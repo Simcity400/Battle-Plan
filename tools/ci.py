@@ -45,6 +45,7 @@ EXIT = {"success": 0, "failure": 1, "error": 2}
 UNCHANGED = "no input changed since the base"
 BUILT_FROM = "ci-built-from"
 SETTLED = 946684800
+TEST_COST = 4
 
 
 @dataclass(frozen=True)
@@ -222,10 +223,11 @@ def crate_weights(crates, sizes):
 
 
 def shard_cost(crates, names, weights):
-    """What building and testing `names` on one runner costs: each crate's test build, and the
-    library of each crate it or its workspace dependencies need, once."""
+    """What building and testing `names` on one runner costs: each crate's test build, which costs
+    TEST_COST times its library's, and the library of each crate it or its workspace dependencies
+    need, once."""
     libraries = set(names).union(*(closure(crates, name) for name in names))
-    return sum(weights[name] for name in names) + sum(weights[name] for name in libraries)
+    return TEST_COST * sum(weights[name] for name in names) + sum(weights[name] for name in libraries)
 
 
 def shard_count(crates, names, weights, most):
@@ -241,12 +243,12 @@ def shard_crates(crates, names, weights, count):
     runner it adds least to the busiest of, so a crate joins the runner already building its
     dependencies. Pure and ordered, so `changes` and each runner agree without being told."""
     def own(name):
-        return weights[name] + sum(weights[dep] for dep in closure(crates, name))
+        return TEST_COST * weights[name] + sum(weights[dep] for dep in closure(crates, name))
 
     loads, built, shards = [0] * count, [set() for _ in range(count)], [[] for _ in range(count)]
     for name in sorted(names, key=lambda name: (-own(name), name)):
         needs = {name} | closure(crates, name)
-        added = [weights[name] + sum(weights[dep] for dep in needs - built[at]) for at in range(count)]
+        added = [TEST_COST * weights[name] + sum(weights[dep] for dep in needs - built[at]) for at in range(count)]
         at = min(range(count), key=lambda at: (loads[at] + added[at], at))
         loads[at] += added[at]
         built[at] |= needs

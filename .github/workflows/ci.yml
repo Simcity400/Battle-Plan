@@ -99,6 +99,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
+            !.cargo-target/debug/*.exe
+            !.cargo-target/debug/*.pdb
+            !.cargo-target/debug/deps/*.exe
+            !.cargo-target/debug/deps/*.pdb
           key: rust-${{ matrix.jobs }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: |
             rust-${{ matrix.jobs }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
@@ -154,6 +158,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
+            !.cargo-target/debug/*.exe
+            !.cargo-target/debug/*.pdb
+            !.cargo-target/debug/deps/*.exe
+            !.cargo-target/debug/deps/*.pdb
           key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
       - run: python tools/ci.py times --target .cargo-target
@@ -168,6 +176,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
+            !.cargo-target/debug/*.exe
+            !.cargo-target/debug/*.pdb
+            !.cargo-target/debug/deps/*.exe
+            !.cargo-target/debug/deps/*.pdb
           key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
 
   check:
