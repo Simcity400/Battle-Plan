@@ -732,7 +732,7 @@ fn constructor_relocation_and_sentinel_restore_exactly() {
 }
 
 #[test]
-#[ignore = "requires BATTLE_PLAN_NAVAL_UNWIND_PROBE pointing to the synthetic C++ probe DLL"]
+#[ignore = "requires BATTLEPLAN_NAVAL_UNWIND_PROBE pointing to the synthetic C++ probe DLL"]
 fn native_foreign_unwind_probe() {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
@@ -740,7 +740,7 @@ fn native_foreign_unwind_probe() {
         System::LibraryLoader::{GetProcAddress, LoadLibraryW},
     };
     let _observation = Observation::new();
-    let path = std::env::var_os("BATTLE_PLAN_NAVAL_UNWIND_PROBE").or_else(|| std::env::var_os("HOI4_NAVAL_UNWIND_PROBE")).expect("probe DLL path");
+    let path = std::env::var_os("BATTLEPLAN_NAVAL_UNWIND_PROBE").or_else(|| std::env::var_os("HOI4_NAVAL_UNWIND_PROBE")).expect("probe DLL path");
     let path: Vec<_> = path.encode_wide().chain(Some(0)).collect();
     let module = unsafe { LoadLibraryW(path.as_ptr()) };
     assert!(!module.is_null());

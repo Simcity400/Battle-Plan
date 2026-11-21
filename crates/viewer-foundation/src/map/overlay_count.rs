@@ -6,7 +6,7 @@ use super::sprites::{Batch, WindowKey, WindowPool, WindowStamp};
 
 pub fn counting() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_COUNT_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_COUNT_OVERLAY")).is_some())
+    *ON.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_COUNT_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_COUNT_OVERLAY")).is_some())
 }
 
 #[derive(Clone, Copy)]

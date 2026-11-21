@@ -16,7 +16,7 @@ Use these words for these things.
 
 - **you** is the agent reading this file. **we** and **maintainers** are the people building BattlePlan. **user** is the person recording and watching campaigns.
 - **game** is the supported strategy game. **mod stack** is the mods and DLC a recording was made with.
-- **collector** is `collector.dll`, loaded into the game; it only reads game memory. **recorder** is the command-line recorder (`recorder.exe`) or the tray app (`battle-plan-recorder.exe`) that attaches the collector and writes the recording.
+- **collector** is `collector.dll`, loaded into the game; it only reads game memory. **recorder** is the command-line recorder (`recorder.exe`) or the tray app (`battleplan-recorder.exe`) that attaches the collector and writes the recording.
 - **spool** is the recoverable file written while recording. **recording** (or **replay**) is the published, indexed `.battleplan` file. **branch** is a continuous stretch of history; a load, a new session or a jump in time starts a new one.
 - **viewer** is the map. **dashboard** is the chart, table and timeline overview. **desktop app** is the Tauri shell around both (`replay-desktop.exe`).
 - **Boat** is the remote VM that compiles Rust for us (`tools/boat.py`).
@@ -24,8 +24,8 @@ Use these words for these things.
 ## Ways to hurt yourself
 
 1. **Killing by pattern.** Never `Stop-Process -Name`, `taskkill /IM`, or kill a PID you found by matching a name, path or worktree. Your process carries this worktree's path, and other agents' builds, Boat runs, dev servers, the game and the recorder share this machine. Kill only a PID you captured at spawn.
-2. **Touching real user data.** `%LOCALAPPDATA%\HOI4Replay` (captures, replay library, caches), the game install and the Paradox user folder are the user's. Read or copy them; never write to, clean or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
-3. **Baking in the machine.** Never commit a machine path, user name, port or host name. Take folders from arguments, settings or the environment (`BATTLE_PLAN_CAPTURES` for capture folders). `tools/check-machine-paths.py` fails any path naming this machine; only scripts in `tools/machine-paths.allow` are exempt.
+2. **Touching real user data.** `%LOCALAPPDATA%\BattlePlan` (captures, replay library, caches), the game install and the Paradox user folder are the user's. Read or copy them; never write to, clean or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
+3. **Baking in the machine.** Never commit a machine path, user name, port or host name. Take folders from arguments, settings or the environment (`BATTLEPLAN_CAPTURES` for capture folders). `tools/check-machine-paths.py` fails any path naming this machine; only scripts in `tools/machine-paths.allow` are exempt.
 4. **Leaving a mess.** Make worktrees with T3 Code, or `git worktree add` beside the existing ones, not in a temp folder or the repo. A new worktree runs `tools/setup_worktree.py` (`npm ci`) in the background: while `.t3/setup-running` names a live process, wait for it; `.t3/setup-failed` holds the error. When done, delete the worktree, branch, build folder and captures.
 5. **Shared state.** Never use plain `git stash`; the stash is shared.
 6. **Stale agents.** Never message an agent idle over an hour, except Astra or Sol; brief a fresh one.

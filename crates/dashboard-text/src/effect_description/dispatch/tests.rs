@@ -5,7 +5,7 @@ use crate::scripted_text::{EventObject, EventScope};
 #[test]
 fn aliases_share_one_class_dispatch() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let text = ScriptedText::new(
         &fixture.frame,
@@ -59,7 +59,7 @@ fn aliases_share_one_class_dispatch() {
 #[test]
 fn unknown_keys_and_unported_classes_are_named_and_counted() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let output = fixture.render(

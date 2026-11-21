@@ -95,14 +95,14 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
   let contentConfig: Promise<void> | null = null;
   const loadContentConfig = () => contentConfig ??= (async () => {
     if (!process.env.APPDATA) return;
-    const bytes = await readFile(path.join(process.env.APPDATA, 'battle-plan', 'content.json'), 'utf8')
+    const bytes = await readFile(path.join(process.env.APPDATA, 'BattlePlan', 'content.json'), 'utf8')
       .catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; });
     if (bytes === null) return;
     const saved: { game_dir?: string; user_dir?: string } = JSON.parse(bytes);
     gameDir = saved.game_dir || gameDir;
     userDir = saved.user_dir || userDir;
   })().catch(error => { contentConfig = null; throw error; });
-  const importsRoot = path.join(tmpdir(), 'battle-plan-imports');
+  const importsRoot = path.join(tmpdir(), 'battleplan-imports');
   const importsOwned = path.join(importsRoot, `${process.pid}-${randomUUID()}`);
   const running = (pid: number) => {
     try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
@@ -218,7 +218,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     return library;
   };
   return {
-    name: 'battle-plan-browser-recordings', apply: 'serve',
+    name: 'battleplan-browser-recordings', apply: 'serve',
     async closeBundle() { await stop(); },
     configureServer(server) {
       void sweepImports();
@@ -246,7 +246,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           if (new URL(request.url ?? '/', 'http://localhost').pathname === '/import' && request.method === 'POST') {
             if (request.headers['content-type'] !== 'application/octet-stream') throw new Error('Expected a recording file');
             const name = path.basename(decodeURIComponent(String(request.headers['x-recording-name'] ?? ''))).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
-            if (!(/\.(?:battleplan|hoi4replay)$/i.test(name)) || name.length > 180) throw new Error('Choose a BattlePlan recording.');
+            if (!/\.battleplan$/i.test(name) || name.length > 180) throw new Error('Choose a BattlePlan recording.');
             const page = pageId(request.headers['x-recording-page']);
             const target = path.join(importsOwned, randomUUID(), name);
             await mkdir(path.dirname(target), { recursive: true });
@@ -282,7 +282,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             let sourceId: string | undefined;
             try {
               const location = await withinRoot(String(input.path));
-              if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a BattlePlan recording.');
+              if (!/\.battleplan$/i.test(location.target) || !(await stat(location.target)).isFile()) throw new Error('Choose a BattlePlan recording.');
               const source = await send({ type: 'open', path: location.target, revision: '' }, controller.signal);
               const id = (source as { id?: unknown } | null)?.id;
               if (typeof id === 'string') sourceId = id;

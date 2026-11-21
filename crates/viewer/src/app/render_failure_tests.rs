@@ -96,7 +96,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()> {
     viewer_audio::System::silent();
     let mut fixture = Fixture::load("viewer-battle-silence")?;
@@ -167,7 +167,7 @@ fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> std::io::Result<()> {
     let fixture = Fixture::load("viewer")?;
     let request = fixture.request([256, 144]);
@@ -289,7 +289,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
     let fixture = Fixture::load("viewer-retired")?;
     let document = || {

@@ -22,10 +22,10 @@ test('each recording keeps its own choice, with the title it is shown by, and no
   saveAircraftChoice('C:/a.battleplan', null, storage);
   assert.equal(loadAircraftChoice('C:/a.battleplan', storage), null);
   assert.equal(storage.items.size, 1);
-  storage.items.set('battle-plan:fly-aircraft:C:/c.battleplan', 'ITA_fighter_equipment_1_entity');
+  storage.items.set('battleplan:fly-aircraft:C:/c.battleplan', 'ITA_fighter_equipment_1_entity');
   assert.deepEqual(loadAircraftChoice('C:/c.battleplan', storage), { name: 'ITA_fighter_equipment_1_entity', title: 'ITA fighter equipment 1' },
     'a choice saved before titles were kept flies the same model without showing its registered name');
-  storage.items.set('battle-plan:fly-aircraft:C:/d.battleplan', '{"title":"Fighter I"}');
+  storage.items.set('battleplan:fly-aircraft:C:/d.battleplan', '{"title":"Fighter I"}');
   assert.equal(loadAircraftChoice('C:/d.battleplan', storage), null);
   assert.equal(aircraftTitle({ titles: ['Fighter I', 'Fighter II'], name: 'fighter_entity' }), 'Fighter I / Fighter II');
   assert.equal(aircraftTitle({ titles: [], name: 'jet_mesh' }), 'Jet');

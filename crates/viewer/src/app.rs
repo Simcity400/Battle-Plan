@@ -310,7 +310,7 @@ impl Laps {
 
 fn gpu_wait(device: &wgpu::Device) -> f64 {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
+    if !ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
         return 0.0;
     }
     let start = Instant::now();
@@ -1145,7 +1145,7 @@ impl Viewer {
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
             remaining: if profiling() {
-                if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
+                if std::env::var("BATTLEPLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
                     1921
                 } else {
                     profiling_sweep().end
@@ -5927,7 +5927,7 @@ impl Viewer {
         let playback_stamp =
             profiling().then(|| self.profile_playback.stamp(self.playhead, self.playing));
         let silent = self.capture.is_some()
-            && (self.campaign_tab || std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some());
+            && (self.campaign_tab || std::env::var_os("BATTLEPLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some());
         if silent {
             viewer_audio::System::silent();
         }
@@ -6187,7 +6187,7 @@ impl Viewer {
         if self.load_complete(document.icons.lazy.busy(), overlay_fresh) {
             if document.content.finish_loading()
                 && let Some(source) = &self.source
-                && std::env::var_os("BATTLE_PLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")).is_some()
+                && std::env::var_os("BATTLEPLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")).is_some()
                 && let Ok(options) = self.config.resolve_options()
             {
                 crate::perf_log::source_admission_probe(source, &options);
@@ -6622,7 +6622,7 @@ impl Viewer {
         }
         let drawn = if let Some(mut document) = self.document.take() {
             if profiling() && self.capture.is_some() {
-                let mode = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
+                let mode = std::env::var("BATTLEPLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
                 let sweep_frames = profiling_sweep();
                 let middle = sweep_frames.start + sweep_frames.len() as u32 / 2;
                 let mut sought = false;
@@ -6770,7 +6770,7 @@ pub(crate) fn date(hour: i32) -> String {
 
 fn check_overlay() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
 }
 
 pub(crate) mod overlay_checks {
@@ -6795,7 +6795,7 @@ pub(crate) mod overlay_checks {
 
 fn check_anchor() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ANCHOR").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ANCHOR")).is_some())
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_CHECK_ANCHOR").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ANCHOR")).is_some())
 }
 
 fn placed_anchor(target: Playhead, moving: bool, speed: f64, age: Duration, last: i32) -> Playhead {

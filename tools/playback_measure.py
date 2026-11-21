@@ -124,13 +124,13 @@ def measure(args):
     viewer_arguments = list(args.viewer_arguments)
     if "--refresh-hz" not in viewer_arguments:
         viewer_arguments += ["--refresh-hz", "60"]
-    environment = dict(os.environ, BATTLE_PLAN_CAPTURES=str(out))
+    environment = dict(os.environ, BATTLEPLAN_CAPTURES=str(out))
     if args.seed_cache:
-        environment["BATTLE_PLAN_PLAYBACK_SEED_CACHE"] = str(Path(args.seed_cache).resolve())
+        environment["BATTLEPLAN_PLAYBACK_SEED_CACHE"] = str(Path(args.seed_cache).resolve())
     command = [str(Path(args.viewer).resolve()), "--playback-cost", str(Path(args.recording).resolve()), *viewer_arguments,
                "--out", str(run_folder)]
     k.CreateMutexW.restype = wt.HANDLE
-    turn = k.CreateMutexW(None, False, "Global\\battle-plan-playback-measure")
+    turn = k.CreateMutexW(None, False, "Global\\battleplan-playback-measure")
     waited = time.monotonic()
     k.WaitForSingleObject(wt.HANDLE(turn), wt.DWORD(0xFFFFFFFF))
     waited = time.monotonic() - waited

@@ -164,7 +164,7 @@ fn organisations() -> DecodedFrame {
 
 fn with_organisations(frame: &DecodedFrame, check: impl FnOnce(&World)) {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalog, groups) = content();
     let dlcs = BTreeSet::new();
     let triggers = TriggerNames::default();

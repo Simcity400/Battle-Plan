@@ -3,7 +3,7 @@
     python tools/daily_tests.py install --ci-dir <runner folder> --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file> [--at 03:00]
     python tools/daily_tests.py run --ci-dir <runner folder> --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file>
 
-`--ci-dir` (or BATTLE_PLAN_CI) names the runner's own folder: its worktree is main there, the
+`--ci-dir` (or BATTLEPLAN_CI) names the runner's own folder: its worktree is main there, the
 acceptance app is built into e2e-app and the reports and locks are kept in reports. `install`
 makes that worktree of origin/main in an empty or new folder and marks it RUNNER_MARK in the
 worktree's own git folder, or moves a marked worktree of this clone to origin/main, and registers
@@ -18,7 +18,7 @@ whatever that build neither produced nor used, so the target holds one build. Ei
 with DISK_FLOOR free, removing the runner's own Cargo target first when that brings it there.
 Rust tests are counted passed, failed, skipped or missing (tools/ci_results.py).
 `--recorded-replies` names the replies the acceptance sweep recorded (`--record-replies`) from the
-`--fixture` recording, which the browser tests replay (BATTLE_PLAN_RECORDED_REPLIES). Its report
+`--fixture` recording, which the browser tests replay (BATTLEPLAN_RECORDED_REPLIES). Its report
 goes to reports: latest.md, rewritten as each group ends, a folder per run with each step's
 log, kept 30 days, and history.tsv, kept whole. The acceptance suite's report is e2e/e2e.md in
 the run's folder; its visual baseline and last work stay in E2E_STATE.
@@ -293,7 +293,7 @@ def acceptance(build, log):
     out = build.folder / "e2e"
     command = [
         str(Path(sys.executable).with_name("python.exe")), "tools/e2e/suite.py", "run", "--app", str(E2E_APP),
-        "--fixture", build.fixture, "--game-dir", build.environment["BATTLE_PLAN_GAME_DIR"], "--out", str(out),
+        "--fixture", build.fixture, "--game-dir", build.environment["BATTLEPLAN_GAME_DIR"], "--out", str(out),
         "--state", str(E2E_STATE),
     ]
     code = run_step(command, log, build.environment, build.deadline - time.monotonic())
@@ -703,12 +703,12 @@ def run_checked_out(args):
         raise RuntimeError(f"checked-out runner expected {commit}, HEAD is {actual}")
     heading = f"main {commit[:10]} {git('log', '-1', '--format=%s')}"
     environment = dict(
-        os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
+        os.environ, BATTLEPLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
         CARGO_INCREMENTAL="0",
     )
-    environment.pop("BATTLE_PLAN_RECORDED_REPLIES", None)
+    environment.pop("BATTLEPLAN_RECORDED_REPLIES", None)
     if args.recorded_replies:
-        environment["BATTLE_PLAN_RECORDED_REPLIES"] = args.recorded_replies
+        environment["BATTLEPLAN_RECORDED_REPLIES"] = args.recorded_replies
     build = Build(rust_target(), folder, environment, deadline, args.fixture)
     size_at_start = size_of(build.target)
     plan = steps()
@@ -1102,17 +1102,17 @@ def fixtures(args):
 def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    game_dir = os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None
-    ci_dir = os.environ.get("BATTLE_PLAN_CI") or None
+    game_dir = os.environ.get("BATTLEPLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None
+    ci_dir = os.environ.get("BATTLEPLAN_CI") or None
     for name in ("install", "run"):
         command = commands.add_parser(name)
         command.add_argument("--ci-dir", type=os.path.abspath, default=ci_dir, required=ci_dir is None)
         command.add_argument(
             "--game-dir", type=os.path.abspath, default=game_dir, required=game_dir is None
         )
-        command.add_argument("--fixture", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
+        command.add_argument("--fixture", type=os.path.abspath, default=os.environ.get("BATTLEPLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
         command.add_argument(
-            "--recorded-replies", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_RECORDED_REPLIES", os.environ.get("HOI4_RECORDED_REPLIES")) or None
+            "--recorded-replies", type=os.path.abspath, default=os.environ.get("BATTLEPLAN_RECORDED_REPLIES", os.environ.get("HOI4_RECORDED_REPLIES")) or None
         )
         if name == "install":
             command.add_argument("--at", default="03:00", help="local start time, HH:MM")

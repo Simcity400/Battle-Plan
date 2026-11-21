@@ -103,14 +103,14 @@ fn epoch_ms() -> f64 {
 }
 
 fn open() -> Option<PerfLog> {
-    let path = PathBuf::from(std::env::var_os("BATTLE_PLAN_PERF_LOG").or_else(|| std::env::var_os("HOI4_PERF_LOG")).filter(|path| !path.is_empty())?);
+    let path = PathBuf::from(std::env::var_os("BATTLEPLAN_PERF_LOG").or_else(|| std::env::var_os("HOI4_PERF_LOG")).filter(|path| !path.is_empty())?);
     let mut map_prefix = path.clone().into_os_string();
     map_prefix.push(".map");
     let map_prefix = PathBuf::from(map_prefix);
     let file = match File::create(&path) {
         Ok(file) => file,
         Err(error) => {
-            eprintln!("BATTLE_PLAN_PERF_LOG {}: {error}", path.display());
+            eprintln!("BATTLEPLAN_PERF_LOG {}: {error}", path.display());
             return None;
         }
     };
@@ -130,7 +130,7 @@ fn open() -> Option<PerfLog> {
             );
         })
     {
-        eprintln!("BATTLE_PLAN_PERF_LOG writer: {error}");
+        eprintln!("BATTLEPLAN_PERF_LOG writer: {error}");
         return None;
     }
     let log = PerfLog {

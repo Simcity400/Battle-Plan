@@ -93,7 +93,7 @@ impl World {
 fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_contexts() {
     use crate::template_changes::Changes;
     const TEST: &str = "extended::group_counters::startup_tests::enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_contexts";
-    const CHILD: &str = "BATTLE_PLAN_HQ_UNSIZED_STARTUP_TEST";
+    const CHILD: &str = "BATTLEPLAN_HQ_UNSIZED_STARTUP_TEST";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])

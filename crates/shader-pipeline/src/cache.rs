@@ -98,7 +98,7 @@ pub struct Cache {
 impl Default for Cache {
     fn default() -> Self {
         let root = std::env::var_os("LOCALAPPDATA")
-            .map(|root| PathBuf::from(root).join("HOI4Replay/shader-cache/v2"));
+            .map(|root| PathBuf::from(root).join("BattlePlan/shader-cache/v2"));
         let mut cache = Self::new(root, Arc::new(Runtime::default()));
         if cache.root.is_none() {
             let warning = "LOCALAPPDATA is unset: compiled shaders are not persisted".to_owned();

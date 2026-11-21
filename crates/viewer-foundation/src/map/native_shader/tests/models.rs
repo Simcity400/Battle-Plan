@@ -442,7 +442,7 @@ impl Family {
 fn synthetic_gui_parts_match_the_direct_shader_submissions() {
     content_reader_core::test_game::enter();
     let (_install, mut library) = effects();
-    if let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
+    if let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
         std::fs::create_dir_all(report).unwrap();
     }
     let (_serial, device, queue) = device();
@@ -778,7 +778,7 @@ fn synthetic_gui_parts_match_the_direct_shader_submissions() {
                     eprintln!("{row}");
                     rows.push(row);
                     if different != 0
-                        && let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
+                        && let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
                     {
                         let prefix =
                             format!("{name}-{}-{}-{scenario}", technique.name, defines.join("-"));
@@ -801,7 +801,7 @@ fn synthetic_gui_parts_match_the_direct_shader_submissions() {
         println!("{row}");
     }
     println!("SUBMISSION COMPARISON: {compared} renders, {failures} with differing pixels");
-    if let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
+    if let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
         std::fs::write(
             Path::new(&report).join("submission-comparison.txt"),
             rows.join("\n"),

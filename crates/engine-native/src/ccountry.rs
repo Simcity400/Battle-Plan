@@ -5545,7 +5545,7 @@ mod tests {
     #[ignore = "unit-scale guarded sent-volunteer reader cost; run release"]
     fn sent_volunteers_unit_scale() {
         use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let stress = std::env::var("BATTLE_PLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() == Ok("stress");
+        let stress = std::env::var("BATTLEPLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() == Ok("stress");
         let (countries, divisions) = if stress {
             (5_000, 100_000)
         } else {

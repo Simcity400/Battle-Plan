@@ -158,10 +158,7 @@ pub(crate) fn replay_path(path: &str) -> Result<String, String> {
     if path.contains('\0') {
         return Err("The recording path holds a NUL character".into());
     }
-    if !std::path::Path::new(path)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
-    {
+    if !replay::recording_files::is_recording(std::path::Path::new(path)) {
         return Err("Choose a BattlePlan recording.".into());
     }
     Ok(path.to_owned())
@@ -263,7 +260,7 @@ fn main() {
     viewer_foundation::parallel::name_shared_pool();
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "battle-plan\n\nreplay-desktop [recording.battleplan] [map options]\n\nThe map runs inside this app. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nMap options such as --branch, --hour and --camera open the campaign map\nthere. --diagnostics shows the maps' technical stats and data limitations\nfor this run; F3 or Settings > Diagnostics toggles and saves them.\n--window-dump <recording> --out <frame.png> draws one frame of the map to a\nfile and exits (the release smoke).\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
+            "BattlePlan\n\nreplay-desktop [recording.battleplan] [map options]\n\nThe map runs inside this app. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nMap options such as --branch, --hour and --camera open the campaign map\nthere. --diagnostics shows the maps' technical stats and data limitations\nfor this run; F3 or Settings > Diagnostics toggles and saves them.\n--window-dump <recording> --out <frame.png> draws one frame of the map to a\nfile and exits (the release smoke).\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
         );
         return;
     }

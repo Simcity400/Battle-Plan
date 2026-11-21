@@ -23,12 +23,6 @@ test('recordings that share a name are told apart by the shortest folder that di
   const folders = distinguishingFolders(paths);
   assert.deepEqual(paths.map(path => distinguishingFolder(folders, path)), ['first', 'second', 'Recordings', null, String.raw`Old\first`, String.raw`New\first`]);
   assert.equal(distinguishingFolders([paths[0], paths[0].replaceAll('\\', '/')]).size, 0, 'one recording listed twice is not a collision');
-  const legacy = [String.raw`C:\Recordings\Italy 1936.battleplan`, String.raw`C:\Recordings\Italy 1936.hoi4replay`, String.raw`D:\Saves\Italy 1936.hoi4replay`];
-  const named = distinguishingFolders(legacy);
-  assert.deepEqual(legacy.map(path => distinguishingFolder(named, path)), ['Recordings', 'Recordings · Older file type', 'Saves'],
-    'an older file type beside a current one with the same name says so, without claiming its format');
-  const pair = distinguishingFolders(legacy.slice(0, 2));
-  assert.deepEqual(legacy.slice(0, 2).map(path => distinguishingFolder(pair, path)), [null, 'Older file type']);
-  assert.deepEqual(legacy.map(path => qualifiedRecordingName(named, path)),
-    ['Italy 1936 in Recordings', 'Italy 1936 in Recordings, older file type', 'Italy 1936 in Saves'], 'the accessible name carries the same distinction');
+  assert.equal(qualifiedRecordingName(folders, paths[0]), 'Italy 1936 in first');
+  assert.equal(qualifiedRecordingName(folders, paths[3]), 'Germany');
 });

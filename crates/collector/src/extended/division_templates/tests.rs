@@ -128,7 +128,7 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
         frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,
     };
     const TEST: &str = "extended::division_templates::tests::enabled_unsized_startup_records_known_template_and_country_values_through_spool";
-    const CHILD: &str = "BATTLE_PLAN_TEMPLATE_UNSIZED_STARTUP_TEST";
+    const CHILD: &str = "BATTLEPLAN_TEMPLATE_UNSIZED_STARTUP_TEST";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
@@ -246,7 +246,7 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
     use replay_frame::frame::{FrameInput, Metrics};
 
     const TEST: &str = "extended::division_templates::tests::failed_template_observer_preserves_fresh_template_and_country_values";
-    const CHILD: &str = "BATTLE_PLAN_TEMPLATE_INSTALL_FAILURE_TEST";
+    const CHILD: &str = "BATTLEPLAN_TEMPLATE_INSTALL_FAILURE_TEST";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])

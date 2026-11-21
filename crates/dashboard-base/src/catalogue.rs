@@ -613,7 +613,7 @@ mod loader_tests {
     #[test]
     fn text_never_reads_settings_and_unreadable_settings_refuse_only_art() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{records, source};
         use replay::spool::Record;
         use std::sync::atomic::AtomicBool;
@@ -700,7 +700,7 @@ mod loader_tests {
     #[test]
     fn a_read_ahead_never_rebinds_content_a_request_replaced() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{records, source};
         use replay::spool::Record;
         use std::sync::{atomic::AtomicBool, mpsc};

@@ -1,7 +1,8 @@
 
 !define HOI_RECORDER "BattlePlan Recorder"
 !define HOI_LEGACY_RECORDER "the game Recorder"
-!define HOI_RECORDER_EXE "battle-plan-recorder.exe"
+!define HOI_LEGACY_APP "Battle Plan"
+!define HOI_RECORDER_EXE "battleplan-recorder.exe"
 !define HOI_APP_EXE "replay-desktop.exe"
 !define HOI_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -15,8 +16,8 @@ Var HoiGuard
 Var HoiClosing
 Var HoiStateFile
 
-!define HOI_GUARD "Local\HOI4Replay.Setup"
-!define HOI_STATE "HOI4REPLAY_SETUP_STATE"
+!define HOI_GUARD "Local\BattlePlan.Setup"
+!define HOI_STATE "BATTLEPLAN_SETUP_STATE"
 
 !macro HOI_TAKE_GUARD
   System::Call 'kernel32::CreateMutexW(p 0, i 1, w "${HOI_GUARD}") p .r0 ?e'
@@ -62,7 +63,7 @@ Function .onInstFailed
   ${EndIf}
   !insertmacro HOI_RELEASE_GUARD
   !insertmacro HOI_READ_STATE
-  ${GetOptions} $CMDLINE "/HOI4RECORDER" $0
+  ${GetOptions} $CMDLINE "/BATTLEPLANRECORDER" $0
   ${IfNot} ${Errors}
     StrCpy $HoiRecorderRan 1
   ${EndIf}
@@ -104,7 +105,7 @@ FunctionEnd
 !define MUI_CUSTOMFUNCTION_GUIINIT HoiGuiInit
 Function HoiGuiInit
   System::Call 'kernel32::GetCurrentProcessId() i .r1'
-  StrCpy $HoiStateFile "$TEMP\HOI4Replay-setup-$1.ini"
+  StrCpy $HoiStateFile "$TEMP\BattlePlan-setup-$1.ini"
   System::Call 'kernel32::SetEnvironmentVariableW(w "${HOI_STATE}", w "$HoiStateFile") i .r2'
 FunctionEnd
 
@@ -124,9 +125,7 @@ Function HoiWelcomeShow
   Pop $HoiStartCheckbox
   SetCtlColors $HoiStartCheckbox "" "${MUI_BGCOLOR}"
   ReadRegStr $0 HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
-  ReadRegStr $1 HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
   ${If} $0 != ""
-  ${OrIf} $1 != ""
   ${OrIfNot} ${FileExists} "$INSTDIR\${HOI_RECORDER_EXE}"
     ${NSD_Check} $HoiStartCheckbox
   ${EndIf}
@@ -150,7 +149,7 @@ FunctionEnd
     ${EndIf}
     System::Call 'kernel32::GetCurrentProcessId() i .r1'
     System::Call 'kernel32::ProcessIdToSessionId(i r1, *i .r2) i .r3'
-    StrCpy $4 "\\.\pipe\HOI4Replay.$2.${role}"
+    StrCpy $4 "\\.\pipe\BattlePlan.$2.${role}"
     StrCpy $5 0
     ${Do}
       nsis_tauri_utils::FindProcessCurrentUser "${exe}"
@@ -217,23 +216,28 @@ FunctionEnd
   ${IfThen} $HoiAppClosed == 1 ${|} StrCpy $HoiReplayRan 1 ${|}
 !macroend
 
+!macro HOI_REPLACE_APP_SHORTCUT folder
+  ${If} ${FileExists} "${folder}\${HOI_LEGACY_APP}.lnk"
+    CreateShortcut "${folder}\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetLnkAppUserModelId "${folder}\${PRODUCTNAME}.lnk"
+    Delete "${folder}\${HOI_LEGACY_APP}.lnk"
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro HOI_REPLACE_APP_SHORTCUT "$SMPROGRAMS"
+  !insertmacro HOI_REPLACE_APP_SHORTCUT "$DESKTOP"
   Delete "$INSTDIR\viewer.exe"
   RMDir /r "$INSTDIR\shader-tools"
   !insertmacro HOI_REMOVE_LICENSES
   ${If} ${FileExists} "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
-    Delete "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
+  ${OrIf} ${FileExists} "$SMPROGRAMS\${HOI_LEGACY_APP} Recorder.lnk"
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
-  ${EndIf}
-  ${If} $UpdateMode <> 1
+    Delete "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
+    Delete "$SMPROGRAMS\${HOI_LEGACY_APP} Recorder.lnk"
+  ${ElseIf} $UpdateMode <> 1
   ${AndIf} $NoShortcutMode <> 1
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
-  ${EndIf}
-  ReadRegStr $0 HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
-  DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
-  ${If} $HoiStartRecorder == ""
-  ${AndIf} $0 != ""
-    StrCpy $HoiStartRecorder 1
   ${EndIf}
   ${If} $HoiStartRecorder == 1
     WriteRegStr HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}" '"$INSTDIR\${HOI_RECORDER_EXE}"'
@@ -242,7 +246,7 @@ FunctionEnd
   ${EndIf}
   !insertmacro HOI_RELEASE_GUARD
   StrCpy $HoiClosing 0
-  ${GetOptions} $CMDLINE "/HOI4RECORDER" $0
+  ${GetOptions} $CMDLINE "/BATTLEPLANRECORDER" $0
   ${IfNot} ${Errors}
     StrCpy $HoiRecorderRan 1
   ${EndIf}
@@ -279,8 +283,6 @@ FunctionEnd
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $UpdateMode <> 1
     Delete "$SMPROGRAMS\${HOI_RECORDER}.lnk"
-    Delete "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
     DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
-    DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
   ${EndIf}
 !macroend

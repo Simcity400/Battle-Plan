@@ -113,7 +113,7 @@ fn caller() -> EventScopes {
 #[test]
 fn add_scientist_xp() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "add_scientist_xp={specialization=specialization_synthetic_energy experience=275}",
@@ -127,7 +127,7 @@ fn add_scientist_xp() {
 #[test]
 fn add_scientist_level() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "add_scientist_level={specialization=specialization_synthetic_lift level=4}",
@@ -141,7 +141,7 @@ fn add_scientist_level() {
 #[test]
 fn injure_scientist_for_days() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "injure_scientist_for_days=13",
@@ -155,7 +155,7 @@ fn injure_scientist_for_days() {
 #[test]
 fn generate_scientist_character() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("generate_scientist_character={portrait_tag_override=AAA traits={syn_practiced syn_observant} skills={specialization_synthetic_shapes=6}}", &mut caller(), Content::default());
     assert_eq!(out.text, "Generate(Quick, Bright)/AAA");
@@ -165,7 +165,7 @@ fn generate_scientist_character() {
 #[test]
 fn add_scientist_trait() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "add_scientist_trait=syn_practiced",
@@ -183,7 +183,7 @@ fn add_scientist_trait() {
 #[test]
 fn scientist_trait_uses_full_category_mask_and_caller_scope() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -236,7 +236,7 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
 #[test]
 fn remove_scientist_role() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "remove_scientist_role=yes",
@@ -250,7 +250,7 @@ fn remove_scientist_role() {
 #[test]
 fn add_scientist_role() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("add_scientist_role={scientist={traits={syn_observant} skills={specialization_synthetic_energy=5}}}", &mut caller(), Content::default());
     assert_eq!(out.text, "Add Alice/AAA");
@@ -260,7 +260,7 @@ fn add_scientist_role() {
 #[test]
 fn active_non_scientists_keep_empty_gates() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let mut scopes = caller();
     scopes.scopes[0].this = EventObject::Character(8);
@@ -272,7 +272,7 @@ fn active_non_scientists_keep_empty_gates() {
 #[test]
 fn unrostered_scientist_presence_is_named_and_counted() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Scientists.index()] =
         TableView::Complete(TableRows::Scientists(vec![]));
@@ -298,7 +298,7 @@ fn unrostered_scientist_presence_is_named_and_counted() {
 #[test]
 fn scientist_role_targets_use_named_character_and_current_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("add_scientist_role={character=synthetic_ben scientist={}} remove_scientist_role={character=synthetic_ben}", &mut caller(), Content::default());
     assert_eq!(out.text, "Add Ben/AAA\nRemove Ben/AAA");
@@ -308,7 +308,7 @@ fn scientist_role_targets_use_named_character_and_current_fallback() {
 #[test]
 fn missing_and_reserved_trait_ids_keep_empty() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("add_scientist_trait=missing_trait add_scientist_trait=\"syn_observant\" add_scientist_trait=3 add_scientist_xp={specialization=missing_specialization experience=275}", &mut caller(), Content::default());
     assert_eq!(out.text, "");

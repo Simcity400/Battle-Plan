@@ -6,7 +6,7 @@ import { DATED_FOLLOW, DATED_PANEL, parseDatedPanels } from '../dashboard/follow
 import { isCellsId } from '../dashboard/follow/liveCells.ts';
 import { busy, busyPreparing } from '../shell/busy.ts';
 
-export const RECORDED_KIND = 'battle-plan recorded replies';
+export const RECORDED_KIND = 'battleplan recorded replies';
 export const RECORDED_VERSION = 4;
 
 export interface RecordedHeader { kind: string; version: number; formatDigest: string; format: string[]; app: { revision: string }; recordedAt: string }

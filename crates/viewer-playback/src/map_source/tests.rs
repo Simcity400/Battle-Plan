@@ -74,10 +74,10 @@ fn fixture_source(name: &str) -> (Arc<Replay>, MapSource) {
 }
 
 #[test]
-#[ignore = "reads a recording named by BATTLE_PLAN_MAP_FIXTURE at the hour BATTLE_PLAN_MAP_FIXTURE_HOUR"]
+#[ignore = "reads a recording named by BATTLEPLAN_MAP_FIXTURE at the hour BATTLEPLAN_MAP_FIXTURE_HOUR"]
 fn a_recorded_hour_through_the_map_source_is_the_row_frames() {
-    let (replay, mut source) = fixture_source("BATTLE_PLAN_MAP_FIXTURE");
-    let at = std::env::var("BATTLE_PLAN_MAP_FIXTURE_HOUR").or_else(|_| std::env::var("HOI4_MAP_FIXTURE_HOUR")).expect("BATTLE_PLAN_MAP_FIXTURE_HOUR names no hour");
+    let (replay, mut source) = fixture_source("BATTLEPLAN_MAP_FIXTURE");
+    let at = std::env::var("BATTLEPLAN_MAP_FIXTURE_HOUR").or_else(|_| std::env::var("HOI4_MAP_FIXTURE_HOUR")).expect("BATTLEPLAN_MAP_FIXTURE_HOUR names no hour");
     let (branch, hour) = at.split_once(':').expect("branch:hour");
     let (branch, hour): (BranchId, Hour) = (branch.parse().unwrap(), hour.parse().unwrap());
     let tables = dashboard_base::map_tables::selected_tables();
@@ -94,9 +94,9 @@ fn a_recorded_hour_through_the_map_source_is_the_row_frames() {
 }
 
 #[test]
-#[ignore = "reads the recordings named by BATTLE_PLAN_MAP_FIXTURES and prints timings"]
+#[ignore = "reads the recordings named by BATTLEPLAN_MAP_FIXTURES and prints timings"]
 fn map_source_steps_and_seeks_beside_the_hour_cursor() {
-    let paths = std::env::var("BATTLE_PLAN_MAP_FIXTURES").or_else(|_| std::env::var("HOI4_MAP_FIXTURES")).expect("BATTLE_PLAN_MAP_FIXTURES names no recording");
+    let paths = std::env::var("BATTLEPLAN_MAP_FIXTURES").or_else(|_| std::env::var("HOI4_MAP_FIXTURES")).expect("BATTLEPLAN_MAP_FIXTURES names no recording");
     let tables = dashboard_base::map_tables::selected_tables();
     for path in paths.split(';').filter(|path| !path.is_empty()) {
         let replay = Arc::new(Replay::open_path(std::path::Path::new(path)).unwrap());

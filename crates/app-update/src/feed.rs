@@ -33,7 +33,7 @@ pub struct Release {
 
 pub fn client(current: &str) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(format!("battle-plan/{current}"))
+        .user_agent(format!("battleplan/{current}"))
         .connect_timeout(FEED_TIMEOUT)
         .read_timeout(STALL_TIMEOUT)
         .build()

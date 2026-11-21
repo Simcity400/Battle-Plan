@@ -407,13 +407,13 @@ fn hourly_losses_read_failure_never_becomes_zero() {
 #[ignore = "print-only hourly casualty bench after live-count presize; lead runs through build slot"]
 fn land_casualty_hourly_timing() {
     let _globals = super::test_globals();
-    let provinces: usize = std::env::var("BATTLE_PLAN_LAND_PROVINCES").or_else(|_| std::env::var("HOI4_LAND_PROVINCES"))
+    let provinces: usize = std::env::var("BATTLEPLAN_LAND_PROVINCES").or_else(|_| std::env::var("HOI4_LAND_PROVINCES"))
         .map(|value| value.parse().unwrap())
         .unwrap_or(20_000);
-    let fraction: usize = std::env::var("BATTLE_PLAN_LAND_BATTLE_PERCENT").or_else(|_| std::env::var("HOI4_LAND_BATTLE_PERCENT"))
+    let fraction: usize = std::env::var("BATTLEPLAN_LAND_BATTLE_PERCENT").or_else(|_| std::env::var("HOI4_LAND_BATTLE_PERCENT"))
         .map(|value| value.parse().unwrap())
         .unwrap_or(1);
-    let variants: usize = std::env::var("BATTLE_PLAN_LAND_LOSS_VARIANTS").or_else(|_| std::env::var("HOI4_LAND_LOSS_VARIANTS"))
+    let variants: usize = std::env::var("BATTLEPLAN_LAND_LOSS_VARIANTS").or_else(|_| std::env::var("HOI4_LAND_LOSS_VARIANTS"))
         .map(|value| value.parse().unwrap())
         .unwrap_or(12);
     let count = provinces.checked_mul(fraction).unwrap() / 100;

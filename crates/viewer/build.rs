@@ -22,14 +22,14 @@ fn main() {
         println!("cargo:rerun-if-changed={path}");
     }
     if let Some(commit) = git(&["rev-parse", "HEAD"]) {
-        println!("cargo:rustc-env=BATTLE_PLAN_PLAYBACK_COST_COMMIT={commit}");
+        println!("cargo:rustc-env=BATTLEPLAN_PLAYBACK_COST_COMMIT={commit}");
     }
     if let Some(base) = git(&["merge-base", "HEAD", "origin/main"]) {
-        println!("cargo:rustc-env=BATTLE_PLAN_PLAYBACK_COST_MAIN={base}");
+        println!("cargo:rustc-env=BATTLEPLAN_PLAYBACK_COST_MAIN={base}");
     }
     if let Some(status) = git(&["status", "--porcelain", "--untracked-files=normal"]) {
         println!(
-            "cargo:rustc-env=BATTLE_PLAN_PLAYBACK_COST_DIRTY={}",
+            "cargo:rustc-env=BATTLEPLAN_PLAYBACK_COST_DIRTY={}",
             !status.is_empty()
         );
     }

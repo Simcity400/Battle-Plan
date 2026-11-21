@@ -90,11 +90,7 @@ fn walk(
             let path = entry.path();
             if kind.is_dir() {
                 pending.push(path);
-            } else if kind.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("battleplan") || ext.eq_ignore_ascii_case("hoi4replay"))
-            {
+            } else if kind.is_file() && replay::recording_files::is_recording(&path) {
                 checkpoint()?;
                 each(&root, &directory, &path, &metadata)?;
             }
@@ -195,7 +191,7 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
         rfd::FileDialog::new()
             .set_parent(&window)
             .set_title("Open recording")
-            .add_filter("BattlePlan", &["battleplan", "hoi4replay"])
+            .add_filter("BattlePlan", &[replay::recording_files::EXTENSION])
             .pick_file()
             .map(|path| path.to_string_lossy().into_owned())
     })

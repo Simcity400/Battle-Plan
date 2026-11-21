@@ -1,6 +1,6 @@
 import type { AircraftEntry } from '../generated/dashboard';
 
-const PREFIX = 'battle-plan:fly-aircraft:';
+const PREFIX = 'battleplan:fly-aircraft:';
 
 type ChoiceStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 

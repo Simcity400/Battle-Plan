@@ -149,7 +149,7 @@ fn catalogue_campaign_failure_becomes_a_gap_and_tries_the_next_block() {
 
 #[test]
 fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success() {
-    const CHILD: &str = "BATTLE_PLAN_METADATA_ALLOCATION_CHILD";
+    const CHILD: &str = "BATTLEPLAN_METADATA_ALLOCATION_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "metadata::tests::catalogue_checked_allocation_failures_propagate_instead_of_becoming_success", "--nocapture"])

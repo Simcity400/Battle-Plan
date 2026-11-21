@@ -87,7 +87,7 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
             .ok_or("game executable has no folder")?
             .to_owned(),
         user_dir: user.clone(),
-        cache_dir: local.join("HOI4Replay").join("recorder"),
+        cache_dir: local.join("BattlePlan").join("recorder"),
         dlc_order: None,
     })
     .map_err(|e| e.to_string())?;

@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "battle-plan-recorder"
+name = "battleplan-recorder"
 path = "src/main.rs"
 
 [build-dependencies]

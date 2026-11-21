@@ -9,7 +9,7 @@ use engine_native::{
 use std::cell::Cell;
 
 fn isolated() -> bool {
-    const CHILD: &str = "BATTLE_PLAN_COMBAT_LOG_ISOLATED_TEST";
+    const CHILD: &str = "BATTLEPLAN_COMBAT_LOG_ISOLATED_TEST";
     let thread = std::thread::current();
     let name = thread.name().unwrap();
     if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new(name)) {

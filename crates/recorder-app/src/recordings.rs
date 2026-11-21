@@ -662,12 +662,6 @@ impl Library {
     }
 }
 
-fn is_recording(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| {
-        extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay")
-    })
-}
-
 fn hidden(entry: &fs::DirEntry) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
@@ -699,7 +693,7 @@ fn recordings_in(folder: &Path, files: &mut Vec<PathBuf>) -> Option<std::io::Err
     let mut failed = None;
     for entry in entries {
         match entry.and_then(|entry| Ok((entry.file_type()?, entry.path()))) {
-            Ok((kind, path)) if kind.is_file() && is_recording(&path) => files.push(path),
+            Ok((kind, path)) if kind.is_file() && recording_files::is_recording(&path) => files.push(path),
             Ok(_) => {}
             Err(error) => {
                 failed.get_or_insert(error);
@@ -733,7 +727,7 @@ pub(crate) fn saved_files(root: &Path, made_when_needed: bool) -> (Vec<PathBuf>,
         };
         let path = entry.path();
         match entry.file_type() {
-            Ok(kind) if kind.is_file() && is_recording(&path) => files.push(path),
+            Ok(kind) if kind.is_file() && recording_files::is_recording(&path) => files.push(path),
             Ok(kind) if kind.is_dir() && recording_folder(&entry) => {
                 if let Some(error) = recordings_in(&path, &mut files) {
                     unreadable.get_or_insert_with(|| failure(false, &path, error));
@@ -757,7 +751,7 @@ mod tests {
 
     fn scratch() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "battle-plan-recorder-recordings-{}-{}",
+            "battleplan-recorder-recordings-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

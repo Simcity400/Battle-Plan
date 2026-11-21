@@ -45,7 +45,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-DEFAULT_STATE = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
+DEFAULT_STATE = Path(os.environ.get("BATTLEPLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
 WINDOW = (1920, 1080)
 SCREEN_VIEWS, TALL_VIEW, SCREEN = ("AllWidgets", "AllWidgetsLegible"), "AllWidgetsTall", (3840, 2160)
 BOAT_FAILED = 75
@@ -55,7 +55,7 @@ SESSIONS = (
     ("pages", "pages", {}),
     ("seeks", "seeks", {}),
     ("map", "visual,map,playback", {}),
-    ("map uncapped", "mapfps", {"BATTLE_PLAN_VIEWER_NO_VSYNC": "1"}),
+    ("map uncapped", "mapfps", {"BATTLEPLAN_VIEWER_NO_VSYNC": "1"}),
     ("catalogue", "catalogue", {}),
     ("controls", "controls", {}),
     ("pages at", "pages-at", {}),
@@ -63,10 +63,10 @@ SESSIONS = (
 QUICK_SESSIONS = (
     ("quick", "glance,playback,catalogue,controls", {}),
 )
-CACHES = ("local/HOI4Replay/viewer", "local/HOI4Replay/shader-cache", "local/HOI4Replay/artwork", "local/Microsoft",
+CACHES = ("local/BattlePlan/viewer", "local/BattlePlan/shader-cache", "local/BattlePlan/artwork", "local/Microsoft",
           "roaming", "webview")
-KEPT = ("local/HOI4Replay/captures",)
-APPS = Path(tempfile.gettempdir()) / "battle-plan-e2e" / "apps"
+KEPT = ("local/BattlePlan/captures",)
+APPS = Path(tempfile.gettempdir()) / "battleplan-e2e" / "apps"
 APP_EXE = "replay-desktop.exe"
 SHELL_FEATURE = "replay-desktop/served-ui"
 
@@ -181,7 +181,7 @@ class App:
 
     def __init__(self, exe, args, environment, log, port):
         self.port = port
-        self.desktop_name = f"HOI4ReplayE2E-{uuid.uuid4().hex[:12]}"
+        self.desktop_name = f"BattlePlanE2E-{uuid.uuid4().hex[:12]}"
         self.desktop = checked(u.CreateDesktopW(self.desktop_name, None, None, 0, 0x1FF, None))
         self.job = checked(k.CreateJobObjectW(None, None))
         limits = Extended()
@@ -454,7 +454,7 @@ def node():
 
 
 def fixture_recording(folder):
-    recordings = sorted((*Path(folder).glob("*.battleplan"), *Path(folder).glob("*.hoi4replay")))
+    recordings = sorted(Path(folder).glob("*.battleplan"))
     if len(recordings) != 1:
         raise RuntimeError(f"{folder} holds {len(recordings)} recordings; the fixture is one")
     return recordings[0]
@@ -482,7 +482,7 @@ def app_environment(profile, port, extra):
     environment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-backgrounding-occluded-windows "
         "--disable-renderer-backgrounding --disable-background-timer-throttling")
-    environment.pop("BATTLE_PLAN_PERF_LOG", None)
+    environment.pop("BATTLEPLAN_PERF_LOG", None)
     environment.update(extra)
     return environment
 
@@ -493,7 +493,7 @@ def launch(args, work, label, extra=None):
     port = free_port()
     environment = app_environment(profile, port, dict(extra or {}))
     if args.ui:
-        environment["BATTLE_PLAN_UI_DIST"] = args.ui
+        environment["BATTLEPLAN_UI_DIST"] = args.ui
     app_args = ["--game-dir", args.game_dir, "--user-dir", str(args.user_folder)]
     app = App(Path(args.app) / "replay-desktop.exe", app_args, environment, args.out / f"app-{label}.log", port)
     try:
@@ -518,7 +518,7 @@ def cold_profile(work):
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"could not empty {profile / cache} within 30 s")
                 time.sleep(1)
-    left = sorted(str(path.relative_to(profile)).replace("\\", "/") for path in (profile / "local" / "HOI4Replay").iterdir())
+    left = sorted(str(path.relative_to(profile)).replace("\\", "/") for path in (profile / "local" / "BattlePlan").iterdir())
     expected = sorted(KEPT)
     if left != expected or any((profile / name).exists() for name in ("roaming", "webview", "local/Microsoft")):
         raise RuntimeError(f"the profile is not cold: it holds {left}")
@@ -580,7 +580,7 @@ def run_locked(args, started, state):
     record["userFolder"] = str(args.user_folder)
     record["fixture"] = {"name": source.name, "bytes": source.stat().st_size}
     shader_compiler(state, Path(args.app))
-    recording = work / "profile" / "local" / "HOI4Replay" / "captures" / source.name
+    recording = work / "profile" / "local" / "BattlePlan" / "captures" / source.name
     if "copy" in stages:
         began = time.monotonic()
         if work.exists():
@@ -611,8 +611,8 @@ def run_locked(args, started, state):
                 cold_profile(work)
                 session["machine"] = {"before": machine_load(0)}
                 record["machine"]["start"] = record["machine"]["start"] or session["machine"]["before"]
-                app = launch(args, work, f"sweep-{slug}", {"BATTLE_PLAN_PERF_LOG": str(work / f"perf-{slug}.jsonl"),
-                                                           "BATTLE_PLAN_E2E_INPUT": input_address, "BATTLE_PLAN_E2E_CAPTURE_CLOCK": "0",
+                app = launch(args, work, f"sweep-{slug}", {"BATTLEPLAN_PERF_LOG": str(work / f"perf-{slug}.jsonl"),
+                                                           "BATTLEPLAN_E2E_INPUT": input_address, "BATTLEPLAN_E2E_CAPTURE_CLOCK": "0",
                                                            **environment})
             except Exception as error:
                 session.update(error=str(error), sweepExit=None, appExit=None, seconds=time.monotonic() - began)
@@ -711,9 +711,9 @@ def parse(argv):
     app.add_argument("--shell", help="folder holding the measuring shell (`build --shell`); needs --ui")
     run_command.add_argument("--ui", help="the production bundle the shell serves (`vite build` output, ui/dist); builds nothing")
     run_command.add_argument("--record-replies", help="file the sweep records every reply and followed message the page receives to (tools/e2e/replies.mjs)")
-    run_command.add_argument("--fixture", default=os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")), required=not os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
-    run_command.add_argument("--game-dir", default=os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")), required=not os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")))
-    run_command.add_argument("--user-dir", default=os.environ.get("BATTLE_PLAN_USER_DIR", os.environ.get("HOI4_USER_DIR")), help="the Paradox user folder, else found as the recorder finds it")
+    run_command.add_argument("--fixture", default=os.environ.get("BATTLEPLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")), required=not os.environ.get("BATTLEPLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
+    run_command.add_argument("--game-dir", default=os.environ.get("BATTLEPLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")), required=not os.environ.get("BATTLEPLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")))
+    run_command.add_argument("--user-dir", default=os.environ.get("BATTLEPLAN_USER_DIR", os.environ.get("HOI4_USER_DIR")), help="the Paradox user folder, else found as the recorder finds it")
     run_command.add_argument("--out", required=True)
     run_command.add_argument("--state", default=str(DEFAULT_STATE), help="baseline history, shader compiler and the last run's work")
     run_command.add_argument("--tier", choices=("full", "quick"), default="full", help="quick: one session for iterating, every page once")

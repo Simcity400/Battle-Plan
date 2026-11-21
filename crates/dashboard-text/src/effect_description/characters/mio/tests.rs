@@ -116,7 +116,7 @@ fn scopes() -> EventScopes {
 #[test]
 fn unlock_mio_trait_tooltip() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "unlock_mio_trait_tooltip={show_modifiers=yes trait=synthetic_convoy_production}",
@@ -133,7 +133,7 @@ fn unlock_mio_trait_tooltip() {
 #[test]
 fn complete_mio_trait() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "complete_mio_trait=synthetic_empty_trait",
@@ -147,7 +147,7 @@ fn complete_mio_trait() {
 #[test]
 fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, expected) in [
         (
@@ -187,7 +187,7 @@ fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
 #[test]
 fn mio_catalogue_is_cached_once_per_stack() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, folder) = fixture();
     let content = fixture
         .catalogue
@@ -223,7 +223,7 @@ fn mio_catalogue_is_cached_once_per_stack() {
 #[test]
 fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for body in [
         "unlock_mio_trait_tooltip={trait=unknown_trait trait=synthetic_convoy_production show_modifiers=no show_modifiers=yes}",
@@ -241,7 +241,7 @@ fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
 #[test]
 fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (key, _, header) in EFFECTS {
         let out = fixture.render(
@@ -293,7 +293,7 @@ fn mio_production_percent_keeps_sign_rounding_and_wrapping() {
 #[test]
 fn mio_policy_uses_the_same_production_bonus_formatter() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let mut database = content_reader_core::industrial_organisations::Database::default();
     database.policies.read_file(
@@ -333,7 +333,7 @@ fn mio_policy_uses_the_same_production_bonus_formatter() {
 #[test]
 fn mio_inherited_organisation_block_renders_copied_numeric_and_tooltip_entries() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -369,7 +369,7 @@ fn mio_inherited_organisation_block_renders_copied_numeric_and_tooltip_entries()
 #[test]
 fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
@@ -412,7 +412,7 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
 #[test]
 fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]

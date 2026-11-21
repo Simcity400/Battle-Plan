@@ -4344,7 +4344,7 @@ mod tests {
 
     #[test]
     fn agency_upgrade_oracle_reports_ambiguous_branch_and_save_reload_discrepancy() {
-        let scratch = std::env::var_os("battle-plan_TEST_SCRATCH")
+        let scratch = std::env::var_os("BATTLEPLAN_TEST_SCRATCH")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
         let root = scratch.join(format!(

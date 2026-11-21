@@ -70,7 +70,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOSTED = os.environ.get("GITHUB_ACTIONS") == "true"
 PIPELINE = ROOT / "tools" / "ci.toml"
 TEMP = Path(os.environ.get("TEMP") or tempfile.gettempdir())
-GAME_LOCKS = tuple(TEMP / folder / "hoi4_game.lock" for folder in ("claude", "HOI4Replay"))
+GAME_LOCK = TEMP / "claude" / "hoi4_game.lock"
 GAME_LOCK_STALE = 90 * 60
 BOAT_FAILED = 75
 NEXTEST_TESTS_FAILED = 100
@@ -598,14 +598,11 @@ class Store:
 
 
 def game_running():
-    """Whether a game lock younger than GAME_LOCK_STALE exists: the agents' or the smoke run's."""
-    for lock in GAME_LOCKS:
-        try:
-            if time.time() - lock.stat().st_mtime < GAME_LOCK_STALE:
-                return True
-        except FileNotFoundError:
-            pass
-    return False
+    """Whether the shared game lock is younger than GAME_LOCK_STALE."""
+    try:
+        return time.time() - GAME_LOCK.stat().st_mtime < GAME_LOCK_STALE
+    except FileNotFoundError:
+        return False
 
 
 if os.name == "nt":

@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn required_project_part_allocation_denial_is_terminal() {
         const NAME: &str = "required_project_part_allocation_denial_is_terminal";
-        const ENV: &str = "BATTLE_PLAN_COLD_PROJECT_TEST";
+        const ENV: &str = "BATTLEPLAN_COLD_PROJECT_TEST";
         if std::env::var(ENV).ok().as_deref() != Some(NAME) {
             assert!(
                 std::process::Command::new(std::env::current_exe().unwrap())
@@ -661,7 +661,7 @@ mod runtime_merge_tests {
     fn cold_runtime_parts_copy_nonempty_stores_before_mutation_and_freeze_in_key_order() {
         const NAME: &str =
             "cold_runtime_parts_copy_nonempty_stores_before_mutation_and_freeze_in_key_order";
-        const ENV: &str = "BATTLE_PLAN_PROJECT_COLD_RUNTIME_TEST";
+        const ENV: &str = "BATTLEPLAN_PROJECT_COLD_RUNTIME_TEST";
         if std::env::var(ENV).ok().as_deref() != Some(NAME) {
             assert!(
                 std::process::Command::new(std::env::current_exe().unwrap())

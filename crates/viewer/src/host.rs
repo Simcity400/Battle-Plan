@@ -218,7 +218,7 @@ pub(crate) fn dump_window(
     config_error: Option<String>,
 ) -> io::Result<()> {
     let (window, inputs) = Window::create(None, options.size, "BattlePlan")?;
-    if crate::background_window(std::env::var_os("BATTLE_PLAN_VIEWER_PROFILE_BACKGROUND").or_else(|| std::env::var_os("HOI4_VIEWER_PROFILE_BACKGROUND")).as_deref()) {
+    if crate::background_window(std::env::var_os("BATTLEPLAN_VIEWER_PROFILE_BACKGROUND").or_else(|| std::env::var_os("HOI4_VIEWER_PROFILE_BACKGROUND")).as_deref()) {
         window.send_to_back();
     }
     let (sent, ended) = mpsc::sync_channel(1);

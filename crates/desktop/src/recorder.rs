@@ -18,7 +18,7 @@ use windows_sys::Win32::System::{
     Threading::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess},
 };
 
-const RECORDER: &str = "battle-plan-recorder.exe";
+const RECORDER: &str = "battleplan-recorder.exe";
 
 const HELD: &str = "BattlePlan Recorder wasn’t started with BattlePlan: the program that opened BattlePlan would close the recorder with it, ending a recording. Start BattlePlan Recorder from the Start menu, or turn on Start with Windows in its settings.";
 
@@ -352,7 +352,7 @@ mod tests {
 
     fn scratch() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "battle-plan-rename-{}-{}",
+            "battleplan-rename-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -446,7 +446,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    const ROLE: &str = "BATTLE_PLAN_TEST_LAUNCH_ROLE";
+    const ROLE: &str = "BATTLEPLAN_TEST_LAUNCH_ROLE";
 
     fn this_test_binary(role: &str, test: &str) -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());

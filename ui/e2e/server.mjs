@@ -36,17 +36,17 @@ export async function startUI(ui, config, output) {
     }
     const seed = config.nativeSeed ?? prior.LOCALAPPDATA;
     if (seed) {
-      const relative = 'HOI4Replay/viewer/content-hashes-v2.bin', destination = path.join(root, 'localappdata', relative);
+      const relative = 'BattlePlan/viewer/content-hashes-v2.bin', destination = path.join(root, 'localappdata', relative);
       await mkdir(path.dirname(destination), { recursive: true });
       await copyFile(path.join(seed, relative), destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
-      await cp(path.join(seed, 'HOI4Replay/viewer/history'), path.join(root, 'localappdata/HOI4Replay/viewer/history'), {
+      await cp(path.join(seed, 'BattlePlan/viewer/history'), path.join(root, 'localappdata/BattlePlan/viewer/history'), {
         recursive: true, filter: async input => {
           if ((await lstat(input)).isSymbolicLink()) throw Error(`Linked native history input refused: ${input}`);
           return true;
         },
       }).catch(error => { if (error.code !== 'ENOENT') throw error; });
     }
-    const preparedSeed = await copyPreparedSeed(config.preparedSeed, path.join(root, 'localappdata/HOI4Replay/prepared'));
+    const preparedSeed = await copyPreparedSeed(config.preparedSeed, path.join(root, 'localappdata/BattlePlan/prepared'));
     const nativeInputs = { historySeed: seed ?? null, preparedSeed };
     await writeJSON(path.join(output, 'native-inputs.json'), nativeInputs);
     process.env.APPDATA = path.join(root, 'appdata'); process.env.LOCALAPPDATA = path.join(root, 'localappdata');

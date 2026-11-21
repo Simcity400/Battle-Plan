@@ -11,7 +11,7 @@ use std::{
 
 pub fn profiling() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_PROFILE").or_else(|| std::env::var_os("HOI4_VIEWER_PROFILE")).is_some())
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_PROFILE").or_else(|| std::env::var_os("HOI4_VIEWER_PROFILE")).is_some())
 }
 
 const QUEUED_LINES: usize = 4096;

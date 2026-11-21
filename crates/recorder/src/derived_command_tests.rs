@@ -11,7 +11,7 @@ use std::fs;
 
 #[test]
 fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
-    const CHILD: &str = "BATTLE_PLAN_DERIVED_TEST_ROOT";
+    const CHILD: &str = "BATTLEPLAN_DERIVED_TEST_ROOT";
     let Some(root) = std::env::var_os(CHILD).map(std::path::PathBuf::from) else {
         let sandbox = synthetic_game::Installation::new("derived-cache").build();
         let output = std::process::Command::new(std::env::current_exe().unwrap())

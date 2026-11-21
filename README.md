@@ -7,11 +7,11 @@
 <p align="center">Record your Hearts of Iron IV campaigns. Replay every hour of the war.</p>
 
 <p align="center">
-  <a href="https://github.com/Simcity400/Battle-Plan/releases"><strong>Download</strong></a> ·
+  <a href="https://github.com/Simcity400/BattlePlan/releases"><strong>Download</strong></a> ·
   <a href="#record-a-campaign">Record</a> ·
   <a href="#watch-a-replay">Watch</a> ·
   <a href="#mods">Mods</a> ·
-  <a href="https://github.com/Simcity400/Battle-Plan/issues">Issues</a>
+  <a href="https://github.com/Simcity400/BattlePlan/issues">Issues</a>
 </p>
 
 BattlePlan records your Hearts of Iron IV campaign while you play, then replays it in a Windows desktop app. Scrub to any hour, follow the front on a map drawn the way the game draws it, and dig into a campaign's military, economic and political history in a dashboard you arrange yourself.
@@ -27,7 +27,7 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 
 ## Install
 
-[Download BattlePlan](https://github.com/Simcity400/Battle-Plan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
+[Download BattlePlan](https://github.com/Simcity400/BattlePlan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
 
 - **BattlePlan**: the replay app, with the campaign map and the dashboard.
 - **BattlePlan Recorder**: a small tray app that records while you play.
@@ -61,14 +61,14 @@ flowchart LR
 
 ### With BattlePlan Recorder
 
-The replay app starts it for you. You can also run `battle-plan-recorder.exe` on its own, or have it start with Windows.
+The replay app starts it for you. You can also run `battleplan-recorder.exe` on its own, or have it start with Windows.
 
 1. Start the game.
 2. Click the tray icon, then press **Record**, or turn on automatic recording for this campaign or for every campaign.
 3. Play normally. Closing the panel or the replay app doesn't stop recording.
 4. Press **Stop**, then **Save** to publish the replay or **Discard** to throw away the current campaign's session. With **Auto save** on, quitting the game saves automatically; otherwise the campaign waits under **Not saved yet**.
 
-Recordings go to `%LOCALAPPDATA%\HOI4Replay\captures` by default, which is also the replay app's library. Later sessions of the same campaign continue the same file. Choose **Next time it loads: New file** to start a fresh one.
+Recordings go to `%LOCALAPPDATA%\BattlePlan\captures` by default, which is also the replay app's library. Later sessions of the same campaign continue the same file. Choose **Next time it loads: New file** to start a fresh one.
 
 ### With the command line
 

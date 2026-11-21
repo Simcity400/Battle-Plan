@@ -42,9 +42,7 @@ node_modules/
 *.db
 *.db-*
 *.battleplan
-*.hoi4replay
 *.battleplan.tmp
-*.hoi4replay.tmp
 *.h4s
 *.hoi4
 

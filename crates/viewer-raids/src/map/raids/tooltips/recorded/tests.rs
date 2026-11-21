@@ -770,7 +770,7 @@ fn phase_progress_uses_preparation_override_and_refuses_missing_flying_inputs() 
 fn hover_build_cost() {
     use super::super::super::test_support::put;
     use replay_data::{rows::CountryLinkRow, rows::CountryRow};
-    let countries: u32 = std::env::var("BATTLE_PLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
+    let countries: u32 = std::env::var("BATTLEPLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1500);

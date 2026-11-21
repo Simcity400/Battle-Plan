@@ -457,7 +457,7 @@ fn serialized_definitions_cannot_be_qualified_as_omitted_group_members() {
 #[test]
 #[ignore]
 fn division_census_from_text_save() {
-    let path = std::env::var_os("BATTLE_PLAN_CENSUS_SAVE").or_else(|| std::env::var_os("HOI4_CENSUS_SAVE")).expect("set BATTLE_PLAN_CENSUS_SAVE");
+    let path = std::env::var_os("BATTLEPLAN_CENSUS_SAVE").or_else(|| std::env::var_os("HOI4_CENSUS_SAVE")).expect("set BATTLEPLAN_CENSUS_SAVE");
     let bytes = std::fs::read(&path).unwrap();
     let saved = content_reader_save::parse(&bytes).unwrap();
     let mut memberships: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();

@@ -42,7 +42,7 @@ impl Drop for Machine {
 
 fn machine(name: &str) -> (Machine, Source, ContentOptions) {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root =
         std::env::temp_dir().join(format!("hoi4_presentation_{name}_{}", std::process::id()));
     let mods = root.with_file_name(format!(

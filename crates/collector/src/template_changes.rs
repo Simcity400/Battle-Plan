@@ -847,7 +847,7 @@ mod tests {
     #[test]
     fn unit_type_callback_preserves_arguments_return_and_in_flight_exclusion() {
         const TEST: &str = "template_changes::tests::unit_type_callback_preserves_arguments_return_and_in_flight_exclusion";
-        const CHILD: &str = "BATTLE_PLAN_TEMPLATE_UNIT_TYPE_CALLBACK_TEST";
+        const CHILD: &str = "BATTLEPLAN_TEMPLATE_UNIT_TYPE_CALLBACK_TEST";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
@@ -918,7 +918,7 @@ mod tests {
     fn occupation_holder_callbacks_forward_real_certificates_and_template_admission() {
         use collector_observers::occupation_changes as occupation;
         const TEST: &str = "template_changes::tests::occupation_holder_callbacks_forward_real_certificates_and_template_admission";
-        const CHILD: &str = "BATTLE_PLAN_OCCUPATION_TEMPLATE_FORWARDING_TEST";
+        const CHILD: &str = "BATTLEPLAN_OCCUPATION_TEMPLATE_FORWARDING_TEST";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])

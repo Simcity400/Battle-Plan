@@ -144,7 +144,7 @@ fn a_finished_partial_belongs_to_its_attempt_until_the_destination_is_checked() 
     let folder = Folder::new("interleaved");
     let bytes = fixtures::restored(7, &RUNS[1..]);
     let path = folder.recording(&bytes);
-    let before = folder.0.join("before.hoi4replay");
+    let before = folder.0.join("before.battleplan");
     fs::write(&before, &bytes).unwrap();
     let Written::Whole(original, first) = write_paced(&path, || Staged::beside(&path), 19, false, |_| true, Pace::here()).unwrap() else { panic!("the first attempt wrote nothing") };
     let replaced = recompress_file(&path, 3, false, |_| true);

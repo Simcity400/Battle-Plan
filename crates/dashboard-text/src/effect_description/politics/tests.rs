@@ -175,7 +175,7 @@ fn state_from_root() -> EventScopes {
 #[test]
 fn politics_description_cases() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -457,7 +457,7 @@ fn politics_description_cases() {
 #[test]
 fn change_tag_from_state_keeps_the_source_name_refusal_counted() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let output = fixture.render(
         "change_tag_from=THIS change_tag_from=THIS",
@@ -478,7 +478,7 @@ fn change_tag_from_state_keeps_the_source_name_refusal_counted() {
 #[test]
 fn agency_feature_and_created_gates_limit_recorded_reads() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
@@ -517,7 +517,7 @@ fn agency_feature_and_created_gates_limit_recorded_reads() {
 #[test]
 fn missing_agency_facts_are_named_and_counted() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::SimulationFeatures.index()] = TableView::Unavailable {
         reason: "missing mask".into(),
@@ -540,7 +540,7 @@ fn missing_agency_facts_are_named_and_counted() {
 #[test]
 fn empty_agency_own_text_uses_core_projection_and_child_walk() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::IntelligenceAgencies.index()] =
         TableView::Complete(TableRows::IntelligenceAgencies(vec![
@@ -562,7 +562,7 @@ fn empty_agency_own_text_uses_core_projection_and_child_walk() {
 #[test]
 fn country_targets_resolve_a_late_synthetic_country() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let countries = (1..=24)
         .map(|id| CountryRow {
@@ -599,7 +599,7 @@ macro_rules! refused {
         #[test]
         fn $name() {
             engine_executable::executable_tables::initialize_for_tests().expect(
-                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+                "BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests",
             );
             let (fixture, _folder) = fixture();
             let body = $body;
@@ -617,7 +617,7 @@ macro_rules! refused {
 #[test]
 fn contested_owner_uses_both_operand_branches_and_fresh_links() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, object, expected) in [
         (
@@ -665,7 +665,7 @@ fn contested_owner_uses_both_operand_branches_and_fresh_links() {
 #[test]
 fn contested_owner_evaluates_scoped_operands() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![
@@ -707,7 +707,7 @@ fn contested_owner_evaluates_scoped_operands() {
 #[test]
 fn absent_ideology_uses_null_object_without_evaluating_an_operand() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::PoliticalParties(parties)) =
         &mut *fixture.frame.tables[TableId::PoliticalParties.index()]
@@ -751,7 +751,7 @@ refused!(
 #[test]
 fn named_party_effect_keeps_plain_text_without_unrelated_map_or_variable_inputs() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = folder_catalogue(&[
         (

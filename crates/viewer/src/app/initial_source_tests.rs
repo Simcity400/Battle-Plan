@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use viewer_foundation::map::camera::Placement;
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_window_lets_go_of_its_load_time_source_once_its_hour_builders_start() -> std::io::Result<()>
 {
     let fixture = Fixture::load("initial-source")?;

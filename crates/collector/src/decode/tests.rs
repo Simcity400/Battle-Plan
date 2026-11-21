@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 #[test]
 fn required_project_freeze_failure_is_terminal_before_ready_publication() {
-    const CHILD: &str = "BATTLE_PLAN_PROJECT_FREEZE_PUBLICATION_TEST";
+    const CHILD: &str = "BATTLEPLAN_PROJECT_FREEZE_PUBLICATION_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "decode::tests::required_project_freeze_failure_is_terminal_before_ready_publication", "--nocapture"])
@@ -3144,7 +3144,7 @@ fn air_slot(table: replay_data::rows::TableId) -> usize {
 }
 #[test]
 fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denial() {
-    const CHILD: &str = "BATTLE_PLAN_PROJECT_VARIABLE_FIFO_TEST";
+    const CHILD: &str = "BATTLEPLAN_PROJECT_VARIABLE_FIFO_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "decode::tests::project_variables_survive_production_fifo_recycling_and_terminal_decode_denial", "--nocapture"])

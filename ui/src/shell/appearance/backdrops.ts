@@ -6,7 +6,7 @@ export const MAX_BACKDROPS = 12;
 const MAX_INPUT_BYTES = 40 * 1024 * 1024;
 const MAX_EDGE = 2560;
 const THUMB_EDGE = 360;
-const DATABASE = 'battle-plan', STORE = 'backdrops';
+const DATABASE = 'BattlePlan', STORE = 'backdrops';
 
 let database: Promise<IDBDatabase> | null = null;
 function open(): Promise<IDBDatabase> {

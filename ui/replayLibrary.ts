@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { ReplayFile, ReplayLibrary } from './src/dashboard/client.ts';
 
-const settingsPath = () => path.join(process.env.APPDATA || path.join(homedir(), '.config'), 'battle-plan', 'replay-folder.json');
+const settingsPath = () => path.join(process.env.APPDATA || path.join(homedir(), '.config'), 'BattlePlan', 'replay-folder.json');
 
 export async function savedReplayFolder(fallback: string): Promise<string> {
   try { const settings = JSON.parse(await readFile(settingsPath(), 'utf8')); return typeof settings.folder === 'string' ? settings.folder : fallback; }
@@ -24,7 +24,7 @@ export async function listReplayFolder(folder: string, signal?: AbortSignal): Pr
       if (entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
       const full = path.join(directory, entry.name);
       if (entry.isDirectory()) pending.push(full);
-      else if (entry.isFile() && (/\.(?:battleplan|hoi4replay)$/i.test(entry.name))) {
+      else if (entry.isFile() && /\.battleplan$/i.test(entry.name)) {
         files.push({ path: full, name: entry.name.slice(0, -'.battleplan'.length), folder: path.relative(root, directory).replaceAll('\\', '/') });
       }
     }

@@ -478,10 +478,10 @@ class Verdict(unittest.TestCase):
         self.assertLessEqual(len(ci.describe(long, 1)), ci.STATUS_LIMIT)
 
     def test_a_failure_a_rule_names_is_not_run_and_every_other_failure_still_fails(self):
-        fixture = ("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
-                   "error: \"BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
-        unset = "effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation"
-        metadata = "BATTLE_PLAN_GAME_DIR must name the supported installation for executable metadata"
+        fixture = ("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
+                   "error: \"BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
+        unset = "effect grammar tests require BATTLEPLAN_GAME_DIR with the supported installation"
+        metadata = "BATTLEPLAN_GAME_DIR must name the supported installation for executable metadata"
         other_error = unset + ": Custom { kind: InvalidData, error: \"table digest mismatch\" }"
 
         def panic(thread, message):
@@ -496,7 +496,7 @@ class Verdict(unittest.TestCase):
             case("a::other_error", panic("a::other_error", other_error)),
             case("a::leaks", panic("a::leaks", fixture), kind="test failure with exit code 101 (leaked handles)"),
             case("a::caught_then_returns_err", panic("a::caught_then_returns_err", fixture) + "Error: \"checksum mismatch\"\n"),
-            case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLE_PLAN_GAME_DIR")')),
+            case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLEPLAN_GAME_DIR")')),
             case("a::caught_then_asserts", panic("a::caught_then_asserts", fixture) + panic("a::caught_then_asserts", "assertion failed: x")),
             case("a::worker", panic("worker", fixture)),
             case("a::times_out", panic("a::times_out", fixture), kind="test timeout"),

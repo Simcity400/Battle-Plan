@@ -2174,7 +2174,7 @@ impl Pass {
             events,
         )?;
         static PROFILE: OnceLock<bool> = OnceLock::new();
-        if *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
+        if *PROFILE.get_or_init(|| std::env::var_os("BATTLEPLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
             eprintln!(
                 "Entity effects: events={} lights={} particles={}",
                 events.len(),

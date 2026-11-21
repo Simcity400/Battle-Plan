@@ -9,7 +9,6 @@ use std::{
 };
 
 pub const EXTENSION: &str = "battleplan";
-pub const LEGACY_EXTENSION: &str = "hoi4replay";
 const LOCK: &str = "recording-names.lock";
 const MAX_COMPONENT: usize = 255;
 pub const MAX_STEM: usize = MAX_COMPONENT - ".battleplan".len() - " (18446744073709551615)".len();
@@ -17,7 +16,7 @@ pub const MAX_STEM: usize = MAX_COMPONENT - ".battleplan".len() - " (18446744073
 pub fn is_recording(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(EXTENSION) || extension.eq_ignore_ascii_case(LEGACY_EXTENSION))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(EXTENSION))
 }
 
 fn at(path: &Path, error: io::Error) -> io::Error {

@@ -17,7 +17,7 @@ fn number(name: &str) -> io::Result<Option<u64>> {
 }
 
 pub(super) fn as_dashboard_map() -> bool {
-    std::env::var("BATTLE_PLAN_AS_DASHBOARD_MAP").or_else(|_| std::env::var("HOI4_AS_DASHBOARD_MAP")).is_ok_and(|value| value == "1")
+    std::env::var("BATTLEPLAN_AS_DASHBOARD_MAP").or_else(|_| std::env::var("HOI4_AS_DASHBOARD_MAP")).is_ok_and(|value| value == "1")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,30 +70,30 @@ pub(super) struct Extras {
 
 impl Extras {
     pub(super) fn open(document: &Document, main: Option<&SideThread>, speed: f64) -> io::Result<Self> {
-        let wanted = number("BATTLE_PLAN_EXTRA_MAPS")?.unwrap_or(0) as usize;
-        let churn = number("BATTLE_PLAN_MAP_CHURN")?.filter(|&frames| frames > 0);
-        let hide = match std::env::var("BATTLE_PLAN_HIDE").or_else(|_| std::env::var("HOI4_HIDE")) {
+        let wanted = number("BATTLEPLAN_EXTRA_MAPS")?.unwrap_or(0) as usize;
+        let churn = number("BATTLEPLAN_MAP_CHURN")?.filter(|&frames| frames > 0);
+        let hide = match std::env::var("BATTLEPLAN_HIDE").or_else(|_| std::env::var("HOI4_HIDE")) {
             Ok(text) if !text.trim().is_empty() => {
                 let parts: Vec<&str> = text.trim().split(':').collect();
                 let which = match parts.first() {
                     Some(&"extra") => Hidden::Extra,
                     Some(&"map") => Hidden::Map,
-                    _ => return Err(io::Error::other(format!("BATTLE_PLAN_HIDE takes extra|map:<from>:<frames>, not {text}"))),
+                    _ => return Err(io::Error::other(format!("BATTLEPLAN_HIDE takes extra|map:<from>:<frames>, not {text}"))),
                 };
-                let at = |index: usize| parts.get(index).and_then(|part| part.parse().ok()).ok_or_else(|| io::Error::other(format!("BATTLE_PLAN_HIDE: {text} names no frames")));
+                let at = |index: usize| parts.get(index).and_then(|part| part.parse().ok()).ok_or_else(|| io::Error::other(format!("BATTLEPLAN_HIDE: {text} names no frames")));
                 Some((which, at(1)?, at(2)?))
             }
             _ => None,
         };
         if (wanted > 0 || hide.is_some()) && main.is_none() {
-            return Err(io::Error::other("BATTLE_PLAN_EXTRA_MAPS and BATTLE_PLAN_HIDE need the map's playhead, which is off or refused"));
+            return Err(io::Error::other("BATTLEPLAN_EXTRA_MAPS and BATTLEPLAN_HIDE need the map's playhead, which is off or refused"));
         }
         if hide.is_some_and(|(which, _, _)| which == Hidden::Extra) && wanted == 0 {
-            return Err(io::Error::other("BATTLE_PLAN_HIDE=extra needs an extra map: set BATTLE_PLAN_EXTRA_MAPS"));
+            return Err(io::Error::other("BATTLEPLAN_HIDE=extra needs an extra map: set BATTLEPLAN_EXTRA_MAPS"));
         }
         let mut extras = Self { wanted, churn, hide, entry: main.map(|side| Arc::clone(side.entry())), ..Self::default() };
         extras.start(document, 0, false);
-        if let Ok(path) = std::env::var("BATTLE_PLAN_EXTRA_RECORDING").or_else(|_| std::env::var("HOI4_EXTRA_RECORDING"))
+        if let Ok(path) = std::env::var("BATTLEPLAN_EXTRA_RECORDING").or_else(|_| std::env::var("HOI4_EXTRA_RECORDING"))
             && !path.trim().is_empty()
         {
             let (units, _) = playhead_host::units::at_path(std::path::Path::new(path.trim()), None)?;

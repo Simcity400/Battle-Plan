@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+    #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
     fn the_host_s_controller_flies_the_aircraft_while_the_map_lacks_keyboard_focus()
     -> std::io::Result<()> {
         use crate::map::scene_failure_tests::Fixture;

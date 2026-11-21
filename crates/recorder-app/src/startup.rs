@@ -19,7 +19,6 @@ use windows_sys::Win32::{
 const INSTANCE_MUTEX: &str = replay::recorder_settings::RECORDER_INSTANCE;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "BattlePlan Recorder";
-const LEGACY_RUN_VALUE: &str = "the game Recorder";
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
 fn wide(value: &OsStr) -> Vec<u16> {
@@ -83,7 +82,7 @@ fn run_value_set(name: &str) -> Result<bool, String> {
 }
 
 pub fn starts_with_windows() -> Result<bool, String> {
-    Ok(run_value_set(RUN_VALUE)? || run_value_set(LEGACY_RUN_VALUE)?)
+    run_value_set(RUN_VALUE)
 }
 
 fn remove_run_value(key: &[u16], name: &str) -> u32 {
@@ -115,10 +114,6 @@ pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
         }
     } else {
         remove_run_value(&key, RUN_VALUE)
-    };
-    let status = match status {
-        ERROR_SUCCESS => remove_run_value(&key, LEGACY_RUN_VALUE),
-        failed => failed,
     };
     if status == ERROR_SUCCESS {
         Ok(())

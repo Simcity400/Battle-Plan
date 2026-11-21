@@ -30,7 +30,7 @@ pub fn check_reuse() -> bool {
     #[cfg(not(any(test, feature = "test-support")))]
     {
         static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *CHECK.get_or_init(|| std::env::var_os("BATTLE_PLAN_REUSE_CHECK").or_else(|| std::env::var_os("HOI4_REUSE_CHECK")).is_some())
+        *CHECK.get_or_init(|| std::env::var_os("BATTLEPLAN_REUSE_CHECK").or_else(|| std::env::var_os("HOI4_REUSE_CHECK")).is_some())
     }
 }
 

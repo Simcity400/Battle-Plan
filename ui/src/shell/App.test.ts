@@ -24,7 +24,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
   let mapVisible = false;
   let overlayOpen = false;
   let quota = true;
-  const values = new Map([['hoi4-replay.sidebar.v1', 'hidden']]);
+  const values = new Map([['battleplan.sidebar.v1', 'hidden']]);
   const fixture = {
     useState(initial: any) {
       const index = cursor++;
@@ -51,7 +51,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { querySelector: () => overlayOpen ? {} : null } });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
     getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { if (quota && key === 'hoi4-replay.analytics-pages.v1') throw new Error('quota'); values.set(key, value); },
+    setItem: (key: string, value: string) => { if (quota && key === 'battleplan.analytics-pages.v1') throw new Error('quota'); values.set(key, value); },
     removeItem: (key: string) => { values.delete(key); },
   } });
   const replacements: Record<string, string> = {

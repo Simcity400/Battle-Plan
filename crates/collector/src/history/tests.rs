@@ -769,7 +769,7 @@ fn the_history_load_leaves_no_thread_it_started_running() {
         branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
         frame::FrameEncoder, frame::Metrics, frame::TableView,
     };
-    const CHILD: &str = "BATTLE_PLAN_HISTORY_LOAD_THREADS";
+    const CHILD: &str = "BATTLEPLAN_HISTORY_LOAD_THREADS";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "history::tests::the_history_load_leaves_no_thread_it_started_running", "--nocapture"])

@@ -1,10 +1,10 @@
 use std::{fs, path::PathBuf, process::Command};
 
 #[test]
-#[ignore = "requires a GPU and an authored game, user folder, and recording.battleplan in BATTLE_PLAN_VIEWER_TEST_FIXTURES/dump"]
+#[ignore = "requires a GPU and an authored game, user folder, and recording.battleplan in BATTLEPLAN_VIEWER_TEST_FIXTURES/dump"]
 fn a_debug_dump_loads_and_renders_on_the_main_thread_stack() {
     let fixture = PathBuf::from(
-        std::env::var_os("BATTLE_PLAN_VIEWER_TEST_FIXTURES")
+        std::env::var_os("BATTLEPLAN_VIEWER_TEST_FIXTURES")
             .expect("choose the authored viewer fixtures folder"),
     )
     .join("dump");

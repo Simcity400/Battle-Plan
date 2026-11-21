@@ -1461,7 +1461,7 @@ mod tests {
     #[test]
     fn shield_png_padding_and_every_refusal_use_the_shared_gui_path() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, refusal_textures, texture_catalogue};
         let mask = Rgba8Image {
             width: 3,
@@ -1517,7 +1517,7 @@ mod tests {
     #[test]
     fn the_shield_s_descriptor_chooses_its_flag_set_and_panel_evens_only_its_overlay() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
         let overlay = Rgba8Image {
             width: 8,
@@ -1558,7 +1558,7 @@ mod tests {
     #[ignore = "requires DXC and a GPU; synthetic content only"]
     fn shield_and_panel_flags_draw_the_descriptor_s_flag_set_through_its_passes() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, shield_programs};
         let flag = |[width, height]: [u32; 2], rgb: [u8; 3]| {
             let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -1770,7 +1770,7 @@ mod tests {
     #[test]
     fn the_shield_follows_the_selected_visual_mods_and_falls_back_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
         let (recorded, cells) = recorded_shield();
         let base =
@@ -1892,7 +1892,7 @@ mod tests {
     #[test]
     fn a_kept_shield_belongs_to_the_catalogue_it_came_from() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (recorded, _) = recorded_shield();
         let base =
             || content_reader_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();

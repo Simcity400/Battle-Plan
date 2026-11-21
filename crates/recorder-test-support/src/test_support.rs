@@ -381,7 +381,7 @@ pub fn allocation_range(
 }
 
 pub fn allocation_test_directory(name: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("battle-plan-recorder-{name}-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("battleplan-recorder-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path

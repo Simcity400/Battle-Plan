@@ -81,7 +81,7 @@ fn equal(label: &str, actual: &[u8], expected: &[u8]) {
         .filter(|(a, b)| a != b)
         .count();
     if different != 0
-        && let Some(dir) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
+        && let Some(dir) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
     {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(Path::new(&dir).join(format!("{label}-actual.rgba")), actual).unwrap();
