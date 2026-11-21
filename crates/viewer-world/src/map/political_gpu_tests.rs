@@ -1,7 +1,7 @@
 use super::*;
 use gradient::{LayerKind, LayerPlane};
 use std::sync::MutexGuard;
-use std::{path::PathBuf, time::Instant};
+use std::time::Instant;
 use viewer_foundation::map::gpu_contract::device_descriptor;
 use viewer_foundation::map::gpu_passes::PassTimer;
 use viewer_foundation::map::test_support::serial;
@@ -454,6 +454,7 @@ fn political_gpu_fallback_oracles() {
     political_gpu_fallback_lockstep(&fallback);
     political_gpu_fallback_pool_interleavings(&fallback);
     political_gpu_fallback_named_changes_equal_the_whole_update(&fallback);
+    political_gpu_decoded_frames(&fallback);
     membership_gpu_tests::retained_membership_keeps_exact_bytes_areas_and_refusals_across_hours(
         &fallback,
     );
@@ -1256,152 +1257,6 @@ fn political_gpu_incremental() {
 }
 
 #[test]
-#[ignore = "set BATTLE_PLAN_POLITICAL_REPLAY, BATTLE_PLAN_POLITICAL_GAME_DIR and BATTLE_PLAN_POLITICAL_USER_DIR"]
-fn political_gpu_recording() {
-    let path =
-        PathBuf::from(std::env::var_os("BATTLE_PLAN_POLITICAL_REPLAY").or_else(|| std::env::var_os("HOI4_POLITICAL_REPLAY")).expect("BATTLE_PLAN_POLITICAL_REPLAY"));
-    let replay = replay::campaign::Replay::open(std::fs::read(&path).unwrap()).unwrap();
-    let options = content_reader_core::ResolveOptions {
-        game_dir: PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_POLITICAL_GAME_DIR").or_else(|| std::env::var_os("HOI4_POLITICAL_GAME_DIR")).expect("BATTLE_PLAN_POLITICAL_GAME_DIR"),
-        ),
-        user_dir: PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_POLITICAL_USER_DIR").or_else(|| std::env::var_os("HOI4_POLITICAL_USER_DIR")).expect("BATTLE_PLAN_POLITICAL_USER_DIR"),
-        ),
-        cache_dir: path.parent().unwrap().join("political-content-cache"),
-    };
-    let content = content_reader_core::resolve(&replay.identity, &options).unwrap();
-    let map = content_reader_core::map::load(&content.layers).unwrap();
-    let field =
-        FieldDefines::load(&content_reader_core::defines::read(&content.layers).unwrap()).unwrap();
-    let strategic = content_reader_regions::regions::read(&content.layers)
-        .unwrap()
-        .regions;
-    let bitmap = ProvinceMap {
-        width: map.width,
-        height: map.height,
-        ids: &map.province_ids,
-    };
-    let mut harness = Harness::new(map.width, map.height);
-    let keys = super::super::political::strategic_regions_of(&map, &strategic).unwrap();
-    let color = |_| field.navy_neutral;
-    let mut layer = Layer::new(
-        LayerKind::Fixed(field.strategic_thickness),
-        &keys,
-        &color,
-        &field,
-    );
-    layer.no_region_color = field.navy_neutral;
-    layer.region_opacity = 0;
-    let mut static_gpu = PoliticalGpu::new(&harness.device, bitmap, &layer).unwrap();
-    let strategic = gradient::build_layer(&bitmap, &layer).unwrap();
-    let (actual, _) = harness.gpu(&mut static_gpu, &layer, 0);
-    compare(&strategic, &actual, "strategic");
-    let mut static_gpu = Some(static_gpu);
-    let mut gpu = None;
-    let mut total = 0;
-    let step = std::env::var("BATTLE_PLAN_POLITICAL_STEP").or_else(|_| std::env::var("HOI4_POLITICAL_STEP")).map_or(1, |value| {
-        value
-            .parse::<usize>()
-            .expect("positive BATTLE_PLAN_POLITICAL_STEP")
-    });
-    assert!(step > 0, "BATTLE_PLAN_POLITICAL_STEP must be positive");
-    use replay_data::{rows::TableId, rows::tables};
-    use replay_frame::frame::FrameDecoder;
-    let selected = [
-        TableId::Campaign,
-        TableId::Provinces,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Subjects,
-        TableId::Autonomy,
-        TableId::CountryAppearance,
-    ];
-    let mut previous_branch = None;
-    let mut ordinal = 0;
-    for index in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for encoded in replay.read_block_selected(index, &selected).unwrap() {
-            let frame = decoder.advance(&encoded).unwrap();
-            let campaign = frame.complete::<tables::Campaign>().unwrap();
-            assert_eq!(campaign.len(), 1);
-            assert_eq!(campaign[0].id, replay.campaign_id);
-            let branch = frame.branch;
-            let hour = frame.hour;
-            let reset = previous_branch != Some(branch);
-            if !reset && ordinal % step != 0 {
-                ordinal += 1;
-                continue;
-            }
-            ordinal += 1;
-            previous_branch = Some(branch);
-            let start = Instant::now();
-            let regions = super::super::political::regions(&map, frame).unwrap();
-            let tables_ms = start.elapsed().as_secs_f64() * 1000.0;
-            let color = |key| regions.country_color(key);
-            let layer = Layer::new(LayerKind::Country, &regions.country_of, &color, &field);
-            if total == 0 {
-                let base = Cache::default()
-                    .warm(
-                        &harness.device,
-                        &harness.queue,
-                        Inputs {
-                            map: bitmap,
-                            strategic: &keys,
-                            field: &field,
-                        },
-                    )
-                    .unwrap();
-                let mut view =
-                    View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
-                view.show(&harness.device, &harness.queue, &Arc::new(regions.clone()))
-                    .unwrap();
-                println!(
-                    "POLITICAL state_bytes={} shared_scratch_bytes={}",
-                    view.state_bytes().unwrap(),
-                    base.scratch.bytes()
-                );
-            }
-            let gpu = gpu.get_or_insert_with(|| {
-                static_gpu
-                    .take()
-                    .unwrap()
-                    .new_layer(&harness.device, &layer)
-                    .unwrap()
-            });
-            let oracle = || {
-                let start = Instant::now();
-                let plane = gradient::build_layer(&bitmap, &layer).unwrap();
-                let stacked = gradient::stack(&strategic, &plane).unwrap();
-                std::hint::black_box(&stacked);
-                (plane, start.elapsed().as_secs_f64() * 1000.0)
-            };
-            let (cpu, actual) = if total % 2 == 0 {
-                let cpu = oracle();
-                (cpu, harness.gpu(gpu, &layer, total))
-            } else {
-                let actual = harness.gpu(gpu, &layer, total);
-                (oracle(), actual)
-            };
-            compare(&cpu.0, &actual.0, &format!("branch {branch} hour {hour}"));
-            println!(
-                "POLITICAL hour={hour} branch={branch} old_field_stack_ms={:.6} tables_ms={tables_ms:.6} new_update_encode_ms={:.6} cells={} bytes_equal={}",
-                cpu.1,
-                actual.1,
-                gpu.dispatched_cells,
-                cpu.0.channel1.len() * 8
-            );
-            total += 1;
-        }
-    }
-    println!(
-        "POLITICAL verified_hours={total} recording={}",
-        path.display()
-    );
-    assert!(total > 0);
-}
-
-#[test]
 fn a_second_mode_layer_takes_the_country_layers_place() {
     assert_eq!(
         holders([Source::Mode, Source::Second]),
@@ -1412,6 +1267,57 @@ fn a_second_mode_layer_takes_the_country_layers_place() {
         [Held::Mode, Held::Mode]
     );
     assert_eq!(holders(POLITICAL), [Held::Naval, Held::Country]);
+}
+
+fn political_gpu_decoded_frames(fallback: &Fallback) {
+    use super::super::political::{regions, strategic_regions_of, tests as fixtures};
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::{FrameDecoder, FrameEncoder, TableView};
+
+    let map = fixtures::map();
+    let bitmap = ProvinceMap {
+        width: map.width,
+        height: map.height,
+        ids: &map.province_ids,
+    };
+    let field = FieldDefines::TEST;
+    let keys = strategic_regions_of(&map, &fixtures::strategic_regions()).unwrap();
+    let color = |_| field.navy_neutral;
+    let mut layer = Layer::new(LayerKind::Fixed(field.strategic_thickness), &keys, &color, &field);
+    layer.no_region_color = field.navy_neutral;
+    layer.region_opacity = 0;
+    let mut harness = fallback.harness(map.width, map.height);
+    let mut gpu = PoliticalGpu::new(&harness.device, bitmap, &layer).unwrap();
+    let strategic = gradient::build_layer(&bitmap, &layer).unwrap();
+    let (actual, _) = harness.gpu(&mut gpu, &layer, 0);
+    compare(&strategic, &actual, "strategic");
+
+    let mut source = fixtures::occupied();
+    source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut gpu = Some(gpu);
+    let mut country = None;
+    for (step, controller) in [200, 100, 200].into_iter().enumerate() {
+        source.hour = 42 + step as i32;
+        let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut *source.tables[TableId::Provinces.index()]
+        else {
+            unreachable!();
+        };
+        rows[2].controller = controller;
+        let encoded = encoder.encode(source.clone(), step == 0).unwrap();
+        let frame = decoder.advance(&encoded).unwrap();
+        let regions = regions(&map, frame).unwrap();
+        let color = |key| regions.country_color(key);
+        let layer = Layer::new(LayerKind::Country, &regions.country_of, &color, &field);
+        let country = country.get_or_insert_with(|| {
+            gpu.take().unwrap().new_layer(&harness.device, &layer).unwrap()
+        });
+        let expected = gradient::build_layer(&bitmap, &layer).unwrap();
+        let (actual, _) = harness.gpu(country, &layer, step as u64 + 1);
+        compare(&expected, &actual, &format!("recorded hour {}", frame.hour));
+    }
 }
 
 fn political_gpu_fallback_named_changes_equal_the_whole_update(fallback: &Fallback) {

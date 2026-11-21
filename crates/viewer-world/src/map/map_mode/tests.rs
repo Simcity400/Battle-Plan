@@ -19,6 +19,26 @@ fn with_empty_character_templates(
     facts
 }
 
+fn frame_with_empty_country_variables() -> DecodedFrame {
+    use replay_data::rows::{ScriptVariablesRow, tables};
+
+    let mut frame = frame();
+    let stores = frame
+        .complete::<tables::Countries>()
+        .unwrap()
+        .iter()
+        .map(|country| ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: country.id,
+            seed: None.into(),
+            entries: Vec::new(),
+        })
+        .collect();
+    frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(stores)).into();
+    frame
+}
+
 fn defines() -> ModeDefines {
     ModeDefines {
         factions_not_member: [0.7, 0.7, 0.7, 0.7],
@@ -877,8 +897,7 @@ fn scripted_modes_delegate_game_layers_and_refuse_colour_scripts() {
 
 #[test]
 fn colour_scripts_paint_each_target_their_callback_colours() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::map::test_game::enter();
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
@@ -974,7 +993,7 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
         rows::CountryStabilityInputRow, rows::HumanControllerRow, rows::RaidCountryInputRow,
         rows::ResearchModifierRow, rows::SimulationFeatureRow, rows::TableSchema,
     };
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     fn set<T: TableSchema>(f: &mut DecodedFrame, rows: Vec<T::Row>) {
         f.tables[T::ID.index()] = TableView::Complete(TableRows::from_rows::<T>(rows)).into();
     }
@@ -1161,10 +1180,10 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
 #[test]
 fn scripted_callbacks_count_one_roster_input_across_iterator_and_array_reads() {
     use dashboard_text::triggers::{ContentFacts, World};
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let content = content(MapModes::default());
     let map = map();
-    let mut f = frame();
+    let mut f = frame_with_empty_country_variables();
     if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *f.tables[TableId::CountryCounterInputs.index()]
     {
@@ -1218,7 +1237,7 @@ fn scripted_callbacks_count_one_roster_input_across_iterator_and_array_reads() {
 #[test]
 fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scopes() {
     use dashboard_text::triggers::{ContentFacts, World};
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let content = content(MapModes::default());
     let map = map();
     let mut f = frame();
@@ -1294,10 +1313,10 @@ fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scope
 #[test]
 fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
     use dashboard_text::triggers::{ContentFacts, World};
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let content = content(MapModes::default());
     let map = map();
-    let mut f = frame();
+    let mut f = frame_with_empty_country_variables();
     for table in [TableId::CountryStabilityInputs, TableId::ResearchModifiers] {
         f.tables[table.index()] = TableView::Unavailable {
             reason: "synthetic uncertified inputs".into(),
@@ -1478,7 +1497,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
 #[test]
 fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_warm_reads() {
     use dashboard_text::triggers::{ContentFacts, World};
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let content = content(MapModes::default());
     let map = map();
     let mut f = frame();
@@ -1623,7 +1642,7 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
 
 #[test]
 fn scripted_empty_targets_keep_country_state_and_controller_layers_unrestricted() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     use dashboard_text::triggers::{ContentFacts, World};
     let content = content(MapModes::default());
     let map = map();
@@ -1682,7 +1701,7 @@ fn scripted_empty_targets_keep_country_state_and_controller_layers_unrestricted(
 
 #[test]
 fn scripted_split_states_use_the_cached_single_branch_and_positive_province_groups() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     use colour_script::{TargetId, borders};
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
@@ -1849,7 +1868,7 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
         rows::MapEvent, rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventPayload,
         rows::MapEventsRow,
     };
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(&"test.txt".into(), br#"scripted_map_modes = {
         partial = { update_daily = no top = { type = country color = {
@@ -1987,7 +2006,7 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
 fn scripted_scheduled_refresh_preserves_unknown_event_context() {
     use dashboard_text::triggers::{ContentFacts, World};
     use replay_data::{rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventsRow};
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
         &"test.txt".into(),
@@ -2145,8 +2164,7 @@ fn scripted_scheduled_refresh_preserves_unknown_event_context() {
 
 #[test]
 fn colour_borders_keep_their_colour_until_their_provinces_change() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::map::test_game::enter();
     use colour_script::{Border, LayerState, TargetId, borders, refreshes};
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
@@ -2397,7 +2415,7 @@ fn infrastructure_identity_must_join_the_recorded_dictionary() {
 #[test]
 fn scripted_invasion_failures_withhold_colours_on_cold_and_warm_caches() {
     use dashboard_text::triggers::{ContentFacts, World};
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::map::test_game::enter();
     let content = content(MapModes::default());
     let map = map();
     for (known_state, unresolved, missing_province) in [

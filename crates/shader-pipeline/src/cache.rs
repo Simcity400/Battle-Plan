@@ -330,7 +330,17 @@ pub(crate) mod tests {
         }
     }
     #[test]
-    fn vanilla_compiles_once_then_disk_cache_survives_two_runs_and_invalidates() {
+    fn shader_compiles_once_then_disk_cache_survives_a_new_process_and_invalidates() {
+        const CACHE_DIR: &str = "SYNTHETIC_SHADER_CACHE_TEST_DIR";
+        if let Some(directory) = std::env::var_os(CACHE_DIR) {
+            let compiler = Arc::new(Count::default());
+            let cache = Cache::new(Some(PathBuf::from(directory)), compiler.clone());
+            let source = source("static const float4 C = 1;");
+            cache.get(&source, &source.techniques[0], &[]).unwrap();
+            assert_eq!(compiler.0.load(Ordering::SeqCst), 0);
+            assert_eq!(cache.diagnostics().disk_hits, 1);
+            return;
+        }
         let scratch = super::super::Scratch::new().unwrap();
         let compiler = Arc::new(Count(AtomicUsize::new(0)));
         let source = Arc::new(source("static const float4 C = 1;"));
@@ -343,15 +353,18 @@ pub(crate) mod tests {
         assert_eq!(compiler.0.load(Ordering::SeqCst), 1);
         drop(effect);
         drop(first);
-        let second = Arc::new(Cache::new(Some(scratch.0.clone()), compiler.clone()));
-        let effect = super::super::library::Effect::new(source.clone(), vec![], second.clone());
-        effect.select("Up").unwrap();
-        assert_eq!(
-            compiler.0.load(Ordering::SeqCst),
-            1,
-            "second process lifetime must read disk"
+        let test = concat!(
+            module_path!(),
+            "::shader_compiles_once_then_disk_cache_survives_a_new_process_and_invalidates"
         );
-        assert_eq!(second.diagnostics().disk_hits, 1);
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test.split_once("::").unwrap().1])
+            .env(CACHE_DIR, &scratch.0)
+            .output()
+            .unwrap();
+        let output = String::from_utf8_lossy(&child.stdout);
+        assert!(child.status.success() && output.contains("1 passed"), "{output}");
+        let second = Cache::new(Some(scratch.0.clone()), compiler.clone());
         let changed = self::source("static const float4 C = 0;");
         second.get(&changed, &changed.techniques[0], &[]).unwrap();
         second

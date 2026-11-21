@@ -789,8 +789,7 @@ mod tests {
 
     #[test]
     fn availability_preserves_native_order_and_duplicate_variant_membership() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let by_handle = BTreeMap::from([(handle(1), 0), (handle(2), 1)]);
         let links = BTreeMap::from([(10, 1), (11, 1)]);
         let rows = vec![
@@ -860,8 +859,7 @@ mod tests {
 
     #[test]
     fn the_recorded_best_candidates_decide_the_conventional_winner() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut bridge = prepared(vec![variant(1, 1), variant(2, 3)]);
         let country = legacy::Country {
             tag: "GER",

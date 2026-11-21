@@ -3,8 +3,7 @@ use replay_data::rows::VariantDefinitionRow;
 
 #[test]
 fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("supported installation metadata");
+    content_reader_core::test_game::enter();
     fn facts_content(replaced: bool) -> model_selection::Content {
         let prefix = if replaced {
             b"equipments = { padding = { is_archetype = yes } }".as_slice()
@@ -24,9 +23,9 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
                 rifles = { is_archetype = yes type = infantry }
                 rifles_1 = { archetype = rifles }
                 rifles_2 = { archetype = rifles visual_level = 2 model = rifle_model }
-                tanks = { is_archetype = yes type = armor
+                frames = { is_archetype = yes type = fighter
                     module_slots = { main = {} secondary = main } }
-                tanks_1 = { archetype = tanks module_slots = inherit visual_level = 3 }
+                frames_1 = { archetype = frames module_slots = inherit visual_level = 3 }
                 orphan = { type = infantry }
             }",
             overrides,
@@ -47,7 +46,7 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
         ] {
             let view = content.model_facts().census(mask);
             let mut present = false;
-            for key in ["rifles", "rifles_1", "rifles_2", "tanks", "tanks_1"] {
+            for key in ["rifles", "rifles_1", "rifles_2", "frames", "frames_1"] {
                 let Some(fact) = view.get(key) else {
                     continue;
                 };
@@ -86,20 +85,20 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
         assert_eq!(
             keys,
             BTreeSet::from(
-                ["rifles", "rifles_1", "rifles_2", "tanks", "tanks_1"].map(String::from)
+                ["rifles", "rifles_1", "rifles_2", "frames", "frames_1"].map(String::from)
             )
         );
         assert!(masks > 1, "facts are held per module-category mask");
-        assert!(enabled.contains(&("tanks".to_owned(), true)));
-        assert!(enabled.contains(&("tanks".to_owned(), false)));
+        assert!(enabled.contains(&("frames".to_owned(), true)));
+        assert!(enabled.contains(&("frames".to_owned(), false)));
     }
     let spellings: [&[u8]; 9] = [
         b"infantry",
         b"rifles",
         b"rifles_1",
         b"RIFLES_2",
-        b"tanks",
-        b"tanks_1",
+        b"frames",
+        b"frames_1",
         b"orphan",
         b"nothing",
         b"Rifles_1",
@@ -112,7 +111,7 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
                 token: at as u32 + 1,
                 literal: match (at, hour % 17) {
                     (2, 3) => b"RIFLES_1".to_vec(),
-                    (3, 8) => b"tanks".to_vec(),
+                    (3, 8) => b"frames".to_vec(),
                     _ => literal.to_vec(),
                 },
             })

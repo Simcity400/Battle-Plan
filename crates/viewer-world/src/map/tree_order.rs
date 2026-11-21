@@ -174,8 +174,6 @@ mod tests {
 
     #[test]
     fn tie_permutations_match_msvc_insertion_partition_and_heap_paths() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let cases: &[(usize, usize, usize, u64)] = &[
             (0, 0, 0, 0xcbf29ce484222325),
             (0, 0, 1, 0xcbf29ce484222325),

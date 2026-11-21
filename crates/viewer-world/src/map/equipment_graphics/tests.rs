@@ -88,8 +88,7 @@ fn country_frame(count: u32, cosmetic: &str) -> replay_frame::frame::DecodedFram
 
 #[test]
 fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::map::test_game::enter();
     let pools = content(br#"default = { tank = {
         pool = { weight = 1 models = { fallback } }
         pool = { weight = 2 limit = { AAA = { has_cosmetic_tag = costume has_government = government } } models = { changed } }
@@ -124,8 +123,7 @@ fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
 
 #[test]
 fn pool_check_starts_a_fresh_variable_context() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::map::test_game::enter();
     let pools = content(
         br#"default = { tank = {
         pool = { limit = { check_variable = { global.pool_ready = 1 } } models = { ready } }
@@ -197,8 +195,7 @@ fn context<'a>(country: Option<&'a str>, factions: &'a [String]) -> Context<'a> 
 
 #[test]
 fn filters_and_dlc_limits_decide_pools_and_unknown_predicates_fail() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::map::test_game::enter();
     let pools = content(
         br#"
         default = { tank = {

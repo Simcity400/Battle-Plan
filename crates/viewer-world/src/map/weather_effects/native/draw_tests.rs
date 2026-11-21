@@ -219,7 +219,7 @@ fn weather_noop_binds_match_bytes_ranges_and_handles_over_many_frames() {
 
 #[test]
 fn weather_technique_names_are_cached_by_authored_flags_without_aliasing_programs() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let effect = effect(false);
     let names = [
         "Fixture",
@@ -455,7 +455,7 @@ fn delta(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>) -> BTree
 #[test]
 #[ignore = "requires a GPU"]
 fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
     let image = |rgba: [u8; 4]| {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -722,7 +722,7 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
 #[test]
 #[ignore = "requires a GPU"]
 fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let _serial = viewer_foundation::map::test_support::serial();
     let instance =
         shader_pipeline::gpu::instance();
