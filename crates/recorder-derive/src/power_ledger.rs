@@ -300,6 +300,7 @@ struct Pending {
     costs: HashMap<u32, CostHour>,
     raws: HashMap<u32, RawHour>,
     daily: BTreeMap<u32, u32>,
+    recovered: HashSet<(u32, u64)>,
     backlog: bool,
 }
 
@@ -307,6 +308,7 @@ struct Batch {
     holder: u32,
     day: i32,
     sole: bool,
+    moved: bool,
     raw: u32,
     rows: Vec<CountryPowerDailyCostRow>,
     held: Vec<Part>,
@@ -545,7 +547,22 @@ impl PowerLedger {
         Ok(())
     }
 
-    fn reconcile(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, before: &HashMap<u32, Vec<u32>>) -> io::Result<()> {
+    fn withhold_ended(&self, own: &Rows<'_>, pending: &mut Pending, today: i32) -> io::Result<()> {
+        for (_, (day, keys)) in self.parts.iter().filter(|(holder, (day, _))| **holder != NONE && *day != today) {
+            for &key in keys {
+                if let Some(mut part) = Self::held_part(own, pending, key, *day)?
+                    && part.cost_ordinal.is_some()
+                {
+                    part.covered = false;
+                    part.spent = Recorded::NotRecorded;
+                    pending.parts.insert(key, part);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, before: &HashMap<u32, Vec<u32>>, moved: &HashSet<u32>) -> io::Result<()> {
         let today = midnight(hour.hour);
         let mut holders: Vec<(u32, i32)> = self.parts.iter().filter(|(holder, _)| **holder != NONE).map(|(&holder, (day, _))| (holder, *day)).collect();
         holders.sort_unstable();
@@ -569,6 +586,9 @@ impl PowerLedger {
             let mut ambiguous = HashSet::new();
             for &raw in raws {
                 for cost in inputs::costs_of(hour, raw)?.into_iter().filter(|cost| midnight(cost.day_hour) == day) {
+                    if batches.contains_key(&cost.pp_sequence) {
+                        pending.recovered.insert((raw, cost.pp_sequence));
+                    }
                     let entry = found.entry(cost.pp_sequence).or_insert_with(|| (raw, Vec::new()));
                     if entry.0 == raw {
                         entry.1.push(cost);
@@ -579,7 +599,19 @@ impl PowerLedger {
             }
             for (sequence, held) in batches {
                 match found.remove(&sequence) {
-                    Some((raw, rows)) if !ambiguous.contains(&sequence) => self.reconcile_batch(hour, own, witnesses, pending, Batch { holder, day, sole, raw, rows, held })?,
+                    Some((raw, rows)) if !ambiguous.contains(&sequence) => {
+                        self.reconcile_batch(hour, own, witnesses, pending, Batch { holder, day, sole, moved: moved.contains(&raw), raw, rows, held })?;
+                    }
+                    None if sole && self.emptied(hour, witnesses, raws[0], day, sequence)? => {
+                        let gone: HashSet<u128> = held.iter().map(Part::key).collect();
+                        for &key in &gone {
+                            pending.parts.remove(&key);
+                            pending.withdrawn.push(key);
+                        }
+                        if let Some((_, open)) = self.parts.get_mut(&holder) {
+                            open.retain(|key| !gone.contains(key));
+                        }
+                    }
                     None if day == today => {}
                     _ => {
                         for mut part in held {
@@ -594,12 +626,22 @@ impl PowerLedger {
         Ok(())
     }
 
+    fn emptied(&self, hour: &Hour<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, raw: u32, day: i32, sequence: u64) -> io::Result<bool> {
+        let at = hour.hour;
+        Ok(inputs::fresh_daily(hour, raw)?.is_some_and(|daily| {
+            daily.day_hour == day
+                && daily.pp_sequence == Some(sequence)
+                && daily.pp_cost_raw == Some(0)
+                && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
+        }))
+    }
+
     fn reconcile_batch(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, batch: Batch) -> io::Result<()> {
-        let Batch { holder, day, sole, raw, rows, held } = batch;
+        let Batch { holder, day, sole, moved, raw, rows, held } = batch;
         let at = hour.hour;
         let Some(sequence) = rows.first().map(|cost| cost.pp_sequence) else { return Ok(()) };
         let epoch = rows[0].epoch;
-        let daily = inputs::daily(hour, raw)?;
+        let daily = inputs::fresh_daily(hour, raw)?;
         let matched = rows.iter().all(|cost| cost.epoch == epoch) && daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day && daily.pp_sequence == Some(sequence));
         let total: i128 = rows.iter().map(|cost| i128::from(cost.cost_raw)).sum();
         let reconciles = matched && daily.as_ref().is_some_and(|daily| daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
@@ -619,13 +661,24 @@ impl PowerLedger {
         }
         let exact = |part: &Part| remaining.get(&part.ordinal).is_some_and(|&(sum, payments, _)| part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum));
         let opened: Vec<u32> = remaining.keys().copied().filter(|ordinal| held.iter().all(|part| part.ordinal != *ordinal)).collect();
-        if held.iter().all(exact) && opened.is_empty() {
+        let changed = !held.iter().all(exact) || !opened.is_empty();
+        if matched || changed {
+            if !reconciles {
+                self.steady.insert(holder);
+            } else if sole {
+                self.steady.remove(&holder);
+            }
+        }
+        if !changed {
             return Ok(());
         }
-        if !reconciles {
-            self.steady.insert(holder);
-        } else if sole {
-            self.steady.remove(&holder);
+        if moved {
+            for mut part in held {
+                part.covered = false;
+                part.spent = Recorded::NotRecorded;
+                pending.parts.insert(part.key(), part);
+            }
+            return Ok(());
         }
         let seen = pending.costs.entry(holder).or_default();
         for cost in rows.iter().filter(|cost| cost.cost_raw != 0) {
@@ -669,7 +722,10 @@ impl PowerLedger {
         }
         for ordinal in opened {
             let key = part_key(holder, POLITICAL, ordinal);
-            if Self::held_part(own, pending, key, day)?.is_some() {
+            if let Some(mut other) = Self::held_part(own, pending, key, day)? {
+                other.covered = false;
+                other.spent = Recorded::NotRecorded;
+                pending.parts.insert(key, other);
                 continue;
             }
             let (sum, payments, first) = remaining[&ordinal];
@@ -780,9 +836,17 @@ impl PowerLedger {
         for moved in moves {
             self.leave(hour, own, pending, today, moved, complete)?;
         }
-        let publications = inputs::publications(hour)?;
+        let mut publications = inputs::publications(hour)?;
+        if !pending.recovered.is_empty() {
+            let recovered = mem::take(&mut pending.recovered);
+            publications.rows.retain_mut(|publication| {
+                let held = !publication.costs.is_empty();
+                publication.costs.retain(|cost| !recovered.contains(&(publication.country, cost.pp_sequence)));
+                !held || !publication.costs.is_empty()
+            });
+        }
         if !publications.backlog {
-            let reread: BTreeSet<u32> = moves.iter().map(|moved| moved.raw).collect();
+            let reread: BTreeSet<u32> = moves.iter().map(|moved| moved.raw).filter(|&raw| self.slot(raw) != NONE).collect();
             let published: HashSet<u32> = publications.rows.iter().filter(|publication| !(publication.deleted_only && reread.contains(&publication.country))).map(|publication| publication.country).collect();
             for publication in publications.rows.iter().filter(|publication| published.contains(&publication.country)) {
                 self.publish(hour, own, witnesses, pending, run_first, publication)?;
@@ -1049,19 +1113,24 @@ impl PowerLedger {
     fn leave(&mut self, hour: &Hour<'_>, own: &Rows<'_>, pending: &mut Pending, today: i32, moved: &Move, complete: bool) -> io::Result<()> {
         let Some((_, open)) = self.parts.get(&moved.from) else { return Ok(()) };
         let open = open.clone();
+        let sequences = |raw: u32| -> io::Result<HashSet<u64>> { Ok(inputs::costs_of(hour, raw)?.into_iter().filter(|cost| midnight(cost.day_hour) == today).map(|cost| cost.pp_sequence).collect()) };
         let mut kept = HashSet::new();
         if complete && !moved.sole {
             for &raw in self.aliases.get(&moved.from).map_or(&[][..], Vec::as_slice) {
-                kept.extend(inputs::costs_of(hour, raw)?.into_iter().filter(|cost| midnight(cost.day_hour) == today).map(|cost| cost.pp_sequence));
+                kept.extend(sequences(raw)?);
+            }
+            for sequence in sequences(moved.raw)? {
+                kept.remove(&sequence);
             }
         }
+        let follow = complete && self.slot(moved.raw) != NONE;
         let mut gone = HashSet::new();
         for key in open {
             let Some(mut part) = Self::held_part(own, pending, key, today)? else { continue };
             if part.cost_ordinal.is_none() || part.sequence.is_some_and(|sequence| kept.contains(&sequence)) {
                 continue;
             }
-            if moved.sole && complete {
+            if moved.sole && follow {
                 gone.insert(key);
                 pending.parts.remove(&key);
                 pending.withdrawn.push(key);
@@ -1354,8 +1423,11 @@ impl Writer for PowerLedger {
         let mut pending = Pending::default();
         if self.recover && inputs::daily_complete(hour) {
             let before = if before.is_empty() { self.aliases.clone() } else { before };
-            self.reconcile(hour, out, witnesses.as_ref(), &mut pending, &before)?;
+            let moved: HashSet<u32> = moves.iter().map(|moved| moved.raw).collect();
+            self.reconcile(hour, out, witnesses.as_ref(), &mut pending, &before, &moved)?;
             self.recover = false;
+        } else if self.recover {
+            self.withhold_ended(out, &mut pending, midnight(at))?;
         }
         self.roll(hour, &mut pending, out)?;
         self.changes(hour, out, witnesses.as_ref(), &mut pending)?;

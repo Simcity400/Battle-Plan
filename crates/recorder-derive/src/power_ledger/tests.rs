@@ -115,6 +115,12 @@ const OVERNIGHT_BLOCKED: i32 = 263;
 const OVERNIGHT: i32 = 264;
 const REPLACED_BLOCKED: i32 = 311;
 const REPLACED: i32 = 312;
+const REVISED_BLOCKED: i32 = 359;
+const REVISED: i32 = 360;
+const UNLINKED_AGAIN: i32 = 385;
+const RELINKED: i32 = 386;
+const DEFERRED_BLOCKED: i32 = 431;
+const DEFERRED: i32 = 432;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -134,10 +140,15 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
         }
     }
-    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED) {
+    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED | REVISED_BLOCKED | DEFERRED_BLOCKED) {
         store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
-    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED) {
+    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED | REVISED | DEFERRED) {
         complete(store, TableId::CountryLinks);
+    }
+    if hour == DEFERRED {
+        store.status(TableId::CountryPowerDaily.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | 433) {
+        complete(store, TableId::CountryPowerDaily);
     }
     if hour == NO_CAPTURE {
         store.status(TableId::PoliticsCaptureCoverage.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
@@ -316,7 +327,7 @@ fn edit(store: &mut Store, hour: i32) {
             put_daily(store, hour, &daily(168, 3 * Q, Q / 2 + Q / 10, 168));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 1, PowerDailyCostKind::MioResearch, Q / 10, 168), TEXTS).unwrap();
         }
-        192 | 216 | 240 | 288 | REPLACED => {
+        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 => {
             put_daily(store, hour, &daily(hour, 3 * Q, Q / 2 + Q / 10, hour as u64));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 0, PowerDailyCostKind::Relation, Q / 2, hour as u64), TEXTS).unwrap();
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 1, PowerDailyCostKind::MioResearch, Q / 10, hour as u64), TEXTS).unwrap();
@@ -329,7 +340,17 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 50, ..Default::default() }, TEXTS).unwrap();
             testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 50 }, TEXTS).unwrap();
         }
-        MOVED_DELETED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED => {
+        REVISED => {
+            put_daily(store, hour, &daily(336, 3 * Q, Q / 4 + Q / 10, 336));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(336, 0, PowerDailyCostKind::Relation, Q / 4, 336), TEXTS).unwrap();
+        }
+        UNLINKED_AGAIN => testing::remove(store, TableId::CountryLinks, 1).unwrap(),
+        RELINKED => {
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 50 }, TEXTS).unwrap();
+            put_daily(store, hour, &daily(384, 3 * Q, Q / 4 + Q / 10, 384));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(384, 0, PowerDailyCostKind::Relation, Q / 4, 384), TEXTS).unwrap();
+        }
+        MOVED_DELETED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED | DEFERRED_BLOCKED => {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
             let day = midnight(hour);
             put_daily(store, hour, &daily(day, 3 * Q, Q / 2, day as u64));
@@ -650,6 +671,21 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     let (replaced, _) = through(0..=REPLACED);
     assert_eq!((spend(&replaced, 50, POLITICAL, 0, "day_unknown"), spend(&replaced, 50, POLITICAL, 1, "day_unknown")), (Some(1), Some(1)), "a batch replaced by the next day's while the ledger was blocked settles its day as unknown");
     assert_eq!(spend(&replaced, 50, POLITICAL, 0, "day_charge"), Some(Q), "and charges nothing it could not prove");
+    let (blocked, _) = through(0..=REVISED_BLOCKED);
+    let (revised, _) = through(0..=REVISED);
+    let grew = |name: &str| spend(&revised, 50, POLITICAL, 0, name).zip(spend(&blocked, 50, POLITICAL, 0, name)).map(|(after, before)| after - before);
+    assert_eq!((grew("day_payments"), grew("day_charge")), (Some(1), Some(Q / 4)), "a cost revised on the first hour after a gap settles its day once, at its revision");
+    let (unlinked, _) = through(0..=UNLINKED_AGAIN);
+    assert!(held(&unlinked, NONE).is_empty(), "a country losing its link opens nothing under the no-holder identity");
+    assert_eq!((spent(&unlinked, 0), spent(&unlinked, 1)), (None, None), "and the batch it left reads as unknown");
+    let (relinked, _) = through(0..=RELINKED);
+    assert_eq!((spent(&relinked, 0), spent(&relinked, 1)), (Some(Q / 4), Some(Q / 10)), "until its holder publishes it again");
+    let (waiting, _) = through(0..=DEFERRED_BLOCKED);
+    let (deferred, _) = through(0..=DEFERRED);
+    for ordinal in [0, 1] {
+        let unknown = |store: &Store| spend(store, 50, POLITICAL, ordinal, "day_unknown");
+        assert_eq!(unknown(&deferred).zip(unknown(&waiting)).map(|(after, before)| after - before), Some(1), "a day that closes while its reconciliation waits for the daily rows settles as unknown");
+    }
 }
 
 #[test]
