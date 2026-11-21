@@ -1,19 +1,3 @@
-//! Allocation-free notifications from the native writers of every ship byte
-//! ShipModels serves from a held read ([`engine_mutations::ship_model_mutations`]): a
-//! ship's fixed fields, pool entries, heap fallback sprite and experience
-//! modifiers, its medal store's modifiers and its carrier air base pointer,
-//! and of its task force's doctrine tree and its weather region's
-//! modifiers, which ShipModels carries with the country's naval tree
-//! certificate, and of a fleet's leader binding, which selects the
-//! commander whose tree terms ShipModels carries with its task force.
-//! A detour only notifies the shared watch registry ([`WatchRegistry`]) for
-//! the ship, air base or medal store its receiver argument names, counts the
-//! call and calls the original; it never changes game behaviour. The writers
-//! run on the game thread and on the TBB workers of the hourly update, which
-//! the registry's atomics serve. Receivers are the ships, medal stores and
-//! carrier bases a ShipModels capture registered. Anything unobserved
-//! (disabled, poisoned, a refused registration, an epoch change, a running
-//! writer) makes the capture read that ship afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -26,25 +10,16 @@ use std::{
 };
 
 const SITES: usize = MUTATIONS.len();
-/// Air base destruction's index in [`MUTATIONS`], forwarded to
-/// [`crate::air_base_carry_changes`].
 const DESTROY_AIR_BASE: usize = 4;
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Carried and read ships; ships read without a certificate to hold; carried
-/// task-force terms; carried rows; carried models; revalidated ships;
-/// variants carried under their design certificate and variants gathered.
 static READS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
-/// Receivers the latest complete capture registered, for off-thread sizing.
 static RECEIVERS: AtomicUsize = AtomicUsize::new(0);
-/// Design writers forwarded now (the design family's paired notifications).
 static VARIANT_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static VARIANT_AVAILABILITY: AtomicU64 = AtomicU64::new(0);
 static VARIANT_VALIDATE: AtomicUsize = AtomicUsize::new(0);
 static VARIANT_CALLS: AtomicU64 = AtomicU64::new(0);
 
-/// One observation domain: the watched receivers and the writers' calls,
-/// and the equipment variants the design family's writers notify.
 pub struct Watches {
     registry: WatchRegistry,
     variants: WatchRegistry,
@@ -66,22 +41,16 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: the writer of `site` ([`MUTATIONS`]
-    /// index) is about to rewrite `receiver`. Dropping the guard notifies its
-    /// return.
     pub fn notify(&self, receiver: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(receiver)
     }
 
-    /// The existing refit patch also certifies the carrier-capacity predicate.
-    /// Other ship writers do not move this independent inline-field receiver.
     pub fn capacity_refit(&self, ship: usize) -> Notification<'_> {
         self.registry
             .notify(ship.wrapping_add(engine_native::cship::MODULE_PREDICATE))
     }
 
-    /// An enabled domain with a table for `receivers` installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(receivers: usize) -> Self {
         let watches = Self::new();
@@ -93,20 +62,17 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
         self.variants.boundary(invalidate);
     }
 
-    /// Tests: a design writer is about to change `variant`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn notify_variant(&self, variant: usize) -> Notification<'_> {
         self.variants.notify(variant)
     }
 
-    /// Tests: the design domain lost observation.
     #[cfg(any(test, feature = "test-support"))]
     pub fn disable_variants(&self) {
         self.variants.set_enabled(false);
@@ -118,53 +84,32 @@ impl Watches {
     }
 }
 
-/// A ship's certificate: the `(epoch, sequence)` of the ship, its medal
-/// store and its carrier air base; an absent receiver is zero.
 pub type Certificate = [(u64, u64); 3];
 
-/// Hints for the ship, medal store and carrier base in the current watch
-/// table. Only the registry's receiver and epoch checks can certify them.
 pub type Slots = [usize; 3];
 pub const NO_SLOTS: Slots = [usize::MAX; 3];
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// `(epoch, sequence)` of one receiver, registering it; `None` when it
-    /// cannot be observed. Equal values across hours prove that no observed
-    /// writer touched it.
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)>;
-    /// [`Self::sequence`] and an optional slot hint, validated by the
-    /// observation domain. Implementations without slots use no hint.
     fn sequence_at(&self, receiver: usize, _held_slot: usize) -> Option<((u64, u64), usize)> {
         self.sequence(receiver)
             .map(|certificate| (certificate, usize::MAX))
     }
-    /// `(epoch, revision)` with no observed writer running. Equal tokens
-    /// across complete captures spare already-certified receivers a lookup.
     fn quiet(&self) -> Option<(u64, u64)> {
         None
     }
-    /// `(epoch, sequence)` of a country's or commander's modifier tree, which the naval tree family
-    /// certifies.
     fn tree_sequence(&self, country: usize) -> Option<(u64, u64)>;
 
-    /// `(epoch, sequence)` of an equipment variant, which the design family's
-    /// writers move; `None` while that domain is unobserved.
     fn variant_sequence(&self, _variant: usize) -> Option<(u64, u64)> {
         None
     }
-    /// `(epoch, revision)` of the variant domain with no design writer running.
     fn variant_quiet(&self) -> Option<(u64, u64)> {
         None
     }
-    /// Whether captures under this domain share one held store across the
-    /// frame pool's buffers, as the process-wide hooks' domain does.
     fn shared_store(&self) -> bool {
         false
     }
 
-    /// The certificate of a ship with `receivers` (ship, medal store,
-    /// carrier base; zero for none), or `None` when one cannot be observed.
     fn certificate(&self, receivers: [usize; 3]) -> Option<Certificate> {
         let mut certificate = [(0, 0); 3];
         for (held, receiver) in certificate.iter_mut().zip(receivers) {
@@ -175,8 +120,6 @@ pub trait Changes: Sync {
         Some(certificate)
     }
 
-    /// [`Self::certificate`] with receiver-validated slot hints. An absent
-    /// receiver keeps its zero certificate and has no slot.
     fn certificate_at(
         &self,
         receivers: [usize; 3],
@@ -212,7 +155,6 @@ impl Changes for Watches {
         }
         Some((certificate, slots))
     }
-    /// Tests observe countries in the same domain.
     fn tree_sequence(&self, country: usize) -> Option<(u64, u64)> {
         self.registry.sequence(country)
     }
@@ -224,7 +166,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
@@ -257,8 +198,6 @@ impl Changes for Observer {
     }
 }
 
-/// `read` while the design family's capability is current and none of its
-/// forwarded writers runs, before and after.
 fn variant_observed(read: impl FnOnce() -> Option<(u64, u64)>) -> Option<(u64, u64)> {
     let stamp = VARIANT_AVAILABILITY.load(Ordering::SeqCst);
     if !variant_capability_is_current(stamp) || VARIANT_ACTIVE.load(Ordering::SeqCst) != 0 {
@@ -275,26 +214,22 @@ fn variant_capability_is_current(stamp: u64) -> bool {
     if stamp == 0 || validator == 0 || VARIANT_AVAILABILITY.load(Ordering::SeqCst) != stamp {
         return false;
     }
-    // SAFETY: only `variant_availability` stores this, from a `fn(u64) -> bool`.
     let validate: fn(u64) -> bool = unsafe { std::mem::transmute(validator) };
     validate(stamp) && VARIANT_AVAILABILITY.load(Ordering::SeqCst) == stamp
 }
 
-/// The design family's forwarding capability, from its receiver; never waits.
 pub fn variant_availability(stamp: u64, validate: fn(u64) -> bool) {
     VARIANT_VALIDATE.store(validate as *const () as usize, Ordering::SeqCst);
     VARIANT_AVAILABILITY.store(stamp, Ordering::SeqCst);
     WATCHES.variants.set_enabled(validate(stamp));
 }
 
-/// A forwarded design writer is about to change `variant`.
 pub fn variant_before(variant: usize) {
     VARIANT_CALLS.fetch_add(1, Ordering::Relaxed);
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
     drop(WATCHES.variants.notify(variant));
 }
 
-/// Its return; an unwound writer leaves the domain unobserved.
 pub fn variant_after(variant: usize, unwound: bool) {
     if unwound {
         WATCHES.variants.poison();
@@ -303,8 +238,6 @@ pub fn variant_after(variant: usize, unwound: bool) {
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// A forwarded writer whose variants cannot be named (bulk upgrades and
-/// source, provider, country or content invalidation) is about to run.
 pub fn variants_before() {
     VARIANT_CALLS.fetch_add(1, Ordering::Relaxed);
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
@@ -319,10 +252,8 @@ pub fn variants_after(unwound: bool) {
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Whether ShipModels holds ships' reads to carry them.
 pub const CARRY: bool = cfg!(feature = "ship_model_changes");
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES
         .registry
@@ -330,18 +261,11 @@ pub fn active() -> usize {
         .saturating_add(VARIANT_ACTIVE.load(Ordering::SeqCst))
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
     WATCHES.variants.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the receivers the latest
-/// capture registered. Nothing is offered before a capture registered any:
-/// a later larger table waits for an invalidating hour, while the first
-/// installs at once.
 pub fn presize() {
     let receivers = RECEIVERS.load(Ordering::Relaxed);
     if receivers != 0 {
@@ -350,66 +274,36 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
     WATCHES.variants.collect();
 }
 
-/// One capture range's ships.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub carried: u64,
     pub read: u64,
     pub uncertified: u64,
-    /// Task-force doctrine contributions and modifier arrays served from a
-    /// held read.
     pub task_terms_carried: u64,
-    /// Ships whose finished row was carried.
     pub rows_carried: u64,
-    /// Carried ships whose model part was carried, only their maximum
-    /// organisation computed from certified ship operands and current
-    /// task-force terms.
     pub models_carried: u64,
-    /// Ships whose certificate moved but whose own objects and modifier
-    /// arrays read this hour equal the held read's, carried again.
     pub revalidated: u64,
-    /// Distinct held variants served under their design certificate, and
-    /// held variants gathered again because a design writer touched them or
-    /// the design domain was unobserved.
     pub variants_carried: u64,
     pub variants_read: u64,
-    /// Receivers the census's ships can register, for sizing.
     pub receivers: usize,
-    /// Sampled ships (every [`PATH_SAMPLE`]th row) and their QPC ticks by
-    /// path: row carried, model part carried, readers on carried inputs,
-    /// read afresh, and (beside its path) revalidated.
     pub path_samples: [u64; PATHS],
     pub path_ticks: [u64; PATHS],
-    /// Task-force terms read ahead of a first ship, and their QPC ticks.
     pub terms_reads: u64,
     pub terms_ticks: u64,
-    /// Carryable rows that did not carry, by reason: each task-force term
-    /// that differed (owner, country, pride ship, doctrine, location, fleet
-    /// leader, HQ support), the fleet leader's tree certificate, terms not
-    /// read for the task force, and equal terms with changed variants or
-    /// organisation modifier eligibility or clamp metadata, and a revalidated
-    /// critical header whose live entry payload must be read again.
     pub terms_changed: [u64; REASONS],
 }
 
-/// Rows between two timed ships (diagnostics; the timer costs two QPC reads).
 pub const PATH_SAMPLE: usize = 16;
-/// Sampled paths: row, model, readers, fresh, revalidated.
 pub const PATHS: usize = 5;
-/// Reasons a carryable row did not carry.
 pub const REASONS: usize = 11;
 static PATH_TOTALS: [AtomicU64; 2 * PATHS] = [const { AtomicU64::new(0) }; 2 * PATHS];
 static TERM_TOTALS: [AtomicU64; 2 + REASONS] = [const { AtomicU64::new(0) }; 2 + REASONS];
 
-/// A worker publishes one range's counts; a complete one also its receivers
-/// for sizing, the largest any range reported (the family capture's, whose
-/// census is the whole one).
 pub fn record(counts: &Counts, complete: bool) {
     for (target, value) in READS.iter().zip([
         counts.carried,
@@ -443,7 +337,6 @@ pub fn record(counts: &Counts, complete: bool) {
 }
 
 
-/// A hook site located with the 16 bytes its hook replaces, refused like a differing sentinel.
 fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)
         .and_then(|code| code.sentinel::<16>())
@@ -457,14 +350,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A site that cannot be located leaves the family uninstalled; ShipModels then
-    /// reads every ship afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A site that cannot be located leaves the family uninstalled; ShipModels then"]
+    #[doc = " reads every ship afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if CARRY && MUTATIONS.iter().all(|site| located(base, site.rva).is_ok()) {
@@ -500,10 +393,6 @@ impl Hooks {
                 false,
             );
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -513,8 +402,6 @@ impl Hooks {
             .registry
             .set_enabled(enabled && !self.hooks.is_empty());
         crate::unit_history_changes::forwarder(enabled && !self.hooks.is_empty());
-        // The air base registrations observe base destruction only through
-        // this family's destructor patch.
         crate::air_base_carry_changes::forwarder(
             crate::air_base_carry_changes::Forwarder::ShipModel,
             enabled && !self.hooks.is_empty(),
@@ -527,23 +414,17 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture. The variant table stays: the design
-        // family's forwarder notifies it.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-/// Notify `site`'s receiver, then run the original with RCX..R9 and return
-/// its RAX. None of the writers takes a stack argument.
+#[doc = " Notify `site`'s receiver, then run the original with RCX..R9 and return"]
+#[doc = " its RAX. None of the writers takes a stack argument."]
 unsafe fn forward(site: usize, arguments: [usize; 4]) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::ShipModelChanges);
     let _notification = WATCHES.notify(arguments[RECEIVER_ARGUMENT[site]], site);
     let _history = (site == 5).then(|| crate::unit_history_changes::notify(arguments[0]));
     let _capacity = (site == 1).then(|| WATCHES.capacity_refit(arguments[0]));
-    // Air base destruction retires the base's registration vectors
-    // ([`crate::air_base_carry_changes`]).
     let _carry = (site == DESTROY_AIR_BASE)
         .then(|| crate::air_base_carry_changes::base_destroyed(arguments[0]));
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
@@ -565,11 +446,6 @@ macro_rules! detours {
     )*};
 }
 
-// [`MUTATIONS`] order: recalculate equipment stats(ship, flag), refit
-//(ship, ...), ship experience modifier rebuild(ship), add carrier air base(manager,
-// ship), air base destruction(base), medal modifier rebuild(store), task-force doctrine rebuild(task force),
-// Weather region modifier rebuild (weather region), fleet leader binding (fleet, leader)
-// and reserve fleet conversion (fleet).
 detours! {
     recalculate_equipment_stats = 0;
     refit = 1;
@@ -605,10 +481,6 @@ mod tests {
         assert_eq!(watches.sequence(ship), Some(own));
     }
 
-    /// A writer moves only its receiver's certificate, so a ship's
-    /// certificate moves with its own, its medal store's or its carrier
-    /// base's writer; a running writer certifies nothing and an invalidating
-    /// hour revokes everything.
     #[test]
     fn a_ship_certificate_moves_with_each_of_its_receivers() {
         let watches = Watches::enabled(16);

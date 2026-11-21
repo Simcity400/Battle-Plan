@@ -1,4 +1,3 @@
-//! Incremental province colour pixels, using the political pass's immutable ID image.
 use super::*;
 use map_display_data::value_index::ValueIndex;
 use std::collections::BTreeMap;
@@ -10,7 +9,6 @@ pub(crate) struct ProvinceColors {
     palette: wgpu::Buffer,
     tiles: wgpu::Buffer,
     uniform: wgpu::Buffer,
-    /// The device's one stripe program, which every view's fill dispatches.
     pipeline: Arc<wgpu::ComputePipeline>,
     group: wgpu::BindGroup,
     provinces: Arc<[Province]>,
@@ -216,8 +214,6 @@ impl ProvinceColors {
         Ok(())
     }
 
-    /// Records the pending stripes; `true` when there were any. They stay pending until
-    /// [`Self::submitted`] follows the encoder's submission.
     pub(crate) fn encode(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
         if !self.pending {
             return false;
@@ -236,7 +232,6 @@ impl ProvinceColors {
         true
     }
 
-    /// The encoder [`Self::encode`] recorded into was submitted: its tiles are drawn.
     pub(crate) fn submitted(&mut self) {
         self.pending = false;
         self.bound.written();

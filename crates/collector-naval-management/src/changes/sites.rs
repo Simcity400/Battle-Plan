@@ -1,6 +1,3 @@
-//! Native writer/lifetime inventory for carried naval management state.
-//! Method sites take at most four integer/pointer arguments and return through RAX.
-//! Tap sites use complete stack-independent data spans with no interior branch/return target.
 use engine_sites::Rva;
 #[derive(Clone, Copy)]
 pub enum Register {
@@ -198,7 +195,6 @@ pub const REPAIR_POLICY_COMMAND: Site = Site {
     base: false,
     retire: false,
 };
-// Split can be commanded independently of repair mode.
 pub const REPAIR_SPLIT_COMMAND: Site = Site {
     name: "repair split command",
     rva: Rva(0x013e8621),
@@ -304,7 +300,6 @@ pub const REPAIR_FACTORY_CLAMP: Site = Site {
     base: false,
     retire: false,
 };
-// The setting applies its own inline clamp; the hourly clamp above is separate.
 pub const REPAIR_FACTORY_SETTING_CLAMP: Site = Site {
     name: "repair factory setting clamp",
     rva: Rva(0x00ee1753),
@@ -756,7 +751,6 @@ pub const BASE_QUEUE_REMOVE: Method = Method {
     base: true,
     retire: false,
 };
-/// One ship leaving a base's queue: the ship leaving its task force, the queue command's removal.
 pub const BASE_QUEUE_ERASE: Method = Method {
     name: "base queue erase",
     rva: Rva(0x00f1eab0),

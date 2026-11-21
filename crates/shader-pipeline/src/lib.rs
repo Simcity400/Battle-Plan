@@ -1,9 +1,4 @@
-//! Executable PdxShader effects. Source assembly belongs to installed-content; DXC (`dxcompiler.dll`
-//! beside the executable) compiles HLSL to SPIR-V, naga validates it and emits WGSL for the
-//! same wgpu device as the map.
-//! No effect filename selects a substitute program.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -28,16 +23,12 @@ pub mod stream;
 pub mod texel;
 pub mod vertices;
 
-/// Native registers are separate namespaces. Vertex and pixel bindings are separate too.
-/// Saturating: an authored index beyond D3D11's slots is refused at compile, never wrapped.
 pub fn binding(index: u32, stage: Stage) -> u32 {
     index
         .saturating_mul(2)
         .saturating_add(u32::from(stage == Stage::Pixel))
 }
 
-/// D3D11 constant-buffer slots (b0-b13) and sampler slots (s0-s15); a PdxShader sampler binds
-/// its texture and sampler at the same index.
 const BUFFER_SLOTS: u32 = 14;
 const SAMPLER_SLOTS: u32 = 16;
 
@@ -63,7 +54,6 @@ impl TextureKind {
 pub struct Buffer {
     pub binding: u32,
     pub size: u32,
-    /// Conservative component byte reads, excluding unused fields and padding.
     pub reads: Vec<std::ops::Range<u32>>,
 }
 
@@ -85,16 +75,12 @@ pub struct VertexInput {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shader {
     pub wgsl: String,
-    /// Whether concatenated triangle lists preserve invocation-local inputs.
     pub independent_draws: bool,
     pub buffers: Vec<Buffer>,
-    /// Physical slots actually read, after compiler dead-code elimination.
     pub textures: Vec<(u32, TextureKind)>,
     pub samplers: Vec<u32>,
-    /// Actual image/sampler pairs, including pairs whose register numbers differ.
     pub sampling_pairs: Vec<(u32, u32)>,
     pub inputs: Vec<VertexInput>,
-    /// How the stage's output depends on its constant buffers, read from the program.
     pub clock: clock::Clock,
 }
 
@@ -105,9 +91,6 @@ pub struct Compiled {
 }
 
 impl Compiled {
-    /// When the draw no longer changes on the clock alone, constant buffer `register` holding
-    /// the clock at byte `time` and the restart at `since` in both stages, as sprite constants
-    /// do: once both stages' [`clock::Clock::settles`] are; `None` while either keeps changing.
     pub fn settles(&self, register: u32, time: u32, since: u32) -> Option<clock::Settling> {
         let mut settles = clock::Settling::NOW;
         for (stage, shader) in [(Stage::Vertex, &self.vertex), (Stage::Pixel, &self.pixel)] {
@@ -118,28 +101,20 @@ impl Compiled {
     }
 }
 
-/// The product version of the official v1.9.2607 release's `dxcompiler.dll`, which
-/// tools/install-shader-compiler.ps1 pins and `dxc --version` prints. The persistent cache ABI
-/// names it, so only this compiler may produce entries.
 pub const DXC_VERSION: &str = "1.9.0.5402 (0d3ee6b55-dirty)";
 
-/// The pinned DXC, `dxcompiler.dll` beside the executable, never a path from shader content.
-/// The Windows SDK and RenderDoc builds tested here omit SPIR-V.
 pub struct Compiler {
     library: dxc::Library,
 }
 
 impl Compiler {
-    /// The compiler beside the running executable.
     pub fn discover() -> Result<Self, String> {
         let exe = std::env::current_exe().map_err(|_| MISSING_COMPILER.to_owned())?;
         Self::at(&exe.with_file_name("dxcompiler.dll"))
     }
 
-    /// Refuses a missing DLL and any build other than the pinned [`DXC_VERSION`].
     pub fn at(library: &Path) -> Result<Self, String> {
         if !library.is_file() {
-            // Installation paths must not enter persisted presentation refusals.
             return Err(MISSING_COMPILER.into());
         }
         let version = dxc::product_version(library)?;
@@ -169,7 +144,6 @@ impl Compiler {
         })
     }
 
-    /// The stage's program and its linkage semantics by location: vertex outputs, pixel inputs.
     fn stage(
         &self,
         program: &Program,
@@ -178,8 +152,6 @@ impl Compiler {
         defines: &[String],
     ) -> Result<(Shader, BTreeMap<u32, String>), String> {
         let source = source::without_host_files(&program.hlsl(technique, stage, defines)?)?;
-        // No include search path. HLSL 2016 matches the legacy D3DCompile syntax more closely
-        // than DXC's 2021 short-circuit semantics.
         let mut arguments: Vec<String> = [
             "-spirv",
             "-fspv-target-env=vulkan1.0",
@@ -198,7 +170,6 @@ impl Compiler {
         ]
         .map(str::to_owned)
         .into();
-        // The engine binds only declared registers.
         let buffers: Vec<u32> = program
             .common
             .buffers
@@ -257,9 +228,6 @@ impl Compiler {
 
 const MISSING_COMPILER: &str = "DXC not found: dxcompiler.dll is not beside the application";
 
-/// D3D11 links a vertex output to a pixel input by register, that is by declaration order, not
-/// by semantic. The same order compiles to the same SPIR-V locations; any other signature
-/// (reordered, or a subset that is not a prefix) is refused rather than guessed.
 fn link(outputs: &BTreeMap<u32, String>, inputs: &BTreeMap<u32, String>) -> Result<(), String> {
     for (location, semantic) in inputs {
         if outputs.get(location) != Some(semantic) {
@@ -273,8 +241,6 @@ fn link(outputs: &BTreeMap<u32, String>, inputs: &BTreeMap<u32, String>) -> Resu
     Ok(())
 }
 
-/// Stage-interface semantics by location for one SPIR-V storage class (1 input, 3 output),
-/// from DXC's `in.var.<SEMANTIC>` and `out.var.<SEMANTIC>` names; `TEXCOORD` is `TEXCOORD0`.
 fn interface(bytes: &[u8], storage: u32) -> Result<BTreeMap<u32, String>, String> {
     let words: Vec<u32> = bytes
         .chunks_exact(4)
@@ -288,7 +254,6 @@ fn interface(bytes: &[u8], storage: u32) -> Result<BTreeMap<u32, String>, String
             .get(at + 1..at + count)
             .ok_or("truncated SPIR-V instruction")?;
         match (words[at] & 0xFFFF, operands) {
-            // OpName
             (5, [id, text @ ..]) => {
                 let text: Vec<u8> = text.iter().flat_map(|word| word.to_le_bytes()).collect();
                 let end = text
@@ -297,11 +262,9 @@ fn interface(bytes: &[u8], storage: u32) -> Result<BTreeMap<u32, String>, String
                     .unwrap_or(text.len());
                 names.insert(*id, String::from_utf8_lossy(&text[..end]).into_owned());
             }
-            // OpDecorate Location
             (71, [id, 30, location, ..]) => {
                 locations.insert(*id, *location);
             }
-            // OpVariable
             (59, [_, id, class, ..]) if *class == storage => variables.push(*id),
             _ => {}
         }
@@ -336,17 +299,12 @@ impl Drop for Scratch {
     }
 }
 
-/// `buffers` and `samplers` are the bindings of the registers the program declares. Any other
-/// register is raw code's own, which the engine never binds (the draw would read whatever an
-/// earlier one left there), so it is refused.
 fn translate(
     bytes: &[u8],
     stage: Stage,
     buffers: &[u32],
     samplers: &[u32],
 ) -> Result<Shader, String> {
-    // DXC leaves the authored DX clip coordinates unchanged without -fvk-invert-y; wgpu
-    // consumes that convention. Do not apply naga's default Vulkan Y inversion a second time.
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         ..Default::default()
@@ -363,7 +321,6 @@ fn translate(
         Ok((module, info))
     };
     let (module, info) = parse(bytes)?;
-    // Settlement analysis needs the authored intrinsics before numeric lowering.
     let clock = clock::analyse(&module, &info);
     let numeric = numeric::d3d_intrinsics(bytes)?;
     let (module, info) = if numeric == bytes {

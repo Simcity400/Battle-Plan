@@ -10,24 +10,19 @@ import { formatAxisPercent } from './valueAxis';
 export type { ShareBand } from './share';
 type Props = Omit<TimeChartProps, 'layers' | 'axes' | 'formatValue' | 'valueTicks' | 'data'> & {
   runs: readonly ShareRun[];
-  /** Bottom to top; the legend names the top band first. */
   bands: readonly ShareBand[];
   summaries?: readonly ChartSummary[];
-  /** While following: the runs read as the chart draws (a tile landing or the head moving repaints, renders
-   * nothing), the head's bin at the followed shares. `runs` stays the structure the chart renders by. */
   live?: LiveShares;
 };
 
-/** Theme-coloured stacked shares with held values, gaps and a quarter axis. */
 export default function StackedShareChart({ runs, bands, summaries, live, ...chart }: Props) {
   const model = useMemo(() => shareStack(summaryShareRuns(runs, summaries), bands.length), [runs, bands.length, summaries]);
   const [first, last] = chart.extent;
   const held = useRef({ extent: [first, last] as readonly [number, number], summaries }); held.current = { extent: [first, last], summaries };
-  const base = useMemo(() => shareLayer(model, bands, [first, last]), [bands, first]); // eslint-disable-line react-hooks/exhaustive-deps
+  const base = useMemo(() => shareLayer(model, bands, [first, last]), [bands, first]);
   const layers = useMemo(() => [live ? liveShareLayer(base, live, bands.length, () => held.current.extent, () => held.current.summaries) : base],
     [base, live, bands.length]);
   useLayoutEffect(() => { if (!live) base.update(model, [first, last]); }, [base, live, model, first, last]);
-  // The layer takes each model in place, so the chart repaints by the model too.
   const revision = useMemo(() => [chart.revision, model], [chart.revision, model]);
   const data = useMemo<ChartData | undefined>(() => live ? { revision: () => [live.revision()], subscribe: live.subscribe } : undefined, [live]);
   return <div className="stacked-share-chart">

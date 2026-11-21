@@ -13,11 +13,6 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.tables[table.index()] = TableView::Complete(rows).into();
 }
 
-/// GER (slot 7) completes `a`, then `b` at 105 (read the hour before: dated). Its focus row is not
-/// recorded at 110..=111; `c` is first read after that at 112 (undated, `b` keeps its date). At
-/// 120 the list is reset to `x` (none dated), `y` is appended at 125 (dated). At 130..=131 the
-/// count names a row the list does not hold; `z` is first read at 132 after it (undated).
-/// Progress rises by a day at 102 and 103 while `b` is worked on; `b` done, nothing is current.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     let countries = vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }];
@@ -79,7 +74,6 @@ fn a_completion_is_dated_only_where_the_list_grew_at_its_end_read_the_hour_befor
     let missing: Vec<(i32, i32, &str)> = fold.missing.iter().map(|missing| (missing.first_hour, missing.last_hour, missing.reason.as_str())).collect();
     assert_eq!(missing, [(110, 111, NO_ROW), (130, 131, INCOMPLETE)]);
     assert!(!fold.missing.iter().any(|missing| missing.reason == NOT_HELD));
-    // The tree and current focus are opaque cells: read where they were written, never "not recorded".
     assert!(!fold.missing.iter().any(|missing| missing.reason == UNRECORDED));
 }
 

@@ -10,7 +10,6 @@ type Point = [number, number, string];
 interface Leaf { tag: string | null; identity: string | null; dealt: boolean; opponent: string | null; cause: number; points: Point[] }
 const leaf = (extra: Partial<Leaf> = {}): Leaf => ({ tag: 'mod country', identity: '3:9', dealt: false, opponent: null, cause: 1,
   points: [[9, 10, '300000'], [8, 11, '200000']], ...extra });
-/** An air-loss leaf as the reply's part of it. */
 const part = (item: Leaf): MilitaryAirPart => ({ tag: item.tag, identity: item.identity, dealt: item.dealt, cause: item.cause,
   opponentKnown: item.opponent !== null, buildingToken: null, buildingId: null, state: null, points: item.points });
 const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { leaves?: Leaf[] } = {}): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 14,
@@ -19,7 +18,6 @@ const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { l
   parts: leaves.map(part), regions: [{ id: '40001', name: null, missing: 'The recorded mod did not define this region.' }], buildings: [], warnings: [], ...extra });
 
 test('ledger totals are exact, summed in numbers while safe and in bigints past that', () => {
-  // The totals summed in bigints throughout, as the ledger has always summed them.
   const reference = (leaves: readonly Leaf[]) => {
     const deltas = new Map<number, { dealt: bigint; taken: bigint; nativeHour: number }>();
     for (const item of leaves) {
@@ -41,9 +39,7 @@ test('ledger totals are exact, summed in numbers while safe and in bigints past 
   };
   const points = (...totals: string[]) => totals.map((totalRaw, index): [number, number, string] => [20 - index, 10 + index, totalRaw]);
   for (const leaves of [
-    // Safe totals, corrections included, over two sides and one shared read.
     [leaf({ points: points('300000', '200000', '-5') }), leaf({ dealt: true, points: points('7', '7', '900') })],
-    // A total past a safe integer, and fifteen-digit totals whose sum is past one.
     [leaf({ points: points('9007199254740993', '1') })],
     [leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }),
       leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }),
@@ -113,7 +109,6 @@ test('country aliases share their holder total and top memberships clip only the
   assert.equal(ledgerPinnedIdentity('malformed', 'campaign', '1', 'mod country'), undefined);
   assert.deepEqual(ledgerCountries(rows, { kind: 'group', group: { type: 'top', count: 1 }, membership: 'hour', aggregate: false }, [], undefined, 13, 14, 'taken', data.countries).rows.map(row => row.tag), ['renamed']);
   assert.deepEqual(ledgerRuns(index.series[1], 10, 14, false, 100000, index.series[1].country.membership).map(run => [run.firstHour, run.lastHour, run.value]), [[13, 13, 3]]);
-  // Before counting starts the header still names the country chosen; only its damage is not recorded.
   assert.equal(ledgerCountryAt(index, 'mod country', 10, 9), null);
   assert.equal(ledgerHeaderTag(index, null, 'mod country', 9, undefined, null), 'mod country');
   assert.equal(ledgerHeaderTag(index, null, 'mod country', 9, '8:99', { tag: 'mod country', identity: '8:99' }), null, 'a pinned holder without a row is not named by its tag');

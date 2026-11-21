@@ -1,9 +1,6 @@
 use super::*;
 use installed_content_core::parser;
 
-/// A `fuel_status` body in the writer's layout: the given scalars, one
-/// consumer block per `(priority, received, requested)` and the pending
-/// entry plus 24 ring entries, entry `i` from `history(i)`.
 fn fuel_status(
     scalars: &str,
     consumers: &[(&str, &str, &str)],
@@ -22,8 +19,6 @@ fn fuel_status(
     text
 }
 
-/// The pending entry and ring written by the game for a country that has
-/// consumed nothing: every field zero.
 fn zero_history(_: i32) -> String {
     "fuel=0.00000 consumed=0.00000 fuel_gain=0 other=0.00000 requested={ 0 0 0 } received={ 0 0 0 }"
         .to_owned()
@@ -110,7 +105,6 @@ fn fuel_keeps_consumers_cursor_and_every_history_entry_in_writer_order() {
         entry.received.each_ref().map(|value| value.raw),
         [100_000, 200_000, 300_000]
     );
-    // An empty consumer array is a layout the writer produces.
     assert!(
         parse_fuel_text(&fuel_status(SCALARS, &[], zero_history))
             .unwrap()
@@ -125,7 +119,6 @@ fn fuel_refuses_layouts_its_writer_cannot_produce() {
     let valid = fuel_status(SCALARS, &consumers, zero_history);
     assert!(parse_fuel_text(&valid).is_ok());
     let mut cases = vec![
-        // A missing, reordered, duplicated or trailing scalar.
         valid.replacen("fuel_cost=0 ", "", 1),
         valid.replacen(
             "fuel_gain_per_oil=3.6 fuel_gain_from_states=64.4",
@@ -134,14 +127,11 @@ fn fuel_refuses_layouts_its_writer_cannot_produce() {
         ),
         valid.replacen("history_index=13", "history_index=13 history_index=13", 1),
         format!("{valid} fuel=1.00000"),
-        // A consumer whose index is not its position, or whose fields move.
         valid.replacen("index=1 priority", "index=2 priority", 1),
         valid.replacen("received=0 requested=0", "requested=0 received=0", 1),
-        // A history entry out of slot order, missing or extra.
         valid.replacen("index=5 ", "index=6 ", 1),
         valid.replacen("history={ index=23 ", "history_extra={ index=23 ", 1),
         format!("{valid} history={{ index=24 {} }}", zero_history(24)),
-        // Lists of other than three anonymous values, and rounding.
         valid.replacen("requested={ 0 0 0 }", "requested={ 0 0 }", 1),
         valid.replacen("received={ 0 0 0 }", "received={ a=0 0 0 }", 1),
         valid.replacen("fuel_gain=2 ", "fuel_gain=0.000001 ", 1),
@@ -475,7 +465,6 @@ fn exchanges_preserve_full_ids_negative_deliveries_and_optional_presence() {
         .unwrap();
     assert_eq!(exports[0].id, (u64::from(u32::MAX) << 32) | 4713);
     assert_eq!(exports[0].delivered.raw, -9_007_199_254_740_993);
-    // An absent subscriber is nothing assigned and nothing required.
     assert_eq!(exports[0].convoys, ConvoyCounts::default());
     assert_eq!(
         exports[1].convoys,
@@ -489,8 +478,6 @@ fn exchanges_preserve_full_ids_negative_deliveries_and_optional_presence() {
     assert!(parsed.countries[b"D01".as_slice()].exports.is_none());
 }
 
-/// A `history_queue` in the writer's layout: a two-record daily window
-/// with the given data, then two empty windows.
 fn queue(data: &str) -> String {
     format!(
         "history_queue={{ 0={{ max_elements=2 offset=1 is_full=yes {data} }} 1={{ max_elements=12 offset=0 is_full=no }} 2={{ max_elements=7 offset=0 is_full=no }} }}"
@@ -561,7 +548,6 @@ fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
     assert!(parsed.countries[b"ITA".as_slice()].lend_lease.is_none());
     assert!(parsed.countries[b"ITA".as_slice()].exports.is_none());
     assert!(parsed.countries[b"ITA".as_slice()].pools.is_none());
-    // An exchange without its pools is refused, not read as empty.
     assert!(
         parse(
             &parser::parse(br#"countries={GER={resources={lend_lease={ receiver="SOV" id={ id=1 type=4713 } efficiency=1 efficiency_due_to_lost_convoys=1 } produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}}}}"#)
@@ -608,7 +594,6 @@ fn logistics_keeps_each_series_window_and_exact_record_values() {
         series[&15].windows[0].record(1, 3).unwrap(),
         [14_507_500_000, 201_750_000, 342_300_000]
     );
-    // An omitted list is every value zero.
     assert_eq!(series[&15].windows[1].record(11, 3).unwrap(), [0, 0, 0]);
     assert!(daily.record(1, 4).is_err());
     assert!(daily.record(2, 3).is_err());
@@ -633,7 +618,6 @@ fn logistics_refuses_layouts_its_writer_cannot_produce() {
         format!("history={{ 15={{ {} }} }}", queue("data={ 1.000001 }")),
         "history={ 15={ history_queue={ 0={ max_elements=2 offset=1 } } } }".to_owned(),
         "history={ 15={ history_queue={ 1={ max_elements=2 offset=1 is_full=no } } } }".to_owned(),
-        // A window after the writer's three, or the daily one again.
         format!(
             "history={{ 15={{ {} }} }}",
             queue("").replace(
@@ -653,8 +637,6 @@ fn logistics_refuses_layouts_its_writer_cannot_produce() {
     }
 }
 
-/// Saved pools retain each nonzero fixed5 amount by resource name, and
-/// `to_use` as three unkeyed pools.
 #[test]
 fn country_resource_pools_keep_every_written_pool() {
     let document = parser::parse(
@@ -702,9 +684,6 @@ fn country_resource_pools_keep_every_written_pool() {
     }
 }
 
-/// A name declared twice is two resources (the loader appends each
-/// declaration); the writer repeats the name, one entry
-/// per nonzero index in index order. Both occurrences are kept in order.
 #[test]
 fn repeated_resource_names_keep_every_occurrence_in_written_order() {
     let document = parser::parse(

@@ -52,8 +52,6 @@ fn part(kind: PartKind, asset: Arc<super::super::library::Effect>) -> gui::Part 
 
 use gui::PartKind;
 
-/// An animated state whose technique has no sampler slots draws as the plain sprite,
-/// masking included, and binds none of the records' slots 1-4 or b1.
 #[test]
 fn a_recordless_animated_technique_draws_the_plain_sprite() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -70,7 +68,6 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
         pivot: [0., 16.],
         rotation: 0.,
     };
-    // Up is declared (with a sampler), Down is not.
     let asset = effect(
         "PixelShader = { Samplers = { T = { Index = 0 } } MainCode P [[ ]] }\nEffect Up { PixelShader = P }\n",
     );
@@ -85,7 +82,6 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
         masked: true,
     }));
     let mut batch = sprites::Batch::default();
-    // The masked plain sprite then reads the null record: the game's null read, refused.
     let error = emit(
         &part(animated.clone(), asset.clone()),
         [0, 0],
@@ -117,11 +113,6 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
     assert!(!draw.effect.asset.defines.contains(&"ANIMATED".to_owned()));
 }
 
-/// Each draw submits its native records in its native topology: four as a strip for a
-/// sprite, a bound texture, a progress bar, a shield's flag and overlay (bottom-left,
-/// top-left, bottom-right, top-right), a plain tile (bottom-left, top-left, top-right,
-/// bottom-right) and an inline icon (top-left, top-right, bottom-left, bottom-right); six
-/// per quad as a list for glyphs and cornered tiles.
 #[test]
 fn each_draw_submits_its_native_records_and_topology() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -146,7 +137,6 @@ fn each_draw_submits_its_native_records_and_topology() {
         native_origin: [0., 8.],
         cornered,
     };
-    // Each record's position (x, y) in the part's local frame, y up.
     let records = |kind: PartKind, clocked: bool| {
         let mut part = part(kind, asset.clone());
         part.shading.clocked = clocked;
@@ -182,7 +172,6 @@ fn each_draw_submits_its_native_records_and_topology() {
     let (topology, corners) = records(tile(false), true);
     assert_eq!(topology, TriangleStrip);
     assert_eq!(corners, [[0., 0.], [0., 8.], [16., 8.], [16., 0.]]);
-    // The overlay's buffer is ordered as a sprite's.
     let (topology, corners) = records(tile(false), false);
     assert_eq!(topology, TriangleStrip);
     assert_eq!(corners, [[0., 0.], [0., 8.], [16., 0.], [16., 8.]]);
@@ -219,13 +208,6 @@ fn each_draw_submits_its_native_records_and_topology() {
     assert_eq!((topology, corners.len()), (TriangleList, 6));
 }
 
-/// Each draw uploads its whole b0 allocation but writes only a prefix: sprites write
-/// 104 of 112 bytes and expose a pooled 256-byte slot; cornered tiles and shield overlays
-/// write 104 of 112 unpooled bytes; progress bars write 100 of 112; masked flags write all
-/// 96, including a 16-byte zero tail; text writes all 80; circular progress writes all 64.
-/// The payload carries both allocation and written prefix without claiming unwritten zeros.
-/// Animation b1 holds two 80-byte records, each with 48 zeroed bytes and the active record's
-/// writes through byte 68, including floats 12 and 14 only for types 1 to 4.
 #[test]
 fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -357,7 +339,6 @@ fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
         assert_eq!(draw.constants.len() * 4, allocation, "{label}");
         assert_eq!(draw.known, known, "{label}");
     }
-    // A masked shield's overlay: a tile whose constants carry no clock, unpooled.
     let mut overlay = part(
         PartKind::Tiles {
             sprite: b"GFX_a".to_vec(),

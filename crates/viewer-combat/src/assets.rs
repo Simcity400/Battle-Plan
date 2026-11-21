@@ -1,4 +1,3 @@
-//! Only combat-window assets; all interface bytes pass through the resolved layers.
 use installed_content_core::unit_leader::SubUnits;
 use installed_content_core::{
     ResolvedLayers, defines::Defines, gui, gui::native::resources,
@@ -23,7 +22,6 @@ use viewer_foundation::map::{
 };
 use viewer_foundation::tooltip_painter::TooltipDefines;
 
-/// Portrait decode failures by sprite name: the refusal kind and its reason.
 type PortraitFailures = BTreeMap<String, (Option<native_gui::RefusalKind>, String)>;
 
 pub struct Assets {
@@ -34,11 +32,7 @@ pub struct Assets {
     pub(super) air_fuel_penalty: Result<i64, String>,
     pub(super) air_day_night: Result<replay_data::day_night::Defines, String>,
     pub(super) air_mine_maximum: Result<i64, String>,
-    /// The civilian intel lane's cap, then the ship count estimate's intel minimum, maximum and
-    /// range at lowest intel, which the naval region view's enemy ship count reads.
     pub(super) naval_region_ship_intel: Result<[i64; 4], String>,
-    /// The convoy count estimate's intel minimum, maximum and range at lowest intel, which the
-    /// naval region view's enemy convoy count reads.
     pub(super) naval_region_convoy_intel: Result<[i64; 3], String>,
     pub(super) air_cipher: Result<dashboard_text::cryptology::Defines, String>,
     pub(super) air_cipher_modifiers: Result<installed_content_core::modifiers::Modifiers, String>,
@@ -46,68 +40,38 @@ pub struct Assets {
     pub gui: GuiResources,
     window_sprites: BTreeSet<Vec<u8>>,
     flag_selectors: Mutex<BTreeMap<String, usize>>,
-    /// Leader portrait sprites by name: their texture and declaration, drawn
-    /// once `portraits` has decoded the texture.
     lazy_sprites: BTreeMap<String, (String, Plain)>,
     portraits: Arc<LazyImages>,
     portrait_failures: Arc<Mutex<PortraitFailures>>,
-    /// The normal set, decoded as windows draw it.
     flags: Arc<LazyFlags>,
-    /// The range of convoy weapon values the content allows, fixed5.
     pub convoy_weapon_bound: Result<[i64; 2], String>,
-    /// The naval combat defines the window's positioning, screening and anti-air read;
-    /// `None`, with a warning, when the content's defines do not load.
     pub naval_defines: Option<installed_content_naval_combat_defines::naval_combat_defines::Defines>,
-    /// NNavy operands, loaded from the matching content stack.
     pub(super) naval_escape_defines: Result<super::naval_escape::Defines, String>,
-    /// Loss-equipment tint from the resolved content.
     pub(super) naval_result_pride_color: Result<[f32; 4], String>,
     pub(super) naval_escape_screening: super::naval_escape::Screening,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
-    /// six weather-event static accumulators, in event order.
     pub(super) naval_weather_modifiers: Vec<Result<installed_content_core::modifiers::Modifiers, String>>,
-    /// Full screening bonus blocks, formatted at the freshly computed screening scale.
     pub(super) naval_screening_modifiers: [Result<installed_content_core::modifiers::Modifiers, String>; 2],
-    /// Effective named static blocks of the strategic templates' custom sea grid.
     pub(super) naval_custom_sea_modifiers:
         BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
-    /// terrain category prefix for the naval background hover.
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
     pub(super) land_terrain: Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String>,
     pub temperature: Result<installed_content_weather::weather::TemperatureRanges, String>,
-    /// The thermal and ground snow intervals a province's weather icons are classified by.
     pub(crate) province_weather: Result<installed_content_weather::weather::ProvinceModifierRules, String>,
-    /// The adjacency rules, and the rule each required province links to, which the state view
-    /// marks with its required rule icon.
     pub(crate) required_rules: Result<RequiredRules, String>,
-    /// `non_core`, `non_core_controller` and `resistance_effect_base`, the static modifiers the
-    /// state owner information sums.
     pub(crate) owner_info_modifiers: Result<[installed_content_core::modifiers::Modifiers; 3], String>,
-    /// The static modifiers the state view's custom province icons name (`<name>_icon`), by name.
     pub(crate) province_icon_modifiers: BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
-    /// `NCountry.LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR`, fixed5.
     pub(crate) non_core_manpower: Result<i64, String>,
-    /// `NBuildings.MAX_SHARED_SLOTS`, the state view's shared slot count's maximum.
     pub(crate) max_shared_slots: Result<i32, String>,
     pub(super) border_events: installed_content_events::events::LazyEvents,
-    /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
-    /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF`,
-    /// fixed5, or why they are unavailable.
     pub(crate) naval_name_defines: Result<[i64; 2], String>,
-    /// Authored division name groups, which render the recorded selection.
     pub division_names: Arc<installed_content_division_names::division_names::Database>,
-    /// Authored leader traits and advisor ranks for the commander hovers.
     pub(super) commander_tooltips: super::commander_tooltips::Content,
-    /// The content's tactic registry: triggers, weights, effects and
-    /// pictures.
     pub tactics: super::tactics::Content,
-    /// Tooltip delays and screen offsets, or why the content lacks them.
     pub tooltip_defines: Result<TooltipDefines, String>,
     pub warnings: Vec<String>,
 }
-/// The adjacency rules in file order, and the rule each required province links to: the first
-/// that names it, as the game reports a later one and keeps the first.
 #[derive(Debug)]
 pub(crate) struct RequiredRules {
     pub rules: Vec<installed_content_core::adjacency_rules::AdjacencyRule>,
@@ -206,7 +170,7 @@ impl Assets {
         warnings.extend(sprite_warnings(
             &self.gui,
             &shortcut_assets(&self.native_windows).sprites,
-            false, // missing_textures above already reports these textures.
+            false,
         ));
         for name in &assets.fonts {
             let Some(font) = self.gui.font(name) else {
@@ -248,14 +212,12 @@ impl Assets {
         Ok(warnings)
     }
 
-    /// Inventoried once per GUI load, then shared by counter and combat ToolTip resources.
     pub fn localisation_assets(
         &self,
         localisation: &installed_content_localisation::localisation::Localisation,
     ) -> (native_gui::Assets, Vec<String>) {
         let mut assets = tooltip_assets(&self.native_windows, localisation);
         let mut warnings = Vec::new();
-        // the game generates inline sub-unit sprite names from data, not localisation.
         match self.commander_tooltips.sub_units() {
             Ok(subunits) => {
                 let (unit_assets, unit_warnings) = unit_assets(subunits);
@@ -288,8 +250,6 @@ impl Assets {
         self.native_sprite_info(name).map(Cow::into_owned)
     }
 
-    /// Static declarations borrow their loaded metadata; only a lazy portrait or a
-    /// negative frame-count refusal needs a presentation-specific copy.
     pub(crate) fn native_sprite_info(
         &self,
         name: &[u8],
@@ -349,7 +309,6 @@ impl Assets {
         Some(Cow::Owned(info))
     }
 
-    /// Preserve the producers' bound dimensions while the native walk owns actual geometry.
     pub fn sprite_size(&self, name: &str) -> Option<[f32; 2]> {
         let info = self.native_sprite(name.as_bytes())?;
         if self.lazy_sprite(name).is_some() {
@@ -364,7 +323,6 @@ impl Assets {
         prepared_size(&self.gui, name.as_bytes(), &info)
     }
 
-    /// Sheets for only the portrait names the frame reaches; lazy IDs are never reused.
     pub(crate) fn portrait_sheets<'a>(
         &self,
         names: impl IntoIterator<Item = &'a [u8]>,
@@ -389,8 +347,6 @@ impl Assets {
             .collect()
     }
 
-    /// Whether `name` is a sprite a window can draw: a declared one, or a
-    /// leader portrait whose texture is not known to be unreadable.
     pub fn has_sprite(&self, name: &str) -> bool {
         if let Some((path, _)) = self.lazy_sprite(name) {
             return self.portraits.peek(path) != Lookup::Failed;
@@ -400,7 +356,6 @@ impl Assets {
             .is_some_and(|info| prepared_size(&self.gui, name.as_bytes(), &info).is_some())
     }
 
-    /// One metadata lookup for an inline icon's drawable frame count.
     pub(super) fn drawable_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
         let info = self.native_sprite(name)?;
         let name = std::str::from_utf8(name).ok()?;
@@ -411,16 +366,10 @@ impl Assets {
         }
     }
 
-    /// Whether a normal-set flag file exists for `key` and is not known to be
-    /// unreadable: the key the bindings choose among a country's candidates.
     pub fn has_flag(&self, key: &str) -> bool {
         self.flags.contains(key)
     }
 
-    /// Hands the tactic triggers the building, ideology and resource names
-    /// count triggers find, from the databases the
-    /// document already loaded, and gives back the scripted triggers and
-    /// count names: the one read every trigger consumer shares.
     pub fn set_count_trigger_names(
         &mut self,
         buildings: &installed_content_core::buildings::Buildings,
@@ -523,7 +472,6 @@ fn sprite_warnings(
     warnings
 }
 
-// Retained entry templates share their registry.
 pub const WINDOW_TEMPLATES: &[&[u8]] = &[
     b"strategicairview",
     b"air_combat_damage_received",
@@ -579,7 +527,6 @@ fn native_window_assets(
             localisation,
         ));
     }
-    // The find view's code writes this icon into its victory point results.
     assets.add_text(&super::find_view::victory_point_icon(1));
     assets
 }
@@ -588,8 +535,6 @@ fn tooltip_assets(
     windows: &NativeWindows,
     localisation: &installed_content_localisation::localisation::Localisation,
 ) -> native_gui::Assets {
-    // inline icons use the global sprite registry.
-    // Both combat drawing and the shared map tooltip painter load this inventory.
     let mut assets = native_gui::Assets::from_localisation(localisation);
     assets.extend(shortcut_assets(windows));
     assets
@@ -599,8 +544,6 @@ fn shortcut_assets(windows: &NativeWindows) -> native_gui::Assets {
     let mut assets = native_gui::Assets::default();
     for root in native_templates(windows) {
         for (_, element) in super::gui::elements(root) {
-            // the first shortcut supplies inline keycap sprites.
-            // The hover binder names and refuses non-UTF-8 shortcuts.
             if let Some(shortcut) = element
                 .button()
                 .and_then(|button| button.shortcuts.first())
@@ -613,9 +556,6 @@ fn shortcut_assets(windows: &NativeWindows) -> native_gui::Assets {
     assets
 }
 
-/// The sprites the state view's code sets by a name its content gives: each building's special
-/// icon, each occupation law's icon and each dynamic modifier's icon. A source that does not read
-/// is named, and the entries that need it show their sprite as not loaded.
 fn content_named_sprites(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut unread = |what: &str, why: io::Error| {
@@ -649,7 +589,6 @@ fn path(raw: &str) -> String {
         .join("/")
 }
 
-/// Plain texture type defaults from plain sprite construction.
 fn texture_sprite(name: String, texture: String) -> SpriteFacts {
     SpriteFacts {
         name: name.into_bytes(),
@@ -675,18 +614,12 @@ fn portrait_paths(items: &[installed_content_core::parser::Item], paths: &mut BT
         }
     }
 }
-/// What the combat interface reads from the content alone, before any
-/// artwork: the trait names, the tactic registry, the division names and the
-/// commander and tooltip content, with the reads' warnings in the order
-/// [`Assets::load`] reports them. The tactic registry keeps its own
-/// ([`CombatContent::warnings`]).
 #[derive(Debug)]
 pub struct CombatContent {
     traits: installed_content_core::unit_leader::Traits,
     tactics: super::tactics::Content,
     division_names: installed_content_division_names::division_names::Database,
     commander_tooltips: super::commander_tooltips::Content,
-    /// The tooltip placement and timing defines, or why they are unreadable.
     tooltip_defines: Result<TooltipDefines, String>,
     warnings: Vec<String>,
 }
@@ -739,14 +672,11 @@ impl CombatContent {
         })
     }
 
-    /// Why the combat tooltips are unavailable, as a warning.
     fn tooltip_warning(&self) -> Option<String> {
         let reason = self.tooltip_defines.as_ref().err()?;
         Some(format!("Combat tooltips are unavailable: {reason}."))
     }
 
-    /// Hands the tactic triggers the count trigger names, as
-    /// [`Assets::set_count_trigger_names`] does.
     pub fn set_count_trigger_names(
         &mut self,
         buildings: &installed_content_core::buildings::Buildings,
@@ -759,8 +689,6 @@ impl CombatContent {
             ));
     }
 
-    /// The reads' warnings, then the tactic registry's and the tooltip
-    /// defines', in the order [`Assets::load`] reports them.
     pub fn warnings(&self) -> impl Iterator<Item = String> + '_ {
         self.warnings
             .iter()
@@ -769,14 +697,13 @@ impl CombatContent {
             .chain(self.tooltip_warning())
     }
 
-    /// Each tactic the registry refuses, or whose picture it cannot form.
     pub fn refusals(&self) -> impl Iterator<Item = &str> {
         self.tactics.refusals()
     }
 }
 
 impl Assets {
-    #[allow(clippy::too_many_arguments)] // The client's content, windows and texture stores.
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         shared: &Arc<ResolvedLayers>,
         regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
@@ -815,12 +742,8 @@ impl Assets {
         }
         let mut files = interface.registry.files.clone();
         let mut direct = Sprites::default();
-        // Inventory literal portrait references once per content set, never by
-        // decoding every historical hour. DDS compression stays intact on upload.
-        // Each file as the characters reader reads it (the reader replay).
         let mut direct_portraits = BTreeSet::new();
         let names = layers.key_names()?;
-        // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
         for file in layers
             .paths()?
             .filter(|p| p.starts_with(b"common/characters/") && p.ends_with(b".txt"))
@@ -849,13 +772,9 @@ impl Assets {
             tooltip_defines,
             ..
         } = content;
-        // Each proven tactic's picture declares its texture; the widgets look
-        // it up through the registry.
         for (key, texture) in tactics.pictures() {
             direct.sprites.push(texture_sprite(key.to_owned(), texture));
         }
-        // The singleton picture is empty; its authored drawable stays
-        // unless that empty picture's path exists.
         let null_picture = "gfx/interface/landcombat/tactics/.dds";
         if layers.has_file(null_picture)? {
             direct.sprites.push(texture_sprite(
@@ -866,7 +785,6 @@ impl Assets {
         files.push(("combat runtime textures".into(), direct));
         let registry = Registry::from_files(files);
         let mut wanted = BTreeSet::new();
-        // Construction finds scrollbar and listbox templates through all `.gui` files.
         let native_assets = native_window_assets(native_windows, &Default::default());
         wanted.extend(
             native_assets
@@ -874,10 +792,6 @@ impl Assets {
                 .iter()
                 .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned)),
         );
-        // Trait-tree connectors also start with GFX_trait_. Load only the
-        // sprites of registered traits, by their
-        // first spelling, instead of that editor UI. A name that is not UTF-8
-        // is not registered (Traits::unsupported names it).
         for name in traits.spellings() {
             wanted.insert(format!("GFX_trait_{name}"));
         }
@@ -898,10 +812,7 @@ impl Assets {
                 .is_some_and(|plain| plain.texture.starts_with(b"gfx/leaders/"));
             if name.starts_with(b"GFX_terrain_")
                 || name.starts_with(b"GFX_navalcombat_ship_icon_")
-                // the game resolves the air icon by country/archetype/sprite
-                // at runtime, outside the authored `.gui` resource names.
                 || name.starts_with(b"GFX_navalcombat_air_icon_")
-                // Retained aircraft survivors use the same cascade.
                 || name.starts_with(b"GFX_navalcombat_air_small_icon_")
                 || name.ends_with(b"_medium")
                 || name.starts_with(b"air_texture:")
@@ -909,9 +820,7 @@ impl Assets {
                     && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
                 || name.starts_with(b"combat_tactic:")
                 || name.starts_with(b"combat_portrait:")
-                // The map mode picker selects scripted modes' button sprites by name.
                 || name.starts_with(b"GFX_mapmode_buttons_")
-                // The state view names a location's icon after its token.
                 || name.starts_with(b"GFX_strategic_location_")
                 || portrait
                 || [
@@ -923,8 +832,6 @@ impl Assets {
                 .contains(&name.as_slice())
                 || (name.starts_with(b"GFX_div_templ_") && name.ends_with(b"_large"))
             {
-                // Resource identifiers stay byte-for-byte in the native loader.
-                // The producer's existing text names cannot address other bytes.
                 match std::str::from_utf8(name) {
                     Ok(name) => {
                         wanted.insert(name.to_owned());
@@ -965,7 +872,6 @@ impl Assets {
                 resident.sprites.insert(name.as_bytes().to_vec());
             }
         }
-        // language-family selection compares the complete l_ language key.
         let mut gui = GuiResources::new(
             registry,
             format!("l_{language}").as_bytes(),
@@ -980,7 +886,6 @@ impl Assets {
         warnings.extend(sprite_warnings(&gui, &resident.sprites, true));
         warnings.extend(gui.uncovered_note("Combat UI"));
         let reader = Arc::clone(shared);
-        // A portrait the visual mods break is the recording's own, named.
         let recorded = reader.without_overlays();
         let decode = interface.decode;
         let portrait_failures = Arc::new(Mutex::new(BTreeMap::new()));
@@ -1067,7 +972,6 @@ impl Assets {
         let naval_escape_screening = super::naval_escape::Screening::load(layers);
         let naval_air_groups =
             super::naval_air_groups::Content::load(layers, &mut warnings, equipment);
-        // six modifiers share registered names.
         let weather_modifiers = &super::naval_environment::WEATHER_MODIFIERS;
         let naval_weather_modifiers = match installed_content_core::static_modifiers::read_blocks(
             layers,
@@ -1180,7 +1084,6 @@ impl Assets {
                     .collect(),
             }
         };
-        // The one terrain database, shared by both combat views.
         let land_terrain = installed_content_core::terrain::read_definitions(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
@@ -1319,8 +1222,6 @@ impl Assets {
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// Glyph inventory from the parsed sub-unit database. Both NATO frames
-/// use the same declaration; missing declarations draw nothing.
 fn unit_assets(subunits: &SubUnits) -> (native_gui::Assets, Vec<String>) {
     let mut assets = native_gui::Assets::default();
     let mut refused = Vec::new();

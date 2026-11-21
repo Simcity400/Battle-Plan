@@ -1,5 +1,3 @@
-//! A run's reports: one JSON file per stack, the summary tables, and the
-//! difference between two runs.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -10,33 +8,20 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-/// What kind of diagnostic a reader gave, from its channel or producer tag.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// The reader refused the whole stack (its `io::Error`).
     ReaderError,
-    /// A file whose reading stops short: the rest of it is unknown.
     Unsettled,
-    /// A place the game's reading leaves the text, read as the game reads it.
     Misread,
-    /// Text the tree parser cannot parse, or a file closed at its end.
     ParseFailure,
-    /// A form the port does not model, refused by name.
     Unsupported,
-    /// A definition, value or lookup refused by name.
     Refused,
-    /// Authored alternatives do not give one content answer.
     Ambiguous,
-    /// A product substitutes a token, another asset or a placeholder.
     Fallback,
-    /// An error the game logs, then continues or skips as the message states.
     Logged,
-    /// Any other note a reader returns about the content.
     Warning,
-    /// Cited engine parity only.
     Content,
-    /// Recorded operands unavailable to the offline inventory check.
     Offline,
 }
 
@@ -109,9 +94,6 @@ impl Kind {
     }
 
     fn actionable(self) -> bool {
-        // Misread and Logged remain actionable reader evidence: only an
-        // explicit Content finding establishes cited parity, and Offline
-        // establishes a dependency resolved by the recorded product.
         !matches!(self, Self::Content | Self::Offline)
     }
 }
@@ -120,12 +102,8 @@ impl Kind {
 pub struct Diagnostic {
     pub reader: String,
     pub kind: Kind,
-    /// The content file the message names, if it names one.
     pub file: Option<String>,
-    /// The line the message names, if it names one.
     pub line: Option<u32>,
-    /// The message with its files, numbers and quoted text masked, so the
-    /// same cause in many places counts once.
     pub cause: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,7 +128,6 @@ impl Diagnostic {
         }
     }
 
-    /// A diagnostic whose file and line are read from `message`.
     pub fn new(reader: &str, kind: Kind, message: String) -> Self {
         Self {
             reader: reader.to_owned(),
@@ -164,8 +141,6 @@ impl Diagnostic {
         }
     }
 
-    /// A diagnostic about `subject` (a name the content defines), counted by
-    /// `why` alone.
     pub fn about(reader: &str, kind: Kind, subject: &str, why: &str) -> Self {
         Self {
             cause: cause(why),
@@ -173,7 +148,6 @@ impl Diagnostic {
         }
     }
 
-    /// A diagnostic in `file`, whose message names it already.
     #[cfg(test)]
     pub fn in_file(reader: &str, kind: Kind, file: &str, message: String) -> Self {
         Self {
@@ -182,8 +156,6 @@ impl Diagnostic {
         }
     }
 
-    /// A diagnostic about what a message names before its first `: `,
-    /// counted by the rest, in `file` when it is known.
     pub fn split(reader: &str, kind: Kind, file: Option<&str>, message: &str) -> Self {
         let diagnostic = match message.split_once(": ") {
             Some((subject, why)) => Self::about(reader, kind, subject, why),
@@ -198,7 +170,6 @@ impl Diagnostic {
         }
     }
 
-    /// A diagnostic whose file and line are known.
     pub fn at(reader: &str, kind: Kind, file: &str, line: Option<u32>, what: &str) -> Self {
         let message = match line {
             Some(line) => format!("{file}: line {line}: {what}"),
@@ -221,14 +192,9 @@ impl Diagnostic {
 pub struct ReaderRun {
     pub reader: String,
     pub milliseconds: u128,
-    /// Whether the reader returned (its diagnostics are then partial
-    /// refusals) or refused the stack.
     pub completed: bool,
-    /// Why the reader did not run: a reader whose result it needs refused
-    /// the stack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_run: Option<String>,
-    /// What an offline product checked, or why it has no content dependency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -240,7 +206,6 @@ pub struct Mounted {
     pub version: String,
 }
 
-/// The states reader's own diagnostic, separate from consumer-only notes.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StateHistoryDiagnostic {
     pub file: Option<String>,
@@ -260,7 +225,6 @@ impl From<&Diagnostic> for StateHistoryDiagnostic {
     }
 }
 
-/// A kept state and the reader's reasons for excluding its map membership.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StateHistoryState {
     pub id: u32,
@@ -284,14 +248,10 @@ pub struct StackReport {
     pub version: String,
     #[serde(default)]
     pub supported_version: String,
-    /// The mods mounted after the DLC, in mount order.
     pub mods: Vec<Mounted>,
     pub dlc: usize,
-    /// Dependencies the descriptor names that are not mounted, and why.
     pub skipped_dependencies: Vec<String>,
-    /// The gather's order notes (`GatheredContent::order_note`).
     pub order_note: Option<String>,
-    /// Why the stack could not be gathered; no reader ran.
     pub gather_error: Option<String>,
     pub gather_milliseconds: u128,
     pub read_milliseconds: u128,
@@ -317,11 +277,8 @@ impl StackReport {
     }
 }
 
-/// The run's manifest, which names its stack reports: an output folder a
-/// run reuses keeps files an earlier run wrote, which are not this run's.
 const MANIFEST: &str = "manifest.json";
 
-/// Writes each stack's report and the manifest naming them.
 pub fn write_run(directory: &Path, run: &BTreeMap<String, StackReport>) -> io::Result<()> {
     for report in run.values() {
         fs::write(
@@ -335,7 +292,6 @@ pub fn write_run(directory: &Path, run: &BTreeMap<String, StackReport>) -> io::R
     )
 }
 
-/// The stack reports the run in `directory` wrote, by stack.
 pub fn read_run(directory: &Path) -> io::Result<BTreeMap<String, StackReport>> {
     let manifest = directory.join(MANIFEST);
     let stacks: Vec<String> = serde_json::from_slice(&fs::read(&manifest)?)
@@ -362,7 +318,6 @@ fn kind_cells(counts: &BTreeMap<Kind, usize>) -> String {
         .join(" | ")
 }
 
-/// A table header: `leading` columns, then one per kind.
 fn header(leading: &[&str]) -> String {
     let columns: Vec<_> = leading
         .iter()
@@ -376,10 +331,6 @@ fn header(leading: &[&str]) -> String {
     )
 }
 
-/// The run's summary in Markdown: each stack's totals by kind with its
-/// timing, the readers that did not run and how many of its diagnostics the
-/// vanilla stack lacks, each stack by reader, and each stack's gravest and
-/// most frequent causes.
 pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "## Stacks found\n");
@@ -627,7 +578,6 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
     out
 }
 
-/// Affected states from the reader's API, plus its returned diagnostics and read error.
 pub fn state_history(run: &BTreeMap<String, StackReport>) -> String {
     let mut out = String::from("\n## State history\n\n");
     for report in run.values() {
@@ -745,9 +695,6 @@ pub fn state_history(run: &BTreeMap<String, StackReport>) -> String {
     out
 }
 
-/// What changed between two runs: per stack and reader, the diagnostics only
-/// the base run has (gone) and only the head run has (new), as multisets of
-/// (reader, kind, file, message).
 pub fn diff(
     base: &BTreeMap<String, StackReport>,
     head: &BTreeMap<String, StackReport>,
@@ -775,7 +722,6 @@ pub fn diff(
                 before.gather_error, after.gather_error
             );
         }
-        // Inventory growth changes count/examples, not diagnostic identity.
         let mut previous: BTreeMap<Key<'_>, Vec<&Diagnostic>> = BTreeMap::new();
         for diagnostic in &before.diagnostics {
             previous
@@ -860,8 +806,6 @@ fn key(diagnostic: &Diagnostic) -> Key<'_> {
     )
 }
 
-/// Positive occurrence growth, with aggregate count and examples outside
-/// identity. Duplicate diagnostics consume the same baseline occurrence pool.
 fn growth<'a>(base: &[Diagnostic], head: &'a [Diagnostic]) -> Vec<(&'a Diagnostic, usize)> {
     let mut remaining: BTreeMap<Key<'_>, usize> = BTreeMap::new();
     for diagnostic in base {
@@ -908,7 +852,6 @@ fn difference<'a>(
     (gone, new)
 }
 
-/// Text made safe for one Markdown table cell.
 fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
@@ -920,13 +863,11 @@ fn truncate(text: &str, limit: usize) -> String {
     }
 }
 
-/// Extensions of the content files messages name.
 const EXTENSIONS: [&str; 13] = [
     ".txt", ".yml", ".lua", ".gfx", ".gui", ".asset", ".csv", ".map", ".bmp", ".dds", ".tga",
     ".fnt", ".mod",
 ];
 
-/// The top-level folders a content path starts with.
 const ROOTS: [&str; 12] = [
     "common/",
     "history/",
@@ -942,10 +883,6 @@ const ROOTS: [&str; 12] = [
     "tweakergui_assets/",
 ];
 
-/// Each content path `message` names, as byte spans: a known extension
-/// ending a word, back to the nearest content root that starts a word, so a
-/// path holding spaces is one span; else the word ending in the extension,
-/// when it holds a `/`.
 fn path_spans(message: &str) -> Vec<(usize, usize)> {
     let lower = message.to_ascii_lowercase();
     let bytes = lower.as_bytes();
@@ -990,8 +927,6 @@ fn path_spans(message: &str) -> Vec<(usize, usize)> {
                     .map_or(0, |space| space + 1);
                 lower[start..at].contains('/').then_some(start)
             });
-            // A path holds no quote, colon or line break, and no list
-            // separator: `, ` ends a list item, not a file name.
             if let Some(start) = start.filter(|&start| {
                 let span = &message[start..end];
                 !span.contains(['"', ':', '\n']) && !span.contains(", ")
@@ -1010,7 +945,6 @@ fn file_in(message: &str) -> Option<String> {
         .map(|&(start, end)| message[start..end].to_owned())
 }
 
-/// The `N` of a `path:N`, else the first `line N` in `message`.
 fn line_in(message: &str) -> Option<u32> {
     let digits = |text: &str| -> Option<u32> {
         let end = text
@@ -1029,7 +963,6 @@ fn line_in(message: &str) -> Option<u32> {
         .find_map(|(at, found)| digits(&message[at + found.len()..]))
 }
 
-/// `message` with its file paths, numbers and quoted text masked.
 fn cause(message: &str) -> String {
     let mut unfiled = String::with_capacity(message.len());
     let mut from = 0;
@@ -1055,9 +988,6 @@ fn cause(message: &str) -> String {
         .collect()
 }
 
-/// `word` with each number that starts at a word boundary masked, hex
-/// digits and dots included (a hexadecimal value such as `123ABCDEF`, a date such
-/// as `1936.1.1`); digits inside a name are kept.
 fn numbers(word: &str) -> String {
     let mut out = String::with_capacity(word.len());
     let mut chars = word.chars().peekable();
@@ -1087,8 +1017,6 @@ mod tests {
 
     mod state_history;
 
-    /// The product matrix's cell for `stack` under the product `key`, found by
-    /// its heading, so no test depends on the registry's order.
     fn product_cell(summary: &str, stack: &str, key: &str) -> String {
         let matrix = summary
             .split("## Dashboard products\n")
@@ -1211,7 +1139,6 @@ mod tests {
                 !matches!(kind, Kind::Content | Kind::Offline)
             );
         }
-        // Examples never affect matching; shrinking inventory adds no occurrence.
         let mut small = Diagnostic::new(reader, Kind::Unsupported, "country script".into());
         small.count = Some(1);
         let mut big = small.clone();
@@ -1244,8 +1171,6 @@ mod tests {
             (colon.file.as_deref(), colon.line),
             (Some("common/a/b.txt"), Some(40))
         );
-        // A path holding spaces is one file, in the file, the line and the
-        // cause alike.
         let spaced = Diagnostic::new(
             "ideas",
             Kind::Misread,
@@ -1262,7 +1187,6 @@ mod tests {
             (Some("gfx/interface/A B.gfx"), Some(7))
         );
         assert_eq!(colon.cause, "<file>:N: bad");
-        // A list of names is no path.
         let list = Diagnostic::new(
             "x",
             Kind::Warning,
@@ -1327,7 +1251,6 @@ mod tests {
         assert!(summary.contains("## Stacks found\n"));
         assert!(summary.contains("mod/fixture.mod | Fixture \\| conversion | 2.4 | 1.17.* | Dependency (123, 1.0) | Other: not installed"), "{summary}");
         assert!(summary.contains("## Dashboard products\n"));
-        // The diagnosed product counts its kinds; every other one ran clean.
         for product in dashboard::products::PRODUCTS {
             let expected = if product.key == NationalFocus::KEY {
                 "1 ambiguous, 1 fallback"

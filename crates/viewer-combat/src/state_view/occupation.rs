@@ -1,5 +1,3 @@
-//! The state view's resistance container: shown only while the state's resistance is active, its
-//! law and garrison template only to the state's controller.
 use super::{paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
 use crate::content::Content;
@@ -86,8 +84,6 @@ pub(super) fn bind(
         }
         Err(why) => withhold_named(out, root, &[LAW_AND_TEMPLATE[0]], &format!("state view occupation law: {why}")),
     }
-    // Without the occupier's data for the occupied country the game builds no hover, and an
-    // authored one stands.
     for path in paths_named(root, "select_law_button") {
         match &hover {
             Ok(Some(text)) => set_hover(&mut out.values, path, hover_text(text), None),
@@ -136,18 +132,15 @@ pub(super) fn bind(
     }
 }
 
-/// The resistance and compliance bars the game places at their positions in the container.
 const BARS: [(&str, &str); 2] = [
     ("resistance_status_pos", super::entry::RESISTANCE),
     ("compliance_status_pos", super::entry::COMPLIANCE),
 ];
 
-/// A bar's whole percent: the value rounded, negative as zero, at most a hundred.
 fn bar_percent(value: i64) -> i32 {
     crate::fixed::round(value).clamp(0, 100)
 }
 
-/// A bar's controls: its progress on the percent's frame, at least the first, and the percent.
 fn bar_values(percent: i32) -> crate::Values {
     let mut values = crate::Values::new();
     values.entry("progress".into()).or_default().frame = Some(percent.max(1) as u32 - 1);
@@ -175,14 +168,11 @@ fn bars(content: &Content, root: &native::Element, out: &mut Bindings, resistanc
     }
 }
 
-/// The state's effective law, and whether the occupier holds occupation data for the occupied
-/// country, which the law's hover needs.
 struct Picked<'l> {
     law: &'l Law,
     paired: Result<bool, String>,
 }
 
-/// The state's effective law ([`occupation_law::law_for`]).
 fn law<'l>(
     content: &Content,
     frame: &DecodedFrame,
@@ -259,7 +249,6 @@ fn law<'l>(
     Ok(Picked { law, paired })
 }
 
-/// The law icon's zero-based frame.
 fn icon_frame(law: &Law) -> Result<u32, String> {
     u32::try_from(law.frame)
         .ok()
@@ -267,9 +256,6 @@ fn icon_frame(law: &Law) -> Result<u32, String> {
         .ok_or_else(|| format!("occupation law {}'s icon frame is not positive", law.token))
 }
 
-/// The law's hover: its highlighted name, its description, its availability trigger described
-/// for the occupier with the occupied country as FROM, then its state modifiers and, when it
-/// declares them, its suppressed ones, each line two spaces in at up to three decimals.
 fn law_hover(content: &Content, frame: &DecodedFrame, law: &Law, controller: u32, occupied: u32) -> Result<String, String> {
     use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
     let mut text = format!("\u{11}H{}\u{11}!", super::loc(content, &law.token, &[])?);
@@ -328,8 +314,6 @@ fn law_hover(content: &Content, frame: &DecodedFrame, law: &Law, controller: u32
     Ok(text)
 }
 
-/// The garrison template the game picks for the state: its own selection, else the occupied
-/// country's, else the occupier's default.
 fn selected_template(selections: &[GarrisonTemplateSelection], occupied: impl Fn(u32) -> bool, state: u32) -> Option<u64> {
     let find = |wanted_state: Option<u32>, group: bool| {
         selections
@@ -340,7 +324,6 @@ fn selected_template(selections: &[GarrisonTemplateSelection], occupied: impl Fn
     find(Some(state), true).or_else(|| find(None, true)).or_else(|| find(None, false))
 }
 
-/// The garrison template the game picks for the state ([`selected_template`]).
 fn garrison_template(frame: &DecodedFrame, facts: &Facts<'_>, resistance: &StateResistanceRow) -> Result<u64, String> {
     let controller = facts.slot(facts.state.controller)?;
     let occupied = facts.slot(resistance.country)?;
@@ -358,8 +341,6 @@ fn garrison_template(frame: &DecodedFrame, facts: &Facts<'_>, resistance: &State
         .ok_or_else(|| "no selection is set, and the game's last fallback template is not recorded".into())
 }
 
-/// The template icon the game draws large: a custom icon unless NATO counters skip it, else
-/// the priority sub-unit's medium icon, NATO frame under NATO counters.
 fn garrison_icon(content: &Content, frame: &DecodedFrame, facts: &Facts<'_>, resistance: &StateResistanceRow, nato: bool) -> Result<(String, u32), String> {
     let template = garrison_template(frame, facts, resistance)?;
     let icons = frame.complete::<tables::DivisionTemplateIcons>().map_err(|e| e.to_string())?;
@@ -380,7 +361,6 @@ fn garrison_icon(content: &Content, frame: &DecodedFrame, facts: &Facts<'_>, res
     Ok((sprite, u32::from(nato)))
 }
 
-/// The required template amount the game last computed for the state's garrison.
 fn required(frame: &DecodedFrame, facts: &Facts<'_>) -> Result<i64, String> {
     let controller = facts.slot(facts.state.controller)?;
     frame
@@ -392,7 +372,6 @@ fn required(frame: &DecodedFrame, facts: &Facts<'_>) -> Result<i64, String> {
         .ok_or_else(|| format!("state {} has no StateGarrisons row for its controller", facts.state.id))
 }
 
-/// Below zero a red mark, zero a dash, else the amount at two decimals.
 fn need_text(amount: i64) -> String {
     match amount {
         ..0 => "\u{11}R ! \u{11}!".into(),
@@ -416,7 +395,6 @@ mod tests {
         assert_eq!(selected_template(&all, ninth, 40), Some(3));
         assert_eq!(selected_template(&all, ninth, 41), Some(2));
         assert_eq!(selected_template(&all, |raw| raw == 7, 41), Some(1));
-        // An unset selection inherits its parent scope.
         let unset = [selection(None, None, Some(1)), selection(Some(9), None, None), selection(Some(9), Some(40), None)];
         assert_eq!(selected_template(&unset, ninth, 40), Some(1));
         assert_eq!(selected_template(&[selection(None, None, None)], ninth, 40), None);

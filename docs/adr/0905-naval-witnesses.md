@@ -1,0 +1,11 @@
+# Qualify naval identities with same-hour witnesses
+
+Air-base registration preserves the order and repetition of the dense country-container vector and authenticates each slot against the indexed registration. Within each registration, the ordered pools partition the existing flattened wing vector; check every range and the final consumed length. The grouping key and the resolved content index have separate meanings. A null singleton has index zero, and resolved definitions name even empty pools. Carrier-only passive fuel values retain separate acquisition outcomes before daily scaling. A failed container packet leaves existing wing and capacity columns usable. A host name read successfully as empty, including for a null or stale host, is distinct from an acquisition failure. Convert exact retained name bytes through the recorded language and UTF-8 guards.
+
+The owner may retain a repair rejoin reference after the destination retires. Resolve it from the same hour's complete task-force census before presenting it. A refit link also stays intact when its destination retires. Resolve it against same-hour refit-production identity and liveness, since daily production values cannot certify that identity. Preserve an unavailable census separately from a complete empty one and treat the native empty work order as zero.
+
+Regional mine rows are sparse. The kind-zero length witness establishes the vector's extent and makes omitted amounts inside it known zero. Without that witness, an omitted index is unknown. Kind-one amounts keep signed fixed5 values.
+
+Patrol inputs use one row per demanded full task-force identity and leave occurrence order and repeats in the mission ledger. A known zero target demands neither chance nor progress. Only a registered raider with a live convoy target reaches the visibility query. A failed query leaves its individual operand unavailable and keeps the ledger row. Standing naval accident reports retain native occurrence order in their keys.
+
+[Carrier registration](../../crates/replay-rows/src/extended_rows/carrier_air.rs) · [Repair and refit](../../crates/replay-rows/src/extended_rows/naval_management.rs) · [Mines](../../crates/replay-rows/src/extended_rows/naval_mines.rs) · [Patrol inputs](../../crates/replay-rows/src/extended_rows/naval_patrol.rs)

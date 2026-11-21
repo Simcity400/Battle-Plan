@@ -5,7 +5,6 @@ use engine_native::{
     memory::SliceMemory,
 };
 
-/// Base zero; the subunit database pointer reads as 0x8800.
 struct Fixture {
     bytes: Vec<u8>,
 }
@@ -130,8 +129,6 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     };
     const TEST: &str = "extended::division_templates::tests::enabled_unsized_startup_records_known_template_and_country_values_through_spool";
     const CHILD: &str = "BATTLE_PLAN_TEMPLATE_UNSIZED_STARTUP_TEST";
-    // Exercise the actual process-wide observers without enabling them in
-    // other tests. No native hooks are patched in this synthetic process.
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
@@ -185,8 +182,6 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     }
     source.bytes[0x3000 + ccountry::LOCK_ALL_TEMPLATES] = 1;
 
-    // The loader's existing live sizing pass precedes hook publication and
-    // the first observer boundary; there has been no capture census yet.
     let mut capacities = Capacities::default();
     capacities.presize(&source, 0, 0x1000).unwrap();
     crate::local_subunit_changes::boundary(true);
@@ -318,7 +313,6 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
         let settings = row.settings.require("settings").unwrap().as_ref().unwrap();
         assert_eq!(settings.priority, priority);
         assert!(row.layout.require("layout").unwrap().is_some());
-        // Complete country rows are published shared with the census snapshot.
         let rows = match &input.tables[TABLES[2].index()] {
             TableInput::Sampled(TableView::Complete(rows)) => rows,
             TableInput::SharedComplete(rows) => rows.as_ref(),
@@ -359,8 +353,6 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
         for (table, value) in TABLES.into_iter().zip(capture.table_inputs()) {
             input.tables[table.index()] = value;
         }
-        // This is the production spool's validation/prepare/commit path, not
-        // an unchecked row codec. Every present column must be encodable.
         let mut prepared = encoder.prepare_bytes(input, true).unwrap();
         let frame = prepared.take_frame().decode().unwrap();
         assert!(frame.keyframe);
@@ -470,8 +462,6 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
             if case == "empty roster" {
                 assert!(icons.is_empty());
             } else {
-                // This observer certifies only a quiet writer domain. Any
-                // active writer refuses both template and country reads.
                 let refused = matches!(
                     case,
                     "template writer" | "country writer" | "garrison writer" | "unobserved"
@@ -515,7 +505,6 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
             } else {
                 let countries = decoded.complete::<tables::CountryTemplateState>().unwrap();
                 assert_eq!(countries.len(), 1);
-                // Missing occupation input refuses only its own fields.
                 if case == "garrisons ready" {
                     assert!(matches!(
                         countries[0].garrison_priority,
@@ -594,7 +583,6 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
             assert!(!store.changed);
         });
     }
-    // A writer that leaves the country's rows as they were changes nothing.
     drop(watches.notify(0x8400, 34));
     store.begin();
     store.read(&source, 0, 0x1000, country, &watches).unwrap();
@@ -624,8 +612,6 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
     ));
     store.finish();
     assert!(store.changed);
-    // A removal changes membership, and restoring a previously cached country
-    // also changes it even when no native writer touched that country's state.
     store.begin();
     store.finish();
     assert!(store.changed);
@@ -635,8 +621,6 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
         .unwrap();
     store.finish();
     assert!(store.changed);
-    // An observed failure cannot revive a formerly held configuration, and
-    // quiet hours must not retry its native reads.
     drop(watches.notify(0x8400, 34));
     source.bytes[0x8400..0x8408].fill(0);
     store.begin();
@@ -648,8 +632,6 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
     );
 }
 
-/// Both tables are read every hour, the dictionary from the icon walk, and
-/// unreadable memory fails both rather than claiming an empty roster.
 #[test]
 fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
     let mut capture = Captured::with_capacities(&capacity());
@@ -664,7 +646,6 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
         capture.capture(&present, 0, 0x1000, hour, force);
         let read = reads.finish();
         assert!(read[TABLES[1].index()].spans > 0);
-        // The walk reads the literal and its key; the dictionary reads nothing more.
         assert_eq!(read[TABLES[0].index()].spans, 0, "{hour}");
         assert_eq!(
             template_outcomes(&capture),
@@ -682,8 +663,6 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
     }
 }
 
-/// The hourly job reads the icon and demanded names directly, then publishes
-/// both tables from that walk; taking its preacquisition performs no live read.
 #[test]
 fn hourly_template_job_publishes_direct_walk_rows() {
     use crate::acquisition_jobs::TemplatesRequest;
@@ -703,7 +682,6 @@ fn hourly_template_job_publishes_direct_walk_rows() {
         let mut request = TemplatesRequest::take(&countries, 0, 0x1000, &mut capture, hour, false);
         request.run(&source);
         request.restore(&mut capture, None);
-        // An unreadable source cannot affect the already acquired tables.
         capture.capture(
             &SliceMemory {
                 base: 0,
@@ -805,8 +783,6 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     source.bytes
         [0x5000 + native::FORMATION_DIVISION_COUNT..0x5000 + native::FORMATION_DIVISION_COUNT + 4]
         .copy_from_slice(&(-17_i32).to_le_bytes());
-    // Two regiment cells and an empty one, no support, one regimental
-    // support cell, all holding the same definition.
     let mut word = |at: usize, value: u64| {
         source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     };
@@ -890,8 +866,6 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
         icons[0].formation_division_count,
         replay_data::rows::Recorded::Value(Some(-17))
     );
-    // A row whose model inputs failed publishes the flag, keeps its
-    // counter fields and is counted by reason.
     let good = capture.icon_rows.rows[0];
     capture.icon_rows.rows[0].model_failure = Some("template grouped subunits unreadable");
     let [
@@ -1080,8 +1054,6 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
             value: TemplateNameValue::SameAsDivisionTemplates
         }))
     ));
-    // A rename reaches the same hour's dictionary, so the name certifies
-    // against it.
     set_name(&mut source, b"Renamed", b"unused");
     capture.capture(&source, 0, 0x1000, 11, false);
     let [
@@ -1103,9 +1075,6 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
     assert_eq!(renamed.priority_unit_name, b"infantry");
 }
 
-/// The dictionary is complete at every hour, so a display name equal to it
-/// is a same-frame certificate; a failed dictionary needs a self-contained
-/// override.
 #[test]
 fn every_hour_certifies_against_the_same_frame_and_a_failed_dictionary_overrides() {
     let mut capture = Captured::with_capacities(&capacity());
@@ -1144,7 +1113,6 @@ fn name_arena_growth_keeps_the_first_heading_and_counts_exact_demand() {
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
     assert_eq!(row.priority_unit_name, b"infantry");
     assert_eq!(row.model_unreadable, 0);
-    // The literal and the dictionary's key behind it.
     assert_eq!(capture.name_bytes.required, 3 + 8);
     capture.grow(&mut size);
     assert!(size.name_bytes >= 3 + 8);
@@ -1211,8 +1179,6 @@ fn large_content(countries: usize, per_country: usize) -> Fixture {
     source
 }
 
-/// `large_content`'s world with each country's own deployment status, so every country's
-/// configuration and its templates' cores are certified and carried.
 fn deployed_content(countries: usize, per_country: usize) -> Fixture {
     fn word(bytes: &mut [u8], at: usize, value: u64) {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -1277,12 +1243,6 @@ fn deployed_content(countries: usize, per_country: usize) -> Fixture {
     source
 }
 
-/// The walk split by country slot ranges across 1, 2, 3, 7 and 15 workers equals the serial walk
-/// on every hour: its rows (raw, spans included), tables, country rows, model failures, speed keys
-/// and carried and read occurrences, so its stores decide as the serial walk's do. The hours: a
-/// forced one; a carried one; writers on templates of three ranges; a template listed by two
-/// countries (left to the serial walk); a refused roster entry in a middle country (the first
-/// failure: no later range's rows or store changes); and recovery. Each range walks its share.
 #[test]
 fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
     const COUNTRIES: usize = 40;
@@ -1294,7 +1254,6 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
     fn set(source: &mut Fixture, at: usize, value: usize) {
         source.bytes[at..at + 8].copy_from_slice(&(value as u64).to_le_bytes());
     }
-    // A country's roster entry: its address and the template it lists.
     let entry = |source: &Fixture, country: usize, ordinal: usize| {
         let owner = word(source, 0x10000 + (country + 1) * 8);
         let at = word(source, owner + ccountry::DIVISION_TEMPLATES) + ordinal * 8;
@@ -1321,9 +1280,6 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
                         );
                     }
                 }
-                // Country 30 lists country 5's first template for two hours: on the second,
-                // its range decides on the stores the hour began with, which the earlier
-                // occurrence changes.
                 3 => {
                     let (_, other) = entry(&source, 5, 0);
                     set(&mut source, duplicate, other);
@@ -1346,7 +1302,6 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
                     }
                 });
                 shares.extend(parts.iter().map(WalkPart::visited));
-                // Workers return their parts in any order.
                 parts.reverse();
                 Ok::<_, &'static str>(parts)
             };
@@ -1376,7 +1331,6 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
             assert_eq!(split.model_failures(), direct.model_failures(), "{label}");
             assert_eq!(split.speed_spans(), direct.speed_spans(), "{label}");
             assert_eq!(split.occurrences(), direct.occurrences(), "{label}");
-            // Only one lane leaves an hour to the serial walk; a template listed twice splits.
             use crate::hour_stages::TemplateFallback;
             let fallback = (lanes == 1).then_some(TemplateFallback::OneLane);
             assert_eq!(split.split_fallback(), fallback, "{label}");
@@ -1428,10 +1382,8 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
             let roster = word(&source, owner + ccountry::DIVISION_TEMPLATES);
             let template = word(&source, roster);
             match fault {
-                // A late optional model refusal keeps the dictionary and icons.
                 1 => source.bytes[template + native::SUBUNIT_COUNTS..][..8]
                     .copy_from_slice(&u64::MAX.to_le_bytes()),
-                // A late roster refusal must keep the original first reason.
                 2 => source.bytes[owner + ccountry::DIVISION_TEMPLATES..][..8]
                     .copy_from_slice(&u64::MAX.to_le_bytes()),
                 _ => {}
@@ -1458,7 +1410,6 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
                     &cache, 0, 0x1000, &mut captured, hour, false,
                 )));
                 let mut batch = Batch::new(&pool);
-                // SAFETY: the synthetic world lives until the batch drains.
                 let ticket = unsafe { batch.submit(&mut request) }.unwrap();
                 let completed = batch.finish(ticket).unwrap();
                 assert!(matches!(completed.report, Ok(Report::Templates(_))));
@@ -1466,8 +1417,6 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
                     panic!("template request must be returned");
                 };
                 request.restore(&mut captured, None);
-                // Taking the worker's publication and settling its owned tail
-                // cannot read live memory, including on the promoted claim tier.
                 captured.capture(
                     &SliceMemory {
                         base: 0,
@@ -1532,7 +1481,7 @@ fn optional_model_failure_does_not_remove_fresh_name_inputs() {
     source.bytes[0x5000 + native::SUBUNIT_COUNTS + 8..0x5000 + native::SUBUNIT_COUNTS + 12]
         .copy_from_slice(&1_u32.to_le_bytes());
     source.bytes[0x5000 + native::SUBUNIT_COUNTS + 12..0x5000 + native::SUBUNIT_COUNTS + 16]
-        .copy_from_slice(&2_u32.to_le_bytes()); // length beyond capacity
+        .copy_from_slice(&2_u32.to_le_bytes());
     capture.capture(&source, 0, 0x1000, 9, true);
     let row = displayed(capture.table_inputs());
     assert_eq!(row.model_unreadable, 1);
@@ -1570,7 +1519,6 @@ impl crate::template_changes::Changes for CoreChanges {
     }
 }
 
-/// Every read a capture makes through it.
 struct Recording<'a> {
     source: &'a Fixture,
     reads: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -1588,7 +1536,6 @@ impl<'a> Recording<'a> {
             reads: Default::default(),
         }
     }
-    /// Reads of the template object past its identity.
     fn template(&self, template: usize) -> usize {
         self.reads
             .borrow()
@@ -1598,7 +1545,6 @@ impl<'a> Recording<'a> {
             })
             .count()
     }
-    /// Reads of the grouped entries, grid cells and sub-unit the templates name.
     fn shared(&self) -> usize {
         self.reads
             .borrow()
@@ -1608,7 +1554,6 @@ impl<'a> Recording<'a> {
     }
 }
 
-/// A copy of the fixture's template at 0x7800, listed after it.
 fn add_second_template(source: &mut Fixture) {
     let template = source.bytes[0x5000..0x5400].to_vec();
     source.bytes[0x7800..0x7c00].copy_from_slice(&template);
@@ -1625,7 +1570,6 @@ fn site(name: &str) -> usize {
         .unwrap()
 }
 
-/// The fixture with a regiment grid on its template at 0x5000.
 fn gridded_fixture() -> Fixture {
     const A: usize = 0x5000;
     let mut source = fixture();
@@ -1648,10 +1592,8 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
     let mut capture = Captured::with_capacities(&capacity());
     let mut previous = None;
     for hour in 0..16 {
-        // The templates this hour reads in full.
         let read: &[usize] = match hour {
             0 => &[A],
-            // Another country's clone writer leaves this country's templates carried.
             1 => {
                 drop(changes.locals.notify(Some(0x9900), 1));
                 &[]
@@ -1668,7 +1610,6 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
                 &[A]
             }
             4 => {
-                // Derived-stat rebuilds write the formation count.
                 source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
                     .copy_from_slice(&19_i32.to_le_bytes());
                 drop(changes.templates.notify(A, site("rebuild_template_caches")));
@@ -1679,7 +1620,6 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
                 &[B]
             }
             6 => {
-                // A roster move renumbers both without reading either.
                 source.bytes[0x4000..0x4008].copy_from_slice(&(B as u64).to_le_bytes());
                 source.bytes[0x4008..0x4010].copy_from_slice(&(A as u64).to_le_bytes());
                 &[]
@@ -1690,7 +1630,6 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
                 drop(changes.templates.notify(B, site("rebuild_template_caches")));
                 &[B]
             }
-            // A refused row is not held.
             8 => &[B],
             9 => {
                 source.bytes[B + native::SUBUNIT_COUNTS..][..8]
@@ -1709,7 +1648,6 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
                 &[B]
             }
             12 => {
-                // Another handle at the held object is read, announced or not.
                 source.bytes[B + 8..B + 16].copy_from_slice(&((18_u64 << 32) | 52).to_le_bytes());
                 &[B]
             }
@@ -1753,7 +1691,6 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
         if hour == 6 {
             assert!(capture.witness.is_none(), "hour {hour}");
         }
-        // An hour witnessing the previous hour's rows publishes exactly them.
         let tables = capture.tables();
         if let Some((witness, rows)) = &previous
             && capture.witness.is_some()
@@ -1785,11 +1722,9 @@ fn a_writer_that_changes_no_template_keeps_the_witness_and_one_that_does_renews_
         let recording = Recording::new(&source);
         capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
         assert_eq!(recording.template(A) > 0, matches!(hour, 0 | 2 | 3), "hour {hour}");
-        // The first hour reads its countries afresh.
         assert_eq!(capture.witness.is_some(), hour > 0, "hour {hour}");
         witnesses.push(capture.witness);
     }
-    // Re-read unchanged after the writer.
     assert_eq!(witnesses[1], witnesses[2]);
     assert_ne!(witnesses[2], witnesses[3]);
     assert_eq!(witnesses[3], witnesses[4]);
@@ -1835,7 +1770,6 @@ fn country_refusal_recovery_and_loss_renew_the_template_witness() {
     assert_ne!(witnesses[4], witnesses[6]);
 }
 
-/// Fresh-only observation reads every template under standing certificates.
 #[test]
 fn fresh_only_observation_reads_every_template() {
     use crate::template_changes::Changes;
@@ -1861,7 +1795,6 @@ fn fresh_only_observation_reads_every_template() {
     let mut source = fixture();
     let mut capture = Captured::with_capacities(&capacity());
     for hour in 0_i32..3 {
-        // No writer announces the edit.
         source.bytes[0x5000 + native::CUSTOM_ICON..][..4].copy_from_slice(&hour.to_le_bytes());
         let recording = Recording::new(&source);
         capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
@@ -1899,7 +1832,6 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
         handles[1..]
     );
     let fixed = source.bytes[0x5000..0x5400].to_vec();
-    // Two role edits compact then append in spare storage, restoring the complete header.
     {
         let _writer = site.map(|site| {
             assert!(matches!(MUTATIONS[site].1, Receiver::Data));
@@ -1922,7 +1854,6 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
         displayed(captured.table_inputs()).excluded_variants,
         [handles[2], handles[0]]
     );
-    // A newly unreadable variant must refuse current model inputs, never carry old handles.
     {
         let _writer = site.map(|site| changes.templates.notify(0x5000, site));
         source.bytes[0x6208..][..8].copy_from_slice(&0xf000_u64.to_le_bytes());
@@ -1935,7 +1866,6 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
     assert!(refused.excluded_variants.is_empty());
 }
 
-/// The custom-icon command names no template, so every template is read again.
 #[test]
 fn the_custom_icon_command_reads_every_template_again() {
     let changes = CoreChanges::new();
@@ -2097,7 +2027,6 @@ fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_share
     assert_eq!(witnesses[2], witnesses[3]);
     assert_eq!(tables[1], tables[2]);
     assert_eq!(tables[2], tables[3]);
-    // A capture while the stores are out (a settlement still pending) reads afresh.
     let bytes = super::home_allocated_bytes(&home);
     assert!(bytes > 0);
     drop(home.lock().unwrap().stores.take());

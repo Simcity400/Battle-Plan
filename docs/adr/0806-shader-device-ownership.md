@@ -1,0 +1,9 @@
+# Share shader pipelines without sharing draw ownership
+
+The process uses one wgpu instance because its device registry supplies the IDs used by the device caches. Two instances could assign the same ID to unrelated devices. Creation and release of devices are serialized through the lifecycle guard. The guard never nests another lock. Cache entries holding devices are dropped after the cache lock is released and under the lifecycle guard.
+
+A device can share a compiled pipeline core between users with the same effect, technique, sampler state and immutable pass. Cores are held weakly so releasing the last user can reclaim one. Each user keeps its own bind groups and frames stamp them against retirement in that user's arena. An unused entry drops the resources it holds. Constant groups follow arena buffer identity. Texture groups follow the full view list, using a hash and last-hit lookup to avoid cloning views on a hit. Once encoding is complete, submitted commands own their handles and the cache may release its copies.
+
+Builds run outside the device cache lock. Concurrent waiters share one result and the render thread skips the draw while it is being prepared. A build that panics or cannot start refuses by name. Validation failures are retained per caller and are never shared as device cores. Device sampler features are known only when views are bound, so a pipeline can have shader-filtered variants keyed by the affected native bindings. Each variant has its own build handling. A captured binding records only the successful effective program and its immutable resources. The caller still applies its ordered selection and state checks. Reuse verifies the live view list even when a captured group retired. All constant bytes and arena offsets are restaged.
+
+[GPU pipeline cache](../../crates/shader-pipeline/src/gpu.rs)

@@ -1,5 +1,3 @@
-//! The AirBases census of state bases carried between hours
-//! ([`super::census_store`], [`crate::air_base_carry_changes`]).
 use super::air_bases_test_kit as kit;
 use super::*;
 use crate::air_base_carry_changes::Watches;
@@ -39,8 +37,6 @@ fn rows(split: &kit::Split) -> Vec<cair_base::Row> {
     split.bases[..len].to_vec()
 }
 
-/// One acquisition of `bytes` and its replay: the AirBases rows, the live
-/// reads and what the census carried and read.
 fn hour(
     bytes: &[u8],
     job: &mut AirBasesJob,
@@ -68,8 +64,6 @@ fn direct(bytes: &[u8]) -> Vec<cair_base::Row> {
     rows(&kit::direct(&kit::memory(bytes)))
 }
 
-/// Every read a state base's row takes: identity, host pack, state identity,
-/// province identity and state link.
 fn row_reads(base: usize, state: usize, province: usize) -> [usize; 7] {
     [
         base,
@@ -90,7 +84,6 @@ fn b1() -> [usize; 7] {
     row_reads(kit::B1, kit::S1, kit::P1)
 }
 
-/// The ordinary state base slot words.
 fn slot_words() -> [usize; 3] {
     [kit::SVEC, kit::SVEC + 8, kit::SVEC + 16]
 }
@@ -118,9 +111,6 @@ fn site(name: &str) -> usize {
         .unwrap()
 }
 
-/// A quiet hour reads no slot word and no state base row, even when the game
-/// changed them without a hooked writer: it publishes the held rows. The
-/// stateless base is read every hour.
 #[test]
 fn a_quiet_hour_reads_no_carried_census_field_even_when_memory_changed() {
     let mut bytes = kit::fixture();
@@ -151,8 +141,6 @@ fn a_quiet_hour_reads_no_carried_census_field_even_when_memory_changed() {
     assert_eq!(quiet, first);
 }
 
-/// Each writer rereads exactly what it names: capacity refresh its base's
-/// row, a state base creator the slot words, and destruction both.
 #[test]
 fn each_writer_rereads_exactly_what_it_names() {
     let mut bytes = kit::fixture();
@@ -177,8 +165,6 @@ fn each_writer_rereads_exactly_what_it_names() {
     assert!(!read_any(&reads, &b0()) && !read_any(&reads, &b1()));
     assert_eq!(created, direct(&bytes));
 
-    // As the forwarded destruction of B1 does, notify its handle and the
-    // slots before its caller empties its slot.
     let destroyed = (
         watches.notify(Some(B1_HANDLE)),
         watches.notify_site(site("ensure_gun_air_base"), 0),
@@ -193,8 +179,6 @@ fn each_writer_rereads_exactly_what_it_names() {
     assert_eq!(emptied.len(), 2);
 }
 
-/// A new base is read while the others carry; an invalidating hour, a
-/// forgotten store and a disabled family read the whole census.
 #[test]
 fn a_new_base_an_invalidating_hour_and_a_disabled_family_read_the_census() {
     let mut bytes = kit::fixture();
@@ -236,8 +220,6 @@ fn a_new_base_an_invalidating_hour_and_a_disabled_family_read_the_census() {
     }
 }
 
-/// A slot array whose header moved is read even under an unchanged
-/// certificate.
 #[test]
 fn a_moved_slot_array_is_read() {
     let mut bytes = kit::fixture();

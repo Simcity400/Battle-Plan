@@ -1,14 +1,3 @@
-//! The map's naval counters, from the mirrors: per task force whether the ordinary pass makes it a
-//! source at sea (province, stack kind, ordinal) or leaves it out and why, whether its naval base
-//! puts it in port, and the operands its item reads; each fleet's group-marker operands; each base's
-//! anchor and whether its items are undecided. These are the hour part of today's naval counters
-//! (`viewer_counters::map::counters::naval_member` decides each task force for both); grouping the
-//! items for the camera stays camera-bound.
-//!
-//! Vision and the viewing country's type-icon relations are inputs set from outside until the
-//! layers that make them can be read. Each item's ship-model cells (hull, capitals, carrier), its
-//! native task-force operands (supply, status, port tooltip, pride) and its ideology frame are not
-//! this layer's yet.
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
@@ -33,17 +22,12 @@ use viewer_foundation::map::{
     task_force_visual,
 };
 
-/// What places a task force: which provinces are land, their regions, the stack anchors and route
-/// geometry, the bases' anchors, and which provinces a camera admits.
 pub trait Waters: Send + Sync {
     fn land(&self, province: u32) -> bool;
     fn region(&self, province: u32) -> Option<u32>;
     fn place(&self, province: u32, route: &UnitRoute<'_>) -> Result<task_force_visual::Placement, &'static str>;
-    /// A naval base's anchor on `province`.
     fn port(&self, province: u32) -> Option<[f32; 3]>;
-    /// The height at and above which the game's camera draws no unit counter.
     fn icons_cutoff(&self) -> f32;
-    /// The provinces a camera at `placement` over `viewport` admits; none admits every one.
     fn admits(&self, placement: Placement, viewport: [u32; 2]) -> Option<Admits>;
 }
 
@@ -80,8 +64,6 @@ impl Waters for crate::document::Content {
 }
 
 impl crate::document::Content {
-    /// What today's counters place a task force on: the counter content, the map, the movement
-    /// map and the route geometry.
     pub fn ground(&self) -> viewer_counters::map::counters::SeaGround<'_> {
         let heights = viewer_foundation::map::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
         viewer_counters::map::counters::SeaGround {
@@ -93,14 +75,12 @@ impl crate::document::Content {
     }
 }
 
-/// Which provinces the view admits.
 pub type Admits = Arc<dyn Fn(u32) -> bool + Send + Sync>;
 
 fn bit(bits: &[u64], at: u32) -> bool {
     bits.get(at as usize / 64).is_some_and(|word| word & (1 << (at % 64)) != 0)
 }
 
-/// Sets `at`'s bit; whether it was clear.
 fn set(bits: &mut Vec<u64>, at: u32) -> bool {
     let word = at as usize / 64;
     if bits.len() <= word {
@@ -127,7 +107,6 @@ fn u64s(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {
     bytes.chunks_exact(8).map(|word| u64::from_le_bytes(word.try_into().expect("eight bytes")))
 }
 
-/// The rows a table holds at the head: none when unavailable, not recorded or in a gap.
 fn held(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
@@ -182,7 +161,6 @@ const TABLES: [TableId; 11] = [
     TableId::Countries,
 ];
 
-/// The task-force fields read: the one place `TaskForces` is read.
 fn force_fields(forces: &Mirror, slot: u32, columns: &Columns) -> Option<ForceFields> {
     let number32 = |column: Num<u32>| forces.number(column, slot).value();
     Some(ForceFields {
@@ -197,14 +175,11 @@ fn force_fields(forces: &Mirror, slot: u32, columns: &Columns) -> Option<ForceFi
     })
 }
 
-/// A ship model's counter operands: the one place `ShipModels` is read. `None` when the cell holds
-/// none, is not recorded or does not decode.
 fn model_counter(models: &Mirror, slot: u32, columns: &Columns) -> Option<ShipCounterInputs> {
     let Cell::Value(bytes) = models.list(columns.model_counter, slot) else { return None };
     <Option<ShipCounterInputs> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, models.format()))).ok().flatten()
 }
 
-/// A task force's route from its `TaskForceMapMotion` row: the one place that table is read.
 fn motion_route<'a>(motion: &Mirror, row: u32, columns: &Columns, path: &'a mut Vec<u32>, alternate: &'a mut Vec<u32>) -> UnitRoute<'a> {
     path.clear();
     path.extend(u32s(bytes_of(motion.list(columns.path, row))));
@@ -225,7 +200,6 @@ fn motion_route<'a>(motion: &Mirror, row: u32, columns: &Columns, path: &'a mut 
     }
 }
 
-/// The mirrors a settle reads.
 struct Tables<'a> {
     forces: Option<&'a Mirror>,
     ships: Option<&'a Mirror>,
@@ -255,7 +229,6 @@ impl<'a> Tables<'a> {
     }
 }
 
-/// The joins of one task force's member, from the mirrors.
 struct Joins<'a> {
     layer: &'a NavalCounters,
     tables: &'a Tables<'a>,
@@ -361,38 +334,25 @@ impl NavalJoins for Joins<'_> {
     }
 }
 
-/// The naval counters layer's arrays and what keeps them.
 pub struct NavalCounters {
     waters: Arc<dyn Waters>,
     columns: Option<Columns>,
-    /// Why nothing is drawn: a core table not recorded, inputs not given, or not composed yet.
     refused: Option<String>,
-    /// Per `TaskForces` slot: its member, when made.
     members: Vec<Option<NavalMember>>,
-    /// Made members' slots by province.
     in_province: HashMap<u32, Vec<u32>>,
     forces: Dirty,
-    /// Per `Ships` slot: its ship and task force as last read.
     ship_rows: Vec<(u64, u64)>,
-    /// Per task force: its ships' slots.
     ships_of: HashMap<u64, Vec<u32>>,
     ship_slots: Dirty,
-    /// Whether the hour's ship operands are whole (every ship with a model that has counter
-    /// operands, both censuses complete), which every ratio needs.
     shipping: bool,
     shipping_dirty: bool,
-    /// Per `FleetCounterInputs` slot: its fleet and first task force as last read.
     fleet_rows: Vec<(u64, u64)>,
-    /// Per task force: the fleets it heads.
     heads: HashMap<u64, Vec<u64>>,
     fleets: BTreeMap<u64, FleetMarker>,
     fleet_slots: Dirty,
     ports: PortSummary,
-    /// Provinces holding a naval base.
     bases: HashSet<u32>,
-    /// Base provinces whose undecided reason is to be taken again.
     port_provinces: HashSet<u32>,
-    /// Whether the viewing country's peace conference hides every unit counter.
     peace: bool,
     peace_dirty: bool,
     all: bool,
@@ -403,14 +363,12 @@ pub struct NavalCounters {
     relations_new: AtomicBool,
     statuses: HashMap<usize, Status>,
     frame: u64,
-    /// Task forces the steps have marked.
     marked: usize,
     camera: Option<(Placement, [u32; 2])>,
     camera_dirty: bool,
     admits: Option<Admits>,
     asked: Vec<u64>,
     admitted: Vec<u64>,
-    /// By `TaskForces` slot: changed outside the view, made when its province is admitted.
     out: Vec<u64>,
     outside: usize,
 }
@@ -457,7 +415,6 @@ impl NavalCounters {
         }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let fresh = Self { columns: self.columns, hidden: self.hidden, camera: self.camera, admits: self.admits.clone(), ..Self::new(Arc::clone(&self.waters)) };
         if let Some((choice, vision)) = self.perspective() {
@@ -469,8 +426,6 @@ impl NavalCounters {
         fresh
     }
 
-    /// The viewing country's type-icon relations at the head; every member is made again when
-    /// they change.
     pub fn set_relations(&self, relations: Arc<type_tint::Index>) {
         let mut held = self.relations.lock().unwrap_or_else(|error| error.into_inner());
         if held.as_ref().is_none_or(|held| !Arc::ptr_eq(held, &relations)) {
@@ -483,7 +438,6 @@ impl NavalCounters {
         self.relations.lock().unwrap_or_else(|error| error.into_inner()).clone()
     }
 
-    /// The viewing country's vision at the head under `choice`.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         let mut held = self.vision.lock().unwrap_or_else(|error| error.into_inner());
         if held.as_ref().is_none_or(|(_, held)| !Arc::ptr_eq(held, &vision) && **held != *vision) {
@@ -504,12 +458,10 @@ impl NavalCounters {
         self.refused.as_deref()
     }
 
-    /// The view draws no naval counter: today's naval pass draws none there either.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
 
-    /// Every made member, by task force.
     pub fn members(&self) -> impl Iterator<Item = &NavalMember> + '_ {
         self.members.iter().flatten()
     }
@@ -530,12 +482,10 @@ impl NavalCounters {
         self.marked
     }
 
-    /// Whether the view admits `province` without the cache: the proof tool's comparisons.
     pub fn admitted(&self, province: u32) -> bool {
         self.admits.as_ref().is_none_or(|admits| admits(province))
     }
 
-    /// Admits only the provinces `admits` names from the next compose: the tests' camera.
     #[cfg(any(test, feature = "test-support"))]
     pub fn admit_only(&mut self, admits: impl Fn(u32) -> bool + Send + Sync + 'static) {
         self.admits = Some(Arc::new(admits));
@@ -567,7 +517,6 @@ impl NavalCounters {
         out.into_iter().for_each(|slot| self.mark_force(forces, slot));
     }
 
-    /// Why the naval counters cannot be drawn from the mirrors at the head, by name.
     fn core(&self, mirrors: &Mirrors) -> Result<(Arc<Vision>, Arc<type_tint::Index>), String> {
         let (_, vision) = self.perspective().ok_or("the viewing country's vision is not set")?;
         let relations = self.relations().ok_or("the viewing country's type-icon relations are not set")?;
@@ -584,8 +533,6 @@ impl NavalCounters {
         Ok((vision, relations))
     }
 
-    /// Marks a task force: dirty when its province, now or as made, is admitted or holds a naval
-    /// base (whose port items are not the camera's), else one bit.
     fn mark_force(&mut self, forces: Option<&Mirror>, slot: u32) {
         let inside = self.admits.is_none() || {
             let standing = self.members.get(slot as usize).and_then(Option::as_ref).map(|member| member.fields.province);
@@ -614,7 +561,6 @@ impl NavalCounters {
         self.bases.contains(&province)
     }
 
-    /// Every live task force and every made member marked.
     fn mark_all(&mut self, mirrors: &Mirrors) {
         let forces = mirrors.get(TableId::TaskForces);
         let mut slots: Vec<u32> = forces.map(|forces| forces.rows().collect()).unwrap_or_default();
@@ -622,8 +568,6 @@ impl NavalCounters {
         slots.into_iter().for_each(|slot| self.mark_force(forces, slot));
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it, reading no mirror (a hidden
-    /// layer's tables may have left them); its view, camera admission, inputs and counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.waters));
         let kept = std::mem::replace(self, empty);
@@ -632,7 +576,6 @@ impl NavalCounters {
         (self.vision, self.vision_new, self.relations, self.relations_new) = (kept.vision, kept.vision_new, kept.relations, kept.relations_new);
     }
 
-    /// Everything dropped; the ship, fleet and base indexes made again and every task force marked.
     fn recompose(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         self.members.clear();
@@ -681,7 +624,6 @@ impl NavalCounters {
         self.mark_all(mirrors);
     }
 
-    /// One `Ships` slot's ship and task force taken in, its old ones taken out; whether they changed.
     fn ship_row(&mut self, slot: u32, row: (u64, u64)) -> Option<(u64, u64)> {
         let at = slot as usize;
         if self.ship_rows.len() <= at {
@@ -706,14 +648,12 @@ impl NavalCounters {
         Some(old)
     }
 
-    /// Whether the hour's ship operands are whole, as today's ship tables require.
     fn shipping_whole(&self, mirrors: &Mirrors) -> bool {
         let columns = self.columns();
         let (Some(ships), Some(models)) = (whole(mirrors.get(TableId::Ships)), whole(mirrors.get(TableId::ShipModels))) else { return false };
         models.rows().all(|slot| model_counter(models, slot, &columns).is_some()) && ships.rows().all(|slot| ships.key(slot).is_some_and(|key| models.slot(key).is_some()))
     }
 
-    /// One fleet's marker made again from its row.
     fn settle_fleet(&mut self, mirrors: &Mirrors, slot: u32) {
         let columns = self.columns();
         let at = slot as usize;
@@ -744,7 +684,6 @@ impl NavalCounters {
         self.fleet_rows[at] = (fleet, first.unwrap_or(0));
     }
 
-    /// Marks the fleets `force` heads.
     fn mark_heads(&mut self, mirrors: &Mirrors, force: u64) {
         let Some(fleets) = self.heads.get(&force) else { return };
         let rows = mirrors.get(TableId::FleetCounterInputs);
@@ -755,7 +694,6 @@ impl NavalCounters {
         }
     }
 
-    /// One task force's member made again from the mirrors.
     fn settle_force(&mut self, tables: &Tables<'_>, seen: (&Vision, &type_tint::Index), slot: u32) {
         let at = slot as usize;
         if self.members.len() <= at {
@@ -784,8 +722,6 @@ impl NavalCounters {
         self.members[at] = Some(member);
     }
 
-    /// A base province's undecided reason taken again: its last undecided task force's, or a task
-    /// force its naval array names that an incomplete census lacks.
     fn settle_port(&mut self, mirrors: &Mirrors, province: u32) {
         let columns = self.columns();
         let mut reason = self
@@ -818,7 +754,6 @@ impl NavalCounters {
         }
     }
 
-    /// Whether the viewing country takes part in a peace conference.
     fn peace_of(&self, mirrors: &Mirrors, ours: u32) -> bool {
         let columns = self.columns();
         held(mirrors.get(TableId::Countries)).is_some_and(|countries| {
@@ -831,7 +766,6 @@ impl NavalCounters {
         let core = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let (vision, relations) = match core {
             Ok(seen) => seen,
-            // Nothing is held or marked while refused: drawn again, it is taken whole.
             Err(why) => {
                 if self.refused.as_ref() != Some(&why) {
                     self.release();
@@ -956,12 +890,10 @@ impl NavalCounters {
         }
     }
 
-    /// Whether a member is compared: its province admitted, or holding a naval base.
     pub fn compared(&self, member: &NavalMember) -> bool {
         self.admitted(member.fields.province) || self.based(member.fields.province)
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;

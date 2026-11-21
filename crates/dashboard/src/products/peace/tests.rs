@@ -9,7 +9,6 @@ fn joins() -> Joins {
     let mut by: HashMap<Identity, Vec<(String, i32, i32)>> = HashMap::new();
     by.insert(A, vec![("AAA".into(), 0, 999)]);
     by.insert(B, vec![("BBB".into(), 0, 999)]);
-    // C exists only from hour 150: a release.
     by.insert(C, vec![("CCC".into(), 150, 999)]);
     Joins {
         holders: HolderTags::from_runs(by),
@@ -196,10 +195,6 @@ fn a_settlement_is_its_log_rows_cells_and_a_cell_not_recorded_leaves_it_out() {
     assert_eq!(settlement(&unrecorded, &columns), None, "a cell not recorded is never read as an empty list");
 }
 
-/// A native action is named by the game's demand label for its type, never by its keyword, which
-/// is also the name the game caches for the type; a puppet demand's label names the country it
-/// puppets, which the reply names for the widget to word at the hour; a label the content cannot
-/// word, or a country not recorded, is refused by name, and no keyword stands in for it.
 #[test]
 fn a_native_peace_action_is_named_by_the_games_demand_label_never_by_its_keyword() {
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(

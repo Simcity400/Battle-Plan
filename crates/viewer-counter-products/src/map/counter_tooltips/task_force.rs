@@ -1,5 +1,3 @@
-//! At-sea task-force counter tooltips.
-//! Port mission items use a separate callback without an arrival query.
 
 use super::*;
 use replay_data::rows::TaskForceMapMotionRow;
@@ -22,7 +20,6 @@ fn motion<'a>(context: &Context<'a>, id: u64) -> Result<&'a TaskForceMapMotionRo
         .map_err(|_| format!("TaskForceMapMotion task force {id} is absent"))
 }
 
-/// The first member's ordinary route and target gate both native movement lines.
 fn append_arrival(
     context: &Context<'_>,
     input: &Hover,
@@ -56,8 +53,6 @@ fn append_arrival(
                 "task force {first} ordinary route count does not match its captured path"
             ));
         }
-        // The game must resolve before either ownership
-        // branch. A foreign first-edge query never bypasses this final gate.
         let last = *movement.path.last().expect("positive matching route count");
         if last == 0 {
             return Ok(None);
@@ -98,9 +93,6 @@ pub(super) fn build(
     query: impl FnOnce(&TaskForceMapMotionRow, bool) -> Result<i64, String>,
 ) -> Tooltip {
     let mut out = Tooltip::default();
-    // Call the map handler before the counter fallback. The counter
-    // declines immediately when its representative reference does not resolve.
-    // The detailed generic arm's handled byte is set only by the ETA formatter.
     let resolved = input.members.first().map_or(Ok(false), |first| {
         context
             .frame

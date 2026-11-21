@@ -1,16 +1,3 @@
-//! What the resources map mode and the trade-route lines read: each resource origin's
-//! icon operands, resource rights, the oil factor, temporary state resources, every
-//! convoy client a route line draws for, and the routes themselves.
-//!
-//! The icon reads an origin's stored efficiency product; a route line reads only whether
-//! its client's efficiency product (A × B, fixed5, truncated) is below the live
-//! `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`, which picks the bad-route colour.
-//!
-//! Every convoy client reaches its route through its own type: an origin and a supply
-//! transfer embed theirs; an exchange, a lend-lease exchange and a market contract use
-//! the exporter's delivery route for the importer. Routes are named by who holds them
-//! ([`RouteKey`]): an origin's by its list owner and state, a delivery route by its
-//! exporter and importer, a supply transfer's by its country and client handle.
 
 use crate::{
     Memory, allocation, ccountry, ccountry_resources, cgame_state,
@@ -23,10 +10,6 @@ use crate::{
 use engine_native::modifier_definition;
 use engine_sites::Rva;
 
-/// A present key's successful metadata is shared only within this parked
-/// walk. Values and presence remain current per accumulator; failed metadata
-/// is never retained, and absent keys demand none. Stack storage cannot add
-/// an allocation refusal to the original getter.
 fn effective(
     memory: &impl Memory,
     base: usize,
@@ -38,7 +21,6 @@ fn effective(
     if !value.present {
         return Ok(0);
     }
-    // An existing pass memo owns its observation and allocation verdicts.
     if memory.modifier_definitions().is_some() {
         return modifier_definition::effective(memory, base, key, value.raw);
     }
@@ -53,55 +35,37 @@ fn effective(
     Ok(operands.effective(value.raw))
 }
 
-/// The live bad-efficiency threshold define, i64 fixed5.
 pub const BAD_EFFICIENCY_THRESHOLD_RVA: Rva = Rva(0x33e_3598);
 
-/// A convoy client's handle (u32 type, u32 id) and its two efficiency factors.
-/// The type word is minted from the live dynamic-type counter, not a class tag.
 #[cfg(test)]
 pub const CLIENT_HANDLE_TYPE: usize = 0x08;
 pub const CLIENT_HANDLE_ID: usize = 0x0c;
-/// Its assigned and required convoy counts, i32.
 pub const CLIENT_CONVOYS: usize = 0x28;
 pub const CLIENT_EFFICIENCY_A: usize = 0x48;
 #[cfg(test)]
 pub const CLIENT_EFFICIENCY_B: usize = 0x50;
-/// Its convoy requirement before the naval-dominance route cost reduction, i32: the
-/// required count is this times one less the reduction, rounded up.
 pub const CLIENT_CONVOYS_BASE: usize = 0x78;
 
-/// Resource-origin client: the embedded route.
 pub const ORIGIN_VTABLE_RVA: Rva = Rva(0x29d_8dc0);
 pub const ORIGIN_ROUTE: usize = 0x350;
 pub const ORIGIN_STATE: usize = 0x80;
-/// The origin's efficiency product, which the resource icon reads.
 pub const ORIGIN_EFFICIENCY: usize = 0x348;
-/// The supply-route factor, written at load and construction.
 pub const ORIGIN_ROUTE_FACTOR: usize = 0x3d8;
-/// Sorted resource rights: 8-byte entries {i32 resource index, u32 holder link}.
 pub const ORIGIN_RIGHTS: usize = 0x3e0;
 pub const RIGHTS_STRIDE: usize = 8;
-/// Rights-holder origins: 16-byte entries, the origin pointer first.
 pub const RIGHTS_ORIGINS: usize = 0x7b8;
 pub const RIGHTS_ORIGIN_STRIDE: usize = 0x10;
-/// Resource-exchange client ([`cresource_exchange`]).
 pub const EXCHANGE_VTABLE_RVA: Rva = cresource_exchange::VTABLE_RVA;
-/// A country's delivery routes, one per canonical importer slot.
 pub const DELIVERY_ROUTES: usize = 0x788;
-/// Lend-lease client: its route pointer and receiver.
 pub const LEND_LEASE_VTABLE_RVA: Rva = Rva(0x2a9_9cf8);
 pub const LEND_LEASE_ROUTE: usize = 0xc0;
 pub const LEND_LEASE_RECEIVER: usize = 0xb8;
 pub const LEND_LEASE_GIVEN: usize = 0x758;
-/// The receiver's independent lend-lease list.
 pub const LEND_LEASE_RECEIVED: usize = 0x770;
-/// Country market wrapper's authenticated manager pointer.
 const MARKET_STATUS_MANAGER: usize = 0x70;
-/// Per-country seller and buyer contract-vector tables.
 const MARKET_SELLERS: usize = 0x30;
 const MARKET_BUYERS: usize = 0x48;
 const MARKET_COUNTRY_STRIDE: usize = 0x18;
-/// Market-contract client, embedded in the contract: its route pointer.
 pub const CONTRACT_CLIENT: usize = 0xf0;
 pub const CONTRACT_CLIENT_VTABLE_RVA: Rva = Rva(0x29e_8330);
 pub const CONTRACT_CLIENT_ROUTE: usize = 0xc8;
@@ -109,7 +73,6 @@ pub const CONTRACT_SELLER: usize = 0x58;
 #[cfg(test)]
 pub const CONTRACT_BUYER: usize = 0x5c;
 pub const MARKET_OWNED_CONTRACTS: usize = 0;
-/// Supply-transfer client: the embedded route.
 pub const SUPPLY_VTABLE_RVA: Rva = Rva(0x2a1_eb80);
 pub const SUPPLY_ROUTE: usize = 0xa0;
 pub const SUPPLY_COUNTRY_SYSTEMS: usize = 0x108;
@@ -117,45 +80,36 @@ pub const SUPPLY_TRANSFERS: usize = 0xd0;
 pub const SUPPLY_TRANSFER_STRIDE: usize = 40;
 pub const SUPPLY_TRANSFER_CLIENT: usize = 0x20;
 
-/// Route object.
 pub const ROUTE_VTABLE_RVA: Rva = Rva(0x29d_8d70);
 pub const ROUTE_KIND: usize = 0x08;
 pub const ROUTE_FROM: usize = 0x10;
 pub const ROUTE_TO: usize = 0x18;
 pub const ROUTE_FROM_PORT: usize = 0x20;
 pub const ROUTE_TO_PORT: usize = 0x28;
-/// The route's sender, receiver and convoy-owner country links.
 pub const ROUTE_LINKS: [usize; 3] = [0x30, 0x34, 0x38];
 pub const ROUTE_LAND_STATES: usize = 0x48;
 pub const ROUTE_SEA_REGIONS: usize = 0x60;
-/// Naval routes draw their ports and sea regions; other kinds their states.
 pub const NAVAL: u8 = 2;
 const PROVINCE_ID: usize = 0xa4;
 const REGION_ID: usize = 0x58;
 
-/// State temporary-resource gates.
 pub const STATE_TEMPORARY_LIST_COUNT: usize = 0x8bc;
 pub const STATE_TEMPORARY_FLAG: usize = 0x1b5;
 
-/// Modifier keys: `local_resources_factor` for (state, country) and the country's
-/// `production_oil_factor`.
 pub const LOCAL_RESOURCES_FACTOR: u32 = 0x39;
 pub const PRODUCTION_OIL_FACTOR: u32 = 0xdd;
 
-/// Client categories, the route lines' layers.
 pub const SUPPLY_TRANSFER: u8 = 1;
 pub const IMPORT: u8 = 2;
 pub const LEND_LEASE: u8 = 4;
 pub const MARKET: u8 = 6;
 
-/// Route classes ([`RouteKey`]).
 pub const ORIGIN_ROUTE_CLASS: u8 = 0;
 pub const DELIVERY_ROUTE_CLASS: u8 = 1;
 pub const SUPPLY_ROUTE_CLASS: u8 = 2;
 
 const ONE: i128 = 100_000;
 
-/// Who holds a route: `country` is the owner of its sliced rows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RouteKey {
     pub class: u8,
@@ -163,23 +117,18 @@ pub struct RouteKey {
     pub other: u32,
 }
 
-/// One resource origin: `list` 0 is the controller's own, 1 a rights holder's.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OriginRow {
     pub state: u32,
-    /// The country whose list holds it (raw country id).
     pub country: u32,
     pub list: u8,
     pub ordinal: u32,
     pub efficiency: i64,
     pub route_factor: i64,
     pub local_resources_factor: i64,
-    /// Its line is the bad colour: its client's efficiency product below the threshold.
     pub bad: bool,
-    /// Assigned and required convoys.
     pub convoys: [i32; 2],
     pub convoys_base: i32,
-    /// Where its route lives this hour; never published.
     pub route_address: usize,
 }
 
@@ -187,7 +136,6 @@ pub struct OriginRow {
 pub struct RightsRow {
     pub ordinal: u32,
     pub state: u32,
-    /// One-based resource database index.
     pub resource: u32,
     pub holder: u32,
 }
@@ -201,60 +149,45 @@ pub struct OilRow {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TemporaryRow {
     pub state: u32,
-    /// The resource's lexer token.
     pub resource: u32,
     pub amount: i64,
 }
 
-/// One convoy client other than an origin.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClientRow {
-    /// Native directional list positions, independently for both endpoint countries.
     pub owner_ordinal: Option<u32>,
     pub other_ordinal: Option<u32>,
-    /// Authenticated client address used to join directional lists; never published.
     pub address: usize,
-    /// The client's handle id.
     pub handle: u32,
     pub category: u8,
     pub owner: u32,
     pub other: u32,
     pub route: RouteKey,
     pub bad: bool,
-    /// Assigned and required convoys.
     pub convoys: [i32; 2],
-    /// The two efficiency factors, fixed5.
     pub efficiency: [i64; 2],
     pub convoys_base: i32,
-    /// Where its route lives this hour; never published.
     pub route_address: usize,
 }
 
-/// One route's drawn structure: ports and sea regions for a naval route, end states and
-/// land states otherwise; no ends and no path when it draws nothing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RouteRow {
     pub key: RouteKey,
     pub kind: u8,
     pub from: u32,
     pub to: u32,
-    /// Native state endpoints, acquired only for a market-referenced route.
     pub source_state: Option<u32>,
     pub destination_state: Option<u32>,
-    /// Range in the path arena.
     pub path_start: usize,
     pub path_len: usize,
 }
 
-/// A strategic region's weight in a naval route's controlled-region cost reduction.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegionWeightRow {
     pub region: u32,
     pub weight: i32,
 }
 
-/// A country's delivery efficiency in one strategic sea region, fixed5: where a bad route
-/// line draws its hotspot colour for a viewer from that country.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegionalRow {
     pub country: u32,
@@ -363,7 +296,6 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
     }
 }
 
-/// The live threshold that turns a route line the bad colour.
 pub fn bad_efficiency_threshold(memory: &impl Memory, base: usize) -> Result<i64, &'static str> {
     read::<i64>(
         memory,
@@ -373,18 +305,13 @@ pub fn bad_efficiency_threshold(memory: &impl Memory, base: usize) -> Result<i64
     .ok_or("bad-efficiency threshold unreadable")
 }
 
-/// A client's or exchange's efficiency: the product of its two fixed5
-/// factors, widened and truncated toward zero, as the game compares it.
 pub fn efficiency_product(a: i64, b: i64) -> i128 {
     i128::from(a) * i128::from(b) / ONE
 }
 
-/// A convoy client's line colour, convoy counts, efficiency factors and base requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ClientStatus {
-    /// Its efficiency product below the bad-efficiency threshold.
     bad: bool,
-    /// Assigned and required convoys.
     convoys: [i32; 2],
     efficiency: [i64; 2],
     convoys_base: i32,
@@ -401,12 +328,10 @@ impl ClientStatus {
     }
 }
 
-/// The client's two efficiency factors.
 fn client_efficiency(memory: &impl Memory, client: usize) -> Result<[i64; 2], &'static str> {
     pair_i64(memory, at(client, CLIENT_EFFICIENCY_A)?).ok_or("convoy client efficiency unreadable")
 }
 
-/// Whether the client's line is the bad colour: its efficiency product below `threshold`.
 pub fn client_bad(
     memory: &impl Memory,
     client: usize,
@@ -416,7 +341,6 @@ pub fn client_bad(
     Ok(efficiency_product(factors[0], factors[1]) < i128::from(threshold))
 }
 
-/// The client's assigned and required convoys.
 fn client_convoys(memory: &impl Memory, client: usize) -> Result<[i32; 2], &'static str> {
     let [assigned, required] =
         pair_u32(memory, at(client, CLIENT_CONVOYS)?).ok_or("convoy client convoys unreadable")?;
@@ -502,12 +426,10 @@ fn origin_factors(memory: &impl Memory, origin: usize) -> Result<(i64, i64), &'s
     }
 }
 
-/// The client's handle id. Its vtable and list membership authenticate it.
 fn client_handle(memory: &impl Memory, client: usize) -> Result<u32, &'static str> {
     read(memory, at(client, CLIENT_HANDLE_ID)?).ok_or("convoy client handle unreadable")
 }
 
-/// A delivery route: the exporter's route for the importer's canonical slot.
 fn delivery_route(
     memory: &impl Memory,
     exporter_resources: usize,
@@ -550,9 +472,6 @@ impl<M: Memory> Walk<'_, M> {
         crate::ccountry_resources::resources(self.memory, self.base, self.countries, country)
     }
 
-    /// An import exchange's route and its exporter: the exchange authenticated as the walked
-    /// importer's ([`cresource_exchange::authenticate`]), and the exporter's delivery route for
-    /// the importer's canonical slot.
     fn exchange(
         &self,
         client: usize,
@@ -573,7 +492,6 @@ impl<M: Memory> Walk<'_, M> {
         Ok((route, ends.exporter_country.id))
     }
 
-    /// A pointer-held route, authenticated as a route object.
     fn held_route(&self, client: usize, offset: usize) -> Result<usize, &'static str> {
         let route = pointer(self.memory, at(client, offset)?, "client route unreadable")?;
         if route == 0 {
@@ -658,7 +576,6 @@ impl<M: Memory> Walk<'_, M> {
             LOCAL_RESOURCES_FACTOR,
             &self.local_resources,
         )?;
-        // A rights-holder origin carries its own route to the holder, as an own origin does.
         let route_address = at(origin, ORIGIN_ROUTE)?;
         self.authenticate_route(route_address)?;
         let status = client_status(memory, origin, self.threshold)?;
@@ -682,7 +599,6 @@ impl<M: Memory> Walk<'_, M> {
 }
 
 impl<M: Memory> Walk<'_, M> {
-    /// An own origin's resource rights.
     fn rights(
         &self,
         origin: usize,
@@ -716,10 +632,6 @@ impl<M: Memory> Walk<'_, M> {
         Ok(())
     }
 
-    /// A country's imports (each exchange draws the exporter's delivery route for this
-    /// importer), the lend-lease it gives (its delivery route for the receiver) and its naval
-    /// supply transfers (each client embeds its route; the supply system's country table is
-    /// indexed by canonical slot).
     fn country_clients(
         &self,
         country: ccountry::Country,
@@ -835,8 +747,6 @@ impl<M: Memory> Walk<'_, M> {
         Ok(())
     }
 
-    /// Read each reached endpoint list once. Match authenticated client addresses rather
-    /// than inferring its position from a handle or the global owning contract vector.
     fn directional_orders(&self, clients: &mut [ClientRow]) -> Result<(), &'static str> {
         let mut handles = Vec::new();
         allocation::reserve(&mut handles, clients.len())
@@ -961,7 +871,6 @@ impl<M: Memory> Walk<'_, M> {
         Ok(())
     }
 
-    /// Market contracts: the seller's delivery route for the buyer.
     fn market(
         &self,
         table: &mut Table,
@@ -1011,13 +920,11 @@ impl<M: Memory> Walk<'_, M> {
     }
 }
 
-/// The tables [`walk_buffer`] fills, as indexes into its per-table state.
 const ORIGINS: usize = 0;
 const RIGHTS: usize = 1;
 const OIL: usize = 2;
 const CLIENTS: usize = 3;
 
-/// One table's rows so far, or why it is unavailable.
 #[derive(Default)]
 struct Table {
     len: usize,
@@ -1033,7 +940,6 @@ impl Table {
         }
     }
 
-    /// Runs `read` unless the table has failed, keeping its failure.
     fn run(&mut self, read: impl FnOnce(&mut Self) -> Result<(), &'static str>) {
         if self.failed.is_none()
             && let Err(reason) = read(self)
@@ -1047,11 +953,6 @@ impl Table {
     }
 }
 
-/// Reads every country's origins (own and rights-holder), their rights, each country's
-/// oil factor and every convoy client a route line draws for: imports, lend-lease given,
-/// supply transfers and market contracts. Each table has its own outcome: a read only one
-/// table needs refuses that table alone. Rights read only their own origin identities,
-/// independently of origin efficiencies and routes.
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -1077,7 +978,6 @@ pub fn walk_buffer(
             return outcomes(&tables);
         }
     };
-    // Only the bad bits read the threshold: the origins' and the clients'.
     let threshold = bad_efficiency_threshold(memory, base);
     if let Err(reason) = threshold {
         tables[ORIGINS].failed = Some(reason);
@@ -1092,7 +992,6 @@ pub fn walk_buffer(
         local_resources: Default::default(),
     };
     let oil_metadata = Default::default();
-    // The supply transfers' country systems, which only the clients read.
     let supply_systems = (|| -> Result<usize, &'static str> {
         let supply = pointer(
             memory,
@@ -1224,13 +1123,6 @@ pub fn walk_buffer(
     outcomes(&tables)
 }
 
-/// The regional delivery efficiency of every country that sees a bad naval route line, in
-/// each sea region of that route: a bad line's region draws its hotspot colour when the
-/// viewing country's efficiency there is below the regional threshold. A route's line is
-/// drawn for each country taking part (an origin's country, an exchange's importer and
-/// exporter, a lend-lease giver and receiver, a contract's seller and buyer, a supply
-/// transfer's country). `scratch` holds the (country, region) pairs; a region outside the
-/// country's records is full, as the game takes it.
 pub fn walk_regional(
     memory: &impl Memory,
     base: usize,
@@ -1303,8 +1195,6 @@ pub fn walk_regional(
     }
 }
 
-/// Every loaded strategic region's route weight, in roster order. The game writes it only
-/// while loading the map, so it is read on full hours. A null roster slot holds no region.
 pub fn walk_region_weights(
     memory: &impl Memory,
     base: usize,
@@ -1368,14 +1258,6 @@ pub fn walk_region_weights(
     }
 }
 
-/// Every state's temporary resources: each resource's temporary key in the state's base
-/// modifiers, for a state whose temporary-resource list is not empty or whose flag is set;
-/// a zero amount has no row. `descriptors` is this hour's complete resource census.
-///
-/// The state pointers are copied 64 at a time and their two gate fields gathered in one
-/// batch; each resource's key is read once, at the first gated state that needs it. A
-/// batch that faults or whose fields would overflow is read state by state, so every
-/// fault keeps its message and its place.
 pub fn walk_temporary(
     memory: &impl Memory,
     base: usize,
@@ -1461,7 +1343,6 @@ pub fn walk_temporary(
         while first < states.count {
             let batch = ((states.count - first) as usize).min(BATCH);
             let mut words = [0_u8; BATCH * 8];
-            // Both copies stop at their first fault; no faulted source is read again.
             let copied = states.element(first, 8).map_or(0, |start| {
                 memory.copy_records(
                     RecordSources::Strided {
@@ -1515,7 +1396,6 @@ pub fn walk_temporary(
                     let gate = &gates[row * 8..][..8];
                     (i32::from_le_bytes(gate[..4].try_into().unwrap()), gate[4])
                 } else {
-                    // Past an overflowing pointer: read as the serial walk does, never gathered.
                     let count = read::<i32>(memory, at(state, STATE_TEMPORARY_LIST_COUNT)?)
                         .ok_or("state temporary list unreadable")?;
                     let flag = read::<u8>(memory, at(state, STATE_TEMPORARY_FLAG)?)
@@ -1535,9 +1415,6 @@ pub fn walk_temporary(
     }
 }
 
-/// The route at `address`, held under `key`, with its path in `path` from `path.len()`.
-/// Market demand supplies the game state to authenticate the native endpoint states;
-/// other consumers read only the drawn structure.
 pub fn read_route(
     memory: &impl Memory,
     base: usize,
@@ -1635,9 +1512,6 @@ pub fn read_route(
     Ok(row)
 }
 
-/// Each path element's id, 64 elements per scattered pointer copy and record batch. Every
-/// source is read once: a batch stops at its first fault, null or overflowing element, and
-/// the ids before it are kept, as a serial walk keeps them.
 fn route_path(
     memory: &impl Memory,
     elements: Array,
@@ -1657,7 +1531,6 @@ fn route_path(
         let batch = ((elements.count - first) as usize).min(BATCH);
         let mut addresses = [0_usize; BATCH];
         let mut words = [[0_u8; 8]; BATCH];
-        // An element outside the array ends the batch before it.
         let mut spans = batch;
         for (index, address) in addresses[..batch].iter_mut().enumerate() {
             match elements.element(first + index as u32, 8) {

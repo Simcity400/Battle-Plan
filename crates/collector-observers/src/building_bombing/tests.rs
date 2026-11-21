@@ -51,8 +51,6 @@ const OWNER: usize = 0x8000;
 const OUTPUT: usize = 0x8500;
 const TYPE: u32 = 0xfa001;
 
-// Heap-owned objects only; production LiveMemory reads use the normal SEH
-// guard. The fake module root lives in its own allocation, avoiding an image.
 struct World {
     storage: Vec<u64>,
     root: Box<u64>,
@@ -227,7 +225,6 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     setup(8, world.base);
     ready();
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
-    // A foreign generic capture between pre/post cannot invalidate this claim.
     std::thread::spawn(|| {
         boundary(clock(3, 4));
         lost_drain();
@@ -236,7 +233,6 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     })
     .join()
     .unwrap();
-    // Attribution is intentionally only consulted after a positive decrease.
     world.dword(WING + cair_wing::ID, 0);
     world.health(1, 0);
     world.word(OUTPUT, 1);
@@ -250,7 +246,6 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     assert_eq!(ATTRIBUTION_FAILURES.load(Ordering::Relaxed), 1);
     assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 0);
     assert_eq!(CALLER_CALLS[0].load(Ordering::Relaxed), 1);
-    // Native no-wing absence retains damage without a read-failure count.
     world.word(SOURCE + native::SOURCE_WING, 0);
     world.health(2, 4_000_000);
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
@@ -262,7 +257,7 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     assert_eq!(ATTRIBUTION_FAILURES.load(Ordering::Relaxed), 1);
     world.health(2, 4_000_000);
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
-    world.word(STATE, 0); // Invalid location must not be followed on a no-op.
+    world.word(STATE, 0);
     world.post(token);
     assert_eq!(drain(&mut output).unwrap(), 0);
 }
@@ -329,8 +324,6 @@ fn assembly_preserves_six_arguments_return_pointer_and_observer_lifetime() {
     assert_eq!(active(), 0);
 }
 
-// Synthetic native frame uses the damage hook's first sixteen sentinel bytes and
-// documented stack/register saves. Its pdata is independent of the wrapper.
 core::arch::global_asm!(
     ".text",
     ".globl building_damage_unwind_test_native",
@@ -439,17 +432,15 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
     };
     assert_eq!(&synthetic[..5], &[0x48, 0x89, 0x5c, 0x24, 0x20]);
 
-    // Walk from a framed native continuation through the DLL wrapper, then
-    // to the original caller. No Rust frame surrounds this native call.
     let pc = building_damage_unwind_test_body as *const () as u64;
     let entry = unsafe { RtlLookupFunctionEntry(pc, &mut base, std::ptr::null_mut()) };
     assert!(!entry.is_null());
     let mut stack = [0_u64; 64];
-    stack[0x30 / 8] = 0xf015; // pushed R15
-    stack[0x38 / 8] = 0xf003; // pushed RDI
-    stack[0x40 / 8] = 0xf002; // pushed RSI
+    stack[0x30 / 8] = 0xf015;
+    stack[0x38 / 8] = 0xf003;
+    stack[0x40 / 8] = 0xf002;
     stack[0x48 / 8] = building_damage_native_return as *const () as u64;
-    stack[0x68 / 8] = 0xf001; // native RBX caller home save
+    stack[0x68 / 8] = 0xf001;
     stack[(0x50 + 0x138) / 8] = 0x12345678;
     let native_frame = stack.as_mut_ptr() as u64;
     let wrapper_frame = native_frame + 0x50;

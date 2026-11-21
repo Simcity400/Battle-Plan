@@ -8,7 +8,6 @@ use crate::{
 };
 use std::collections::{BTreeMap, HashMap};
 
-/// The unit written to memory.
 #[derive(Default)]
 struct Memory {
     bytes: Vec<u8>,
@@ -42,7 +41,6 @@ fn store(settings: Settings) -> Store {
     store
 }
 
-/// A state's live rows by key, each with every cell.
 fn rows(table: &TableState) -> BTreeMap<u128, Vec<String>> {
     table
         .rows()
@@ -52,9 +50,6 @@ fn rows(table: &TableState) -> BTreeMap<u128, Vec<String>> {
 
 static LISTS: [[u32; 8]; 4] = [[1, 2, 3, 4, 5, 6, 7, 8], [1, 2, 3, 9, 5, 6, 7, 8], [4, 4, 4, 4, 4, 4, 4, 4], [7, 7, 1, 2, 3, 4, 5, 6]];
 
-/// One hour of changes that exercise every model and list form: a random walk (differences or
-/// second differences), a counter (runs), ids (raw values), an optional going missing, list cells
-/// patched, edited, rewritten as pieces and repeated (pooled).
 fn hour(store: &mut Store, hour: u32, rows_held: &mut Vec<u32>) {
     store.begin_hour(hour as i32, &[]).unwrap();
     store.status(0, Status::Complete, true, Some(hour as i32), true).unwrap();
@@ -95,8 +90,6 @@ fn hour(store: &mut Store, hour: u32, rows_held: &mut Vec<u32>) {
     }
 }
 
-/// Runs `blocks` blocks of [`hour`], keeping each hour's state; the unit, the states and the run's
-/// first state.
 fn run(settings: Settings, blocks: u32) -> (Memory, Vec<TableState>) {
     let mut store = store(settings);
     let mut memory = Memory::default();
@@ -114,8 +107,6 @@ fn run(settings: Settings, blocks: u32) -> (Memory, Vec<TableState>) {
     (memory, states)
 }
 
-/// Reads every block of `memory` back in steps of `step` hours from the run's first state,
-/// checking the state at each step's end against the state the store held then.
 fn read_back(memory: &Memory, states: &[TableState], step: u16) {
     let columns: Vec<usize> = (0..KINDS.len()).collect();
     let mut cells = states[0].clone();
@@ -150,8 +141,6 @@ fn read_back(memory: &Memory, states: &[TableState], step: u16) {
     }
 }
 
-/// Every model and list form, read back hour by hour and a day at a time, equals the store's
-/// state; a column of ids chose raw values and the counter runs.
 #[test]
 fn every_model_and_list_form_reads_back() {
     let (memory, states) = run(Settings::at(3), 2);
@@ -161,9 +150,6 @@ fn every_model_and_list_form_reads_back() {
     assert_eq!(page, memory.pages[1], "a page reads back as written");
 }
 
-/// Small caps and budgets close parts inside a block and within an hour group: the parts read
-/// back as one. With every stream a frame of its own, a column with no events in one part has
-/// its next stream chained to nothing older than the part before it.
 #[test]
 fn parts_closed_by_cap_and_by_budget_read_back() {
     let settings = Settings { cap: 64, ..Settings::at(3) };
@@ -186,8 +172,6 @@ fn parts_closed_by_cap_and_by_budget_read_back() {
     read_back(&memory, &states, 5);
 }
 
-/// A slot freed and taken by another row within one part starts a new track, and a row inserted,
-/// changed and deleted within a step leaves no cell behind.
 #[test]
 fn reused_slots_and_short_lives_read_back() {
     let mut store = store(Settings::at(3));
@@ -228,7 +212,6 @@ fn reused_slots_and_short_lives_read_back() {
     read_back(&memory, &states, 24);
 }
 
-/// A part compressed against the one before it is refused by name when read without it.
 #[test]
 fn a_chained_part_without_its_predecessor_is_refused_by_name() {
     let settings = Settings { cap: 64, small: 1, ..Settings::at(3) };
@@ -240,9 +223,6 @@ fn a_chained_part_without_its_predecessor_is_refused_by_name() {
     assert!(refused.to_string().contains("without the part before it"), "{refused}");
 }
 
-/// Restores at every block's end, whole every fourth: one against a whole restore whose table
-/// grew past its last chunk reads back equal to the store's state, from at most two extents a
-/// chunk.
 #[test]
 fn restores_against_a_whole_one_whose_chunks_grew_read_back() {
     let settings = Settings { restore_blocks: 1, whole_every: 4, ..Settings::at(3) };
@@ -267,8 +247,6 @@ fn restores_against_a_whole_one_whose_chunks_grew_read_back() {
     }
 }
 
-/// A run taken up at a block's end from its file writes the bytes and pages an unbroken run
-/// writes, with and without a restore at that block's end.
 #[test]
 fn resume_after_a_block_writes_what_an_unbroken_run_writes() {
     for restore_blocks in [1, 3] {
@@ -302,8 +280,6 @@ fn resume_after_a_block_writes_what_an_unbroken_run_writes() {
     }
 }
 
-/// A whole restore packs a table whose slots pass twice its live rows by the margin: the page
-/// says so and a reader renumbering from its own live bits holds what the store holds.
 #[test]
 fn a_packed_table_is_flagged_and_reads_back() {
     let settings = Settings { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..Settings::at(3) };
@@ -336,7 +312,6 @@ fn a_packed_table_is_flagged_and_reads_back() {
     read_back(&memory, &states, 24);
 }
 
-/// Inserts a row at `slot` with every cell given.
 fn insert_row(changes: &mut crate::store::TableChanges<'_>, slot: u32, key: u128, value: i32) {
     changes.insert_at(slot, key).unwrap();
     changes.write(slot, 0, Cell::I32(value)).unwrap();
@@ -346,14 +321,10 @@ fn insert_row(changes: &mut crate::store::TableChanges<'_>, slot: u32, key: u128
     changes.write(slot, 4, Cell::U32List(&LISTS[0])).unwrap();
 }
 
-/// The frame of chunk `index` of `stream` in `entry`, and its prefix.
 fn chunk(entry: &restore::RestoreEntry, stream: u32, index: usize) -> &restore::Chunk {
     &entry.streams.iter().find(|(held, _)| *held == stream).expect("the stream").1[index]
 }
 
-/// A restore that is not whole names again its whole one's frame for every chunk nothing touched
-/// since (the rows, and columns no hour wrote), compresses the others against it, and reads back
-/// equal to the store's state.
 #[test]
 fn restores_name_clean_chunks_again_and_read_back() {
     let settings = Settings { restore_blocks: 1, whole_every: 4, ..Settings::at(3) };
@@ -395,9 +366,6 @@ fn restores_name_clean_chunks_again_and_read_back() {
     }
 }
 
-/// Against a whole restore: a slot freed and taken by a row of another key, a row past the whole
-/// restore's last rows chunk (a chunk of its own, without a prefix), then the table shrunk back:
-/// each restore reads back equal to the store's state.
 #[test]
 fn restores_with_changed_keys_and_rows_past_their_chunks_read_back() {
     let settings = Settings { restore_blocks: 1, whole_every: 4, ..Settings::at(3) };
@@ -438,9 +406,6 @@ fn restores_with_changed_keys_and_rows_past_their_chunks_read_back() {
     assert_eq!(rows(&table), rows(&states[3 * BLOCK as usize - 1]));
 }
 
-/// The reader's cells widen in the middle of a stream when a track's value does not fit, and the
-/// loop goes on with the tracks after it; a column with no unrecorded bits takes them when a
-/// track in the middle unrecords its cell.
 #[test]
 fn cells_widen_in_the_middle_of_a_stream() {
     let mut store = store(Settings::at(3));
@@ -474,7 +439,6 @@ fn cells_widen_in_the_middle_of_a_stream() {
 const TEXT: [Kind; 1] = [Kind::Bytes];
 const NAMES: [&[u8]; 3] = [b"held", b"again", b"other"];
 
-/// The strings of the run, read again from here once the store let them go.
 struct Named;
 
 impl crate::store::StringSource for Named {
@@ -483,9 +447,6 @@ impl crate::store::StringSource for Named {
     }
 }
 
-/// Two blocks of a table of one text cell, one row: `each` gives an hour's status and the text
-/// written, if any. A table is restored at a block's end once two events passed since its last
-/// restore, every fourth whole.
 fn text_run(each: impl Fn(u32) -> (Status, Option<u32>)) -> Memory {
     let settings = Settings { restore_events: 2, restore_blocks: 99, whole_every: 4, ..Settings::at(3) };
     let mut store = Store::new(vec![TEXT.to_vec()], vec![false]);
@@ -512,9 +473,6 @@ fn text_run(each: impl Fn(u32) -> (Status, Option<u32>)) -> Memory {
     memory
 }
 
-/// The table read from the restore at block 0's end, which is not whole, through block 1, which
-/// ends without one: by a fresh cursor and by `rebuild`. Every string its cell and its status
-/// name comes with its bytes.
 fn every_string_from_the_restore(memory: &Memory) {
     let restored = memory.pages[0].tables[0].restore.as_ref().expect("a restore at block 0's end");
     assert!(!restored.whole);
@@ -558,10 +516,6 @@ fn every_string_from_the_restore(memory: &Memory) {
     }
 }
 
-/// A string first named after a whole restore, named by no live cell at a later restore that is
-/// not whole, and named again after it, comes with its bytes to a reader starting at that restore:
-/// a table's parts name a string the first time it is named since the table's last restore of
-/// any kind.
 #[test]
 fn a_string_named_again_after_a_restore_reads_from_that_restore() {
     let memory = text_run(|at| {
@@ -576,8 +530,6 @@ fn a_string_named_again_after_a_restore_reads_from_that_restore() {
     every_string_from_the_restore(&memory);
 }
 
-/// The same for a status's refusal reason: a reason named in a part before a restore that is not
-/// whole, refused by no status at it, and named again after it.
 #[test]
 fn a_refusal_named_again_after_a_restore_reads_from_that_restore() {
     let memory = text_run(|at| {
@@ -592,11 +544,6 @@ fn a_refusal_named_again_after_a_restore_reads_from_that_restore() {
     every_string_from_the_restore(&memory);
 }
 
-/// Rows inserted in a part in which some of their columns have no stream, on a fresh slot and
-/// on one a deleted row held recorded cells in: those cells read back not recorded, as the
-/// store holds them (a column not given is not recorded), not as the slot's old or empty value.
-/// The writer gives every column of a part that inserts rows a stream; a part without one means
-/// exactly this, and is made here by dropping the frames of a list and two numeric columns.
 #[test]
 fn an_inserted_row_s_cell_of_a_column_without_a_stream_reads_not_recorded() {
     let settings = Settings { small: 0, ..Settings::at(3) };
@@ -643,19 +590,14 @@ fn an_inserted_row_s_cell_of_a_column_without_a_stream_reads_not_recorded() {
     assert_eq!(rows(&rebuilt), rows(last));
 }
 
-/// A log's columns: every cell kind (numbers, optional, bool, text, lists, opaque).
 const LOG_KINDS: [Kind; 6] = [Kind::I64, Kind::OptionalU32, Kind::Bool, Kind::Bytes, Kind::U32List, Kind::Opaque];
 
-/// Strings a log's text cells name, pinned for the run.
 const LOG_TEXT: u32 = 1 << 30;
 
-/// What a log did, as a reader of it sees: each row appended (run hour, ordinal, key, its cells as
-/// the store gives them) and each row forgotten (run hour, ordinal).
 #[derive(Clone, Debug, Default, PartialEq)]
 struct LogModel {
     appended: Vec<(i32, u64, u128, Vec<String>)>,
     forgotten: Vec<(i32, u64)>,
-    /// The ordinals listed, the count and the status at each block's end.
     ends: Vec<(u64, Vec<u64>, Status)>,
 }
 
@@ -673,14 +615,10 @@ fn pin_texts(store: &mut Store) {
     }
 }
 
-/// The log's hour `hour` (after [`hour`] gave table 0's): `hour % 5` rows appended with cells of
-/// every kind, some not given; the oldest forgotten while more than 40 are listed; every 97th hour
-/// a row appended and forgotten again within it; its status unavailable for a stretch of hours.
 fn log_hour(store: &mut Store, hour: u32, model: &mut LogModel) {
     log_hour_listing(store, hour, model, 40);
 }
 
-/// [`log_hour`], the oldest forgotten while more than `cap` are listed.
 fn log_hour_listing(store: &mut Store, hour: u32, model: &mut LogModel, cap: usize) {
     static ITEMS: [u32; 6] = [3, 1, 4, 1, 5, 9];
     let status = if (300..340).contains(&hour) { Status::Unavailable { reason: LOG_TEXT + 7 } } else { Status::Complete };
@@ -717,7 +655,6 @@ fn log_hour_listing(store: &mut Store, hour: u32, model: &mut LogModel, cap: usi
     model.forgotten.extend(forgotten.into_iter().map(|ordinal| (hour as i32, ordinal)));
 }
 
-/// A log cell as a reader of it shows it.
 fn shown(cell: Option<Cell<'_>>) -> String {
     let items: Vec<u8>;
     let value = match cell {
@@ -736,8 +673,6 @@ fn shown(cell: Option<Cell<'_>>) -> String {
     format!("{value:?}")
 }
 
-/// `blocks` blocks of table 0's [`hour`] and the log's [`log_hour`]: the unit, the state table's
-/// states, and the log's model.
 fn log_run(settings: Settings, blocks: u32) -> (Memory, Vec<TableState>, LogModel) {
     let mut store = log_store(settings);
     let mut memory = Memory::default();
@@ -758,7 +693,6 @@ fn log_run(settings: Settings, blocks: u32) -> (Memory, Vec<TableState>, LogMode
     (memory, states, model)
 }
 
-/// Everything the log did, read back by a span of hours from its parts.
 fn read_log(memory: &Memory) -> LogModel {
     let columns: Vec<usize> = (0..LOG_KINDS.len()).collect();
     let mut read = LogModel::default();
@@ -784,11 +718,6 @@ fn read_log(memory: &Memory) -> LogModel {
     read
 }
 
-/// A log's rows of every cell kind, appended and forgotten (a row of each 97th hour within its
-/// hour, the run's first hour included), read back by span equal to what was appended and
-/// forgotten, across parts closed by a block's end, by the cap and by the budget; its count and
-/// live set at every block's end equal the store's; its rows read by ordinal; the table holding
-/// state beside it reads back unchanged; a log's entry reads back as written.
 #[test]
 fn a_log_s_rows_read_back_by_span_and_by_ordinal() {
     for (settings, closes) in [
@@ -850,15 +779,11 @@ fn a_log_s_rows_read_back_by_span_and_by_ordinal() {
     }
 }
 
-/// The first hour of the block holding `ordinal`, by the blocks' counts.
 fn by_ordinal_block(memory: &Memory, ordinal: u64) -> i32 {
     let at = memory.pages.iter().rposition(|page| page.tables[1].count <= ordinal).unwrap();
     (memory.pages[at].block * BLOCK) as i32
 }
 
-/// A log changed in a block is restored at its end as its count and live set (no key, no column);
-/// one nobody appended to or forgot from, its status unchanged, names its last restore again and
-/// writes nothing; a status change alone restores it.
 #[test]
 fn a_log_is_restored_at_every_block_end_and_named_again_when_unchanged() {
     let mut store = log_store(Settings::at(3));
@@ -904,9 +829,6 @@ fn a_log_is_restored_at_every_block_end_and_named_again_when_unchanged() {
     assert!(refused.contains("a log in one block of its run and holds state in another"), "{refused}");
 }
 
-/// A log's rows appended in one block, the newest forgotten in it and the rest in the next: at
-/// each block's end, the count and live set its hours left, replayed from its parts as a walk
-/// from the run's start holds them, equal its restore there.
 #[test]
 fn a_log_s_replay_at_each_block_end_equals_its_restore() {
     let mut store = log_store(Settings::at(3));
@@ -953,11 +875,6 @@ fn a_log_s_replay_at_each_block_end_equals_its_restore() {
     assert!(listed.is_empty(), "the second block forgot every row");
 }
 
-/// A run with a log taken up from its file at a commit (a block's end), and after a kill inside
-/// the next block (the file cut back to the commit): each writes the bytes and pages an unbroken
-/// run writes, a row appended and forgotten within one hour included. With a small budget, after
-/// an hour of the first block appended and forgot far more rows than any later hour, the parts
-/// the budget closes fall where the unbroken run's do.
 #[test]
 fn resume_with_a_log_writes_what_an_unbroken_run_writes() {
     for (settings, burst) in [(Settings { cap: 64, ..Settings::at(3) }, false), (Settings { budget: 4096, ..Settings::at(3) }, true)] {
@@ -1035,8 +952,6 @@ fn resume_with_a_log_writes_what_an_unbroken_run_writes() {
     }
 }
 
-/// A store that declares a table a log refuses to take it up from a file that wrote it as state,
-/// and the other way round.
 #[test]
 fn resume_refuses_a_table_of_another_class_by_name() {
     let mut resumed = log_store(Settings::at(3));
@@ -1047,8 +962,6 @@ fn resume_refuses_a_table_of_another_class_by_name() {
     assert!(refused.contains("Table 0 is a log in the file and state in this build"), "{refused}");
 }
 
-/// A state table's cursor refuses a log's part by name, and a log's cursor a state table's, so a
-/// reader that makes a cursor for every table it selects is told the class, not a slot error.
 #[test]
 fn a_cursor_refuses_a_log_s_part_and_a_log_cursor_a_state_table_s() {
     let (memory, _, _) = log_run(Settings::at(3), 1);
@@ -1070,9 +983,6 @@ fn a_cursor_refuses_a_log_s_part_and_a_log_cursor_a_state_table_s() {
 }
 
 
-/// A log taken up at a run's start at a count just under 2^32: appended and forgotten across
-/// 2^32, its parts closed by the cap, restored at each block's end, read back by span and by ordinal across the
-/// boundary, and taken up again after a kill: the resumed file is the unbroken one's.
 #[test]
 fn a_log_passes_two_to_the_thirty_two_rows() {
     let start = u64::from(u32::MAX) - 3;
@@ -1158,8 +1068,6 @@ fn a_log_passes_two_to_the_thirty_two_rows() {
     assert!(killed.bytes == memory.bytes, "the resumed file differs");
 }
 
-/// `blocks` blocks of a log appending five rows an hour; every tenth hour the oldest 30 listed
-/// forgotten, by `forget_run` or one `forget` at a time, ascending; the unit and the live set.
 fn forgets_by(run: bool, refused_too: bool) -> (Memory, Vec<u64>) {
     let mut store = log_store(Settings { cap: 200, ..Settings::at(3) });
     let mut memory = Memory::default();
@@ -1199,9 +1107,6 @@ fn forgets_by(run: bool, refused_too: bool) -> (Memory, Vec<u64>) {
     (memory, listed)
 }
 
-/// A run forgotten at once writes the bytes and pages, and leaves the live set, that its rows
-/// forgotten one at a time in ascending order do; a run refused for any row (forgotten before,
-/// never appended, past 2^64) changes nothing; a state table refuses a run by name.
 #[test]
 fn forget_run_writes_what_forgetting_one_at_a_time_writes() {
     let (one_at_a_time, listed) = forgets_by(false, false);
@@ -1218,10 +1123,6 @@ fn forget_run_writes_what_forgetting_one_at_a_time_writes() {
     assert!(refused.contains("holds state"), "{refused}");
 }
 
-/// An hour's forgets may come in any order, before, between and after its appends (a row
-/// appended and forgotten within the hour included): the unit is the one an hour giving its
-/// appends and then its forgets in ascending order writes, and a reader sees the hour's appends,
-/// then its forgets ascending.
 #[test]
 fn an_hour_s_forgets_may_come_in_any_order_among_its_appends() {
     let row = |at: u32| [Some(Cell::I64(i64::from(at))), None, None, None, None, None];
@@ -1272,10 +1173,8 @@ fn an_hour_s_forgets_may_come_in_any_order_among_its_appends() {
     assert_eq!(seen, ["+10", "+11", "+12", "-2..4", "-7..8", "-10..11"]);
 }
 
-/// A row as a reader of the log sees it: run hour, key, and its cells of the columns read.
 type Seen = (i32, u128, Vec<String>);
 
-/// Every row of the log (table 1), read by a [`LogCursor`] over each block's parts, by ordinal.
 fn cursor_rows(memory: &Memory, columns: &[usize]) -> BTreeMap<u64, Seen> {
     let mut rows = BTreeMap::new();
     for page in &memory.pages {
@@ -1306,8 +1205,6 @@ fn cursor_rows(memory: &Memory, columns: &[usize]) -> BTreeMap<u64, Seen> {
     rows
 }
 
-/// The log's rows at `ordinals` by [`log_rows_at`], each string checked handed once and before the
-/// first row naming it; the rows, and the strings handed.
 fn rows_at(memory: &Memory, columns: &[usize], ordinals: &[u64]) -> io::Result<(Vec<(u64, Seen)>, HashMap<u32, Vec<u8>>)> {
     let (mut read, mut named) = (Vec::new(), HashMap::new());
     log_rows_at(&memory.bytes, &memory.pages, &LOG_KINDS, 1, columns, ordinals, &mut |event| match event {
@@ -1325,15 +1222,10 @@ fn rows_at(memory: &Memory, columns: &[usize], ordinals: &[u64]) -> io::Result<(
     Ok((read, named))
 }
 
-/// A text cell as [`shown`] gives it: its string id.
 fn text_of(cell: &str) -> Option<u32> {
     cell.strip_prefix("Text(")?.strip_suffix(')')?.parse().ok()
 }
 
-/// Rows asked by ordinal equal a cursor's rows at the same ordinals, cell for cell (not their
-/// slot): cells of every kind, some not given, every column and a few, rows appended and forgotten
-/// in one hour, the run's first hour, across parts closed by a block's end and by the cap and
-/// across the block's end. A range takes the same path and gives every row.
 #[test]
 fn rows_asked_by_ordinal_equal_the_cursor_s() {
     for (settings, closes) in [(Settings::at(3), "a block's end"), (Settings { cap: 48, ..Settings::at(3) }, "the cap")] {
@@ -1366,8 +1258,6 @@ fn rows_asked_by_ordinal_equal_the_cursor_s() {
     }
 }
 
-/// An ordinal never appended in the run, one asked twice and one out of order are refused by
-/// name, as is a table holding state; asking nothing hands nothing.
 #[test]
 fn rows_asked_by_ordinal_are_refused_by_name() {
     let (memory, _, model) = log_run(Settings { cap: 48, ..Settings::at(3) }, 2);
@@ -1385,8 +1275,6 @@ fn rows_asked_by_ordinal_are_refused_by_name() {
     assert!(rows_at(&memory, &columns, &[]).unwrap().0.is_empty());
 }
 
-/// A row in a block's last part naming a string its block's first part listed gets the string's
-/// bytes handed before it, the earlier parts read for them, though not walked.
 #[test]
 fn a_string_first_named_in_an_earlier_part_is_handed_before_its_row() {
     let (memory, _, model) = log_run(Settings { cap: 48, ..Settings::at(3) }, 2);
@@ -1407,9 +1295,6 @@ fn a_string_first_named_in_an_earlier_part_is_handed_before_its_row() {
     assert_eq!(named.get(&id), Some(&format!("text {}", id - LOG_TEXT).into_bytes()));
 }
 
-/// A string a block's end restore lists (the status's refusal reason) is named by no part of the
-/// next block; a row of that block whose text cell names it gets its bytes from the restore, by
-/// ordinal and by span, and `log_state_named` gives them beside the state.
 #[test]
 fn a_string_named_again_after_a_log_s_restore_reads_from_that_restore() {
     let reason = LOG_TEXT + 3;
@@ -1454,7 +1339,6 @@ fn a_string_named_again_after_a_log_s_restore_reads_from_that_restore() {
     assert_eq!(spanned, HashMap::from([(reason, b"text 3".to_vec())]), "by span");
 }
 
-/// The marks stream as sorting every mark by slot, stably, wrote it.
 fn marks_by_sorting(pending: &Pending, births: &[(u32, u16)], first: u16) -> Vec<u8> {
     let mut found = Vec::new();
     let (bytes, mut at, mut hour, mut slot) = (&pending.buffer, 0, 0_u16, 0_u32);
@@ -1498,9 +1382,6 @@ fn marks_by_sorting(pending: &Pending, births: &[(u32, u16)], first: u16) -> Vec
     out
 }
 
-/// Marks put in slot order by counting write the bytes sorting them wrote: dense hours, slots
-/// out of order and twice in an hour, rows born once, twice and with no mark between their
-/// births, a far slot, a lone mark; one scratch taken from case to case.
 #[test]
 fn marks_write_what_sorting_every_mark_by_slot_wrote() {
     let cases: [(Vec<(u16, u32)>, Vec<(u32, u16)>, u16); 5] = [
@@ -1525,10 +1406,6 @@ fn marks_write_what_sorting_every_mark_by_slot_wrote() {
     }
 }
 
-/// A table read in part every hour of a block closes one part of every row's mark at the block's
-/// end: closing it holds the
-/// stream and two bytes a mark, which the unit's measure sees, and keeps none of its streams to
-/// chain to, since no part of the block follows.
 #[test]
 fn a_table_read_in_part_every_hour_closes_in_two_bytes_a_mark_and_keeps_nothing_to_chain() {
     const ROWS: u32 = 4_000;
@@ -1559,21 +1436,16 @@ fn a_table_read_in_part_every_hour_closes_in_two_bytes_a_mark_and_keeps_nothing_
     assert_eq!(memory.pages.len(), 1);
 }
 
-/// The journal tests' tables: table 0 holds state, table 1 is a log, one of its columns optional
-/// (its values are read aligned).
 fn journal_kinds() -> Vec<Vec<Kind>> {
     vec![vec![Kind::U32], vec![Kind::I64, Kind::U32List, Kind::OptionalI32]]
 }
 
-/// One table's section of an hour, as the collector writes it.
 fn journal_section(table: usize, changed: &[u32], deleted: &[u32], inserted: &[u32], keys: &[u128], inserts: &[crate::state::Values<'_>], runs: &[crate::section::Run<'_>]) -> (usize, Vec<u8>) {
     let kinds = &journal_kinds()[table];
     let hour = crate::section::TableHour { read: None, changed, deleted, inserted, keys, inserts, runs, unrecorded: &[], touched: &[] };
     (table, crate::section::write(kinds, &hour).unwrap())
 }
 
-/// Table 0's hour: its one row (key 1) inserted at the run's first hour with `value`, else set
-/// to it.
 fn state_hour(hour: u32, value: u32) -> (usize, Vec<u8>) {
     use crate::{section::{Op, Run}, state::Values};
     if hour == 0 {
@@ -1583,8 +1455,6 @@ fn state_hour(hour: u32, value: u32) -> (usize, Vec<u8>) {
     journal_section(0, &[0], &[], &[], &[], &[], &[Run { column: 0, op: Op::Set, positions: &[0], values: Some(Values::U32(&values)), except: &[], patches: None }])
 }
 
-/// The journal's hours through the adapter into a store whose table 1 is a log, each hour every
-/// table read and complete with the sections given: the unit, its run ended after the last hour.
 fn through_journal(hours: &[Vec<(usize, Vec<u8>)>]) -> Memory {
     let kinds = journal_kinds();
     let mut store = Store::new(kinds.clone(), vec![false, false]);
@@ -1617,8 +1487,6 @@ fn through_journal(hours: &[Vec<(usize, Vec<u8>)>]) -> Memory {
     memory
 }
 
-/// The log's rows read back by span: each appended (hour, ordinal, key) and each forgotten
-/// (hour, ordinal).
 fn journal_log(memory: &Memory) -> (Vec<(i32, u64, u128)>, Vec<(i32, u64)>) {
     let (mut appended, mut forgotten) = (Vec::new(), Vec::new());
     log_span(&memory.bytes, &memory.pages, &journal_kinds()[1], 1, &[0, 1], 0, 0..=i32::MAX, &mut |hour, event| match event {
@@ -1630,8 +1498,6 @@ fn journal_log(memory: &Memory) -> (Vec<(i32, u64, u128)>, Vec<(i32, u64)>) {
     (appended, forgotten)
 }
 
-/// Each table's status and read mark at every hour of the first block, the reason's text for a
-/// refusal.
 fn journal_statuses(memory: &Memory, table: usize) -> Vec<(String, bool)> {
     let (_, strings) = log_state_named(&memory.bytes, &memory.pages, &journal_kinds()[1], 1, 0).unwrap();
     let page = &memory.pages[0];
@@ -1647,11 +1513,6 @@ fn journal_statuses(memory: &Memory, table: usize) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// A log row the collector inserts is appended and one it deletes is forgotten, its slot taking
-/// the next row, and an hour that only deletes reads no inserted values: read back as a log, with
-/// its forgets. Before the journal door knew logs, a table declared a log refused the collector's
-/// insert, and the hour with it; before an hour of deletes alone was read so, its optional column's
-/// empty values took their alignment and the section ran out ("Section ends inside a value").
 #[test]
 fn a_journal_insert_is_an_append_and_its_delete_a_forget() {
     use crate::state::Values;
@@ -1677,9 +1538,6 @@ fn a_journal_insert_is_an_append_and_its_delete_a_forget() {
     assert_eq!(journal_statuses(&memory, 1), vec![("Complete".to_owned(), true); 3], "a log is read in each hour the collector read it");
 }
 
-/// A log row the collector writes an hour after its insert costs that table from that hour, by
-/// name: the section changes nothing of it, later sections of it are not taken, the table holding
-/// state lands in every hour, and the unit reads back. As state, the write landed.
 #[test]
 fn a_log_row_written_after_its_hour_costs_its_table_from_that_hour_by_name() {
     use crate::{section::{Op, Run}, state::Values};
@@ -1703,8 +1561,6 @@ fn a_log_row_written_after_its_hour_costs_its_table_from_that_hour_by_name() {
     assert_eq!((log.count(), log.listed().unwrap().ones().collect::<Vec<_>>()), (Some(2), vec![0, 1]));
 }
 
-/// A key the collector inserts again after deleting it costs its log from that hour by name:
-/// a log holds a key once a run.
 #[test]
 fn a_log_key_given_again_costs_its_table_from_that_hour_by_name() {
     use crate::state::Values;

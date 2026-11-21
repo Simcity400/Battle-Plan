@@ -1,6 +1,3 @@
-/** The prepare lane beside a playing page, in a real browser: one page plays at 15 hours a frame (1,440 h/s at 96 frames a
- * second) with the lane on and with it off, and the page's frames, commits and requests are compared. Paused, the lane
- * prepares two other pages, each asking a reply and drawing a long list. */
 import { Profiler, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
@@ -20,7 +17,6 @@ import { PreparingPage } from './preparing.ts';
 
 const START = 30_000;
 
-/** The clock's parts the page and the lane read, moved by the test. */
 class Clock {
   hour = START;
   playing = false;
@@ -44,7 +40,6 @@ let host: HTMLElement | null = null;
 const requests: { product: string; hour: number; playing: boolean }[] = [];
 let visibleCommits = 0;
 let preparedRenders = 0;
-/** Renders of a prepared page's widget that saw the clock playing. */
 let playingRenders = 0;
 
 const client = {
@@ -61,7 +56,6 @@ const client = {
 
 const ask = (product: string, hour: number): ProductRequest => ({ sourceId: 'fixture', revision: '1', product, params: { hour } });
 
-/** The page shown: values painted each frame, and a reply asked once a block of 2,880 hours. */
 function ShownPage() {
   const blockOf = () => Math.floor(clock.getHour() / 2880) * 2880;
   const [block, setBlock] = useState(blockOf);
@@ -72,10 +66,8 @@ function ShownPage() {
   return <div><span ref={text} />{reply.data ? <i>{reply.data.rows.length}</i> : null}</div>;
 }
 
-/** A page the lane prepares: a reply at the clock's hour and a long list drawn from it. */
 function OtherPage({ page }: { page: PreparedPage }) {
   preparedRenders++;
-  // As every widget does: it renders again when the clock starts or stops.
   if (useSyncExternalStore(page.runtime.clock.subscribe, page.runtime.clock.getSnapshot).playing) playingRenders++;
   const reply = useProduct<{ rows: number[] }>(page.runtime.client, ask(page.id, clock.getHour()), true);
   return <ul>{reply.data?.rows.map(row => <li key={row}>{page.id} {row}</li>)}</ul>;
@@ -105,7 +97,6 @@ const fixture = {
       <PreparedPages pages={prepared} clock={clock as unknown as PlaybackController} client={client} viewport={viewport} enabled={lane}
         draw={page => <OtherPage page={page} />} />
     </>);
-    // Paused: the lane, when on, prepares every page and ends.
     for (let at = 0; at < 600; at++) {
       await frame();
       if (!lane && at > 30) break;
@@ -138,8 +129,6 @@ const fixture = {
     };
   },
   hostShown: () => !!document.querySelector('[data-prepare]'),
-  /** Play pressed while the lane has a page laid out (the suite seeks, then plays at once): the renders of that page that
-   * saw the clock playing, and whether the page is still laid out once the play's commit is painted. */
   async playWhilePreparing() {
     await fixture.mount(true);
     clock.hour += 2_880; clock.seekSequence++; clock.anchor();
@@ -152,7 +141,6 @@ const fixture = {
     clock.playing = false; clock.anchor();
     return { laid, playingRenders, shown };
   },
-  /** Each read hook's first render of a reply the lane already holds: whether it had the data. */
   async heldFirstRender() {
     root?.unmount(); host?.remove();
     forgetProducts(client, 'fixture');
@@ -172,9 +160,6 @@ const fixture = {
     await frame(); await frame();
     return first;
   },
-  /** Each read hook waiting on its own read when the reply settles in the cache, rendered once more before the reply is
-   * handed to it by a state update that changes nothing (React renders it, then bails out and keeps none of its
-   * effects): whether an effect keyed on the data ran once the reply was handed to it. */
   async heldBetweenRenders() {
     root?.unmount(); host?.remove();
     forgetProducts(client, 'fixture');
@@ -199,7 +184,6 @@ const fixture = {
     await frame(); await frame();
     return { product: !!ran.product, products: !!ran.products, followed: !!ran.followed };
   },
-  /** A widget following its head directly (`useFollow`), shown and in a prepared copy: what each follows, and how each reads. */
   async followed() {
     root?.unmount(); host?.remove();
     const acquired: string[] = [];

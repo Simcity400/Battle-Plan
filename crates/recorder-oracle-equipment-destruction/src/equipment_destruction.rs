@@ -1,6 +1,3 @@
-//! Event self-check and exact saved-unit absence witnesses.
-//! The army save writer saves the remaining pool; the unit save writer
-//! saves both full-handle words.
 use super::{Report, complete, country_context, invalid, required_country_tag};
 use installed_content_save::Save;
 use replay::{campaign::Replay, campaign::SeekResult};
@@ -68,10 +65,6 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             .ok_or_else(|| invalid("EquipmentDestruction signed amount sum overflows"))?;
         *causes.entry(row.cause.as_str()).or_insert(0_usize) += 1;
     }
-    // Pool serializers retain balances, not events; production,
-    // replenishment, upgrades and transfers prevent an exact pool-delta oracle.
-    // Pre/post and pre-free fixtures check amounts, but coordinated live runs
-    // must still verify hook coverage and ownership; no save difference is waived.
     report.compared("EquipmentDestruction", amount_rows);
     report.limitation("Saves serialize remaining pools rather than destruction events, so signed event amounts have only a recording self-check", format!("EquipmentDestruction.amount_raw: {amount_rows} aggregate rows; signed net {signed_net} raw"));
     report.limitation("deletion witnesses certify identity and absence without assigning individual divisions a share of aggregate losses", format!("EquipmentDestruction.cause: {amount_rows} aggregate rows"));
@@ -79,9 +72,6 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
         report.limitation("the save has no destruction-event field for this cause, so its signed net removals have no exact save amount comparator", format!("EquipmentDestruction.{cause}: {count} aggregate rows"));
     }
     if native_gains != 0 {
-        // active_damage writes the signed pre/post difference to Combat Log
-        // but other causes
-        // have no saved event counter and the log is not this table's scope.
         report.limitation("native pool gains are recorded as negative net removals, so these rows correct earlier totals rather than counting losses", format!("EquipmentDestruction.amount_raw: {native_gains} negative aggregate rows are native gain corrections"));
     }
     if unknown != 0 {
@@ -165,9 +155,6 @@ pub fn compare_deletions(
     if live_handles.is_some() {
         report.compared("DivisionEquipmentDeletions.current_census", rows.len());
     }
-    // Roster reading holds volunteer/exile armies outside
-    // country rosters; preceding-census owners compare only with unchanged
-    // expeditionary status, and witnesses never apportion aggregate losses.
     if !rows.is_empty() {
         report.limitation("deleted units lack saved pools and owners, while roster-only saves cannot certify transfer-held divisions or event dispositions", format!("DivisionEquipmentDeletions: {} deletion or roster-transfer witnesses", rows.len()));
     }
@@ -362,9 +349,6 @@ fn compare_previous_census_with_history(
     for (disposition, count) in transferred_before_census {
         report.limitation("a witnessed transfer may return and be deleted before a roster census, or be deleted as a transfer-held orphan", format!("DivisionEquipmentDeletions.{disposition}: {count} transfer-held deletion witnesses absent from the preceding census"));
     }
-    // Deployment/scripted army creation and overrun
-    // have no census barrier. Orphan transfer cleanup
-    // can delete a held identity without a roster census.
     for (disposition, count) in unseen {
         let reason = if matches!(disposition, "division_destroyed" | "division_overrun") {
             "a division may be wiped or overrun before its first complete census, so its prior identity is unverified"
@@ -463,7 +447,6 @@ fn compare_previous_census_with_history(
     {
         report.limitation("unavailable witness intervals and incomplete census history cannot certify intervening deletions or reappearance", format!("DivisionEquipmentDeletions: {} active transfers; {} incomplete witness intervals; {} incomplete censuses; {} unrecorded hours", active.len(), history.incomplete_witness_intervals, history.incomplete_censuses, history.unrecorded_hours));
     }
-    // Divisions.reveal_skip follows the division reveal-skip test.
     if fake != 0 {
         report.limitation("fake-intel census entries are deception objects whose lifecycle has no gameplay loss witness", format!("DivisionEquipmentDeletions: {fake} fake-intel census entries excluded"));
     }

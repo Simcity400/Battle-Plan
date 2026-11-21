@@ -12,7 +12,6 @@ const TEXTS: &str = concat!(
     " PARTY:0 \"[ROOT.GetRulingParty]\"\n",
 );
 
-/// GER (slot 1) ruled by its fascist party.
 fn party_frame() -> DecodedFrame {
     let mut frame = frame();
     *frame.tables[TableId::PoliticalParties.index()] =
@@ -33,9 +32,6 @@ fn party_frame() -> DecodedFrame {
     frame
 }
 
-/// A text's operands, recorded at its hour, expand it again without the hour: as the hour did
-/// in its language, naming countries and selecting keys again in another, and refusing by name
-/// what the preparation did not read.
 #[test]
 fn recorded_operands_expand_a_text_as_its_hour_did() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -76,8 +72,6 @@ fn recorded_operands_expand_a_text_as_its_hour_did() {
         &operands.contexts[*context as usize][0].value,
         Value::Entry(Some((key, _))) if key == b"GER"
     ));
-    // Another language names the countries and localises the selected keys again, and refuses
-    // what only the preparation's language read.
     let mut german = Localisation::clone(&catalogue.localisation);
     german.language = "german".into();
     assert_eq!(expand(&raw, b"RECORDED", &german), expected);
@@ -86,7 +80,6 @@ fn recorded_operands_expand_a_text_as_its_hour_did() {
         error.contains("[ROOT.GetRulingParty]") && error.contains("read in english"),
         "{error}"
     );
-    // A text reading what the recorded one did not is refused by name.
     let error = expand(
         "[ROOT.GetAdjective] [GetModText]",
         b"RECORDED",
@@ -102,14 +95,11 @@ fn recorded_operands_expand_a_text_as_its_hour_did() {
         error.contains("[ROOT.GetName] was not evaluated"),
         "{error}"
     );
-    // Saved and restored, they expand alike.
     let restored: Operands =
         serde_json::from_slice(&serde_json::to_vec(&operands).unwrap()).unwrap();
     assert_eq!(restored, operands);
 }
 
-/// Every command's outcome at the hour, refusals included, is what the operands give back in
-/// the preparation's language.
 #[test]
 fn recorded_refusals_and_values_match_the_hour() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -158,7 +148,6 @@ fn recorded_refusals_and_values_match_the_hour() {
     }
 }
 
-/// A key keeps its first recording, and a text without brackets records nothing.
 #[test]
 fn a_key_keeps_its_first_recording() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -182,7 +171,6 @@ fn a_key_keeps_its_first_recording() {
         text.record(b"TAG", "[ROOT.GetTag]", &soviet, &mut operands),
         Ok("SOV".into())
     );
-    // A text read at another hour than the operands' is refused, not recorded.
     let mut later = Operands::new(frame.hour + 1);
     assert_eq!(
         text.record_root(b"TAG", "[ROOT.GetTag]", &mut later),
@@ -211,8 +199,6 @@ fn a_key_keeps_its_first_recording() {
     );
 }
 
-/// Variables read at the hour expand as it read them; commands whose values depend on their
-/// order are refused when another text evaluates them in another.
 #[test]
 fn recorded_variables_keep_their_value_and_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -221,7 +207,6 @@ fn recorded_variables_keep_their_value_and_order() {
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
     let mut frame = frame();
-    // World::new also requires Provinces; this numeric-only world has none.
     *frame.tables[TableId::Provinces.index()] =
         TableView::Complete(TableRows::Provinces(Vec::new()));
     for id in [
@@ -268,9 +253,6 @@ fn recorded_variables_keep_their_value_and_order() {
     }
 }
 
-/// What a property expands inside it is not the text's own: a reader reading the text again
-/// takes the outer command for the outer command, and knows whether the property evaluated a
-/// scripted localisation.
 #[test]
 fn a_property_expanding_text_inside_records_only_its_text() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -325,7 +307,6 @@ fn balance_range(range: &str, expected: &str, stateful: bool) {
             ..Default::default()
         }],
     );
-    // In the Soviet Union's scope: GER's range text expands ROOT as GER, the text's own as SOV.
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 2);
     let raw = "[GER.GetActiveRangeName]|[ROOT.GetTag]";
     let hour = text.expand(raw);
@@ -354,8 +335,6 @@ fn balance_range(range: &str, expected: &str, stateful: bool) {
     );
 }
 
-/// Commands a scripted localisation's text in another language leaves out may have set what the
-/// commands after them read: the reader refuses it by name rather than give their values.
 #[test]
 fn a_scripted_localisation_leaving_out_what_later_values_read_is_refused() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -368,8 +347,6 @@ fn a_scripted_localisation_leaving_out_what_later_values_read_is_refused() {
         text: String::new(),
         stateful,
     };
-    // A property that evaluated a scripted localisation may have set them too; one that did not
-    // may be left out.
     for (set, stateful) in [
         (Value::Entry(None), true),
         (read(true), true),
@@ -412,7 +389,6 @@ fn a_scripted_localisation_leaving_out_what_later_values_read_is_refused() {
     }
 }
 
-/// Scripted localisations nested as deep as the game nests them read on a stack that holds them.
 #[test]
 fn scripted_localisations_nested_to_the_backstop_are_read_again() {
     engine_executable::executable_tables::initialize_for_tests()

@@ -8,16 +8,11 @@ import { buildingChoices, constructionWindows, logReach, mergeWindows, validateC
 import type { ProjectAt } from './constructionData';
 import type { ConstructionLogReply } from '../../generated/dashboard';
 
-/** The branch's construction log manifest: its windows and the building types its lines name. */
 function useManifest(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {
   return useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'construction-log-manifest', params: { branchId: track.branch.id } } : null, active, validateConstructionLogManifest, track?.source);
 }
 
-/** The construction log at `hour` (null outside the branch): the windows of the branch's blocks it holds, joined. It
- * holds the hour's window, the next during playback, and back as far as the drawn rows need (`onDrawn`); while the
- * hour's window loads it keeps showing the last hour it held. `hour` moves only when the widget renders for a change,
- * so the windows wanted move a block at a time. */
 export function useConstructionLog(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean, hour: number | null, live: boolean) {
   const manifest = useManifest(runtime, track, active);
   const data = manifest.data;
@@ -42,8 +37,6 @@ export function useConstructionLog(runtime: WidgetRuntime, track: BoundTrack | u
     retry: manifest.error ? manifest.retry : windows.retry, onDrawn };
 }
 
-/** The Building types setting's choices: the types this campaign's lines name, as the game names and pictures them
- * (never a fixed list). */
 export function useConstructionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   return { types: buildingChoices(useManifest(runtime, track, true).data) };

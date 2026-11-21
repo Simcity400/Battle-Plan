@@ -9,7 +9,6 @@ const reply = (regions: { region: string; name: string | null; missing: string |
   regions,
 });
 
-/** The live cells of regions' words: `[region, ours, enemy]`, a word left out not recorded. */
 const words = (pairs: [string, number | null, number | null][]) => valuesOf(new Map(pairs.flatMap(([region, ours, enemy]) => [
   ...ours === null ? [] : [[liveKey(region, 'ours'), ours] as const], ...enemy === null ? [] : [[liveKey(region, 'enemy'), enemy] as const]])),
 'Not recorded at this hour');

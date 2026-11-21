@@ -1,4 +1,3 @@
-//! Exact same-pass OOB operands loaned to optional child-front capture.
 
 use super::{NAVAL_PACK_N, NavalJob, OOB_MASK};
 use crate::raw::{RawLog, Recorded};
@@ -33,10 +32,6 @@ impl Memory for OrderGroupSource<'_> {
                 else {
                     return false;
                 };
-                // copy_oob_root_spans emits the own flag then its anchor,
-                // including the failed field before continuing its suffix.
-                // Parent flag copies never emit this unique anchor. Its
-                // own success is irrelevant: its position selects the flag.
                 if anchor.mask != OOB_MASK
                     || anchor.bulk
                     || flag.addr != address
@@ -54,9 +49,6 @@ impl Memory for OrderGroupSource<'_> {
                 true
             }
             16 => {
-                // nspan logs each root's full child header exactly once.
-                // Refuse missing/repeated headers and retain exact failures;
-                // neither a bulk span nor a newly requested 4B read may heal it.
                 let Some((header, _)) = self.recorded.unique_observation(address, 16) else {
                     return false;
                 };

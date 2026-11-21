@@ -10,7 +10,6 @@ fn step(hour: i32, cells: Option<Vec<Cell>>) -> Step {
     Step { hour, cells: cells.map(Vec::into_boxed_slice) }
 }
 
-/// One assignment row's cells, every column of `ResearchAssignments` in order.
 fn assignment(first: i32, after: Option<i32>, last: Option<i32>, ended: Option<i32>, outcome: u8, observed: Option<i32>, awaiting: bool) -> Vec<Cell> {
     let mut cells = vec![Cell::Missing; TableId::ResearchAssignments.field_count()];
     let mut set = |name: &str, cell: Cell| cells[dashboard_declare::field(TableId::ResearchAssignments, name).unwrap()] = cell;
@@ -52,7 +51,6 @@ fn coverage_is_each_stretch_a_row_lives_and_adjacent_stretches_join() {
     let mut slots = BTreeMap::new();
     coverage(&history, &mut covered, &mut slots);
     let span = |first_hour, last_hour| ResearchCoverage { first_hour, last_hour };
-    // A read starting a cover the hour after the last one ended is the same stretch of coverage.
     assert_eq!(covered, [span(100, 139), span(150, 300)]);
     assert_eq!(slots[&0], [span(100, 129), span(150, 300)]);
     assert_eq!(slots[&1], [span(160, 199)]);
@@ -64,7 +62,6 @@ fn an_assignment_is_its_rows_last_cells_across_lanes_and_one_still_active_is_obs
     let lane = |index: u128, lane: u128| base | index << 16 | lane;
     let history = assignments(vec![
         (lane(0, 0), vec![step(100, Some(assignment(100, None, None, None, A::ACTIVE, None, false))), step(200, Some(assignment(200, Some(176), None, None, A::ACTIVE, None, false)))]),
-        // Switched out at 200, it waits in a lane of its own until its completion is proven at 220.
         (lane(0, 1), vec![
             step(200, Some(assignment(100, None, Some(176), Some(200), A::SWITCHED, None, true))),
             step(220, Some(assignment(100, None, Some(176), Some(200), A::COMPLETED, Some(220), false))),
@@ -79,7 +76,6 @@ fn an_assignment_is_its_rows_last_cells_across_lanes_and_one_still_active_is_obs
     assert_eq!(shown, [(100, ResearchOutcome::Completed, Some(200), Some(220), 176), (200, ResearchOutcome::Active, None, None, 392)]);
     assert_eq!(slots[&0][0].token, "radio");
     assert_eq!(slots[&0][0].database_index, 9);
-    // Where the timeline goes on in another run, what was active at the stretch's end is not seen to end.
     let slots = entries(&history, Some(392), Some(401), &mut unreadable).unwrap();
     assert_eq!((slots[&0][1].outcome, slots[&0][1].ended_by_hour), (ResearchOutcome::Unknown, Some(401)));
 }
@@ -100,7 +96,6 @@ fn input(index: u32, handle: u32, occurrence: i32, token: &[u8], progress: i64) 
     }
 }
 
-/// A frame of holder (5, 7) whose one owner, raw country 11, was read at `read`.
 fn frame(hour: i32, read: i32, inputs: Vec<ResearchInputRow>, modifiers: Vec<ResearchModifierRow>) -> replay_frame::frame::DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     let mut set = |table: TableId, rows: TableRows| *frame.tables[table.index()] = TableView::Complete(rows);
@@ -149,7 +144,6 @@ fn slots_at_an_hour_join_the_active_assignment_and_say_why_they_are_unknown() {
     assert_eq!(slots.len(), 2);
     let researching = &slots[0];
     assert_eq!((researching.state.first_hour, researching.state.last_hour), (120, 120), "as read, whatever the hour asked");
-    // Its progress is a live cell: progress over the cost operands' base, the idle slot none.
     let live = live.finish();
     assert_eq!(live.groups.len(), 1);
     assert_eq!((live.groups[0].table, live.groups[0].keys.clone()), (TableId::ResearchInputs, vec![11u128 << 32]));
@@ -161,17 +155,13 @@ fn slots_at_an_hour_join_the_active_assignment_and_say_why_they_are_unknown() {
     assert_eq!(researching.state.token.as_deref(), Some("radio"));
     let progress = researching.progress.as_ref().unwrap();
     assert_eq!((progress.progress_raw.as_str(), progress.base_days_raw.as_deref()), ("4000000", Some("10000000")));
-    // Its modifiers were not recorded and it did not start at this read: its days left are not guessed.
     assert_eq!(researching.state.details.as_ref().unwrap().remaining_days, None);
     assert_eq!((slots[1].state.token.as_ref(), slots[1].progress.as_ref()), (None, None));
     assert_eq!(grants.grants.len(), 1);
     assert_eq!(grants.grants[0].technologies[0].token, "radar");
-    // Another technology in the slot joins no assignment.
     let (_, slots, _) = slots::slots(&frame(130, 120, vec![input(0, 32, 10, b"radar", 0)], Vec::new()), owner, 130, &none, &Cells::default()).unwrap();
     assert_eq!((slots[0].state.entry_first_observed_hour, slots[0].progress.as_ref()), (None, None));
-    // No inventory rows read with the slots: the inventory is unavailable by name, never empty.
     assert!(slots::slots(&frame(130, 120, rows.clone(), Vec::new()), owner, 130, &none, &Cells::default()).unwrap().2.unavailable.is_some());
-    // Uncovered, or with slots out of order, nothing is shown and the reason is named.
     let mut uncovered = frame(130, 120, rows.clone(), Vec::new());
     *uncovered.tables[TableId::ResearchCoverage.index()] = TableView::Complete(TableRows::ResearchCoverage(Vec::new()));
     assert_eq!(slots::slots(&uncovered, owner, 130, &none, &Cells::default()).unwrap_err(), "No research read covers this hour");
@@ -219,12 +209,9 @@ fn a_breakdown_follows_one_assignment_read_by_read_and_stops_where_its_slot_hold
     let empty = || History { columns: Vec::new(), to: 400, texts: Vec::new(), keys: Vec::new() };
     let histories = Histories { samples, inputs, slot_modifiers: empty(), shared_modifiers: empty(), bonuses: empty() };
     let (states, progress) = breakdown::assignment(&histories, 11, 0, 100, 400, true, &|_| None).unwrap();
-    // Its first read takes the slot's speed (a witnessed start), later ones a day's progress.
     let days = |state: &ResearchSlotState| state.details.as_ref().unwrap().remaining_days;
-    // The third read only counts the second's days down: one state.
     assert_eq!(states.iter().map(|state| (state.first_hour, state.last_hour, days(state))).collect::<Vec<_>>(), [(100, 123, Some(99)), (124, 171, Some(49))]);
     assert_eq!(progress.iter().map(|sample| (sample.first_hour, sample.progress_raw.as_str())).collect::<Vec<_>>(), [(100, "100000"), (124, "300000"), (148, "500000")]);
-    // A start the recording did not witness has no rate at its first read.
     let (states, _) = breakdown::assignment(&histories, 11, 0, 100, 400, false, &|_| None).unwrap();
     assert_eq!(days(&states[0]), None);
     assert!(breakdown::assignment(&histories, 11, 0, 172, 400, true, &|_| None).is_ok());
@@ -247,6 +234,5 @@ fn a_state_read_again_continues_while_only_its_days_left_count_down() {
     assert!(continues(&read(100, 123, Some(10)), &read(124, 147, Some(9))));
     assert!(continues(&read(100, 123, Some(10)), &read(124, 147, Some(10))));
     assert!(!continues(&read(100, 123, Some(10)), &read(124, 147, Some(7))));
-    // Never across hours no state holds.
     assert!(!continues(&read(100, 120, Some(10)), &read(124, 147, Some(9))));
 }

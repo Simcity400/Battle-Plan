@@ -1,11 +1,3 @@
-//! Scoring for reference pairs: the metrics, masks and difference image behind `--compare`.
-//!
-//! A reference pair is a game screenshot and the viewer's render of the same hour and camera
-//! position. This module turns such a pair into numbers: mean absolute error
-//! in gamma space, a luminance SSIM on a three level pyramid, and a mean CIE76 colour distance,
-//! reported once for the frame and once per cell of a region grid so a worker can see which part
-//! of the frame is wrong. Everything here is a pure function over decoded images except
-//! [`read_png`] and [`write_png`].
 
 use serde::Serialize;
 use std::{
@@ -18,23 +10,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Width supported by the standard interface exclusion set.
 pub const GAME_UI_WIDTH: u32 = 2560;
-/// Height supported by both built-in interface exclusion sets.
 pub const GAME_UI_HEIGHT: u32 = 1440;
-/// Width supported by the ultrawide interface exclusion set.
 pub const GAME_UI_WIDE_WIDTH: u32 = 3440;
 
-/// The game's interface regions at 2560x1440, excluded by `--exclude-game-ui`.
-///
-/// These regions exclude the fixed interface at the supported frame size:
-///
-/// - Top bar `0,0 2560x100`.
-/// - Army group buttons `890,100 190x66`, including their flag strips.
-/// - Right side panels `2440,980 120x460`, including map mode controls and the bottom button block.
-/// - Bottom centre portraits `1186,1286 216x154`, including their tabs and banners.
-///
-/// Operating system overlays require additional rectangles supplied through `--exclude`.
 pub const GAME_UI_EXCLUSIONS: [Rect; 4] = [
     Rect {
         x: 0,
@@ -62,20 +41,6 @@ pub const GAME_UI_EXCLUSIONS: [Rect; 4] = [
     },
 ];
 
-/// The game's interface regions at 3440x1440 (the same 1.25 interface scale on an ultrawide
-/// window), excluded by `--exclude-game-ui`.
-///
-/// Across changing map views, the interface consists of pixels whose
-/// luminance varies by at most 6 across those different map views, and each box is that static
-/// region rounded outwards by two pixels:
-///
-/// - Top bar `0,0 3440x100`. Rows 94 to 98 are the last mostly static rows across the width; row 99
-///   is map in every column outside the two hangs below.
-/// - Army group buttons `1990,100 276x8`. Their flag strips hang to row 106 between x 1996 and 2259.
-/// - Date and speed cluster `3280,100 160x16`. It hangs to row 115 between x 3283 and the right edge.
-/// - Right side panels `3345,997 95x443`. The map mode column is static from x 3347 and row 999.
-/// - Bottom centre portraits `1584,1301 200x139`. The two leader cards span x 1586..1781 and rows
-///   1303..1439.
 pub const GAME_UI_WIDE_EXCLUSIONS: [Rect; 5] = [
     Rect {
         x: 0,
@@ -109,7 +74,6 @@ pub const GAME_UI_WIDE_EXCLUSIONS: [Rect; 5] = [
     },
 ];
 
-/// The interface exclusion rectangles for a supported game screenshot size.
 pub fn game_ui_exclusions(width: u32, height: u32) -> Option<&'static [Rect]> {
     match (width, height) {
         (GAME_UI_WIDTH, GAME_UI_HEIGHT) => Some(&GAME_UI_EXCLUSIONS),
@@ -118,19 +82,13 @@ pub fn game_ui_exclusions(width: u32, height: u32) -> Option<&'static [Rect]> {
     }
 }
 
-/// Factor the per channel absolute difference is multiplied by in the `--diff` image.
 pub const DIFF_AMPLIFICATION: u16 = 4;
-/// Colour the `--diff` image uses for masked pixels.
 pub const DIFF_MASKED: [u8; 3] = [128, 128, 128];
 
-/// Side of the SSIM Gaussian window.
 const SSIM_WINDOW: usize = 11;
-/// Standard deviation of the SSIM Gaussian window.
 const SSIM_SIGMA: f64 = 1.5;
-/// Number of pyramid levels SSIM is reported on; level 0 is full resolution.
 pub const SSIM_LEVELS: usize = 3;
 
-/// An 8 bit RGB image held as tightly packed `width * height * 3` bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
     width: u32,
@@ -139,7 +97,6 @@ pub struct Image {
 }
 
 impl Image {
-    /// Builds an image from packed RGB bytes, rejecting an empty or mismatched buffer.
     pub fn from_rgb(width: u32, height: u32, rgb: Vec<u8>) -> io::Result<Self> {
         if width == 0 || height == 0 {
             return Err(invalid("an image needs a positive width and height"));
@@ -157,22 +114,18 @@ impl Image {
         Ok(Self { width, height, rgb })
     }
 
-    /// Width in pixels.
     pub fn width(&self) -> u32 {
         self.width
     }
 
-    /// Height in pixels.
     pub fn height(&self) -> u32 {
         self.height
     }
 
-    /// The packed RGB bytes, row major from the top left.
     pub fn rgb(&self) -> &[u8] {
         &self.rgb
     }
 
-    /// The pixel at `(x, y)`, or `None` outside the image.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 3]> {
         if x >= self.width || y >= self.height {
             return None;
@@ -180,7 +133,6 @@ impl Image {
         Some(self.at(y as usize * self.width as usize + x as usize))
     }
 
-    /// Whether `other` has the same pixel dimensions.
     pub fn same_size(&self, other: &Self) -> bool {
         self.width == other.width && self.height == other.height
     }
@@ -191,11 +143,6 @@ impl Image {
     }
 }
 
-/// Bilinearly resamples an image by `factor`.
-///
-/// Use this to align the viewer frame with a larger screenshot before scoring. Pixel
-/// centres are aligned: destination pixel `i` samples source coordinate
-/// `(i + 0.5) / factor - 0.5`, clamped at the edges.
 pub fn upscale(image: &Image, factor: f64) -> io::Result<Image> {
     if !factor.is_finite() || factor <= 0.0 {
         return Err(invalid("the upscale factor must be finite and positive"));
@@ -246,7 +193,6 @@ pub fn upscale(image: &Image, factor: f64) -> io::Result<Image> {
     Image::from_rgb(width, height, rgb)
 }
 
-/// Decodes an 8 bit RGB or RGBA PNG, dropping any alpha channel.
 pub fn decode_png(bytes: &[u8]) -> io::Result<Image> {
     let mut reader = png::Decoder::new(io::Cursor::new(bytes))
         .read_info()
@@ -290,14 +236,12 @@ pub fn decode_png(bytes: &[u8]) -> io::Result<Image> {
     Image::from_rgb(info.width, info.height, rgb)
 }
 
-/// Reads a PNG from `path`, naming the file in any error.
 pub fn read_png(path: &Path) -> io::Result<Image> {
     let bytes = std::fs::read(path)
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
     decode_png(&bytes).map_err(|error| invalid(format!("{}: {error}", path.display())))
 }
 
-/// Writes an RGB PNG to `path`.
 pub fn write_png(path: &Path, image: &Image) -> io::Result<()> {
     let file = File::create(path)
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
@@ -312,21 +256,15 @@ pub fn write_png(path: &Path, image: &Image) -> io::Result<()> {
     writer.finish().map_err(io::Error::other)
 }
 
-/// A pixel rectangle; `x` and `y` are inclusive and `x + width` and `y + height` are exclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Rect {
-    /// Left edge in pixels.
     pub x: u32,
-    /// Top edge in pixels.
     pub y: u32,
-    /// Width in pixels; always positive.
     pub width: u32,
-    /// Height in pixels; always positive.
     pub height: u32,
 }
 
 impl Rect {
-    /// Parses the `x,y,w,h` form taken by `--exclude`.
     pub fn parse(text: &str) -> io::Result<Self> {
         let values = text
             .split(',')
@@ -350,18 +288,15 @@ impl Rect {
         }
     }
 
-    /// Right edge, exclusive, saturating rather than overflowing.
     pub fn right(&self) -> u32 {
         self.x.saturating_add(self.width)
     }
 
-    /// Bottom edge, exclusive, saturating rather than overflowing.
     pub fn bottom(&self) -> u32 {
         self.y.saturating_add(self.height)
     }
 }
 
-/// Which pixels of a frame take part in the comparison.
 #[derive(Clone, Debug)]
 pub struct Mask {
     width: u32,
@@ -370,7 +305,6 @@ pub struct Mask {
 }
 
 impl Mask {
-    /// A mask that includes every pixel of a `width` by `height` frame.
     pub fn full(width: u32, height: u32) -> io::Result<Self> {
         if width == 0 || height == 0 {
             return Err(invalid("a mask needs a positive width and height"));
@@ -385,7 +319,6 @@ impl Mask {
         })
     }
 
-    /// Builds a mask from a mask PNG: a pixel is excluded where all three channels are zero.
     pub fn from_image(image: &Image) -> Self {
         let mut included = Vec::with_capacity(image.width() as usize * image.height() as usize);
         for y in 0..image.height() {
@@ -400,7 +333,6 @@ impl Mask {
         }
     }
 
-    /// Excludes every pixel of `rect` that lies inside the frame.
     pub fn exclude_rect(&mut self, rect: Rect) {
         let left = rect.x.min(self.width) as usize;
         let right = rect.right().min(self.width) as usize;
@@ -413,87 +345,58 @@ impl Mask {
         }
     }
 
-    /// Whether the pixel at `(x, y)` takes part in the comparison.
     pub fn includes(&self, x: u32, y: u32) -> bool {
         x < self.width
             && y < self.height
             && self.included[y as usize * self.width as usize + x as usize]
     }
 
-    /// Width in pixels.
     pub fn width(&self) -> u32 {
         self.width
     }
 
-    /// Height in pixels.
     pub fn height(&self) -> u32 {
         self.height
     }
 
-    /// How many pixels take part in the comparison.
     pub fn included_pixels(&self) -> u64 {
         self.included.iter().filter(|included| **included).count() as u64
     }
 }
 
-/// Similarity metrics over one set of unmasked pixels.
-///
-/// Every value is `None` when it cannot be computed: the means when the set is empty, an SSIM
-/// level when no complete 11x11 window of that level fits inside the unmasked pixels.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Metrics {
-    /// How many unmasked pixels the means cover.
     pub pixels: u64,
-    /// Mean absolute error per channel in 0..255 gamma space units, red then green then blue.
     pub mae_channels: [Option<f64>; 3],
-    /// Mean absolute error over all three channels in 0..255 gamma space units.
     pub mae: Option<f64>,
-    /// Mean CIE76 colour distance in Lab, sRGB decoded to linear light.
     pub delta_e: Option<f64>,
-    /// Luminance SSIM per pyramid level; index 0 is full resolution, each level halves both sides.
     pub ssim_levels: [Option<f64>; SSIM_LEVELS],
 }
 
-/// One cell of the region grid.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Region {
-    /// Row major index of the cell, `row * columns + column`.
     pub index: u32,
-    /// Zero based row of the cell, counted from the top.
     pub row: u32,
-    /// Zero based column of the cell, counted from the left.
     pub column: u32,
-    /// The pixels the cell covers.
     pub rect: Rect,
-    /// Metrics over the unmasked pixels of the cell.
     pub metrics: Metrics,
 }
 
-/// The result of comparing one reference pair.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Report {
-    /// Width of both images in pixels.
     pub width: u32,
-    /// Height of both images in pixels.
     pub height: u32,
-    /// Columns of the region grid.
     pub columns: u32,
-    /// Rows of the region grid.
     pub rows: u32,
-    /// How many pixels the mask excluded.
     pub excluded_pixels: u64,
-    /// Metrics over every unmasked pixel of the frame.
     pub overall: Metrics,
-    /// Metrics per cell of the region grid, in row major order.
     pub regions: Vec<Region>,
 }
 
-/// Rec. 601 luminance of a gamma encoded RGB pixel, in the same 0..255 units.
 fn luminance(pixel: [u8; 3]) -> f64 {
     0.299 * pixel[0] as f64 + 0.587 * pixel[1] as f64 + 0.114 * pixel[2] as f64
 }
 
-/// The sRGB electro-optical transfer function for one 0..255 channel.
 fn srgb_to_linear(channel: u8) -> f64 {
     let value = channel as f64 / 255.0;
     if value <= 0.04045 {
@@ -503,7 +406,6 @@ fn srgb_to_linear(channel: u8) -> f64 {
     }
 }
 
-/// CIE Lab under D65 for a gamma encoded sRGB pixel, `table` decoding sRGB to linear light.
 fn srgb_to_lab(pixel: [u8; 3], table: &[f64; 256]) -> [f64; 3] {
     let (r, g, b) = (
         table[pixel[0] as usize],
@@ -524,7 +426,6 @@ fn srgb_to_lab(pixel: [u8; 3], table: &[f64; 256]) -> [f64; 3] {
     [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
 }
 
-/// The normalised 1-D Gaussian used by both SSIM convolution passes.
 fn gaussian_kernel() -> [f64; SSIM_WINDOW] {
     let mut kernel = [0.0f64; SSIM_WINDOW];
     let centre = (SSIM_WINDOW as f64 - 1.0) / 2.0;
@@ -540,8 +441,6 @@ fn gaussian_kernel() -> [f64; SSIM_WINDOW] {
     kernel
 }
 
-/// Separable Gaussian convolution keeping only the window centres whose whole 11x11 window lies
-/// inside the plane, so the result is `(width - 10)` by `(height - 10)`.
 fn blur(values: &[f64], width: usize, height: usize, kernel: &[f64; SSIM_WINDOW]) -> Vec<f64> {
     let out_width = width - SSIM_WINDOW + 1;
     let out_height = height - SSIM_WINDOW + 1;
@@ -570,7 +469,6 @@ fn blur(values: &[f64], width: usize, height: usize, kernel: &[f64; SSIM_WINDOW]
     result
 }
 
-/// The window centres whose whole 11x11 window is unmasked, matching [`blur`]'s output shape.
 fn erode(included: &[bool], width: usize, height: usize) -> Vec<bool> {
     let out_width = width - SSIM_WINDOW + 1;
     let out_height = height - SSIM_WINDOW + 1;
@@ -592,7 +490,6 @@ fn erode(included: &[bool], width: usize, height: usize) -> Vec<bool> {
     result
 }
 
-/// Mean SSIM over the fully unmasked windows of one pyramid level, or `None` when there are none.
 fn ssim_level(
     game: &[f64],
     viewer: &[f64],
@@ -635,7 +532,6 @@ fn ssim_level(
     (count > 0).then(|| total / count as f64)
 }
 
-/// Halves a plane with a 2x2 box average, dropping an odd last row or column.
 fn downsample(values: &[f64], width: usize, height: usize) -> Vec<f64> {
     let (out_width, out_height) = (width / 2, height / 2);
     let mut result = Vec::with_capacity(out_width * out_height);
@@ -650,7 +546,6 @@ fn downsample(values: &[f64], width: usize, height: usize) -> Vec<f64> {
     result
 }
 
-/// Halves a mask plane; a coarse pixel is unmasked only when all four fine pixels are.
 fn downsample_included(included: &[bool], width: usize, height: usize) -> Vec<bool> {
     let (out_width, out_height) = (width / 2, height / 2);
     let mut result = Vec::with_capacity(out_width * out_height);
@@ -666,7 +561,6 @@ fn downsample_included(included: &[bool], width: usize, height: usize) -> Vec<bo
     result
 }
 
-/// Luminance SSIM on a [`SSIM_LEVELS`] level pyramid, level 0 at full resolution.
 fn ssim_pyramid(
     game: &[f64],
     viewer: &[f64],
@@ -691,7 +585,6 @@ fn ssim_pyramid(
     levels
 }
 
-/// Copies the `rect` sub-rectangle out of a full frame plane.
 fn crop<T: Copy>(values: &[T], width: usize, rect: Rect) -> Vec<T> {
     let mut result = Vec::with_capacity(rect.width as usize * rect.height as usize);
     for y in rect.y..rect.bottom() {
@@ -701,14 +594,12 @@ fn crop<T: Copy>(values: &[T], width: usize, rect: Rect) -> Vec<T> {
     result
 }
 
-/// The `index`th of `parts` equal shares of `total`, as a half-open range.
 fn share(total: u32, parts: u32, index: u32) -> (u32, u32) {
     let start = (total as u64 * index as u64 / parts as u64) as u32;
     let end = (total as u64 * (index as u64 + 1) / parts as u64) as u32;
     (start, end)
 }
 
-/// Per pixel quantities shared by the frame metrics and every region's metrics.
 struct Planes {
     width: usize,
     height: usize,
@@ -719,7 +610,6 @@ struct Planes {
 }
 
 impl Planes {
-    /// Decodes both images into the per pixel quantities the metrics are built from.
     fn build(game: &Image, viewer: &Image, mask: &Mask) -> Self {
         let mut table = [0.0f64; 256];
         for (channel, value) in table.iter_mut().enumerate() {
@@ -749,7 +639,6 @@ impl Planes {
         }
     }
 
-    /// Metrics over the unmasked pixels of `rect`.
     fn metrics(&self, game: &Image, viewer: &Image, rect: Rect) -> Metrics {
         let mut sums = [0.0f64; 3];
         let mut delta_e = 0.0f64;
@@ -797,7 +686,6 @@ impl Planes {
     }
 }
 
-/// Rejects a pair of images and a mask that do not share one pixel size.
 fn check_sizes(game: &Image, viewer: &Image, mask: &Mask) -> io::Result<()> {
     if !game.same_size(viewer) {
         return Err(invalid(format!(
@@ -820,10 +708,6 @@ fn check_sizes(game: &Image, viewer: &Image, mask: &Mask) -> io::Result<()> {
     Ok(())
 }
 
-/// Compares a reference pair over the unmasked pixels, overall and per cell of a grid.
-///
-/// `columns` and `rows` describe the region grid; cells are reported row major. Both images and
-/// the mask must have the same pixel dimensions and the grid must fit the image.
 pub fn compare(
     game: &Image,
     viewer: &Image,
@@ -878,8 +762,6 @@ pub fn compare(
     })
 }
 
-/// The `--diff` image: the absolute per channel difference amplified by [`DIFF_AMPLIFICATION`]
-/// and clamped, with masked pixels painted [`DIFF_MASKED`].
 pub fn diff_image(game: &Image, viewer: &Image, mask: &Mask) -> io::Result<Image> {
     check_sizes(game, viewer, mask)?;
     let mut rgb = Vec::with_capacity(game.rgb().len());
@@ -900,7 +782,6 @@ pub fn diff_image(game: &Image, viewer: &Image, mask: &Mask) -> io::Result<Image
     Image::from_rgb(game.width(), game.height(), rgb)
 }
 
-/// Formats an optional metric for the text report.
 fn show(value: Option<f64>) -> String {
     match value {
         Some(value) => format!("{value:.4}"),
@@ -909,7 +790,6 @@ fn show(value: Option<f64>) -> String {
 }
 
 impl Report {
-    /// The plain text report: `metric=value` lines for the frame, then the region table.
     pub fn to_text(&self) -> String {
         let mut text = String::new();
         text.push_str(&format!("width={}\n", self.width));

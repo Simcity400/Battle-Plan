@@ -1,4 +1,3 @@
-//! Exact auxiliary occurrence comparison, independent of headline caches.
 use super::*;
 use engine_intelligence::network_auxiliary::{Entry, NATIONAL, kind};
 use installed_content_save::intel::{IntelNetworkEntry, network_auxiliary as saved_aux};
@@ -363,8 +362,6 @@ mod tests {
             assert!(!check(changed).differences.is_empty());
         }
 
-        // Session 9's YUG network as the game writes it: each occupied-country
-        // record an anonymous `{ "TAG" { ... } }` pair.
         let save = br#"countries={OWN={} YUG={} ROM={}}
             strategic_operatives={ strategic_operative={ 7={ intel_network={ target="YUG"
                 intel_network={ vertices=1 state_id={ 107 } gain={ 0.4 }

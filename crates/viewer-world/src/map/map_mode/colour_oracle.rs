@@ -1,21 +1,3 @@
-//! A scripted map mode's `country`, `state` and `state_controller` layers: each target's `color`
-//! callback, run through the shared trigger evaluator, colours its own region.
-//!
-//! The callback runs in an event scope whose ROOT, THIS and PREV are the viewing country and whose
-//! FROM is the target: the country, or the state, whose own FROM is itself, or for a
-//! `state_controller` layer the controller of that portion of the state. A callback that holds
-//! leaves its colour in the temps `red`, `green`, `blue` and `alpha` (each clamped to 0..1, unset
-//! reading 0), `highlighted` (pulsing when non-zero) and, with `thickness = yes`, `thickness`,
-//! set to 1 before the callback runs and used unclamped as the region's fill factor. A callback
-//! the evaluator cannot decide is refused, counted by its reason.
-//!
-//! Each target's border is kept between refreshes, as the game keeps it. A refresh first compares
-//! the target's province list with the kept one and clears the border when it changed; the colour
-//! is then set only when the callback holds with an alpha above 0, so a callback that fails keeps
-//! the colour of an unchanged border. The game refreshes when the mode is selected or loaded and,
-//! with `update_daily` enabled, at each day's first hour; between refreshes the kept
-//! borders show as they are. A replay's seek or fresh open acts as a load and starts from empty
-//! borders; playing forward carries them across the days.
 use super::{Inputs, ModeLayer, Style, finish, pack};
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use dashboard_text::triggers::{Eval, Evaluator, Temps};
@@ -26,25 +8,18 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use viewer_foundation::map::tables::core;
 
-/// One in fixed5.
 const FIXED5: i64 = 100_000;
 
-/// Hours in a day: the daily refresh runs at each day's first hour, hour index 0.
 const HOURS_PER_DAY: i32 = 24;
 
-/// The flat gradient byte a layer without `thickness = yes` fills its regions with.
 pub(super) const FLAT_GRADIENT: u8 = 244;
 
 pub use map_display_data::landscape::{Border, ColourState, LayerState, TargetId};
 
-/// Whether this hour refreshes the mode's colour layers given the previous hour's borders: a
-/// first hour (no previous, as after a seek, an open or a selection) always does; otherwise the
-/// day's first hour does when the mode updates daily.
 pub(super) fn refreshes(previous: Option<&ColourState>, update_daily: bool, hour: i32) -> bool {
     previous.is_none() || (update_daily && hour.rem_euclid(HOURS_PER_DAY) == 0)
 }
 
-/// Actual native refresh calls in this hour's event interval, after the effect's gates.
 pub(super) fn forced_refresh(mode: &str, inputs: &Inputs) -> Result<bool, String> {
     use replay_data::rows::{MapEventFamily, MapEventPayload};
     let Some(index) = inputs
@@ -83,18 +58,13 @@ pub(super) fn forced_refresh(mode: &str, inputs: &Inputs) -> Result<bool, String
     Ok(interval.events.iter().any(|event| matches!(event.payload, MapEventPayload::ScriptedMapRefresh(ordinal) if ordinal as usize == index)))
 }
 
-/// What one target paints, and the scope its callback runs in.
 struct Target {
     id: TargetId,
     object: EventObject,
-    /// A `state_controller` portion's controller, its FROM's FROM.
     controller: Option<u32>,
     provinces: Vec<u32>,
 }
 
-/// The layer's kept borders after this hour: refreshed from `previous` when `refresh`, else
-/// `previous` as it is. The state's refusals are pushed to `warnings` on every hour, refreshed or
-/// not; a layer refused outright keeps no borders.
 pub(super) fn borders(
     mode: &str,
     side: &str,
@@ -134,12 +104,6 @@ fn refreshed(
     let Some(viewer) = inputs.selected else {
         return refused_outright(format!("{what}'s colour script needs a viewing country"));
     };
-    // An effect refresh inherits its caller's active TLS context. Unlike a
-    // standalone refresh, unwritten temps need not be zero; earlier targets
-    // can also leave values there. Do not infer those transient values from
-    // the recorded event. Missing refresh evidence also cannot exclude such
-    // a call on a first or daily repaint. Only a complete negative interval
-    // proves a fresh store; otherwise prove each callback from its writes.
     let temps = match forced_refresh(mode, inputs) {
         Ok(false) => Temps::Fresh,
         Ok(true) | Err(_) => Temps::Inherited,
@@ -148,8 +112,6 @@ fn refreshed(
     let (selected, failures) =
         evaluator.capture_colour_inputs(|| targets(layer, inputs, &evaluator, viewer));
     if !failures.is_empty() {
-        // Uncertain selection can add or remove targets. Refuse the whole layer
-        // and clear old borders, independently of the selectors' Boolean result.
         return LayerState {
             borders: BTreeMap::new(),
             refusals: failures
@@ -166,12 +128,9 @@ fn refreshed(
     let mut kept = previous
         .map(|previous| previous.borders.clone())
         .unwrap_or_default();
-    // A target gone this hour, as a country that lost its last controlled province, keeps no
-    // border: its old provinces are another target's now.
     kept.retain(|id, _| targets.iter().any(|target| target.id == *id));
     let mut refused: BTreeMap<String, usize> = BTreeMap::new();
     for target in targets {
-        // A changed province list clears the border before the callback runs.
         let border = kept.entry(target.id).or_insert_with(|| Border {
             provinces: target.provinces.clone(),
             style: None,
@@ -207,7 +166,6 @@ fn refreshed(
             .and_then(|scopes| colour(&evaluator, layer, scopes));
         match colour {
             Ok(Some(style)) => border.style = Some(style),
-            // A failing callback, or one leaving alpha at 0, keeps what the border holds.
             Ok(None) => {}
             Err(reasons) => {
                 border.style = None;
@@ -229,7 +187,6 @@ fn refreshed(
     }
 }
 
-/// The kept borders as a gradient layer: each coloured border its own region.
 pub(super) fn layer(
     layer: &Layer,
     borders: &BTreeMap<TargetId, Border>,
@@ -266,7 +223,6 @@ pub(super) fn layer(
     .unwrap()
 }
 
-/// The callback's colour for one target: `None` when it does not hold or its alpha is 0.
 fn colour(
     evaluator: &Evaluator<'_, '_>,
     layer: &Layer,
@@ -293,8 +249,6 @@ fn colour(
     let unit = |name: &[u8]| -> Result<f32, Vec<String>> {
         Ok(temp(name)?.clamp(0, FIXED5) as f32 / FIXED5 as f32)
     };
-    // Alpha gates all the other output reads. In particular a proved zero
-    // alpha does not need inherited RGB/highlight values.
     let alpha = unit(b"alpha")?;
     if alpha <= 0.0 {
         return Ok(None);
@@ -311,8 +265,6 @@ fn colour(
     }))
 }
 
-/// The targets a layer paints: every country with a controlled province, every state, or every
-/// portion of a state under one controller, narrowed by the layer's `targets` block.
 fn targets(
     layer: &Layer,
     inputs: &Inputs,
@@ -425,8 +377,6 @@ fn targets(
                         provinces: ids,
                     });
                 } else {
-                    // The other native arm groups only positive province controllers,
-                    // in canonical country order, irrespective of the cached weights.
                     let mut groups = BTreeMap::<u32, Vec<u32>>::new();
                     for (id, raw) in members {
                         if (raw as i32) > 0 {

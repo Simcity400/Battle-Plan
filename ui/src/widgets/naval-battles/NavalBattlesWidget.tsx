@@ -28,7 +28,6 @@ const adapter: BattleViewAdapter<NavalBattleRow, NavalBattlesReply, NavalBattles
     ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unknownStart: 'Start not recorded' },
   measures: MEASURES, resultMeasure: MEASURES[0], compactSides: SIDES,
   formatLoss: (value, row) => `${battleValueText(value)}${value.value !== null && row.end === null ? ' so far' : ''}`,
-  // Following, a row's fleets are read at the hour its run begins, asked for every run as its window lands.
   details: {
     product: 'naval-battle-details', validate: validateNavalBattleDetails, held: navalRunDetails,
     ask: (row, following) => ({ id: row.id, hour: following ? row.runHour : row.observedHour }),

@@ -10,10 +10,7 @@ function canonicalOwnerSource(source, leases) {
   try { tuple = JSON.parse(source); } catch { return `literal:${source}`; }
   if (!Array.isArray(tuple) || tuple.length !== 2 || typeof tuple[0] !== 'string'
     || !/^lease-[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}-\d+$/i.test(tuple[0])) return `literal:${source}`;
-  // UUIDs and allocation counters belong to the bridge process. A capture-local
-  // identity preserves which rows share an owner and which hold separate leases.
   if (!leases.has(tuple[0])) leases.set(tuple[0], leases.size + 1);
-  // Distinct tags keep literal source strings from colliding with aliases.
   return `runtime:${JSON.stringify([leases.get(tuple[0]), tuple[1]])}`;
 }
 
@@ -34,14 +31,11 @@ function canonicalListOwnership(value, leases, owner = false) {
 function canonicalLists(lists) {
   const leases = new Map();
   return lists.map(list => {
-    // Provider IDs and traversal timings describe this capture's runtime.
-    // Preserve every semantic field, including titles/slots outside row arrays.
     const { id, source, steps, traversal, geometry, diagnostics, ...content } = list;
     return canonicalListOwnership({ ...content, label: list.label ?? null }, leases);
   });
 }
 
-/** The head image with every pixel that differs from the base in red and the rest dimmed, and how many differ. */
 export function diffImage(base, head) {
   const out = new PNG({ width: head.width, height: head.height });
   let changed = 0;
@@ -57,7 +51,6 @@ export function diffImage(base, head) {
   return { png: PNG.sync.write(out), changed };
 }
 
-/** `diffDirectory`, when given, receives a diff image for each same-sized capture whose pixels differ. */
 export async function compareCaptures(baseDirectory, headDirectory, { diffDirectory = null } = {}) {
   const base = await readJSON(path.join(baseDirectory, 'manifest.json'));
   const head = await readJSON(path.join(headDirectory, 'manifest.json'));

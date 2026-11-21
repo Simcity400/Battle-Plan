@@ -1,9 +1,3 @@
-//! The proof tool's line for the script-driven readers at the head (`--scripts on|off`): the map
-//! side's own [`Scripts`] layer, whose whole settle has made the icons of the sample's hour with
-//! the offer cycle complete, compared with today's evaluation over today's frame of that hour;
-//! what the layer measured, how old the icons were while playing, what the playhead held, and
-//! every step's build time (`off` keeps only the step times and holdings, the baseline the scripts
-//! are judged against).
 
 use super::Scripts;
 use crate::{
@@ -24,17 +18,12 @@ pub struct Line {
     consumer: playhead::Consumer,
     reader: playhead::Reader,
     steps: Vec<Arc<playhead::Step>>,
-    /// Every step's build nanoseconds, and resets apart.
     step_ns: Vec<u64>,
-    /// Per frame while playing: hours from the icons on screen to the head.
     age: Vec<f64>,
-    /// Per comparison name: entries, differing, samples.
     totals: std::collections::BTreeMap<String, (u64, u64, u64)>,
 }
 
 impl Line {
-    /// `on` the scripts, the layer declaring the needs `primed` names (a file, one a line) from
-    /// the start, so its lanes have joined when the comparisons come.
     pub fn open(entry: &Arc<Entry>, recording: Recording, on: bool, primed: Option<&str>) -> io::Result<Self> {
         let mut needs = Vec::new();
         if let Some(file) = primed {
@@ -50,7 +39,6 @@ impl Line {
         Ok(Self { entry: Arc::clone(entry), recording, on, consumer, reader, steps: Vec::new(), step_ns: Vec::new(), age: Vec::new(), totals: Default::default() })
     }
 
-    /// One frame of the map at `head`: the steps reached taken and timed, the icons' age noted.
     pub fn frame(&mut self, side: &MapSide, head: Hour, playing: bool) {
         self.steps.clear();
         self.consumer.take(head, &mut self.steps);
@@ -63,8 +51,6 @@ impl Line {
         }
     }
 
-    /// The raid icons and music chances the side's layer settled whole at `hour` against today's;
-    /// skipped (and noted) while the scripts' tables are still arriving.
     pub fn compare(&mut self, side: &MapSide, document: &Document, hour: Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         if !self.on {
             return Ok(());
@@ -76,8 +62,6 @@ impl Line {
         };
         let layer = super::drawn(side);
         let tables = layer.map_or(0, |layer| layer.needs().len());
-        // The whole settle of this sample made the icons of its own hour with the cycle complete:
-        // one that stands anywhere else is the scripts' tables still arriving.
         let reached = layer.and_then(Scripts::product).filter(|product| product.hour == hour && product.complete).and_then(|product| {
             let raids = product.raids.clone().filter(|icons| icons.built_for.is_some_and(|(branch, at, country)| (branch, at, country) == (self.recording.branch, hour, ours)))?;
             let (_, music) = product.music.clone().filter(|(at, _)| *at == hour)?;
@@ -146,8 +130,6 @@ impl Drop for Line {
     }
 }
 
-/// A line of a primed file: `Table` (its keys), `Table *` (every field) or `Table a,b` (those
-/// fields, by their schema names).
 fn need(line: &str) -> Option<crate::playhead_host::views::Need> {
     use crate::playhead_host::views::Need;
     let (name, fields) = line.split_once(' ').map_or((line, None), |(name, fields)| (name, Some(fields.trim())));
@@ -159,7 +141,6 @@ fn need(line: &str) -> Option<crate::playhead_host::views::Need> {
     }
 }
 
-/// Where two texts first differ, with what each holds around it.
 fn first_difference(wanted: &str, got: &str) -> String {
     let at = wanted.bytes().zip(got.bytes()).position(|(a, b)| a != b).unwrap_or(wanted.len().min(got.len()));
     let around = |text: &str| {

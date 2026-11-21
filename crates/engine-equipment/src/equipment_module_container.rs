@@ -1,5 +1,3 @@
-//! Equipment-module collection embedded in a variant. Its count is signed.
-//! The header's identity word does not authenticate a vtable.
 
 use engine_sites::Rva;
 use crate::{
@@ -11,13 +9,9 @@ use crate::{
     walk::Outcome,
 };
 
-/// Candidate collection identity word; not used for authentication.
 pub const IDENTITY_WORD_RVA_CANDIDATE: Rva = Rva(0x030f_d000);
-/// Candidate module-container data pointer.
 pub const ENTRIES_CANDIDATE: usize = 0x08;
 
-/// `definition_token` names the module from its authored content key.
-/// The content name is not copied into every row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub variant: u64,
@@ -25,13 +19,9 @@ pub struct Row {
     pub slot: u32,
     pub definition_token: u32,
     pub definition_active: u8,
-    /// Authenticated pass-local address for demanded immutable operands.
     pub definition_pointer: usize,
 }
 
-/// The containing variant authenticates this header. The collection identity
-/// word is not a substitute vtable. `variants` must be the same complete registry
-/// census as variant definitions; unavailable source tables cannot become shorter slices.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -42,9 +32,6 @@ pub fn walk(
         let expected = engine_sites::at(base, cequipment_module::VTABLE_RVA)
             .ok_or("module definition address overflow")?;
         let mut len = 0_usize;
-        // One chunk's module entries are read with a single contiguous copy
-        // whose failure is reported for the whole chunk, so this size is part
-        // of the walker's error precedence rather than a free tuning knob.
         const BATCH: usize = 32;
         const HEADERS: [RecordField; 1] = [RecordField {
             source_offset: cequipment_variant::MODULES + ENTRIES_CANDIDATE,
@@ -233,7 +220,6 @@ mod tests {
     #[test]
     fn module_names_are_never_read_and_null_definitions_are_unavailable() {
         let mut bytes = fixture();
-        // The name header is content: a corrupt one no longer denies the row.
         bytes[0x218..0x238].fill(0xff);
         assert_eq!(
             walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),

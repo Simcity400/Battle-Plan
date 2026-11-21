@@ -23,11 +23,8 @@ import type { Grouping } from './stockpileData';
 import { pinnedGrouping } from './stockpileDrill';
 import type { StockpileCatalogueReply } from './types';
 
-/** The included types a widget saves, as content keys. */
 export const includedTypes = (widget: WidgetSpec) => contentSet(typeof widget.options?.included === 'string' ? widget.options.included : '').map(contentKey);
 
-/** The holders' catalogue (`equipment-stockpile-catalogue`): their designs, types, reads and peaks over the branch. Asked
- * once per holders and included types, never per hour. */
 export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack | undefined, holders: readonly StockpileHolder[], included: readonly string[], active: boolean) {
   const request = track && holders.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-catalogue',
     params: { branchId: track.branch.id, holders, included } } : null;
@@ -40,14 +37,11 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
   }, track?.source);
 }
 
-/** One holder's stockpile at the hour `widget` shows (`equipment-stockpile-at`): followed at the head as a pushed panel
- * whose numbers are live cells, else asked for its hour (a pinned or range widget, a hovered or drilled hour). */
 export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, hoverHour: number | null = null) {
   return useHeadProduct<StockpileAtReply>(runtime, widget, 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply), hoverHour });
 }
 
-/** The catalogue with `at`'s structure and values as the view of the hour they are of. */
 function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<typeof useStockpileAt>, track: BoundTrack | undefined, tag?: string) {
   const values = useSyncExternalStore(at.live.subscribe, at.live.read, at.live.read);
   const hour = (at.read === 'followed' ? at.shownAt() ?? at.at : at.hour) ?? track?.branch.lastHour ?? 0;
@@ -57,15 +51,14 @@ function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<
   return { view, hour };
 }
 
-/** The widget's country, its catalogue and its stockpile at the hour it shows. */
 export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, within?: readonly Span[] | null) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const includedText = typeof widget.options?.included === 'string' ? widget.options.included : '';
-  const included = useMemo(() => includedTypes(widget), [includedText]); // eslint-disable-line react-hooks/exhaustive-deps
+  const included = useMemo(() => includedTypes(widget), [includedText]);
   const withinKey = JSON.stringify(within ?? null);
   const holders = useMemo<StockpileHolder[]>(() => tag ? [{ country: countryFromKey(tag), ...(within ? { within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) } : {}) }] : [],
-    [tag, withinKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    [tag, withinKey]);
   const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, active);
   const at = useStockpileAt(runtime, widget, tag ?? null, active);
   const { view, hour } = useView(catalogue.data, at, track);
@@ -73,9 +66,6 @@ export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime
     retry: () => { catalogue.retry(); at.retry(); } };
 }
 
-/** The settings' choices: the included types are the campaign's own types, named as the content names them; the lines
- * over time are the groups of the grouping chosen that can be drawn (`chartChoices`). Each is offered as a `setToken`
- * token, so a key a setting cannot store can be included and chosen alike. */
 export function useStockpileChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data } = useEquipmentStockpile(widget, runtime, true);
   if (!data) return { included: [], chosen: [], chosenVariant: [], chosenDomain: [], partGroup: [] };
@@ -91,8 +81,6 @@ export function useStockpileChoices(widget: WidgetSpec, runtime: WidgetRuntime):
   };
 }
 
-/** A dated country's stockpile at an hour: its catalogue over every tag it held, each within the hours it held it, and
- * the hour's values from the tag it held then, followed at the head while `follows`, else asked for `hour`. */
 export function useStockpileCountry(selection: DatedCountrySelection | null, runtime: WidgetRuntime, track: BoundTrack | undefined, widget: WidgetSpec,
   active: boolean, hour: number, follows: boolean, included: readonly string[]) {
   const groups = useCountryGroups(runtime, track, active && !!selection);
@@ -105,7 +93,6 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const holders = useMemo(() => spans ? stockpileHolders(spans) : [], [spans]);
   const live = active && !!selection;
   const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, live);
-  // The holder at the hour rendered: an identity change of the country while following shows at the next render.
   const tag = holderAt(holders, follows ? Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0) : hour);
   const spec = useMemo<WidgetSpec>(() => ({ ...widget, time: follows ? { mode: 'follow' } : widget.time }), [widget, follows]);
   const at = useStockpileAt(runtime, spec, tag, live, follows ? null : hour);

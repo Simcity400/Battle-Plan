@@ -1,4 +1,3 @@
-//! CPU fixtures for the separate played phase of inactive naval wrappers.
 use super::*;
 
 fn instance() -> ModelInstance {

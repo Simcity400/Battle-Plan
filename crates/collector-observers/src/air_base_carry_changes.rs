@@ -1,21 +1,3 @@
-//! Allocation-free notifications from the native writers of everything a state air base's
-//! AirBaseRegistrations subtree reads ([`engine_mutations::air_base_mutations`]). A detour only notifies the
-//! shared watch registry ([`WatchRegistry`]) for the base handle its first argument names (a base's
-//! handle, a pool's base handle), counts its site and calls the original; it never changes game
-//! behaviour. A receiver whose handle does not read revokes every certificate. A pool site names an
-//! unlinked pool's zero or invalid reference, which no registered base holds: a carried base's
-//! pools all name it ([`crate::extended::air::RegistrationStore`]). Two writers are other families'
-//! patches, whose detours forward here: the country air pool capacity setter
-//! ([`crate::raid_changes`], only a store that changes the held value, [`capacity_written`]) and
-//! air base destruction ([`crate::ship_model_changes`], [`base_destroyed`]). The domain observes
-//! only while its own hooks and all three forwarders are enabled. Anything unobserved (disabled,
-//! poisoned, a refused registration, an epoch change, a running writer) makes the capture read that
-//! base afresh ([`crate::extended::air::RegistrationStore`]).
-//!
-//! The same handles certify each state base's AirBases row; capacity refresh names its base. The
-//! state base creators and base destruction also notify [`MEMBERSHIP`], which certifies the
-//! manager's state base slots. Entering the developer map editor, forwarded by the building
-//! family ([`poison`]), ends every carry for the attachment.
 pub mod registration;
 
 use crate::{
@@ -32,27 +14,14 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Carried and read bases.
 static READS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-/// State bases the latest complete pass visited, for off-thread sizing.
 static BASES: AtomicUsize = AtomicUsize::new(0);
-/// State bases whose decoded rows the decode worker appended from a walk of
-/// the same segment, and those it walked and kept.
 static DECODED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-/// [`Work`] summed over every pass: bases and QPC ticks by kind, then the
-/// spliced spans and bytes.
 static WORK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-/// [`registration::Census`] summed over every pass, then the passes.
 static CENSUS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 
-/// The watch key of the manager's state base slots. A base handle's low word
-/// is its reference type, never one.
 pub const MEMBERSHIP: u64 = 1;
 
-/// Where one pass's AirBaseRegistrations acquisition time goes, by base:
-/// [read without a carry (hosts, and every base without a store), carried
-/// state bases (certificate, links and splice), state bases read afresh
-/// (read and hold)], and what the carried ones spliced. Status only.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Work {
     bases: [u64; 3],
@@ -65,7 +34,6 @@ impl Work {
     pub const CARRIED: usize = 1;
     pub const FRESH: usize = 2;
 
-    /// One base of `kind`, whose registrations began at QPC `started`.
     pub fn note(&mut self, kind: usize, started: i64) {
         self.bases[kind] += 1;
         self.ticks[kind] += crate::clock::qpc().saturating_sub(started).max(0) as u64;
@@ -87,7 +55,6 @@ impl Work {
     }
 }
 
-/// A worker publishes one pass's [`Work`].
 #[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record_work(work: &Work) {
     let values = work.bases.into_iter().chain(work.ticks).chain(work.spliced);
@@ -96,28 +63,19 @@ pub fn record_work(work: &Work) {
     }
 }
 
-/// One observation domain: the watched base handles and each writer site's
-/// calls.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
-    /// Receivers whose base handle did not read.
     unnamed: AtomicU64,
-    /// Forwarded capacity stores that changed a container's capacity.
     capacities: AtomicU64,
-    /// This family's hooks, and each [`Forwarder`], enabled.
     hooks: AtomicBool,
     forwarders: [AtomicBool; 3],
 }
 
-/// A family whose patch forwards a writer here.
 #[derive(Clone, Copy)]
 pub enum Forwarder {
-    /// The capacity setter.
     Raid = 0,
-    /// The base destructor.
     ShipModel = 1,
-    /// Entering the developer map editor.
     Building = 2,
 }
 
@@ -149,9 +107,6 @@ impl Watches {
         );
     }
 
-    /// Hook path, allocation-free: a writer is about to change the base with
-    /// `handle`; `None` names no base and revokes every certificate.
-    /// Dropping the guard notifies its return.
     #[inline]
     pub fn notify(&self, handle: Option<u64>) -> Notification<'_> {
         match handle.and_then(|handle| usize::try_from(handle).ok()) {
@@ -163,9 +118,6 @@ impl Watches {
         }
     }
 
-    /// Hook path: the notification of a call of `site` whose first argument
-    /// is `first`, naming its base by the handle the site's [`Receiver`]
-    /// holds, or the state base slots for a manager site.
     #[inline]
     pub fn notify_site(&self, site: usize, first: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
@@ -175,7 +127,6 @@ impl Watches {
         }
     }
 
-    /// An enabled domain with a table for `bases` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(bases: usize) -> Self {
         let watches = Self::new();
@@ -189,7 +140,6 @@ impl Watches {
         watches
     }
 
-    /// An enabled domain before any table is installed, as at attach.
     #[cfg(any(test, feature = "test-support"))]
     pub fn without_table() -> Self {
         let watches = Self::new();
@@ -201,8 +151,6 @@ impl Watches {
         watches
     }
 
-    /// Off the game thread: a table for `bases` receivers and the slots,
-    /// installed at the next boundary.
     pub fn offer(&self, bases: usize) {
         self.registry.offer(bases.saturating_add(1));
     }
@@ -218,8 +166,6 @@ impl Watches {
     }
 }
 
-/// The base handle at `offset` in RCX's object `first`; `None` when it does
-/// not read.
 #[inline]
 fn handle(offset: usize, first: usize) -> Option<u64> {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -228,14 +174,9 @@ fn handle(offset: usize, first: usize) -> Option<u64> {
         .and_then(|address| engine_native::read::<u64>(&memory, address))
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// `(epoch, sequence)` of one base handle, registering it; `None` when it
-    /// cannot be observed. Equal values across hours prove that no observed
-    /// writer touched the base.
     fn sequence(&self, handle: u64) -> Option<(u64, u64)>;
 
-    /// [`Self::sequence`] of the manager's state base slots.
     fn membership(&self) -> Option<(u64, u64)> {
         self.sequence(MEMBERSHIP)
     }
@@ -247,7 +188,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn sequence(&self, handle: u64) -> Option<(u64, u64)> {
@@ -255,17 +195,11 @@ impl Changes for Observer {
     }
 }
 
-/// Hook path, allocation-free: `country air pool capacity setter(base, ..)`
-/// is about to change a container capacity of `base` (or its held value did
-/// not read). Hold the result over the native call.
 pub fn capacity_written(base: usize) -> Notification<'static> {
     WATCHES.capacities.fetch_add(1, Ordering::Relaxed);
     WATCHES.notify(handle(engine_native::cair_base::HANDLE, base))
 }
 
-/// Hook path, allocation-free: `air base destruction(base)` is about to
-/// retire `base`'s vectors, before its caller empties the base's slot. Hold
-/// the result over the native call.
 pub fn base_destroyed(base: usize) -> (Notification<'static>, Notification<'static>) {
     (
         WATCHES.notify(handle(engine_native::cair_base::HANDLE, base)),
@@ -273,33 +207,23 @@ pub fn base_destroyed(base: usize) -> (Notification<'static>, Notification<'stat
     )
 }
 
-/// Hook path: entering the developer map editor, which rebuilds states and
-/// province links without an observed writer.
 pub fn poison() {
     WATCHES.registry.poison();
 }
 
-/// `forwarder`'s patch is enabled.
 pub fn forwarder(forwarder: Forwarder, enabled: bool) {
     WATCHES.forwarders[forwarder as usize].store(enabled, Ordering::SeqCst);
     WATCHES.apply();
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the bases the latest pass
-/// visited. Nothing is offered before a pass visited them: a later larger
-/// table waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
     let bases = BASES.load(Ordering::Relaxed);
     if bases != 0 {
@@ -307,13 +231,10 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// A worker publishes one pass's counts and, when it completed, the state
-/// bases it visited for sizing.
 #[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record(counts: &registration::Counts, bases: Option<usize>) {
     for (target, value) in READS.iter().zip([counts.carried, counts.read]) {
@@ -324,7 +245,6 @@ pub fn record(counts: &registration::Counts, bases: Option<usize>) {
     }
 }
 
-/// A worker publishes one pass's AirBases census.
 #[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record_census(census: &registration::Census) {
     let values = census
@@ -338,7 +258,6 @@ pub fn record_census(census: &registration::Census) {
     }
 }
 
-/// The decode worker publishes one pass's appended and kept bases.
 pub fn record_decoded(reused: u64, walked: u64) {
     DECODED[0].fetch_add(reused, Ordering::Relaxed);
     DECODED[1].fetch_add(walked, Ordering::Relaxed);
@@ -349,14 +268,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; AirBaseRegistrations
-    /// then reads every base afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled; AirBaseRegistrations"]
+    #[doc = " then reads every base afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_base_carry_changes")
@@ -399,10 +318,6 @@ impl Hooks {
             WATCHES.hooks.store(false, Ordering::SeqCst);
             WATCHES.apply();
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -422,17 +337,10 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         crate::wing_preferences::publication_enabled(false);
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-// Each site takes integer or pointer arguments only (the asm prologues use
-// RCX..R9) and returns RAX unchanged from its original; the first names the
-// base as its [`Receiver`] says. The notification covers the original in
-// flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($first:ident $(, $arg:ident)*)) => {
         unsafe extern "system-unwind" fn $name($first: usize $(, $arg: usize)*) -> usize {
@@ -448,30 +356,19 @@ macro_rules! callback {
         }
     };
 }
-// Create country container (base, tag).
 callback!(create_country_container, 0, (base, tag));
-// Remove country access (base, tag).
 callback!(remove_country_access, 1, (base, tag));
-// Register pool (base, pool, dedupe) -> bool.
 callback!(register_pool, 2, (base, pool, dedupe));
-// Erase pool (base, pool) -> bool.
 callback!(erase_pool, 3, (base, pool));
-// Add wing (pool, wing, dedupe).
 callback!(add_wing, 4, (pool, wing, dedupe));
-// Remove wing (pool, wing, destroy) -> bool.
 callback!(remove_wing, 5, (pool, wing, destroy));
-// Destroy all wings (pool).
 callback!(destroy_all_wings, 6, (pool));
-// Split wing (pool, wing, size, force) -> wing.
 callback!(split_wing, 7, (pool, wing, size, force));
-// Wing pool deleting destructor(pool, flags) -> pool.
 callback!(destroy_pool, 8, (pool, flags));
 callback!(rebind_pool_definition, 9, (pool));
-// State base of each kind, created for an empty slot (manager, state) -> base.
 callback!(ensure_state_air_base, 10, (manager, state));
 callback!(ensure_rocket_air_base, 11, (manager, state));
 callback!(ensure_gun_air_base, 12, (manager, state));
-// Capacity refresh (base).
 callback!(refresh_capacity, 13, (base));
 
 #[cfg(test)]
@@ -514,8 +411,6 @@ mod tests {
         );
     }
 
-    /// A base site names its base by its handle and a pool site by the pool's base handle; a
-    /// receiver that does not read names none, so it revokes every certificate.
     #[test]
     fn a_site_names_its_base_by_handle_and_an_unread_receiver_names_none() {
         let site = |name: &str| {
@@ -541,8 +436,6 @@ mod tests {
         assert_eq!(watches.unnamed.load(Ordering::Relaxed), 1);
     }
 
-    /// A state base creator notifies the slots and no base; capacity refresh notifies its base
-    /// and not the slots.
     #[test]
     fn creators_name_the_slots_and_capacity_refresh_names_its_base() {
         let site = |name: &str| {

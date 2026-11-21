@@ -8,8 +8,6 @@ use crate::{
 use replay_columnar::{envelope, writer::Work};
 use std::sync::Arc;
 
-/// The recorder's own store taking each hour's journal, as the live writer does, and its frame
-/// of `tables` after each hour: what a reader of the recording reads back there.
 struct Applied {
     writer: HourWriter<std::io::Cursor<Vec<u8>>>,
     tables: Vec<TableId>,
@@ -22,7 +20,6 @@ impl Applied {
         Self { writer: fixtures::writer(fixtures::identity(b"native frame", mode.byte()), |_| {}), tables: tables.to_vec(), mode, running: false }
     }
 
-    /// The next hour starts another run.
     fn cut(&mut self) {
         self.running = false;
     }
@@ -35,7 +32,6 @@ impl Applied {
         let sections: Vec<u8> = prepared.sections().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
         self.writer.hour(&prepared.manifest, &sections).unwrap();
         let mut frame = self.writer.frame(&self.tables, (input.branch, input.hour), self.mode).unwrap();
-        // The hour's metrics as a reader takes them: the clock's, and a read table's time unknown.
         let columns: Vec<usize> = crate::columnar_frames::schema().unwrap().iter().map(Vec::len).collect();
         let manifest = replay_columnar::manifest::Manifest::read(&prepared.manifest, &columns).unwrap();
         frame.metrics.total_ns = manifest.total_ns;
@@ -57,18 +53,12 @@ const TABLES: [TableId; 3] = [
     TableId::ResearchInputs,
 ];
 
-/// The row encoder and decoder beside the columnar writer and a walker, fed the same frames.
 struct Paths {
     encoder: FrameEncoder,
     decoder: FrameDecoder,
     writer: FrameWriter,
-    /// The same hours staged a row at a time, which write the same bytes.
     rows: FrameWriter,
-    /// The same hours clearing and finishing every column of every staged table, and
-    /// staging hours of no rows: the same bytes again.
     swept: FrameWriter,
-    /// The same hours, each prepared and committed on three threads, its complete tables diffed
-    /// with the row encoder's baselines: the same bytes again.
     laned: FrameWriter,
     applied: Applied,
     tables: Vec<TableId>,
@@ -94,19 +84,15 @@ impl Paths {
         }
     }
 
-    /// The row recording restarts, as a restarted spool does, while the columnar run goes on:
-    /// its next hour is a keyframe.
     fn restart_rows(&mut self) {
         self.encoder = FrameEncoder::new();
         self.decoder = FrameDecoder::new();
     }
 
-    /// The paths' frame of the given tables' inputs, read or not.
     fn frame(&self, hour: i32, inputs: Vec<(TableInput, bool)>) -> FrameInput {
         frame_of(self.mode, &self.tables, hour, inputs)
     }
 
-    /// The hour through both paths, compared.
     fn check(&mut self, hour: i32, inputs: Vec<(TableInput, bool)>) {
         let input = self.frame(hour, inputs);
         let tables = self.tables.clone();
@@ -114,16 +100,11 @@ impl Paths {
         same(&tables, &rows, &columnar);
     }
 
-    /// The hour as the row recording decodes it, and as the columnar one walks it.
     fn hour(&mut self, input: FrameInput) -> (DecodedFrame, DecodedFrame) {
         let first = input.hour == 1;
-        // The row frame first, as the spool prepares it: its keyframe refuses a truncated read.
-        // Every other hour encodes the tables as segments, as the spool's helpers do.
         let mut segments: [Option<TableSegment>; TABLE_COUNT] = std::array::from_fn(|_| None);
         if input.hour % 2 == 0 {
             let context = self.encoder.frame_context(input.branch, input.hour, first);
-            // A table the spool cannot encode alone, such as one its capture mode does not
-            // record, is encoded with the frame.
             for &table in &self.tables {
                 let segment = self.encoder.encode_segment(&context, table, &input.tables[table.index()]);
                 segments[table.index()] = segment.ok();
@@ -139,7 +120,6 @@ impl Paths {
         let prepared = self.writer.hour_on(&input, &[], plain, &OneThread).unwrap();
         let staged = self.rows.hour_on(&input, &[], plain, &OneThread).unwrap();
         let swept = self.swept.hour_on(&input, &[], plain, &OneThread).unwrap();
-        // Diffed with the row encoder's baselines, which it has not yet committed this hour to.
         let baselines = Some(RowFrame {
             baselines: Some(&self.encoder),
             keyframe,
@@ -162,7 +142,6 @@ impl Paths {
     }
 }
 
-/// The calling thread and two others, each running the job at once.
 struct Threads;
 
 impl Lanes for Threads {
@@ -180,7 +159,6 @@ impl Lanes for Threads {
     }
 }
 
-/// The writers' restarts, strings and every table's state, are the same.
 fn same_restarts(writers: &mut [&mut FrameWriter]) {
     let restarts: Vec<_> = writers.iter_mut().map(|writer| writer.restart().unwrap()).collect();
     let (strings, tables) = &restarts[0];
@@ -193,13 +171,10 @@ fn same_restarts(writers: &mut [&mut FrameWriter]) {
     }
 }
 
-/// The three tables as given, read or not; every other table unavailable and unread.
 fn frame(hour: i32, tables: [(TableInput, bool); 3]) -> FrameInput {
     frame_of(CaptureMode::Full, &TABLES, hour, tables.into())
 }
 
-/// `tables` as given, read or not. Every other table the mode records is unavailable and
-/// unread, and every table it does not record is marked so.
 fn frame_of(
     mode: CaptureMode,
     tables: &[TableId],
@@ -258,7 +233,6 @@ fn division(id: u64, hit_points: i64) -> DivisionRow {
         organisation: 1_234_567,
         ..Default::default()
     };
-    // The wire holds stepped fields at their step, as the spool rounds them before encoding.
     row.round_to_display();
     row
 }
@@ -287,7 +261,6 @@ fn unavailable(reason: &str) -> TableInput {
     })
 }
 
-/// Every view, sample hour, read bit and metric the walker gives matches the row decoder's.
 fn same(tables: &[TableId], rows: &DecodedFrame, columnar: &DecodedFrame) {
     for &table in tables {
         let index = table.index();
@@ -319,9 +292,6 @@ fn same(tables: &[TableId], rows: &DecodedFrame, columnar: &DecodedFrame) {
     assert_eq!(metrics(columnar), metrics(rows));
 }
 
-/// Every form today's conversion hands the encoder (sampled complete, truncated and
-/// unavailable views, shared complete rows, compared equality, compared changes and owner
-/// slice updates), read and unread, makes the columnar views the row recording decodes.
 #[test]
 fn every_conversion_form_walks_to_the_row_recordings_views() {
     let mut paths = Paths::new();
@@ -337,7 +307,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     ));
     same(&TABLES, &rows, &columnar);
 
-    // Compared equality, one compared change, and owner 1's slice read again with a change.
     let (equal, _) = paths
         .encoder
         .comparison_baseline::<tables::Countries>(1, 2, false)
@@ -380,8 +349,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     ));
     same(&TABLES, &rows, &columnar);
 
-    // Unread hours: a changed table loses its sample, an unchanged one keeps it, and a slice
-    // update drops a dead owner's rows.
     let (equal, _) = paths
         .encoder
         .comparison_baseline::<tables::Divisions>(1, 3, false)
@@ -413,7 +380,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     ));
     same(&TABLES, &rows, &columnar);
 
-    // A truncated read, a removal with an insertion, and equality after a slice update.
     let (equal, _) = paths
         .encoder
         .comparison_baseline::<tables::ResearchInputs>(1, 4, false)
@@ -434,7 +400,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     ));
     same(&TABLES, &rows, &columnar);
 
-    // Whole tables again after a truncated read, an unavailable table, and new shared rows.
     let (rows, columnar) = paths.hour(frame(
         5,
         [
@@ -448,7 +413,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     ));
     same(&TABLES, &rows, &columnar);
 
-    // Available again, and an unread unchanged hour after an unread change.
     let (equal, _) = paths
         .encoder
         .comparison_baseline::<tables::Countries>(1, 6, false)
@@ -466,7 +430,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     ));
     same(&TABLES, &rows, &columnar);
 
-    // Unread compared changes beside unread equality, then an unread truncated read.
     let (changed, _) = paths
         .encoder
         .comparison_baseline::<tables::Divisions>(1, 7, false)
@@ -509,7 +472,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
         ],
     );
 
-    // A keyed slice update replacing one holder and dropping another.
     let (sliced, _) = paths
         .encoder
         .slice_baseline(TableId::ResearchInputs, 1, 9, false)
@@ -533,7 +495,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
         ],
     );
 
-    // A key-range slice update bringing an owner's rows back, unread.
     let (sliced, _) = paths
         .encoder
         .slice_baseline(TableId::ResearchInputs, 1, 10, false)
@@ -560,8 +521,6 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
     );
 }
 
-/// A staggered table's off-slot refusal carries complete rows from an earlier hour of the
-/// run, and stays a refusal when nothing complete is held.
 #[test]
 fn an_off_slot_refusal_carries_complete_rows_as_the_row_encoder_does() {
     let (table, first, second) = TableId::ALL
@@ -587,7 +546,6 @@ fn an_off_slot_refusal_carries_complete_rows_as_the_row_encoder_does() {
     paths.check(7, vec![(skipped(), false)]);
 }
 
-/// A Map recording marks the tables its mode leaves out, and they walk as not recorded.
 #[test]
 fn a_map_recording_walks_its_unrecorded_tables_as_not_recorded() {
     let unrecorded = TableId::ALL
@@ -614,8 +572,6 @@ fn a_map_recording_walks_its_unrecorded_tables_as_not_recorded() {
     );
 }
 
-/// A table the recording omits, retired from the format or left out by the capture mode, keeps
-/// no read bit even when its producer timed it, and walks as the row recording decodes it.
 #[test]
 fn omitted_tables_walk_as_decoded_and_keep_no_read_bit() {
     let format = FormatVersion::CURRENT.version();
@@ -643,8 +599,6 @@ fn omitted_tables_walk_as_decoded_and_keep_no_read_bit() {
     }
 }
 
-/// A run's first hour refuses a truncated read as the keyframe a row recording starts with does;
-/// a later truncated read stays truncated.
 #[test]
 fn a_truncated_first_hour_walks_as_the_keyframe_refusal() {
     let mut paths = Paths::of(&[TableId::Countries], CaptureMode::Full);
@@ -659,8 +613,6 @@ fn a_truncated_first_hour_walks_as_the_keyframe_refusal() {
     paths.check(3, vec![(truncated(vec![country(2, 21)]), true)]);
 }
 
-/// A shared table read again as a new allocation writes only the rows that differ from the
-/// last committed hour's, and a membership change writes it complete; both walk as the rows.
 #[test]
 fn a_reread_shared_table_writes_only_its_differing_rows() {
     let mut paths = Paths::new();
@@ -679,8 +631,6 @@ fn a_reread_shared_table_writes_only_its_differing_rows() {
     paths.check(3, vec![(shared(vec![country(1, 10), country(2, 25), country(3, 30)]), true), (divisions_3, true), (research_3, true)]);
 }
 
-/// Complete tables arriving hour after hour in the order they are held: unchanged, changed in
-/// place with a FILL, with rows coming and going, and held again.
 #[test]
 fn complete_tables_in_their_held_order_walk_to_the_row_recordings_views() {
     let mut paths = Paths::of(&[TableId::Countries, TableId::Divisions], CaptureMode::Full);
@@ -701,15 +651,10 @@ fn complete_tables_in_their_held_order_walk_to_the_row_recordings_views() {
     paths.check(6, hour(2..=22, |id| i64::from(id % 3), 900_000));
 }
 
-/// Each table's work, by table index.
 fn works(writer: &FrameWriter) -> Vec<Work> {
     writer.tables().iter().map(TableWriter::work).collect()
 }
 
-/// Hours of tables that change nothing: a table whose hour stages no rows (compared equal,
-/// compared changes of no row, or no rows at all) begins no hour, and one staged whole and
-/// unchanged clears and finishes no column; each writes what the writer sweeping every column
-/// writes.
 #[test]
 fn unchanged_tables_cost_their_writers_no_column() {
     let mut paths = Paths::new();
@@ -720,9 +665,6 @@ fn unchanged_tables_cost_their_writers_no_column() {
         width(TableId::ResearchInputs),
     );
     let w = |hours, columns| Work { hours, columns };
-    // The work of countries, divisions and research inputs, by the writers working the columns
-    // an hour touched and by the swept one. No writer begins another table's hours: each is
-    // unavailable or not recorded.
     let expect = |paths: &Paths, hour: i32, touched: [Work; 3], swept: [Work; 3]| {
         assert_eq!(works(&paths.rows), works(&paths.writer), "hour {hour}");
         for (writer, expected) in [(&paths.writer, touched), (&paths.swept, swept)] {
@@ -768,7 +710,6 @@ fn unchanged_tables_cost_their_writers_no_column() {
             ),
         ],
     );
-    // The inserts staged every column; the swept writer cleared each first.
     let swept = [w(1, 2 * c), w(1, 2 * d), w(1, 2 * r)];
     expect(&paths, 1, [w(1, c), w(1, d), w(1, r)], swept);
     let (compared, equal) = tokens(&paths, 2);
@@ -780,7 +721,6 @@ fn unchanged_tables_cost_their_writers_no_column() {
             (TableInput::ComparedEqual(equal), true),
         ],
     );
-    // The countries' hour clears what the inserts left, then finishes nothing.
     let swept = [w(2, 4 * c), w(2, 4 * d), w(1, 2 * r)];
     expect(&paths, 2, [w(2, 2 * c), w(1, d), w(1, r)], swept);
     let (compared, equal) = tokens(&paths, 3);
@@ -794,7 +734,6 @@ fn unchanged_tables_cost_their_writers_no_column() {
     );
     let swept = [w(3, 6 * c), w(2, 4 * d), w(1, 2 * r)];
     expect(&paths, 3, [w(3, 2 * c), w(1, d), w(1, r)], swept);
-    // One country's tag changes: its column alone is finished, then cleared.
     let (compared, equal) = tokens(&paths, 4);
     paths.check(
         4,
@@ -821,23 +760,16 @@ fn unchanged_tables_cost_their_writers_no_column() {
     expect(&paths, 6, [w(6, 2 * c + 2), w(1, d), w(1, r)], swept);
 }
 
-/// The recorder's writer, from complete rows, and a converter's, from the same rows with the
-/// keys each table's delta names and the sample hours the row recording of the same hours
-/// decodes, staged by column, a row at a time, and by column clearing and finishing every
-/// column.
 struct Converters {
     live: FrameWriter,
     converted: FrameWriter,
     rows: FrameWriter,
     swept: FrameWriter,
-    /// The converter's hours on three threads.
     laned: FrameWriter,
     encoder: FrameEncoder,
     decoder: FrameDecoder,
 }
 
-/// One hour through the recorder's writer and the converters': all write the same manifest
-/// and sections.
 fn recorded_hour(
     writers: &mut Converters,
     hour: i32,
@@ -883,9 +815,6 @@ fn recorded_hour(
     laned.commit_on(on_lanes, &Threads).unwrap();
 }
 
-/// A recorded delta's keys write what its complete rows write, and are not taken where the
-/// held rows are not the rows the delta changed: a run's first hour, and after a truncated or
-/// refused hour.
 #[test]
 fn a_recorded_delta_writes_what_its_complete_rows_write() {
     let mut writers = Converters {
@@ -960,7 +889,6 @@ fn a_recorded_delta_writes_what_its_complete_rows_write() {
             None,
         ],
     );
-    // Deltas naming nothing, of rows the writers do not hold complete.
     recorded_hour(
         &mut writers,
         4,
@@ -998,7 +926,6 @@ fn a_recorded_delta_writes_what_its_complete_rows_write() {
     same_restarts(&mut [live, converted, rows, swept, laned]);
 }
 
-/// A delta naming a key its complete rows do not hold ends the run.
 #[test]
 fn a_delta_key_without_its_row_is_refused() {
     let mut writer = FrameWriter::new().unwrap();
@@ -1016,9 +943,6 @@ fn a_delta_key_without_its_row_is_refused() {
     assert!(writer.hour(&frame(2, tables())).is_err());
 }
 
-/// Hours whose tables bring strings the run has not used, in rows and in refusals, prepared on
-/// lanes: each such table is prepared again in table order, and every writer's bytes, strings
-/// and restarts are the ones a single thread writes.
 #[test]
 fn new_strings_on_lanes_are_interned_in_table_order() {
     let mut paths = Paths::new();
@@ -1050,9 +974,6 @@ fn new_strings_on_lanes_are_interned_in_table_order() {
     }
 }
 
-/// Complete tables diffed with the row encoder's baselines write what their complete rows
-/// write: a few changed rows, rows that came and went, a densely changed hour after which the
-/// table is written complete, and diffs again once its dense hours passed.
 #[test]
 fn complete_tables_diffed_with_the_encoders_baselines_write_their_complete_bytes() {
     let mut paths = Paths::new();
@@ -1090,10 +1011,6 @@ fn complete_tables_diffed_with_the_encoders_baselines_write_their_complete_bytes
     }
 }
 
-/// A dense table of opaque cells, diffed with the row encoder's baselines: every row's counter
-/// changes each hour while its opaque cells mostly do not, so its rows are written beside their
-/// previous rows and the unchanged opaque cells kept, with the bytes the complete rows write;
-/// a row that comes ends the alignment and the table is written complete.
 #[test]
 fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
     use crate::rows::{
@@ -1133,9 +1050,6 @@ fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
     }
 }
 
-/// A row recording's hours converted from the views and sample hours they decode to, as the
-/// converter converts them, in runs that may start where the recording's does not, on one
-/// thread and on three; and the converted run's walk.
 struct Conversion {
     encoder: FrameEncoder,
     decoder: FrameDecoder,
@@ -1155,15 +1069,12 @@ impl Conversion {
         }
     }
 
-    /// Starts another converted run at the next hour, as a cut does; the recording goes on.
     fn cut(&mut self) {
         self.writer = FrameWriter::new().unwrap();
         self.laned = FrameWriter::new().unwrap();
         self.applied.cut();
     }
 
-    /// The hour as the row recording decodes it, stored as a keyframe when `keyframe` says,
-    /// and as its conversion walks.
     fn hour(
         &mut self,
         hour: i32,
@@ -1199,9 +1110,6 @@ impl Conversion {
     }
 }
 
-/// An unread table a recording's keyframe stores whole again has no sample hour there, though
-/// its rows are the ones the converter holds, and its converted hour keeps none either; between
-/// keyframes the recording leaves it unchanged, and it keeps its sample.
 #[test]
 fn an_unread_snapshot_of_the_held_rows_keeps_no_sample_hour() {
     let mut conversion = Conversion::new();
@@ -1224,9 +1132,6 @@ fn an_unread_snapshot_of_the_held_rows_keeps_no_sample_hour() {
     assert_eq!(conversion.writer.tables()[at].acquisition().last_read, None);
 }
 
-/// A converted run cut where the recording's goes on starts with the recording's views: a
-/// truncated table truncated, with its rows and missing count, and an unread one sampled when
-/// the recording last read it.
 #[test]
 fn a_cut_runs_first_hour_keeps_a_truncated_view_and_the_recordings_sample_hours() {
     let mut conversion = Conversion::new();
@@ -1279,9 +1184,6 @@ fn a_cut_runs_first_hour_keeps_a_truncated_view_and_the_recordings_sample_hours(
     same(&TABLES, &decoded, &walked);
 }
 
-/// A run starting where the row encoder writes no keyframe, as at a gap the rows recorded
-/// through, keeps a truncated read truncated, as the row recording decodes it; a run starting
-/// at a row keyframe refuses it, as the keyframe does.
 #[test]
 fn a_truncated_first_hour_is_refused_only_at_a_row_keyframe() {
     let truncated = || {
@@ -1321,14 +1223,10 @@ fn a_truncated_first_hour_is_refused_only_at_a_row_keyframe() {
     keyed.commit(hour).unwrap();
 }
 
-/// The calling thread and two others, which take four of an hour's step's tables between them
-/// and stop, as helpers do when the game starts its tick; the caller takes tables only once
-/// both stopped, and finishes the step.
 struct Stopping {
     caller: std::thread::ThreadId,
     taken: std::sync::atomic::AtomicUsize,
     stopped: std::sync::atomic::AtomicUsize,
-    /// Steps whose helpers both stopped with tables left.
     steps: std::sync::atomic::AtomicUsize,
 }
 
@@ -1369,8 +1267,6 @@ impl Lanes for Stopping {
     }
 }
 
-/// Lanes that stop part way through an hour's preparation and commit leave the rest to the
-/// caller, with the bytes and restarts one thread writes.
 #[test]
 fn lanes_that_stop_leave_their_tables_to_the_caller() {
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -1403,13 +1299,9 @@ fn lanes_that_stop_leave_their_tables_to_the_caller() {
         laned.commit_on(actual, &lanes).unwrap();
         same_restarts(&mut [&mut alone, &mut laned]);
     }
-    // Every hour's preparation and commit stopped its helpers with tables left.
     assert_eq!(lanes.steps.load(SeqCst), 8);
 }
 
-/// An unread table the row encoder writes anew at a keyframe, as at a page's first hour or after
-/// a spool restart, keeps its sample hour in the columnar recording: its rows did not change. The
-/// row decoder, starting there, has none. A daily table's consumers refused every such hour.
 #[test]
 fn an_unread_table_at_a_row_keyframe_keeps_its_sample() {
     let mut paths = Paths::new();
@@ -1433,15 +1325,12 @@ fn an_unread_table_at_a_row_keyframe_keeps_its_sample() {
     }
 }
 
-/// The row encoder's baselines are taken only when they are the writer's last committed hour:
-/// a writer that missed an hour the encoder committed writes what its own rows give.
 #[test]
 fn a_baseline_of_an_hour_the_writer_missed_is_not_taken() {
     let mut encoder = FrameEncoder::new();
     let mut diffed = FrameWriter::new().unwrap();
     let mut plain = FrameWriter::new().unwrap();
     for hour in 1..=5 {
-        // A heavy cell changes at the hour the writers miss, and keeps its new value.
         let second = CountryRow {
             tag: if hour >= 4 { b"XX".to_vec() } else { b"C002".to_vec() },
             ..country(2, 20)
@@ -1480,8 +1369,6 @@ fn a_baseline_of_an_hour_the_writer_missed_is_not_taken() {
     same_restarts(&mut [&mut diffed, &mut plain]);
 }
 
-/// A complete table whose rows all go, through the row encoder's recorded deletions, and come
-/// again writes what its complete rows write.
 #[test]
 fn a_complete_table_emptied_and_refilled_writes_its_complete_bytes() {
     let mut paths = Paths::new();

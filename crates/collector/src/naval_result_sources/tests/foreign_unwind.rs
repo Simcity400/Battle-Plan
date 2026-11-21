@@ -1,4 +1,3 @@
-//! Native C++/SEH dispatch through the three production Naval bridges.
 use super::*;
 use crate::foreign_unwind_probe as probe;
 use std::mem::offset_of;
@@ -23,8 +22,6 @@ struct NativeCall {
 }
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 
-// Independently authored native caller/original, not an emitter. The original
-// calls the native raise directly after the diagnostic helper has returned.
 core::arch::global_asm!(
     ".text", ".globl naval_foreign_caller", ".seh_proc naval_foreign_caller",
     "naval_foreign_caller:", "sub rsp, 0x38", ".seh_stackalloc 0x38",
@@ -58,8 +55,6 @@ unsafe extern "system-unwind" {
     fn naval_foreign_site();
 }
 
-// This helper returns before either native raise: no Rust fault or panic is
-// substituted for foreign dispatch. All storage inspection here is nonblocking.
 unsafe extern "system" fn record_original(first: usize, second: usize, rsp: usize, pc: usize) {
     let call = unsafe { &mut *(CURRENT.load(Ordering::Acquire) as *mut NativeCall) };
     call.entered += 1;
@@ -70,8 +65,6 @@ unsafe extern "system" fn record_original(first: usize, second: usize, rsp: usiz
         assert_eq!(active(), 1);
         assert!(crate::runtime::observers_active());
         assert!(store().try_lock().is_ok());
-        // Isolate ACTIVE's release veto, then restore the test-owned installed
-        // site/admission flags before returning to the native original.
         let enabled = ENABLED.swap(false, Ordering::SeqCst);
         let installed = SITE_ENABLED[call.site].swap(false, Ordering::SeqCst);
         assert_eq!(
@@ -144,8 +137,6 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             assert_eq!(active(), 0, "a stranded writer must retain its storage");
             assert!(SITE_ENABLED.iter().all(|site| !site.load(Ordering::SeqCst)));
             let world = World::new();
-            // The actual constructor shim receives this caller's return PC as
-            // the native load factory: no invented birth or native globals.
             let base = if site_index == 2 {
                 caller_site + 5 - 0xc0dc19
             } else {
@@ -224,8 +215,6 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             assert!(call.rsp < call.caller_rsp);
             assert_ne!(call.return_pc, caller_site + 5);
             registered(call.return_pc);
-            // Native C++/SEH handlers have different outer frames; the actual
-            // production bridge must preserve this exact relative stack depth.
             let original_state = (call.caller_rsp - call.rsp, call.return_pc);
             let mut rows = [Entry::default(); 2];
             assert_eq!(drain(&mut rows).unwrap(), usize::from(site_index < 2));

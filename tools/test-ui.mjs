@@ -8,7 +8,6 @@ import { parseAst } from 'rolldown/parseAst';
 export const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 
-// Add every browser fixture here. The dependency check below refuses omissions.
 export const browserTests = [
   'ui/src/charts/heat/HeatMatrix.dom.test.ts',
   'ui/src/charts/live.dom.test.ts',
@@ -49,7 +48,6 @@ export async function discoverTests(root = repositoryRoot) {
 }
 
 function namespaceHasValues(node) {
-  // Node only erases namespaces containing type declarations or other erased namespaces.
   if (node.type === 'TSModuleDeclaration') return node.body && namespaceHasValues(node.body);
   if (node.type === 'TSModuleBlock') return node.body.some(namespaceHasValues);
   if (node.type === 'ExportNamedDeclaration' && node.declaration) return namespaceHasValues(node.declaration);
@@ -84,8 +82,6 @@ function moduleGraph(root) {
   }
   async function localModule(base, reference, kind) {
     if (!reference.startsWith('.')) return { file: false, dependency: null };
-    // As Node resolves each: an import against the importer's URL (no query or fragment, percent-decoded),
-    // a require as a filesystem path.
     const path = kind === 'require' ? resolve(dirname(base), reference) : fileURLToPath(new URL(reference, pathToFileURL(base)));
     if (!resolutions.has(path)) resolutions.set(path, (async () => {
       const sourceFile = /\.(?:[cm]?[jt]s|tsx)$/;
@@ -157,7 +153,6 @@ function moduleGraph(root) {
   return { walk };
 }
 
-/** Why Node's loader, stripping types, cannot load a relative static import; null when it can. */
 function nodeRefusal({ path, file }, attributes) {
   if (!extname(path)) return 'no extension';
   if (!file) return 'no such file';
@@ -182,7 +177,6 @@ export async function checkNodeImports(files, root = repositoryRoot, graph = mod
   if (violations.size) throw new Error(`Node test modules must use imports and syntax Node can load with type stripping:\n${[...violations].sort().join('\n')}`);
 }
 
-/** Inspect actual module dependencies rather than text inside synthetic fixtures. */
 export async function checkBrowserManifest(files, manifest = browserTests, root = repositoryRoot, graph = moduleGraph(root)) {
   const known = new Set(files);
   if (new Set(manifest).size !== manifest.length) throw new Error('Duplicate browser test in the serial manifest');
@@ -212,8 +206,6 @@ export async function executeGroup(group, root = repositoryRoot, output = proces
   if (!group.files.length) return 0;
   const flags = ['BATTLE_PLAN_VIRTUAL_TAB_ONLY', 'BATTLE_PLAN_VIRTUAL_TAB_FULL'];
   const previous = flags.map(flag => process.env[flag]);
-  // Node's test runner inherits its environment while spawning each file. Keep
-  // the mode scoped until the entire serial group settles, then restore callers.
   for (const flag of flags) {
     if (group.tabFull) process.env[flag] = '1';
     else delete process.env[flag];
@@ -233,7 +225,6 @@ export async function executeGroup(group, root = repositoryRoot, output = proces
   }
 }
 
-/** Complete both groups, preserving a failure from either one. */
 export async function runGroups(groups, execute = executeGroup) {
   let failed = false;
   for (const group of groups) {

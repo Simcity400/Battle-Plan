@@ -1,48 +1,30 @@
-//! Anonymous foreign-homebase record in the country supply system (`ccountry_supply_system::FOREIGN_HOMEBASE_DATA`).
-//!
-//! Numeric fields retain signed i64 fixed5 values. Hourly updates advance
-//! elapsed hours by the unit scale.
 
 use crate::{
     Memory, ccountry_supply_system, cpdx_array::Array, csupply_system, msvc_string, read,
     read_slice, walk::Outcome,
 };
 
-/// Foreign-homebase record stride.
 pub const STRIDE: usize = 0x70;
-/// Foreign-homebase u32 province id.
 pub const PROVINCE: usize = 0x00;
-/// Foreign-homebase signed i64 fixed5 supply.
 pub const SUPPLY: usize = 0x08;
-/// Foreign-homebase signed i64 fixed5 start.
 pub const START: usize = 0x10;
-/// Foreign-homebase signed i64 fixed5 penalty.
 pub const PENALTY: usize = 0x18;
-/// Additional penalty, signed fixed5; omitted by save serialization.
 pub const ADDED_PENALTY: usize = 0x20;
-/// Foreign-homebase source MSVC string.
 pub const SOURCE: usize = 0x28;
-/// Signed fixed5 duration.
 pub const DURATION: usize = 0x48;
-/// Foreign-homebase duplicate u32 province id checked against the node's first word.
 pub const PROVINCE_COPY: usize = 0x50;
-/// Signed fixed5 elapsed hours; increments hourly and resets independently.
 pub const HOURS: usize = 0x58;
-/// Foreign-homebase signed i64 fixed5 decay.
 pub const DECAY: usize = 0x60;
-/// Foreign-homebase base flag u8 in {0,1}.
 pub const BASE: usize = 0x68;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Position in the native per-country array; preserves duplicate provinces.
     pub ordinal: u32,
     pub province: u32,
     pub supply: i64,
     pub start: i64,
     pub penalty: i64,
-    /// This native field is omitted by the text-save serializer.
     pub added_penalty: i64,
     pub duration: i64,
     pub hours: i64,
@@ -59,8 +41,6 @@ pub struct SourceWalk {
     pub required_bytes: usize,
 }
 
-/// Copies literal source bytes into caller-owned storage. A string never gets
-/// shortened or converted lossily. Whole rows are omitted for either capacity.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -136,7 +116,6 @@ pub fn walk_buffer(
     result.unwrap_or_else(unavailable)
 }
 
-/// The caller authenticates the CCountrySupplySystem and country backlink.
 #[cfg(test)]
 pub(crate) fn read_country(
     memory: &impl Memory,
@@ -177,8 +156,6 @@ pub(crate) fn read_country_buffer(
             let address = array
                 .element(ordinal, STRIDE)
                 .ok_or("foreign homebase address overflow")?;
-            // The source header is needed even for a row that cannot fit, so
-            // capacity growth includes every native string's exact length.
             let string = address + SOURCE;
             let (source, source_len) = literal(memory, string)?;
             required_bytes = required_bytes
@@ -188,8 +165,6 @@ pub(crate) fn read_country_buffer(
             if len == output.len() || source_len > sources.len() - bytes_len {
                 continue;
             }
-            // The string header was already read. Copy the numeric ranges
-            // around it in one guard rather than copying that header again.
             let mut prefix = [0_u8; SOURCE];
             let mut suffix = [0_u8; BASE + 1 - DURATION];
             if memory.copy_scattered(

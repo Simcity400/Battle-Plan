@@ -1,4 +1,3 @@
-//! The fresh getter, composed from held membership and shared operands.
 use super::*;
 use engine_executable::modifier_keys as keys;
 use replay_data::rows::DivisionRow;
@@ -136,7 +135,6 @@ pub(super) fn fresh(
             )?
             .unwrap_or(0),
     );
-    // The moving weather/state branch runs only for a logical owner at war.
     if moving && at_war(frame, &links, unit.logical_owner)? {
         if state_id != 0 {
             total =

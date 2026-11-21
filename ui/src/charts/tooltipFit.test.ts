@@ -22,7 +22,6 @@ test('the fullest form that fits is shown, built only as far as needed', () => {
   assert.ok(tooltipHeight(medium) <= tooltipRoom(500));
   assert.equal(medium.rows.length, 21);
   assert.equal(built, 2);
-  // What was left out is still read out: the fullest form, in full.
   assert.equal(tooltipText(medium), tooltipText({ title: 'T', rows: [...rows(40), total] }));
 });
 
@@ -37,10 +36,8 @@ test('when nothing fits, the last form is cut with its totals kept and the rest 
     assert.equal(tip.rows.length - 2 + hidden, 60, `${height}`);
     assert.equal(tip.spoken, tooltipText(long));
   }
-  // At a very short window the note gives way before the total does.
   assert.equal(fitTooltip([long], 120, { keep: 1 }).note, undefined);
   assert.equal(fitTooltip([long], 700, { keep: 1 }).note, long.note);
-  // The count row can be worded for what the rows are.
   assert.equal(fitTooltip([{ title: 'T', rows: rows(80) }], 400, { more: hidden => `${hidden} more resources` }).rows.at(-1)!.label.endsWith('more resources'), true);
 });
 
@@ -62,11 +59,9 @@ test('a tooltip is read out as one line, or as its full content when trimmed', (
 test('a full form, when given, is what assistive technology reads whatever is shown', () => {
   const full: TooltipContent = { title: 'Rifles', rows: Array.from({ length: 10 }, (_, index) => ({ label: `Variant ${index}`, value: String(index) })) };
   const capped: TooltipContent = { title: 'Rifles', rows: [...full.rows.slice(0, 8), { label: '2 more variants' }] };
-  // The capped form fits, but the spoken text lists every variant.
   const shown = fitTooltip([capped], 10000, { full });
   assert.equal(shown.rows.length, 9);
   assert.ok(shown.spoken?.includes('Variant 9'));
-  // A cut form reads the full one too; without it, the first form is read as before.
   assert.ok(fitTooltip([capped], 60, { full }).spoken?.includes('Variant 9'));
   assert.equal(fitTooltip([capped], 10000).spoken, undefined);
 });
@@ -86,7 +81,7 @@ test('missing flags add no tooltip rows, spoken text or fitting height', () => {
 
 test('refitting missing flags in a smaller window preserves original omissions and the kept total', () => {
   const countries: TooltipRow[] = rows(5000, 'Native country').map((row, index) => ({ ...row, countryFlag: { flag: `synthetic-flag-${index}` } }));
-  countries[0] = { ...countries[0], omittedRows: -1 }; // invalid metadata remains an ordinary data row
+  countries[0] = { ...countries[0], omittedRows: -1 };
   const raw: TooltipContent = { title: 'Native countries', countryFlag: { flag: 'synthetic-header' }, rows: [...countries, total] };
   const more = (hidden: number) => `${hidden} more participants`;
   const first = fitTooltip([raw], 360, { keep: 1, more });

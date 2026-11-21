@@ -1,7 +1,3 @@
-//! Demand for stored faction goals. No writer callback walks goals or allocates.
-//! Ordinary pending checks are observed only at their actual stores; progress
-//! refresh compares the incoming value with the one cache its CALL names. Missing observation
-//! refuses this family rather than authorizing an hourly native scan.
 use crate::{
     hook::{Hook, Registers, Tap},
     watch_registry::WatchRegistry,
@@ -64,8 +60,8 @@ pub(crate) fn prime() {
     presize();
     WATCHES.boundary(false);
 }
-/// # Safety
-/// The worker owns the Factions lease and is this domain's only capture.
+#[doc = " # Safety"]
+#[doc = " The worker owns the Factions lease and is this domain's only capture."]
 pub(crate) unsafe fn install_growth() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -99,8 +95,8 @@ pub struct Hooks {
     hooks: Vec<OwnedHook>,
 }
 impl Hooks {
-    /// # Safety
-    /// Attach owns the verified image and native patch publication lifetime.
+    #[doc = " # Safety"]
+    #[doc = " Attach owns the verified image and native patch publication lifetime."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "faction_changes") {
@@ -206,7 +202,6 @@ impl Drop for Hooks {
     fn drop(&mut self) {
         #[cfg(test)]
         let _exclusive = tests::exclusive();
-        // SAFETY: runtime owns these hooks until restoration and flight drainage.
         unsafe { WATCHES.release() };
     }
 }
@@ -281,7 +276,6 @@ unsafe extern "system-unwind" fn progress(
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionGoals);
     count(10);
     let flight = ManuallyDrop::new(WATCHES.running());
-    // SAFETY: the native caller owns this goal through the CALL's return.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let address = first.checked_add(native::GOAL_PROGRESS - native::GOAL_PROGRESS_STATUS);
     let before = address.and_then(|at| engine_native::read::<i64>(&memory, at));
@@ -318,8 +312,6 @@ mod tests {
     thread_local! {
         static HELD: Cell<bool> = const { Cell::new(false) };
     }
-    /// The watch table is process-wide: this module's tests and other modules' paths that
-    /// change it (the hourly observer boundary, sizing, attach) take turns.
     pub(super) struct Exclusive(Option<std::sync::MutexGuard<'static, ()>>);
     impl Drop for Exclusive {
         fn drop(&mut self) {
@@ -338,7 +330,6 @@ mod tests {
         HELD.set(true);
         Exclusive(Some(turn))
     }
-    /// A test puts back the originals it swapped and disables the table, even when it fails.
     struct Serial {
         original: [usize; SITES],
         _turn: Exclusive,
@@ -366,9 +357,6 @@ mod tests {
         19
     }
 
-    /// A call in flight through a site holds its publication back. The family reports that
-    /// as not ready, never as an error, so attach retries it: on its own, and from an attach
-    /// round, whose collect pass goes on past the publication and whose report says busy.
     #[test]
     fn busy_attach_publication_remains_retryable() {
         static FLIGHT: AtomicUsize = AtomicUsize::new(1);
@@ -434,8 +422,6 @@ mod tests {
         let structural = WATCHES.sequence(owner(0x1000)).unwrap();
         let cache = WATCHES.sequence(first).unwrap();
         ORIGINAL[10].store(update as *const () as usize, Ordering::Release);
-        // SAFETY: the callback receives a stable synthetic goal cache and an
-        // original with the same native operands.
         let result = unsafe { progress(first, 123, 0, 0) };
         assert_eq!(result, 19);
         assert_eq!(

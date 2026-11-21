@@ -29,9 +29,6 @@ import type { Choice, WeatherPeriod, WeatherShow } from './weatherData';
 import { useWeatherInView } from './useWeather';
 import './weather.css';
 
-/** Recorded weather by strategic region and day: conditions as stripes, the regions' mean temperature, or one recorded
- * weather modifier on a ramp. Long views fold their days into the plot's pixel columns. Following the playhead it
- * renders only when the window shown changes; the playhead is drawn at the clock each frame. */
 export default function WeatherWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -51,13 +48,11 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   useShownEachFrame(runtime.clock, () => data ? following ? Math.min(clockHour() ?? data.lastHour, data.lastHour) : data.lastHour : null);
   const dayHours = data?.dayHours ?? 1;
   const chosenTheatres = useMemo(() => contentSet(options.theatres).map(contentKey), [options.theatres]);
-  // The theatres' regions at the hour shown; a theatre filter whose membership is not known shows why instead.
   const air = useAirTheatres(track, extent?.[1] ?? null, active && chosenTheatres.length > 0);
   const inTheatres = useMemo(() => theatreRegions(air.theatres, chosenTheatres), [air.theatres, chosenTheatres]);
   const regions = useMemo(() => data ? shownRegions(data, contentSet(options.regions).map(contentKey), inTheatres) : [], [data, options.regions, inTheatres]);
-  const periods = useMemo(() => data && extent ? weatherPeriods(data.columns, extent, data.dayHours) : [], [data, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Hours the shown reply does not reach while the next loads: never clear days.
-  const unreached = useMemo(() => data && extent ? uncoveredSpans(extent, data) : [], [data, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const periods = useMemo(() => data && extent ? weatherPeriods(data.columns, extent, data.dayHours) : [], [data, extent?.[0], extent?.[1]]);
+  const unreached = useMemo(() => data && extent ? uncoveredSpans(extent, data) : [], [data, extent?.[0], extent?.[1]]);
   const grey = mix(tokens.surface, tokens.text, 0.1);
   const gap = `color-mix(in srgb, ${tokens.error} ${tokens.gapOpacity * 100}%, ${tokens.surface})`;
   const flagColour = useCallback((index: number) => tokens.categories[index % tokens.categories.length], [tokens.categories]);
@@ -81,11 +76,10 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   const onMenu = useCallback((hour: number, x: number, y: number) => {
     const period = periods.find(item => item.firstHour <= hour && hour <= item.lastHour);
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, period?.exact === false ? hour : period?.readHour ?? hour)]);
-  }, [track, periods, menu.open, runtime]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [track, periods, menu.open, runtime]);
   const anchor = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ id: string; name: string } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<readonly string[]>([]);
-  // The read the drill's provinces answer.
   const [drillShown, setDrillShown] = useState<number | null>(null);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings] : null);
   if (!track) return <WidgetState kind="empty" icon="sun" message="Load a campaign to see weather." />;
@@ -111,7 +105,6 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
         if (!region) return;
         setPicked(region);
         const playing = widget.time.mode === 'follow';
-        // The provinces of the day under the pointer, whatever its column holds.
         dispatch({ type: 'open', breakdown: 'provinces', hour: pickedDay(hour, dayHours, extent), playing, playhead: playing ? clockHour() : null });
       }} /></div>;
   const pinned = drill.breakdown !== null && !drill.follow ? drill.hour : null;

@@ -1,5 +1,3 @@
-/** The raid log reply, read once per campaign (or range), and what both raid widgets read from it: a raid at an hour,
- * its status and preparation, its type and icon, and each country's launches and wins over time. */
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
@@ -11,7 +9,6 @@ import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
 
-/** Both raid widgets and the picker ask whether the campaign has raids the same way: no raid is read. */
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -42,8 +39,6 @@ export function validateRaidLog(value: unknown): RaidLogReply {
   return { ...reply, artwork: reply.artwork.map(art => ({ ...art, image: drawableIcon(art.image) })) };
 }
 
-/** Every raid of the widget's campaign (its range when ranged), read once: the widgets cut it at the hour shown.
- * With `catalogue`, only the raid types and whether raids are available. */
 export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, catalogue = false) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const range = track && !catalogue && widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, 0) : null;
@@ -52,7 +47,6 @@ export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   return { track, ...useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source) };
 }
 
-/** The raids started by `hour` (every raid for null), in start order: `episodes` come in start order. */
 export function startedBy(episodes: readonly RaidEpisode[], hour: number | null): number {
   if (hour === null) return episodes.length;
   let lo = 0, hi = episodes.length;
@@ -64,10 +58,8 @@ export function raidType(types: readonly RaidTypeInfo[], episode: RaidEpisode): 
   return types.find(type => type.token === episode.raidType) ?? null;
 }
 export function raidTypeName(type: RaidTypeInfo | null): string { return contentTitle(type?.name, type?.token, 'Raid name unavailable'); }
-/** A raid's type as the content names it, else the name the reply gave, else why it has none. */
 export const raidTypeText = (data: Pick<RaidLogReply, 'types'>, episode: RaidEpisode) =>
   contentTitle(raidType(data.types, episode)?.name ?? episode.raidTypeName, episode.raidType, episode.raidType === null ? 'Raid type not recorded' : 'Raid name unavailable');
-/** Repeated localised titles keep distinct choices without showing script keys. */
 export function raidTypeChoices(types: readonly RaidTypeInfo[]): { token: string; label: string }[] {
   const counts = new Map<string, number>();
   for (const type of types) { const name = raidTypeName(type); counts.set(name, (counts.get(name) ?? 0) + 1); }
@@ -82,8 +74,6 @@ export function raidIcon(data: Pick<RaidLogReply, 'artwork'>, episode: RaidEpiso
   return episode.icon === null ? null : data.artwork.find(art => art.key === episode.icon)?.image ?? null;
 }
 
-/** A raid at an hour: the last run of its phases by then, the one read at the hour (none when it was not), and the
- * hour its row was last dated by: the first hour of the phase it shows, joined back over a gap with the same phase. */
 export interface RaidAt { episode: RaidEpisode; latest: RaidPhaseRun; current: RaidPhaseRun | null; since: number; hour: number }
 
 export function raidAt(episode: RaidEpisode, hour: number): RaidAt | null {
@@ -100,14 +90,12 @@ export function raidAt(episode: RaidEpisode, hour: number): RaidAt | null {
   return { episode, latest, current: latest.lastHour >= hour ? latest : null, since: runs[first].firstHour, hour };
 }
 
-/** The hours a raid's row can change at: each phase run's first hour and the hour after its last. */
 export function raidChangeHours(episodes: readonly RaidEpisode[]): number[] {
   const hours: number[] = [];
   for (const episode of episodes) for (const run of episode.runs) hours.push(run.firstHour, run.lastHour + 1);
   return hours.sort((a, b) => a - b);
 }
 
-/** Its preparation hours read at `hour` exactly, none when not read then. */
 export function raidPreparationAt(episode: RaidEpisode, hour: number): number | null {
   const runs = episode.preparation, at = Math.floor(hour);
   let found: RaidPreparationRun | null = null;
@@ -121,34 +109,28 @@ export function raidPreparationAt(episode: RaidEpisode, hour: number): number | 
 export function raidStatus(data: Pick<RaidLogReply, 'phaseEnded' | 'outcomeNone'>, at: RaidAt): string {
   const value = at.current ?? at.latest;
   const phase = value.phaseName ?? 'Unknown phase';
-  // Outcome text is shown only once ended and excludes the no-outcome sentinel.
   const outcome = value.phase === data.phaseEnded && value.outcome !== data.outcomeNone ? value.outcomeName ?? 'Unknown outcome' : null;
   const status = outcome === null ? phase : `${phase} · ${outcome}`;
   return at.current ? status : `Last known: ${status}`;
 }
 
-/** Whether the raid is preparing at the hour (its preparation hours then shown). */
 export const raidPreparing = (data: Pick<RaidLogReply, 'phasePreparing'>, at: RaidAt) => (at.current ?? at.latest).phase === data.phasePreparing;
 
-/** "N h prepared" at `hour` while preparing, why not when not read then, nothing in another phase. */
 export function raidPreparationText(data: Pick<RaidLogReply, 'phasePreparing'>, at: RaidAt, hour: number): string | null {
   if (!raidPreparing(data, at)) return null;
   const hours = at.current ? raidPreparationAt(at.episode, hour) : null;
   return hours === null ? 'Preparation not known' : `${hours.toLocaleString('en-US')} h prepared`;
 }
 
-/** A raid's target place: its state's or province's id while not named. */
 export function raidPlaceId(episode: RaidEpisode): string {
   return episode.province !== null ? `Province ${episode.province}` : episode.state !== null ? `State ${episode.state}` : 'Target not known';
 }
 
 export type RaidMetric = 'both' | 'launched' | 'succeeded';
-/** A country's launches and wins through each hour of a run. */
 export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number }
 export interface RaidTallySeries { tag: string; runs: RaidTallyRun[]; segments: Span[]; membership: Span[] | null; identities?: undefined }
 export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: number }
 
-/** The spans of `span` the reply holds (its missing spans cut out). */
 export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
   const out: Span[] = [];
   let at = span.firstHour;
@@ -161,9 +143,6 @@ export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
   return out;
 }
 
-/** Each country's launches (at the hour a raid launched) and wins (at the hour it ended a success) as runs over the
- * recorded spans of `span`: the `chosen` countries (at zero when they raided none), or with `top` the countries ever
- * among the top `count` by the metric, each with the spans it was. A raid without a named raider is counted apart. */
 export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing: readonly Span[], chosen: readonly string[],
   top: { count: number; metric: RaidMetric } | null, keyOf: (raider: string, hour: number) => string = raider => raider): RaidTally {
   const events = new Map<string, [number, 0 | 1][]>();
@@ -174,7 +153,6 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
     if (episode.succeeded && episode.endedHour !== null) marks.push([episode.endedHour, 1]);
     if (!marks.length) continue;
     if (episode.raider === null) { unattributed++; continue; }
-    // Each mark counts for the country the raider tag was then: a chosen slot takes every tag its country held.
     for (const mark of marks) {
       const key = keyOf(episode.raider, mark[0]);
       const list = events.get(key) ?? [];
@@ -210,8 +188,6 @@ function tallyRuns(events: readonly [number, 0 | 1][], segments: readonly Span[]
   return runs;
 }
 
-/** Each country's spans among the top `count` by the metric (launches for both; a country counts once it has a launch,
- * or for both a win), ties in tag order. */
 function topMembership(events: ReadonlyMap<string, readonly [number, 0 | 1][]>, hours: readonly number[], span: Span,
   top: { count: number; metric: RaidMetric }): Map<string, Span[]> {
   const counts = new Map<string, [number, number]>();
@@ -235,12 +211,10 @@ function topMembership(events: ReadonlyMap<string, readonly [number, 0 | 1][]>, 
   return out;
 }
 
-/** How many of `hours` (ascending) lie at or before `hour`. */
 export function eventsThrough(hours: readonly number[], hour: number): number {
   let lo = 0, hi = hours.length;
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (hours[mid] <= hour) lo = mid + 1; else hi = mid; }
   return lo;
 }
 
-/** A run's value at `hour` in a tally series, none where not recorded. */
 export const tallyRunAt = (series: RaidTallySeries | undefined, hour: number) => runAt(series?.runs ?? [], Math.floor(hour));

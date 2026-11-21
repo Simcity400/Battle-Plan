@@ -344,7 +344,7 @@ fn unit_fixture() -> Fixture {
     *fixture.frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
             division: UNIT,
-            name: Recorded::NotRecorded, // Historical generator operands.
+            name: Recorded::NotRecorded,
             naming: Recorded::Value(Some(NameOperands {
                 custom: b"Selected [This.GetName]".to_vec(),
                 ..Default::default()
@@ -385,7 +385,6 @@ fn unit_fixture() -> Fixture {
     if let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
     {
-        // The global store, first in key order: scope kind, then id.
         rows.insert(
             0,
             ScriptVariablesRow {
@@ -528,7 +527,6 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         );
         assert_eq!(out.refusals, BTreeMap::from([(expected, 2)]), "{body}");
     }
-    // A missing fallback key is distinct from an absent template; explicit names still work.
     if let TableView::Complete(TableRows::DivisionTemplates(rows)) =
         &mut *fixture.frame.tables[TableId::DivisionTemplates.index()]
     {
@@ -793,7 +791,7 @@ fn unit_carrier_format98_naming_table() {
             &[],
         );
         assert_eq!(out.text, "SetOrg 0.25 [This.GetName]");
-        assert!(out.refusals.is_empty()); // Do not read a name for this description.
+        assert!(out.refusals.is_empty());
     }
 }
 
@@ -897,7 +895,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
                 .enumerate()
                 .map(|(at, &division)| DivisionStatusRow {
                     division,
-                    name: Recorded::NotRecorded, // Historical generator operands.
+                    name: Recorded::NotRecorded,
                     naming: Recorded::Value(Some(NameOperands {
                         custom: format!("Unit {}", at + 1).into_bytes(),
                         ..Default::default()
@@ -967,7 +965,6 @@ fn units_output_branches() {
         (
             "delete_unit_template_and_units={division_template=Raw air_experience=1}",
             C(1),
-            // Report unknown own fields rather than loading child effects.
             "Delete Raw\n",
         ),
         (
@@ -1155,7 +1152,6 @@ fn units_output_branches() {
         (
             "BBB={transfer_units_fraction={target=AAA} set_equipment_fraction=2}",
             C(1),
-            // The transfer wrapper adds no LF; concatenate its children.
             "\u{12}BBBBeta:\n   UnitsTo alpha   Adjust 1.00\n",
         ),
     ] {
@@ -1206,8 +1202,6 @@ fn navy_unknown_target_uses_reserved_country_name() {
         .collect::<Localisation>()
         .into();
     Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
-    // Read the definite name even when the country selector chooses slot zero.
-    // The recorded cache decides whether to rebuild or retain empty text.
     for (built, expected) in [(2, "NavyTo reserved navy target\n"), (0, "NavyTo \n")] {
         *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -1456,7 +1450,6 @@ fn units_admission_and_named_refusals() {
             out.refusals,
         );
     }
-    // A successful earlier province must not hide a later unknown native score.
     if let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *fixture.frame.tables[TableId::Provinces.index()]
     {
@@ -2169,7 +2162,6 @@ fn units_equipment_named_refusals() {
             variant: 9999,
         });
     }
-    // A later unresolved roster row cannot override the first exact match.
     let out = render(
         &fixture,
         "add_equipment_to_stockpile={type=syn_concrete amount=1}",
@@ -2220,7 +2212,6 @@ fn units_recorded_variant_no_tech_probe() {
             variant.creator_link = creator;
             variant.origin_link = origin;
             if expected.contains("LegacyTechUnnamed") {
-                // A native first match hides the later unavailable version.
                 let mut later = variant.clone();
                 later.id = 70;
                 later.version = Recorded::NotRecorded;
@@ -2258,7 +2249,6 @@ fn units_recorded_variant_no_tech_probe() {
     {
         rows.iter_mut().find(|row| row.id == 60).unwrap().version = Recorded::NotRecorded;
     }
-    // Native tests the version before a matching family's foreign creator.
     let out = render(
         &fixture,
         "create_equipment_variant={type=syn_concrete} create_equipment_variant={type=syn_concrete}",

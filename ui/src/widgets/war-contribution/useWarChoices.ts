@@ -10,7 +10,6 @@ import type { WarsReply } from '../../generated/dashboard';
 import { validateWarsReply } from '../wars/warsData';
 import { warName } from './warContributionData';
 
-/** Every war the viewpoint fought in this branch, by its in-game name and start. */
 export function useWarChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;

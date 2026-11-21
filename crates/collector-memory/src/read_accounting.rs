@@ -1,15 +1,3 @@
-//! Table scopes for native reads: a read under a table's scope that resolves a withheld site
-//! withholds that table. Test builds also count each scope's reads (CountedMemory) as evidence.
-//!
-//! These thread-local scopes assign work without allocating or synchronizing per read.
-//! Shared country authentication belongs to Countries; the shared unit census
-//! belongs to Divisions. Nested detail scopes retain their existing timing
-//! anchors, so consumers of owned bytes never charge the source work again.
-//!
-//! A Capture isolates each executor job, including callback helping and rejected
-//! inline work. Collection merges its counts once, even after a caught panic.
-//! The outer callback Capture includes the sole hook-entry clock and diagnostic
-//! scalar reads under Clock, and the once-only player roster under Players.
 
 use engine_native::memory::ReadCounts;
 use replay_data::rows::TABLE_COUNT;
@@ -59,18 +47,14 @@ impl State {
     }
 }
 
-/// Per table, one more than the first site key a read under its scope found withheld; zero while
-/// none was. Sticky for the session: the table stays withheld by that site's name.
 static WITHHELD: [AtomicUsize; TABLE_COUNT] = [const { AtomicUsize::new(0) }; TABLE_COUNT];
 
 fn withhold(table: usize, key: engine_sites::Rva) {
-    // Reads outside any table scope stay charged to Clock; their sites are refused where resolved.
     if table != TableId::Clock.index() {
         let _ = WITHHELD[table].compare_exchange(0, key.0 + 1, Ordering::AcqRel, Ordering::Acquire);
     }
 }
 
-/// The site that withheld this table, if any read under its scope found one withheld.
 pub fn withheld(table: TableId) -> Option<engine_sites::Rva> {
     match WITHHELD[table.index()].load(Ordering::Acquire) {
         0 => None,
@@ -82,7 +66,6 @@ thread_local! {
     static STATE: RefCell<State> = const { RefCell::new(State::new()) };
 }
 
-/// Its pending counters and parent table belong to the opening thread.
 #[must_use]
 pub struct Table {
     previous: usize,
@@ -102,7 +85,6 @@ pub fn table(table: TableId) -> Table {
 }
 
 impl Table {
-    /// Switch a timed shared walk's phase while retaining its original parent.
     pub fn select(&mut self, table: TableId) {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
@@ -129,8 +111,6 @@ pub fn with_table<R>(owner: TableId, work: impl FnOnce() -> R) -> R {
     work()
 }
 
-/// Keep this guard outside the job's panic boundary. Its table guards unwind
-/// inside that boundary, so the parent's scope is restored after a panic.
 #[must_use]
 pub struct Capture {
     previous: MaybeUninit<State>,
@@ -155,7 +135,6 @@ impl Capture {
             let mut state = state.borrow_mut();
             state.flush();
             let previous = capture.previous.as_mut_ptr();
-            // SAFETY: every field of `previous` is written before `open` is set.
             unsafe {
                 #[cfg(any(test, feature = "test-support"))]
                 std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
@@ -180,18 +159,15 @@ impl Capture {
         tables
     }
 
-    /// `finish` into the caller's storage, without a copy on this stack.
     #[cfg(any(test, feature = "test-support"))]
     pub fn finish_into(mut self, tables: &mut TableCounts) {
         self.restore(Some(tables));
     }
 
-    /// Restore the parent; this capture's counts go to `tables` when given.
     fn restore(&mut self, #[allow(unused_variables)] tables: Option<&mut TableCounts>) {
         if !std::mem::take(&mut self.open) {
             return;
         }
-        // SAFETY: `open` was set only after `new` initialized `previous`.
         let previous = unsafe { self.previous.assume_init_ref() };
         STATE.with(|state| {
             let mut state = state.borrow_mut();
@@ -212,13 +188,10 @@ impl Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        // Discarded counts are never copied out.
         self.restore(None);
     }
 }
 
-/// Merge a collected completion after restoring its caller's Capture. Borrowed,
-/// so a collector merges in place without copying the counts onto its stack.
 #[cfg(any(test, feature = "test-support"))]
 pub fn merge(counts: &TableCounts) {
     STATE.with(|state| {
@@ -229,8 +202,6 @@ pub fn merge(counts: &TableCounts) {
     });
 }
 
-/// Called after all worker collections and live reads, before frame ownership
-/// transfers to the decode queue. Taking another snapshot never adds work.
 #[cfg(any(test, feature = "test-support"))]
 pub fn snapshot() -> TableCounts {
     let mut tables = ZERO;
@@ -238,7 +209,6 @@ pub fn snapshot() -> TableCounts {
     tables
 }
 
-/// `snapshot` into the caller's storage, without a copy on this stack.
 #[cfg(any(test, feature = "test-support"))]
 pub fn snapshot_into(tables: &mut TableCounts) {
     STATE.with(|state| {
@@ -328,7 +298,6 @@ mod tests {
         assert_eq!(snapshot()[TableId::Divisions.index()], ReadCounts::ZERO);
         read(5);
         merge(&job_counts);
-        // Actual job table guards unwind before their executor Capture ends.
         drop(owner);
         let mut expected = job_counts;
         expected[TableId::Countries.index()] = copies(2, 7);

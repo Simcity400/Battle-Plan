@@ -1,4 +1,3 @@
-//! The commands both apps register. Tauri cannot export commands from a library's root.
 use crate::{Channel, RELEASES, UpdateState, Updates, install};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
@@ -12,7 +11,6 @@ pub fn app_update_state(updates: State<'_, Arc<Updates>>) -> UpdateState {
     updates.state()
 }
 
-/// Run `work` on a thread made for blocking: an action waits out a running check.
 async fn blocking<T: Send + 'static>(
     app: AppHandle,
     work: impl FnOnce(&AppHandle, Arc<Updates>) -> Result<T, String> + Send + 'static,
@@ -38,13 +36,11 @@ pub async fn app_update_download(app: AppHandle) -> Result<UpdateState, String> 
     .await
 }
 
-/// Answers only when the installer did not start; once it starts, both apps close.
 #[tauri::command]
 pub async fn app_update_install(app: AppHandle) -> Result<(), String> {
     blocking(app, |app, updates| updates.install(app)).await
 }
 
-/// Save the channel for both apps and read its feed; a failed read is in the answered state.
 #[tauri::command]
 pub async fn app_update_set_channel(
     app: AppHandle,
@@ -58,7 +54,6 @@ pub async fn app_update_set_channel(
     .await
 }
 
-/// Open the release page of `version` on the release repository.
 #[tauri::command]
 pub fn app_update_open_release(version: String) -> Result<(), String> {
     let releases = RELEASES.ok_or("This build has no release page.")?;

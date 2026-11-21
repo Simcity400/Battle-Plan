@@ -3,9 +3,6 @@ use super::*;
 pub(crate) const AIR_STATS_N: usize = 1;
 pub(super) const STATS_MASK: u32 = 0x01;
 
-/// One refresh of raw air-statistics payload. Flat pools recycle capacities
-/// and the steady state reuses storage. Worker growth follows each original
-/// request before publication; decode follows the complete accepted payload.
 #[derive(Debug, Default)]
 pub(crate) struct AirStatsJob {
     pub log: RawLog<AIR_STATS_N>,
@@ -65,10 +62,6 @@ fn stats_pool_u32(log: &RawLog<AIR_STATS_N>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
-/// Mirror of one history slot's `read_current` takes: vtable, field count,
-/// self reference, window chain, yearly-window validation words, record
-/// linkage and the nine channel spans. Returns false exactly when the typed
-/// read fails for this history.
 fn copy_stats_history(
     log: &mut RawLog<AIR_STATS_N>,
     memory: &impl engine_native::Memory,
@@ -189,8 +182,6 @@ fn copy_stats_history(
         Some(start) => log.bytes[start],
         None => return false,
     };
-    // Existing rings retain their original signed capacity,
-    // just as the typed current-bucket reader does.
     if capacity as i32 <= 0 || records.count != capacity || year_slot >= capacity || wrapped > 1 {
         return false;
     }
@@ -272,9 +263,6 @@ fn copy_stats_history(
     copy_stats_channels(log, memory, values)
 }
 
-/// Retain the typed reader's nine exact channel spans and their observation
-/// order. A full-capacity guard is selected before any source read; the cold
-/// scalar path preserves partial admission and growth requests at pool limits.
 pub(super) fn copy_stats_channels(
     log: &mut RawLog<AIR_STATS_N>,
     memory: &impl engine_native::Memory,
@@ -337,18 +325,10 @@ fn copy_stats_pass_mode(
     job.active = true;
     job.game_state = game_state;
     let started = qpc();
-    // Single per-owner loop (no duplicate takes): census takes and history
-    // takes interleave in owner order. The replay serves by exact
-    // (address, length) with in-order multiplicity, so take order never
-    // affects serving. Only this acquisition supplies the owned decode.
     copy_stats_owners(&mut job.log, memory, base, game_state);
     ticks[0] += qpc().saturating_sub(started).max(0) as u64;
 }
 
-/// Countries/links/manager preamble plus one loop over owner slots: per
-/// owner the identity takes, the history-table header take, every slot-word
-/// take and every nonnull history object. Stops at the first typed abort
-/// point, mirroring the walk's fail-fast.
 fn copy_stats_owners(
     log: &mut RawLog<AIR_STATS_N>,
     memory: &impl engine_native::Memory,
@@ -423,9 +403,6 @@ fn copy_stats_owners(
     if owners.count == 0 || countries_array.count < 2 || links_array.count == 0 {
         return;
     }
-    // Every link entry the walk can read (canonical(slot)/canonical(id)
-    // checks read each visited slot's entry plus each raw id's entry).
-    // Taking the whole vector once covers all of them deterministically.
     for link in 0..links_array.count {
         let addr = match (link as usize)
             .checked_mul(4)
@@ -445,8 +422,6 @@ fn copy_stats_owners(
         Some(vtable) => vtable as u64,
         None => return,
     };
-    // The walk reads a slot only through `Reader::read_at` of an owner's canonical slot, so a
-    // null, foreign or reserved-alias slot stops nothing; the replay derives each verdict.
     for slot in 1..countries_array.count {
         let pointer_addr = (slot as usize)
             .checked_mul(8)
@@ -460,7 +435,6 @@ fn copy_stats_owners(
             && let Some(vtable) = sspan(log, memory, Some(pointer), 8, STATS_MASK)
             && stats_pool_u64(log, vtable) == country_vtable
         {
-            // The id's link entry is staged above.
             sspan(
                 log,
                 memory,
@@ -559,10 +533,6 @@ fn copy_stats_owners(
     }
 }
 
-/// Per-owner history-table walk: header already staged by the census; take
-/// each slot word, then each nonnull history via `copy_stats_history`.
-/// Stops at the first typed abort point (failed take), mirroring the walk's
-/// fail-fast on unreadable slots.
 pub(crate) fn copy_air_stats_refresh(
     memory: &impl Memory,
     ctx: AirStatsCopyContext,
@@ -599,9 +569,6 @@ pub(crate) fn decode_air_stats_payload(
         }
     };
     let started = qpc();
-    // Replay the existing statistics walk against the recorded spans into
-    // the pooled buffers, with the identical bounded/capacity handling the
-    // game thread applies.
     let walked = cloop_history::walk(
         &recorded,
         base,

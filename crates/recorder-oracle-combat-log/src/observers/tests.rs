@@ -162,7 +162,6 @@ fn fixture() -> (DecodedFrame, Save) {
             variant: VARIANT + (1 << 32),
             amount_raw: 50_000,
         },
-        // The side pool's serializer omits this zero entry.
         LandEquipmentLoss {
             variant: VARIANT,
             amount_raw: 0,
@@ -216,7 +215,6 @@ fn run(frame: &DecodedFrame, saved: &Save) -> Report {
 #[test]
 fn observer_comparison_uses_exact_values_across_save_decimal_spellings() {
     let (frame, saved) = fixture();
-    // The parser's spelling-sensitive equality remains intact globally.
     assert_ne!(number("3"), decimal(300_000).unwrap());
     let report = run(&frame, &saved);
     assert!(report.differences.is_empty(), "{:?}", report.differences);

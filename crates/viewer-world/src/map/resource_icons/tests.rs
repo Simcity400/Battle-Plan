@@ -23,7 +23,6 @@ fn content() -> ResourceIconContent {
     }
 }
 
-/// Synthetic texts: a resource's name, then its value after a colon.
 fn texts() -> Localisation {
     loaded(concat!(
         "l_english:\n",
@@ -45,8 +44,6 @@ fn camera(height: f32) -> Camera {
     }
 }
 
-/// The fixture's hour with one province per state (`10 x state`) and, in the mixed state, a
-/// second province of more victory points (11).
 fn frame() -> DecodedFrame {
     let mut frame = fixture::frame();
     let mut provinces: Vec<_> = (1..=8)
@@ -99,7 +96,6 @@ fn icons_draw_only_in_the_resources_mode_below_the_unit_icon_cutoff() {
     let defines = content().defines;
     let mode = |stock| visibility::of(&MapMode::Stock(stock));
     assert_eq!(shown(&mode(Stock::Resources), 100., &defines), Some(true));
-    // Rows and flags hide from the text cutoff up; the icons from the unit icon cutoff up.
     assert_eq!(shown(&mode(Stock::Resources), 800., &defines), Some(false));
     assert_eq!(shown(&mode(Stock::Resources), 899.9, &defines), Some(false));
     assert_eq!(shown(&mode(Stock::Resources), 900., &defines), None);
@@ -120,8 +116,6 @@ fn icons_draw_only_in_the_resources_mode_below_the_unit_icon_cutoff() {
     );
 }
 
-/// A free eye shows each icon by its own distance, however low it flies: the icon stands at its
-/// state's anchor below the unit icon cutoff, and its rows show below the text cutoff.
 #[test]
 fn a_free_eye_shows_each_icon_by_its_own_distance() {
     let content = content();
@@ -129,7 +123,6 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
     let anchors = anchors();
     let anchor = [3000., 10., 1500.];
     let prepared = |distance: f32| {
-        // Level with the anchors, `distance` south of them.
         let eye = [3000., 10., 1500. - distance];
         prepare(
             &ResourceIconInputs {
@@ -176,7 +169,6 @@ fn every_state_with_resources_gets_an_icon_with_the_games_rows_and_flags() {
     let icons = prepared(Stock::Resources, 100.);
     let states: Vec<_> = icons.placed.iter().map(|icon| icon.state).collect();
     assert_eq!(states, [MIXED, GATED, COSTED, GRANTED, GIVEN, ALIASED]);
-    // The state whose controller holds no origin is refused by name.
     assert_eq!(icons.report.refused.len(), 1, "{:?}", icons.report.refused);
     assert!(
         icons
@@ -209,8 +201,6 @@ fn every_state_with_resources_gets_an_icon_with_the_games_rows_and_flags() {
             },
         ]
     );
-    // One foreign holder of every row: the window's flag, none on the row, which is at its
-    // nominal amount and uncoloured.
     let given = icon(GIVEN);
     assert_eq!(given.flag, Some(AFG_SLOT));
     assert_eq!(
@@ -240,7 +230,6 @@ fn resource_anchor_uses_centroid_mean_and_authored_ties_and_wrapping() {
     };
     let anchors = anchor_provinces(&members, &centroid, 100.).unwrap();
     assert_eq!(anchors[&1], 4);
-    // Mean x normalizes before integer distance, as do each member's candidates.
     assert_eq!(anchors[&2], 10);
     let reversed = BTreeMap::from([(2, vec![10, 9])]);
     assert_eq!(
@@ -263,7 +252,6 @@ fn graphical_state_anchor_uses_signed_integer_distance_and_keeps_normal_ties() {
     };
     let anchors = anchor_provinces(&members, &centroid, 400_000.).unwrap();
     assert_eq!(anchors[&1], 1);
-    // A negative wrapped best distance is the native uninitialized sentinel too.
     assert_eq!(anchors[&2], 4);
     assert!(!anchors.contains_key(&3));
 }
@@ -350,7 +338,6 @@ fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
     assert_eq!((report.icons, report.rows), (1, 2), "{:?}", report.refused);
     assert!(!batch.quads.is_empty());
     assert_eq!(view.items.values().map(Vec::len).collect::<Vec<_>>(), [2]);
-    // One row left: its window is reused, the second kept for a later row.
     let report = placed(true, 1, None).draw(&context, &mut view, &mut batch);
     assert_eq!((report.icons, report.rows), (1, 1), "{:?}", report.refused);
     assert_eq!(view.items.values().map(Vec::len).collect::<Vec<_>>(), [2]);
@@ -359,15 +346,12 @@ fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
         items.iter().map(Instance::drawn).collect::<Vec<_>>(),
         [true, false]
     );
-    // From the text cutoff up, the window draws neither rows nor its flag.
     let report = placed(false, 0, Some(AFG_SLOT)).draw(&context, &mut view, &mut batch);
     assert_eq!(report.rows, 0, "{:?}", report.refused);
-    // Below it, the window's flag is bound to the holder.
     let report = placed(true, 0, Some(AFG_SLOT)).draw(&context, &mut view, &mut batch);
     assert_eq!(report.icons, 1, "{:?}", report.refused);
 }
 
-/// Every quad of an icon, its rows included, stands at the icon's anchor for a free eye to place.
 #[test]
 fn an_icon_s_quads_stand_at_its_anchor() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -387,7 +371,6 @@ fn an_icon_s_quads_stand_at_its_anchor() {
     assert!(!batch.quads.is_empty());
     let anchor = Some(icons.placed[0].anchor);
     assert!(batch.quads.iter().all(|quad| quad.anchor == anchor));
-    // Later pushes are screen interface again.
     batch.push(batch.quads[0].clone());
     assert_eq!(batch.quads.last().unwrap().anchor, None);
 }

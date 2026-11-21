@@ -1,56 +1,36 @@
-//! The find view's search, as the game runs it on every edit.
-//!
-//! The index holds, in order, every country owning at least one state (its name, then its tag),
-//! every state (its name, then its id) and every province with victory points and a name. A
-//! query shorter than two bytes finds nothing unless it is one digit. The query and every name
-//! and secondary are folded alike ([`Fold`]); an entry matches where the query first occurs in
-//! its name, else in its secondary, and the matches are listed in a stable order of that
-//! position, every one of them.
 
 use std::collections::BTreeMap;
 
-/// What a result centres the camera on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A country: its capital state, which it may lack.
     Country { capital: Option<u32> },
     State(u32),
     Province(u32),
 }
 
-/// One searchable entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub name: String,
     pub secondary: String,
-    /// The result's text as the game builds it.
     pub display: String,
     pub target: Target,
 }
 
-/// The game's search folding. The game maps each accented letter to an ASCII letter from a
-/// table in its executable before lower-casing ASCII; where the recording withholds that table,
-/// only ASCII lower-casing applies, and a text holding a letter outside ASCII is refused rather
-/// than folded by a guess.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Fold<'a> {
     table: Option<&'a BTreeMap<u32, u8>>,
 }
 
-/// Why a query finds nothing that the game would find something for.
 pub const UNFOLDED_QUERY: &str = "the query holds a letter outside ASCII, and the \
      game's accent folding table is withheld";
-/// Why entries are left out of the index.
 pub const UNFOLDED_NAMES: &str = "names holding letters outside ASCII are left out of \
      the results, as the game's accent folding table is withheld";
 
 impl<'a> Fold<'a> {
-    /// Folding with the game's table: code point to ASCII letter.
     pub fn with_table(table: &'a BTreeMap<u32, u8>) -> Self {
         Self { table: Some(table) }
     }
 
-    /// `text` folded to the bytes the game compares, or `None` when it cannot be folded.
     pub fn apply(&self, text: &str) -> Option<Vec<u8>> {
         let mut out = Vec::with_capacity(text.len());
         for ch in text.chars() {
@@ -81,16 +61,13 @@ struct Folded {
     secondary: Vec<u8>,
 }
 
-/// The entries of one presented hour, folded once.
 #[derive(Default)]
 pub struct Index {
     entries: Vec<Entry>,
     folded: Vec<Folded>,
-    /// Entries left out because they cannot be folded.
     pub unfolded: usize,
 }
 
-/// A search's results, or why it was refused.
 pub type Found<'i> = Result<Vec<&'i Entry>, &'static str>;
 
 impl Index {
@@ -125,7 +102,6 @@ impl Index {
         &self.entries
     }
 
-    /// The results for `query`.
     pub fn search(&self, query: &str, fold: Fold<'_>) -> Found<'_> {
         let long_enough =
             query.len() >= 2 || (query.len() == 1 && query.bytes().all(|b| b.is_ascii_digit()));
@@ -150,7 +126,6 @@ impl Index {
     }
 }
 
-/// Where `needle` first occurs in `haystack`.
 fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
@@ -202,19 +177,14 @@ mod tests {
     fn a_name_matches_before_its_secondary_and_results_follow_the_match_position() {
         let index = index();
         assert_eq!(names(index.search("BE", Fold::default())), ["Bergen", "Berlin"]);
-        // "er" is at 1 in Germany, Bergen and Berlin; ties keep the index order: countries, then
-        // states, then provinces.
         assert_eq!(
             names(index.search("er", Fold::default())),
             ["Germany", "Bergen", "Berlin"]
         );
-        // An earlier match comes first whatever the kind: "an" is at 2 in Brandenburg, 4 in
-        // Germany.
         assert_eq!(
             names(index.search("an", Fold::default())),
             ["Brandenburg", "Germany"]
         );
-        // A tag or id is searched only when the name holds no match.
         assert_eq!(names(index.search("ger", Fold::default())), ["Germany"]);
         assert_eq!(names(index.search("12", Fold::default())), ["Bergen"]);
     }
@@ -242,9 +212,7 @@ mod tests {
         assert_eq!(index.unfolded, 3);
         assert_eq!(names(index.search("ly", Fold::default())), ["Lyon"]);
         assert_eq!(index.search("bavi\u{e8}", Fold::default()), Err(UNFOLDED_QUERY));
-        // A punctuation mark outside ASCII is no letter: it keeps its bytes.
         assert_eq!(Fold::default().apply("a – b").unwrap(), "a – b".as_bytes());
-        // With the table, accented letters fold to their ASCII letter before lower-casing.
         let table = BTreeMap::from([(0xe8, b'e'), (0xe3, b'a'), (0xf6, b'o')]);
         let fold = Fold::with_table(&table);
         let folded = Index::build(index.entries().to_vec(), fold);

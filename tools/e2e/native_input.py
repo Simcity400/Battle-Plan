@@ -46,8 +46,6 @@ u.ScreenToClient.argtypes = [w.HWND, c.POINTER(w.POINT)]
 u.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageW.restype = w.LPARAM
 WM_SETTEXT, BM_CLICK = 0x000C, 0x00F5
-# The map draws in the app's own process, in a child window of the app's window with this title
-# (viewer::host::MAP_WINDOW_TITLE).
 MAP_TITLE = "Battle Plan map"
 
 
@@ -183,7 +181,6 @@ class Desktop:
         shows and offers no fields fails at once, and is cancelled so the app is not left behind a modal dialog."""
         deadline = time.monotonic() + seconds
         expanded = False
-        # A dialog builds and shows its controls a moment after its own window: it is judged once it has had this long.
         settled = None
         while time.monotonic() < deadline:
             dialogs = [entry for entry in self.windows() if entry[4] == "#32770"]
@@ -192,7 +189,6 @@ class Desktop:
             else:
                 settled = settled or time.monotonic() + 1.0
                 children = [entry for entry in self.windows() if entry[0] != dialogs[0][0]]
-                # The dialog's own red, green and blue fields (COLOR_RED, COLOR_GREEN, COLOR_BLUE) and its OK button.
                 fields = {entry[5]: entry for entry in children if entry[4] == "Edit" and entry[5] in (706, 707, 708)}
                 button = next((entry for entry in children if entry[4] == "Button" and entry[5] == 1), None)
                 if len(fields) == 3 and button:
@@ -201,7 +197,6 @@ class Desktop:
                         u.SendMessageW(fields[control][0], WM_SETTEXT, 0, c.cast(buffer, c.c_void_p).value)
                     u.SendMessageW(button[0], BM_CLICK, 0, 0)
                     return {"chosen": list(rgb)}
-                # COLOR_MIX: "Define Custom Colors >>", which shows the fields.
                 mix = next((entry for entry in children if entry[4] == "Button" and entry[5] == 719), None)
                 if mix and not expanded:
                     u.SendMessageW(mix[0], BM_CLICK, 0, 0)

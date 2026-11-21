@@ -1,21 +1,3 @@
-//! `CasualtyLifetimes` and `CasualtyTotals`. The game counts casualties per war relation
-//! lifetime: each side's losses in it, and each side's losses from no attacker, which it copies
-//! into every relation of the victim. A lifetime is the relation between two country identities
-//! from its start hour; its row lives while WarRelations lists it and is deleted the hour it does
-//! not, its last counters ending the row. A country's dealt and taken are the sums over every
-//! lifetime it was ever in, kept in its totals row.
-//!
-//! Its unknown-attacker total is known from a first read where every unknown counter of its
-//! relations is zero; each later read adds the one increment every relation spanning both reads
-//! agrees on, a new relation's counter being at most that increment. A disagreement, a negative
-//! increment or no spanning relation loses it, and a gap loses every total, for the rest of the
-//! run. After a gap, a lifetime the last read listed that the next no longer lists makes both its
-//! countries' totals partial: they miss its last hours.
-//!
-//! A gap is an hour the tables were not complete: the inputs were not, or a relation's country
-//! resolved to no identity, joined one to itself, or two relations were one lifetime (the writer
-//! withholds both tables that hour). State is the tables: a resume reads the live lifetimes and
-//! each country's sums back. A sum that leaves i64 is not recorded for the rest of the run.
 
 use crate::{
     forces::{exact, invalid, number, written},
@@ -40,7 +22,6 @@ const READS: &[Read] = &[
 
 const TABLES: [TableId; 2] = [TableId::CasualtyLifetimes, TableId::CasualtyTotals];
 
-/// Why an hour's relations do not join, by [`Writer::strings`] index.
 const UNRESOLVED: usize = 0;
 const SAME: usize = 1;
 const WIDE: usize = 2;
@@ -52,34 +33,28 @@ const REASONS: [&str; 4] = [
     "Casualties: two war relations are one lifetime",
 ];
 
-/// CasualtyTotals' columns.
 const DEALT: usize = 0;
 const TAKEN: usize = 1;
 const UNKNOWN: usize = 2;
 const PARTIAL: usize = 3;
 
-/// A lifetime's counters: taken by `a`, taken by `b`, `a`'s and `b`'s unknown-attacker losses.
 type Counters = [i64; 4];
 
 fn lifetime_key(a: Identity, b: Identity, start: i32) -> u128 {
     u128::from(a.0) << 104 | u128::from(a.1) << 80 | u128::from(b.0) << 56 | u128::from(b.1) << 32 | u128::from(start as u32)
 }
 
-/// A lifetime key's two identities, the lesser first.
 fn lifetime_of(key: u128) -> (Identity, Identity) {
     let field = |shift: u32| (key >> shift) as u32 & CasualtyLifetimeRow::FIELD;
     ((field(104), field(80)), (field(56), field(32)))
 }
 
-/// One relation as read: its WarRelations key, its lifetime and counters.
 struct Relation {
     raw: u64,
     key: u128,
     counters: Counters,
 }
 
-/// The relation at WarRelations `slot`, its counters turned so `a` is the lesser identity; why it
-/// does not join when it does not.
 fn relation(holders: &Holders, view: &TableView<'_>, slot: u32) -> io::Result<Result<Relation, usize>> {
     let table = TableId::WarRelations;
     let raw = view.key(slot).ok_or_else(|| invalid(format!("WarRelations slot {slot} holds no row")))? as u64;
@@ -99,7 +74,6 @@ fn relation(holders: &Holders, view: &TableView<'_>, slot: u32) -> io::Result<Re
     Ok(Ok(Relation { raw, key: lifetime_key(a, b, start), counters }))
 }
 
-/// A live lifetime row's counters.
 fn held(view: &TableView<'_>, key: u128) -> io::Result<Option<Counters>> {
     let Some(slot) = view.slot(key) else { return Ok(None) };
     let table = TableId::CasualtyLifetimes;
@@ -111,17 +85,14 @@ fn lifetime_cells(counters: Counters) -> Vec<Value> {
     counters.into_iter().map(Value::I64).collect()
 }
 
-/// A country's dealt and taken; none once one left i64 in the run.
 type Sums = [Option<i128>; 2];
 
-/// One read's agreement check of an identity's unknown-attacker counters.
 #[derive(Clone, Copy, Debug)]
 struct Agree {
     present: bool,
     all_zero: bool,
     delta: Option<i64>,
     valid: bool,
-    /// The greatest counter of a relation not spanning both reads.
     new_max: i64,
 }
 
@@ -132,8 +103,6 @@ impl Default for Agree {
 }
 
 impl Agree {
-    /// A relation listed with counter `value`, `previous` its counter at the read before when it
-    /// spans both.
     fn relation(&mut self, value: i64, previous: Option<i64>) {
         self.present = true;
         self.all_zero &= value == 0;
@@ -149,7 +118,6 @@ impl Agree {
         }
     }
 
-    /// Spanning relations listed again unchanged.
     fn unchanged(&mut self) {
         self.present = true;
         match self.delta {
@@ -159,8 +127,6 @@ impl Agree {
         }
     }
 
-    /// The total after the read, from `total` before it, for an identity that had a lifetime
-    /// before the read (`seen`) or not.
     fn total(&self, seen: bool, total: Option<i64>) -> Option<i64> {
         if !self.present {
             return total;
@@ -172,15 +138,12 @@ impl Agree {
     }
 }
 
-/// What an hour does to the lifetimes: those it lists with new counters (every listed one, read
-/// whole), those no longer listed, and the WarRelations rows gone.
 struct Plan {
     moved: Vec<Relation>,
     retired: Vec<u128>,
     gone: Vec<u64>,
 }
 
-/// What an hour did to one identity.
 #[derive(Default)]
 struct Touch {
     agree: Agree,
@@ -190,16 +153,11 @@ struct Touch {
 
 #[derive(Default)]
 pub struct Casualties {
-    /// The writer must read its tables back before its next hour: a resume.
     rebuild: bool,
     holders: Holders,
-    /// Each live lifetime by its WarRelations row's key, as the last hour read them.
     by_raw: HashMap<u64, u128>,
-    /// The lifetimes the table holds live.
     live: HashSet<u128>,
-    /// Each identity's live lifetimes.
     degree: HashMap<Identity, u32>,
-    /// Each identity's dealt and taken over every lifetime it was in.
     sums: HashMap<Identity, Sums>,
 }
 
@@ -215,7 +173,6 @@ fn add(sums: &mut HashMap<Identity, Sums>, key: u128, old: Counters, new: Counte
 }
 
 impl Casualties {
-    /// The live lifetimes, and every identity's sums from its totals row, as they stand.
     fn read_tables(&mut self, out: &Rows<'_>) -> io::Result<()> {
         self.by_raw.clear();
         self.live.clear();
@@ -233,7 +190,6 @@ impl Casualties {
         Ok(())
     }
 
-    /// Every relation listed, against every lifetime held live.
     fn plan_whole(&self, hour: &Hour<'_>) -> io::Result<Result<Plan, usize>> {
         let view = hour.table(TableId::WarRelations);
         let mut moved = Vec::new();
@@ -252,7 +208,6 @@ impl Casualties {
         Ok(Ok(Plan { moved, retired, gone: Vec::new() }))
     }
 
-    /// The relations the hour wrote, inserted or deleted.
     fn plan_changes(&self, hour: &Hour<'_>) -> io::Result<Result<Plan, usize>> {
         let mut retired = HashSet::new();
         let mut gone = Vec::new();
@@ -436,7 +391,6 @@ impl Writer for Casualties {
         }
     }
 
-    /// Nothing but the tables: a resume reads the live lifetimes and the sums back.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

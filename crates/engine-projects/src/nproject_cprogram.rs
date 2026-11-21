@@ -1,43 +1,26 @@
-//! Project programs read from each country's authenticated status. Shared
-//! root entries are deduplicated by object pointer before materialization.
 
 use crate::{
     Memory, ccountry, msvc_string, nproject_cprogram_status, read, read_slice, walk::Outcome,
 };
 use engine_sites::Rva;
 
-/// Program primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_e080);
-/// Program reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 83;
-/// Program u32 reference type.
 pub const TYPE: usize = 0x08;
-/// Program u32 local ID.
 pub const ID: usize = 0x0c;
-/// Program u32 owner reference, checked against its independent copy.
 pub const OWNER_PRIMARY: usize = 0x18;
-/// Program u32 province reference, checked against its independent copy.
 pub const PROVINCE_PRIMARY: usize = 0x1c;
-/// Program MSVC building-token string.
 pub const BUILDING: usize = 0x20;
-/// Program u32 active-project handle.
 pub const ACTIVE_PROJECT_HANDLE: usize = 0x50;
-/// Active-project presence byte checked before consuming its handle.
 pub const ACTIVE_FLAG: usize = 0x54;
-/// Scientist character u32 reference type.
 pub const SCIENTIST_REFERENCE_TYPE: usize = 0x58;
-/// Independent program owner-reference copy.
 pub const OWNER_COPY: usize = 0x170;
-/// Independent program province-reference copy.
 pub const PROVINCE_COPY: usize = 0x174;
-/// Unread prototype rewards, serialized as signed i32.
 pub const UNREAD_PROTOTYPE_REWARDS: usize = 0x178;
-/// Supporting assignment collection; native entries keep a reference and timer.
 pub const SUPPORTING_SCIENTISTS: usize = 0xb0;
 pub const ASSIGNMENT_STRIDE: usize = 0x30;
 pub const ASSIGNMENT_TIMER: usize = 0x10;
 pub const ASSIGNMENT_TIMED: usize = 0x28;
-/// Owned acquisition encoding, excluding native callback pointers and padding.
 pub const ASSIGNMENT_BYTES: usize = 17;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -48,8 +31,6 @@ pub struct Assignment {
     pub timed: u8,
 }
 
-/// Primary then supporting assignments in native order. The primary reference
-/// was already read with the program. No native limit is imposed on supports.
 pub fn assignments(
     memory: &impl Memory,
     program: usize,
@@ -100,7 +81,6 @@ pub struct Row {
     pub owner: u32,
     pub province: u32,
     pub active_project: Option<u32>,
-    /// Full CCharacter reference; zero and typed-null values remain distinct.
     pub scientist: u64,
     pub unread_rewards: i32,
     pub building_start: usize,
@@ -118,7 +98,6 @@ pub struct NameWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
-    /// Rooted program pointer slots before deduplication, for off-thread growth.
     pub required_candidates: usize,
 }
 
@@ -126,11 +105,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// The caller supplies both pointer scratch and the output arena. Pointer
-/// sorting removes stale aliases in O(n log n) without a heap allocation. A
-/// candidate-capacity failure publishes unavailable and required_candidates:
-/// aliases cannot be counted as distinct missing rows before a complete census.
-/// Native owner comes from the program, independently of the country root.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -173,7 +147,6 @@ pub fn walk_buffer(
             found_country = true;
             let status = nproject_cprogram_status::from_country(memory, base, country, &countries)?;
             let programs = nproject_cprogram_status::programs(memory, status)?;
-            // The original program-status roster owns candidate demand.
             candidates.ensure(
                 result
                     .required_candidates
@@ -276,8 +249,6 @@ pub fn walk_buffer(
                 .ok_or("program assignment byte count overflow")?;
             row.details_start = result.bytes_len;
             if row.assignments_known {
-                // The immutable acquired membership is reused while the same arena
-                // appends detail operands; no second supporting-scientist walk.
                 let mut detail_bytes = 0usize;
                 let mut fit = true;
                 let arena = std::cell::RefCell::new(&mut names);

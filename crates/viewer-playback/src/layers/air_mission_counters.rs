@@ -1,15 +1,3 @@
-//! The map's regional Air mission counters, from the mirrors: per strategic region of the
-//! viewing country its mission counts, the kinds whose interception alert is proved, each
-//! withheld entry's reason, its supply summary and its Ground Crews control, decided by
-//! viewer-counters' `region_alerts` and `ground_of` as today's `air_missions::Prepared::read`
-//! decides them. The localised hovers are made where the tooltips are made.
-//!
-//! What a region's alert reads follows the hour: records of the last day. A region is made again
-//! when its holder's records or its wings change, at the hour its oldest record in the window
-//! leaves it, and at each daily pass; no other region is touched by the hour. Whether the latest
-//! daily pass visited the viewing country is asked on a worker the layer owns, through the
-//! host's roster history ([`AirMissionCounters::set_passes`]); until it answers, an alert that
-//! depends on it is undecided and its region stays marked.
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Published, View, owned::opaque};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
@@ -41,19 +29,15 @@ use viewer_foundation::map::{
     perspective::{Choice, Vision},
 };
 
-/// The window today's interception aggregate reads, in hours.
 const WINDOW: i32 = 24;
 
-/// How long a settle that waits however long the daily air passes take gives them.
 const WHOLE: Duration = Duration::from_secs(60);
 const TIMEOUT_UNKNOWN: &str = "NGame.AIR_LOG_TIMEOUT_HOURS is unavailable";
 const ENABLED_UNKNOWN: &str = "Ground Crews writer certificate or enabled-byte read is unavailable";
 const CENSUS: &str = "the regional combat census is incomplete";
 
-/// The roster history the layer asks whether a daily pass visited a country.
 pub type Passes = Arc<dyn AirPasses + Send + Sync>;
 
-/// What the layer reads of the content: the air log timeout and the Ground Crews defines.
 pub struct Content {
     timeout: Result<i32, String>,
     ground: Result<(i64, i64), String>,
@@ -87,34 +71,26 @@ struct Columns {
     command_power: Num<i64>,
 }
 
-/// The tables it reads.
 const TABLES: [TableId; 7] = [TableId::AirRegionalMissions, TableId::AirWings, TableId::AirMissionInputs, TableId::AirRegionCombat, TableId::AirGroundCrews, TableId::CountryLinks, TableId::Countries];
 
-/// What one region shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionValue {
     pub counts: Counts,
-    /// A bit per kind whose interception alert is proved.
     pub alerts: u32,
-    /// Each withheld entry's kind and reason, in kind order.
     pub uncertain: Vec<(usize, &'static str)>,
     pub supply: Option<AirSupplySummary>,
-    /// The Ground Crews control, for a region counting some mission; why it is refused.
     pub ground: Option<Result<Ground, String>>,
 }
 
-/// One registration as last settled: its order key, and our region when it counts in one.
 #[derive(Clone, Debug)]
 struct Registration {
     order: (u32, u64),
     counted: Result<Option<(u32, i32, u32)>, String>,
 }
 
-/// The layer's daily-pass worker: questions asked and answers given.
 struct Asker {
     send: mpsc::Sender<(BranchId, Hour, u32)>,
     shared: Arc<(Mutex<Answers>, Condvar)>,
-    /// Why the worker could not start: every question is refused by it.
     failed: Option<String>,
 }
 
@@ -130,7 +106,6 @@ impl Asker {
         let shared: Arc<(Mutex<Answers>, Condvar)> = Arc::default();
         let held = Arc::clone(&shared);
         let spawned = std::thread::Builder::new().name("air mission passes".into()).spawn(move || {
-            // The step's settle joins its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             while let Ok(question) = take.recv() {
                 let (branch, pass, slot) = question;
@@ -147,52 +122,32 @@ impl Asker {
     }
 }
 
-/// A holder's own and foreign record vectors, decoded.
 type Records = (Arc<Vec<AirCombatRecord>>, Arc<Vec<AirCombatRecord>>);
 
-/// The regional Air mission counters' arrays and what keeps them.
 pub struct AirMissionCounters {
     content: Arc<Content>,
     columns: Option<Columns>,
-    /// Why nothing is drawn: an input not set, not drawn here, or not composed yet.
     refused: Option<String>,
-    /// Why the window's counts are withheld this hour, as today words it.
     withheld: Option<String>,
-    /// The values the window's air mission counters draw, as of the last settle.
     published: Option<Arc<AirValues>>,
-    /// Per `AirRegionalMissions` slot: the registration as last settled.
     registrations: Vec<Option<Registration>>,
-    /// Registrations refused, in registration order: the first withholds the window.
     failures: BTreeMap<(u32, u64), String>,
-    /// Per region of ours: its registered wings in registration order, with planes and mask.
     wings: BTreeMap<u32, BTreeMap<(u32, u64), (i32, u32)>>,
-    /// Per region: the `AirRegionCombat` keys of rows whose country is ours (the first holds it).
     holders: BTreeMap<u32, BTreeSet<u128>>,
-    /// Per such row: its region, and its two record vectors once a region showing missions has
-    /// read them since they last changed.
     records: HashMap<u128, (u32, Option<Records>)>,
-    /// `AirRegionCombat` keys changed since the last settle.
     combat_changed: BTreeSet<u128>,
-    /// Raw country references and whether they are ours, asked once each.
     ours_of: RefCell<HashMap<u32, bool>>,
     supply_complete: bool,
     supply_unrecorded: bool,
     supply_dirty: bool,
     power: Option<i64>,
     power_dirty: bool,
-    /// What each region shows.
     values: BTreeMap<u32, RegionValue>,
-    /// Per region with a holder: the hour its oldest record in the window leaves it.
     wake: BTreeMap<u32, Hour>,
-    /// Regions whose Ground Crews refusal names the head's hour, as today's words do: made again
-    /// at every hour while that table is not whole.
     hourly: BTreeSet<u32>,
     registrations_dirty: Dirty,
     regions: Dirty,
-    /// Regions whose alert waits for a daily pass's answer, by question.
     waiting: BTreeMap<(BranchId, Hour, u32), BTreeSet<u32>>,
-    /// The newest hour the counts stand for: the head of a settle with nothing marked and no
-    /// question out. While one is out, what it publishes.
     product_hour: Option<Hour>,
     hour: Option<Hour>,
     day: Option<Hour>,
@@ -209,19 +164,16 @@ pub struct AirMissionCounters {
     phases: [(u64, u64); PHASES.len()],
 }
 
-/// The settle phases [`AirMissionCounters::phases`] counts.
 pub const PHASES: [&str; 4] = ["registrations", "holders", "regions", "by the hour"];
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// The rows a table holds at the head when it is whole; none otherwise.
 fn complete(mirrors: &Mirrors, table: TableId) -> Option<&Mirror> {
     mirrors.get(table).filter(|mirror| mirror.complete())
 }
 
-/// Why a table is not whole at the head, as today's frame words it.
 fn not_whole(mirror: Option<&Mirror>, table: TableId, hour: Hour) -> Option<String> {
     let Some(mirror) = mirror else { return Some(format!("hour {hour} {table:?} is not read yet")) };
     match mirror.status() {
@@ -284,7 +236,6 @@ impl AirMissionCounters {
         }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let fresh = Self { columns: self.columns, hidden: self.hidden, ..Self::new(Arc::clone(&self.content)) };
         if let Some((choice, vision)) = self.perspective() {
@@ -296,7 +247,6 @@ impl AirMissionCounters {
         fresh
     }
 
-    /// The viewing country's vision at the head under `choice` (its slot is whose missions).
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         let mut held = lock(&self.vision);
         if held.as_ref().is_none_or(|(_, held)| held.ours() != vision.ours()) {
@@ -305,7 +255,6 @@ impl AirMissionCounters {
         *held = Some((choice, vision));
     }
 
-    /// The recording's daily air roster history and the branch played.
     pub fn set_passes(&self, passes: Passes, branch: BranchId) {
         let mut held = lock(&self.passes);
         if held.as_ref().is_none_or(|(held, at)| !Arc::ptr_eq(held, &passes) || *at != branch) {
@@ -318,7 +267,6 @@ impl AirMissionCounters {
         lock(&self.vision).clone()
     }
 
-    /// The branch of the roster history it was given, if one was.
     pub fn passes_branch(&self) -> Option<BranchId> {
         lock(&self.passes).as_ref().map(|(_, branch)| *branch)
     }
@@ -331,30 +279,22 @@ impl AirMissionCounters {
         self.refused.as_deref()
     }
 
-    /// The view does not draw the regional Air mission counters, as today draws them only in the
-    /// strategic air map mode.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
 
-    /// Why the window's counts are withheld; none when they are made.
     pub fn withheld(&self) -> Option<&str> {
         self.withheld.as_deref()
     }
 
-    /// Each region's value, when the counts are made.
     pub fn values(&self) -> &BTreeMap<u32, RegionValue> {
         &self.values
     }
 
-    /// The values the window's air mission counters draw, as of the last settle; none while
-    /// refused or hidden.
     pub fn published(&self) -> Option<&Arc<AirValues>> {
         self.published.as_ref().filter(|_| self.refused.is_none() && !self.hidden)
     }
 
-    /// Makes the published values again when they differ from what was published: few regions,
-    /// compared whole, so an unchanged hour keeps its allocation and the window lays out nothing.
     fn publish(&mut self) {
         if self.refused.is_some() || self.hidden {
             return;
@@ -390,7 +330,6 @@ impl AirMissionCounters {
         PHASES.iter().zip(&self.phases).map(|(&name, &(entities, ns))| (name, entities, ns))
     }
 
-    /// Regions with a holder: those the hour can touch.
     pub fn held_regions(&self) -> usize {
         self.holders.values().filter(|keys| !keys.is_empty()).count()
     }
@@ -411,7 +350,6 @@ impl AirMissionCounters {
         self.perspective().map_or(0, |(_, vision)| vision.ours())
     }
 
-    /// Whether raw country `raw` is the viewing country.
     fn is_ours(&self, links: Option<&Mirror>, raw: u32, ours: u32) -> bool {
         *self.ours_of.borrow_mut().entry(raw).or_insert_with(|| {
             let columns = self.columns();
@@ -419,7 +357,6 @@ impl AirMissionCounters {
         })
     }
 
-    /// Everything dropped; every registration, holder row and region taken again.
     fn recompose(&mut self, mirrors: &Mirrors) {
         self.registrations.clear();
         self.failures.clear();
@@ -453,8 +390,6 @@ impl AirMissionCounters {
         }
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it; its view, inputs and counters
-    /// kept. The daily-pass worker ends with it.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.content));
         let kept = std::mem::replace(self, empty);
@@ -462,7 +397,6 @@ impl AirMissionCounters {
         (self.vision, self.vision_new, self.passes, self.passes_new) = (kept.vision, kept.vision_new, kept.passes, kept.passes_new);
     }
 
-    /// Why the layer cannot draw at the head, by name.
     fn core(&self, mirrors: &Mirrors) -> Result<u32, String> {
         let (_, vision) = self.perspective().ok_or("the viewing country's vision is not set")?;
         for table in TABLES {
@@ -473,7 +407,6 @@ impl AirMissionCounters {
         Ok(vision.ours())
     }
 
-    /// One registration taken again from the mirrors; its old and new regions marked.
     fn settle_registration(&mut self, mirrors: &Mirrors, slot: u32, ours: u32) {
         let at = slot as usize;
         if self.registrations.len() <= at {
@@ -527,8 +460,6 @@ impl AirMissionCounters {
         self.registrations[at] = Some(Registration { order, counted });
     }
 
-    /// One `AirRegionCombat` row taken again: a row of ours holds its region's records, decoded
-    /// when a region showing missions reads them.
     fn settle_combat(&mut self, mirrors: &Mirrors, key: u128, ours: u32) {
         if let Some((region, _)) = self.records.remove(&key) {
             if let Some(keys) = self.holders.get_mut(&region) {
@@ -546,14 +477,12 @@ impl AirMissionCounters {
         self.mark_shown(region);
     }
 
-    /// Marks `region` when it shows missions or our wings fly there; a holder alone shows nothing.
     fn mark_shown(&mut self, region: u32) {
         if self.values.contains_key(&region) || self.wings.contains_key(&region) {
             self.mark_region(region);
         }
     }
 
-    /// The records of `region`'s holder, decoded from the mirror if they changed since read.
     fn holder_records(&mut self, mirrors: &Mirrors, region: u32) -> Option<Records> {
         let columns = self.columns();
         let key = *self.holders.get(&region)?.first()?;
@@ -567,7 +496,6 @@ impl AirMissionCounters {
         held.clone()
     }
 
-    /// The table-wide supply facts and the country's command power taken again.
     fn settle_globals(&mut self, mirrors: &Mirrors, ours: u32) {
         let columns = self.columns();
         if std::mem::take(&mut self.supply_dirty) {
@@ -596,21 +524,18 @@ impl AirMissionCounters {
         }
     }
 
-    /// Every region with a Ground Crews row of ours marked: its supply may enter its counts.
     fn supply_regions(&mut self, mirrors: &Mirrors, ours: u32) {
         let Some(crews) = mirrors.get(TableId::AirGroundCrews) else { return };
         let regions: Vec<u32> = crews.rows().filter_map(|slot| crews.key(slot)).filter(|key| (key >> 32) as u32 == ours && *key as u32 != u32::MAX).map(|key| key as u32).collect();
         regions.into_iter().for_each(|region| self.mark_region(region));
     }
 
-    /// Whether the daily pass at `pass` visited the viewing country, when the worker has answered.
     fn known_answer(&self, pass: Hour, ours: u32) -> Option<Result<bool, String>> {
         let (_, branch) = lock(&self.passes).clone()?;
         let asker = self.asker.as_ref()?;
         lock(&asker.shared.0).given.get(&(branch, pass, ours)).cloned()
     }
 
-    /// The question asked on the worker; `region` waits for its answer.
     fn ask(&mut self, pass: Hour, ours: u32, region: u32) {
         let Some((passes, branch)) = lock(&self.passes).clone() else { return };
         let question = (branch, pass, ours);
@@ -632,8 +557,6 @@ impl AirMissionCounters {
         self.waiting.entry(question).or_default().insert(region);
     }
 
-    /// Regions whose question was answered marked again, the answers still out waited for within
-    /// the settling's budget.
     fn take_answers(&mut self, settling: &Settling) {
         let Some(asker) = &self.asker else { return };
         let shared = Arc::clone(&asker.shared);
@@ -656,7 +579,6 @@ impl AirMissionCounters {
         }
     }
 
-    /// One region made again from what the layer holds and the mirrors.
     fn settle_region(&mut self, mirrors: &Mirrors, region: u32, ours: u32, hour: Hour) {
         let columns = self.columns();
         self.waiting.values_mut().for_each(|regions| {
@@ -725,7 +647,6 @@ impl AirMissionCounters {
             self.supply_complete,
             supply_refusal(self.supply_unrecorded),
         );
-        // Undecided until the worker answers; the region is made again then.
         if needed.get()
             && let Some(pass) = pass
         {
@@ -739,7 +660,6 @@ impl AirMissionCounters {
             };
             ground_of(self.content.ground.as_ref().map(|&(cost, _)| cost).map_err(Clone::clone), active, self.power)
         });
-        // With the defines read, a table not whole refuses the control in words naming this hour.
         if ground.is_some() && self.content.ground.is_ok() && !mirrors.get(TableId::AirGroundCrews).is_some_and(Mirror::complete) {
             self.hourly.insert(region);
         } else {
@@ -756,13 +676,11 @@ impl AirMissionCounters {
 }
 
 impl AirMissionCounters {
-    /// Recomputes what is dirty: registrations and holder rows whole, then regions within `settling`.
     fn settle_dirty(&mut self, mirrors: &Mirrors, settling: Settling) {
         self.frame += 1;
         let core = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let ours = match core {
             Ok(ours) => ours,
-            // Nothing is held or marked while refused: drawn again, it is taken whole.
             Err(why) => {
                 if self.refused.as_ref() != Some(&why) {
                     self.release();
@@ -778,7 +696,6 @@ impl AirMissionCounters {
             self.passes_new.store(false, Ordering::Release);
             self.recompose(mirrors);
         }
-        // Another roster history gives other answers: asked again, nothing else changes.
         if self.passes_new.swap(false, Ordering::AcqRel) {
             self.asker = None;
             self.waiting.clear();
@@ -839,12 +756,10 @@ impl AirMissionCounters {
         }
     }
 
-    /// The frame thread's own marks: regions, registrations and holder rows to make again.
     fn marks(&self) -> usize {
         self.regions.len() + self.registrations_dirty.len() + self.combat_changed.len() + usize::from(self.all)
     }
 
-    /// The regions waiting for an answer are made again once it is given, within the budget.
     fn settle_dirty_again(&mut self, mirrors: &Mirrors, ours: u32, hour: Hour, settling: Settling) {
         while !self.waiting.is_empty() {
             let before = self.waiting.len();
@@ -928,7 +843,6 @@ impl AirMissionCounters {
         }
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -1018,13 +932,10 @@ impl Layer for AirMissionCounters {
 
 
     fn carried(&self) -> Carried {
-        // A region waiting for the daily pass worker's answer is the worker's, not carried.
         let entities = self.marks();
         Carried { entities }
     }
 
-    /// Current while no question is out; while one is, the newest hour the counts stand for, or
-    /// nothing before the first. Hidden or refused, it draws nothing and owes nothing.
     fn published(&self) -> Published {
         if self.refused.is_some() || self.hidden || self.waiting.is_empty() {
             return Published::Current;

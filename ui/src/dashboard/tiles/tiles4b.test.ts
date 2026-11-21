@@ -12,7 +12,6 @@ const LAST = 105_541;
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 const base64 = (bytes: Uint8Array) => { let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary); };
 
-/** A binned tile of `tags`, every bin present and level, each tag with a drop in every fifth bin. */
 function binned(tags: readonly string[], binHours: number, index: number, marks: boolean): SeriesTileReply {
   const first = index * TILE_BINS * binHours, last = first + TILE_BINS * binHours - 1;
   const bytes = new Uint8Array(tags.length * TILE_BINS * (1 + 4 + 5));
@@ -57,7 +56,6 @@ test('following with spend ticks on asks the series and its marks together, one 
   assert.ok(moving <= Math.ceil((LAST - 8760) / span));
   assert.equal(quiet + moving, frames);
   assert.ok(renders <= initial + moving);
-  // The marks are cells of the tiles' bins on the absolute grid, about eighteen pixels each; ordinals counted on from the drops before.
   const line = view.current!.get('GER')!;
   const clusters = line.marks!.clusters;
   assert.ok(clusters.length > 0 && line.marks!.tiles);
@@ -72,7 +70,6 @@ test('following with spend ticks on asks the series and its marks together, one 
   console.log(`following with marks at 1,440 h/s: ${initial} tiles to open, then ${moving} requests for series and marks together`);
 });
 
-/** An hourly tile of `tags` from `runs(tag)`, each run's first hour flagged as the service writes it. */
 function hourly(runs: (tag: number) => Run[]) {
   return (tags: readonly string[], binHours: number, index: number): SeriesTileReply => {
     assert.equal(binHours, 1);
@@ -97,7 +94,6 @@ function hourly(runs: (tag: number) => Run[]) {
 }
 
 test('an hourly tile holds the hourly runs, joined across tile seams, and its bins are those runs', async () => {
-  // Runs of several lengths, one across two seams, a gap, a break after it.
   const source = (tag: number): Run[] => [
     { firstHour: 1000, lastHour: 1100, value: 1.5 + tag, breakBefore: true },
     { firstHour: 1101, lastHour: 1700, value: -2.25, breakBefore: false },
@@ -112,7 +108,6 @@ test('an hourly tile holds the hourly runs, joined across tile seams, and its bi
   await settle();
   for (const [tag, at_] of [['GER', 0], ['ITA', 1]] as const) {
     const line = view.current!.get(tag)!;
-    // The first tile asked starts at hour 1024: the run held from 1000 comes in going on from the tile before.
     assert.deepEqual(line.summary.runs, [{ ...source(at_)[0], firstHour: 1024, breakBefore: false }, ...source(at_).slice(1)], `${tag}'s runs`);
     assert.deepEqual(viewRuns(line, 1050, 1765), [{ ...source(at_)[0], firstHour: 1050, breakBefore: false }, ...source(at_).slice(1)]);
     const buckets = line.summary.buckets;
@@ -141,7 +136,6 @@ test('a view of many keys asks its groups once, side by side, and a second chart
   view.setView({ ...at, to: 8700 });
   await settle();
   assert.equal(all.asked.length, tiles * groups, 'asked once');
-  // Another chart of the same series, its tags a subset in another order: nothing to ask.
   const some = lane(['T400', 'T3', 'T77'], { key: all.key });
   const other = new TileView(cache, some, () => {});
   other.setView(at);
@@ -153,7 +147,6 @@ test('a view of many keys asks its groups once, side by side, and a second chart
 test('decoding a landing tile: what it costs on the thread it lands on', () => {
   const measure = (keys: number) => {
     const tags = Array.from({ length: keys }, (_, at) => `T${at}`);
-    // Varying bins, raw values and one-byte hours: the common case at a level-0 width, as large as a tile gets.
     const bytes = new Uint8Array(keys * TILE_BINS * (1 + 16 + 5));
     bytes.fill(PRESENT, 0, keys * TILE_BINS);
     const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
@@ -165,7 +158,6 @@ test('decoding a landing tile: what it costs on the thread it lands on', () => {
     started = performance.now();
     for (let at = 0; at < rounds; at++) tilesOf(reply, tags, 6, 10, tag => tag);
     const totalMs = (performance.now() - started) / rounds;
-    // What is left on the page's thread once the worker has decoded the bytes: each tag's arrays.
     const decoded = { ...reply, bins: bytesOf(reply.bins as string) };
     started = performance.now();
     for (let at = 0; at < rounds; at++) tilesOf(decoded, tags, 6, 10, tag => tag);
@@ -186,7 +178,6 @@ test('a landing tile is decoded where replies are parsed, its bytes handed over,
   const transfer = decodeTileBins(parsed);
   assert.ok((parsed.data.bins as unknown) instanceof Uint8Array, 'decoded off the frame');
   assert.deepEqual(transfer, [(parsed.data.bins as unknown as Uint8Array).buffer], 'the one buffer, handed over');
-  // What a worker posts arrives as it is, the buffer moved.
   const moved = structuredClone(parsed, { transfer });
   assert.equal(transfer[0].byteLength, 0, 'the worker keeps no copy');
   const key = (tag: string) => tag;

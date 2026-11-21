@@ -86,7 +86,6 @@ fn a_host_or_subject_template_has_no_badges_and_flies_the_owner_flag() {
         inputs.frames(&row, &detail(vec![3]), &BONUSES),
         [Ok(false); 2]
     );
-    // A positive expeditionary owner wins; -1 is not positive.
     assert_eq!(inputs.entry_owner(&row), Ok(8));
     let reserve = LandCombatDivisionRow {
         division: 3,
@@ -112,12 +111,10 @@ fn the_occupier_badge_needs_a_committed_occupying_opponent_and_a_bonus() {
     let frame = frame();
     let inputs = Inputs::read(&frame).unwrap();
     let row = exiled(EXILE_ORIGIN, 0);
-    // Opponent 2's expeditionary owner 8 occupies; the reserve does not count.
     assert_eq!(
         inputs.frames(&row, &detail(vec![4, 2]), &BONUSES)[0],
         Ok(true)
     );
-    // The hover counts every occupying opponent, reserves excluded.
     assert_eq!(
         inputs.occupiers(&row, &detail(vec![2, 3, 4]), &BONUSES),
         Ok(2)
@@ -132,13 +129,11 @@ fn the_occupier_badge_needs_a_committed_occupying_opponent_and_a_bonus() {
         inputs.frames(&row, &detail(vec![2]), &unbonused)[0],
         Ok(false)
     );
-    // The defending side reads its own bonus and the attackers.
     let mut defending = row.clone();
     defending.side = 1;
     let mut swapped = detail(vec![]);
     swapped.sides[0].committed = vec![2];
     assert_eq!(inputs.frames(&defending, &swapped, &unbonused)[0], Ok(true));
-    // The refusal names the opposing unit whose owner is unknown.
     assert_eq!(
         inputs.frames(&row, &detail(vec![77]), &BONUSES)[0],
         Err(Refused::Division {
@@ -146,7 +141,6 @@ fn the_occupier_badge_needs_a_committed_occupying_opponent_and_a_bonus() {
             gap: Gap::Absent
         })
     );
-    // The badge stops at its first occupier; the count needs every row.
     assert_eq!(
         inputs.frames(&row, &detail(vec![2, 77]), &BONUSES)[0],
         Ok(true)
@@ -160,9 +154,6 @@ fn the_occupier_badge_needs_a_committed_occupying_opponent_and_a_bonus() {
     );
 }
 
-/// the game shows frame 14 when any opposing committed unit qualifies:
-/// a later occupying opponent decides although an earlier opponent's
-/// owner is unknown; without one, the first unknown opponent is named.
 #[test]
 fn a_later_occupying_opponent_decides_past_an_unknown_one() {
     let frame = frame();
@@ -186,7 +177,6 @@ fn a_later_occupying_opponent_decides_past_an_unknown_one() {
         all.unwrap_err().to_string(),
         "the Divisions table has no row for division 77"
     );
-    // An opponent whose owner has no CountryLinks row is undecided too.
     let mut unlinked = row.clone();
     unlinked.exile.as_mut().unwrap().occupiers = vec![99];
     assert_eq!(
@@ -207,7 +197,6 @@ fn a_later_occupying_opponent_decides_past_an_unknown_one() {
 fn the_core_badge_compares_the_location_cores_through_country_links() {
     let frame = frame();
     let inputs = Inputs::read(&frame).unwrap();
-    // Core 7 and exile country 5 share canonical slot 1.
     assert_eq!(
         inputs.frames(&exiled(EXILE_ORIGIN, 0), &detail(vec![]), &BONUSES)[1],
         Ok(true)
@@ -218,7 +207,6 @@ fn the_core_badge_compares_the_location_cores_through_country_links() {
         inputs.frames(&elsewhere, &detail(vec![]), &BONUSES)[1],
         Ok(false)
     );
-    // The refusal names the core without a CountryLinks row.
     elsewhere.exile.as_mut().unwrap().location_cores = vec![99];
     let refused = inputs.frames(&elsewhere, &detail(vec![]), &BONUSES)[1];
     assert_eq!(
@@ -233,13 +221,9 @@ fn the_core_badge_compares_the_location_cores_through_country_links() {
         "the CountryLinks table has no row for country 99"
     );
     assert_eq!(inputs.contains(&[0], 0), Ok(true));
-    // A later match decides although an earlier link is missing.
     assert_eq!(inputs.contains(&[99, 7], 5), Ok(true));
 }
 
-/// the game is exactly `origin == 2`: any other recorded origin, 0 and
-/// 1 or outside 0..=2, is not exiled, so the entry flies the division's
-/// owner flag and neither badge is drawn.
 #[test]
 fn only_origin_two_is_exiled() {
     let frame = frame();
@@ -256,7 +240,6 @@ fn only_origin_two_is_exiled() {
     }
 }
 
-/// A missing operand names its table, its key and why the table lacks it.
 #[test]
 fn refusals_name_the_table_key_and_gap() {
     let mut frame = frame();

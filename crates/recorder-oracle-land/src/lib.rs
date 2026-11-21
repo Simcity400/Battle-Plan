@@ -1,4 +1,3 @@
-//! land save comparisons and recorded consistency checks.
 use installed_content_save as save;
 use installed_content_save::Decimal;
 #[cfg(test)]

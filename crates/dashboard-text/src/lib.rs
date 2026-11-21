@@ -1,14 +1,4 @@
-//! The dashboard's text interpreter and the content facts it reads: recorded
-//! triggers and scopes, scripted localisation, effect descriptions, modifier
-//! text, the game's name rules, the content catalogue and the recording
-//! metadata helpers products and map tooltips share. Nothing here names a
-//! product or a source; the `dashboard` loads the
-//! catalogue for each source and re-exports every module at its old path.
-//!
-//! The `test-support` feature compiles the fixtures and test instrumentation the
-//! tests of crates above this one use.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: test_allocator::Allocator = test_allocator::Allocator;

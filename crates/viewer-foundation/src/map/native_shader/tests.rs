@@ -7,7 +7,6 @@ use std::{
 };
 mod models;
 mod parts;
-// Supply these native define families.
 fn is_gui_effect(name: &str) -> bool {
     name.ends_with(".shader")
         && (name.starts_with("buttonstate")
@@ -25,7 +24,6 @@ fn is_gui_effect(name: &str) -> bool {
             ))
 }
 
-// Compile each path only where the authored code tests it; names do not select a model.
 fn variants(program: &Program) -> Vec<Vec<String>> {
     let source = [&program.common, &program.vertex, &program.pixel]
         .iter()

@@ -41,7 +41,6 @@ impl Handle {
     pub fn signaled(&self) -> Result<bool, String> {
         self.wait(0)
     }
-    /// Waits up to `milliseconds` for the handle to be signalled.
     pub fn wait(&self, milliseconds: u32) -> Result<bool, String> {
         match unsafe { WaitForSingleObject(self.0, milliseconds) } {
             WAIT_OBJECT_0 => Ok(true),
@@ -65,27 +64,22 @@ fn text(value: &[u16]) -> OsString {
     OsString::from_wide(&value[..value.iter().position(|&v| v == 0).unwrap_or(value.len())])
 }
 
-/// Every process named `hoi4.exe`, whatever its state.
 pub fn game_processes() -> Result<Vec<GameProcess>, String> {
     game_processes_named("hoi4.exe")
 }
 
-/// Whether the game process that started at `start_time` is still listed, even frozen or exiting.
 pub fn game_present(pid: u32, start_time: u64) -> Result<bool, String> {
     Ok(game_processes()?
         .iter()
         .any(|game| game.pid == pid && game.start_time == start_time))
 }
 
-/// Every process with the image name `name`, ignoring case, from one system process listing.
 pub fn game_processes_named(name: &str) -> Result<Vec<GameProcess>, String> {
     let listing = system_processes()?;
     let base = listing.as_ptr().cast::<u8>();
     let mut found = Vec::new();
     let mut offset = 0;
     loop {
-        // SAFETY: the system filled the buffer with entries chained by NextEntryOffset, each
-        // followed by its NumberOfThreads thread rows.
         let entry = unsafe { &*base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
         let image = &entry.ImageName;
         if !image.Buffer.is_null()
@@ -114,7 +108,6 @@ pub fn game_processes_named(name: &str) -> Result<Vec<GameProcess>, String> {
             let (deleting, signalled) = exit_facts(pid);
             found.push(GameProcess {
                 pid,
-                // Reserved1 bytes 24..32 are CreateTime, the FILETIME GetProcessTimes gives.
                 start_time: u64::from_le_bytes(entry.Reserved1[24..32].try_into().unwrap()),
                 state: classify(&threads, deleting, signalled),
             });
@@ -126,7 +119,6 @@ pub fn game_processes_named(name: &str) -> Result<Vec<GameProcess>, String> {
     }
 }
 
-/// The system process listing, in a buffer aligned for its entries.
 fn system_processes() -> Result<Vec<u64>, String> {
     let mut needed = 0u32;
     let mut buffer: Vec<u64> = Vec::new();
@@ -150,7 +142,6 @@ fn system_processes() -> Result<Vec<u64>, String> {
     }
 }
 
-/// Whether the process is being deleted and whether it has exited; one that is gone has both.
 fn exit_facts(pid: u32) -> (bool, bool) {
     let raw = unsafe {
         OpenProcess(
@@ -160,7 +151,6 @@ fn exit_facts(pid: u32) -> (bool, bool) {
         )
     };
     let Ok(handle) = Handle::new(raw) else {
-        // The PID names no process any more; access denied leaves only the threads to tell.
         let gone = unsafe { GetLastError() } == ERROR_INVALID_PARAMETER;
         return (gone, gone);
     };
@@ -189,7 +179,6 @@ fn exit_facts(pid: u32) -> (bool, bool) {
     (deleting, handle.signaled().unwrap_or(false))
 }
 
-/// A FILETIME's local hour and minute.
 pub fn local_clock(filetime: u64) -> Option<(u16, u16)> {
     let universal = FILETIME {
         dwLowDateTime: filetime as u32,
@@ -319,7 +308,6 @@ impl Process {
         })
     }
 
-    /// Opens the process discovery selected; `None` once its PID names another process or none.
     pub fn open_selected(game: &GameProcess, inject: bool) -> Result<Option<Self>, String> {
         match Self::open(game.pid, inject) {
             Ok(process) => Ok((process.start_time == game.start_time).then_some(process)),
@@ -378,7 +366,6 @@ impl Process {
             let kernel = unsafe { GetModuleHandleW(wide(OsStr::new("kernel32.dll")).as_ptr()) };
             let loader = unsafe { GetProcAddress(kernel, c"LoadLibraryW".as_ptr().cast()) }
                 .ok_or("LoadLibraryW export absent")?;
-            // Resolve the module actually owning the export (forwarders can land in KernelBase).
             let mut owner = ptr::null_mut();
             if unsafe {
                 GetModuleHandleExW(
@@ -459,8 +446,6 @@ impl Process {
     }
 }
 
-/// Read-only access to another process's memory for one-shot oracles. Each
-/// copy is one `ReadProcessMemory`; a partial or failed read is a failure.
 pub struct ProcessMemory<'a>(pub &'a Handle);
 
 impl engine_native::Memory for ProcessMemory<'_> {
@@ -478,16 +463,13 @@ impl engine_native::Memory for ProcessMemory<'_> {
             && read == destination.len()
     }
 
-    /// The addresses belong to another process; a local cache hint is useless.
     fn prefetch(&self, _address: usize, _len: usize) {}
 }
 
 pub struct Event {
     pub handle: Handle,
 }
-// SAFETY: an event handle may be signalled, reset and waited on from any thread.
 unsafe impl Send for Event {}
-// SAFETY: as above; the handle is only closed on drop.
 unsafe impl Sync for Event {}
 impl Event {
     pub fn open(name: &str) -> Result<Self, String> {
@@ -517,20 +499,17 @@ impl Event {
     }
 }
 
-/// A name one holder in this Windows session has at a time: the named mutex exists while held.
 pub struct Claim {
     _held: Handle,
 }
 
 impl Claim {
-    /// `None` while another holder has `name`.
     pub fn take(name: &str) -> Result<Option<Self>, String> {
         let name = wide(OsStr::new(name));
         unsafe { SetLastError(0) };
         let raw = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
         let error = unsafe { GetLastError() };
         if raw.is_null() {
-            // A more privileged holder's mutex cannot be opened.
             return if error == ERROR_ACCESS_DENIED {
                 Ok(None)
             } else {
@@ -630,7 +609,6 @@ mod tests {
         );
         let first = Claim::take(&name).unwrap().expect("a fresh name");
         assert!(Claim::take(&name).unwrap().is_none());
-        // A refused claim keeps no handle that would hold the name after the holder.
         drop(first);
         let again = Claim::take(&name).unwrap();
         assert!(again.is_some());
@@ -647,7 +625,6 @@ mod tests {
         };
         let opened = Process::open_selected(&selected, false).unwrap();
         assert_eq!(opened.map(|process| process.start_time), Some(start_time));
-        // The PID now names a process that started at another time: not the one selected.
         for start_time in [start_time - 1, start_time + 1] {
             let reused = GameProcess {
                 start_time,
@@ -659,7 +636,6 @@ mod tests {
 
     const HELD_CHILD: &str = "HOI4REPLAY_TEST_HELD_CHILD";
 
-    /// The child of the test below: it waits for the event its parent names, then exits.
     #[test]
     fn a_held_child_waits_for_its_release() {
         if let Some(name) = std::env::var_os(HELD_CHILD) {
@@ -675,7 +651,6 @@ mod tests {
         use windows_sys::Win32::System::Diagnostics::Debug::{
             CONTEXT, CONTEXT_CONTROL_AMD64, GetThreadContext,
         };
-        // Never named hoi4.exe: a recorder on this machine would take it for the game.
         let unique = format!(
             "hoi4replay-state-test-{}-{}",
             std::process::id(),
@@ -730,7 +705,6 @@ mod tests {
         struct Aligned(CONTEXT);
         let mut context: Aligned = unsafe { std::mem::zeroed() };
         context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-        // Reading the context returns only once the thread's suspension has taken effect.
         assert_ne!(unsafe { GetThreadContext(thread.0, &mut context.0) }, 0);
         assert_eq!(state(), [crate::games::ProcessState::Frozen]);
 

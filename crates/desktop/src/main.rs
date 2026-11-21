@@ -19,11 +19,9 @@ use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::{Manager, State, WebviewWindow};
 
-// Widget requests and the map's documents contend on the Windows process heap.
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
-/// An image a reply names, read off the main thread, or 404.
 fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder) {
     use tauri::http::{HeaderValue, Response, StatusCode, header};
     let name = request.uri().path().strip_prefix('/').unwrap_or_default().to_owned();
@@ -47,7 +45,6 @@ fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSc
 
 #[tauri::command]
 fn desktop_state(window: WebviewWindow, host: State<'_, NativeHost>) -> Result<HostStatus, String> {
-    // Establish configuration/onboarding even before a recording makes the map visible.
     host.ensure_started(&window)?;
     Ok(host.status())
 }
@@ -73,13 +70,10 @@ fn map_action(
     popouts: State<'_, popout::PopOuts>,
     action: dashboard::protocol::MapAction,
 ) -> Result<(), String> {
-    // The host saves folders first and sends the viewer what it saved.
     if matches!(action, dashboard::protocol::MapAction::Folders { .. }) {
         return Err("Set the content folders in Settings".into());
     }
     host.map_action(action.clone())?;
-    // A user unload closes the pop-out through `popout_unloaded`; reconnecting a recording
-    // unloads it too, and the pop-out follows the reopened one instead.
     popouts.mirror(&action);
     Ok(())
 }
@@ -90,7 +84,6 @@ async fn export_map(
     popouts: State<'_, popout::PopOuts>,
     view_id: Option<String>,
 ) -> Result<Option<String>, String> {
-    // The pop-out window to export is the one open when the request starts, not after the dialog.
     let popout = (view_id.as_deref() == Some(popout::VIEW_ID))
         .then(|| popouts.current_generation())
         .flatten();
@@ -105,13 +98,11 @@ async fn export_map(
     .map_err(|e| e.to_string())?;
     let Some(path) = path else { return Ok(None) };
     let path = path.to_string_lossy().into_owned();
-    // Answered once the map saved the picture or refused it, not when it queued the request.
     let answered = if view_id.as_deref() == Some(popout::VIEW_ID) {
         popout::export(&popouts, popout, path)?
     } else {
         host.export(path, view_id)?
     };
-    // What the map saved: the file, and the branch and hour it drew.
     answered
         .await
         .map_err(|_| "The map stopped before the export finished".to_owned())?
@@ -153,9 +144,6 @@ fn set_dashboard_maps(
     host.set_dashboard_views(&window, &views)
 }
 
-/// What a recording's path must be for a map command to carry it. The file itself is never read
-/// here: this is the thread that pumps the map's window, and the map opens the recording on its
-/// own loading thread, where it resolves the path and checks the revision the page expects.
 pub(crate) fn replay_path(path: &str) -> Result<String, String> {
     if path.is_empty() {
         return Err("Replay path is empty".into());
@@ -223,8 +211,6 @@ fn main() {
         );
         return;
     }
-    // The release smoke draws a recording's map from the installed layout, through the map's own
-    // window and the shader compiler beside this executable.
     if std::env::args().any(|arg| arg == "--window-dump") {
         let code = match viewer::host::window_dump(std::env::args_os().skip(1)) {
             Ok(()) => 0,
@@ -280,7 +266,6 @@ fn main() {
             )?;
             recorder::start_recorder();
             native::start_gamepad(app.handle().clone());
-            // Followed answers come from the maps' playheads in this process.
             let push = app.handle().clone();
             viewer::host::install_follow(move |kind, payload| {
                 if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
@@ -371,8 +356,6 @@ fn main() {
     });
 }
 
-/// Closing the app ends the service and maps first, off the event loop, which keeps pumping
-/// their windows: a window goes only once no map draws on it. True while that runs.
 fn exit_after_maps(app: &tauri::AppHandle) -> bool {
     static EXIT: ExitOrder = ExitOrder::new();
     EXIT.begin(
@@ -387,21 +370,18 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
                     if ended {
                         handle.exit(0);
                     } else {
-                        // A map still draws in the main window: the process ends without destroying it.
                         std::process::exit(0);
                     }
                 })
                 .map(drop)
         },
         || {
-            // No thread to stop the maps on: the process ends without destroying a window they draw on.
             perf::close();
             std::process::exit(0);
         },
     )
 }
 
-/// Where closing the app stands: not begun, running, or done once no map draws.
 struct ExitOrder(std::sync::atomic::AtomicU8);
 
 impl ExitOrder {
@@ -412,8 +392,6 @@ impl ExitOrder {
         Self(std::sync::atomic::AtomicU8::new(0))
     }
 
-    /// True while the exit runs, which holds every close. `start` runs it off the event loop;
-    /// when it cannot, `fallback` must end the process without destroying a map's window.
     fn begin(&self, start: impl FnOnce() -> std::io::Result<()>, fallback: impl FnOnce()) -> bool {
         use std::sync::atomic::Ordering;
         match self.0.compare_exchange(0, Self::RUNNING, Ordering::AcqRel, Ordering::Acquire) {
@@ -432,9 +410,6 @@ impl ExitOrder {
     }
 }
 
-/// Stops every map and then the data service they read from; true once the main map has ended,
-/// which it is given a moment to do. The service ends last, so no map's load holds the exit on a
-/// service thread it is still using.
 fn shutdown(app: &tauri::AppHandle) -> bool {
     app.state::<popout::PopOuts>().close(app);
     let (ended, waited) = std::sync::mpsc::channel();

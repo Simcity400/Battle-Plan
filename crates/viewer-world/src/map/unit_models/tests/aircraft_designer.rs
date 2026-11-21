@@ -11,9 +11,6 @@ const ARCHETYPE: u32 = 7;
 const MODEL: u32 = 8;
 const DLC: u32 = 0x100;
 
-/// `transport_plane_equipment` is an archetype the `transport_plane`
-/// air sub-unit needs, so it carries a sub-unit list;
-/// `transport_plane_equipment_1` does not.
 fn content() -> model_selection::Content {
     model_selection::Content::from_test_documents(&[br#"
                 sub_units = {
@@ -44,8 +41,6 @@ fn assets(registered: &[&str]) -> UnitModelAssets {
             }
 }
 
-/// ENG (raw 100, slot 1) created variant 5 of `token`, saved model
-/// `saved`; the DLC mask is `dlc`.
 fn frame(token: u32, saved: &str, dlc: u32) -> DecodedFrame {
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for this hour".into(),
@@ -153,7 +148,6 @@ fn frame(token: u32, saved: &str, dlc: u32) -> DecodedFrame {
     }
 }
 
-/// `designer_entity` for variant 5 as the raid layer asks it.
 fn resolve(
     assets: &UnitModelAssets,
     token: u32,
@@ -217,15 +211,11 @@ fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
 fn a_saved_model_is_answered_before_the_pools_are_run() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // A nonempty saved entity name returns before graphics selection,
-    // so with the DLC the saved
-    // model is the result even where a pool model is declared.
     let assets = assets(&ALL);
     assert_eq!(
         resolve(&assets, ARCHETYPE, "saved_c47_entity", DLC),
         Ok(Some("saved_c47_entity".into()))
     );
-    // An undeclared saved model goes on to the aircraft ladder.
     assert_eq!(
         resolve(&assets, ARCHETYPE, "missing_entity", DLC),
         Ok(Some("ENG_transport_plane_entity".into()))
@@ -236,9 +226,6 @@ fn a_saved_model_is_answered_before_the_pools_are_run() {
 fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // No pool or conventional candidate is declared: the result is
-    // null, the empty saved entity name gives nothing, and
-    // aircraft equipment model selection answers.
     let assets = assets(&["ENG_transport_plane_entity"]);
     let recorded = frame(ARCHETYPE, "", DLC);
     assert_eq!(
@@ -258,7 +245,6 @@ fn without_the_dlc_or_a_sub_unit_list_the_pools_are_not_run() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets(&ALL);
-    // No DLC: the saved model, then the ladder.
     assert_eq!(
         resolve(&assets, ARCHETYPE, "saved_c47_entity", 0),
         Ok(Some("saved_c47_entity".into()))
@@ -267,8 +253,6 @@ fn without_the_dlc_or_a_sub_unit_list_the_pools_are_not_run() {
         resolve(&assets, ARCHETYPE, "", 0),
         Ok(Some("ENG_transport_plane_entity".into()))
     );
-    // A non-archetype type has no sub-unit list: the game gives
-    // only its saved model.
     let recorded = frame(MODEL, "", DLC);
     assert_eq!(
         equipment_graphics::test_support::with_world(&recorded, &[], |limits| {

@@ -1,4 +1,3 @@
-//! Intel acquisition buffers. Allocation, growth and replay conversion are off-thread.
 
 use super::daily_intel::{Home, Loan, Walk};
 use crate::{
@@ -84,13 +83,8 @@ impl OperativeRefusals {
 }
 
 static OPERATIVE_REFUSALS: OperativeRefusals = OperativeRefusals::new();
-/// The intel network write count
-/// ([`crate::country_input_changes::intel_network_writes`]) the last
-/// complete IntelNetworks read saw.
 static NETWORK_RESETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NETWORK_CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-// Last attempted membership epoch. A failed cut stays unavailable until the
-// next required census instead of starting an hourly recovery walk.
 static NETWORK_CAPTURE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct NetworkSummaryCache {
@@ -99,20 +93,16 @@ struct NetworkSummaryCache {
     resets: u64,
 }
 
-/// Load/gap invalidation is a constant-time mark; acquisition remains on the
-/// existing network worker census.
 pub fn network_summary_boundary(invalidate: bool) {
     if invalidate {
         NETWORK_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
-/// Script-name keys the hourly walks resolve, kept across hours and frames.
 static ROOT_OUT_KEY: std::sync::Mutex<engine_native::modifier_definition::NamedKey> =
     std::sync::Mutex::new(operative_missions::root_out_key());
 static OFFER_SPEED_KEY: std::sync::Mutex<engine_native::modifier_definition::NamedKey> =
     std::sync::Mutex::new(agency_operation_buffers::speed_key());
 
-/// The held key, or a fresh one when another walk holds it.
 fn with_held_key<R>(
     held: &std::sync::Mutex<engine_native::modifier_definition::NamedKey>,
     fresh: engine_native::modifier_definition::NamedKey,
@@ -131,8 +121,6 @@ fn with_held_key<R>(
 
 type Rosters = std::sync::Arc<[Vec<u64>; 5]>;
 
-/// Each country's last converted mission rosters: an unchanged roster keeps its
-/// allocation, so its row compares by pointer.
 static HELD_ROSTERS: std::sync::Mutex<Option<std::collections::HashMap<u32, Rosters>>> =
     std::sync::Mutex::new(None);
 
@@ -167,7 +155,6 @@ fn held_rosters(
     rosters
 }
 
-/// A sizing walk of every operative mission, with the held root-out key.
 pub fn operative_mission_demand(
     memory: &impl Memory,
     base: usize,
@@ -185,8 +172,6 @@ pub fn operative_mission_demand(
     })
 }
 
-/// One residual worker owns the native census at a time. Frames share its
-/// aggregate cache so recycled frames never reread unchanged networks.
 static NETWORK_SUMMARY_CACHE: std::sync::Mutex<NetworkSummaryCache> =
     std::sync::Mutex::new(NetworkSummaryCache {
         values: ccountry_intel_network::SummaryCache::new(),
@@ -290,7 +275,6 @@ pub struct CaptureReport {
 pub const GLOBAL_SCOPE: u8 = 0;
 pub const COUNTRY_SCOPE: u8 = 1;
 pub const STATE_SCOPE: u8 = 2;
-/// A character's own flags and script variables, keyed by its Characters id.
 pub const CHARACTER_SCOPE: u8 = 3;
 
 #[derive(Default)]
@@ -312,35 +296,26 @@ impl SeedWork {
     }
 }
 
-/// Spool-owned comparison state, not another captured-frame lease. Bits are
-/// cleared for each comparison.
 #[derive(Default)]
 pub struct ScriptVariableComparison {
     scopes: Vec<u64>,
     entries: Vec<u64>,
     kept: Option<Kept>,
-    /// The latest conversion's work, until the spool takes it.
     work: Option<VariableWork>,
 }
 
 impl ScriptVariableComparison {
-    /// The latest conversion's work, once.
     pub fn take_work(&mut self) -> Option<VariableWork> {
         self.work.take()
     }
 }
 
-/// A converted hour whose input, once committed, leaves the encoder's
-/// baseline holding exactly its capture's rows: that comparison's
-/// destination, which the next hour's token names as its baseline, and the
-/// capture's generation ([`VariableDelta::generation`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Kept {
     at: (u64, BranchId, Hour),
     generation: u64,
 }
 
-/// ScriptVariables' changed rows by key; `None` removes the key's row.
 type Edits = Vec<(u128, Option<rows::ScriptVariablesRow>)>;
 
 #[cfg(feature = "conversion_check")]
@@ -350,9 +325,6 @@ fn sorted_scopes(previous: &[rows::ScriptVariablesRow]) -> bool {
         .all(|pair| (pair[0].scope_kind, pair[0].scope_id) < (pair[1].scope_kind, pair[1].scope_id))
 }
 
-/// State scopes arrive in ID order, while canonical country slots need not
-/// follow raw country IDs. The ordinal is only a checked lookup hint;
-/// reordered scopes still use the exact search.
 fn baseline_index(
     previous: &[rows::ScriptVariablesRow],
     ordinal: usize,
@@ -369,9 +341,6 @@ fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// The edits as the keyed update of the baseline `token` names: the merged
-/// table's change is the complete table's ([`SliceUpdate::keyed`]). `None`
-/// when two edits name one key or storage cannot grow.
 fn keyed_update(token: BaselineToken, mut edits: Edits) -> Option<TableInput> {
     if edits.is_empty() {
         return Some(TableInput::ComparedEqual(token));
@@ -415,8 +384,6 @@ fn first_seen(bits: &mut [u64], index: usize) -> bool {
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
-    /// Bytes of scratch for the bulk intel-record copies. The worker prepares
-    /// at least one native record; larger populations use bounded batches.
     pub intel_scratch: usize,
     pub subject_names: usize,
     pub autonomy_names: usize,
@@ -424,11 +391,8 @@ pub struct Capacities {
     pub agency_upgrade_definitions: usize,
     pub operation_descriptions: usize,
     pub operative_names: usize,
-    /// OperativeMissions' portrait and ideology bytes.
     pub operative_mission_bytes: usize,
-    /// Operations' phases, requirements and equipment pool entries.
     pub operation_parts: usize,
-    /// StrategicOperatives' control-trade and diplomatic-pressure entries.
     pub strategic_operative_entries: usize,
     pub agency_operation_entries: usize,
     pub variable_entries: usize,
@@ -455,8 +419,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Count each original nonzero cached opinion and retained typed relation;
-    /// an empty walk counts their exact live demand.
     pub fn presize_relations(
         &mut self,
         memory: &impl Memory,
@@ -482,10 +444,6 @@ impl Capacities {
         failure.map_or(Ok(()), Err)
     }
 
-    /// At most one row per canonical country for Capitulation, Subjects,
-    /// Autonomy and IntelligenceAgencies; ScriptVariables has one scope row
-    /// for the global scope, every country and every state (and every
-    /// character, which [`Self::raise_for_script_variables`] counts).
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         for index in [0, 1, 2, 3] {
@@ -495,11 +453,6 @@ impl Capacities {
         raise(&mut self.rows[8], rows(slots, 1).saturating_add(states));
     }
 
-    /// CountryIntel keeps at most one row per native record, and every owner's
-    /// vector is indexed by target slot, so the live dense total
-    /// (`ccountry_intel::native_rows`) bounds the first hour. Nonzero intel is
-    /// dense among live countries (~0.9 x live^2 rows), so the sparse table
-    /// needs close to that bound when every state is its own country.
     pub fn raise_for_country_intel(&mut self, native_rows: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[15], rows(native_rows, 1));
@@ -509,17 +462,11 @@ impl Capacities {
         crate::country_scale::raise(&mut self.rows[16], crate::country_scale::rows(count, 1));
     }
 
-    /// ScriptFlags keeps one row per live flag of every scope, which the
-    /// managers' own counts give (`script_flag_demand`); the per-manager
-    /// scratch follows the same capacity.
     pub fn raise_for_script_flags(&mut self, flags: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[7], rows(flags, 1));
     }
 
-    /// ScriptVariables keeps one row per walked store and every store's
-    /// entries and key bytes, which the stores' own headers give
-    /// (`script_variable_demand`).
     pub fn raise_for_script_variables(&mut self, demand: VariableDemand) {
         use crate::country_scale::{raise, rows};
         crate::variable_changes::offer_scopes(demand.scopes);
@@ -529,7 +476,6 @@ impl Capacities {
     }
 }
 
-/// The live ScriptVariables demand: its stores, entries and key bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VariableDemand {
     pub scopes: usize,
@@ -538,7 +484,6 @@ pub struct VariableDemand {
 }
 
 impl VariableDemand {
-    /// The field-wise maximum.
     pub fn max(self, other: Self) -> Self {
         Self {
             scopes: self.scopes.max(other.scopes),
@@ -548,8 +493,6 @@ impl VariableDemand {
     }
 }
 
-/// Sizing only: every ScriptVariables store, entry and key byte, from each
-/// store's header, through the walk itself with no room for rows.
 pub fn script_variable_demand(
     memory: &impl Memory,
     base: usize,
@@ -568,10 +511,6 @@ pub fn script_variable_demand(
     })
 }
 
-/// Sizing only: the live flag count of every ScriptFlags scope, from each
-/// manager's header, through the walk itself with no room for rows. The same
-/// census adds watches for every scope, including empty managers, to the
-/// embedded-store demand before the first watch table is installed.
 pub fn script_flag_demand(memory: &impl Memory, base: usize, state: usize) -> Option<usize> {
     match flag_demand(memory, base, state) {
         Outcome::Rows { len } => Some(len),
@@ -580,8 +519,6 @@ pub fn script_flag_demand(memory: &impl Memory, base: usize, state: usize) -> Op
     }
 }
 
-/// Both existing sizing callers retain the walk's named refusal and only
-/// offer scope demand after a complete census (rows themselves may not fit).
 fn flag_demand(memory: &impl Memory, base: usize, state: usize) -> Outcome {
     let mut scopes = 0;
     let outcome = walk_flags_buffer(
@@ -606,14 +543,10 @@ struct ScopedFlag {
     flag: cscript_flag::Row,
 }
 
-/// Spool-owned, fieldwise native snapshot of ScriptFlags, which has no
-/// staggered cache, so the memo owns its immutable replay result directly.
-/// Neither capture leases nor live pointers survive conversion.
 #[derive(Default)]
 struct NativeShadow<R> {
     rows: Vec<R>,
     output: Option<Arc<TableRows>>,
-    /// `output`'s capture hour and held-rows generation.
     hour: Option<i32>,
     witness: Option<u64>,
     hits: u64,
@@ -629,7 +562,6 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
         self.witness = None;
     }
 
-    /// An equal `witness` at the next hour republishes `output` uncompared.
     fn input(
         &mut self,
         id: TableId,
@@ -717,7 +649,6 @@ pub struct IntelShadow {
 pub struct IntelShadowStats {
     pub hits: u64,
     pub misses: u64,
-    /// Hours that published the previous hour's rows on their witness alone.
     pub republished: u64,
     pub row_capacity_bytes: usize,
     pub replay_capacity_bytes: usize,
@@ -728,7 +659,6 @@ impl IntelShadow {
         self.flags.statistics()
     }
 
-    /// Withdraw `table`'s held rows: a later hour converts it.
     pub fn forget(&mut self, table: TableId) {
         if table == TableId::ScriptFlags {
             self.flags.clear();
@@ -753,12 +683,9 @@ impl<'a> IntelConversion<'a> {
 
 pub struct Captured {
     relation_active: [bool; 2],
-    /// The residual tables the capture mode leaves out: their walks do not run.
     left_out: [bool; N],
-    /// ScriptVariables is lent to its own job ([`Self::take_variables`]).
     variables_apart: bool,
     capitulation: CaptureRows<cdiplomacy_status::CapitulationRow>,
-    /// Capitulation rows' owned war-goal recipients, grown by the worker walk.
     war_goal_recipients: Vec<u32>,
     subjects: CaptureRows<csubject_relation::Row>,
     autonomy: CaptureRows<ccurrent_autonomy_status::Row>,
@@ -788,7 +715,6 @@ pub struct Captured {
     source_census_complete: bool,
     flags: CaptureRows<ScopedFlag>,
     variables: CaptureRows<cvariables::ScopeRow>,
-    /// What the variables capture kept of the held one.
     variable_delta: VariableDelta,
     operations: CaptureRows<coperation_instance::Row>,
     assignments: CaptureRows<operation_assigned_operative::Row>,
@@ -796,17 +722,10 @@ pub struct Captured {
     incoming_actions: CaptureRows<incoming_diplomatic_action_queue::Row>,
     relation_opinions: CaptureRows<crelation_status::OpinionRow>,
     relation_tuples: CaptureRows<crelation_status::TupleRow>,
-    /// Dense country authentication cells for the typed relation walk, sized
-    /// by `grow` from the census and link headers the last walk observed.
     relation_resolver: crelation_status::Resolver,
-    /// Owned-membership snapshot and resolver for the subject walk, sized by
-    /// `grow` from the last walk's observed demand. Empty storage is correct.
     subject_snapshot: cwar_relation::OwnedSnapshotScratch,
-    /// The pool's shared CountryIntel rows, held from the walk until the spool
-    /// grows this frame; see `daily_intel`.
     country_intel: Loan,
     country_intel_outcome: Outcome,
-    /// None means no walk (Skip/Busy), Err a fresh refusal, Ok a complete sample.
     country_intel_sample: Option<Result<rows::ReservedCountryIntelSample, &'static str>>,
     subject_names: Arena<u8>,
     autonomy_names: Arena<u8>,
@@ -821,22 +740,9 @@ pub struct Captured {
     variable_names: Arena<u8>,
     tokens: Arena<u32>,
     flag_scratch: Vec<cscript_flag::Row>,
-    /// The held ScriptFlags generation this capture published ([`FlagStore::witnessed`]).
     flags_witness: Option<u64>,
-    /// Worker-payload gate for the relations family. Set by the game thread
-    /// on refresh hours with a valid payload; `capture` then skips the typed
-    /// relations walk and the decode worker installs these rows before the
-    /// ready handoff. Preserved across `reset` (set per refresh, cleared
-    /// by the worker after decode).
     pub relations_raw_mode: bool,
-    /// Which owners this hour's relation rows cover (`slicing::RELATIONS`).
-    /// Loaned to the relations job from dispatch to its join.
     relations_selection: SliceSelection,
-    /// Raw-copy split gate for the hourly capitulation table (local index 0).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
-    /// then skips the typed capitulation walk and the decode worker fills
-    /// the rows before the ready handoff. Preserved across `reset` (set per
-    /// hour, cleared by the worker after decode).
     pub capitulation_raw_mode: bool,
 }
 
@@ -848,13 +754,10 @@ impl Captured {
     pub fn set_relation_activity(&mut self, active: [bool; 2]) {
         self.relation_active = active;
     }
-    /// Leave out the residual tables `left_out` marks: the residual capture
-    /// reads none of them and reports them skipped.
     pub fn leave_out(&mut self, left_out: [bool; N]) {
         self.left_out = left_out;
     }
 
-    /// Empty ownership placeholder, with no rows or scratch allocated.
     pub fn vacant() -> Self {
         Self::build(
             &Capacities {
@@ -878,8 +781,6 @@ impl Captured {
         )
     }
 
-    /// Every slice and returned array uses local TABLES order. The frame gets
-    /// its own CountryIntel buffer until `share_country_intel`.
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self::build(
             capacity,
@@ -889,23 +790,18 @@ impl Captured {
         )
     }
 
-    /// [`Self::with_capacities`] with no CountryIntel buffer until `share_country_intel`.
     pub fn without_home(capacity: &Capacities) -> Self {
         Self::build(capacity, Loan::default())
     }
 
-    /// The CountryIntel buffer this frame uses.
     pub fn country_intel_home(&self) -> Option<&Home> {
         self.country_intel.home()
     }
 
-    /// Use the pool's CountryIntel buffer instead of this frame's own.
     pub fn share_country_intel(&mut self, home: &Home) {
         self.country_intel = Loan::new(home.clone());
     }
 
-    /// Hold this frame's CountryIntel loan across a reset off the game
-    /// thread: its buffer goes home only at [`Self::release_country_intel`].
     pub fn take_country_intel_loan(&mut self) -> Loan {
         std::mem::take(&mut self.country_intel)
     }
@@ -914,7 +810,6 @@ impl Captured {
         self.country_intel = loan;
     }
 
-    /// Return the CountryIntel buffer this frame borrowed to the shared home.
     pub fn release_country_intel(&mut self) {
         self.country_intel.release();
     }
@@ -988,27 +883,19 @@ impl Captured {
         }
     }
 
-    /// The owners whose relation rows this frame's read replaced.
     pub fn relations_selection(&self) -> &SliceSelection {
         &self.relations_selection
     }
 
-    /// Start this hour's relations read and loan its selection to the job.
-    /// Allocation-free: the pack keeps a placeholder until the join.
     pub fn take_relations_selection(&mut self, hour: i32, force_full: bool) -> SliceSelection {
         self.relations_selection.reset(hour, force_full);
         std::mem::replace(&mut self.relations_selection, SliceSelection::new(false))
     }
 
-    /// Return the job's selection at its join, before any view or publication.
     pub fn restore_relations_selection(&mut self, selection: SliceSelection) {
         self.relations_selection = selection;
     }
 
-    /// Before IntelResidual borrows this pack: the relations job's context
-    /// (row capacities, activity) and, on a refresh hour, this hour's owner
-    /// slice. During the loan the frame holds a vacant placeholder with no rows
-    /// and no selection storage, so this must run first.
     pub fn begin_relations(
         &mut self,
         base: usize,
@@ -1029,13 +916,6 @@ impl Captured {
         (context, selection)
     }
 
-    /// The relations join as `acquire` runs it, after IntelResidual returned
-    /// this pack: take back the slice and return the store (`end_relations`)
-    /// and set the raw-mode gate. `Ok` is a payload to publish, including
-    /// storage grown by the worker. `Err` recycles a panicked or stopped job;
-    /// the gate keeps typed capture off the tables, and
-    /// `fail_relations_capture` publishes them unavailable without another
-    /// native read.
     #[allow(clippy::type_complexity)]
     pub fn join_relations(
         &mut self,
@@ -1046,7 +926,6 @@ impl Captured {
         Option<Box<SliceFingerprints>>,
         Result<RelationsJob, RelationsJob>,
     ) {
-        // A failed or truncated read is read again at the next hour.
         let published = report.raw_ok && failure.is_none() && job.published();
         let fingerprints = self.end_relations(&mut job, published);
         self.relations_raw_mode = report.raw_ok || failure.is_some();
@@ -1058,9 +937,6 @@ impl Captured {
         (fingerprints, payload)
     }
 
-    /// At the relations join, after IntelResidual returned this pack: take
-    /// back the job's owner slice and return its fingerprint store. A read not
-    /// `published` whole is read again at the next hour.
     pub fn end_relations(
         &mut self,
         job: &mut RelationsJob,
@@ -1134,8 +1010,6 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        // The vector moved into a changed cut's handle still belongs to this
-        // frame until spool return recycles it. Quiet borrowers own no copy.
         let handed_off = self
             .certified_snapshots
             .iter()
@@ -1196,8 +1070,6 @@ impl Captured {
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        // Spool only, before reset/reuse. Restore the exact acquisition vectors
-        // moved into lazy handles; no per-table buffer allocation on the worker.
         for (index, outcome) in [
             self.propaganda.outcome,
             self.source_contributions.outcome,
@@ -1226,7 +1098,6 @@ impl Captured {
         self.subjects.grow(&mut capacity.rows[1]);
         self.autonomy.grow(&mut capacity.rows[2]);
         self.agencies.grow(&mut capacity.rows[3]);
-        // Identity refusals retain raw rows; they are not additional storage demand.
         grow_capacity(&mut capacity.rows[17], self.agency_upgrade_required);
         grow_vec(&mut self.agency_upgrades.rows, capacity.rows[17]);
         grow_capacity(
@@ -1235,7 +1106,6 @@ impl Captured {
         );
         self.agency_upgrade_catalog
             .resize(capacity.agency_upgrade_definitions);
-        // Permanent native-null targets are missing rows, not storage demand.
         let operative_outcome = self.operatives.outcome;
         self.operatives.outcome =
             operative_storage_outcome(operative_outcome, self.operative_refused_rows);
@@ -1262,8 +1132,6 @@ impl Captured {
         self.incoming_actions.grow(&mut capacity.rows[12]);
         self.relation_opinions.grow(&mut capacity.rows[13]);
         self.relation_tuples.grow(&mut capacity.rows[14]);
-        // Relation storage is sized only from what its own walks observed, so
-        // a vacant or never-walked pack allocates nothing here.
         if self
             .relation_resolver
             .grow()
@@ -1280,8 +1148,6 @@ impl Captured {
         {
             return;
         }
-        // Returns the shared buffer. Its scratch is a fixed copy window: a
-        // country longer than it is copied in several passes, not truncated.
         self.country_intel.grow(&mut capacity.rows[15]);
         self.subject_names.grow(&mut capacity.subject_names);
         self.autonomy_names.grow(&mut capacity.autonomy_names);
@@ -1300,7 +1166,6 @@ impl Captured {
         grow_vec(&mut self.flag_scratch, capacity.rows[7]);
     }
 
-    /// Worker acquisition grows owned storage from its original native observations.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
         &mut self,
@@ -1326,10 +1191,6 @@ impl Captured {
         report.ticks
     }
 
-    /// Acquire the scheduled tables whose buffers belong to this request. The
-    /// independently delegated capitulation and relations slots remain intact.
-    /// `flags` carries ScriptFlags rows of untouched managers, `variables`
-    /// ScriptVariables rows of untouched stores.
     pub fn capture_residual(
         &mut self,
         memory: &impl Memory,
@@ -1340,8 +1201,6 @@ impl Captured {
         self.capture_tables(memory, context, true, false, flags, variables)
     }
 
-    /// Complete only the independently delegated slots after residual capture
-    /// has returned. Its rows and arenas remain owned by that result.
     pub fn capture_delegated(
         &mut self,
         memory: &impl Memory,
@@ -1350,7 +1209,6 @@ impl Captured {
         self.capture_tables(memory, context, false, true, None, None)
     }
 
-    /// A final worker failure preserves independently staged raw tables.
     pub fn fail_delegated_capture(&mut self, context: CaptureContext, reason: &'static str) {
         if !self.capitulation_raw_mode {
             self.fail_capitulation_capture(
@@ -1375,8 +1233,6 @@ impl Captured {
         }
     }
 
-    /// Reject an accepted residual request without retrying any live reads or
-    /// changing the independently delegated tables and their raw-mode gates.
     pub fn fail_residual_capture(
         &mut self,
         context: CaptureContext,
@@ -1457,11 +1313,6 @@ impl Captured {
         } = context;
         let mut active =
             TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
-        // The daily intelligence step writes every network. Outside it,
-        // country dynamic reuse destroys that country's networks through
-        // the strategic operative reset, and the console's intel network
-        // growth command sets local strengths. An hour after either, or
-        // with them unobserved, reads the table again.
         let resets = crate::country_input_changes::intel_network_writes();
         if include_residual
             && (resets != Some(NETWORK_RESETS.load(std::sync::atomic::Ordering::SeqCst))
@@ -1687,9 +1538,6 @@ impl Captured {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let epoch = NETWORK_CACHE_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
                     let lifetimes = crate::country_input_changes::intel_network_resets();
-                    // A freed/recreated network can reuse its address and pair.
-                    // A lifetime reset therefore revokes payload reuse, whereas
-                    // the independent console growth occurrence does not.
                     let lifetime_changed = cache.epoch != epoch || lifetimes != Some(cache.resets);
                     let refresh = scheduled || lifetime_changed;
                     let read = ccountry_intel_network::walk_with_cached_summaries(
@@ -1741,8 +1589,6 @@ impl Captured {
                         crate::source_changes::network_refused();
                     }
                 } else {
-                    // No certificate permits a quiet carry. Preserve the existing
-                    // state's fallback without adding an hourly aggregate scan.
                     self.networks.outcome = ccountry_intel_network::walk(
                         memory,
                         base,
@@ -1880,7 +1726,6 @@ impl Captured {
                         required: result.required_bytes,
                     },
                 );
-                // The parts arena certifies the same rows.
                 self.operation_parts.len = result.parts_len;
                 self.operation_parts.required = result.required_parts;
                 if !valid_arena(
@@ -1951,8 +1796,6 @@ impl Captured {
             ticks[anchor] = elapsed(begin);
         }
         if include_residual {
-            // Walked only by the frame holding the pool's buffer; a due hour
-            // that finds it held carries the last sample and the next hour walks.
             self.country_intel_outcome = match self.country_intel.borrow(active[15]) {
                 Walk::Skip | Walk::Busy => Outcome::Unavailable {
                     reason: replay_data::cadence::SKIPPED_REASON,
@@ -2090,7 +1933,6 @@ impl Captured {
         self.country_intel_sample
     }
 
-    /// Called only on the spool thread; this owns all Vec and string conversion.
     pub fn table_inputs(
         &self,
         baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
@@ -2111,7 +1953,6 @@ impl Captured {
                 TableInput::Sampled(self.flags_table(outcomes[7]))
             }
         });
-        // Converted once a day; the spool's staggered cache carries it between.
         let country_intel = TableInput::Sampled(self.country_intel_table(outcomes[15]));
         self.convert_tables(
             TableInput::Sampled,
@@ -2565,7 +2406,6 @@ impl Captured {
                 }
             },
         );
-        // Countries no longer converted release their rosters.
         let held = held.into_inner();
         if let Outcome::Rows { len } = outcome
             && held.len() > len
@@ -2652,7 +2492,6 @@ impl Captured {
         })
     }
 
-    /// Whether every scope equals its baseline row and none is missing.
     #[cfg(test)]
     fn variables_equal(
         &self,
@@ -2692,8 +2531,6 @@ impl Captured {
         input
     }
 
-    /// The input, compared only where the capture saw change when the
-    /// baseline holds the capture it continued, and its work.
     fn changed_variables(
         &self,
         outcome: Outcome,
@@ -2721,11 +2558,6 @@ impl Captured {
         input
     }
 
-    /// Scopes the capture kept from the capture the baseline holds equal
-    /// their baseline rows; every other scope is compared with its baseline
-    /// row, and a scope added, removed or with other keys changes its row
-    /// alone. Whatever today's conversion refuses is converted complete, by
-    /// it.
     fn variable_edits(
         &self,
         outcome: Outcome,
@@ -2780,8 +2612,6 @@ impl Captured {
         input.unwrap_or_else(|| self.complete_variables(outcome, Complete::Refused, work))
     }
 
-    /// The scopes are the kept capture's, position for position: only the
-    /// listed ones are compared.
     fn listed_edits(
         &self,
         scopes: &[cvariables::ScopeRow],
@@ -2811,9 +2641,6 @@ impl Captured {
         Some(())
     }
 
-    /// Every scope is found among the baseline rows, once; the `changed`
-    /// ones, or every one, are compared, a scope the baseline lacks is
-    /// added and a baseline row no scope found is removed.
     fn mapped_edits(
         &self,
         scopes: &[cvariables::ScopeRow],
@@ -2842,7 +2669,6 @@ impl Captured {
             match (row, compared) {
                 (_, true) => self.scope_edit(scope, row, &mut scratch.entries, work, edits)?,
                 (Some(_), false) => {}
-                // A kept scope the baseline lacks: the capture is not the kept one's.
                 (None, false) => return None,
             }
         }
@@ -2859,9 +2685,6 @@ impl Captured {
         Some(())
     }
 
-    /// One scope against its baseline row (`None`: the baseline has none),
-    /// listing its row when it differs. `None` when today's conversion
-    /// refuses it.
     fn scope_edit(
         &self,
         scope: &cvariables::ScopeRow,
@@ -2920,7 +2743,6 @@ impl Captured {
         Some(())
     }
 
-    /// Today's complete conversion, shared with the encoder when complete.
     fn complete_variables(
         &self,
         outcome: Outcome,
@@ -2937,8 +2759,6 @@ impl Captured {
         input
     }
 
-    /// Today's conversion, for the verification build: every scope against
-    /// the baseline, any membership change complete.
     #[cfg(feature = "conversion_check")]
     fn reference_variables(
         &self,
@@ -2976,9 +2796,6 @@ impl Captured {
         }
     }
 
-    /// Changed values may replace a scope only after all scope and literal-name
-    /// membership checks succeed; malformed or changed membership stays on the
-    /// complete conversion path with its original duplicate/refusal checks.
     #[cfg(feature = "conversion_check")]
     fn compare_variables(
         &self,
@@ -3006,8 +2823,6 @@ impl Captured {
             let Some(index) = baseline_index(previous, ordinal, scope_identity(scope.scope)) else {
                 return false;
             };
-            // Equal counts and successful lookups alone do not exclude duplicate
-            // current scopes or names replacing an omitted baseline key.
             if !first_seen(&mut scratch.scopes, index) {
                 return false;
             }
@@ -3020,9 +2835,6 @@ impl Captured {
         true
     }
 
-    /// One scope against its baseline row, its entries and names lying in the
-    /// captured arenas: whether it is equal, or `None` when its names are not
-    /// the baseline's or the baseline row is malformed.
     fn scope_matches(
         &self,
         scope: &cvariables::ScopeRow,
@@ -3209,9 +3021,6 @@ impl Captured {
         })
     }
 
-    /// The wire ordinal is the native serializable-vector index, so a native
-    /// vector longer than the wire width cannot be represented and refuses the
-    /// table rather than aliasing two relations onto one key.
     fn relation_tuples_table(&self, outcome: Outcome) -> TableView {
         if self.relation_tuples.rows[..outcome.len()]
             .iter()
@@ -3282,7 +3091,6 @@ impl From<csubject_relation::NameWalk> for ArenaRead {
     }
 }
 
-/// Validate each row against its owned arena.
 trait ArenaRow<T> {
     fn valid(&self, len: usize) -> bool;
 }
@@ -3317,9 +3125,6 @@ impl ArenaRow<coperation_instance::Part> for coperation_instance::Row {
     }
 }
 
-/// A row's parts split into its phases, requirements, pool variant entries
-/// and pool archetype totals; `None` outside the captured arena or when a
-/// part is not of its span's kind.
 fn operation_parts<'a>(
     row: &coperation_instance::Row,
     parts: &'a [coperation_instance::Part],
@@ -3465,8 +3270,6 @@ fn scope_identity(scope: cvariables::Scope) -> (u8, u32) {
     }
 }
 
-/// The ScriptVariables walk: the held store's quiet hour, else every scope read with what the
-/// store carries.
 #[allow(
     clippy::too_many_arguments,
     reason = "the walk's operands, its row arenas, the delta and the held store"
@@ -3486,7 +3289,6 @@ fn walk_variables(
     delta.clear();
     capture_variables(rows, entries, names, |scopes, entries, names| {
         let _reads = read_accounting::table(TABLES[8]);
-        // A quiet hour publishes the held walk, reading only the stores it must.
         if let Some(reuse) = reuse.as_mut()
             && let Some(walk) = reuse.quiet_hour(memory, base, state, scopes, entries, names)
         {
@@ -3504,7 +3306,6 @@ fn walk_variables(
             None => cvariables::walk_scopes_buffer(memory, base, state, scopes, entries, names),
         }
     });
-    // Rows outside the captured arenas certify nothing either.
     if let Some(reuse) = reuse {
         if matches!(rows.outcome, Outcome::Rows { .. }) {
             let len = rows.outcome.len();
@@ -3521,8 +3322,6 @@ fn walk_variables(
     }
 }
 
-/// ScriptVariables lent apart from the residual Intel job ([`Captured::take_variables`]), so
-/// its walk is joined when the pack is published, not before the final borrowers.
 pub struct VariablePart {
     rows: CaptureRows<cvariables::ScopeRow>,
     entries: Arena<cvariables::Row>,
@@ -3551,7 +3350,6 @@ impl VariablePart {
         self.delta.clear();
     }
 
-    /// The residual capture's ScriptVariables walk; returns its ticks.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -3579,7 +3377,6 @@ impl VariablePart {
         elapsed(begin)
     }
 
-    /// An accepted job that did not complete is refused by name when due, never retried live.
     pub fn fail(&mut self, context: CaptureContext, reason: &'static str) {
         self.reset();
         self.rows.outcome = Outcome::Unavailable {
@@ -3593,8 +3390,6 @@ impl VariablePart {
 }
 
 impl Captured {
-    /// Lend ScriptVariables to its own job, with the capture mode's leave-out as it stands; the
-    /// residual capture leaves it alone until [`Self::restore_variables`].
     pub fn take_variables(&mut self) -> VariablePart {
         self.variables_apart = true;
         VariablePart {
@@ -3688,8 +3483,6 @@ fn valid_variable_parts(
         })
 }
 
-/// `reuse` carries the rows of managers no hooked writer touched since the
-/// held read ([`flag_store`]); without it every manager is read.
 fn walk_flags(
     memory: &impl Memory,
     base: usize,
@@ -3718,7 +3511,6 @@ fn walk_flags_buffer(
     mut reuse: Option<FlagReuse<'_>>,
     mut scopes: Option<&mut usize>,
 ) -> Outcome {
-    // A quiet hour publishes the held rows without walking any scope.
     if let Some(reuse) = reuse.as_mut()
         && let Some(outcome) = reuse.quiet_hour(memory, base, state, &mut output, |held| {
             same_countries(memory, base, state, held)
@@ -3736,10 +3528,6 @@ fn walk_flags_buffer(
             }
             Ok(manager)
         };
-        // A character's manager header arrives copied with its identity
-        // (`gathered`); another scope's is read from its manager when the
-        // scope is read afresh, so a carried scope reads neither.
-        // A country scope names its country, which the held walk lists.
         let mut scope = |kind,
                          id,
                          manager: usize,
@@ -3880,8 +3668,6 @@ fn walk_flags_buffer(
         if !found_state {
             return Err("state table has no readable states");
         }
-        // Each authenticated roster occurrence's identity, then its manager,
-        // gathered in one read of the character.
         let mut characters = ccharacter_manager::Roster::read(memory, base, state)?.cursor();
         while let Some(character) = characters.next_occurrence(memory)? {
             let mut head = [0; cflag_manager::HEADER];
@@ -3925,8 +3711,6 @@ fn walk_flags_buffer(
     outcome
 }
 
-/// Whether this hour's countries, in the walk's order, are `held`'s. With
-/// the callback's authenticated census it reads nothing.
 fn same_countries(memory: &impl Memory, base: usize, state: usize, held: &[(usize, u32)]) -> bool {
     let Ok(countries) = ccountry::Reader::new(memory, base, state) else {
         return false;
@@ -3946,8 +3730,6 @@ fn same_countries(memory: &impl Memory, base: usize, state: usize, held: &[(usiz
     held.next().is_none()
 }
 
-/// A state scope's vtable, id and flag-manager root in one scattered read,
-/// with the sequential reads' failure order and reasons.
 fn state_flag_manager(
     memory: &impl Memory,
     state: usize,
@@ -4009,43 +3791,18 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
         .ok_or("script scope root unreadable")
 }
 
-// ===========================================================================
-// Relations job (RelationOpinions, RelationTuples).
-//
-// The worker runs the typed walk (`crelation_status::walk_with`) into the
-// job's own rows; the decode worker copies them into the pack. One shared
-// store keeps the opinion baseline between refreshes, so a refresh that
-// observed every opinion write since the last one (`crate::opinion_changes`)
-// reads only the statuses a writer changed. Every owner a drained mark names
-// joins the hour's slice, so a changed opinion reaches the hour it changed
-// in; an hour whose marks are not handed over reads every owner.
-// ===========================================================================
 
-/// Drains the opinion writes observed since `consumed`: see
-/// [`crate::opinion_changes::drain`].
 type Drain =
     fn(&mut u64, &mut [crelation_status::Mark], &mut usize) -> Option<(u64, Option<usize>)>;
 
-/// The opinion baseline every relations job shares. Pooled jobs borrow the one
-/// store: a job takes it at its refresh and returns it, grown off the game
-/// thread, when decode releases the job. A refresh that finds it lent reads
-/// every status, which yields the same rows.
 struct SharedOpinions {
     baseline: crelation_status::Baseline,
-    /// The baseline's counts last reported to `opinion_changes`.
     reported: crelation_status::BaselineCounts,
-    /// The opinion-write log position this baseline has accounted for.
     consumed: u64,
-    /// Each mark is a status and its owning diplomacy, so a mark waits for
-    /// its owner's slice.
     marks: Vec<crelation_status::Mark>,
     required_marks: usize,
-    /// Marks the latest drain found pending, under any epoch: the opinion
-    /// log is offered room for them.
     required_log: usize,
     drain: Drain,
-    /// Offers the opinion log room for that many marks
-    /// ([`crate::opinion_changes::offer`]).
     offer: fn(usize),
     charge: crate::raw_memory::Charge,
 }
@@ -4055,7 +3812,6 @@ impl SharedOpinions {
         Self {
             baseline: crelation_status::Baseline::default(),
             reported: crelation_status::BaselineCounts::default(),
-            // Marks appended before this store existed are no one's demand.
             consumed: default_cursor(),
             marks: Vec::new(),
             required_marks: 0,
@@ -4066,7 +3822,6 @@ impl SharedOpinions {
         }
     }
 
-    /// Off the game thread.
     fn grow(&mut self) {
         fn fit<T: Default + Clone>(vector: &mut Vec<T>, required: usize) {
             if required > vector.len() {
@@ -4076,8 +3831,6 @@ impl SharedOpinions {
                 }
             }
         }
-        // Room for the marks the last drain saw, in the baseline as well as
-        // here, so they are not refused twice.
         if self
             .baseline
             .reserve_marks(self.required_marks)
@@ -4087,8 +3840,6 @@ impl SharedOpinions {
             return;
         }
         fit(&mut self.marks, self.required_marks);
-        // An hour's marks: those the last drain found, and at least one per
-        // opinion held, as a daily sweep can change each of them.
         (self.offer)(self.required_log.max(self.baseline.rows()));
         self.charge.set(crate::raw_memory::Capacity {
             payload_vectors: (self.baseline.allocated_bytes()
@@ -4099,7 +3850,6 @@ impl SharedOpinions {
     }
 }
 
-/// Tests never observe the process's native writers.
 #[cfg(not(any(test, feature = "test-support")))]
 fn default_cursor() -> u64 {
     crate::opinion_changes::cursor()
@@ -4120,7 +3870,6 @@ fn default_offer() -> fn(usize) {
     crate::opinion_changes::offer
 }
 
-/// Tests never size the process's opinion log.
 #[cfg(any(test, feature = "test-support"))]
 fn default_offer() -> fn(usize) {
     |_| {}
@@ -4131,8 +3880,6 @@ fn default_drain() -> Drain {
     |_, _, _| None
 }
 
-// The slot is a static: boxing the store would allocate on its first
-// borrow, which happens in the callback.
 #[allow(clippy::large_enum_variant)]
 enum OpinionSlot {
     Unmade,
@@ -4145,7 +3892,6 @@ type OpinionStore = std::sync::Mutex<OpinionSlot>;
 #[cfg(not(any(test, feature = "test-support")))]
 static RELATION_OPINIONS: OpinionStore = std::sync::Mutex::new(OpinionSlot::Unmade);
 
-/// Tests keep a private store per job, so parallel tests never share one.
 #[cfg(not(any(test, feature = "test-support")))]
 fn default_opinion_store() -> &'static OpinionStore {
     &RELATION_OPINIONS
@@ -4156,14 +3902,12 @@ fn default_opinion_store() -> &'static OpinionStore {
     Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Unmade)))
 }
 
-/// A borrowed store, returned to its slot when dropped.
 struct LentOpinions {
     store: &'static OpinionStore,
     shared: Option<SharedOpinions>,
 }
 
 impl LentOpinions {
-    /// Never blocks and never allocates: the callback may call it.
     fn borrow(store: &'static OpinionStore) -> Option<Self> {
         let mut slot = store.try_lock().ok()?;
         let shared = match std::mem::replace(&mut *slot, OpinionSlot::Lent) {
@@ -4192,11 +3936,8 @@ impl Drop for LentOpinions {
     }
 }
 
-/// Bumped on every load, gap or recovery; a baseline recorded under an older
-/// value is not replayed.
 static RELATION_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The world may have been rebuilt: no recorded opinion may be replayed.
 pub fn forget_relation_opinions() {
     RELATION_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
@@ -4205,9 +3946,6 @@ pub fn relation_epoch() -> u64 {
     RELATION_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// One relations refresh: its rows, outcomes and the walk's retained storage.
-/// Worker acquisition grows from original native occurrences; deferred decoding
-/// never follows native pointers.
 #[derive(Default)]
 pub struct RelationsJob {
     pub active: [bool; 2],
@@ -4216,16 +3954,10 @@ pub struct RelationsJob {
     provisioned: bool,
     walk: Option<crelation_status::Walk>,
     resolver: crelation_status::Resolver,
-    /// Where this job borrows the opinion baseline.
     store: Option<&'static OpinionStore>,
-    /// The shared store while this job holds it, from its refresh until decode
-    /// releases the job.
     shared: Option<LentOpinions>,
     capacity_charge: crate::raw_memory::Charge,
-    /// The pack's owner selection for this hour, loaned from dispatch to the
-    /// join (`Captured::take_relations_selection`).
     pub selection: Option<SliceSelection>,
-    /// The relations family's fingerprint store, loaned with the selection.
     pub fingerprints: Option<Box<SliceFingerprints>>,
 }
 
@@ -4240,7 +3972,6 @@ impl std::fmt::Debug for RelationsJob {
 }
 
 impl RelationsJob {
-    /// Worker storage grows from the original acquired relation occurrences.
     pub fn new() -> Self {
         let mut job = Self {
             provisioned: true,
@@ -4250,14 +3981,11 @@ impl RelationsJob {
         job
     }
 
-    /// Reset the payload, retaining storage.
     pub fn clear(&mut self) {
         self.active = [false; 2];
         self.walk = None;
     }
 
-    /// Whether the refresh's walk published both tables whole: rows, not a
-    /// failure or truncation.
     pub fn published(&self) -> bool {
         self.walk.is_some_and(|walk| {
             matches!(walk.opinions, Outcome::Rows { .. })
@@ -4265,7 +3993,6 @@ impl RelationsJob {
         })
     }
 
-    /// Whether this is pooled storage rather than a vacant placeholder.
     pub fn is_allocated(&self) -> bool {
         self.provisioned
     }
@@ -4274,15 +4001,12 @@ impl RelationsJob {
         self.resolver.required() > self.resolver.capacity()
     }
 
-    /// Off the game thread: grow the shared store to what this job's refresh
-    /// observed and hand it back for the next job.
     pub fn return_opinions(&mut self) {
         if let Some(mut lent) = self.shared.take() {
             lent.shared().grow();
         }
     }
 
-    /// Off the game thread: prepare the resolver for its observed demand.
     pub fn grow(&mut self) {
         if self.resolver.grow().map_err(crate::allocation::io).is_err() {
             return;
@@ -4303,28 +4027,19 @@ impl RelationsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RelationsCopyReport {
-    /// The accepted worker's outcomes are ready for deferred installation.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 2],
-    /// Row bytes handed to decode.
     pub raw_bytes: [u64; 2],
 }
 
-/// Acquisition parameters, bundled to keep the refresh entry small.
 #[derive(Debug, Clone, Copy)]
 pub struct RelationsCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub active: [bool; 2],
-    /// `relation_epoch` at dispatch.
     pub epoch: u64,
 }
 
-/// Select every owner a drained opinion or relation mark names, so that this
-/// hour reads its changed opinions and relation tuples. A mark's diplomacy names its owner through the
-/// baseline, or else through the diplomacy's country backlink (an owner the
-/// baseline holds no rows for). False when an owner cannot be named: the hour
-/// then reads every owner.
 fn select_marked(
     memory: &impl Memory,
     baseline: &crelation_status::Baseline,
@@ -4346,10 +4061,6 @@ fn select_marked(
     })
 }
 
-/// Scan every live country into this hour's relations selection with a
-/// constant fingerprint: only new owners and unpublished reads join the
-/// hour's slice. The census reads go through the callback's cached country
-/// view. An incomplete census keeps every held owner live.
 fn scan_relation_owners(
     memory: &impl Memory,
     base: usize,
@@ -4402,7 +4113,6 @@ pub fn copy_relations_refresh(
     if let (Some(selection), Some(fingerprints)) = (&mut job.selection, &mut job.fingerprints) {
         scan_relation_owners(memory, ctx.base, ctx.game_state, selection, fingerprints);
     }
-    // Lent to another job: read every status, as after a load.
     let mut unshared = crelation_status::Baseline::default();
     let (baseline, observation) = match &mut job.shared {
         Some(lent) => {
@@ -4415,15 +4125,12 @@ pub fn copy_relations_refresh(
                 drain,
                 ..
             } = lent.shared();
-            // Only opinion refreshes account for the log.
             let mut pending = 0;
             let drained = if ctx.active[0] {
                 drain(consumed, marks.as_mut_slice(), &mut pending)
             } else {
                 None
             };
-            // Marks from before the baseline's epoch (a load's, say) are
-            // never replayed: they are no demand for storage.
             let continues =
                 drained.is_some_and(|(epoch, _)| baseline.token() == Some((epoch, ctx.epoch)));
             if continues {
@@ -4434,9 +4141,6 @@ pub fn copy_relations_refresh(
                 token: (epoch, ctx.epoch),
                 marks: count.map(|count| &marks[..count]),
             });
-            // The held rows of an owner outside the hour's read are current
-            // only while every opinion write since its read was handed over
-            // under the observation its baseline continues.
             if let Some(selection) = &mut job.selection {
                 let marked = observation
                     .and_then(|observation| observation.marks)
@@ -4452,8 +4156,6 @@ pub fn copy_relations_refresh(
             (&mut unshared, None)
         }
     };
-    // Without a loaned selection (a test harness) every owner is read, as on
-    // a full hour: the pack's placeholder selection is a full one.
     let selection = job.selection.as_ref();
     let select = |owner| selection.is_none_or(|selection| selection.contains(owner));
     let walk = crelation_status::walk_with(
@@ -4495,8 +4197,6 @@ impl Captured {
         self.relation_tuples.rows.len()
     }
 
-    /// Terminal failure of an accepted relations refresh, without another live
-    /// read. Other Intel tables and their independent acquisition gates survive.
     pub fn fail_relations_capture(&mut self, active: [bool; 2], reason: &'static str) {
         self.relation_active = active;
         self.relation_opinions.outcome = Outcome::Unavailable {
@@ -4516,8 +4216,6 @@ impl Captured {
         self.relations_raw_mode = false;
     }
 
-    /// Installs a refresh's rows and outcomes into the pack. Clears
-    /// `relations_raw_mode` so the next capture starts clean.
     pub fn decode_relations_payload(&mut self, job: &RelationsJob, decode_ticks: &mut [u64; 2]) {
         self.relation_active = job.active;
         let Some(walk) = job
@@ -4550,7 +4248,6 @@ impl Captured {
     }
 }
 
-/// Installs owned rows, growing the decoded destination off-thread.
 fn install<R: Copy + Default>(
     active: bool,
     outcome: Outcome,
@@ -4580,30 +4277,9 @@ fn install<R: Copy + Default>(
     };
 }
 
-// ===========================================================================
-// Hourly capitulation raw-copy split (Capitulation).
-//
-// The game thread copies raw bytes only: one shared country census plus, per
-// country, the diplomacy pointer, each diplomacy field the walk reads and the
-// owned war goals. No row is decoded on the game thread. The single FIFO
-// decode worker replays `cdiplomacy_status::walk_capitulation` against the
-// recorded spans (`crate::raw::Recorded`), so rows, order, truncation and
-// failure reasons are identical by construction (see `crate::raw` for the
-// mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: validation, precedence and error scope
-// are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless.
-// ===========================================================================
 
-/// Fault-attribution mask: the single capitulation table. The shared census
-/// carries the same bit, so tearing the census blocks the check like the
-/// pilot's conservative rule.
 const M_CAPITULATION: u32 = 0x01;
 
-/// One hour of raw capitulation payload. Flat pools recycle capacities;
-/// original acquisitions grow on the worker before publication.
 #[derive(Debug, Default)]
 pub struct CapitulationJob {
     pub log: RawLog<1>,
@@ -4618,7 +4294,6 @@ impl CapitulationJob {
         }
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -4628,7 +4303,6 @@ impl CapitulationJob {
         self.log.grow_for_next()
     }
 
-    /// Retain observed demand when recycling on the decode worker.
     pub fn grow(&mut self) {
         self.log.grow();
     }
@@ -4636,13 +4310,11 @@ impl CapitulationJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CapitulationCopyReport {
-    /// False when the original acquisition could not be staged whole.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 1],
     pub raw_bytes: [u64; 1],
 }
 
-/// Worker copy parameters, bundled to keep the tick entry small.
 #[derive(Debug, Clone, Copy)]
 pub struct CapitulationCopyContext {
     pub base: usize,
@@ -4653,8 +4325,6 @@ fn cap_pool_u64(log: &RawLog<1>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 fn capspan(
     log: &mut RawLog<1>,
     memory: &impl Memory,
@@ -4665,10 +4335,6 @@ fn capspan(
     log.take(memory, addr?, len, mask)
 }
 
-/// One structural copy pass: shared census plus, per country, the diplomacy
-/// pointer, the diplomacy fields the walk reads, each as its own exact span,
-/// and the owned war goals. Stops at the first typed abort point; later
-/// extras are harmless.
 fn copy_capitulation_pass(
     memory: &impl Memory,
     base: usize,
@@ -4712,15 +4378,12 @@ fn copy_capitulation_pass(
     let Some(mut slots) = crate::raw::CountrySlots::new(countries, links, base) else {
         return;
     };
-    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
     for slot in 1..slots.count() {
         let pointer = match slots.take(log, memory, slot, M_CAPITULATION) {
             Some(Some(pointer)) => pointer,
             Some(None) => continue,
             None => return,
         };
-        // Per-country diplomacy pointer, then exactly the fields the walk
-        // reads from the object.
         let Some(diplo_start) = capspan(
             log,
             memory,
@@ -4769,8 +4432,6 @@ fn copy_capitulation_pass(
         if log.overflowed {
             return;
         }
-        // Each goal's pointer, vtable and recipient are their own spans,
-        // read until the first that the typed walk would refuse.
         if let Some(at) = goals {
             let mut header = [0u8; 16];
             header.copy_from_slice(&log.bytes[at..at + 16]);
@@ -4784,7 +4445,6 @@ fn copy_capitulation_pass(
     }
 }
 
-/// Mirror of the owned war-goal recipients read by `walk_capitulation`.
 fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals: Array) {
     let Some(vtable) = engine_sites::at(base, engine_native::cwar_goal::VTABLE_RVA) else {
         return;
@@ -4819,8 +4479,6 @@ fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals:
     }
 }
 
-/// Hourly worker acquisition into one owned job. Original spans grow before
-/// publication; failed staging publishes unavailable without another walk.
 pub fn copy_capitulation_refresh(
     memory: &impl Memory,
     ctx: CapitulationCopyContext,
@@ -4838,8 +4496,6 @@ pub fn copy_capitulation_refresh(
 }
 
 impl Captured {
-    /// Each read country's diplomacy scalars with its owned war goals'
-    /// recipients; a list outside the captured recipients refuses the table.
     fn capitulation_table(&self, outcome: Outcome) -> TableView {
         let goals = |row: &cdiplomacy_status::CapitulationRow| match row.war_goals {
             None => Some(None),
@@ -4870,17 +4526,11 @@ impl Captured {
         })
     }
 
-    /// Terminal failure of accepted Capitulation acquisition without retrying
-    /// live memory or invalidating the other Intel tables.
     pub fn fail_capitulation_capture(&mut self, reason: &'static str) {
         self.capitulation.outcome = Outcome::Unavailable { reason };
         self.capitulation_raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw hourly payload into the pooled
-    /// typed rows. Outcomes match the typed walk exactly because the
-    /// identical walk runs against the recorded spans. Clears
-    /// `capitulation_raw_mode` so the next capture starts clean.
     pub fn decode_capitulation_payload(
         &mut self,
         base: usize,
@@ -4910,11 +4560,7 @@ impl Captured {
     }
 }
 
-// Test-only, so the decode worker tests can reuse the same harness.
 #[cfg(any(test, feature = "test-support"))]
-/// Shared synthetic address space for the relations job harness.
-/// Three countries in slots 1..3, each with a complete four-slot matrix;
-/// slot zero is the reserved sentinel the walk never reaches.
 pub mod relations_test_kit {
     use super::*;
     use engine_native::{
@@ -4945,7 +4591,6 @@ pub mod relations_test_kit {
     pub fn status(owner: usize, target: usize) -> usize {
         0x10000 + owner * 0x4000 + target * 0x1000
     }
-    /// The owned-relation vector of owner index `owner`.
     pub fn own(bytes: &mut [u8], owner: usize, relations: &[usize]) {
         let relations: Vec<u64> = relations.iter().map(|&r| r as u64).collect();
         array(
@@ -5066,13 +4711,11 @@ pub mod relations_test_kit {
         pub tuple_outcome: Outcome,
     }
 
-    /// Typed reference path: the existing `crelation_status::walk`.
     pub fn direct(memory: &impl Memory, opinion_cap: usize, tuple_cap: usize) -> Direct {
         let mut opinions = vec![crelation_status::OpinionRow::default(); opinion_cap];
         let mut tuples = vec![crelation_status::TupleRow::default(); tuple_cap];
         let result =
             crelation_status::walk(memory, BASE, GS, &mut opinions, &mut tuples, [true; 2]);
-        // The collector bounds row counts against its buffers.
         let opinions = bounded_for_test(result.opinions, opinions);
         let tuples = bounded_for_test(result.tuples, tuples);
         Direct {
@@ -5098,7 +4741,6 @@ pub mod relations_test_kit {
         (outcome, kept)
     }
 
-    /// Job path under test: the worker walk on `memory`, installed into `intel`.
     pub fn split(
         memory: &impl Memory,
         intel: &mut Captured,
@@ -5339,7 +4981,6 @@ mod tests {
         assert_eq!(TABLES[22..26], expected.each_ref().map(TableRows::table));
         let mut retained = std::array::from_fn::<_, 4, _>(|_| RetainedSnapshot::new());
         let mut snapshots = std::array::from_fn::<_, 4, _>(|_| None);
-        // The worker has acquired rows, but no recording encoder has admitted them.
         for (index, rows) in expected.iter().enumerate() {
             assert_eq!(
                 retained[index].publish(
@@ -5386,7 +5027,6 @@ mod tests {
                     ));
                 });
             }
-            // Use production assembly and the spool encoder's validation/commit path.
             let inputs =
                 captured.table_inputs(None, &mut ScriptVariableComparison::default(), None);
             let mut tables = std::array::from_fn::<_, TABLE_COUNT, _>(|_| {
@@ -5483,8 +5123,6 @@ mod tests {
             allocated,
             "handoff must not lose/double frame accounting"
         );
-        // This cut was never encoded. Off-thread return still prepares its
-        // replay baseline before restoring its original acquisition allocation.
         captured.grow(&mut capacities);
         assert_eq!(captured.source_values.rows.as_ptr(), pointer);
         assert_eq!(captured.source_values.rows.capacity(), 16_384);
@@ -5591,8 +5229,6 @@ mod tests {
                         }
                     }
                     TableView::Unavailable { reason } => {
-                        // Disabled synthetic observers are genuine named refusals;
-                        // the cadence marker cannot seed a first/recovery frame.
                         assert!(!reason.is_empty(), "{id:?}");
                         assert_ne!(reason, replay_data::cadence::SKIPPED_REASON, "{id:?}");
                     }
@@ -5860,8 +5496,6 @@ mod tests {
                 None,
             );
             let counts = accounting.finish();
-            // IntelNetworks is read every hour while its writers outside the
-            // daily step go unobserved, as they do without hooks.
             assert!(crate::country_input_changes::intel_network_writes().is_none());
             assert_ne!(
                 captured.outcomes()[6],
@@ -5883,9 +5517,6 @@ mod tests {
         }
     }
 
-    /// Pooled frames share one CountryIntel buffer. A daily slot that finds it
-    /// still held (the spool has not returned the last walk) returns at once
-    /// with a carried skip, and the next hour walks instead.
     #[test]
     fn a_held_intel_buffer_defers_the_daily_walk_one_hour_without_waiting() {
         struct Unreadable;
@@ -5909,7 +5540,6 @@ mod tests {
                 None,
                 None,
             );
-            // Any outcome but the carried skip means the walk ran.
             captured.outcomes()[15]
                 != Outcome::Unavailable {
                     reason: replay_data::cadence::SKIPPED_REASON,
@@ -5919,7 +5549,6 @@ mod tests {
         assert!(matches!(first.country_intel_sample(), Some(Err(_))));
         assert!(!capture(&mut second, 1));
         assert_eq!(second.country_intel_sample(), None);
-        // The first frame is still unconverted at the next daily slot.
         assert!(!capture(&mut second, 24));
         assert_eq!(second.country_intel_sample(), None);
         assert!(!capture(&mut second, 25));
@@ -5970,8 +5599,6 @@ mod tests {
             TableView::Complete((**shared(&first[7])).clone()),
             original[7]
         );
-        // CountryIntel is converted once a day and carried by the spool's
-        // staggered cache, so it keeps no native shadow.
         assert_eq!(second[15], TableInput::Sampled(original[15].clone()));
         let stats = shadow.statistics();
         assert_eq!((stats.hits, stats.misses), (1, 1));
@@ -5983,7 +5610,6 @@ mod tests {
             stats.replay_capacity_bytes,
             std::mem::size_of_val(shared(&first[7]).rows::<tables::ScriptFlags>().unwrap())
         );
-        // Unused capacity is not data. Only the current successful prefix is compared.
         capture.flags.rows.push(ScopedFlag::default());
         let third = memo_inputs(&capture, &mut shadow, 1);
         assert!(Arc::ptr_eq(shared(&first[7]), shared(&third[7])));
@@ -6085,20 +5711,17 @@ mod tests {
         capture.flags_witness = Some(9);
         let mut shadow = IntelShadow::default();
         let first = inputs(&capture, &mut shadow, 0);
-        // Republication compares nothing: a change the witness denies goes unseen.
         capture.flags.rows[0].flag.value += 1;
         let republished = inputs(&capture, &mut shadow, 1);
         assert!(Arc::ptr_eq(shared(&first[7]), shared(&republished[7])));
         let stats = shadow.statistics();
         assert_eq!((stats.republished, stats.hits, stats.misses), (1, 0, 1));
-        // After a gap the rows are compared, and converted when they differ.
         let gap = inputs(&capture, &mut shadow, 3);
         assert!(!Arc::ptr_eq(shared(&first[7]), shared(&gap[7])));
         assert_eq!(
             TableView::Complete((**shared(&gap[7])).clone()),
             capture.tables()[7]
         );
-        // Another generation, or none, compares the rows.
         capture.flags_witness = Some(10);
         let moved = inputs(&capture, &mut shadow, 4);
         capture.flags_witness = None;
@@ -6107,7 +5730,6 @@ mod tests {
         assert!(Arc::ptr_eq(shared(&gap[7]), shared(&unwitnessed[7])));
         let stats = shadow.statistics();
         assert_eq!((stats.republished, stats.hits, stats.misses), (1, 2, 2));
-        // A refusal withdraws the rows.
         shadow.forget(TableId::ScriptFlags);
         capture.flags_witness = Some(10);
         let refused = inputs(&capture, &mut shadow, 6);
@@ -6128,7 +5750,6 @@ mod tests {
         };
         let initial = LOCAL.snapshot().current.payload_vectors;
         assert_eq!(initial, expected(&job));
-        // A refresh records its demand; growth follows it off the capture.
         let bytes = relations_kit::opinionated_fixture();
         let ctx = RelationsCopyContext {
             base: relations_kit::BASE,
@@ -6142,7 +5763,6 @@ mod tests {
         let grown = LOCAL.snapshot().current.payload_vectors;
         assert!(grown > initial);
         assert_eq!(grown, expected(&job));
-        // The shared store grows as the job returns it, on its own charge.
         job.return_opinions();
         let mut lent = LentOpinions::borrow(job.store.unwrap()).unwrap();
         let baseline = &lent.shared().baseline;
@@ -6239,7 +5859,6 @@ mod tests {
             operations[0].effect_description,
             rows::Recorded::Value(b"a\r\xffz".to_vec())
         );
-        // Retained refusal rows do not constitute extra storage demand.
         capture.grow(&mut capacity);
         assert_eq!(capacity.rows[17], 2);
         capture.operations.rows[0].effect_description.len = 9;
@@ -6355,7 +5974,6 @@ mod tests {
                 other => panic!("raw refused entries must survive acquisition: {other:?}"),
             };
             let upgrades = rows.rows::<tables::AgencyUpgradeLevels>().unwrap();
-            // Both the typed walk and the residual capture grow to every row.
             let retained = 2;
             assert_eq!(upgrades.len(), retained);
             assert_eq!(upgrades.len() + missing as usize, 2);
@@ -6832,7 +6450,6 @@ mod tests {
                 root_out_nationality: Some(1),
             }]
         );
-        // A span outside the arena makes the table unavailable, never empty.
         capture.operative_missions.rows[0].portrait = Name { start: 5, len: 2 };
         assert!(matches!(
             capture.tables()[18],
@@ -6927,7 +6544,6 @@ mod tests {
                 },
             ]
         );
-        // A span outside the arena makes the table unavailable, never empty.
         capture.strategic_operatives.rows[0].pressure_len = 2;
         assert!(matches!(
             capture.tables()[19],
@@ -7008,8 +6624,6 @@ mod tests {
                 1_u8
             )
         );
-        // A span holding another kind, or reaching past the arena, refuses
-        // the table.
         capture.operations.rows[0].parts_start = 0;
         assert!(matches!(capture.tables()[9], TableView::Unavailable { .. }));
         capture.operations.rows[0].parts_start = 2;
@@ -7177,7 +6791,6 @@ mod tests {
         (capture, previous)
     }
 
-    /// The shared baseline the conversion's complete hours leave.
     fn variable_baseline(
         previous: Vec<rows::ScriptVariablesRow>,
     ) -> replay_frame::frame::FrameEncoder {
@@ -7209,7 +6822,6 @@ mod tests {
         let bytes = capture.allocated_bytes();
         assert!(capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
         let capacities = (scratch.scopes.capacity(), scratch.entries.capacity());
-        // Arena relocation and unused bytes do not change a literal key.
         capture.variable_names.first[6..8].copy_from_slice(&[0xff, 0]);
         capture.variable_entries.first[0].name_start = 6;
         capture.variable_names.len = 8;
@@ -7250,8 +6862,6 @@ mod tests {
                 &mut ScriptVariableComparison::default(),
                 None,
             );
-            // A changed value, seed or key replaces its scope's row alone; a
-            // changed identity removes one scope and adds another.
             let TableInput::SliceUpdate { update, .. } = &views[8] else {
                 panic!("change {change}: {:?}", views[8]);
             };
@@ -7371,9 +6981,9 @@ mod tests {
         let encoder = variable_baseline(previous.clone());
         let mut scratch = ScriptVariableComparison::default();
         for order in [
-            [0, 1, 2, 3, 4], // Every checked ordinal matches.
-            [0, 2, 1, 3, 4], // Country canonical-slot order differs from raw IDs.
-            [0, 1, 2, 4, 3], // State permutation must also use the fallback.
+            [0, 1, 2, 3, 4],
+            [0, 2, 1, 3, 4],
+            [0, 1, 2, 4, 3],
             [0, 2, 1, 4, 3],
         ] {
             for (row, index) in capture.variables.rows.iter_mut().zip(order) {
@@ -7537,8 +7147,6 @@ mod tests {
             &((BASE + cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x8000 + cstate::ID, &1_u32.to_le_bytes());
-        // Two historical characters, ids 44 and 45: 44 owns one flag, 45 an
-        // empty manager. Their managers are embedded, not pointed to.
         put(
             &mut bytes,
             GAME + cgame_state::CHARACTER_MANAGER,
@@ -7669,7 +7277,6 @@ mod tests {
             walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch, None),
             Outcome::Rows { len: 4 }
         );
-        // Character 45's empty manager is a scope without rows.
         assert_eq!(
             rows.iter()
                 .map(|row| (row.scope_kind, row.scope_id))
@@ -7685,7 +7292,6 @@ mod tests {
             rows.iter()
                 .all(|row| row.flag.value == i16::MIN && row.flag.remaining_days == -3)
         );
-        // That count sizes the first full hour.
         assert_eq!(script_flag_demand(&memory, BASE, GAME), Some(4));
         let mut capacities = Capacities::default();
         capacities.rows[7] = 1;
@@ -7696,7 +7302,6 @@ mod tests {
             walk_flags(&memory, BASE, GAME, &mut sized, &mut scratch, None),
             Outcome::Rows { len: 4 }
         );
-        // A character whose manager is not a CFlagManager fails the table.
         let mut broken = bytes.clone();
         put(
             &mut broken,
@@ -7739,8 +7344,6 @@ mod tests {
     #[test]
     fn flag_scopes_read_each_character_and_state_once_with_sequential_verdicts() {
         use std::cell::RefCell;
-        /// Records each guarded call's first address and refuses spans
-        /// covering `denied`.
         struct Calls<'a> {
             bytes: &'a [u8],
             denied: Option<usize>,
@@ -7804,8 +7407,6 @@ mod tests {
                 .filter(|address| (start..start + len).contains(address))
                 .count()
         };
-        // A character's identity and its embedded manager header share one
-        // read, as do a state's vtable, id and flag root.
         assert_eq!(within(0x6000, 0x200), 1);
         assert_eq!(within(0x6200, 0x200), 1);
         assert_eq!(within(0x8000, 0x1000), 1);
@@ -7862,7 +7463,6 @@ mod tests {
         let direct = relations_kit::direct(&memory, 16, 16);
         assert_eq!(direct.opinion_outcome, Outcome::Rows { len: 2 });
         assert_eq!(direct.tuple_outcome, Outcome::Rows { len: 2 });
-        // Slot zero is never serialized even with a nonzero opinion.
         assert_eq!(
             direct
                 .opinion_rows
@@ -8003,8 +7603,6 @@ mod tests {
 
     #[test]
     fn growing_relation_destinations_match_complete_rows_with_skipped_boundary() {
-        // Zero, one, exact and ample initial storage all publish the same
-        // complete native rows, preserving the serializer's skipped boundary.
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         for (opinion_cap, tuple_cap) in [(0, 0), (1, 1), (2, 2), (64, 64)] {
@@ -8019,8 +7617,6 @@ mod tests {
     fn relations_job_matches_faults_with_identical_reasons() {
         use engine_native::{csubject_relation, cwar_relation};
         let valid = relations_kit::opinionated_fixture();
-        // Each mutation faults the whole family; both paths must agree on the
-        // outcome reason while the other partition stays consistent.
         type Fault = (&'static str, fn(&mut Vec<u8>));
         let cases: &[Fault] = &[
             ("relation status vtable mismatch", |bytes: &mut Vec<u8>| {
@@ -8105,7 +7701,6 @@ mod tests {
                 intel.relation_tuples.outcome, direct.tuple_outcome,
                 "{reason}"
             );
-            // War/subject skip faults still authenticate: exercised below.
             let _ = (cwar_relation::VTABLE_RVA, csubject_relation::VTABLE_RVA);
         }
     }
@@ -8192,7 +7787,6 @@ mod tests {
 
     #[test]
     fn relations_invalid_primary_bytes_preserve_unavailable_rows() {
-        // A readable but invalid diplomacy vtable retains the typed error.
         let (mut bytes, ()) = (relations_kit::fixture(), ());
         bytes[relations_kit::DIPLOMACY[0]] ^= 0xff;
         let memory = relations_kit::memory(&bytes);
@@ -8211,8 +7805,6 @@ mod tests {
         static MARKS: std::cell::RefCell<Vec<crelation_status::Mark>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// Observes this thread's `MARKS` as every opinion write since the last
-    /// drain, under one epoch.
     fn test_drain(
         _: &mut u64,
         output: &mut [crelation_status::Mark],
@@ -8246,7 +7838,6 @@ mod tests {
         }
     }
 
-    /// One refresh released as decode releases it; its opinion outcome and rows.
     fn observed_refresh(
         bytes: &[u8],
         job: &mut RelationsJob,
@@ -8263,9 +7854,6 @@ mod tests {
         (outcome, job.opinions[..outcome.len()].to_vec())
     }
 
-    /// Pooled jobs share one opinion store. A refresh that finds it lent
-    /// reads every status and yields the same rows; the store comes home,
-    /// grown, when decode releases the job holding it.
     #[test]
     fn relations_jobs_share_one_opinion_store() {
         let bytes = relations_kit::opinionated_fixture();
@@ -8285,17 +7873,12 @@ mod tests {
         };
         let rows = run(&mut first);
         assert!(first.shared.is_some());
-        // Lent: the second job walks without it, to the same rows.
         assert_eq!(run(&mut second), rows);
         assert!(second.shared.is_none());
         first.return_opinions();
         let mut lent = LentOpinions::borrow(store).unwrap();
         assert!(lent.shared().baseline.allocated_bytes() > 0);
         drop(lent);
-        // Home and grown: the first job's refresh sized the owners; two more,
-        // each returned so the store grows, size and record their rows. The
-        // next replays, so an unobserved change to an unmarked status is not
-        // read.
         let mut cleared = bytes.clone();
         relations_kit::p64(&mut cleared, relations_kit::status(0, 2), 0);
         for _ in 0..2 {
@@ -8313,37 +7896,22 @@ mod tests {
         assert_eq!(second.walk.unwrap().opinions, rows.0.opinions);
     }
 
-    /// The relations dispatch runs across IntelResidual's loan of the pack, as
-    /// `acquire` runs it: the context and slice come from the real pack before
-    /// the loan, the join (`join_relations`) returns them to it, then the
-    /// typed capture and the failure path run as they do there. Published,
-    /// worker-grown and failed reads all return the slice and store without a
-    /// typed read; an unpublished read is read again at the next hour.
-    /// Rejected-inline execution is covered in `acquisition_jobs`.
     #[test]
     fn relations_dispatch_spans_the_intel_loan_and_returns_its_slice() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         let mut pack = relations_kit::intel_captured(16, 16);
         let mut store = Some(Box::new(SliceFingerprints::new()));
-        // Every opinion write is observed (none happens), so the held rows of
-        // owners outside the hour's slice stay current.
         let opinions = observed_store();
-        // One hour: begin before the loan, walk while it is out, then the
-        // join, the typed capture and the failure path. Returns the owners
-        // the hour's published rows came from, and whether they were
-        // published by the job itself.
         let hour = |pack: &mut Captured,
                     store: &mut Option<Box<SliceFingerprints>>,
                     hour: i32,
                     rows: usize,
-                    // A panicked (walked) or stopped (never walked) job.
                     failure: Option<(&'static str, bool)>| {
             let (context, selection) =
                 pack.begin_relations(relations_kit::BASE, relations_kit::GS, hour, false, true);
             assert_eq!(pack.relation_activity(), [true; 2]);
             let loaned = std::mem::replace(pack, Captured::vacant());
-            // What the old dispatch order read: the placeholder has nothing.
             assert_eq!((pack.opinion_rows_cap(), pack.tuple_rows_cap()), (0, 0));
             let mut job = RelationsJob {
                 opinions: vec![crelation_status::OpinionRow::default(); rows],
@@ -8359,8 +7927,6 @@ mod tests {
                     if walked {
                         copy_relations_refresh(&memory, context, &mut job);
                     }
-                    // `completed!` maps a failed completion to the default
-                    // report, as `acquire` sees it.
                     RelationsCopyReport::default()
                 }
             };
@@ -8370,9 +7936,6 @@ mod tests {
             let (fingerprints, payload) = pack.join_relations(job, report, failure);
             *store = fingerprints;
             assert!(store.is_some(), "the store comes back at hour {hour}");
-            // The typed capture, as `acquire` runs it after the joins. It
-            // resets the relation outcomes to UNCAPTURED; one it walked would
-            // hold this fixture's rows.
             pack.capture_delegated(
                 &memory,
                 CaptureContext {
@@ -8393,8 +7956,6 @@ mod tests {
                     assert!(job.selection.is_none() && job.fingerprints.is_none());
                     assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
                     assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
-                    // Released as decode releases it, which grows the
-                    // shared store.
                     job.return_opinions();
                     rows(&job.opinions, job.walk.unwrap().opinions)
                 }
@@ -8402,8 +7963,6 @@ mod tests {
                     job.return_opinions();
                     assert!(job.selection.is_none() && job.fingerprints.is_none());
                     let reason = failure.expect("accepted workers return their owned payload");
-                    // The raw-mode gate kept the typed capture off the
-                    // tables; the failure path publishes them unavailable.
                     assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
                     assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
                     pack.fail_relations_capture(context.active, reason);
@@ -8415,7 +7974,6 @@ mod tests {
             };
             (owners, published)
         };
-        // First sight reads every owner; the slice then reads its own.
         let (all, published) = hour(&mut pack, &mut store, 1, 16, None);
         assert!(published && all.len() >= 2);
         let slice = |hour: i32| {
@@ -8427,13 +7985,9 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
         };
         let one = *all.iter().next().unwrap();
-        // The first hour sized the shared store; the next reads every owner
-        // again while its baseline records them.
         assert_eq!(hour(&mut pack, &mut store, 2, 16, None).0, all);
         let own = replay_data::cadence::slice_of(one) as i32 + 24;
         assert_eq!(hour(&mut pack, &mut store, own, 16, None).0, slice(own));
-        // An empty seed grows during its original worker walk and publishes
-        // this hour's complete slice. The next hour reads only its own slice.
         let (grown, published) = hour(&mut pack, &mut store, own + 24, 0, None);
         assert!(published);
         assert_eq!(grown, slice(own));
@@ -8441,8 +7995,6 @@ mod tests {
             hour(&mut pack, &mut store, own + 25, 16, None).0,
             slice(own + 25)
         );
-        // A panicked job (it walked) or a stopped one (it never walked)
-        // publishes nothing, reads nothing more, and is read again too.
         let (failed, published) = hour(
             &mut pack,
             &mut store,
@@ -8467,14 +8019,9 @@ mod tests {
             hour(&mut pack, &mut store, own + 73, 16, None).0,
             &slice(own) | &slice(own + 73)
         );
-        // The pack's own selection, with its storage, is back after each join.
         assert!(pack.relations_selection().contains(one) || !slice(own + 49).contains(&one));
     }
 
-    /// Relations are read one owner slice per hour while every opinion write
-    /// is observed: a first scan reads every owner (each is new), a later
-    /// hour reads only its slice, and a read left unpublished is read again
-    /// at the next hour. Without an observation every hour reads every owner.
     #[test]
     fn a_relations_job_reads_new_owners_then_only_its_hours_slice() {
         let bytes = relations_kit::opinionated_fixture();
@@ -8498,7 +8045,6 @@ mod tests {
             job.selection = Some(selection);
             job.fingerprints = store.take();
             assert!(copy_relations_refresh(&memory, ctx, job).raw_ok);
-            // Released as decode releases it, which grows the shared store.
             job.return_opinions();
             *store = job.fingerprints.take();
             let walk = job.walk.unwrap();
@@ -8515,8 +8061,6 @@ mod tests {
         };
         let (all, _) = read(1, &mut store, true);
         assert!(all.len() >= 2, "{all:?}");
-        // The first read sized the shared store; the next reads every owner
-        // again while its baseline records them.
         assert_eq!(read(2, &mut store, true).0, all);
         let slice = |hour: i32| {
             all.iter()
@@ -8529,7 +8073,6 @@ mod tests {
         let (owners, unpublished) = read(25, &mut store, true);
         assert!(!owners.is_empty());
         assert_eq!(owners, slice(25));
-        // Unpublished: the next hour reads its own slice and this one again.
         unpublished.invalidate(store.as_deref_mut().unwrap());
         let (owners, _) = read(26, &mut store, true);
         assert_eq!(owners, &slice(25) | &slice(26));
@@ -8539,8 +8082,6 @@ mod tests {
         assert_eq!(owners, all);
     }
 
-    /// A baseline is replayed until the epoch moves (a load, gap or
-    /// recovery), and then every status is read again.
     #[test]
     fn relation_baselines_last_until_the_epoch_moves() {
         let bytes = relations_kit::opinionated_fixture();
@@ -8548,7 +8089,6 @@ mod tests {
             store: Some(observed_store()),
             ..RelationsJob::new()
         };
-        // Owners, then their rows, get storage; the third refresh records.
         for _ in 0..3 {
             assert_eq!(
                 observed_refresh(&bytes, &mut job, 1).0,
@@ -8569,8 +8109,6 @@ mod tests {
         );
     }
 
-    /// Observed refreshes replay unmarked statuses and re-read the marked
-    /// ones.
     #[test]
     fn observed_refreshes_read_marked_statuses() {
         let mut bytes = relations_kit::opinionated_fixture();
@@ -8582,11 +8120,9 @@ mod tests {
             |owner, target| relations_kit::status(owner, target) + crelation_status::OPINION;
         let initial = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(initial.0, Outcome::Rows { len: 2 });
-        // Records, then replays.
         for _ in 0..3 {
             assert_eq!(observed_refresh(&bytes, &mut job, 1), initial);
         }
-        // A marked write is read.
         relations_kit::p32(&mut bytes, opinion(1, 3), 61);
         MARKS.with_borrow_mut(|marks| {
             marks.push(crelation_status::Mark {
@@ -8598,7 +8134,6 @@ mod tests {
         assert_eq!(marked.1[1].opinion, 61);
     }
 
-    /// One sliced refresh at `hour`: the owners it read and its opinion rows.
     fn sliced_refresh(
         bytes: &[u8],
         job: &mut RelationsJob,
@@ -8616,9 +8151,6 @@ mod tests {
         (owners, rows)
     }
 
-    /// A marked opinion write is read in the hour after it, although its
-    /// owner's slice comes later (daily slices held it until then); an hour
-    /// whose marks cannot all be handed over reads every owner.
     #[test]
     fn marked_owners_are_read_the_next_hour_outside_their_slice() {
         let mut bytes = relations_kit::opinionated_fixture();
@@ -8627,20 +8159,15 @@ mod tests {
             ..RelationsJob::new()
         };
         let mut fingerprints = Some(Box::new(SliceFingerprints::new()));
-        // First sight reads every owner (ids 1 to 3, slices 1 to 3).
         let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 24);
         assert_eq!(owners, [1, 2, 3]);
-        // That read sized the shared store; the next reads every owner again
-        // while its baseline records them.
         let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 25);
         assert_eq!(owners, [1, 2, 3]);
-        // Hour 29 is no owner's slice: nothing is read.
         assert!(
             sliced_refresh(&bytes, &mut job, &mut fingerprints, 29)
                 .0
                 .is_empty()
         );
-        // Owner 2's opinion of its third target changes, marked by its writer.
         relations_kit::p32(
             &mut bytes,
             relations_kit::status(1, 3) + crelation_status::OPINION,
@@ -8659,7 +8186,6 @@ mod tests {
                 .any(|row| row.owner_country == 2 && row.opinion == 61),
             "{rows:?}"
         );
-        // More marks than the drain can hand over: every owner is read.
         MARKS.with_borrow_mut(|marks| {
             marks.extend(std::iter::repeat_n(
                 crelation_status::Mark {
@@ -8671,7 +8197,6 @@ mod tests {
         });
         let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 31);
         assert_eq!(owners, [1, 2, 3]);
-        // A later mark selects only its own owner again.
         MARKS.with_borrow_mut(|marks| {
             marks.push(crelation_status::Mark {
                 status: relations_kit::status(2, 0),
@@ -8702,7 +8227,6 @@ mod tests {
         assert_eq!(direct.opinion_outcome, Outcome::Rows { len: 2 });
     }
 
-    // ---- Hourly capitulation split (Capitulation) ----
 
     const CAP_BASE: usize = 0;
     const CAP_GAME: usize = 0x1000;
@@ -8798,7 +8322,6 @@ mod tests {
     fn cap_direct(memory: &SliceMemory<'_>) -> Captured {
         let capacities = cap_capacities();
         let mut captured = Captured::with_capacities(&capacities);
-        // Typed reference path for slot 0 only; other slots stay reset.
         captured.capitulation.outcome = bounded(
             cdiplomacy_status::walk_capitulation(
                 memory,
@@ -8879,9 +8402,6 @@ mod tests {
         assert_eq!(split.capitulation.rows[0].capitulated_hour, i32::MIN);
     }
 
-    /// A positive slot holding the reserved slot-zero object, and a positive
-    /// alias of a country, are skipped as the reader skips them: the copy
-    /// still captures the table the direct walk reads.
     #[test]
     fn capitulation_split_copy_admits_reserved_and_positive_country_aliases() {
         const RESERVED: usize = 0x2800;
@@ -8923,9 +8443,6 @@ mod tests {
         assert_eq!(split.capitulation.rows[0], direct.capitulation.rows[0]);
     }
 
-    /// The raw copy records each owned war goal's pointer, vtable and
-    /// recipient, so the decode worker's replay reads the same recipients as
-    /// a direct walk; a goal that is not a war goal refuses the list in both.
     #[test]
     fn capitulation_split_copy_reads_owned_war_goal_recipients() {
         let mut bytes = cap_fixture();
@@ -8984,9 +8501,6 @@ mod tests {
         }
     }
 
-    /// A diplomacy object with an unreadable tail no field is read from still
-    /// yields its owned war goals, as the direct walk does: the copy reads
-    /// only the fields the walk reads, each as its own span.
     #[test]
     fn capitulation_split_copy_reads_war_goals_beside_an_unreadable_diplomacy_tail() {
         struct Hole<'a> {
@@ -9061,9 +8575,6 @@ mod tests {
         );
     }
 
-    /// The copy reads exactly the spans the direct walk reads, and no wider
-    /// one: every diplomacy field and war-goal read is its own exact span, so
-    /// a span enclosing the diplomacy object would serve nothing at replay.
     #[test]
     fn capitulation_split_copy_reads_only_what_the_walk_reads() {
         struct Trace<'a> {

@@ -35,7 +35,6 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
     fn census(frame: &DecodedFrame, content: &model_selection::Content) -> Result<String, String> {
         bridge::Prepared::read(frame, content).map(|census| census.comparison_state())
     }
-    // Only successful authored calls under this mask can populate the bank.
     fn check_bank(content: &model_selection::Content) {
         let mut keys = BTreeSet::new();
         let mut enabled = BTreeSet::new();
@@ -94,7 +93,6 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
         assert!(enabled.contains(&("tanks".to_owned(), true)));
         assert!(enabled.contains(&("tanks".to_owned(), false)));
     }
-    // Re-spelled tokens, unauthored equipment, missing archetypes and absent tokens stay live.
     let spellings: [&[u8]; 9] = [
         b"infantry",
         b"rifles",
@@ -113,7 +111,6 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
             .map(|(at, literal)| LexicalTokenRow {
                 token: at as u32 + 1,
                 literal: match (at, hour % 17) {
-                    // The same key spelled anew, then a token naming another key.
                     (2, 3) => b"RIFLES_1".to_vec(),
                     (3, 8) => b"tanks".to_vec(),
                     _ => literal.to_vec(),
@@ -184,7 +181,6 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
             .collect();
         for (every, at, roster_kind, ordinal, variant) in [
             (43, 7, 0, 99, 999),
-            // A roster kind past the stored best candidates.
             (47, 9, 3, 98, handle(0)),
             (53, 11, 1, 0, handle(1)),
         ] {
@@ -241,7 +237,6 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
             .into();
         }
         if hour == 180 {
-            // Replaced authored content starts its own bank and retained census.
             check_bank(&warm);
             warm = facts_content(true);
             retained = RetainedBridge::default();
@@ -291,7 +286,6 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
             "{reason}: {refused:?}"
         );
     }
-    // 5,000 countries, each creating one variant and listing it in every roster.
     let countries = 5000_u32;
     let mut sizing = base.clone();
     set(&mut sizing, TableRows::LexicalTokens(tokens(0)));

@@ -1,7 +1,3 @@
-//! A declared series served with no product code (SPEC 3.5): a tag's value at hours, its chart,
-//! the next hour it changes, and for series with drops, pages and marks of the hours it fell.
-//! Every reply reads the tag's holder through the one identity rule ([`crate::identity`]) and
-//! each holder's row in the stretches the timeline holds; nothing is read from hours not asked.
 
 use crate::{
     Query,
@@ -33,8 +29,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// One line of a series: a country's owner, and for a sub-keyed series one of its parts (0 for a
-/// series without parts).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ask {
     pub country: Country,
@@ -42,13 +36,11 @@ pub struct Ask {
 }
 
 impl Ask {
-    /// The line of a series without parts.
     pub fn whole(country: impl Into<Country>) -> Self {
         Self { country: country.into(), part: 0 }
     }
 }
 
-/// A line as a request names it: a country, and for a sub-keyed series its part's key.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesLineAsk {
@@ -58,7 +50,6 @@ pub struct SeriesLineAsk {
     pub part: Option<String>,
 }
 
-/// Hours of the run a part of a tag's line reads: one holder's row in one stretch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Part {
     pub run: u32,
@@ -67,13 +58,10 @@ pub struct Part {
     pub last: i32,
     pub slot: u32,
     pub id: u32,
-    /// The first hour of its unbroken identity segment.
     pub segment_first: i32,
-    /// It starts a segment: the hour before it is another holder's, unheld or unknown.
     pub starts: bool,
 }
 
-/// One chart of a span's hours `first..=last`, and where each of its keys is.
 struct ExtentRead {
     chart: replay::lanes::Chart,
     index: HashMap<u128, usize>,
@@ -81,7 +69,6 @@ struct ExtentRead {
     last: i32,
 }
 
-/// A value the recording does not hold for a tag, and why.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MissingSpan {
@@ -90,7 +77,6 @@ pub struct MissingSpan {
     pub reason: String,
 }
 
-/// A run of one value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesRun {
@@ -101,13 +87,12 @@ pub struct SeriesRun {
     pub country_id: u32,
     pub starts_segment: bool,
     pub segment_first_hour: i32,
-    /// Whether the value held before `firstHour` (after `lastHour`) is known to differ: a state
-    /// read reads the block of its hour, so a run reaching that block's edge may go on past it.
+    #[doc = " Whether the value held before `firstHour` (after `lastHour`) is known to differ: a state"]
+    #[doc = " read reads the block of its hour, so a run reaching that block's edge may go on past it."]
     pub first_exact: bool,
     pub last_exact: bool,
 }
 
-/// A fall of the value from one hour to the next within one holder's segment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesDrop {
@@ -116,19 +101,18 @@ pub struct SeriesDrop {
     pub after_raw: String,
 }
 
-/// A country's value at an hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesState {
     pub country: Country,
-    /// The part's key, for a sub-keyed series.
+    #[doc = " The part's key, for a sub-keyed series."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub part: Option<String>,
     pub hour: i32,
     pub run: Option<SeriesRun>,
     pub drop: Option<SeriesDrop>,
-    /// Why there is no value: never zero, never a guess.
+    #[doc = " Why there is no value: never zero, never a guess."]
     pub missing: Option<String>,
 }
 
@@ -178,18 +162,17 @@ pub enum NavigationKey {
 pub struct SeriesRead {
     pub country: Country,
     pub hour: i32,
-    /// For a sub-keyed series, one part's key; none reads every part the owner holds at the hour.
+    #[doc = " For a sub-keyed series, one part's key; none reads every part the owner holds at the hour."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub part: Option<String>,
 }
 
-/// A part an owner held over a span, and the hours it held it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPartLife {
     pub part: String,
-    /// The content id the part holds (a token, a text id), when the series declares one.
+    #[doc = " The content id the part holds (a token, a text id), when the series declares one."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub id: Option<String>,
@@ -197,12 +180,11 @@ pub struct SeriesPartLife {
     pub last_hour: i32,
 }
 
-/// Each asked country's parts over a span: the list a breakdown's legend needs.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPartsReply {
     pub branch_id: String,
-    /// Bits of a row key below its owner: a followed row's part is its key's low `partBits` bits.
+    #[doc = " Bits of a row key below its owner: a followed row's part is its key's low `partBits` bits."]
     pub part_bits: u32,
     pub owners: Vec<SeriesOwnerParts>,
 }
@@ -212,7 +194,7 @@ pub struct SeriesPartsReply {
 pub struct SeriesOwnerParts {
     pub country: Country,
     pub parts: Vec<SeriesPartLife>,
-    /// The span's hours whose parts are not known, with why.
+    #[doc = " The span's hours whose parts are not known, with why."]
     pub missing: Vec<MissingSpan>,
 }
 
@@ -222,7 +204,6 @@ struct Family {
     measure: String,
 }
 
-/// A request to a declared series.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Params {
@@ -230,7 +211,6 @@ struct Params {
     family: Family,
     #[serde(default)]
     countries: Vec<Country>,
-    /// A sub-keyed series' lines, (country, part).
     #[serde(default)]
     lines: Vec<SeriesLineAsk>,
     #[serde(default)]
@@ -244,17 +224,11 @@ struct Params {
     last_hour: Option<f64>,
     cursor: Option<String>,
     page_size: Option<u32>,
-    /// A sub-keyed series' state of every part keeps the owner's `top` parts greatest at the hour; a series without
-    /// parts ranks its countries ([`ranked`]).
     top: Option<u32>,
-    /// The hour a ranked state reads.
     hour: Option<f64>,
-    /// A ranked chart's width.
     width: Option<u32>,
-    /// A tile request's spans each tag is drawn over ([`crate::tile`]).
     #[serde(rename = "within")]
     _within: Option<serde::de::IgnoredAny>,
-    /// A tile request's bin and tile ([`crate::tile`]).
     #[serde(rename = "binHours")]
     _bin_hours: Option<i64>,
     #[serde(rename = "index")]
@@ -263,7 +237,6 @@ struct Params {
     _with_marks: Option<bool>,
 }
 
-/// Hours a tag's line is drawn over.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Span {
@@ -271,15 +244,10 @@ pub struct Span {
     pub last_hour: i32,
 }
 
-/// The product listing each owner's parts over a span.
 pub const PARTS: &str = "series-parts";
 
-/// The longest page of events a reply holds.
 pub const PAGE_LIMIT: u32 = 1024;
 
-/// The nearest hour strictly past `origin` toward `key` within `bounds` at which `table` was read
-/// and available; none where it was not. Searched outward from the origin in widening spans, so a
-/// read near it costs the blocks near it.
 pub fn next_read(query: &Query<'_>, table: replay_data::rows::TableId, origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
     if bounds.0 > bounds.1 {
         return Err(invalid("Invalid navigation bounds"));
@@ -330,8 +298,6 @@ pub fn hour_of(value: Option<f64>, name: &str) -> io::Result<i32> {
     Ok(value.floor() as i32)
 }
 
-/// Answers `product` for the declared series its family names; none when no declared series
-/// has that kind.
 pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> io::Result<Option<serde_json::Value>> {
     let Some(kind) = params.get("family").and_then(|family| family.get("kind")).and_then(serde_json::Value::as_str) else {
         return Ok(None);
@@ -376,7 +342,6 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
                 Some(n) => ranked::stepped(&line, origin, key, bounds, n)?.into_iter().map(|tag| Ask::whole(&tag)).collect(),
                 None => line.asks(&params.countries, &params.lines)?,
             };
-            // Main's autonomy alone answered none where nothing changes; every other series holds the origin.
             let hour = match series.kind {
                 "autonomy" => line.change_lines(&asks, &measures, origin, key, bounds)?,
                 _ => line.navigate_lines(&asks, &measures, origin, key, bounds)?,
@@ -401,18 +366,13 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
     Ok(Some(value))
 }
 
-/// One line of a ranked view ([`Line::ranked`]).
 pub struct RankedLine {
     pub tag: String,
-    /// Its chart, drawn in its member bins only.
     pub summary: ChartSummary,
-    /// Its member bins, as hour spans.
     pub membership: Vec<(i32, i32)>,
     pub missing: Vec<MissingSpan>,
 }
 
-/// The level and bin hours a view of `hours` hours `width` bins wide reads, as
-/// [`replay::lanes::chart`] picks them: walked below six hours a pixel.
 pub fn grid(hours: i64, width: u32) -> (u8, i64) {
     let per_pixel = (hours / i64::from(width.max(1))).max(1);
     if per_pixel < replay_columnar::summary::bucket_hours(0) {
@@ -426,8 +386,6 @@ pub fn grid(hours: i64, width: u32) -> (u8, i64) {
     (level, (per_pixel / size) * size)
 }
 
-/// The hours of `first..=last` of run `run` whole buckets of `level` hold: an edge off the bucket
-/// grid moves inward unless the run holds no hour past it.
 pub fn whole_buckets(recording: &Recording, run: u32, (first, last): (i32, i32), level: u8) -> io::Result<(i64, i64)> {
     let (from, to) = (i64::from(first), i64::from(last));
     if level == replay::lanes::WALKED {
@@ -446,12 +404,6 @@ pub fn whole_buckets(recording: &Recording, run: u32, (first, last): (i32, i32),
     Ok((a, b))
 }
 
-/// Summarized column `column` of `table` of run `run`, for `keys` (every key when none), over
-/// exactly `first..=last` in bins of `bin_hours` on the absolute grid: charts in hour order, each
-/// with its hours. The whole buckets of `level` are read from its pieces; an edge a bucket would
-/// carry past (into hours outside the span: the view's, another history's or not held) is read
-/// from the levels below, under six hours walked. [`replay::lanes::chart_at`] alone folds a
-/// bucket crossing its span whole.
 pub fn charts_within(
     recording: &Recording,
     run: u32,
@@ -481,21 +433,16 @@ pub fn charts_within(
     Ok(out)
 }
 
-/// One measure of one series over a timeline.
 pub struct Line<'q, 'a> {
     query: &'q Query<'a>,
     series: &'static Series,
     measure: &'static Measure,
     source: Source,
-    /// Its summary column, when the table holds summaries.
     column: u32,
-    /// The drops log, for a series with drops.
     drops: Option<log::Reader<'q, 'a>>,
-    /// What its charts' missing hours read, kept for the reply's other lines.
     unread: Mutex<Unread>,
 }
 
-/// A line's reads of its table's status and its keys' lives, by run.
 #[derive(Default)]
 struct Unread {
     statuses: HashMap<(u32, i32, i32), Arc<Vec<replay::lanes::StatusRun>>>,
@@ -529,7 +476,6 @@ impl<'q, 'a> Line<'q, 'a> {
         self.series
     }
 
-    /// A part as a request names it.
     fn part_of(&self, text: Option<&str>) -> io::Result<u128> {
         match (self.series.parts, text) {
             (None, None) => Ok(0),
@@ -542,9 +488,6 @@ impl<'q, 'a> Line<'q, 'a> {
         }
     }
 
-    /// The lines a request names: its countries for a series without parts, its (country, part) lines for
-    /// one with them. A line of every part summed is not offered: per-key buckets cannot give the
-    /// least and greatest of a sum.
     pub fn asks(&self, countries: &[Country], lines: &[SeriesLineAsk]) -> io::Result<Vec<Ask>> {
         if self.series.parts.is_some() && !countries.is_empty() {
             return Err(invalid(format!("{} is asked by (tag, part) lines, never a sum of its parts", self.series.kind)));
@@ -556,12 +499,10 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// A line's part as a reply names it: none for a series without parts.
     pub fn part_text(&self, ask: &Ask) -> Option<String> {
         self.series.parts.map(|_| ask.part.to_string())
     }
 
-    /// Where its value comes from.
     pub fn source(&self) -> Source {
         self.source
     }
@@ -578,7 +519,6 @@ impl<'q, 'a> Line<'q, 'a> {
         self.measure.decimals
     }
 
-    /// Whether its series' events are the hours a measure fell.
     pub fn drops(&self) -> bool {
         self.series.drops
     }
@@ -587,7 +527,6 @@ impl<'q, 'a> Line<'q, 'a> {
         10_f64.powi(i32::from(self.measure.decimals))
     }
 
-    /// Each owner key's holder runs: (first, last, tag), by this series' key.
     fn by_key(&self) -> HashMap<u128, Vec<(i32, i32, &str)>> {
         let mut out: HashMap<u128, Vec<(i32, i32, &str)>> = HashMap::new();
         for (tag, runs) in &self.query.holders.tags {
@@ -600,7 +539,6 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    /// Refused by name for a sub-keyed series: its rows rank parts, not countries.
     fn owners_only(&self, what: &str) -> io::Result<()> {
         if self.series.key.unowned() {
             return Err(invalid(format!("{} is rows no country owns: {what} is not offered", self.series.kind)));
@@ -611,8 +549,6 @@ impl<'q, 'a> Line<'q, 'a> {
         }
     }
 
-    /// A line no country owns over `from..=to`: its one row, `key`, in each stretch (the world's whatever the line's
-    /// name, a faction's by its id).
     fn fixed(&self, key: u128, from: i32, to: i32) -> Vec<Part> {
         let timeline = &self.query.timeline;
         let mut out: Vec<Part> = Vec::new();
@@ -628,14 +564,10 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    /// The `n` tags with the greatest value at `hour` (ties by tag, as the followed top and the UI
-    /// rank): one read at that hour of the table's columns the value reads, a computed value
-    /// evaluated on each row.
     pub fn rank_at(&self, hour: i32, n: usize) -> io::Result<Vec<String>> {
         self.rank_at_by(hour, n, false)
     }
 
-    /// [`Self::rank_at`], or with `least` the `n` least, least first (ties by tag still).
     pub fn rank_at_by(&self, hour: i32, n: usize, least: bool) -> io::Result<Vec<String>> {
         self.owners_only("a rank at an hour")?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
@@ -663,12 +595,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(values.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect())
     }
 
-    /// The view's `n` first countries in each bin, ranked by their value at the bin's last
-    /// recorded hour (ties by key), from the summary pieces' top-N: no country's chart is read
-    /// unless it ranks. A member's line in a bin is that bin's values (first, last, least, greatest
-    /// over its hours there); its membership is its member bins. Bins are the view's, six hours at
-    /// the finest; a view shorter than six hours ranks at its last hour, as do a stretch's edge bin
-    /// a summary bucket would carry past it and each bin of a stretch shorter than six hours, read exactly.
     pub fn ranked(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<Vec<RankedLine>> {
         self.owners_only("a ranked view")?;
         let hours = i64::from(to) - i64::from(from) + 1;
@@ -692,13 +618,11 @@ impl<'q, 'a> Line<'q, 'a> {
         let holders = self.by_key();
         let tag_of = |key: u128, hour: i32| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
         let mut lines: BTreeMap<String, (Vec<Option<ChartBucket>>, Vec<(i32, i32)>)> = BTreeMap::new();
-        // Each member's bucket in the bin with the hours it is a member there.
         let mut place = |slot: usize, drawn: Vec<(&str, ChartBucket, Vec<(i32, i32)>)>| {
             for (tag, bucket, hours) in drawn {
                 let (buckets, spans) = lines.entry(tag.to_owned()).or_insert_with(|| (vec![None; bins], Vec::new()));
                 let joined = hours.first().is_some_and(|&(from, _)| spans.last().is_some_and(|&(_, last)| i64::from(last) + 1 >= i64::from(from)));
                 let bucket = ChartBucket { first_break: !joined, ..bucket };
-                // A bin two stretches share holds both stretches' hours.
                 buckets[slot] = match buckets[slot] {
                     Some(held) => crate::chart::merge(Some(held), Some(bucket)),
                     None => Some(bucket),
@@ -713,7 +637,6 @@ impl<'q, 'a> Line<'q, 'a> {
         };
         for stretch in self.query.timeline.within(from, to) {
             let span = i64::from(stretch.last) - i64::from(stretch.first) + 1;
-            // A stretch shorter than a summary bucket ranks at its last hour in each view bin and is read exactly there.
             if span < six {
                 let mut start = i64::from(stretch.first).div_euclid(bin_hours) * bin_hours;
                 while start <= i64::from(stretch.last) {
@@ -726,16 +649,12 @@ impl<'q, 'a> Line<'q, 'a> {
                 }
                 continue;
             }
-            // The stretch read on the view's own bins.
             let stretch_width = (span / bin_hours).max(1) as u32;
             let (level, stretch_bins) = grid(span, stretch_width);
             let stretch_first = i64::from(stretch.first).div_euclid(stretch_bins) * stretch_bins;
-            // One key more than drawn: a key no tag holds (a table's world row, a ceased country) never shortens a bin.
             let best = crate::cost::storage(|| {
                 replay::lanes::top(recording, stretch.run, self.series.table, self.column, stretch.first, stretch.last, stretch_width, n + 1, replay::lanes::By::Last)
             })?;
-            // An edge bin whose summary bucket reaches past the stretch (the view's end, another history's hours or
-            // hours not held) is ranked at its last hour and read exactly over its hours.
             let (whole_first, whole_last) = self.whole_buckets(stretch.run, (stretch.first, stretch.last), level)?;
             let edges = (whole_first > i64::from(stretch.first), whole_last < i64::from(stretch.last));
             let count = best.len();
@@ -750,7 +669,6 @@ impl<'q, 'a> Line<'q, 'a> {
                     true => self.exact_top(stretch.run, (lo as i32, hi as i32), level, stretch_bins, n, &holders)?,
                     false => members
                         .into_iter()
-                        // Named by the tag holding the key at the bin's last hour.
                         .filter_map(|(key, value)| Some((tag_of(key, hi as i32)?, value)))
                         .take(n)
                         .map(|(tag, value)| {
@@ -776,7 +694,6 @@ impl<'q, 'a> Line<'q, 'a> {
                 place(slot, drawn);
             }
         }
-        // A view with an hour to each pixel draws its members' hourly runs over their membership.
         if hours <= i64::from(asked) {
             let drawn: Vec<(Ask, Vec<(i32, i32)>)> = lines.iter().map(|(tag, (_, spans))| (Ask::whole(tag), spans.clone())).collect();
             let charts = self.summaries_within(&drawn, from, to, asked)?;
@@ -797,12 +714,10 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect()
     }
 
-    /// `country`'s parts meeting `from..=to`, of a series without parts.
     pub fn parts(&self, country: impl Into<Country>, from: i32, to: i32) -> Vec<Part> {
         self.held(&Ask::whole(country), from, to)
     }
 
-    /// The parts of `ask`'s line meeting `from..=to`: its country's holders' rows of its part.
     pub fn held(&self, ask: &Ask, from: i32, to: i32) -> Vec<Part> {
         if self.series.key.unowned() {
             return ask.country.tag().and_then(|tag| self.series.key.fixed(tag)).map_or_else(Vec::new, |key| self.fixed(key, from, to));
@@ -814,8 +729,6 @@ impl<'q, 'a> Line<'q, 'a> {
             let Holder::Found { slot, id } = run.holder else { continue };
             let holder_first = self.query.holders.at(country, run.first).map_or(run.first, |held| held.first);
             for stretch in timeline.within(run.first, run.last) {
-                // The segment begins where the uncut stretch does, back through loads into recorded
-                // hours, never before its holder took the tag.
                 let mut at = timeline.stretches.partition_point(|held| held.last < stretch.first);
                 let mut chain = timeline.stretches[at].first;
                 while at > 0 && matches!(timeline.stretches[at].join, crate::timeline::Join::Load { .. }) {
@@ -838,7 +751,6 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    /// Why `country` has no value at `hour`, when its holder or the timeline says so.
     pub(crate) fn missing_at(&self, country: &Country, hour: i32) -> Option<String> {
         if self.query.timeline.at(hour).is_none() {
             return Some(self.query.timeline.reason(hour));
@@ -857,8 +769,6 @@ impl<'q, 'a> Line<'q, 'a> {
         }
     }
 
-    /// Why `country` has no row at `hour` it holds no tag at: a tag no country holds, or a country
-    /// that does not exist then, whose value is not recorded there.
     pub(crate) fn absent(&self, country: &Country, hour: i32) -> String {
         match country {
             Country::Tag(tag) => format!("{tag} is held by no country"),
@@ -866,8 +776,6 @@ impl<'q, 'a> Line<'q, 'a> {
         }
     }
 
-    /// The keys of `owner`'s rows of run `run` at `hour`, ascending, or why they are not known:
-    /// one read at the hour of the owner's key range.
     fn owned_at(&self, run: u32, hour: i32, owner: u128, top: Option<usize>) -> io::Result<Result<Vec<u128>, String>> {
         let parts = self.series.parts.ok_or_else(|| invalid(format!("{} has no parts", self.series.kind)))?;
         let (lo, hi) = parts.range(owner);
@@ -881,17 +789,12 @@ impl<'q, 'a> Line<'q, 'a> {
             return Ok(Ok(snapshot.rows.iter().map(|&(key, _)| key).collect()));
         };
         let view = snapshot.view();
-        // Greatest first, ties by key; a part without a value is not ranked.
         let mut ranked: Vec<(i64, u128)> = snapshot.rows.iter().filter_map(|&(key, slot)| Some((self.source.value(&view, slot)?, key))).collect();
         ranked.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         ranked.truncate(n);
         Ok(Ok(ranked.into_iter().map(|(_, key)| key).collect()))
     }
 
-    /// Each read's value, its run within the block of its hour, and its drop there. A sub-keyed
-    /// series' read names a part, or none to read every part its owner holds at the hour (one
-    /// state each, in key order), or with `top` its `top` parts greatest at the hour, greatest
-    /// first.
     pub fn states(&self, reads: &[SeriesRead], top: Option<usize>) -> io::Result<Vec<SeriesState>> {
         if top.is_some() && self.series.parts.is_none() {
             return Err(invalid(format!("{} has no parts to rank", self.series.kind)));
@@ -935,11 +838,8 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    /// Each asked line's value at its hour, its run within the block of its hour, and its drop
-    /// there.
     fn states_of(&self, reads: &[(Ask, i32)]) -> io::Result<Vec<SeriesState>> {
         let recording = self.query.replay.recording();
-        // Reads of one block of one run share one walk of it.
         let mut blocks: HashMap<(u32, u32), Vec<(usize, Part, (i32, i32))>> = HashMap::new();
         let mut out: Vec<SeriesState> = reads
             .iter()
@@ -961,7 +861,6 @@ impl<'q, 'a> Line<'q, 'a> {
             let block = ((i64::from(hour) - i64::from(held.first_hour)) / i64::from(UNIT_ORDINALS)) as u32;
             let block_first = held.first_hour + (block * UNIT_ORDINALS) as i32;
             let block_last = (block_first + UNIT_ORDINALS as i32 - 1).min(held.first_hour + held.ordinals as i32 - 1);
-            // The holder's part over the block read, so the run is read to the block's edges.
             let part = self
                 .held(ask, block_first, block_last)
                 .into_iter()
@@ -999,7 +898,6 @@ impl<'q, 'a> Line<'q, 'a> {
                     country_id: part.id,
                     starts_segment: part.starts && first == whole_first,
                     segment_first_hour: part.segment_first,
-                    // Exact where the read saw the value change, or at the holder's own edge.
                     first_exact: first == whole_first || read_first > from,
                     last_exact: last == whole_last || read_last < block_last,
                 });
@@ -1016,20 +914,15 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// `country`'s chart over `from..=to` drawn `width` pixels wide, and the hours it holds no value.
     pub fn summary(&self, country: impl Into<Country>, from: i32, to: i32, width: u32) -> io::Result<(ChartSummary, Vec<MissingSpan>)> {
         Ok(self.summaries(&[country.into()], from, to, width)?.remove(0))
     }
 
-    /// Each of `tags`' charts over `from..=to`, `width` pixels wide, and the hours each holds no
-    /// value: one read of each run the view meets, for every tag at once.
     pub fn summaries<C: Clone + Into<Country>>(&self, countries: &[C], from: i32, to: i32, width: u32) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
         let drawn: Vec<(Ask, Vec<(i32, i32)>)> = countries.iter().map(|country| (Ask::whole(country.clone()), vec![(from, to)])).collect();
         self.summaries_within(&drawn, from, to, width)
     }
 
-    /// [`Self::summaries`] with each tag's line drawn only over its own spans of the view (a
-    /// ranking's membership): a line starts afresh at each span.
     pub fn summaries_within(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, width: u32) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
         let tags: Vec<&Country> = drawn.iter().map(|(ask, _)| &ask.country).collect();
         let hours = i64::from(to) - i64::from(from) + 1;
@@ -1051,11 +944,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// `keys`' runs of run `run` over `from..=to`. Where the table's absent row is the game's zero
-    /// ([`dashboard_declare::absent_is_zero`]), an hour a key has no row reads 0 while the table is
-    /// complete and its owner's slice has been read (`SliceReads`), and has no value otherwise.
-    /// Such a table names both countries of a row by raw engine references: a key's line is its
-    /// pair's rows under every raw id linked to either country while the link holds ([`Aliases`]).
     fn key_runs(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::Runs>> {
         let recording = self.query.replay.recording();
         let Some(parts) = self.series.parts.filter(|_| dashboard_declare::absent_is_zero(self.series.table)) else {
@@ -1110,9 +998,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// Each drawn tag's runs of one value over `from..=to`, each run cut to its part, breaking after
-    /// hours with no value and where a segment starts, and the parts the tag holds there: one read
-    /// of each run the view meets, for every tag at once.
     pub(crate) fn hourly_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
         let (held, parts) = self.drawn_parts(drawn, from, to);
         let mut by_run: HashMap<u32, (Vec<u128>, i32, i32)> = HashMap::new();
@@ -1154,8 +1039,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// Each drawn tag's parts over `from..=to`, and those parts cut to its spans: a cut part
-    /// starts a line afresh.
     fn drawn_parts(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> (Vec<Vec<Part>>, Vec<Vec<Part>>) {
         let held: Vec<Vec<Part>> = drawn.iter().map(|(ask, _)| self.held(ask, from, to)).collect();
         let cut = held
@@ -1177,18 +1060,11 @@ impl<'q, 'a> Line<'q, 'a> {
         (held, cut)
     }
 
-    /// Each drawn tag's bins of `bin_hours` on the absolute grid, from the bin holding `from`
-    /// through the bin holding `to`, read from `level`'s pieces ([`replay::lanes::WALKED`]: every
-    /// hour walked), and the parts the tag holds over `from..=to`: one chart read for each span of a
-    /// run's hours the parts cover without a break, of every key its parts name, exact at the span's
-    /// edges ([`Self::charts_within`]). A part whose edge shares a bin with hours its key may hold a
-    /// row in outside the part is read over its own hours instead ([`Self::shared_edge`]).
     pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
         if dashboard_declare::read_by_key(self.series.table) {
             return self.binned_from_runs(drawn, from, to, bin_hours);
         }
         let (held, parts) = self.drawn_parts(drawn, from, to);
-        // A run's hours between its parts may be another history's: a span never reaches over them.
         let mut covered: HashMap<u32, Vec<(i32, i32)>> = HashMap::new();
         for part in parts.iter().flatten() {
             covered.entry(part.run).or_default().push((part.first, part.last));
@@ -1253,13 +1129,10 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// The hours of `first..=last` of run `run` whole buckets of `level` hold: an edge not on the
-    /// bucket grid moves inward unless the run holds no hour past it.
     fn whole_buckets(&self, run: u32, span: (i32, i32), level: u8) -> io::Result<(i64, i64)> {
         whole_buckets(self.query.replay.recording(), run, span, level)
     }
 
-    /// `keys`' charts of run `run` over exactly `span` ([`charts_within`]), each with where its keys are.
     fn charts_within(&self, run: u32, keys: &[u128], span: (i32, i32), level: u8, bin_hours: i64) -> io::Result<Vec<ExtentRead>> {
         Ok(charts_within(self.query.replay.recording(), run, (self.series.table, self.column), Some(keys), span, level, bin_hours)?
             .into_iter()
@@ -1270,11 +1143,6 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    /// `key`'s bins of `reads` over `first..=last`, on the grid of `bins` bins of `bin_hours` from
-    /// `first_bin`, none starting a line. A bin's reads, in hour order, fold as one read of `level`
-    /// would: its hours are to `level`'s bucket (the first, least and greatest at the bucket's first
-    /// hour, the last value at its last six hours) within the bin's hours of `first..=last`, so an
-    /// edge re-read from a finer level answers as the whole bucket does.
     #[allow(clippy::too_many_arguments, reason = "a part's hours, the view's level and its grid")]
     fn fold_reads(&self, reads: &[ExtentRead], key: u128, (first, last): (i32, i32), level: u8, first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<ChartBucket>> {
         use replay_columnar::summary::bucket_hours;
@@ -1284,7 +1152,6 @@ impl<'q, 'a> Line<'q, 'a> {
             replay::lanes::WALKED => 1,
             _ => bucket_hours(level) / six,
         };
-        // Per bin: its values, the hours its key was covered, and its magnitude total.
         let mut folded: Vec<Option<(replay::lanes::Bin, u32, u128)>> = vec![None; bins];
         for read in reads {
             let Some(&at) = read.index.get(&key) else { continue };
@@ -1346,9 +1213,6 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect()
     }
 
-    /// The `n` keys of run `run` greatest at `last` with a tag there (ties by key), each with its
-    /// one bin read exactly ([`Self::charts_within`]) over only the hours of `first..=last` that
-    /// tag holds it (`holders`), and those hours.
     fn exact_top<'t>(
         &self,
         run: u32,
@@ -1382,7 +1246,6 @@ impl<'q, 'a> Line<'q, 'a> {
         if ranked.is_empty() {
             return Ok(Vec::new());
         }
-        // A key another tag held earlier in the bin is read only over its winner's hours; winners held alike read together.
         let mut by_hours: BTreeMap<Vec<(i32, i32)>, Vec<u128>> = BTreeMap::new();
         for &(_, key, tag) in &ranked {
             let mut held: Vec<(i32, i32)> =
@@ -1422,8 +1285,6 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    /// Each owner key's hours a holder holds it, and the hours no holder is known for some tag
-    /// (unknown or unresolved), by this series' key.
     fn held_by_owner(&self) -> (HashMap<u128, Vec<(i32, i32)>>, Vec<(i32, i32)>) {
         let mut owners: HashMap<u128, Vec<(i32, i32)>> = HashMap::new();
         let mut unknown: Vec<(i32, i32)> = self.query.holders.unknown.iter().map(|(first, last, _)| (*first, *last)).collect();
@@ -1438,9 +1299,6 @@ impl<'q, 'a> Line<'q, 'a> {
         (owners, unknown)
     }
 
-    /// Whether `part`'s first or last bin holds hours of `span` outside the part where its key may
-    /// hold a row: an hour any holder holds the key's owner, or one no holder is known for. A
-    /// chart of `span` would fold those hours into the part's bin.
     fn shared_edge(&self, part: &Part, span: (i32, i32), bin_hours: i64, (owners, unknown): &(HashMap<u128, Vec<(i32, i32)>>, Vec<(i32, i32)>)) -> bool {
         if self.series.key == dashboard_declare::Key::Singleton {
             return part.first > span.0 || part.last < span.1;
@@ -1459,9 +1317,6 @@ impl<'q, 'a> Line<'q, 'a> {
         meets(before) || meets(after)
     }
 
-    /// [`Self::binned`] of a series no summary holds ([`dashboard_declare::READ_BY_KEY`]): each
-    /// drawn line's runs read from the table's tracks over `from..=to`, folded into its bins. A
-    /// bin's extremes keep their exact hours.
     fn binned_from_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
@@ -1503,10 +1358,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// The hours of `from..=to` `tag`'s line holds no value in, each stretch with its reason: the
-    /// hours no part holds ([`Self::unheld`]), and within each part the hours its table was not
-    /// complete and, where an absent row is no value, the hours outside its key's life in the run.
-    /// Exact hours, read from the blocks' page entries and the table's lifetimes, whatever the bins.
     pub fn missing(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
         let country = &country.into();
         let mut out = self.unheld(country, from, to, parts);
@@ -1531,8 +1382,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(joined(out))
     }
 
-    /// The hours of `part` within `from..=to` its table was not complete (not recorded, not available or read in
-    /// part), each with its reason, onto `out`; the hours it was complete returned.
     fn incomplete(&self, part: &Part, from: i32, to: i32, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
         let (first, last) = (part.first.max(from), part.last.min(to));
         let mut complete = Vec::new();
@@ -1549,7 +1398,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(complete)
     }
 
-    /// The table's status of run `run` through `from..=to`, read once a reply.
     fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<Vec<replay::lanes::StatusRun>>> {
         if let Some(held) = self.unread.lock().unwrap_or_else(PoisonError::into_inner).statuses.get(&(run, from, to)) {
             return Ok(held.clone());
@@ -1559,8 +1407,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(read)
     }
 
-    /// Every key's first and last hour of run `run`, sorted by key, read once a reply; none where an
-    /// absent row is a zero, or the table keeps no lifetimes (a series read by key).
     fn lives(&self, run: u32) -> io::Result<Option<Arc<Vec<(u128, i64, i64)>>>> {
         let table = self.series.table;
         if (self.series.parts.is_some() && dashboard_declare::absent_is_zero(table)) || crate::cost::declared(table).is_err() {
@@ -1574,9 +1420,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(Some(read))
     }
 
-    /// The hours of `from..=to` no part of `tag` holds, each stretch with its reason: one reason
-    /// between consecutive boundaries of the timeline's stretches and unheld hours, the identity
-    /// table's unknown hours and the tag's holder runs.
     pub fn unheld(&self, country: &Country, from: i32, to: i32, parts: &[Part]) -> Vec<MissingSpan> {
         let mut edges: Vec<i64> = Vec::new();
         for gap in &self.query.timeline.unheld {
@@ -1622,7 +1465,6 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    /// The chart of a view finer than the smallest bucket: from hourly runs, which it carries.
     fn hourly(&self, runs: Vec<ChartRun>, from: i32, to: i32, width: u32) -> ChartSummary {
         let scale = self.scale();
         let hours = i64::from(to) - i64::from(from) + 1;
@@ -1671,25 +1513,19 @@ impl<'q, 'a> Line<'q, 'a> {
             to: f64::from(to),
             width,
             buckets,
-            // Runs only where each hour has a pixel of its own.
             runs: (hours <= i64::from(width)).then_some(clipped),
         }
     }
 
-    /// The nearest hour from `origin` toward `key` at which any measure of any tag changes,
-    /// within `bounds`; the origin itself, held within the bounds, where nothing changes.
     pub fn navigate<C: Clone + Into<Country>>(&self, countries: &[C], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
         let asks: Vec<Ask> = countries.iter().map(|country| Ask::whole(country.clone())).collect();
         self.navigate_lines(&asks, measures, origin, key, bounds)
     }
 
-    /// [`Self::navigate`] over lines, each a tag's part of a sub-keyed series.
     pub fn navigate_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
         Ok(self.change_lines(asks, measures, origin, key, bounds)?.or_else(|| origin.map(|hour| hour.clamp(bounds.0, bounds.1))))
     }
 
-    /// The nearest hour strictly past `origin` toward `key` within `bounds` at which any measure of
-    /// any line changes; none where nothing does.
     pub fn change_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
         if bounds.0 > bounds.1 {
             return Err(invalid("Invalid navigation bounds"));
@@ -1702,7 +1538,6 @@ impl<'q, 'a> Line<'q, 'a> {
         };
         let recording = self.query.replay.recording();
         let mut best: Option<i32> = None;
-        // A change is strictly past the origin: stepping from an hour never lands on it.
         let mut offer = |hour: i32| {
             if (forward && i64::from(hour) <= at) || (!forward && i64::from(hour) >= at) {
                 return;
@@ -1712,7 +1547,6 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut by_run: HashMap<u32, Vec<Part>> = HashMap::new();
         for ask in asks {
             for part in self.held(ask, bounds.0, bounds.1) {
-                // A segment's first hour is a change: its value begins there.
                 let starts = i64::from(part.first);
                 if (forward && starts > at) || (!forward && starts < at) {
                     offer(part.first);
@@ -1740,8 +1574,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(best)
     }
 
-    /// The drops log's patterns of `tags` (each a group) over `from..=to`: each holder part's
-    /// rows of this measure.
     fn drop_patterns<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32) -> io::Result<Vec<Pattern>> {
         let kind = self.series.measures.iter().position(|measure| std::ptr::eq(measure, self.measure)).ok_or_else(|| invalid("No such measure"))?;
         let mask = u128::from(u32::MAX) << log::facet_shift(0) | u128::from(u32::MAX) << log::facet_shift(1);
@@ -1765,17 +1597,12 @@ impl<'q, 'a> Line<'q, 'a> {
         self.drops.as_ref().ok_or_else(|| invalid(format!("{} has no drops", self.series.kind)))
     }
 
-    /// Each of `tags`' drops from `first` through `last`, by bin of `bin_hours` on the absolute
-    /// grid from `first` (index, count), and how many it dropped on the timeline before `first`:
-    /// exact, from the drops log's counts and, under six hours, its rows.
     pub(crate) fn drop_counts<C: Clone + Into<Country>>(&self, tags: &[C], first: i32, last: i32, bin_hours: i64) -> io::Result<Vec<(u64, Vec<(u32, u64)>)>> {
         let patterns = self.drop_patterns(tags, self.query.timeline.first, last)?;
         let counts = self.drops_log()?.counts(&patterns, tags.len(), first, last, bin_hours)?;
         Ok(counts.into_iter().map(|counts| (counts.before, counts.bins)).collect())
     }
 
-    /// A page of the tags' drops from ordinal `cursor` within `from..=to`. Ordinals count from
-    /// the timeline's first drop of these tags; a row's own ordinal counts its country's.
     pub fn page<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, cursor: u64, size: u32) -> io::Result<SeriesEventPage> {
         let patterns = self.drop_patterns(tags, self.query.timeline.first, to)?;
         let page = self.drops_log()?.page(&patterns, tags.len(), from, to, cursor, size)?;
@@ -1796,8 +1623,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(SeriesEventPage { first_ordinal: page.first.to_string(), total: page.total().to_string(), rows, cursor: page.cursor().map(|cursor| cursor.to_string()) })
     }
 
-    /// Each of `tags`' drops over the view as marks, each cluster at most eighteen pixels wide:
-    /// counted from the drops log for every tag at once, a cluster's hours those of its bins.
     pub fn marks_of<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, width: u32) -> io::Result<Vec<MarkSummary>> {
         let hours = i64::from(to) - i64::from(from) + 1;
         let span = ((hours * 18 + i64::from(width) - 1) / i64::from(width)).max(1);
@@ -1839,9 +1664,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// Each tag's parts over `from..=to` with the first and last hour it held each: its holders'
-    /// key ranges of the table's lifetimes in each stretch, read once a run; and the hours no part
-    /// is known, the tag unheld or its table not complete, where a part may be missing.
     pub fn part_lives<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32) -> io::Result<Vec<SeriesOwnerParts>> {
         let parts = self.series.parts.ok_or_else(|| invalid(format!("{} has one row an owner: it has no parts", self.series.kind)))?;
         if dashboard_declare::read_by_key(self.series.table) {
@@ -1893,7 +1715,6 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 }
 
-/// `spans` by first hour, neighbours of one reason joined.
 fn joined(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
     spans.sort_unstable_by_key(|span| span.first_hour);
     let mut out: Vec<MissingSpan> = Vec::with_capacity(spans.len());
@@ -1906,8 +1727,6 @@ fn joined(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
     out
 }
 
-/// Why a table of `status` holds no rows to read at an hour.
-/// The hours both `a` and `b` hold, each ascending spans that do not overlap.
 fn meet(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let (mut i, mut j, mut out) = (0, 0, Vec::new());
     while i < a.len() && j < b.len() {
@@ -1920,7 +1739,6 @@ fn meet(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     out
 }
 
-/// Ascending spans that do not overlap, holding every hour of `spans`.
 fn union(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
     spans.sort_unstable();
     spans.dedup_by(|next, kept| {
@@ -1933,8 +1751,6 @@ fn union(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
     spans
 }
 
-/// Every raw engine reference of a country over a span, from `CountryLinks`' runs of each raw
-/// id's canonical slot: an id linked to the slot a country's id links to, while both links hold.
 struct Aliases {
     by_slot: HashMap<i64, Vec<(u32, i32, i32)>>,
     slots: HashMap<u32, Vec<(i32, i32, i64)>>,
@@ -1955,8 +1771,6 @@ impl Aliases {
         Self { by_slot, slots }
     }
 
-    /// `id`'s aliases over `from..=to`, each with the hours it is one: `id` itself throughout,
-    /// ascending by id. Without a link `id` is its own alias alone.
     fn of(&self, id: u32, from: i32, to: i32) -> Vec<(u32, Vec<(i32, i32)>)> {
         let mut found: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::from([(id, vec![(from, to)])]);
         for &(first, last, slot) in self.slots.get(&id).into_iter().flatten() {
@@ -1971,9 +1785,6 @@ impl Aliases {
     }
 }
 
-/// A pair's rows under its countries' raw ids as one line, ascending: each row's values within
-/// its spans (the hours both its ids are the pair's); where two rows hold an hour, the earlier
-/// starting keeps it.
 fn pair_rows(rows: &[(&[(i32, i32, Option<i64>)], &[(i32, i32)])]) -> read::Runs {
     let mut pieces: Vec<(i32, i32, i64)> = Vec::new();
     for &(runs, spans) in rows {
@@ -2000,8 +1811,6 @@ fn pair_rows(rows: &[(&[(i32, i32, Option<i64>)], &[(i32, i32)])]) -> read::Runs
     out
 }
 
-/// `held` over `from..=to` with every hour it has no value read as 0 where `zero` (ascending spans)
-/// holds it: a row the game lists only while nonzero.
 fn zero_absent(held: &read::Runs, zero: &[(i32, i32)], from: i32, to: i32) -> read::Runs {
     let mut whole: read::Runs = Vec::new();
     let mut at = from;

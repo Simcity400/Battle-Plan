@@ -1,4 +1,3 @@
-//! Province geometry and the subject colour rule from verified game content.
 
 use crate::key_names::KeyNames;
 use std::{
@@ -25,16 +24,11 @@ pub struct ProvinceDefinition {
     pub id: u32,
     pub rgb: [u8; 3],
     pub kind: ProvinceKind,
-    /// One-based index into `map/default.map`'s continent list; zero is none.
-    /// The eighth column's signed decimal prefix narrowed to u8.
     pub continent: u8,
 }
 
-/// The content half of the political colour: country colours themselves are recorded
-/// (`CountryAppearance`), already cosmetic-resolved and HSV-modified.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryColors {
-    /// Autonomy definition id -> use_overlord_color. Omitted fields default to false.
     pub use_overlord_color: BTreeMap<Vec<u8>, bool>,
 }
 
@@ -42,7 +36,6 @@ pub struct CountryColors {
 pub struct ProvinceImage {
     pub width: u32,
     pub height: u32,
-    /// Row-major pixels, starting at the top-left regardless of BMP storage order.
     pub province_ids: Vec<u32>,
 }
 
@@ -51,20 +44,15 @@ pub struct MapData {
     pub width: u32,
     pub height: u32,
     pub province_ids: Vec<u32>,
-    /// Includes the map's zero sentinel if definition.csv declares it.
     pub definitions: BTreeMap<u32, ProvinceDefinition>,
     pub country_colors: CountryColors,
 }
 
-/// One `definition.csv` record: a u16 id, byte red, green and blue,
-/// kind, coastal and continent fields, and the terrain name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefinitionRow {
-    /// One-based line of the file, for messages.
     pub line: usize,
     pub id: u16,
     pub rgb: [u8; 3],
-    /// The kind column's bytes, empty when the row has only four columns.
     pub kind: Vec<u8>,
     pub coastal: bool,
     pub terrain: Vec<u8>,
@@ -72,8 +60,6 @@ pub struct DefinitionRow {
 }
 
 impl DefinitionRow {
-    /// The parser compares the kind bytes exactly: `land` (2), `sea` (4) and
-    /// `lake` (8); anything else stores kind 1, which `None` stands for.
     pub fn kind(&self) -> Option<ProvinceKind> {
         match self.kind.as_slice() {
             b"land" => Some(ProvinceKind::Land),
@@ -84,15 +70,6 @@ impl DefinitionRow {
     }
 }
 
-/// Every record of `definition.csv` in file order. The text ends at its
-/// first NUL and splits on line feeds, keeping empty pieces; each line ends
-/// at its first carriage return and splits on `;` into at most eight columns.
-/// A line of fewer than three columns is logged and skipped. Each number is
-/// a signed decimal prefix ([`engine_number`]) scanned from its column's first
-/// byte in the whole text, so an empty last column reads through the line
-/// break, then narrows to the record's field. Kind and coastal columns
-/// compare exact bytes (`true` is coastal). Absent columns take the parser's
-/// defaults: kind 1, not coastal, terrain `unknown`, continent 0.
 pub fn definition_rows(input: &[u8]) -> io::Result<Vec<DefinitionRow>> {
     let text = parser::c_string(input);
     let mut rows = Vec::new();
@@ -110,7 +87,6 @@ pub fn definition_rows(input: &[u8]) -> io::Result<Vec<DefinitionRow>> {
         let line = index + 1;
         match columns.len() {
             0..=2 => continue,
-            // The parser reads the blue column (view 3) past the three it has.
             3 => {
                 return Err(invalid(format!(
                     "definition.csv line {line} has three columns; the native blue channel is \
@@ -145,9 +121,6 @@ fn color_key([red, green, blue]: [u8; 3]) -> u32 {
     (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
 }
 
-/// The native province table is indexed by record position while the raster's colour lookup
-/// stores each record's ID, so a record whose ID is not its position mixes two records; the
-/// readers that key definitions by ID refuse it by name.
 pub(crate) fn require_positions(rows: &[DefinitionRow]) -> io::Result<()> {
     match rows
         .iter()
@@ -162,21 +135,12 @@ pub(crate) fn require_positions(rows: &[DefinitionRow]) -> io::Result<()> {
     }
 }
 
-/// The province definitions and the colour lookup the province raster is
-/// resolved through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Definitions {
-    /// Every record by id, which is its native record position, the zero sentinel included.
     pub provinces: BTreeMap<u32, ProvinceDefinition>,
-    /// Each nonzero record writes its id under its colour in file order,
-    /// so a later record takes a colour an earlier one also declares and
-    /// record zero's colour is a miss.
     colors: HashMap<u32, u32>,
 }
 
-/// Reads `definition.csv` as the game does (`definition_rows`). Records the
-/// map does not model are refused by name: a kind other than `land`, `sea` or
-/// `lake`, and a record whose id is not its position ([`require_positions`]).
 pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
     let rows = definition_rows(input)?;
     require_positions(&rows)?;
@@ -211,9 +175,6 @@ pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
     Ok(Definitions { provinces, colors })
 }
 
-/// Each record's terrain name by id (column seven, `unknown` when absent),
-/// from the rows [`definition_rows`] reads; a record whose id is not its
-/// position is refused as [`read_definitions`] refuses it.
 pub fn province_terrains(input: &[u8]) -> io::Result<BTreeMap<u32, Vec<u8>>> {
     let rows = definition_rows(input)?;
     require_positions(&rows)?;
@@ -223,15 +184,10 @@ pub fn province_terrains(input: &[u8]) -> io::Result<BTreeMap<u32, Vec<u8>>> {
         .collect())
 }
 
-/// The province definitions of [`read_definitions`].
 pub fn parse_definitions(input: &[u8]) -> io::Result<BTreeMap<u32, ProvinceDefinition>> {
     Ok(read_definitions(input)?.provinces)
 }
 
-/// Resolves the provinces bitmap through the map bitmap loader
-/// (`NativeBitmap`) and the definitions' colour lookup. A colour no record
-/// claims is refused: the game invents a land province for it, which this
-/// map reader does not model.
 pub fn decode_provinces_bmp(input: &[u8], definitions: &Definitions) -> io::Result<ProvinceImage> {
     let bitmap = NativeBitmap::decode(input)?;
     let count = bitmap
@@ -265,7 +221,6 @@ fn apply_autonomy_colors(
     input: &[u8],
     names: &KeyNames,
 ) -> io::Result<()> {
-    // The database's own read of the file ([`crate::autonomy::read_definitions`]).
     for item in crate::autonomy::settled_definitions(input, names)? {
         let Some(items) = item.value.items() else {
             continue;
@@ -281,8 +236,6 @@ fn apply_autonomy_colors(
                         .map_err(|error| invalid(format!("autonomy id: {error}")))?,
                 );
             } else if field.keyword_is("use_overlord_color") {
-                // Compare C strings independently of token kind; anything
-                // other than exact yes/no leaves the stored value.
                 inherit = field
                     .value
                     .scalar()
@@ -301,15 +254,12 @@ fn apply_autonomy_colors(
 pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors> {
     let mut colors = CountryColors::default();
     let names = layers.key_names()?;
-    // The database loader's roster: the folder's own files in byte order, each by its bytes.
     for path in crate::script_files::paths(layers, "common/autonomous_states/", Some(".txt"))? {
         apply_autonomy_colors(&mut colors, &path.read(layers)?, &names)?;
     }
     Ok(colors)
 }
 
-/// Reads the definitions and provinces bitmap `map/default.map` names.
-/// The bitmap's size supplies the map's raster extent.
 pub fn load(layers: &ResolvedLayers) -> io::Result<MapData> {
     let files = crate::terrain::read_default_map(layers)?;
     let definitions = read_definitions(&layers.read(&files.file("definitions")?)?)?;
@@ -363,8 +313,6 @@ mod tests {
     fn the_native_bitmap_loader_reads_what_the_header_says_it_reads() {
         let definitions = read_definitions(b"0;0;0;0;land\n1;4;5;6;land\n").unwrap();
         let good = bitmap(1, 1, &[6, 5, 4, 88]);
-        // The loader ignores biSizeImage, and a 24-bit file's pixels start at
-        // byte 54 whatever bfOffBits says.
         for (offset, value) in [(34, 999_u32), (10, 40), (2, 1)] {
             let mut bytes = good.clone();
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -397,7 +345,6 @@ mod tests {
 
     #[test]
     fn a_later_record_takes_a_shared_colour_and_record_zero_never_claims_one() {
-        // A nonzero province can share record zero's colour.
         let definitions =
             read_definitions(b"0;0;0;0;land\n1;0;0;0;land\n2;5;5;5;sea\n3;0;0;0;lake\n").unwrap();
         assert_eq!(definitions.provinces.len(), 4);
@@ -441,7 +388,6 @@ mod tests {
         assert_eq!(
             rows,
             [
-                // A continent's numeric prefix, as strtol reads it.
                 (
                     4,
                     1,
@@ -451,7 +397,6 @@ mod tests {
                     b"hills".to_vec(),
                     5
                 ),
-                // Absent columns take the parser's defaults.
                 (5, 2, [3, 4, 5], None, false, b"unknown".to_vec(), 0),
                 (
                     6,
@@ -462,9 +407,7 @@ mod tests {
                     b"unknown".to_vec(),
                     0
                 ),
-                // Narrowed to the record's fields; kinds and `true` are exact bytes.
                 (7, 3, [0, 255, 255], None, false, b"plains".to_vec(), 6),
-                // An empty last column reads on through the line break.
                 (
                     8,
                     5,
@@ -474,7 +417,6 @@ mod tests {
                     b"lakes".to_vec(),
                     6
                 ),
-                // The file ends at its first NUL.
                 (
                     9,
                     6,
@@ -502,9 +444,6 @@ mod tests {
         assert!(province_terrains(b"0;0;0;0;land\n2;1;1;1;sea\n1;2;2;2;land").is_err());
     }
 
-    /// The native table is indexed by record position and the raster by the records' IDs,
-    /// so a file whose IDs are unique but out of order would key one record's kind under
-    /// another's colour: every reader that keys definitions by ID refuses it by name.
     #[test]
     fn records_whose_id_is_not_their_position_are_refused_by_name() {
         for (input, line, id, position) in [
@@ -560,9 +499,6 @@ mod tests {
         assert!(colors.use_overlord_color[b"x".as_slice()]);
     }
 
-    /// The colour rule reads the database loader's roster: the folder's own files
-    /// in byte order (`Z.txt` before `a.txt`), found without ASCII case, and no
-    /// file of a subfolder.
     #[test]
     fn autonomy_colours_follow_the_database_file_roster() {
         engine_executable::executable_tables::initialize_for_tests()

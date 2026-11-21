@@ -1,5 +1,4 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-//! Battle Plan Recorder: a tray program that records campaigns while the game runs.
 
 mod commands;
 mod compress;
@@ -24,7 +23,6 @@ fn main() {
         return;
     }
     let Some(_instance) = startup::single_instance() else {
-        // Another recorder already runs for this user.
         return;
     };
     let recorder = Arc::new(worker::Recorder::default());
@@ -80,7 +78,6 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Could not start Battle Plan Recorder");
     app.run(|_, event| {
-        // Closing the panel must not end the recorder; only Quit does.
         if let tauri::RunEvent::ExitRequested {
             code: None, api, ..
         } = event

@@ -140,7 +140,6 @@ fn fixture() -> Vec<u8> {
         TASK_FORCE + cunit::HANDLE,
         &u64::MAX.to_le_bytes(),
     );
-    // The task force has no viewer entries at all.
     for (index, (viewer, level)) in [(4_u32, 255_u8), (u32::MAX, 4)].into_iter().enumerate() {
         put(
             &mut bytes,
@@ -383,8 +382,6 @@ fn native_order_nonpositive_levels_and_full_handles_survive() {
             unit: (7 << 32) | 3,
             ordinal: 0,
             viewer: 4,
-            // The engine reads this byte as a signed char; -1 is absence to
-            // every reader but is still a stored entry.
             level: -1,
         }
     );
@@ -444,7 +441,6 @@ fn null_members_bad_vtables_zero_handles_and_torn_headers_refuse() {
         assert_eq!(walked(&bytes, 4).0, Outcome::Unavailable { reason });
     }
     let mut bytes = fixture();
-    // A count beyond the vector's own capacity is a torn header.
     put(
         &mut bytes,
         DIVISION + cunit::VIEWER_COUNT,
@@ -457,8 +453,6 @@ fn null_members_bad_vtables_zero_handles_and_torn_headers_refuse() {
         }
     );
     let mut bytes = fixture();
-    // A header that passes its own bounds but whose entries run past the
-    // readable span is a failed copy, not a shorter census.
     put(
         &mut bytes,
         DIVISION + cunit::VIEWER_DATA,
@@ -561,9 +555,6 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
     );
 }
 
-/// With the shared division census, each authenticated division's viewer
-/// entries are hinted from its gathered header before they are read, and the
-/// guarded copies are exactly those of a memory that drops the hints.
 #[test]
 fn shared_division_viewer_entries_are_hinted_before_their_reads() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -694,9 +685,6 @@ fn shared_division_batches_preserve_entry_fault_after_growth_and_partial_headers
     }
 }
 
-/// [`fixture`] with `count` more divisions after it, division `i` holding
-/// `i % 40` viewer entries (some beyond one entry block), and the shared
-/// census of those divisions.
 fn scale_fixture(count: usize) -> (Vec<u8>, Vec<DivisionSource>) {
     const UNIT: usize = cunit::VIEWER_COUNT + 4;
     let mut bytes = fixture();
@@ -748,11 +736,6 @@ fn scale_fixture(count: usize) -> (Vec<u8>, Vec<DivisionSource>) {
     (bytes, sources)
 }
 
-/// The batched walk over the shared census in `memory`, then the serial
-/// reference over `serial_memory` (each its own source, so a one-shot fault
-/// meets each walk): each division read alone, its header and then each of
-/// its entry blocks. The fixture's fleets and railway guns hold no viewer
-/// entries.
 fn batched_and_serial(
     memory: &impl Memory,
     serial_memory: &impl Memory,
@@ -790,10 +773,6 @@ fn batched_and_serial(
     [(new, batched), (old, serial)]
 }
 
-/// On healthy memory, 200 shared-census divisions give the serial rows and
-/// outcome, truncated or not, with their first entry blocks read sixteen
-/// divisions to a guarded scatter instead of one copy each: the walk's
-/// single copies are the later blocks and the census and roster reads.
 #[test]
 fn batched_first_blocks_match_the_serial_walk() {
     use crate::memory::{CountedMemory, ReadCounts};
@@ -820,8 +799,6 @@ fn batched_first_blocks_match_the_serial_walk() {
     assert!(reads.copy_calls < later_blocks + 64, "{reads:?}");
 }
 
-/// The faults the equality tests place in [`scale_fixture`]: a division's
-/// first entry block, a division's second block and a division's header.
 fn scale_fault_sites(bytes: &[u8], sources: &[DivisionSource]) -> [std::ops::Range<usize>; 3] {
     let entries = |i: usize| {
         let at = sources[i].pointer + cunit::VIEWER_DATA - BASE;
@@ -833,9 +810,6 @@ fn scale_fault_sites(bytes: &[u8], sources: &[DivisionSource]) -> [std::ops::Ran
     [first..first + 4, second..second + 4, header..header + 16]
 }
 
-/// A persistent fault gives the serial walk's result: a scatter it breaks
-/// leaves the rest of its group to their own reads, counted once; a fault
-/// the scatter never meets (a later block, a header) counts nothing.
 #[test]
 fn a_persistent_viewer_fault_gives_the_serial_result() {
     use crate::batch_fallback::{Batch, Faulty, count};
@@ -865,8 +839,6 @@ fn a_persistent_viewer_fault_gives_the_serial_result() {
     }
 }
 
-/// A one-shot fault never refuses more than the serial walk: a first block
-/// whose scatter it broke is read again at its division's turn.
 #[test]
 fn a_one_shot_viewer_fault_refuses_no_more_than_the_serial_walk() {
     use crate::batch_fallback::Faulty;
@@ -894,7 +866,6 @@ fn a_one_shot_viewer_fault_refuses_no_more_than_the_serial_walk() {
             "site {site}"
         );
         if site == 0 {
-            // Read again after the scatter consumed the fault.
             assert_eq!(batched, expected);
         } else {
             assert_eq!(batched, serial, "site {site}");

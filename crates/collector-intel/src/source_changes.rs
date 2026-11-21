@@ -1,5 +1,3 @@
-//! Sparse source-writer observations. Native callbacks publish fixed-size
-//! facts into prepared lanes; one residual worker owns retained source state.
 
 use crate::{
     hook::Hook,
@@ -202,8 +200,6 @@ impl Store {
             self.retired.push(old);
         }
         REFERENCES.store(pointer, Ordering::SeqCst);
-        // Entry precedes loading REFERENCES. After the swap, a zero flight
-        // count proves that no callback can still use any retired index.
         if ACTIVE.load(Ordering::SeqCst) == 0 {
             self.retired.clear();
         }
@@ -283,7 +279,6 @@ impl Store {
                 }
             }
             if self.network_due || bootstrap {
-                // Existing network membership supplies only actual holders.
                 self.next_networks.clear();
                 allocation::reserve(&mut self.next_networks, self.network_seeds.len())
                     .map_err(|_| "intel network source membership allocation failed")?;
@@ -321,7 +316,6 @@ impl Store {
             if membership {
                 self.publish_index()?;
             }
-            // The ordinary quiet hour returns before walking retained owners.
             if events.is_empty() && !changed {
                 return Ok(None);
             }
@@ -760,9 +754,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The host authenticates the image and retains hooks and stores until
-    /// restoration and native callback quiescence are both proved.
+    #[doc = " # Safety"]
+    #[doc = " The host authenticates the image and retains hooks and stores until"]
+    #[doc = " restoration and native callback quiescence are both proved."]
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
@@ -777,7 +771,6 @@ impl Hooks {
             .and_then(|at| read::<u64>(memory, at))
             .and_then(|p| usize::try_from(p).ok())
             .ok_or("intel source bootstrap game state unreadable")?;
-        // A collector attached before any load sizes for nothing; captures grow the lane.
         let countries = if game == 0 {
             0
         } else {
@@ -897,8 +890,6 @@ mod tests {
         assert_eq!(result.unwrap(), None);
         assert!(contributions.is_empty());
         assert!(sources.is_empty());
-        // A replacement alone reads only its independent family, not every owner,
-        // and a burst past the prepared lane keeps every event.
         let lane = store.lanes.last().unwrap();
         let burst = 4 * lane.len() as u64 + 3;
         for order in 1..=burst {
@@ -921,7 +912,6 @@ mod tests {
         );
         assert!(store.lanes.last().unwrap().len() >= burst as usize);
         assert_eq!(store.rejected, 0);
-        // Only a refused allocation loses an event now; the status names it.
         let lane = store.lanes.last().unwrap();
         assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &**lane));
         for _ in 0..lane.len() {
@@ -945,16 +935,12 @@ mod tests {
         let status = serde_json::to_value(status()).unwrap();
         assert_eq!(status["first_loss"], "intel source event allocation failed");
         assert_eq!(status["failed_sites"][sites::SITES[site].name], 1);
-        // Missing even one event revokes the proof; an ordinary hour must not
-        // bootstrap by walking all countries to recover it.
         assert!(
             store
                 .capture(&NoRead, 0, None, false, &mut contributions, &mut sources)
                 .unwrap_err()
                 .contains("requires existing daily or forced census")
         );
-        // A forced snapshot is final state for this cut. Earlier queued
-        // reference events cannot overwrite a freshly read network reference.
         let mut world = engine_native::ccountry::synthetic::World::new(0, 0, 0x200);
         let address = world.alloc(24);
         world.u64(address, native::REFERENCE_VTABLE.0 as u64);

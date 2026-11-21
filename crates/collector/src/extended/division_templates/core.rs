@@ -1,13 +1,8 @@
-//! Each template's last read, published as is while its writer certificate
-//! stands: the census then reads nothing of it past its identity.
 use super::*;
 use crate::template_changes::Changes;
 
-/// Template, owner and owner's local-definition writer stamps: a template names only global
-/// definitions and its owner's clones, so another country's clone writers leave it carried.
 pub(super) type Certificate = [(u64, u64); 3];
 
-/// Whether the certificate still stands for a row of `owner` whose clones `deployment` holds.
 fn stands(
     changes: &dyn Changes,
     certificate: &Certificate,
@@ -45,7 +40,6 @@ impl Core {
         variants: &[u64],
         names: &[u8],
     ) -> Option<Self> {
-        // Refused fields and names are read again next hour.
         if row.model_failure.is_some() || row.unit_type_failure.is_some() {
             return None;
         }
@@ -71,7 +65,6 @@ impl Core {
             fallback_key: display.fallback_key.map(|_| key),
         });
         r.name_key = Some(key);
-        // These belong to the independently held extension.
         r.names_group = None;
         r.cells = Default::default();
         r.grid_dimensions = Default::default();
@@ -102,13 +95,10 @@ impl Core {
 struct Entry {
     template: u64,
     certificate: Certificate,
-    /// The owner's deployment status the certificate's third stamp watches.
     deployment: usize,
     core: Core,
     speed: Option<Vec<u32>>,
-    /// Published as held this hour.
     carried: bool,
-    /// Its row was read and held again this walk.
     renewed: bool,
 }
 
@@ -117,17 +107,12 @@ pub(super) struct Store {
     entries: Vec<Entry>,
     live: Vec<u64>,
     payload_bytes: usize,
-    /// This walk read a row, or speed keys, other than the ones held, or held a row no longer.
     changed: bool,
-    /// Each walk visit's entry index ([`hinted`]) and this walk's visits.
     hints: Vec<u32>,
     visits: usize,
-    /// The entries this walk carried, in visit order, and the next one `held` takes.
     carried: Vec<u32>,
     next_held: usize,
 }
-/// Where visit `slot` found its entry last walk, when that entry still names
-/// `template`: the roster order rarely changes, so most lookups skip the search.
 pub(super) fn hinted<E>(
     entries: &[E],
     hints: &[u32],
@@ -142,7 +127,6 @@ pub(super) fn hinted<E>(
         .map(|_| at)
 }
 
-/// Remembers where visit `slot` found its entry; a hint that cannot be kept only costs a search.
 pub(super) fn remember_hint(hints: &mut Vec<u32>, slot: usize, at: usize) {
     let Ok(at) = u32::try_from(at) else {
         return;
@@ -160,7 +144,6 @@ fn carries(entry: &Entry, pointer: usize, owner: u32, certificate: &Certificate)
     entry.core.row.pointer == pointer
         && entry.core.row.owner == owner
         && entry.certificate == *certificate
-        // Refused or unheld speed keys take the fresh path.
         && entry.speed.is_some()
 }
 
@@ -181,7 +164,6 @@ impl Store {
         }
     }
 
-    /// Whether this walk's reads published anything other than the rows already held.
     pub fn changed(&self) -> bool {
         self.changed
     }
@@ -199,8 +181,6 @@ impl Store {
                 .sum::<usize>()
     }
 
-    /// Whether this occurrence publishes its held row: the template object,
-    /// handle and owner are the held read's and its stamps have not moved.
     pub fn carry(
         &mut self,
         template: u64,
@@ -234,7 +214,6 @@ impl Store {
         carried
     }
 
-    /// What [`Self::carry`] decides for a walk's only occurrence of `template`, changing nothing.
     pub fn would_carry(
         &self,
         template: u64,
@@ -249,14 +228,12 @@ impl Store {
         })
     }
 
-    /// Whether `template`'s held row was read again earlier in this walk.
     pub fn renewed(&self, template: u64) -> bool {
         self.entries
             .binary_search_by_key(&template, |entry| entry.template)
             .is_ok_and(|at| self.entries[at].renewed)
     }
 
-    /// The held row of `template`, for a range of a split walk that decided to carry it.
     pub fn core_of(&self, template: u64) -> Option<native::IconCore<'_>> {
         let entry = &self.entries[self
             .entries
@@ -271,7 +248,6 @@ impl Store {
         })
     }
 
-    /// The row the walk carried for `template`; the walk asks in the order it carried them.
     pub fn held(&mut self, template: u64) -> Option<native::IconCore<'_>> {
         let slot = self.next_held;
         self.next_held += 1;
@@ -293,7 +269,6 @@ impl Store {
         })
     }
 
-    /// Holds a read row whose stamps, taken before its reads, still stand.
     #[allow(clippy::too_many_arguments)]
     pub fn remember(
         &mut self,
@@ -317,7 +292,6 @@ impl Store {
         let found = self
             .entries
             .binary_search_by_key(&row.template, |entry| entry.template);
-        // Another occurrence of the handle was already published from it.
         if found.is_ok_and(|at| self.entries[at].carried) {
             return;
         }
@@ -363,7 +337,6 @@ impl Store {
         self.payload_bytes += self.entries[at].core.allocated_bytes();
     }
 
-    /// A carried template's held speed keys.
     pub fn speed(&self, template: u64) -> Option<&[u32]> {
         let entry = &self.entries[self
             .entries
@@ -372,7 +345,6 @@ impl Store {
         entry.carried.then_some(entry.speed.as_deref()).flatten()
     }
 
-    /// Freshly read speed keys, held while the row's stamps still stand.
     pub fn remember_speed(&mut self, template: u64, keys: Option<&[u32]>, changes: &dyn Changes) {
         let Ok(at) = self
             .entries
@@ -428,7 +400,6 @@ mod tests {
 
     type Stamp = (u64, u64);
 
-    /// The owner's deployment status, and another country's.
     const DEPLOYMENT: usize = 0x8400;
     const OTHER: usize = 0x9900;
 
@@ -503,10 +474,8 @@ mod tests {
         let key = core.row.name_key.unwrap();
         assert_eq!(&core.names[key.start..][..key.len], b"key");
         assert_eq!(store.speed(row.template), Some([155].as_slice()));
-        // Another country's clone writer leaves the row carried.
         changes.dependencies[1].fetch_add(1, Relaxed);
         assert!(carried(&mut store, &changes, row.pointer, row.owner));
-        // Another object or owner, a moved stamp or no stamp at all reads the template.
         assert!(!carried(&mut store, &changes, 0x6000, row.owner));
         assert!(!carried(&mut store, &changes, row.pointer, 2));
         assert!(store.held(row.template).is_none() && store.speed(row.template).is_none());
@@ -516,7 +485,6 @@ mod tests {
         assert!(!store.carry(row.template, row.pointer, row.owner, None));
         changes.dependencies[0].fetch_add(1, Relaxed);
         assert!(!carried(&mut store, &changes, row.pointer, row.owner));
-        // A writer during the read leaves nothing held under the new stamps.
         let before = certificate(&changes, &row);
         drop(changes.watches.notify(row.pointer, 0));
         store.remember(
@@ -541,7 +509,6 @@ mod tests {
             names,
         );
         assert!(carried(&mut store, &changes, row.pointer, row.owner));
-        // An unreadable name is not held, and drops the earlier read.
         store.begin();
         let unnamed = native::IconRow {
             name_key: None,

@@ -339,9 +339,6 @@ fn naval_hitmiss_float_words_keep_infinity_and_nan_bits() {
 
 #[test]
 fn naval_hitmiss_string_read_stops_at_nul_before_comparison() {
-    // The native token replay can retain NUL bytes, while the descriptor tree
-    // lexer rejects them before this projection. Exercise the shared reader's
-    // C-string behavior directly rather than claiming descriptor integration.
     let member = |key: &[u8], bytes: &[u8]| Item {
         key: Some(key.to_vec()),
         key_quoted: false,

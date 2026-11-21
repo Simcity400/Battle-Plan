@@ -1,4 +1,3 @@
-//! Session-scoped hook refusals. No capture callback formats diagnostics.
 use collector_primitives::build_gate::{self, Piece};
 use engine_executable::availability::{Verified, Withheld};
 use replay_data::rows::TableId;
@@ -94,7 +93,6 @@ runtime_families! {
     FactionCompanions => ("faction_companions", crate::faction_companion_changes::Hooks),
     Market => ("market_changes", crate::market_changes::Hooks),
     CommandBatch => ("command_batch", crate::command_batch::Hooks),
-    // World invalidation stays published until every other family restores.
     WorldLifetime => ("world_lifetime", crate::world_lifetime::Hooks),
 }
 
@@ -123,7 +121,6 @@ impl Family {
                     | (Self::CombatLogPrune, "combat_log_history")
             )
     }
-    /// What the build gate must verify before this family touches the game.
     fn piece(self) -> Piece {
         match self {
             Self::Hourly => Piece::new("hourly sampling"),
@@ -392,7 +389,6 @@ impl Family {
                 LendLeaseAgreements,
                 MarketEvents,
             ],
-            // Without the command batch every capture holds the game; no table is lost.
             Self::Hourly | Self::CommandBatch | Self::WorldLifetime => &[],
         }
     }
@@ -439,7 +435,6 @@ impl Family {
                 | (Missions, WorldInputs | Raid)
         )
     }
-    // These captures already refuse missing observation or read current sources.
     fn preserves_capture(self, table: TableId) -> bool {
         if matches!(
             self,
@@ -555,8 +550,6 @@ pub(crate) fn configure(directory: &Path, session: u64, process_start: u64) {
     });
 }
 fn publish_attach_status(family: Family) -> io::Result<()> {
-    // Once workers exist, the spool's coalesced status writer is the sole
-    // publisher. It serializes this same registry; never race its temp file.
     if WORKERS_STARTED.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -571,7 +564,6 @@ fn publish_attach_status(family: Family) -> io::Result<()> {
         "build": build_gate::status(),
         "installation_error": family.essential(),
     });
-    // A reader holding status.json past the replace retry must not refuse the attach.
     if let Err(error) =
         crate::runtime::write_status(&context.directory.join("status.json"), &status)
     {
@@ -603,7 +595,6 @@ pub(crate) fn refuse(family: Family, stage: &'static str, cause: &str) -> Result
     }
     refuse_at(family, None, stage, cause)
 }
-/// Whether `family` may touch the game; a withheld family is refused by name, never constructed.
 pub(crate) fn admit(family: Family) -> Result<bool, &'static str> {
     let Err(withheld) = family.verified() else {
         return Ok(true);
@@ -616,7 +607,6 @@ pub(crate) fn admit(family: Family) -> Result<bool, &'static str> {
         Err(error) => Err(error),
     }
 }
-/// Stops before any game read or patch when a family every frame needs is withheld.
 pub(crate) fn admit_essential() -> Result<(), &'static str> {
     for family in Family::ALL
         .into_iter()
@@ -708,7 +698,6 @@ pub(crate) fn apply(source: &mut FrameInput) -> io::Result<()> {
         return Ok(());
     }
     let failures = FAILURES.lock().unwrap_or_else(PoisonError::into_inner);
-    // Template observation admits reuse; its absence selects fresh acquisition.
     for family in Family::ALL
         .into_iter()
         .filter(|family| failed(*family) && *family != Family::Templates)
@@ -751,8 +740,6 @@ pub(crate) fn shared_rollback_failed(
         .into_iter()
         .find(|family| Some(family.name()) == name)
         .ok_or("shared rollback has no registered runtime family")?;
-    // Shared publication reports an atomic family outcome. Name that family's
-    // complete registered site set, as for other group publication errors.
     let diagnostic = audit_report(
         family,
         0,
@@ -904,8 +891,6 @@ impl<T: RegisteredFamily> FamilyHooks<T> {
         if let Some(diagnostic) = diagnostic {
             refuse_diagnostic(family, diagnostic)?;
         } else if hooks.inner.is_none() {
-            // Every returned Err must have been observed above, even before
-            // reaching a native constructor.
             return Err("hook constructor failed without an installation diagnostic");
         }
         Ok(hooks)
@@ -1070,7 +1055,6 @@ mod tests {
         const CHILD: &str = "BATTLE_PLAN_HOOK_CONTAINMENT_TEST";
         const TEST: &str =
             "hook_failures::tests::every_runtime_family_contains_failures_and_restores_safely";
-        // The production registry is session-scoped. Isolate its mutations.
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
@@ -1252,8 +1236,6 @@ mod tests {
                     replay_frame::frame::TableInput::Sampled(TableView::Complete(_))
                 )));
             }
-            // A partially published family is retained for restoration, even
-            // though it supplies no recorded table. Never discard live relays.
             let mut restored = false;
             broken
                 .toggle(false, |_, enabled| {

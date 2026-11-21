@@ -2,9 +2,6 @@ use crate::test_fixtures::{PRODUCTION_HOUR, equipment_types, production_frame};
 use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
-/// The rule's icon ([`super::variant_icon`]), checked against its choice made with every
-/// artwork question left open ([`super::icon_choice`]) and then answered by the same content:
-/// across the rule's steps, the walk makes the rule's choice.
 fn chosen(
     content: &super::IconContent,
     hour: &super::IconHour,
@@ -109,8 +106,6 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
     let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
     let hour = IconHour::read(&frame, &content).unwrap();
     let row = VariantDefinitionRow::default();
-    // The type's own sprite is admitted before testing its archetype's
-    // validity. Fallback continues through technology, family and pools.
     for (token, expected) in [
         ("bare_type", "GFX_bare_type_medium"),
         ("technology_type", "GFX_mod_technology_medium"),
@@ -123,8 +118,6 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
             "{token}"
         );
     }
-    // Null archetype sprites and technologies are skipped, even when their
-    // would-be string-only matches exist, because the cached hash is checked.
     let capital = VariantDefinitionRow {
         classifier_flags: 1 << 6,
         ..Default::default()
@@ -142,8 +135,6 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         chosen(&content, &hour, &auto, "pooled_type"),
         Ok(Some(Icon::Sprite("GFX_pool_picture".into())))
     );
-    // The null object's empty name has sentinel hash -1 and cannot match an
-    // authored empty-key pool.
     let null_pool = make_content(&[br#"
         default = { "" = { pool = { icons = { GFX_null_pool } } } }
     "#]);
@@ -161,8 +152,6 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
 
-    // A real empty name retains its registered hash, distinct from the null sentinel.
-    // Archetype/family references read strings, not token ids.
     let units = equipment_types(&[br#"
         equipments = {
             "" = { is_archetype = yes }
@@ -290,9 +279,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
             ["gfx/designs/my_tank.dds".to_owned()].into(),
         )
     };
-    // Germany (fascist, western culture) with its politics, factions and states read.
     let mut frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
-    // Both countries' appearance, neither with a 2D culture.
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(
             [11, 21]
@@ -312,7 +299,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
     for table in [TableId::Factions, TableId::FactionMembers, TableId::States] {
         *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
     }
-    // Both countries' politics, with no capital: no continent pools.
     *frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![
         PoliticsRow {
             country: 21,
@@ -343,7 +329,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
         icon_at(&frame, content, row, spelling)
     };
     let sprite = |name: &str| Ok(Some(Icon::Sprite(name.to_owned())));
-    // Step 2: an auto-designed variant takes its creator's pool, filtered by its ideology group.
     let plain = content(&["GFX_fascist_tank", "GFX_default_tank"]);
     assert_eq!(
         icon(&plain, &variant(0, 1, 1, b"."), "tanks_1"),
@@ -357,7 +342,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
         ),
         sprite("GFX_default_tank")
     );
-    // Without the ruling party recorded the creator's pool is unknown, never guessed.
     let mut unread = frame.clone();
     *unread.tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
         reason: "fixture".into(),
@@ -367,7 +351,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
             .unwrap_err()
             .contains("ruling party")
     );
-    // Nor where the pools cannot place the country.
     let mut unplaced = frame.clone();
     *unplaced.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![]));
     assert!(
@@ -375,7 +358,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
             .unwrap_err()
             .contains("Politics")
     );
-    // Step 1: an active sprite or path that exists; a missing one falls back.
     let designed = content(&["GFX_my_tank", "GFX_tanks_1_medium"]);
     assert_eq!(
         icon(&designed, &variant(0, 1, 0, b"GFX_my_tank"), "tanks_1"),
@@ -393,7 +375,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
         icon(&designed, &variant(0, 1, 0, b"GFX_gone"), "tanks_1"),
         sprite("GFX_tanks_1_medium")
     );
-    // Step 3/4: the type tag-prefixed, then plain, then its archetype.
     let named = content(&[
         "GFX_GER_tanks_1_medium",
         "GFX_tanks_1_medium",
@@ -411,7 +392,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
         ),
         sprite("GFX_tanks_medium")
     );
-    // A capital ship tries `_capital_medium` first.
     let mut capital = variant(0, 0, 1, b"");
     capital.classifier_flags = 1 << 6;
     assert_eq!(
@@ -422,7 +402,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
         ),
         sprite("GFX_tanks_1_capital_medium")
     );
-    // Step 5: the single enabling technology, by id then parent.
     assert_eq!(
         icon(
             &content(&["GFX_infantry_weapons1_medium"]),
@@ -439,7 +418,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
         ),
         sprite("GFX_GER_infantry_weapons_medium")
     );
-    // Step 7: the pools for L alone, without ideology; nothing matches: no icon.
     assert_eq!(
         icon(
             &content(&["GFX_default_tank", "GFX_fascist_tank"]),
@@ -452,11 +430,8 @@ fn equipment_icons_follow_the_production_rows_rule() {
         icon(&content(&[]), &variant(0, 0, 1, b""), "rifles_1"),
         Ok(None)
     );
-    // An unknown kind is refused, an unknown type too.
     assert!(icon(&plain, &variant(0, 1, 7, b"x"), "tanks_1").is_err());
     assert!(icon(&plain, &variant(0, 0, 1, b""), "modded_thing").is_err());
-    // An origin whose appearance is unavailable is still named by its Countries tag;
-    // where the rule then needs its 2D culture, the icon is unknown, not the next guess.
     let mut no_appearance = frame.clone();
     *no_appearance.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
         reason: "fixture".into(),
@@ -471,8 +446,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
     let by_technology = content(&["GFX_infantry_weapons1_medium"]);
     let unknown = icon_at(&no_appearance, &by_technology, &from_italy, "rifles_1").unwrap_err();
     assert!(unknown.contains("original tag is unknown"), "{unknown}");
-    // Technology sprites name L by its original tag, which only the appearance table
-    // records: without it even a tag-prefixed technology sprite is unknown.
     let tagged = content(&[
         "GFX_ITA_infantry_weapons1_medium",
         "GFX_western_infantry_weapons1_medium",
@@ -480,7 +453,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
     ]);
     let unknown = icon_at(&no_appearance, &tagged, &from_italy, "rifles_1").unwrap_err();
     assert!(unknown.contains("original tag is unknown"), "{unknown}");
-    // With it read, the tag comes before the 2D culture, and the culture before the plain name.
     let mut cultured = frame.clone();
     *cultured.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
@@ -510,13 +482,10 @@ fn equipment_icons_follow_the_production_rows_rule() {
         ),
         sprite("GFX_western_infantry_weapons1_medium")
     );
-    // With the appearance read, an empty 2D culture is known to be none, so the plain name follows.
     assert_eq!(
         icon(&by_technology, &from_italy, "rifles_1"),
         sprite("GFX_infantry_weapons1_medium")
     );
-    // A dynamic origin (D01, named after AAA): its type sprites use its own tag, its
-    // technology sprites its original tag.
     let mut dynamic = frame.clone();
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
         id,
@@ -577,10 +546,6 @@ fn equipment_icons_follow_the_production_rows_rule() {
     );
 }
 
-/// Modded content resolves through the stack: a mod's own equipment type, enabled
-/// by a mod technology that names it in another ASCII case (one lexer token), takes
-/// the mod's technology sprite; a vanilla type keeps its sprite name, which the mod
-/// overrides with its own texture; a type the content does not know is refused.
 #[test]
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -617,7 +582,6 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
             "common/technologies/lasers.txt",
             "technologies = { Laser_Tech = { enable_equipments = { LASER_RIFLE_1 } } Gauss_Tech = { enable_equipments = { if = { limit = { has_dlc = \"X\" } gauss_rifle_1 rifles_1 } } } }",
         ),
-        // The mod replaces the vanilla file: the sprite keeps its name, with the mod's texture.
         (
             &modded,
             "interface/equipment.gfx",
@@ -690,9 +654,6 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     );
     let refused = chosen(&content, &hour, &row, "plasma_rifle_1").unwrap_err();
     assert!(refused.contains("plasma_rifle_1"), "{refused}");
-    // A technology enabling by a script is refused alone, in a counted warning: a type
-    // it mentions whose rule reaches the technology step is unknown; one found before
-    // that step (rifles_1, by its own sprite) and every other type are unaffected.
     let [warning] = content.warnings().try_into().unwrap();
     assert!(
         warning.starts_with("1 technologies") && warning.contains("Gauss_Tech"),

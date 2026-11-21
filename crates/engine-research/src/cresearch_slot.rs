@@ -1,38 +1,22 @@
-//! Active research-slot operands. The speed multiplier is separate from
-//! technology progress.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_1810);
-/// Technology definition handle, u32, matched against its token identity.
 pub const TECHNOLOGY_HANDLE: usize = 0x08;
-/// Owning technology-status pointer authenticated by backlink.
 pub const STATUS: usize = 0x10;
-/// Technology-definition pointer.
 pub const TECHNOLOGY: usize = 0x18;
-/// Banked idle days, signed i64 fixed5, increased by one fixed5 day per idle day.
 pub const BANKED_DAYS: usize = 0x20;
-/// Applied saved days, signed i64 fixed5, moved from the bank on assignment.
 pub const APPLIED_DAYS: usize = 0x28;
-/// Research-speed multiplier, signed i64 fixed5, initialized to one.
 pub const RESEARCH_SPEED: usize = 0x38;
-/// Signed i32 ordinal, validated against the positive array count.
 pub const INDEX: usize = 0x40;
-/// Empty lexer token stored when no technology is assigned; `fixed_layout`
-/// checks its spelling and static range.
 pub use crate::cpdx_lexer::IDLE_RESEARCH_TOKEN as IDLE_HANDLE;
-/// Multiplier scale used when resetting and dividing the saved-days product.
 pub const RESEARCH_SPEED_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Nonnegative native i32 ordinal; all bits preserved and checked against the array count.
     pub index: u32,
     pub technology_handle: u32,
-    /// Exact selected technology template occurrence; zero when idle.
     pub database_index: i32,
-    /// Native technology pointer presence; the pointer itself is not portable identity.
     pub technology_present: u8,
     pub research_speed_raw: i64,
     pub banked_days_raw: i64,
@@ -86,9 +70,6 @@ pub(crate) fn row(
     Ok(row)
 }
 
-// Research serialization, updating and template selection use the same four
-// spans as copy_raw, one record per slot, with no padding or new field
-// acquisition.
 pub(crate) const FIELDS: [crate::memory::RecordField; 4] = crate::memory::packed_fields([
     (0, 12),
     (STATUS, 16),
@@ -98,8 +79,6 @@ pub(crate) const FIELDS: [crate::memory::RecordField; 4] = crate::memory::packed
 pub(crate) const LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&FIELDS, 56).expect("valid slot record layout");
 
-/// Game-thread raw copy with no validation beyond address bounds.
-/// Returns completed scattered fields; failed field may be partial.
 pub fn copy_raw(
     memory: &impl crate::Memory,
     pointer: usize,
@@ -120,7 +99,6 @@ pub fn copy_raw(
     ))
 }
 
-/// Decode-side interpretation of already-copied slot bytes with identical faults.
 pub fn decode_raw(
     base: usize,
     status: usize,
@@ -163,8 +141,6 @@ pub fn decode_raw(
     })
 }
 
-/// Flat raw spans for one slot plus its linked-technology presence.
-/// Game thread fills header/owner/speed/days via guarded copies only.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Raw {
     pub header: [u8; 12],

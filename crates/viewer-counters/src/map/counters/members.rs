@@ -1,18 +1,10 @@
-//! The hour part of a division's land counter: the source it stands in (province and stack kind),
-//! its ordinal there and the operands its plate joins and draws by, decided from values. Today's
-//! hour tables (`division_counters`) and the map's counter layer both decide through
-//! [`division_member`]; only how they join the hour's tables differs ([`MemberJoins`]).
 
 use super::*;
 use viewer_foundation::map::counter_inputs::OrderFacts;
 use installed_content_core::movement::MovementMap;
 
-/// Every land source's division members with their actions, each source's in ordinal then id
-/// order: what a layer keeping the members hands the layout ([`Preparation::set_layered`]). Held
-/// in shards, so a product that changed one source copies that shard and shares the rest.
 pub type LandStacks = super::Shards<(u32, u32), Arc<[(Member, counter_action::Action)]>>;
 
-/// One `Divisions` row's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DivisionFields {
     pub id: u64,
@@ -42,38 +34,23 @@ impl DivisionFields {
     }
 }
 
-/// What a division's member reads besides its own row.
 pub trait MemberJoins {
-    /// A raw country reference's canonical slot.
     fn owner(&self, raw: u32) -> Option<u32>;
-    /// `None` without a complete occupant order, when every division takes ordinal zero;
-    /// `Some(None)` when `province`'s mixed array does not hold the division.
     fn ordinal(&self, division: u64, province: u32) -> Option<Option<u32>>;
     fn sight(&self, division: u64, owner: u32, province: u32) -> Sight;
-    /// The type icon's relation of the roster and logical owners (raw references) to the viewing
-    /// country ([`type_tint::Index::of`]).
     fn type_tint(&self, roster: u32, logical: u32) -> Option<type_tint::Side>;
-    /// [`Vision::shares_vision_proven`] for the viewing country.
     fn shared_vision(&self, owner: u32) -> Result<bool, SharingUnknown>;
-    /// The viewing country's canonical slot.
     fn ours(&self) -> u32;
-    /// `ArmyIconInputs`: `separate_counter` and `alternate_template`.
     fn icon_input(&self, division: u64) -> Option<(u8, u64)>;
-    /// Whether the division provides a led orders group's HQ.
     fn hq_provider(&self, division: u64) -> bool;
-    /// Its movement row's stack kind; `STANDSTILL` without one.
     fn stack_kind(&self, division: u64) -> u32;
     fn status(&self, division: u64) -> DivisionStatus;
-    /// Whether its status and maxima are recorded, which its bars need.
     fn bars(&self, division: u64) -> bool;
     fn orders(&self) -> &dyn OrderFacts;
     fn withdrawing(&self, group: u64) -> Option<bool>;
-    /// The orders group's leader handle; `None` when its row is not recorded.
     fn leader(&self, group: u64) -> Option<u64>;
 }
 
-/// One division's member of its source, without its action, which reads the hour's combats and
-/// destinations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
     pub id: u64,
@@ -100,9 +77,6 @@ pub struct Member {
     pub commander: Option<Option<u64>>,
 }
 
-/// The source `(province, stack kind)` and member of one division, or `None` when it has no
-/// land counter: an unlinked owner, absent from its province's occupant array, unseen, or riding
-/// in port.
 pub fn division_member(
     division: DivisionFields,
     joins: &impl MemberJoins,
@@ -159,8 +133,6 @@ pub fn division_member(
     ))
 }
 
-/// A member's strength, organisation, bars and status glyph operands: what a strength or status
-/// change alone moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Strength {
     pub hp: i64,
@@ -169,7 +141,6 @@ pub struct Strength {
     pub status: counter_status::Member,
 }
 
-/// [`Strength`] of the division whose canonical roster owner is `owner`.
 pub fn member_strength(division: &DivisionFields, owner: u32, joins: &impl MemberJoins) -> Strength {
     let status = joins.status(division.id);
     Strength {
@@ -195,7 +166,6 @@ pub fn member_strength(division: &DivisionFields, owner: u32, joins: &impl Membe
     }
 }
 
-/// A member's orders-group operands: what a change of its group, its plans or its orders moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Orders {
     pub group_parent: Option<u64>,
@@ -232,10 +202,6 @@ impl Member {
     }
 }
 
-/// A division's stack kind from its movement row's route standing in `province`: the route's
-/// first hop placed on the content map with each province's `Standstill` anchor
-/// ([`CounterContent::anchor`]), else the stand-off kind its combat role gives
-/// ([`counter_move::DivisionRoutes`] places routes the same way).
 pub fn division_kind(
     route: &counter_move::UnitRoute<'_>,
     province: u32,
@@ -252,7 +218,6 @@ pub fn division_kind(
 }
 
 impl Member {
-    /// The land unit it stands for, with its action.
     pub(super) fn unit(self, action: counter_action::Action) -> LandUnit<'static> {
         LandUnit {
             ordinal: self.ordinal,
@@ -285,7 +250,6 @@ impl Member {
 }
 
 impl LandUnit<'_> {
-    /// Its hour part.
     pub(super) fn member(&self) -> Member {
         Member {
             id: self.id,
@@ -314,7 +278,6 @@ impl LandUnit<'_> {
     }
 }
 
-/// Today's joins: the hour tables built from a frame of rows.
 pub(super) struct TableJoins<'a, 't, O> {
     pub(super) land: &'a CounterTables<'t>,
     pub(super) owner: &'a O,
@@ -380,18 +343,14 @@ impl<O: Fn(u32) -> Option<u32>> MemberJoins for TableJoins<'_, '_, O> {
 }
 
 impl HourTables {
-    /// The hour's type-icon relations to the viewing country.
     pub fn type_tints(&self) -> &Arc<type_tint::Index> {
         &self.type_tints
     }
 
-    /// The action of division `id` this hour (the viewing country's divisions; an error for others).
     pub fn division_action(&self, id: u64) -> counter_action::Action {
         self.actions.get(id)
     }
 
-    /// Every land source's division members, by source, each source's members in ordinal order
-    /// (ties in the hour's row order): the hour part of the division counters.
     pub fn division_members(&self) -> Vec<((u32, u32), Vec<Member>)> {
         self.divisions
             .iter()

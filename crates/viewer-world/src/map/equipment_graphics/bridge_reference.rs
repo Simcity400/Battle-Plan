@@ -1,4 +1,3 @@
-// Keep the uncached census independent of the held-fact builder.
 use super::*;
 
 pub(crate) fn read<'a>(
@@ -119,7 +118,6 @@ fn variant<'a>(
         .equipment_model(key)
         .map_err(|error| format!("variant {}: {error}", row.id))?;
     let creator_reference = row.creator_link as i32;
-    // Signed nonpositive sentinels must not alias through canonical slot zero.
     let creator_slot = if creator_reference > 0 {
         *links.get(&row.creator_link).ok_or_else(|| {
             format!(
@@ -135,7 +133,6 @@ fn variant<'a>(
         .map_err(|error| format!("variant {}: {error}", row.id))?;
     Ok(legacy::Variant {
         handle: row.id,
-        // The persistent object ID is the handle's upper word, not its reference type.
         id: (row.id >> 32) as u32,
         creator_reference,
         creator_slot,

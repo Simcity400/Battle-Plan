@@ -37,8 +37,6 @@ fn duplicate_slots_use_first_span_and_existing_parent_units_in_reverse_order() {
     let Recorded::Value(Some(inputs)) = &mut plan.child_fronts else {
         unreachable!()
     };
-    // Only the native-demand prefix is supplied; an unused raw stored tail
-    // cannot change either indexed group's first matching span.
     inputs.count = Some(17);
     let pairs = [
         Pair {

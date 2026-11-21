@@ -1,7 +1,3 @@
-//! The occupation marks layer's line of the proof tool: its marks against today's hour's
-//! (`occupation_icons::hour_marks` over today's frame) and against itself composed anew. Run it
-//! with `--map-mode resistance` or `compliance`: in any other mode it declares nothing, and is
-//! equal while it holds nothing.
 
 use super::OccupationMarks;
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};

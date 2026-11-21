@@ -60,7 +60,6 @@ test('history lanes sort by gained, ended or name, and can hide ended spirits', 
   assert.deepEqual(gained.map(lane => [lane.id, lane.label]), [['heer', 'since 0'], ['mefo', 'ended 400'], ['blitz', 'ended 600']]);
   assert.deepEqual(historyLanes(list, 650, 'ended', true, describe).map(lane => lane.id), ['mefo', 'blitz', 'heer']);
   assert.deepEqual(historyLanes(list, 650, 'name', false, describe).map(lane => lane.id), ['heer']);
-  // Not yet gained spirits have no lane; a held span is accented.
   assert.deepEqual(historyLanes(list, 50, 'gained', true, describe).map(lane => lane.id), ['heer']);
   assert.equal(gained[0].spans[0].emphasis, true);
   assert.equal(gained[1].spans[0].emphasis, false);
@@ -87,7 +86,6 @@ test('the grid orders spirits by their latest acquisition', () => {
 
 test('a spirit already held when recording began, or after an unrecorded stretch, is held before, not since', () => {
   const list = spirits(REPLY);
-  // Recording begins at hour 0: heer was gained at some unknown time up to then.
   assert.equal(startUnseen(0, 0), true);
   assert.equal(startUnseen(700, 0), false);
   assert.equal(startUnseen(700, 0, [{ firstHour: 650, lastHour: 699 }]), true);
@@ -99,11 +97,9 @@ test('a spirit gone at the first recorded hour after a gap ended by then, at an 
   const list = spirits(REPLY);
   const mefo = list.find(spirit => spirit.token === 'mefo')!;
   const gap = [{ firstHour: 400, lastHour: 450 }];
-  // Inside the gap it may still be held; after it, recorded hours show it gone.
   assert.deepEqual(spiritState(mefo, 440, gap), { kind: 'unknown', lastSeen: 399 });
   assert.deepEqual(spiritState(mefo, 460, gap), { kind: 'ended', at: 451, lastSeen: 399 });
   assert.equal(endedBy(mefo, 460, gap), 451);
   assert.deepEqual(historyLanes(list, 460, 'gained', true, describe, gap).map(lane => [lane.id, lane.label]), [['heer', 'since 0'], ['mefo', 'ended by 451']]);
-  // Hidden with the other ended spirits.
   assert.deepEqual(historyLanes(list, 460, 'gained', false, describe, gap).map(lane => lane.id), ['heer']);
 });

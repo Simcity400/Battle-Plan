@@ -1,27 +1,3 @@
-//! Allocation-free notifications from the native writers of every rail
-//! info's RailCooldowns row, its building and selection inputs and its
-//! RailEdges rows ([`engine_mutations::railway_mutations`]). A detour only marks the
-//! province whose info its arguments name in the family's [`DirtySet`],
-//! counts its site and calls the original; it never changes game behaviour.
-//!
-//! - Setting a province on cooldown and the info constructor name the
-//!   province in EDX; setting railway and the info destructor name it through
-//!   the info's definition id.
-//! - The daily cooldown countdown writes the info of every occurrence on the
-//!   manager's cooldown list: it marks [`COUNTDOWN`], and the consumer reads
-//!   every province on the list it held and on this hour's list ([`crate::extended::naval_history`]).
-//!   Province 0 never holds an info (the walk refuses one), so its bit is
-//!   free for this.
-//! - The info's and the manager's save readers and the manager's
-//!   constructor and destructor name nothing and move the epoch.
-//! - The rail building's health is written by the building status writers,
-//!   whose patches [`crate::building_changes`] owns: it forwards each call
-//!   ([`building_changed`], [`building_unnamed`]), and entering nudge mode
-//!   or an uninstalled building family poisons this domain. The domain
-//!   observes only while both its own hooks and that forwarder are enabled.
-//!
-//! Anything unobserved (disabled, poisoned, an id beyond the bitmap, an
-//! epoch change, a running writer) makes the capture read every info.
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
@@ -36,26 +12,16 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Per [`Counts`] field, cumulative.
 static READS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
-/// Rail slots (province ids) of the latest complete capture, for off-thread
-/// sizing.
 static SLOTS: AtomicUsize = AtomicUsize::new(0);
 
-/// The bit the daily countdown marks: province 0, which never holds an info.
 pub const COUNTDOWN: usize = 0;
 
-/// One observation domain: the marked provinces and each writer site's
-/// calls.
 pub struct Watches {
     set: DirtySet,
     calls: [AtomicU64; SITES],
-    /// Receivers whose province did not read.
     unnamed: AtomicU64,
-    /// Forwarded building writes of a province status, and those naming no
-    /// status.
     buildings: [AtomicU64; 2],
-    /// This family's hooks, and the building family's forwarder, enabled.
     hooks: AtomicBool,
     forwarder: AtomicBool,
 }
@@ -78,9 +44,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// whose receiver `target` names is about to run. Dropping the guard
-    /// marks its return.
     pub fn notify(&self, site: usize, target: Target) -> Dirty<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         match target {
@@ -94,9 +57,6 @@ impl Watches {
         }
     }
 
-    /// A forwarded building write of the status with `flags` and
-    /// `location`: a province status marks its province; a state status
-    /// holds no rail building.
     fn building(&self, flags: u32, location: u32) -> Option<Dirty<'_>> {
         if flags & engine_native::cbuilding_status::PROVINCE_FLAG == 0 {
             return None;
@@ -116,15 +76,12 @@ impl Watches {
         self.set.notify_every()
     }
 
-    /// Observe only while both the hooks and the forwarder are enabled;
-    /// enabling starts an epoch.
     fn apply(&self) {
         self.set.set_enabled(
             self.hooks.load(Ordering::SeqCst) && self.forwarder.load(Ordering::SeqCst),
         );
     }
 
-    /// An enabled domain with a bitmap for `ids` provinces installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(ids: usize) -> Self {
         let watches = Self::new();
@@ -136,13 +93,11 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.set.boundary(invalidate);
     }
 
-    /// The building family's forwarder turned off or on.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_forwarder(&self, enabled: bool) {
         self.forwarder.store(enabled, Ordering::SeqCst);
@@ -160,11 +115,7 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// The single consumer's hourly take of the marked provinces
-    /// ([`DirtySet::take`]), [`COUNTDOWN`] included; `None` certifies
-    /// nothing.
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
 }
 
@@ -174,7 +125,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
@@ -182,28 +132,21 @@ impl Changes for Observer {
     }
 }
 
-/// What a site's arguments name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A province; `None` when it cannot be named.
     Province(Option<usize>),
-    /// Every occurrence on the manager's cooldown list.
     Countdown,
-    /// Infos it does not name, or the slot table itself.
     Every,
 }
 
-/// What `receiver` names given a site's first two arguments.
 fn target(receiver: Receiver, first: usize, second: usize) -> Target {
     match receiver {
-        // EDX alone: the native sign-extends it (`MOVSXD` in set province on cooldown).
         Receiver::Province => Target::Province(
             u32::try_from(second as u32 as i32)
                 .ok()
                 .map(|id| id as usize),
         ),
         Receiver::Info => {
-            // SAFETY: a guarded read of live memory on the calling thread.
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
             Target::Province(
                 engine_mutations::railway_mutations::province(&memory, first).map(|id| id as usize),
@@ -214,47 +157,31 @@ fn target(receiver: Receiver, first: usize, second: usize) -> Target {
     }
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.set.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.set.boundary(invalidate);
 }
 
-/// Disable reuse for the attachment: a writer this family cannot observe
-/// may run (nudge mode, or no building family to forward building writes).
 pub fn poison() {
     WATCHES.set.poison();
 }
 
-/// The building family's forwarder enabled or disabled; outside attach and
-/// detach only.
 pub fn forwarder(enabled: bool) {
     WATCHES.forwarder.store(enabled, Ordering::SeqCst);
     WATCHES.apply();
 }
 
-/// Hook path, allocation-free: a building writer of the status with `flags` and `location`
-/// (`cbuilding_status::FLAGS` and `ID`) is about to run. Marks the province of a province status,
-/// whose rail building the info at that slot holds. Hold the result over the native call.
 pub fn building_changed(flags: u32, location: u32) -> Option<Dirty<'static>> {
     WATCHES.building(flags, location)
 }
 
-/// Hook path, allocation-free: a building writer whose status cannot be
-/// named is about to run; every info is read afresh.
 pub fn building_unnamed() -> Dirty<'static> {
     WATCHES.building_unnamed()
 }
 
-/// Off the game thread: size the bitmap for the slots the latest capture
-/// walked. Nothing is offered before a capture walked them: a later larger
-/// bitmap waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
     let slots = SLOTS.load(Ordering::Relaxed);
     if slots != 0 {
@@ -262,32 +189,23 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced bitmap.
 pub fn collect() {
     WATCHES.set.collect();
 }
 
-/// One capture's infos, edge rows and batches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
     pub reused_edges: u64,
     pub read_edges: u64,
-    /// Batches published from held outputs without a read.
     pub carried_batches: u64,
-    /// Batches read.
     pub read_batches: u64,
-    /// Provinces the take marked, with those of the countdown's lists.
     pub marked: u64,
-    /// The take saw the daily countdown.
     pub countdown: bool,
-    /// No held batch could be carried: everything was read.
     pub full: bool,
 }
 
-/// A worker publishes one capture's counts and, when it completed, the rail
-/// slots it walked for sizing.
 pub fn record(counts: &Counts, slots: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -313,14 +231,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; the rail tables
-    /// then read every info afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled; the rail tables"]
+    #[doc = " then read every info afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "rail_changes")
@@ -355,10 +273,6 @@ impl Hooks {
             WATCHES.hooks.store(false, Ordering::SeqCst);
             WATCHES.apply();
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -376,17 +290,10 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the bitmap is dropped only once the
-        // hooks were never enabled, or were removed and drained after the
-        // last capture; the building family's forwarders are restored with
-        // the other families before any hook is dropped.
         unsafe { WATCHES.set.release() };
     }
 }
 
-// Each site takes at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original; the first two name the province
-// as its [`Receiver`] says. The mark covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -403,23 +310,14 @@ macro_rules! callback {
         }
     };
 }
-// Set province on cooldown (manager, province, ticks).
 callback!(set_province_on_cooldown, 0);
-// Update cooldowns (manager), daily.
 callback!(update_cooldowns, 1);
-// Set railway (info, neighbour, level).
 callback!(set_railway, 2);
-// Rail-info construction(info, province id).
 callback!(construct_info, 3);
-// Rail-info scalar deleting destructor(info, flags).
 callback!(destroy_info, 4);
-// Read info (info, reader, token).
 callback!(read_info, 5);
-// Railway manager construction(manager).
 callback!(construct_manager, 6);
-// Railway manager scalar deleting destructor(manager, flags).
 callback!(destroy_manager, 7);
-// Read manager (manager, reader, token).
 callback!(read_manager, 8);
 
 #[cfg(test)]
@@ -439,16 +337,12 @@ mod tests {
             .unwrap()
     }
 
-    /// The setter and the constructor name their province in EDX alone; an
-    /// info names its province through its definition's id; the countdown
-    /// names its list and the rest nothing.
     #[test]
     fn receivers_name_their_province() {
         assert_eq!(
             target(Receiver::Province, 0, 0xdead_0000_0000_0207),
             Target::Province(Some(0x207))
         );
-        // A negative EDX names none.
         assert_eq!(
             target(Receiver::Province, 0, u32::MAX as usize),
             Target::Province(None)
@@ -473,9 +367,6 @@ mod tests {
         drop(definition);
     }
 
-    /// A named writer marks its province, the countdown marks its bit, and
-    /// a writer naming nothing (or whose province does not read) moves the
-    /// epoch, so the consumer reads every info.
     #[test]
     fn each_site_marks_its_province_or_moves_the_epoch() {
         let watches = Watches::enabled(1_024);
@@ -507,8 +398,6 @@ mod tests {
         );
     }
 
-    /// A forwarded write of a province status marks that province; a state
-    /// status marks nothing; a status without a location moves the epoch.
     #[test]
     fn forwarded_building_writes_mark_province_statuses() {
         use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
@@ -528,8 +417,6 @@ mod tests {
         assert_ne!(take(&watches).0, Some(epoch));
     }
 
-    /// Without the building family's forwarder nothing certifies: a building
-    /// write could go unseen. Its return starts an epoch.
     #[test]
     fn the_domain_observes_only_with_the_forwarder() {
         let watches = Watches::enabled(64);

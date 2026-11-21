@@ -1,4 +1,3 @@
-//! Populated native fixtures enter through discovery, writer lifetimes and spool.
 use super::*;
 use collector_projection::projection::ProjectionScratch;
 use engine_native::{ccountry, cgame_state};
@@ -13,7 +12,6 @@ const CONTRACT: usize = 0x10000;
 const OTHER: usize = 0x11000;
 const VARIANT: usize = 0x1e000;
 const VARIANT_ID: u64 = (55_u64 << 32) | 70;
-// Keep the resource object's outgoing exchange header inside each country fixture.
 const COUNTRY_STRIDE: usize = 0x3000;
 fn id(n: u32) -> u64 {
     (u64::from(n) << 32) | u64::from(contract::TYPE)
@@ -362,7 +360,6 @@ fn active_removal_precedes_retired_cleanup_variable_marks_and_new_contract_admis
     session.create_contract(&memory, OTHER);
     memory.u64(OTHER + contract::EQUIPMENT_PROGRESS, 50_000);
     session.contract_delivery(&memory, OTHER);
-    // Shared reset/variable owners notify unrelated stores too; never read them.
     drop(producer::variable_write(0xdeadbeef));
     boundary(101);
     held::seed_contract(&memory, 0, OTHER, id(18), 5000);
@@ -488,7 +485,6 @@ fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition
     session.create_contract(&memory, OTHER);
     session.remove_contract(&memory, OTHER);
     boundary(101);
-    // Discovery belongs to the existing census before queued lifetimes drain.
     held::seed_contract(&memory, 0, OTHER, id(20), 5000);
     memory.forbidden.push(OTHER..OTHER + 0x1000);
     let frame = record(&memory, 101, &mut encoder, &mut decoder);
@@ -503,9 +499,6 @@ fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition
     assert!(events.iter().all(|r| r.agreement == id(20)));
 }
 
-/// A C++ exception anywhere in the game (a save load raises them) may end a
-/// seed-changing context with no writer notification. The next hour reads
-/// every held contract's variables again; later hours carry without reads.
 #[test]
 fn an_unobserved_variable_change_rereads_every_contract_and_keeps_its_terms() {
     let _session = producer::test_support::Session::default();

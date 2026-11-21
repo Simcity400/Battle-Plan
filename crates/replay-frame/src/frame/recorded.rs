@@ -1,5 +1,3 @@
-//! Immutable recorded updates. A frame retains only its hour's update cells;
-//! different reads share those cells without sharing reconstruction baselines.
 use super::{Frame, Metrics, TABLE_COUNT, TableUpdate};
 use crate::{BranchId, Hour};
 use engine_allocation as allocation;
@@ -171,7 +169,6 @@ impl RecordedFrame {
             }),
         })
     }
-    /// Materialize an owned wire frame only for callers that require ownership.
     #[cfg(any(test, feature = "test-support"))]
     pub fn to_owned_frame(&self) -> io::Result<Frame> {
         Ok(Frame {
@@ -196,8 +193,6 @@ impl RecordedFrame {
                     }
                 }
             } else {
-                // Inline updates cannot be shared separately from their frame.
-                // Detach only the retained tables, leaving other owners intact.
                 let mut updates = allocation::vec(kept.iter().filter(|&&kept| kept).count())?;
                 let mut slots = [None; TABLE_COUNT];
                 for (index, &kept) in kept.iter().enumerate() {
@@ -239,8 +234,6 @@ impl RecordedFrame {
         }
         Ok(())
     }
-    /// Move unique update cells into an owned frame; copy only cells another
-    /// reader or the cache still holds.
     pub fn into_owned_frame(self) -> io::Result<Frame> {
         let Self {
             branch,
@@ -282,7 +275,6 @@ impl RecordedFrame {
             tables: values,
         })
     }
-    /// Allocations retained by this frame, for callers deduplicating shared cells.
     pub fn allocations(&self, mut visit: impl FnMut(*const (), usize)) {
         match &self.tables.0 {
             Backing::Frame(frame) => visit(
@@ -328,7 +320,6 @@ impl From<Frame> for RecordedFrame {
     }
 }
 
-/// Inputs accepted by change trackers without copying recorded payloads.
 pub trait IntoRecordedFrame {
     fn into_recorded(self) -> Arc<RecordedFrame>;
 }
@@ -353,15 +344,12 @@ impl IntoRecordedFrame for Frame {
     }
 }
 
-/// Borrowed recorded operands used by the ordinary decoder.
 pub trait FrameSource {
     fn branch(&self) -> BranchId;
     fn hour(&self) -> Hour;
     fn keyframe(&self) -> bool;
     fn metrics(&self) -> &Metrics;
     fn update(&self, index: usize) -> &TableUpdate;
-    /// The update at `index` when the source shares it, which a decoder can
-    /// then keep without copying it.
     fn shared_update(&self, index: usize) -> Option<&Arc<TableUpdate>> {
         let _ = index;
         None

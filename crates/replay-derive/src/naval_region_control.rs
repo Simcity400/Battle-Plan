@@ -1,4 +1,3 @@
-//! Native regional control sides and complete cached supremacy snapshots.
 use super::{directed_wars::Owner, visibility::Families};
 use replay_data::{rows::AirCountryRelationRow, rows::NavalSupremacyRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -7,7 +6,6 @@ use std::{
     sync::OnceLock,
 };
 type Fact<T> = Result<T, String>;
-/// RelationTuples' type of a naval blockade.
 pub const NAVAL_BLOCKADE_RELATION_TYPE: u32 = 0x27f8;
 
 pub struct Snapshot<'a> {
@@ -16,7 +14,6 @@ pub struct Snapshot<'a> {
     pub enemy: i64,
     pub ratio_friendly: i64,
     pub ratio_enemy: i64,
-    /// The explanatory enemy sum before the minimum floor raises it.
     pub raw_enemy: i64,
 }
 impl<'a> Snapshot<'a> {
@@ -48,9 +45,6 @@ impl<'a> Snapshot<'a> {
     }
 }
 
-/// The explanatory supremacy share from its friendly and enemy operands: the
-/// native fixed5 quotient of friendly over their wrapping sum, zero when the
-/// sum is zero.
 pub fn share(friendly: i64, enemy: i64) -> Fact<i64> {
     let denominator = friendly.wrapping_add(enemy);
     if denominator == 0 {
@@ -60,7 +54,6 @@ pub fn share(friendly: i64, enemy: i64) -> Fact<i64> {
     }
 }
 
-/// Cached rows admitted only inside their supplying midnight epoch.
 pub fn regional_rows(frame: &DecodedFrame, region: u32) -> Fact<Vec<&NavalSupremacyRow>> {
     let sampled = frame.tables[replay_data::rows::TableId::NavalSupremacy.index()]
         .sampled_at()
@@ -77,7 +70,6 @@ pub fn regional_rows(frame: &DecodedFrame, region: u32) -> Fact<Vec<&NavalSuprem
     Ok(rows)
 }
 
-/// Control operands remain independent of explanatory-roster failures.
 #[cfg(any(test, feature = "test-support"))]
 pub fn control_sums(
     frame: &DecodedFrame,
@@ -87,22 +79,16 @@ pub fn control_sums(
 ) -> Fact<(i64, i64)> {
     control_rows(frame, viewer, &regional_rows(frame, region)?, links)
 }
-/// What the rule reads of one frame alike for every viewer, read once and shared by the viewers'
-/// contexts ([`ControlContext::shared`]): the faction and subject rosters, each NavalSupremacy
-/// owner's directed wars, the share's families with each faction's linked members, and the
-/// blockades by blockaded country.
 pub struct World<'a> {
     frame: &'a DecodedFrame,
     links: &'a BTreeMap<u32, u32>,
     factions: OnceLock<Fact<Families>>,
     subjects: OnceLock<Fact<Families>>,
-    /// Each NavalSupremacy row's owner, its directed wars admitted when first reached.
     owners: BTreeMap<u32, OnceLock<Fact<Owner<'a>>>>,
     group: OnceLock<Fact<Group>>,
     blockaders: OnceLock<Fact<BTreeMap<u32, BTreeSet<u32>>>>,
 }
 
-/// The share's families, the linked slots and each faction's linked members.
 struct Group {
     families: Families,
     live: BTreeSet<u32>,
@@ -135,9 +121,6 @@ impl<'a> World<'a> {
             .map_err(Clone::clone)
     }
 
-    /// The explanatory ratio's country group of `viewer`: itself, its recorded allies, and every
-    /// linked slot of its family by unique membership, independently of the control's directed
-    /// family predicate.
     fn group(&self, viewer: u32) -> Fact<BTreeSet<u32>> {
         let mut group = BTreeSet::from([viewer]);
         for row in rows_of(self.frame, viewer, AirCountryRelationRow::ALLY)? {
@@ -182,7 +165,6 @@ impl<'a> World<'a> {
         Ok(group)
     }
 
-    /// The canonical countries blockading `viewer`.
     fn blockaders(&self, viewer: u32) -> Fact<Option<&BTreeSet<u32>>> {
         let by = self
             .blockaders
@@ -211,7 +193,6 @@ impl<'a> World<'a> {
     }
 }
 
-/// A context's world: its own, or one shared by every viewer of a frame.
 enum Held<'w, 'a> {
     Own(Box<World<'a>>),
     Shared(&'w World<'a>),
@@ -227,8 +208,6 @@ impl<'a> std::ops::Deref for Held<'_, 'a> {
     }
 }
 
-/// One viewer's admissions over a frame, reused across its regions: the control's directed
-/// families and owners (its world's), and the explanatory share's group and enemy roster.
 pub struct ControlContext<'w, 'a> {
     world: Held<'w, 'a>,
     viewer: u32,
@@ -241,7 +220,6 @@ impl<'a> ControlContext<'a, 'a> {
     }
 }
 impl<'w, 'a> ControlContext<'w, 'a> {
-    /// `viewer`'s context over `world`, which every viewer of the frame may share.
     pub fn shared(world: &'w World<'a>, viewer: u32) -> Self {
         Self::held(Held::Shared(world), viewer)
     }
@@ -281,7 +259,6 @@ impl<'w, 'a> ControlContext<'w, 'a> {
         }
         Ok((friendly, enemy))
     }
-    /// Explanatory ratio operands retain ordered enemy occurrences and their floor.
     pub fn share(&self, region: u32, minimum: i64) -> Fact<(i64, i64)> {
         self.share_rows(&regional_rows(self.world.frame, region)?, minimum)
     }
@@ -343,7 +320,6 @@ fn control_rows(
     ControlContext::new(frame, viewer, links).rows(rows)
 }
 
-/// The recorded diplomacy rows of `country` of `kind`, in key order.
 fn rows_of(frame: &DecodedFrame, country: u32, kind: u8) -> Fact<&[AirCountryRelationRow]> {
     let rows = frame
         .complete::<tables::AirCountryRelations>()
@@ -353,7 +329,6 @@ fn rows_of(frame: &DecodedFrame, country: u32, kind: u8) -> Fact<&[AirCountryRel
     Ok(&rows[first..end])
 }
 
-/// The raw recorded diplomacy vector, preserving aliases and occurrences.
 pub fn raw_roster(frame: &DecodedFrame, viewer: u32, kind: u8) -> Fact<Vec<u32>> {
     let mut rows: Vec<_> = rows_of(frame, viewer, kind)?.iter().collect();
     rows.sort_by_key(|row| row.ordinal);
@@ -403,12 +378,9 @@ fn family(
     factions: &OnceLock<Fact<Families>>,
     subjects: &OnceLock<Fact<Families>>,
 ) -> Fact<bool> {
-    // Positive faction membership is authenticated in both directions;
-    // Country0's cached faction may omit itself from the roster.
     if source == viewer && source != 0 {
         return Ok(true);
     }
-    // Test the target faction roster before the cached subject pointer.
     let zero_faction = if viewer == 0 {
         let [row] = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -425,7 +397,6 @@ fn family(
         None
     };
     let roster_member = if zero_faction == Some(0) {
-        // Native null faction yields a singleton target, without a roster read.
         source == 0
     } else {
         let faction = factions
@@ -465,8 +436,6 @@ fn zero_subject(
     source: u32,
     viewer: u32,
 ) -> Fact<bool> {
-    // The positive Subjects census excludes canonical Country0. Exact hourly visibility packets
-    // supply its cached subject endpoints.
     if source == 0 {
         let rows = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -503,8 +472,6 @@ fn zero_subject(
         .iter()
         .find(|r| r.canonical_slot == source)
         .ok_or("naval family source country missing")?;
-    // RelationLinks' complete-owner certificate excludes target Country0. The source's hourly forward
-    // visibility packet supplies the subject pointer for this branch.
     let row = frame
         .complete::<tables::CountryCounterInputs>()
         .map_err(|e| e.to_string())?;
@@ -530,8 +497,6 @@ fn zero_subject(
     )
 }
 
-/// A dominance roster's raw country as its canonical slot: raw zero is the reserved Country0,
-/// which the positive-only CountryLinks census leaves out.
 pub fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
     if raw == 0 {
         Ok(0)
@@ -635,7 +600,6 @@ mod tests {
             current,
             ..Default::default()
         };
-        // Region 7 holds the viewer, its ally, its enemy and a blockader; 8 an enemy alone; 9 nothing.
         frame.tables[TableId::NavalSupremacy.index()] =
             SharedView::from(TableView::Complete(TableRows::NavalSupremacy(vec![
                 current(7, 101, 10),
@@ -659,7 +623,6 @@ mod tests {
             assert_eq!(once, fresh);
             once
         };
-        // Without the diplomacy tables, a region holding currents refuses and an empty one does not.
         let refused = shares(&frame);
         assert!(refused[0].is_err() && refused[1].is_err());
         assert_eq!(refused[2], Ok((0, 2)));
@@ -691,10 +654,7 @@ mod tests {
                 ..Default::default()
             }]))
             .into();
-        // Friendly: the viewer and its ally; enemy: the roster's enemy and the blockader, floored.
         assert_eq!(shares(&frame), [Ok((15, 10)), Ok((0, 4)), Ok((0, 2))]);
-        // Contexts sharing one world answer each viewer as contexts of their own do, a faction's
-        // members included.
         frame.tables[TableId::FactionMembers.index()] =
             TableView::Complete(TableRows::FactionMembers(vec![
                 FactionMemberRow { country: 103, faction: 9, ordinal: 0 },

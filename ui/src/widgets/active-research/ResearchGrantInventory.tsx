@@ -5,7 +5,6 @@ import type { GrantInventory } from '../../generated/dashboard';
 
 type Grant = GrantInventory['grants'][number];
 
-/** A grant's effects, each once, in one line. */
 function effects(grant: Grant): string {
   const ahead = grant.aheadReductionRaw === null || BigInt(grant.aheadReductionRaw) === 0n ? null : researchNumber(BigInt(grant.aheadReductionRaw));
   return [grant.speedBonusRaw !== null ? `Research speed ${researchNumber(BigInt(grant.speedBonusRaw) * 100n)}%` : null,

@@ -1,7 +1,3 @@
-//! `walk`: every hour of a recording stepped to as a walk of blocks steps it (each block's first
-//! hour a keyframe), each hour's frame and recorded facts made as `recorder inspect` makes them,
-//! and what each table cost.
-
 use crate::{Options, open, table_named};
 use crate::meter::{Meter, round};
 use replay::columnar_frames::{Frames, Recording, Spent};
@@ -10,11 +6,6 @@ use replay_data::rows::TableId;
 use serde_json::{Value, json};
 use std::io;
 
-/// Hours walked whole, at most `--hours`, of every table or those `--tables` names. The frames
-/// of each hour are dropped before the next (as `recorder inspect` drops them), or held until the
-/// next is made with `--hold`. With `--rebuild`, every view is built from every cell, as before
-/// views were patched. With `--check`, each hour is also built from every cell and every table's
-/// view, sample hour and update compared; its time is not counted.
 pub fn walk(path: &str, options: &Options) -> io::Result<Value> {
     let tables = match options.get("tables") {
         Some(names) => names.split(',').map(table_named).collect::<io::Result<Vec<_>>>()?,
@@ -90,8 +81,6 @@ pub fn walk(path: &str, options: &Options) -> io::Result<Value> {
     }))
 }
 
-/// The hour of `check` (every view built from every cell) at `(run, ordinal)` against `made`:
-/// each table whose view, sample hour or update differs, and a keyframe that differs, noted.
 fn compare(
     recording: &Recording,
     check: &mut Frames<&Recording>,

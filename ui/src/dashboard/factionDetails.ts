@@ -14,7 +14,6 @@ function definition(entry: Record<string, unknown>): boolean {
     && listOf(entry.bands, band => text(band.name) && (band.min === null || typeof band.min === 'number') && (band.max === null || typeof band.max === 'number'));
 }
 
-/** A `faction-details` reply, checked whole: every index names a definition it holds. */
 export function validateFactionDetails(value: unknown): FactionDetailReply {
   if (!object(value) || typeof value.faction !== 'string' || typeof value.branchId !== 'string' || !text(value.logo)
     || !listOf(value.definitions, definition)) throw new Error('The faction details reply is malformed.');
@@ -34,10 +33,8 @@ export function validateFactionDetails(value: unknown): FactionDetailReply {
   return value as unknown as FactionDetailReply;
 }
 
-/** What a followed reply renders on: all of it, its numbers being live cells. */
 export const detailsStructure = (reply: FactionDetailReply): string => JSON.stringify(reply);
 
-/** The live cells' keys. */
 export const FACTION_ROW = 'faction';
 export const projectionKey = liveKey(FACTION_ROW, 'projection');
 export const manpowerTotalKey = liveKey(FACTION_ROW, 'manpower');
@@ -46,11 +43,8 @@ export const goalProgressKey = (ordinal: number) => liveKey(`goal:${ordinal}`, '
 export const resourceKey = (ordinal: number) => liveKey(`resource:${ordinal}`, 'amount');
 export const manpowerKey = (ordinal: number) => liveKey(`manpower:${ordinal}`, 'value');
 
-/** The game's saturated fixed-point cache, left in the progress of goals without ratio progress. */
 export const FIXED5_MAX = 92233720124192;
 
-/** A goal's progress from its live cache (a thousandth of a percent): its percentage, `unmeasured` when the game
- * measures none, or missing with the cell's reason. */
 export type GoalProgress = { kind: 'percent'; percent: number } | { kind: 'unmeasured' } | { kind: 'missing'; reason: string };
 export function goalProgress(values: LiveValues<number>, ordinal: number): GoalProgress {
   const key = goalProgressKey(ordinal);
@@ -60,13 +54,11 @@ export function goalProgress(values: LiveValues<number>, ordinal: number): GoalP
   return Number.isFinite(raw) && Math.abs(raw) < 2 ** 53 ? { kind: 'percent', percent: raw / 1000 } : { kind: 'missing', reason: 'Not recorded' };
 }
 
-/** A live number, or why it is missing. */
 export function liveNumber(values: LiveValues<number>, key: string): { value: number } | { reason: string } {
   const value = values.get(key);
   return value === undefined ? { reason: values.missing(key) || 'Not recorded' } : { value };
 }
 
-/** Texts painted from the live cells: `write` makes a key's text from the values the frame reads. */
 export function liveTextsOf(live: Live<LiveValues<number>>, write: (values: LiveValues<number>, key: string) => string): LiveTexts {
   return { text: key => write(live.read(), key), subscribe: changed => live.subscribe(changed) };
 }

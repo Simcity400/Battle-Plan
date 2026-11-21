@@ -30,7 +30,6 @@ fn host_hours_cost_no_bytes_and_historical_stamps_decode_only_from_their_format(
         assert!(!historical.fresh_at(stamp.wrapping_add(1)));
         assert!(Value::encode(&historical, &mut Vec::new()).is_err());
         assert!(Value::encoded_bytes(&historical).is_err());
-        // Current recordings store nothing, so the same bytes stay unread.
         let mut input = Decoder::new(&wire);
         assert_eq!(PacketHour::decode(&mut input).unwrap(), PacketHour::Host);
         assert_eq!(input.remaining(), wire.len());
@@ -53,7 +52,6 @@ fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format(
         assert!(!cadence::is_staggered(host) && !cadence::is_sliced(host));
         let change = host.last_change();
         let (kind, format) = match host {
-            // Relaid since: the stamped recording refuses it by name.
             TableId::DivisionMovement => (
                 ChangeKind::Layout,
                 replay_data::rows::compatibility::STORED_ONCE_FORMAT,
@@ -101,8 +99,6 @@ fn packets_fresh(frame: &DecodedFrame, table: TableId) -> bool {
     let TableView::Complete(rows) = &*frame.tables[table.index()] else {
         return false;
     };
-    // Each host row is acquired at its frame's hour; a historical stamp
-    // inside it must also name that hour.
     packet_hours(rows)
         .into_iter()
         .all(|hour| hour.fresh_at(frame.hour))
@@ -156,15 +152,12 @@ fn keyframes_seeks_and_refusals_prove_freshness_from_the_frame_alone() {
             );
         }
         assert!(frames[2].keyframe);
-        // A seek starts at the keyframe with no earlier witness.
         let mut seek = FrameDecoder::new();
         for wire in &frames[2..] {
             let decoded = seek.apply(wire).unwrap();
             assert!(packets_fresh(&decoded, table), "{table:?} at {}", wire.hour);
         }
 
-        // A skipped or failed host is never carried, so no earlier packet
-        // can be read at that hour, and the next acquisition is a snapshot.
         let mut decoder = FrameDecoder::new();
         decoder.apply(&frames[0]).unwrap();
         for reason in [cadence::SKIPPED_REASON, "guarded host read failed"] {

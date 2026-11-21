@@ -1,8 +1,6 @@
 export type BrowserRequestLane = 'history' | 'replays' | 'interactive' | 'control';
 
-// Six in all, the browser's connections to one host; pages replaying hours wait apart from replies.
 const LIMITS: Readonly<Record<BrowserRequestLane, number>> = { history: 2, replays: 1, interactive: 2, control: 1 };
-// Match the service queues: a waiting refresh runs after eight first asks.
 const FIRST_ASK_BURST = 8;
 const aborted = () => new DOMException('Request cancelled', 'AbortError');
 
@@ -14,8 +12,6 @@ interface Task {
   start: () => void;
 }
 
-/** Reserve HTTP connections for dated facts and release commands while histories load.
- * Cancelled active work keeps its connection until fetch and its body settle. */
 export class BrowserRequestQueue {
   private readonly waiting: Record<BrowserRequestLane, Task[]> = { history: [], replays: [], interactive: [], control: [] };
   private readonly firstBurst: Record<BrowserRequestLane, number> = { history: 0, replays: 0, interactive: 0, control: 0 };
@@ -34,7 +30,6 @@ export class BrowserRequestQueue {
         cancel: () => {
           if (controller.signal.aborted) return;
           controller.abort();
-          // An active request owns its slot until its network work ends.
           if (started) return;
           const at = this.waiting[lane].indexOf(task);
           if (at >= 0) this.waiting[lane].splice(at, 1);
@@ -50,8 +45,7 @@ export class BrowserRequestQueue {
             return operation(controller.signal);
           }).then(async value => {
             if (controller.signal.aborted) {
-              // A cancelled open can still return a lease; let its owner release it.
-              try { await options.onCancelledValue?.(value); } catch { /* Cancellation remains the result if late cleanup fails. */ }
+              try { await options.onCancelledValue?.(value); } catch {   }
               reject(aborted());
             }
             else resolve(value);
@@ -69,7 +63,6 @@ export class BrowserRequestQueue {
     });
   }
 
-  /** Cancel only the released lease's work; other recordings keep their requests. */
   cancelSource(sourceId: string): void {
     for (const tasks of Object.values(this.waiting)) for (const task of [...tasks]) if (task.sourceId === sourceId) task.cancel();
     for (const task of this.running) if (task.sourceId === sourceId) task.cancel();

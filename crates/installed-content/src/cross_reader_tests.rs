@@ -1,4 +1,3 @@
-//! Tests that compose independent content readers through the public paths.
 
 use crate::{faction_templates::read, gui::native::FormattedLocalization, test_support::Stack};
 

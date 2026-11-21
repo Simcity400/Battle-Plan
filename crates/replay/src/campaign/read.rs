@@ -1,8 +1,3 @@
-//! A campaign recording's hours as the row decoder's frames ([`Frames`]): a block's first hour
-//! is a keyframe, each table of it a Snapshot, so a block's hours are the same whichever blocks
-//! are read with it; every hour's views go on from the hour before's. A later hour of a run goes on
-//! from where each table stands unless a restore of the table lies between; any other hour is a
-//! seek: each table restored at its last restore before the hour and advanced to it.
 
 use super::{BlockIndex, Replay, SeekResult};
 use crate::{
@@ -14,24 +9,16 @@ use crate::{
 };
 use std::{io, sync::Arc};
 
-/// How a view build spreads its tables over threads.
 pub struct Parallel<'a> {
-    /// Worker threads at most; one builds on the calling thread.
     pub workers: usize,
-    /// Runs first on each worker, for the caller's thread setup such as a lower scheduling
-    /// priority, which a spawned thread does not inherit.
     pub on_worker: &'a (dyn Fn() + Sync),
 }
 
 impl Replay {
-    /// `block`'s run and the run ordinal of hour `hour` in it.
     fn ordinal(&self, block: &BlockIndex, hour: Hour) -> io::Result<u32> {
         self.recording.run(block.run)?.ordinal(hour).ok_or_else(|| invalid_static("a block's hour lies outside its run"))
     }
 
-    /// Each hour of `blocks`, in the order given, with `tables` built: the recorded facts of
-    /// each hour as the row recording shaped them and its frame. `visit` stops the read by
-    /// returning false.
     pub fn visit_blocks(
         &self,
         blocks: &[&BlockIndex],
@@ -55,7 +42,6 @@ impl Replay {
                     check()?;
                     Pool::on(pool, || frames.go_to(block.run, ordinal))?;
                 }
-                // Read as timelines, an hour is named by the timeline its page was clipped for.
                 let (frame, recorded) = Pool::on(pool, || frames.frame_recorded(block.branch))?;
                 if !visit(block, &recorded, &frame)? {
                     return Ok(());
@@ -65,8 +51,6 @@ impl Replay {
         Ok(())
     }
 
-    /// One block's hours with `tables` built, as [`Self::visit_blocks`] reads them: each hour's
-    /// recorded facts and frame.
     pub fn read_block_alone(
         &self,
         block: &BlockIndex,
@@ -77,7 +61,6 @@ impl Replay {
         self.visit_blocks(&[block], tables, |_, recorded, frame| visit(recorded, frame).map(|()| true), check)
     }
 
-    /// The block holding `hour` of `branch`, when one does.
     pub fn block_at(&self, branch: BranchId, hour: Hour) -> Option<&BlockIndex> {
         self.index.iter().find(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
     }
@@ -86,12 +69,10 @@ impl Replay {
         self.seek_selected(branch, hour, None)
     }
 
-    /// [`Self::seek`] building only `tables`.
     pub fn seek_selected(&self, branch: BranchId, hour: Hour, tables: Option<&[TableId]>) -> io::Result<SeekResult> {
         self.seek_selected_with(branch, hour, tables, || Ok(()))
     }
 
-    /// [`Self::seek_selected`] with the caller's cancellation, checked before the read.
     pub fn seek_selected_with(&self, branch: BranchId, hour: Hour, tables: Option<&[TableId]>, mut check: impl FnMut() -> io::Result<()>) -> io::Result<SeekResult> {
         let Some(block) = self.block_at(branch, hour).copied() else {
             return Ok(SeekResult::Gap { branch, hour, reason: self.gap_reason(branch, hour)? });
@@ -104,19 +85,14 @@ impl Replay {
     }
 }
 
-/// Frames of a recording's hours asked in turn: a later hour of the run goes on from the hour
-/// built last, any other is a seek. For playback stepping forward, an hour at a time or by jumps.
 pub struct HourCursor {
     replay: Arc<Replay>,
     tables: Vec<TableId>,
-    /// Its frames' complete views carry change facts and field stamps.
     changes: bool,
-    /// The hour built last and its run.
     last: Option<(BranchId, Hour, u32)>,
     frames: Option<Frames<Held>>,
 }
 
-/// The recording of the replay a cursor holds, for its frames to read.
 struct Held(Arc<Replay>);
 
 impl std::ops::Deref for Held {
@@ -128,8 +104,6 @@ impl std::ops::Deref for Held {
 }
 
 impl HourCursor {
-    /// A cursor building `tables`, its complete views carrying change facts and field stamps
-    /// with `changes`: an hour stepped to from the one built last names what it changed.
     pub fn new(replay: Arc<Replay>, tables: &[TableId], changes: bool) -> Self {
         Self { replay, tables: tables.to_vec(), changes, last: None, frames: None }
     }
@@ -138,24 +112,19 @@ impl HourCursor {
         &self.replay
     }
 
-    /// The hour it built last.
     pub fn last(&self) -> Option<(BranchId, Hour)> {
         self.last.map(|(branch, hour, _)| (branch, hour))
     }
 
-    /// Whether a seek of `hour` of `branch` goes on from the hour it built last: that hour or a
-    /// later one of its run.
     pub fn continues(&self, branch: BranchId, hour: Hour) -> bool {
         self.last.is_some_and(|(held, last, run)| held == branch && hour >= last && self.replay.block_at(branch, hour).is_some_and(|block| block.run == run))
     }
 
-    /// Lets go of its readers and what they hold.
     pub fn release(&mut self) {
         self.frames = None;
         self.last = None;
     }
 
-    /// The frame of `hour` of `branch`, or the gap holding it.
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<SeekResult> {
         let Some(block) = self.replay.block_at(branch, hour).copied() else {
             return Ok(SeekResult::Gap { branch, hour, reason: self.replay.gap_reason(branch, hour)? });
@@ -196,13 +165,9 @@ mod tests {
     const CAMPAIGN: &[u8] = b"hour cursor";
     const BLOCK: Hour = UNIT_ORDINALS as Hour;
     const TABLES: [TableId; 2] = [TableId::Clock, TableId::Campaign];
-    /// Branch 1's first run: seven blocks, the last short; the writer restores each table at
-    /// block 5's end, six blocks after its first.
     const FIRST: std::ops::Range<Hour> = 10..10 + 6 * BLOCK + 40;
-    /// Its second run, after a hole.
     const LATER: Hour = 10 + 7 * BLOCK;
 
-    /// One hour of branch 1: its clock, the campaign, every other table empty.
     fn frame(hour: Hour) -> Frame {
         Frame {
             branch: 1,
@@ -229,7 +194,6 @@ mod tests {
         Replay::from_records(CAMPAIGN.to_vec(), &[records(frame)]).unwrap()
     }
 
-    /// Branch 1's session, its start and its hours, each `frame` gives.
     fn records(frame: impl Fn(Hour) -> Frame) -> Vec<Record> {
         let session = SessionStart {
             id: 1,
@@ -258,11 +222,6 @@ mod tests {
         records
     }
 
-    /// A campaign recording of format 141, written as that build wrote it (its identity naming
-    /// that format's schema, its pages naming the tables it held, its records recorded in that
-    /// format), opens: its sessions and branch decode, its hours read as written, and each table
-    /// added at format 142 is not recorded, as a table its capture mode leaves out, never empty or
-    /// unavailable; the format that introduced it is named among its compatibility gaps.
     #[test]
     fn a_campaign_recording_of_an_earlier_format_opens_and_plays() {
         use replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
@@ -291,7 +250,6 @@ mod tests {
         }
     }
 
-    /// [`frame`] as a build of row format `format` wrote it: the tables added since not recorded.
     fn frame_at(format: u16, hour: Hour) -> Frame {
         let mut frame = frame(hour);
         for table in TableId::ALL.into_iter().filter(|table| !table.last_change().present(format) && table.last_change().retired.is_none()) {
@@ -300,9 +258,6 @@ mod tests {
         frame
     }
 
-    /// Records recovery adds to a recording of format 141 are recorded in format 141, as a
-    /// recording never mixes formats: it reopens at 141 holding them. A control whose layout
-    /// changed after a recording's format cannot be written in it and is refused by name.
     #[test]
     fn records_added_to_a_recording_of_an_earlier_format_are_recorded_in_its_format() {
         use crate::{
@@ -338,9 +293,6 @@ mod tests {
         assert!(error.to_string().contains("EventLoss layout changed"), "{error}");
     }
 
-    /// A recording whose records name a format newer than this build's, its change leaving this
-    /// build's schema digest alone, is refused by name however it is opened, never read under
-    /// this build's contract.
     #[test]
     fn a_recording_of_a_newer_format_is_refused_by_name_however_it_is_opened() {
         let newer = crate::format::FormatVersion::CURRENT.version() + 1;
@@ -350,15 +302,10 @@ mod tests {
         }
     }
 
-    /// Each table's restores so far.
     fn restores(cursor: &HourCursor) -> Vec<u32> {
         TABLES.iter().map(|&table| cursor.frames.as_ref().and_then(|frames| frames.reader(table)).map_or(0, TableReader::restores)).collect()
     }
 
-    /// A cursor moved forward a day at a time through a run, across its block ends and across a
-    /// table's restore, builds at every stop the frame a fresh seek builds. It goes on from the
-    /// hour built last for that hour and any later one of its run, never for an earlier hour or
-    /// another run, and a table restores only across a block end it was restored at.
     #[test]
     fn a_cursor_moved_forward_by_days_goes_on_and_builds_what_a_seek_builds() {
         let replay = Arc::new(replay());
@@ -401,9 +348,6 @@ mod tests {
         assert!(!cursor.continues(2, last + 1));
     }
 
-    /// A walk of a branch's blocks, across block ends and from one run to the next, hands at every
-    /// hour the frame and recorded facts each block read alone hands: views, sample hours, updates,
-    /// and a keyframe at each block's first hour and no other.
     #[test]
     fn a_walk_across_block_ends_hands_the_frames_each_block_read_alone_hands() {
         let replay = replay();
@@ -449,9 +393,6 @@ mod tests {
         assert_eq!(at, alone.len());
     }
 
-    /// A cursor made with change facts hands them through its frames: the next hour, within a
-    /// block or across its end, names the clock row it wrote and leaves the campaign alone; a jump
-    /// names none; a cursor made without them never does.
     #[test]
     fn a_cursor_with_change_facts_hands_them_through_its_frames() {
         use crate::frame::{HourInput, TableChanges};

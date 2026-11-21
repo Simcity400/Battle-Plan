@@ -1,4 +1,3 @@
-//! Scripted map callbacks over the same recorded operands as other trigger consumers.
 use super::{Eval, Evaluator, Scope, Scopes, Store};
 use crate::triggers::Failure;
 use installed_content_core::parser::Item;
@@ -55,7 +54,6 @@ impl Evaluator<'_, '_> {
         ) {
             const BUILTIN: u64 =
                 mask::<replay_data::rows::StateRow>(&["owner", "controller", "population"]);
-            // States is keyed by its id.
             let row = recorded_row::<tables::States>(world.tables(), BUILTIN, u128::from(state))?
                 .ok_or("state builtin lacks its States row")?;
             return match name {
@@ -109,7 +107,6 @@ impl Evaluator<'_, '_> {
                 "compliance",
                 "compliance_speed",
             ]);
-            // Keyed by the state.
             let row = recorded_row::<tables::StateResistance>(
                 world.tables(),
                 RESISTANCE,
@@ -215,7 +212,6 @@ impl Evaluator<'_, '_> {
 
     pub(super) fn state_in_home_area(&self, state: u32) -> Result<bool, Failure> {
         let world = self.world();
-        // States is keyed by its id.
         let row = recorded_row::<tables::States>(
             world.tables(),
             mask::<replay_data::rows::StateRow>(&["owner"]),
@@ -314,7 +310,6 @@ impl Evaluator<'_, '_> {
         if features.human_ai != 0 {
             return Ok(true);
         }
-        // Keyed by the canonical slot.
         let flag = recorded_row::<tables::RaidCountryInputs>(
             self.world().tables(),
             mask::<replay_data::rows::RaidCountryInputRow>(&["autonomous"]),
@@ -333,8 +328,6 @@ impl Evaluator<'_, '_> {
                 .ok_or("human controllers lacks the AI-control country")?;
             return Ok(flag != 0 && row.count == 0);
         }
-        // The raid census leaves this flag absent only outside the native
-        // controller arrays, where AI control falls back to the live players.
         for player in recorded::<tables::Players>(
             self.world().tables(),
             mask::<replay_data::rows::PlayerRow>(&["country"]),
@@ -367,8 +360,6 @@ impl Evaluator<'_, '_> {
         } else {
             world.token_of(name)?
         };
-        // Even an unknown name needs a certified roster: missing input cannot
-        // establish nonmembership or silently select a colour's false branch.
         let (mut witness, mut seen, mut matched) = (None, 0_usize, false);
         for row in rows.iter().filter(|row| {
             row.kind == replay_data::rows::ResearchModifierRow::SHARING_ROSTER
@@ -431,7 +422,6 @@ impl Evaluator<'_, '_> {
             }
         }
         let mut length = operand.clone();
-        // The reader retains the array text with a length suffix independently.
         length.index = Some(Box::new(installed_content_core::scoped_variable::ScopedVariable {
             parsed: true,
             num: true,
@@ -515,7 +505,6 @@ impl Evaluator<'_, '_> {
         }
         let (countries, values): (bool, std::borrow::Cow<'_, [u32]>) = match (store, name) {
             (Store::State(state), b"core_countries") => {
-                // Keyed by the state.
                 let row = recorded_row::<tables::StateCores>(
                     world.tables(),
                     mask::<replay_data::rows::StateCoreRow>(&["cores"]),
@@ -539,7 +528,6 @@ impl Evaluator<'_, '_> {
                 let owned = self.country_state_array(slot, b"owned_states")?;
                 let mut values = Vec::new();
                 for &id in owned.iter() {
-                    // States is keyed by its id.
                     let row = recorded_row::<tables::States>(
                         world.tables(),
                         mask::<replay_data::rows::StateRow>(&["controller"]),
@@ -656,7 +644,6 @@ impl Evaluator<'_, '_> {
                 ));
             }
         };
-        // Keyed by the raw country; its readers read any of its fields.
         recorded_row::<tables::CountryStabilityInputs>(
             world.tables(),
             tables::CountryStabilityInputs::ID.full_mask(),
@@ -672,8 +659,6 @@ impl Evaluator<'_, '_> {
             })
     }
 
-    /// Both the calculated getter and modifier callbacks read this same
-    /// optional effective total; a missing total has one physical field identity.
     pub(super) fn stability_modifier_input(
         &self,
         row: &replay_data::rows::CountryStabilityInputRow,
@@ -727,8 +712,6 @@ impl Evaluator<'_, '_> {
     }
 
     pub(super) fn country_has_war(&self, slot: u32) -> Result<bool, Failure> {
-        // Mode zero tests the cached enemy count, then scans owned war relations.
-        // The enemy vector and the active relation census supply the two arms.
         if !self.world().enemies(slot)?.is_empty() {
             return Ok(true);
         }
@@ -802,7 +785,6 @@ impl Evaluator<'_, '_> {
             let Scope::State(state) = scopes.this else {
                 return Ok(Eval::False);
             };
-            // Keyed by the state.
             let row = recorded_row::<tables::StateCores>(
                 world.tables(),
                 mask::<replay_data::rows::StateCoreRow>(&["cores"]),
@@ -870,7 +852,6 @@ impl Evaluator<'_, '_> {
     }
 }
 
-/// `T`'s rows when complete, each holding the fields `mask` names, the whole table read.
 fn recorded<'a, T: replay_data::rows::TableSchema>(
     frame: HourFrame<'a>,
     mask: u64,
@@ -882,8 +863,6 @@ fn recorded<'a, T: replay_data::rows::TableSchema>(
         .collect()
 }
 
-/// `T`'s row keyed `key` when the table is complete, holding the fields `mask` names, the
-/// whole table read.
 fn recorded_row<'a, T: replay_data::rows::TableSchema>(
     frame: HourFrame<'a>,
     mask: u64,

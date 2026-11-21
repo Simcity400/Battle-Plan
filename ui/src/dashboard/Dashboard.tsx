@@ -47,36 +47,25 @@ import { LiveMotion } from '../charts/liveMotion.ts';
 import { commitZone } from '../shell/commitCount';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
-  /** Whether flying and walking draw the map's interface, as the viewer last reported it. */
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
-  /** The branch the shown campaign plays, and how to play another; null without one. */
   onBranch?: (branch: BranchChoice | null) => void;
-  /** A campaign-map operation failed, or (null) succeeded or is no longer wanted. */
   onMapError?: (operation: string, error: string | null) => void;
-  /** Bumped by Retry map: the campaign map is sent the clock's hour again, and each failed command. */
   mapRetry?: number;
-  /** Whether any page has layout changes not yet saved, which resetting the pages discards. */
   onUnsaved?: (unsaved: boolean) => void;
-  /** The pages that exist; what a deleted page kept while not shown is dropped. */
   pages?: readonly PageEntry[]; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void;
-  /** What the full map last answered for the aircraft Fly mode flies. */
   flyAircraft?: FlyAircraftStatus | null;
-  /** Where panels dock beside the workspace, narrowing the map rather than covering it. */
   sideHost?: HTMLElement | null }
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
 export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
-  // Widget code loads with the app, the restored page's first, even while the map is shown: the
-  // first page opened never waits for its widgets' code.
   useEffect(() => {
     const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
     preloadWidgetRenderers(shown?.template.widgets.map(widget => widget.kind) ?? []);
     preloadAllWidgetRenderers();
   }, [restored]);
   const [library, setLibrary] = useState(restored.library);
-  // The page whose layouts are shown; it trails `page` until the swap below runs.
   const [shownPage, setShownPage] = useState(page);
   const pageRef = useRef(shownPage);
   pageRef.current = shownPage;
@@ -90,15 +79,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const campaignsRef = useRef(campaigns);
   campaignsRef.current = campaigns;
   const [defaultRoleId, setDefaultRoleId] = useState<string | null>(null);
-  // Each campaign's chosen country for this session: reopening the recording clears it, a seek keeps it.
   const [selectedCountries, setSelectedCountries] = useState<Record<string, CountryChoice | null>>({});
   const [observed, setObserved] = useState<Record<string, number>>({});
-  // Histories chosen by id: indexes shift as a recording grows or its joins change.
   const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>({});
   const [loadErrors, setLoadErrors] = useState<Record<string, Failure>>({});
   const hasOpened = useRef(false);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
-  // The campaign map's picker choices, sent back with its options so a restarted viewer keeps them.
   const [campaignPicked, setCampaignPicked] = useState<Pick<MapOptions, 'mapMode' | 'mapModeSlots'>>({});
   useEffect(() => {
     let live = true;
@@ -110,12 +96,10 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return () => { live = false; for (const stop of stops) stop(); };
   }, [client]);
   const merged = useMemo(() => includeCampaigns(draftTemplate, campaigns), [draftTemplate, campaigns]);
-  // Roles and tracks keep their identity while their content does: a widget's option or a layout move
-  // changes neither, so the tracks bound from them, and the runtime every widget reads, stay the same.
   const roleList = merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id]?.tag ?? null, selectedSlot: selectedCountries[role.id]?.slot ?? null, observed }));
   const rolesKey = JSON.stringify(roleList), tracksKey = JSON.stringify(merged.tracks);
-  const templateRoles = useMemo(() => roleList, [rolesKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const templateTracks = useMemo(() => merged.tracks, [tracksKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const templateRoles = useMemo(() => roleList, [rolesKey]);
+  const templateTracks = useMemo(() => merged.tracks, [tracksKey]);
   const template = useMemo(() => ({ ...merged, roles: templateRoles, tracks: templateTracks }), [merged, templateRoles, templateTracks]);
   const [warning, setWarning] = useState<string | null>(restored.warning);
   const [savedTemplate, setSavedTemplate] = useState<DashboardTemplate | null>(null);
@@ -129,8 +113,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [saved, savedTemplate]);
   const [editing, setEditing] = useState(false);
   const saveMenu = usePopover();
-  // Each page keeps its layouts, draft and edit state while another page is shown. A new
-  // reset token drops them all, so every page reopens from storage.
   const pageStates = useRef(new Map<PageId, { library: LayoutLibrary; template: DashboardTemplate; editing: boolean }>());
   const resetSeen = useRef(resetToken);
   useLayoutEffect(() => {
@@ -155,20 +137,17 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const saveButton = saveMenu.trigger;
   const editButton = useRef<HTMLButtonElement>(null);
   const dirty = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns)) !== stableJson(includeCampaigns(selectedLayout.template, campaigns)), [draftTemplate, selectedLayout.template, campaigns]);
-  // A deleted page's kept layouts and draft go with it.
   const pageList = pages?.map(entry => entry.id).join('\n');
   useEffect(() => {
     if (pageList === undefined) return;
     const existing = pageList.split('\n');
     for (const id of [...pageStates.current.keys()]) if (!existing.includes(id)) pageStates.current.delete(id);
   }, [pageList]);
-  // Unsaved changes on the shown page or any page kept aside, for Settings' page reset.
   const unsaved = useMemo(() => layoutsUnsaved([{ library, template: draftTemplate },
     ...keptPageStates(pageStates.current, shownPage, pageList?.split('\n') ?? [...pageStates.current.keys()])], template => includeCampaigns(template, campaigns)),
   [library, draftTemplate, shownPage, campaigns, pageList]);
   useEffect(() => { onUnsaved?.(unsaved); }, [unsaved, onUnsaved]);
   useEffect(() => () => onUnsaved?.(false), [onUnsaved]);
-  // Resetting the arrangement would change nothing when the draft already is the page's default.
   const layoutAtDefault = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns))
     === stableJson(includeCampaigns({ ...defaultTemplate(shownPage), name: draftTemplate.name }, campaigns)), [draftTemplate, campaigns, shownPage]);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -181,9 +160,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error)), []);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   useEffect(() => {
-    // The native picker's day/night and allied-plan toggles flip the widget's own settings.
-    // A flip that failed is reported where its map is: the campaign map's like its other commands (Retry map
-    // only clears it, as flipping again could undo a later one), a widget map's on that widget.
     maps.onToggle = (view, toggle) => view.id === CAMPAIGN_MAP_VIEW
       ? commands.send(`setting:${view.id}:${toggle.setting}`, () => toggleMapSetting(client, view, toggle), false)
       : maps.saveToggle(view, toggle, () => toggleMapSetting(client, view, toggle));
@@ -212,10 +188,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const popout = usePopout();
   const popoutOpen = useRef(false);
   popoutOpen.current = popout.open;
-  // The pop-out window shown now, which a request captures when it starts.
   const popoutGeneration = useRef(0);
   popoutGeneration.current = popout.generation;
-  // Commands the pop-out's viewer `generation:viewer` refused, shown in its controls rather than over the main map.
   const [popoutFailures, setPopoutFailures] = useState<{ viewer: string; command: 'configure' | 'seek' | 'aircraft'; message: string }[]>([]);
   const reportPopout = useCallback((viewer: string, command: 'configure' | 'seek' | 'aircraft', message: string | null) => setPopoutFailures(previous => {
     const kept = previous.filter(failure => failure.viewer === viewer && failure.command !== command);
@@ -223,7 +197,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }), []);
   const popoutViewer = popout.open ? `${popout.generation}:${popout.viewer}` : null;
   const popoutIssue = popoutProblem(popout) ?? popoutFailures.find(failure => failure.viewer === popoutViewer)?.message ?? null;
-  // A pop-out map keeps following the clock from any page.
   useLayoutEffect(() => { if (!active && !mapActive && !popout.open) clock.stop(); }, [active, mapActive, popout.open, clock]);
   const mapChoice = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
   const mapCountry = mapChoice?.tag ?? null, mapCountrySlot = mapChoice?.slot ?? null, mapObserved = observed[CAMPAIGN_MAP_VIEW] ?? null;
@@ -233,15 +206,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     commands.send('configure', () => mapAction({ kind: 'configure', options }));
     return () => commands.forget('configure');
   }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, campaignPicked, mapCountry, mapCountrySlot, mapObserved, commands]);
-  // The camera mode and its overlay choice are the viewer's own: the control shows what it reports
-  // and asks it to change.
   const chooseCameraMode = useCallback((mode: CameraMode) => {
     commands.send('camera', () => mapAction({ kind: 'cameraMode', mode, overlays: cameraOverlays }));
   }, [cameraOverlays, commands]);
   const chooseOverlays = useCallback((overlays: boolean) => {
     commands.send('camera', () => mapAction({ kind: 'cameraMode', mode: cameraMode, overlays }));
   }, [cameraMode, commands]);
-  // A camera change is for the viewer shown when it was asked; a hidden or restarted map drops its failure.
   useEffect(() => mapActive && mapReady && desktopAvailable ? () => commands.forget('camera') : undefined, [mapActive, mapReady, commands]);
   const resendSeek = useRef<(() => void) | null>(null);
   useLayoutEffect(() => {
@@ -254,7 +224,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     resendSeek.current = stop.resend;
     return () => { stop(); resendSeek.current = null; onMapError?.('seek', null); };
   }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError]);
-  // Retry map sends the clock's hour again even without a failed seek: a viewer's own load error needs it too.
   const retried = useRef(mapRetry);
   useEffect(() => {
     if (mapRetry === retried.current) return;
@@ -262,15 +231,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     resendSeek.current?.();
     commands.retry();
   }, [mapRetry, commands]);
-  // The viewer runs its own clock between anchors, and a restarted one is restored with the last anchor
-  // it was sent: a viewer that becomes ready is sent the clock as it is now.
   useEffect(() => {
     if (!mapReady) return;
     resendSeek.current?.();
     maps.resend();
   }, [mapReady, maps]);
-  // Keyed on the window's generation, so every new pop-out window is sent the options and the
-  // clock even when it opens in the same render that closed the previous one.
   const popoutConfig = popoutConfigKey(popout);
   useEffect(() => {
     if (popoutConfig == null || defaultLoading) return;
@@ -291,7 +256,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   useLayoutEffect(() => { maps.setHidden(nativeHidden || hasMapOverlay()); maps.schedule(); }, [maps, nativeHidden, template.layouts]);
   useEffect(() => {
     mounted.current = true;
-    // A minimised app keeps playing while the pop-out map shows the campaign.
     const visibility = () => { if (document.hidden && !popoutOpen.current) clock.setPlaying(false); };
     const beforeToggle = (event: Event) => {
       if ('newState' in event && event.newState === 'open' && isMapOverlay(event.target)) maps.setHidden(true);
@@ -312,8 +276,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const update = useCallback((change: (previous: DashboardTemplate) => DashboardTemplate) => {
     setTemplate((previous) => change(includeCampaigns(previous, campaignsRef.current)));
   }, []);
-  /** Saves a widget's settings-panel choices to the active layout at once. A choice the
-   * saved layout cannot hold yet (a newly opened campaign) stays a draft until Save. */
   const persistView = useCallback((previous: WidgetSpec, widget: WidgetSpec) => {
     const current = libraryRef.current;
     const next = { ...current, layouts: current.layouts.map(entry => {
@@ -329,9 +291,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     setLibrary(next);
   }, []);
   const applyWidget = useCallback((widget: WidgetSpec, view = false) => {
-    // The widget the change was made from, as last drawn: only what the change altered
-    // is applied to the latest one, so a second change made before it is drawn again
-    // (two options saved at once) never undoes the first.
     const before = templateRef.current.widgets.find(item => item.id === widget.id);
     update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? (before ? rebaseWidget(item, before, widget) : widget) : item) }));
     if (view && before) persistView(before, widget);
@@ -379,9 +338,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     setLibrary(next); setTemplate(entry.template); setSavedTemplate(null);
   };
 
-  /** Opens a recording into a campaign slot; resolves to the campaign's id once it is loaded. */
   const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false, campaignId?: string, onFailure?: (error: Failure) => void): Promise<string | null> => {
-    // A rename reconnects its own campaign by id: another may briefly share the path.
     const known = campaignId === undefined
       ? campaignsRef.current.find((item) => sameCampaignPath(item.path, chosen))
       : campaignsRef.current.find((item) => item.id === campaignId);
@@ -400,8 +357,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     setLoadErrors(current => { const next = { ...current }; delete next[chosen]; return next; });
     const previous = roles.bindings[id]?.source;
     if (reconnect && known && desktopAvailable && previous) {
-      // Retire the standalone owner's snapshot before replacing this lease.
-      // A rejected retirement leaves the old binding available for retry/unload.
       try { await mapAction({ kind: 'unload', path: previous.path }); }
       catch (cause) {
         if (mounted.current && campaignsRef.current.includes(campaign)) {
@@ -433,21 +388,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return source ? id : null;
   }, [roles.open, roles.remove, roles.bindings, template.tracks, clock]);
 
-  /** Points a widget at the default campaign (null) or a recording. A recording that is not
-   * loaded yet is opened once and shared, exactly as from the sidebar. */
   const assignCampaign = useCallback(async (widgetId: string, chosen: string | null) => {
     const assign = (previous: DashboardTemplate, widget: WidgetSpec, roleId: string | null): WidgetSpec => {
       const track = roleId === null ? null : previous.tracks.find(item => item.roleId === roleId);
       if (roleId !== null && !track) return widget;
-      // Choosing the campaign it already follows changes nothing, not even a pinned moment.
       if (roleId === null ? widget.campaign === 'default' : widget.campaign === 'tracks' && widget.trackIds[0] === track!.id) return widget;
-      // A pinned moment belongs to one recording's branch; a new campaign starts from the widget's default time.
       const time = widget.time.mode === 'pin' ? { mode: widgetDefinition(widget.kind)?.defaultTime ?? 'campaign' } as const : widget.time;
       return roleId === null ? { ...widget, campaign: 'default' as const, time } : { ...widget, campaign: 'tracks' as const, trackIds: [track!.id], time };
     };
-    // The campaign is a settings-panel choice too, so it saves at once like the rest. The
-    // new widget is worked out from the current layout first, so the save needs no
-    // state updater to have run.
     const pick = (roleId: string | null) => {
       const current = includeCampaigns(templateRef.current, campaignsRef.current);
       const widget = current.widgets.find(item => item.id === widgetId);
@@ -463,7 +411,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (!mounted.current) return;
     if (roleId) { pick(roleId); return; }
     if (failure) throw failure;
-    // openCampaign reports its own failures beside the sidebar; the picker says why nothing changed.
     throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
       ? 'That recording is still opening. Choose it again once it has loaded.'
       : 'That recording could not be opened. The notice above the dashboard or the sidebar shows why.');
@@ -472,15 +419,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const bindingsRef = useRef(roles.bindings);
   bindingsRef.current = roles.bindings;
   const [relocations, setRelocations] = useState<Relocation[]>([]);
-  /** A recording's file was renamed, by either app or in Explorer: an open campaign reconnects by its new name. */
   const relocate = useCallback((from: string, to: string) => {
     setLoadErrors(current => Object.fromEntries(Object.entries(current).map(([path, error]) => [sameCampaignPath(path, from) ? to : path, error])));
     const campaign = campaignsRef.current.find(item => sameCampaignPath(item.path, from));
-    // One still opening keeps the path it opens; a rename waits for it.
     if (!campaign || campaign.loading) return;
     campaignsRef.current = campaignsRef.current.map(item => item === campaign ? { ...item, path: to } : item);
     setCampaigns(campaignsRef.current);
-    // The open campaign names the recording through all its renames, whatever its header or folder.
     setRelocations(current => [...current, [from, to, campaign.id]]);
     void openCampaign(to, campaign.label, undefined, true, campaign.id);
   }, [openCampaign]);
@@ -488,9 +432,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const source = campaign.loading ? null : bindingsRef.current[campaign.id]?.source;
     return source ? [{ path: campaign.path, campaignKey: source.metadata.campaignKey }] : [];
   }), []);
-  // A look the host has not answered yet is never stacked with another, whichever effect started it.
   const locating = useRef(false);
-  // Each open recording is found again by its folder and campaign, so a rename shows at once.
   useEffect(() => {
     if (!client.locateRecordings) return;
     let live = true;
@@ -501,7 +443,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       void client.locateRecordings!(shown).finally(() => { locating.current = false; }).then(located => {
         if (!live) return;
         let moved = false;
-        // A new name, or the same one with different capitals.
         located.forEach((path, at) => {
           if (path && (!sameCampaignPath(path, shown[at].path) || recordingFilename(path) !== recordingFilename(shown[at].path))) { relocate(shown[at].path, path); moved = true; }
         });
@@ -520,7 +461,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     setCampaigns(campaignsRef.current);
     const source = roles.bindings[id]?.source;
     if (desktopAvailable && source) {
-      // The pop-out window shown when the unload started; a later window is not this unload's.
       const shownPopout = popoutGeneration.current;
       try { await mapAction({ kind: 'unload', path: source.path }); await popoutUnloaded(source.path, shownPopout); }
       catch (cause) {
@@ -533,7 +473,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       }
     }
     if (!mounted.current || !campaignsRef.current.includes(retiring)) return;
-    // Other campaigns may unload while this unload is in flight; use the current roster.
     setDefaultRoleId(current => defaultAfterUnload(current, id, campaignsRef.current.filter(campaign => !campaign.loading).map(campaign => campaign.id)));
     roles.remove(id);
     campaignsRef.current = campaignsRef.current.filter(campaign => campaign.id !== id);
@@ -549,7 +488,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   useEffect(() => {
     let live = true;
     let stop: (() => void) | undefined;
-    // Each click is its own flip, which may have saved before failing: Retry map clears it rather than flips again.
     const flips: string[] = [];
     void client.onMapToggle?.((event) => {
       if (!live) return;
@@ -559,7 +497,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }).then(unsubscribe => { if (live) stop = unsubscribe; else unsubscribe(); });
     return () => { live = false; stop?.(); commands.forget(...flips); };
   }, [client, defaultSource, commands]);
-  // A map's Ctrl+click chooses the country its campaign's map and dashboard share, as the game's observer switches.
   const observeTarget = useRef({ template, defaultRoleId });
   observeTarget.current = { template, defaultRoleId };
   useEffect(() => {
@@ -572,7 +509,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }).then(unsubscribe => { if (live) stop = unsubscribe; else unsubscribe(); });
     return () => { live = false; stop?.(); };
   }, [client]);
-  // A pick is the country holding the picked tag at the playback hour, which the dashboard then follows by its slot.
   const defaultTrack = tracks.find(track => track.roleId === defaultRoleId);
   const defaultSlots = useSlotTags(client, defaultTrack, !!defaultTrack);
   const pickCountry = (tag: string | null, slot: number | null) => {
@@ -593,9 +529,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (firstReady) setDefaultRoleId((current) => defaultAfterOpen(current, firstReady.id));
   }, [campaigns, roles.bindings]);
   useEffect(() => { if (hasOpened.current && (defaultSource?.path ?? null) !== path) onPrimaryPath?.(defaultSource?.path ?? null); }, [defaultSource, path, onPrimaryPath, campaigns.length]);
-  // Fly mode's aircraft belongs to the campaign the map shows: a name of its content, kept on
-  // this device, with none as the start. Sent again whenever a map becomes ready, as a restarted
-  // viewer flies none.
   const aircraftRecording = defaultSource ? recordingKey(defaultSource.path, defaultSource.metadata.campaignKey) : null;
   const [aircraft, setAircraft] = useState<string | null>(null);
   useEffect(() => setAircraft(aircraftRecording ? loadAircraftChoice(aircraftRecording) : null), [aircraftRecording]);
@@ -608,7 +541,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     commands.send('aircraft', () => mapAction({ kind: 'flyAircraft', aircraft }));
     return () => commands.forget('aircraft');
   }, [mapActive, mapReady, aircraft, commands]);
-  // The pop-out's map flies the same aircraft; each viewer it starts is told when it is ready.
   useEffect(() => {
     if (popoutConfig == null) return;
     let current = true;
@@ -624,8 +556,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
 
   const shownTrack = tracks.find(track => track.roleId === defaultRoleId);
   useEffect(() => onBranch?.(shownTrack ? { id: shownTrack.branch.id, choose: branchId => onMapBranch(shownTrack.id, branchId) } : null),
-    // The track object changes with every rebind; its identity and branch are what the choice names.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [shownTrack?.id, shownTrack?.branch.id, onMapBranch, onBranch]);
 
   const recordings = replayLibrary.files;
@@ -643,8 +573,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
     [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
 
-  // The prepare lane: the page shown (its rows below the fold), then every other page from the next, each laid out with its
-  // own layout and asked through the lane's client.
   const laneClient = useMemo(() => preparingClient(client), [client]);
   const [viewportBox, setViewportBox] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => setViewportBox(viewport.current), []);
@@ -664,12 +592,10 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return { id, template: paged, runtime: { ...runtime, client: laneClient, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
   }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, observed, sourceMap, selectedBranches, runtime, laneClient]);
 
-  /** Opens a campaign's recording again, found by its folder and campaign first. */
   const reconnect = async (campaign: Campaign) => {
     const source = bindingsRef.current[campaign.id]?.source;
     const [located] = source && client.locateRecordings
       ? await client.locateRecordings([{ path: campaign.path, campaignKey: source.metadata.campaignKey }]).catch(() => [null]) : [null];
-    // Renamed, the relocation reconnects it; either way only this campaign, by its id.
     if (located && (!sameCampaignPath(located, campaign.path) || recordingFilename(located) !== recordingFilename(campaign.path))) relocate(campaign.path, located);
     else void openCampaign(campaign.path, campaign.label, undefined, true, campaign.id);
   };
@@ -703,7 +629,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       popoutCameraOverlays={popout.status?.running ? popout.status.cameraOverlays : false}
       aircraft={aircraft} onAircraft={chooseAircraft} popoutFlyAircraft={popout.status?.flyAircraft ?? null} aircraftHost={sideHost} />}
     {active && <>
-      {/* The layout picker and the editing tools share one slot, so the bar never shifts or grows. */}
+      { }
       <div className="toolbar-swap" data-editing={editing || dirty || undefined}>
       <div className="header-layout"><Icon name="layers" />
         <Select label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}

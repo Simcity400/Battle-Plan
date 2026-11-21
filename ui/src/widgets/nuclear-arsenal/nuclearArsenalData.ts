@@ -1,5 +1,3 @@
-/** The Nuclear arsenal widget's data: each country's stockpile as the top bar shows it is the ranked `country-nuke-totals`,
- * each weapon type a part of it (`country-nukes`), the types named by the `nuclear-arsenal` reply. */
 import type { MeasureParts } from '../../charts/race/measureParts';
 import type { NuclearArsenalReply, NukeType } from '../../generated/dashboard';
 import { dayLabel } from '../../charts/draw.ts';
@@ -25,7 +23,6 @@ export function arsenalRows(reply: NuclearArsenalReply, hour: number, selection:
     ...(selection.split && row.counts.length ? { parts: row.counts.map(part => ({ id: String(part.ordinal), value: part.value })) } : {}) }));
 }
 
-/** Stable row identities for the structure that makes the arsenal race render. */
 export function arsenalStructureRows(reply: NuclearArsenalReply): string[] {
   const countries = new Map<number, [string, boolean, number[]]>();
   for (const row of reply.countries) countries.set(row.countryId, [row.tag, row.total > 0, row.counts.map(v => v.ordinal)]);
@@ -37,7 +34,6 @@ export function arsenalStructureRows(reply: NuclearArsenalReply): string[] {
   ];
 }
 
-// JSON enumerates unsigned array-index keys in numeric order regardless of the native rank.
 export function arsenalStructure(reply: NuclearArsenalReply) {
   const countries: Record<number, unknown> = {};
   for (const row of reply.countries) countries[row.countryId] = [row.tag, row.total > 0, row.counts.map(v => v.ordinal)];
@@ -58,15 +54,12 @@ export function validateNuclearArsenal(value: unknown): NuclearArsenalReply {
   return reply as NuclearArsenalReply;
 }
 
-/** A weapon type's name: its localised name, its token, or its ordinal when the game names none. */
 export const typeName = (type: NukeType) => type.name ?? type.token ?? `Unnamed nuclear type ${type.ordinal}`;
 
-/** A weapon type's name by its ordinal (a part's key), from the types the reply lists. */
 export function partName(reply: NuclearArsenalReply | undefined, part: string): string {
   const type = reply?.types.find(held => String(held.ordinal) === part);
   return type ? typeName(type) : `Unnamed nuclear type ${part}`;
 }
 
-/** A stockpile's parts: each weapon type the country holds, a part of the sub-keyed `country-nukes` series. */
 export const nukeParts = (reply: NuclearArsenalReply | undefined): MeasureParts => ({ kind: 'keyed', label: 'Weapon types',
   family: { kind: 'country-nukes', measure: 'amount' }, partBits: 32, decimals: 0, name: part => partName(reply, part) });

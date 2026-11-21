@@ -78,7 +78,6 @@ export function validateBreakdownReply(data: unknown): ProductionLineBreakdownRe
   return reply;
 }
 
-/** Native line keys belong to one campaign branch and producing country. */
 export const productionLineToken = (campaign: string, branch: string, tag: string, key: string) =>
   setToken(campaignToken(campaign, JSON.stringify([branch, tag, key])));
 
@@ -93,41 +92,33 @@ export function productionLineKey(campaign: string, branch: string, tag: string,
   } catch { return null; }
 }
 
-/** A variant's names where its definition was read; none where it was not. */
 export const variantOf = (variants: readonly VariantName[], id: string): VariantName | null => variants.find(variant => variant.id === id && variant.known) ?? null;
 export const organisationOf = (organisations: readonly OrganisationName[], id: string): OrganisationName | null =>
   id === '0' ? null : organisations.find(organisation => organisation.id === id) ?? null;
 
-/** A line's name: the game's, else its type line; where the variant is not recorded, its id, so a line is never blank. */
 export const variantName = (variant: VariantName | null, id: string) => variant ? variant.name ?? variant.typeName ?? 'Variant name unavailable' : `Variant ${id}`;
 
-/** The organisation column: its name, else its script key; a dash for none. */
 export const organisationText = (organisation: OrganisationName | null, mio: string) =>
   mio === '0' ? '—' : organisation ? contentTitle(organisation.name, organisation.token, 'Organisation name unavailable') : 'Not recorded';
 
-/** A picture's artwork URL; any other image is missing art, shown with the placeholder. */
 export const iconImage = (icons: readonly EquipmentIcon[], key: string | null): string | null =>
   key == null ? null : drawableIcon(icons.find(icon => icon.key === key)?.image);
 
-/** Units per week as the row shows them: one decimal, or every recorded decimal for a slow line that one would round to 0. */
 export function weeklyText(weekly: bigint, decimals: number): string {
   const short = formatAmount(weekly, decimals, 1);
   return short === '0' && weekly !== 0n ? formatAmount(weekly, decimals, decimals) : short;
 }
 
 const EFFICIENCY_FULL = 3276800n;
-/** The efficiency (a Q15 raw) as the production row shows it: `(raw + 0x4000) >> 15` percent. */
 export const efficiencyPercent = (raw: bigint) => (raw + 0x4000n) >> 15n;
 export const efficiencyFraction = (raw: bigint) => Math.max(0, Math.min(1, Number(raw) / Number(EFFICIENCY_FULL)));
 
-/** The most factories any line was assigned or asked for over the branch: the live bars' shared scale. */
 export function factoryScale(reply: ProductionLinesReply | undefined): number {
   let most = 0;
   for (const line of reply?.lines ?? []) for (const step of line.steps) most = Math.max(most, step.activeFactories, step.requestedFactories);
   return most;
 }
 
-/** A line's numbers as its row paints them, read from its live cells; each null where its cell has no value. */
 export interface LineValues { active: number | null; requested: number | null; efficiency: bigint | null; speed: bigint | null; cost: bigint | null; output: number | null }
 
 const whole = (value: number | undefined) => value === undefined ? null : BigInt(Math.round(value));
@@ -138,19 +129,16 @@ export function lineValues(values: LiveValues<number>, handle: string): LineValu
     cost: whole(read('cost')), output: read('output') ?? null };
 }
 
-/** Units a week by the game's weekly formula, fixed5: `speed × 700000 ÷ cost`, truncated; null without a positive cost. */
 export function weeklyRaw(speed: bigint | null, cost: bigint | null): bigint | null {
   return speed === null || cost === null || cost <= 0n ? null : speed * 700_000n / cost;
 }
 
-/** The units a running line has made, as its row shows them: unknown where a tick could not be counted. */
 export function liveTotalText(output: OutputNow | null, units: number | null, missing: string | null): string {
   if (missing !== null || !output) return 'Not recorded';
   if (output.parts.some(part => !part.exact)) return 'Unknown';
   return units === null ? '—' : gbNumber.format(units);
 }
 
-/** A total: the sum of the parts' units when every part is exact, else null (a tick could not be counted). */
 export function outputTotal(parts: readonly OutputPart[]): bigint | null {
   if (parts.some(part => !part.exact)) return null;
   return parts.reduce((sum, part) => sum + BigInt(part.units), 0n);
@@ -162,7 +150,6 @@ export function totalText(output: { parts: readonly OutputPart[] } | null): stri
   return total == null ? 'Unknown' : gbNumber.format(total);
 }
 
-/** The key of the line `handle` was at `hour` in the branch's history: the appearance whose hours hold it. */
 export function lineKeyAt(reply: ProductionLinesReply | undefined, handle: string, hour: number): string | null {
   const lines = reply?.lines.filter(line => line.handle === handle) ?? [];
   return lines.find(line => line.steps.length && line.steps[0].firstHour <= hour && hour <= line.steps.at(-1)!.lastHour)?.key ?? null;
@@ -176,7 +163,6 @@ export function productionLineLabel(reply: ProductionLinesReply, line: LineHisto
 
 export const windowOf = (detailHours: number, hour: number) => Math.floor(hour / detailHours);
 
-/** How a line is described beside its lane: factories at the hour shown, or when it ended, or when it was last recorded. */
 export function laneStatus(line: LineHistory, hour: number, day: (hour: number) => string): { text: string; ended: boolean } {
   const step = runAt(line.steps, hour);
   if (step) return { text: `${step.activeFactories} ${step.activeFactories === 1 ? 'factory' : 'factories'}`, ended: false };
@@ -191,8 +177,6 @@ export function laneStatus(line: LineHistory, hour: number, day: (hour: number) 
   return { text: 'Not recorded then', ended: false };
 }
 
-/** Lanes for the history: one per line first seen by `until`, in the order first seen. Each unbroken stretch of one
- * variant is a span whose band is the factories assigned; a line running at `until` is accented, an ended one grey. */
 export function historyLanes(reply: ProductionLinesReply, until: number, showEnded: boolean, day: (hour: number) => string): TimelineLane[] {
   const lanes: TimelineLane[] = [];
   for (const line of reply.lines) {
@@ -225,14 +209,12 @@ export function historyLanes(reply: ProductionLinesReply, until: number, showEnd
   return lanes;
 }
 
-/** The most factories any line was assigned: the history's band scale. */
 export function bandScale(reply: ProductionLinesReply): number {
   let most = 0;
   for (const line of reply.lines) for (const step of line.steps) most = Math.max(most, step.activeFactories);
   return most;
 }
 
-/** A factor's breakdown at an hour in its forms, fullest first, for the kit's `fitTooltip`. */
 export function modifierTooltip(group: ProductionModifierRun['groups'][number] | undefined, title: string, color: (id: string) => string | undefined): readonly TooltipContent[] {
   if (!group) return [{ title, rows: [{ label: 'Breakdown', value: 'Not recorded', tone: 'muted' }] }];
   const total: TooltipRow = { label: group.label, value: group.totalRaw == null ? 'Not recorded' : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true };

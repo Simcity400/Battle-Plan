@@ -1,53 +1,3 @@
-//! Country operands for displayed stability, war support and maximum command
-//! power, with modifier-tree children and identifiable sources. Displayed
-//! values are calculated, so this reader copies operands for replay consumers
-//! and never calls a game function.
-//!
-//! Stability combines base, war and ruling-party terms, propaganda penalty,
-//! effective modifier and cached coastal contribution before loaded bounds. War
-//! support combines base, offensive/defensive war terms, tension,
-//! bombing/interception/hero/convoy/propaganda terms and its effective modifier
-//! before loaded bounds. Maximum command power applies effective flat and
-//! multiplicative terms to its loaded base.
-//!
-//! Modifier rebuilding appends one clone per non-empty source in source order.
-//! Clones retain entries, display text, category mask and depth, with token
-//! reset. For tracked good keys each child entry is its root contribution.
-//! Pairing replays supported sources in order, requiring equal nonzero entries
-//! and equal copied display text where applicable. Pair only when the leftmost
-//! and rightmost order-preserving assignments agree; ambiguous children keep
-//! display text. Only children with tracked values and sources with tracked
-//! keys participate so empty signatures cannot shift bounds.
-//!
-//! The tree: filtered modifier addition appends exactly one clone (a modifier child clone) per
-//! non-empty source to the country accumulator's children (the country modifier accumulator's
-//! entries), in call order, during country modifier recalculation; a clone keeps only the source's
-//! entries, display string, category mask and depth, and its token is reset. For `good` keys the
-//! child's entry equals its contribution to the root. The reader therefore replays the source walk
-//! in that order for the kinds whose layout is proven and pairs each child with a source whose
-//! nonzero entries are exactly equal (and, where the child copies the source's display string,
-//! whose display text is equal). A child is paired only when the leftmost and rightmost
-//! order-preserving assignments agree; anything else stays unpaired and keeps its display text.
-//! Only children with a tracked value and sources with a tracked key take part: the others could
-//! only pair with each other and would move the assignments' bounds.
-//!
-//! Source kinds replayed here (the others, which stay unpaired, are faction, difficulty setting
-//! items, balance of power, decisions and missions, operations, focus, autonomy, buildings,
-//! technologies, doctrines, intelligence agency, the difficulty static, abilities and hosted
-//! exiles): ideas (`cpolitical_status::IDEAS`), the ruling party's first country leader, its
-//! ideology group, appointed advisors (`ccountry_characters::APPOINTED_ADVISORS`), the bound named
-//! statics, enabled dynamic modifiers (constant part, then evaluated part) and the scaled stability
-//! and war-support statics (scaled static copies).
-//!
-//! The copied inputs also include war predicates over owned war relations, the interception ring
-//! sum, loaded defines, active language and tracked modifier getter values resolved through
-//! `modifier_definition::keys_by_names_at`. `raid_launch_inputs` alone reads `max_command_power`,
-//! `max_command_power_mult` and allocated command power into hourly CountryCommandPower; consumers
-//! join that row at the same frame. `add_command_power` and the top bar subtract allocated power
-//! from the maximum (see `ccountry`). Tooltip-only ideas, all-zero dynamic modifiers and
-//! zero-valued faction children cannot shift pairing because they have no tracked values. Synthetic
-//! fixtures cover pairing, ambiguity, drift, truncation and short reads; live capture and
-//! real-country pairing coverage remain unverified.
 
 use crate::{
     Memory, cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader,
@@ -69,7 +19,6 @@ mod observed;
 pub use observed::Memo;
 use observed::Observed;
 
-// Test-only phase labels add no live instrumentation.
 macro_rules! phase {
     ($phase:ident) => {
         #[cfg(test)]
@@ -79,11 +28,6 @@ macro_rules! phase {
     };
 }
 
-/// The modifier script names whose totals and tree lines are recorded; the
-/// replay's `CountryStabilityInputRow::KEY_NAMES` lists the same names in the
-/// same order. Each is resolved to its key index by name
-/// ([`modifier_definition::keys_by_names_at`]). They are registered with flags
-/// 3 (percentage, good) or 2 (max_command_power: number, good).
 pub const KEY_NAMES: [&[u8]; TRACKED] = [
     b"stability_factor",
     b"party_popularity_stability_factor",
@@ -97,86 +41,54 @@ pub const KEY_NAMES: [&[u8]; TRACKED] = [
     b"max_command_power_mult",
 ];
 pub const TRACKED: usize = 10;
-/// The keys whose totals the row records: all but `max_command_power` and
-/// `max_command_power_mult`, whose getter values CountryCommandPower records
-/// (one reader per value). Their lines are still read here.
 pub const TOTALS: usize = 8;
 
-/// Stored Q15 propaganda stability penalty, clamped weekly. Serialization
-/// converts to fixed5 with five decimals truncated toward zero
-/// (`replay_data::fixed_point::q15_to_saved_fixed5`).
 pub const PROPAGANDA_STABILITY_PENALTY: usize = 0x14c0;
-/// Q15 propaganda war support penalty (`propaganda_war_support_penalty`, 0x4b47).
 pub const PROPAGANDA_WAR_SUPPORT_PENALTY: usize = 0x14e0;
-/// Fixed5 coastal-protection stability term written daily, added to displayed
-/// stability and serialized as `coastal_protection_ratio`.
 pub const COASTAL_PROTECTION_STABILITY: usize = 0x1600;
-/// Air-statistics object used by displayed war support.
 pub const AIR_STATISTICS: usize = 0xfc8;
-/// Country accumulator children: data, capacity and count, visited by the
-/// modifier-breakdown formatter.
 pub const MODIFIER_CHILDREN: usize = ccountry::MODIFIER_ACCUMULATOR + 0x18;
 
-/// Idea modifier accumulator, added with a built display label.
 pub const IDEA_MODIFIER: usize = 0x68;
-/// Country-leader modifier using character name as display text without a separate label.
 pub const LEADER_MODIFIER: usize = 0x68;
-/// Ruling-party ideology-group modifier.
 pub const IDEOLOGY_GROUP_MODIFIER: usize = 0x480;
-/// Advisor modifier.
 pub const ADVISOR_MODIFIER: usize = 0x1a0;
-/// Dynamic-modifier constant part with stored display text.
 pub const DYNAMIC_CONSTANT: usize = 0xf8;
-/// Dynamic-modifier scripted rows, stride 0xd8, with signed key and recorded
-/// count. Evaluated values are stored per entry; nonzero values form one child.
 pub const DYNAMIC_VALUE_ROWS: usize = 0x1b8;
 pub const DYNAMIC_VALUE_ROW_STRIDE: usize = 0xd8;
-/// Static-modifier database holding the bound static slots.
 pub const STATIC_DATABASE_RVA: Rva = Rva(0x033d_e590);
-/// Static-modifier script name stored as an MSVC string and hashed for lookup.
 pub const STATIC_NAME: usize = 0x1a8;
-/// Diplomacy word tested by mode-1 war predicates on the counterpart;
-/// only values below one admit the war.
 pub const DIPLOMACY_HOSTING: usize = 0x1f0;
 
-/// Interception-ring layout: a data pointer, a signed size, a signed head and a wrapped byte. Each
-/// slot points to an i64 row pointer; column 1 is summed with the stored saturation limit.
 const RING: usize = 0x10;
 const RING_DATA: usize = 0x08;
 const RING_SIZE: usize = 0x20;
 const RING_COLUMN: usize = 1;
 const RING_SATURATION: i64 = 0x53e2_d620_fb40;
 
-/// Define globals in `CountryStabilityInputRow` field order. Loaded values
-/// use fixed5 except interception war-support scale, which uses Q15.
 pub const DEFINE_RVAS: [Rva; DEFINES] = [
-    Rva(0x033e_2868), // BASE_STABILITY_WAR_FACTOR
-    Rva(0x033e_2908), // BASE_STABILITY_PARTY_POPULARITY_FACTOR
-    Rva(0x033e_4480), // MIN_STABILITY
-    Rva(0x033e_4400), // MAX_STABILITY
-    Rva(0x033e_2c48), // WAR_SUPPORT_OFFNSIVE_WAR
-    Rva(0x033e_2ce0), // WAR_SUPPORT_DEFENSIVE_WAR
-    Rva(0x033e_2d70), // WAR_SUPPORT_TENSION_IMPACT
-    Rva(0x033e_45d8), // MIN_WAR_SUPPORT
-    Rva(0x033e_4528), // MAX_WAR_SUPPORT
-    Rva(0x033d_f5f0), // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
-    Rva(0x033d_f678), // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
-    Rva(0x033d_f9e0), // BASE_MAX_COMMAND_POWER
+    Rva(0x033e_2868),
+    Rva(0x033e_2908),
+    Rva(0x033e_4480),
+    Rva(0x033e_4400),
+    Rva(0x033e_2c48),
+    Rva(0x033e_2ce0),
+    Rva(0x033e_2d70),
+    Rva(0x033e_45d8),
+    Rva(0x033e_4528),
+    Rva(0x033d_f5f0),
+    Rva(0x033d_f678),
+    Rva(0x033d_f9e0),
 ];
 pub const DEFINES: usize = 12;
 
-/// Byte offsets of the bound static slots in the static database, in the
-/// order that the modifier rebuild adds them.
 #[derive(Clone, Copy)]
 struct StaticSlot {
     offset: usize,
     scaled: bool,
-    /// Position among the replayed sources: after the advisors (1), after the
-    /// fleet statics (2) or after the dynamic modifiers (3).
     phase: u8,
 }
 const STATIC_SLOTS: [StaticSlot; 11] = [
-    // Sent-attache static followed by lacking-consumer-goods static.
     StaticSlot {
         offset: 0x90,
         scaled: false,
@@ -187,7 +99,6 @@ const STATIC_SLOTS: [StaticSlot; 11] = [
         scaled: false,
         phase: 1,
     },
-    // Fleet-pride static, peace/war static, then temporary sunk-pride static.
     StaticSlot {
         offset: 0xb8,
         scaled: false,
@@ -208,8 +119,6 @@ const STATIC_SLOTS: [StaticSlot; 11] = [
         scaled: false,
         phase: 2,
     },
-    // Scaled war-support good/bad statics, wartime war-support static, then
-    // scaled stability good/bad statics.
     StaticSlot {
         offset: 0x78,
         scaled: true,
@@ -237,10 +146,8 @@ const STATIC_SLOTS: [StaticSlot; 11] = [
     },
 ];
 
-/// Entries read per guarded copy.
 const ENTRY_BATCH: usize = 32;
 
-/// The source kinds a line can be paired with; replay maps them to its tags.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -255,14 +162,12 @@ pub enum Kind {
     DynamicModifierValues,
 }
 
-/// Byte range of a copied string in the walk's arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub len: usize,
 }
 
-/// One country's formula inputs; see the replay row for the meaning of each.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InputRow {
     pub country: u32,
@@ -280,13 +185,10 @@ pub struct InputRow {
     pub convoys_q15: i64,
     pub propaganda_war_support_q15: i64,
     pub interception_sum_raw: i64,
-    /// The getter value of each of the first [`TOTALS`] tracked keys; None
-    /// when the key is unregistered.
     pub totals: [Option<i64>; TOTALS],
     pub children: u32,
 }
 
-/// One (child, tracked key) with a nonzero value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LineRow {
     pub country: u32,
@@ -297,12 +199,9 @@ pub struct LineRow {
     pub identity_id: u32,
     pub secondary: i64,
     pub value: i64,
-    /// The child's display text; only for [`Kind::Unpaired`].
     pub text: Span,
 }
 
-/// Tracked key indices resolved by name, and the definition table header they
-/// were resolved against: they stay valid while that header is unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keys {
     pub keys: [Option<u32>; TRACKED],
@@ -315,15 +214,10 @@ impl Keys {
         Ok(Self { keys, table })
     }
 
-    /// Whether the definition table still has the header these keys came from.
-    /// Whether the resolved keys still hold: the modifier table is unchanged. A
-    /// failed read is an error, never a reason to resolve again.
     pub fn current(&self, memory: &impl Memory, base: usize) -> Result<bool, &'static str> {
         modifier_definition::table(memory, base).map(|table| table == self.table)
     }
 
-    /// The keys whose totals are recorded ([`TOTALS`]), ascending without
-    /// repeats, for one accumulator census.
     fn sorted_totals(&self) -> ([u32; TRACKED], usize) {
         Self::ascending(self.keys[..TOTALS].iter().flatten())
     }
@@ -342,8 +236,6 @@ impl Keys {
     }
 }
 
-/// Per-walk globals: defines, world tension, the active language, the bound
-/// statics and the tracked keys' metadata.
 #[derive(Debug)]
 pub struct Context {
     pub manpower_enabled: bool,
@@ -400,12 +292,6 @@ impl Context {
         })
     }
 
-    /// One value for the globals that decide every row of a read: the tracked
-    /// keys, their definition table header and operands, the defines, the
-    /// active language and the bound statics. Rows read under equal digests
-    /// differ only by their countries' own fields. World tension is left out:
-    /// daily tension decay moves it every day, a drift each row takes up at its
-    /// country's read.
     pub fn digest(&self) -> u64 {
         let mut digest = Signature::new();
         for (index, key) in self.keys.keys.iter().enumerate() {
@@ -433,8 +319,6 @@ impl Context {
     }
 }
 
-/// Active-language singleton: its first word points to the language string.
-/// A null root or string supplies the empty result.
 fn language(memory: &impl Memory, base: usize) -> Result<Vec<u8>, &'static str> {
     let root = read::<u64>(memory, site(base, localization_root_layout::SINGLETON_RVA)?)
         .ok_or("language root unreadable")?;
@@ -454,7 +338,6 @@ fn language(memory: &impl Memory, base: usize) -> Result<Vec<u8>, &'static str> 
     Ok(text)
 }
 
-/// Engine layout for one digest of nonzero `(key, value)` entries in order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Signature {
     count: u32,
@@ -502,21 +385,14 @@ struct Candidate {
     kind: Kind,
     content: Content,
     signature: Signature,
-    /// The source's display string and its (length, digest), compared with
-    /// the child's when the child copies it.
     display: Option<(usize, usize, u64)>,
-    /// A scaled static: paired by display text and the same set of nonzero keys
-    /// (its values are scaled, so they are not compared).
     scaled: bool,
-    /// A nonzero entry has a tracked key. Only such candidates can equal a
-    /// child with lines, so no other one takes part in pairing.
     tracked: bool,
     identity: Option<usize>,
     identity_id: u32,
     secondary: i64,
 }
 
-/// Preallocated per-walk storage; allocated off the game thread.
 pub struct Scratch {
     observations: Memo,
     batch_fallbacks: u64,
@@ -557,7 +433,6 @@ impl Scratch {
         Self::vacant()
     }
 
-    /// An allocation-free placeholder; worker walks grow from original headers.
     pub fn vacant() -> Self {
         Self {
             observations: Memo::default(),
@@ -578,8 +453,6 @@ impl Scratch {
             + (self.forward.capacity() + self.backward.capacity()) * size_of::<u32>()
     }
 
-    /// Failed speculative batches in the latest country's walk, including a
-    /// refused country. Each yields once to its original per-object reads.
     pub fn batch_fallbacks(&self) -> u64 {
         self.batch_fallbacks
     }
@@ -591,21 +464,13 @@ impl Default for Scratch {
     }
 }
 
-/// One country's walk into caller-owned rows and bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CountryWalk {
-    /// Lines written, or the failure; a country whose lines do not fit writes
-    /// none of them and counts all as unread.
     pub lines: Outcome,
     pub bytes_len: usize,
-    /// Bytes a retry needs for this country's lines.
     pub required_bytes: usize,
 }
 
-/// Diagnostic QPC ticks for inputs, children, candidates and pairing/emission.
-/// The caller supplies its existing job start; each boundary becomes the next
-/// phase's start, so a complete country costs four clock reads. Setup and
-/// between-country bookkeeping are charged to inputs. No row depends on time.
 pub struct WalkTiming {
     ticks: [u64; 4],
     previous: i64,
@@ -629,16 +494,12 @@ impl WalkTiming {
         self.previous = ended;
     }
 
-    /// End the job with its existing final clock read, including a refusal
-    /// before any country was reached. The remaining bookkeeping is inputs.
     pub fn finish_at(mut self, ended: i64) -> [u64; 4] {
         self.record_at(0, ended);
         self.ticks
     }
 }
 
-/// Worker-only append. Child/source storage follows the original headers and
-/// emitted rows/text grow before copying each native occurrence.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_country<M: Memory>(
     memory: &M,
@@ -670,8 +531,6 @@ pub fn walk_country<M: Memory>(
     )
 }
 
-/// Worker append with shared static observations of this hour only.
-/// Reset `memo` before a new hour's Context, even when its globals compare equal.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub fn walk_country_memo<M: Memory>(
@@ -705,8 +564,6 @@ pub fn walk_country_memo<M: Memory>(
     )
 }
 
-/// The hourly-memo worker walk with optional diagnostics kept out of the
-/// ordinary walker and benchmarks. Refused phases retain their elapsed ticks.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_country_memo_timed<M: Memory>(
     memory: &M,
@@ -756,17 +613,12 @@ fn walk_country_buffers<M: Memory>(
     byte_start: usize,
     mut timing: Option<&mut WalkTiming>,
 ) -> Result<CountryWalk, &'static str> {
-    // Keep the input acquisitions separate: read_children must reobserve its
-    // header so the existing changed-tree consistency check remains reachable.
     scratch.batch_fallbacks = 0;
     let acquired_input = inputs(memory, base, countries, country, context);
     if let Some(timing) = timing.as_deref_mut() {
         timing.boundary(0);
     }
     *input = acquired_input?;
-    // The original acquisitions still run in place. Filtered modifier addition
-    // clones each child's own entries and text; pairing reuses those exact
-    // observations without another copy.
     let mut observations = std::mem::take(&mut scratch.observations);
     let memory = Observed::new(memory, &mut observations, memo);
     let result = (|| {
@@ -803,8 +655,6 @@ fn walk_country_buffers<M: Memory>(
     result
 }
 
-/// Exact emitted line/text demand follows appended modifier clones in source
-/// order, preserving acquisition pairing and tracked entries.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
     crate::allocation::advisory(|| demand_advisory(memory, base, state))
 }
@@ -942,9 +792,6 @@ fn inputs<M: Memory>(
     })
 }
 
-/// Ruling-party popularity reached through country political status (`ccountry::POLITICAL_STATUS`),
-/// ruling party (`cpolitical_status::RULING_PARTY`) and popularity
-/// (`cpolitical_party::POPULARITY`), with authenticated ownership.
 fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, &'static str> {
     phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
@@ -960,9 +807,6 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
         .ok_or("ruling party popularity unreadable")
 }
 
-/// Owned war-relation predicates retain relation type, attacker/defender roles
-/// and same-country identity. Mode 1 additionally requires
-/// the second country's diplomacy word to be below one.
 fn war_flags<M: Memory>(
     memory: &M,
     base: usize,
@@ -1036,7 +880,6 @@ fn war_flags<M: Memory>(
     Ok((at_war, offensive, defensive, diplomacy))
 }
 
-/// Interception-ring sum for the country's air-statistics object, read passively.
 fn interception(memory: &impl Memory, country: usize) -> Result<i64, &'static str> {
     phase!(Interception);
     let stats = pointer(memory, at(country, AIR_STATISTICS)?)?;
@@ -1069,8 +912,6 @@ fn interception(memory: &impl Memory, country: usize) -> Result<i64, &'static st
     Ok(sum)
 }
 
-/// Copies every child's header, display and entries: nonzero-entry
-/// signature, display digest and tracked values.
 fn read_children(
     memory: &Observed<'_, impl Memory>,
     base: usize,
@@ -1092,14 +933,9 @@ fn read_children(
     }
     let vtable = site(base, cmodifier::VTABLE_RVA)? as u64;
     let mut index = 0;
-    // Each page's child heads (vtable, accumulator header, display string
-    // header) in one guarded gather instead of one scattered copy per
-    // child. Children are processed in order, so a child whose head did not
-    // read refuses where the per-child copy did, after every earlier child.
     let mut heads = [0_u8; 64 * CHILD_HEAD_BYTES];
     pointer_pages_gathered(memory, children, &mut heads, vtable, |child, head| {
         phase!(Children);
-        // The per-child copy's own address checks, in its order.
         at(child, cmodifier::ACCUMULATOR)?;
         let address = at(child, cmodifier::DISPLAY_NAME)?;
         let head = head.ok_or("country modifier child unreadable")?;
@@ -1134,8 +970,6 @@ fn read_children(
     Ok(index)
 }
 
-/// A child's gathered head: vtable, accumulator header and display string
-/// header, as the per-child scattered copy read them.
 const CHILD_HEAD_BYTES: usize = 56;
 const CHILD_HEAD: [RecordField; 3] = [
     RecordField {
@@ -1160,9 +994,6 @@ const CHILD_HEAD_LAYOUT: RecordLayout<'static> =
         None => panic!("child head layout"),
     };
 
-/// [`pointer_pages`] that also gathers each page's child heads
-/// ([`CHILD_HEAD`]) in one guarded call: `visit` gets each child with its
-/// head, `None` from the first child whose head did not read whole.
 fn pointer_pages_gathered(
     memory: &Observed<'_, impl Memory>,
     array: Array,
@@ -1183,8 +1014,6 @@ fn pointer_pages_gathered(
         ) {
             return Err("country stability pointers unreadable");
         }
-        // Pointers are validated in order before any head is read, as the
-        // per-child walk validated each before its copy.
         let mut valid = 0;
         let mut invalid = None;
         for (target, p) in pointers.iter_mut().zip(bytes[..count * 8].chunks_exact(8)) {
@@ -1220,7 +1049,6 @@ fn pointer_pages_gathered(
     Ok(())
 }
 
-/// A validated string's length and digest, streamed without a text-size cap.
 fn display_digest(
     memory: &impl Memory,
     address: usize,
@@ -1245,7 +1073,6 @@ fn display_digest(
     Ok((descriptor.len, digest))
 }
 
-/// Digests only reject; matching digests still require exact payload equality.
 fn same_text(
     memory: &impl Memory,
     left: usize,
@@ -1270,8 +1097,6 @@ fn same_text(
     Ok(true)
 }
 
-/// Walks the nonzero entries of a sorted accumulator array, validating the
-/// whole array's key order.
 fn nonzero(
     memory: &impl Memory,
     entries: Array,
@@ -1319,7 +1144,6 @@ fn signature(
     Ok(signature)
 }
 
-/// The replayed sources in modifier-rebuild order.
 fn candidates(
     memory: &Observed<'_, impl Memory>,
     base: usize,
@@ -1336,7 +1160,6 @@ fn candidates(
     };
     let c = country.pointer;
     phase!(Ideas);
-    // 1-3: ideas, the ruling party's first country leader, its ideology group.
     let status = pointer(memory, at(c, ccountry::POLITICAL_STATUS)?)?;
     let ideas = Array::read(memory, at(status, cpolitical_status::IDEAS)?, 8)
         .ok_or("active idea array invalid")?;
@@ -1344,8 +1167,6 @@ fn candidates(
     let secondary = site(base, cidea::SECONDARY_VTABLE_RVA)? as u64;
     batched::pointer_pages(memory, ideas, |pointers| {
         batched::objects(memory, pointers, 8, IDEA_MODIFIER, false);
-        // CIdea can be reached through its secondary base. Authenticate its
-        // own primary vptr before selecting the source payload's allocation.
         let mut modifiers = [0; 64];
         let mut len = 0;
         for &idea in pointers {
@@ -1376,8 +1197,6 @@ fn candidates(
             if read::<u64>(memory, object) != Some(primary) {
                 return Err("active idea primary vtable mismatch");
             }
-            // Political modifier rebuilding adds the array's own pointer +
-            // 0x68, with a built label.
             list.source(memory, at(idea, IDEA_MODIFIER)?, Kind::Idea, false)?
                 .identity(at(object, cidea::TOKEN)?, 0, 0);
         }
@@ -1398,9 +1217,6 @@ fn candidates(
         return Err("ruling party unreadable");
     }
     let leaders = Array::from_header(leaders, 8).ok_or("ruling party leaders invalid")?;
-    // Political modifier rebuilding reaches both objects from this party. Their
-    // checks remain in leader/ideology order; only their individually owned
-    // fields are gathered.
     let group_pointer = pointer_from(&group).ok();
     let leader_pointer = if leaders.count != 0 {
         memory.gather([(leaders.data, 8)], false);
@@ -1465,7 +1281,6 @@ fn candidates(
     }
     batched::sources(memory, &modifiers[..len], true, false);
     if leaders.count != 0 {
-        // Select the first element only when count is nonzero.
         let leader = pointer(memory, leaders.data)?;
         let mut head = [0_u8; 16];
         if !read_slice(memory, leader, &mut head)
@@ -1496,8 +1311,6 @@ fn candidates(
     )?
     .identity(at(group, cideology_group::TOKEN)?, 0, 0);
     phase!(Advisors);
-    // 8: appointed advisors, after faction, difficulty and balance-of-power
-    // sources this reader does not replay.
     let object = read::<u64>(memory, at(c, ccountry::CHARACTERS)?)
         .ok_or("country characters pointer unreadable")?;
     if object != 0 {
@@ -1549,17 +1362,10 @@ fn candidates(
             Ok(())
         })?;
     }
-    // 14-15 and 22-24: named statics (their conditions are not replayed; a
-    // static that was not added simply pairs with no child). An inactive
-    // static could only take another source's child with its exact display
-    // and entries. Unreplayed kinds label their children with a localised
-    // decision or mission prefix during the modifier rebuild, so this needs
-    // content localising a static exactly as such a label.
     for phase in [1, 2] {
         list.statics(memory, context, phase)?;
     }
     phase!(Dynamic);
-    // 28: enabled dynamic modifiers, the constant part then the values.
     let container = at(c, ccountry::DYNAMIC_MODIFIERS)?;
     let entries = Array::read(
         memory,
@@ -1569,8 +1375,6 @@ fn candidates(
     .ok_or("dynamic modifier entries invalid")?;
     for first in (0..entries.count).step_by(64) {
         let count = (entries.count - first).min(64);
-        // Dynamic modifier serialization owns each 56-byte header; value
-        // recalculation reaches enabled definitions.
         memory.gather(
             (first..first + count).filter_map(|index| {
                 entries
@@ -1640,7 +1444,6 @@ fn candidates(
                 .identity(id, scope.0, scope.1);
         }
     }
-    // 29-31: the scaled war support and stability statics.
     list.statics(memory, context, 3)?;
     Ok(list.len)
 }
@@ -1673,8 +1476,6 @@ impl Builder<'_> {
         Ok(slot)
     }
 
-    /// A CModifier source at `modifier`: its accumulator entries, and its
-    /// display string when the child copies it (no label passed).
     fn source(
         &mut self,
         memory: &impl Memory,
@@ -1752,11 +1553,6 @@ impl Builder<'_> {
         Ok(())
     }
 
-    /// Dynamic-modifier evaluated values are summed per key in key order. Its
-    /// child uses the localised definition ID, also stored as the constant part's
-    /// display even when that part is empty. Require equal text so another source
-    /// with equal values cannot take the child. A language change can leave the
-    /// stored text and fresh child unequal; the line then stays unpaired.
     fn values(
         &mut self,
         memory: &impl Memory,
@@ -1834,7 +1630,6 @@ impl Candidate {
     }
 }
 
-/// A CCharacter's id behind a role's character pointer, authenticated.
 fn character_id(memory: &impl Memory, base: usize, character: usize) -> Result<u32, &'static str> {
     let identity = read::<[u8; 16]>(memory, character).ok_or("character unreadable")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap())
@@ -1852,8 +1647,6 @@ fn character_id(memory: &impl Memory, base: usize, character: usize) -> Result<u
     ))
 }
 
-/// Whether a child is the candidate's clone: equal nonzero entries (and equal
-/// display text where the child copies it); a scaled static by display alone.
 fn matches(
     memory: &impl Memory,
     values: &[(u32, i64)],
@@ -1872,7 +1665,6 @@ fn matches(
     if !candidate.scaled && child.signature != candidate.signature {
         return Ok(false);
     }
-    // Exact verification of every nonzero entry, in order.
     let mut expected = [(0_u32, 0_i64); 64];
     let mut equal = true;
     let mut seen = 0_usize;
@@ -1887,7 +1679,6 @@ fn matches(
             equal &= wanted.next().is_none();
         }
         Content::Entries(source) => {
-            // Compare in windows of the source's nonzero entries.
             let mut offset = 0;
             while equal {
                 let mut filled = 0;
@@ -1932,8 +1723,6 @@ fn matches(
     Ok(equal)
 }
 
-/// Leftmost and rightmost order-preserving assignments; a child is paired
-/// only when both choose the same source.
 fn pair(
     memory: &impl Memory,
     scratch: &mut Scratch,
@@ -1949,10 +1738,6 @@ fn pair(
         backward,
         ..
     } = scratch;
-    // Only children with lines and candidates with tracked keys participate.
-    // Empty signatures could match each other and shift bounds across real
-    // sources: tooltip-only sources can produce children, while ideas with no
-    // modifier and dynamic modifiers with no nonzero value produce none.
     let takes_part = |source: &Candidate| source.tracked;
     let mut next = 0;
     for index in 0..children {
@@ -2083,7 +1868,6 @@ fn emit(
     })
 }
 
-/// The walk's string arena for one country's lines.
 struct Arena<'a> {
     bytes: Buffer<'a, u8>,
     used: usize,
@@ -2092,8 +1876,6 @@ struct Arena<'a> {
 }
 
 impl Arena<'_> {
-    /// Copies an exact std::string; once anything does not fit, only the
-    /// requirement grows.
     fn copy(&mut self, memory: &impl Memory, address: usize) -> Result<Span, &'static str> {
         let descriptor = Descriptor::read(memory, address)?;
         let start = self.used;

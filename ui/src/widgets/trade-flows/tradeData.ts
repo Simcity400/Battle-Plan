@@ -13,11 +13,6 @@ import { groupRuns, groupUnobserved } from '../../dashboard/groups.ts';
 import type { ResolvedCountries } from '../../dashboard/groups';
 import type { CountrySelection } from '../../dashboard/model';
 
-/** Who sells what to whom, from the `trade-flows` product: each flow is one seller's
- * deals for one resource with one buyer (see `crates/dashboard/src/products/
- * trade_flows.rs` for what the values are and the evidence). Values are exact
- * fixed-point integers; the diagram draws with numbers and every label and tooltip
- * reads the exact integers. */
 
 const HOUR = signed32;
 const COUNT = unsigned32;
@@ -27,10 +22,6 @@ const nativeIdentity = (value: unknown): value is string => typeof value === 'st
 const ordered = (spans: readonly { firstHour: number; lastHour: number }[]) =>
   spans.every((span, index) => span.firstHour <= span.lastHour && (index === 0 || spans[index - 1].lastHour < span.firstHour));
 
-/** Checks the reply's shape: resources by ascending native index, countries sorted
- * in the data service's byte order (`compareTags`), each flow's parallel run arrays
- * of one length with runs in hour order that never overlap and exact raw amounts,
- * and known hours in ascending order. */
 export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
   const reply = data as TradeFlowsReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && HOUR(reply.firstHour) && HOUR(reply.lastHour)
@@ -58,8 +49,6 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
     })
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The trade flows reply is malformed.');
-  // Indexing also refuses contradictory holder aliases. Every numeric run must
-  // name the same exact native holder in the shared census at its supplying read.
   const trade = decodeTrade(reply);
   const outrun = trade.flows.some(flow => flow.runs.some(run => (['seller', 'buyer'] as const).some(side => {
     const fact = runAt(flow[side === 'seller' ? 'sellerFacts' : 'buyerFacts'], run.firstHour);
@@ -69,25 +58,19 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
   throw new Error('The trade flow names a holder outside its recorded identity.');
 }
 
-/** One stretch of a flow's recorded terms. */
 export interface FlowRun {
   firstHour: number; lastHour: number; sellerTag: string; buyerTag: string;
-  /** The daily amount, exact, and as a number for drawing. */
   raw: bigint; amount: number;
   factories: number; convoysAssigned: number; convoysRequired: number; deals: number;
 }
 
-/** One seller's sales of one resource to one buyer: its runs, with running sums so
- * any hour's total is a binary search. */
 export interface Flow {
   key: string;
-  /** Initial aliases; use flowCountryAt for a dated presentation. */
   seller: string; buyer: string;
   sellerIdentity: string; buyerIdentity: string;
   sellerFacts: readonly TradeCountrySpan[]; buyerFacts: readonly TradeCountrySpan[];
   resource: ResourceInfo;
   runs: FlowRun[];
-  /** Amount × hours and hours before each run, for totals. */
   amountBefore: Float64Array; hoursBefore: Float64Array;
 }
 
@@ -111,14 +94,12 @@ export interface TradeData {
   flows: Flow[];
   countryFacts: ReadonlyMap<string, readonly TradeCountrySpan[]>;
   identitiesByTag: ReadonlyMap<string, readonly TradeCountrySpan[]>;
-  /** Each resource's place in the game's order, for its colour. */
   resourceOrder: ReadonlyMap<number, number>;
 }
 
 export interface TradeCountrySpan extends Span { identity: string; tag: string }
 export interface TradeCountryFact { identity: string; tag: string; hour: number; firstHour: number; lastHour: number }
 
-/** Exact holder key; tags and separators in mod content cannot change it. */
 export const flowKey = (sellerIdentity: string, buyerIdentity: string, resource: number) => JSON.stringify([sellerIdentity, buyerIdentity, resource]);
 
 function countryAt(facts: readonly TradeCountrySpan[], hour: number): TradeCountryFact | null {
@@ -128,7 +109,6 @@ function countryAt(facts: readonly TradeCountrySpan[], hour: number): TradeCount
     if (facts[middle].firstHour <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
   }
   const fact = facts[found];
-  // When absent now, show the latest supplying census date, never a future alias.
   return fact ? { ...fact, hour: Math.min(hour, fact.lastHour) } : null;
 }
 export const identityCountryAt = (data: TradeData, identity: string, hour: number): TradeCountryFact | null => countryAt(data.countryFacts.get(identity) ?? [], hour);
@@ -136,7 +116,6 @@ export const flowCountryAt = (flow: Flow, side: 'seller' | 'buyer', hour: number
 
 const decoded = new WeakMap<TradeFlowsReply, TradeData>();
 
-/** The reply's flows as runs, decoded once per reply. */
 export function decodeTrade(reply: TradeFlowsReply): TradeData {
   let data = decoded.get(reply);
   if (data) return data;
@@ -173,14 +152,9 @@ export function decodeTrade(reply: TradeFlowsReply): TradeData {
   return data;
 }
 
-/** Which countries' trade is shown: all countries, or chosen countries (fixed, or
- * a group's members at each hour as `membership`), counting a flow when either end
- * is chosen or, with `between`, only when both are. A group counted at each hour
- * counts nothing in the hours its membership was not recorded (`unobserved`). */
 export type TradeScope = { kind: 'all' } | { kind: 'countries'; tags: readonly string[]; membership: ReadonlyMap<string, readonly Span[]> | null;
   unobserved?: readonly Span[]; countryIds?: ReadonlySet<string>; identityNote?: string; between: boolean };
 
-/** Spans with `holes` cut out, in hour order. */
 function without(spans: readonly Span[], holes: readonly Span[]): Span[] {
   if (!holes.length) return [...spans];
   const sorted = [...holes].sort((a, b) => a.firstHour - b.firstHour);
@@ -197,7 +171,6 @@ function without(spans: readonly Span[], holes: readonly Span[]): Span[] {
   return kept;
 }
 
-/** Where a set of spans and another overlap, or together cover. */
 function combine(first: readonly Span[], second: readonly Span[], both: boolean): Span[] {
   const edges: [number, number][] = [];
   for (const span of first) edges.push([span.firstHour, 1], [span.lastHour + 1, -1]);
@@ -229,9 +202,6 @@ function clip(runs: readonly FlowRun[], spans: readonly Span[]): FlowRun[] {
   return clipped;
 }
 
-/** The flows a scope and a resource choice show (every resource when none is
- * chosen), cut to the hours their countries count, so a country counted at each
- * hour trades in the diagram only while it is a member. */
 export function selectFlows(data: TradeData, scope: TradeScope, resources: ReadonlySet<number> | null): Flow[] {
   const wantedResource = (flow: Flow) => !resources || resources.has(flow.resource.id);
   if (scope.kind === 'all') return data.flows.filter(wantedResource);
@@ -256,8 +226,6 @@ export function selectFlows(data: TradeData, scope: TradeScope, resources: Reado
   return selected;
 }
 
-/** End/ever membership chooses native holders at the dates it counts, before
- * including those holders' whole histories. Hour membership still clips each read. */
 export function tradeScope(data: TradeData, selection: CountrySelection, resolved: ResolvedCountries | null,
   groups: CountryGroupReply | undefined, lastHour: number, between: boolean): TradeScope {
   if (selection.kind === 'all') return { kind: 'all' };
@@ -288,7 +256,6 @@ export function tradeScope(data: TradeData, selection: CountrySelection, resolve
 
 export type Measure = 'current' | 'total' | 'average';
 
-/** Amount × hours and hours of a flow up to and including `hour`. */
 export function flowPrefix(flow: Flow, hour: number): [number, number] {
   const runs = flow.runs;
   let low = 0;
@@ -304,10 +271,6 @@ export function flowPrefix(flow: Flow, hour: number): [number, number] {
   return [flow.amountBefore[found] + run.amount * hours, flow.hoursBefore[found] + hours];
 }
 
-/** A flow's size in the diagram at `hour`: its daily amount then (current), what it
- * delivered from `from` to then (total), or its average daily amount over the hours
- * it traded in that time (average). Zero when it did not trade. For drawing only:
- * `exactFlow` gives the numbers shown. `basis` may reuse flowPrefix(flow, from - 1). */
 export function flowValue(flow: Flow, measure: Measure, from: number, hour: number, basis?: readonly [number, number]): number {
   if (measure === 'current') return runAt(flow.runs, hour)?.amount ?? 0;
   const [amountEnd, hoursEnd] = flowPrefix(flow, hour);
@@ -315,12 +278,9 @@ export function flowValue(flow: Flow, measure: Measure, from: number, hour: numb
   const amount = amountEnd - amountStart;
   const hours = hoursEnd - hoursStart;
   if (hours <= 0) return 0;
-  // Amount × hours: a daily amount held 24 hours delivers it once.
   return measure === 'total' ? amount / 24 : amount / hours;
 }
 
-/** Exact sums of flows over [from, hour], by recorded hour: amount × hours and the
- * factories and convoys × hours, the hours traded, and the first and last hours. */
 export interface FlowSums { amountHours: bigint; factoryHours: bigint; assignedHours: bigint; requiredHours: bigint; hours: number; first: number | null; last: number | null }
 
 export function exactSums(flows: readonly Flow[], from: number, hour: number): FlowSums {
@@ -343,7 +303,6 @@ export function exactSums(flows: readonly Flow[], from: number, hour: number): F
   return sums;
 }
 
-/** The terms of flows at one hour, summed: exact amount, factories, convoys, deals. */
 export interface FlowTerms { raw: bigint; factories: number; convoysAssigned: number; convoysRequired: number; deals: number; flows: number }
 
 export function termsAt(flows: readonly Flow[], hour: number): FlowTerms {
@@ -361,15 +320,12 @@ export function termsAt(flows: readonly Flow[], hour: number): FlowTerms {
   return terms;
 }
 
-/** Hours of [from, to] the deals are known, from the reply's known spans. */
 export function knownHours(known: readonly HourSpan[], from: number, to: number): number {
   let hours = 0;
   for (const span of known) hours += Math.max(0, Math.min(to, span.lastHour) - Math.max(from, span.firstHour) + 1);
   return hours;
 }
 
-/** Deals left out at an hour (a read listed them but could not attribute them), from
- * the reply's partial spans; 0 when the hour's deals are all attributed. */
 export function leftOutAt(partial: readonly PartialSpan[], hour: number): number {
   let low = 0;
   let high = partial.length - 1;
@@ -382,14 +338,10 @@ export function leftOutAt(partial: readonly PartialSpan[], hour: number): number
   return 0;
 }
 
-/** Hours of [from, to] known only in part. */
 export function partialHours(partial: readonly PartialSpan[], from: number, to: number): number {
   return knownHours(partial, from, to);
 }
 
-/** What the caption and tooltips say of how much of the trade shown was recorded:
- * deals left out at the moment (current), or days not recorded and days known only
- * in part over [from, hour] (total, average); none when everything was. */
 export function coverageNote(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, measure: Measure, from: number, hour: number): string | undefined {
   if (measure === 'current') {
     const left = leftOutAt(reply.partial, hour);
@@ -401,19 +353,11 @@ export function coverageNote(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, 
     .filter(Boolean).join(' ') || undefined;
 }
 
-/** Why nothing shows, when that is because nothing was recorded: the deals at the
- * moment (current), or over the whole of [from, hour] (total, average); null when
- * something was recorded. */
 export function unrecordedMessage(known: readonly HourSpan[], measure: Measure, from: number, hour: number): string | null {
   if (measure === 'current') return knownSpanAt(known, hour) < 0 ? 'Trade deals were not recorded at this time.' : null;
   return knownHours(known, from, hour) < 1 ? 'Trade deals were not recorded in this time.' : null;
 }
 
-/** What an empty diagram says when something was recorded: whether all of it was
- * (no trade), or only part (deals a read could not attribute, days not recorded, or
- * a group counted at each hour whose membership was not recorded), so an incomplete
- * record never reads as no trade. `groupUnobserved` is the group's unrecorded
- * hours, or null for countries not chosen by such a group. */
 export function emptyMessage(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, measure: Measure, from: number, hour: number,
   groupUnobserved: readonly Span[] | null = null): string {
   if (measure === 'current') {
@@ -427,7 +371,6 @@ export function emptyMessage(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, 
   return 'No trade in this time.';
 }
 
-/** The known span holding an hour, by its place, or -1 when the hour is unknown. */
 export function knownSpanAt(known: readonly HourSpan[], hour: number): number {
   let low = 0;
   let high = known.length - 1;
@@ -440,32 +383,26 @@ export function knownSpanAt(known: readonly HourSpan[], hour: number): number {
   return -1;
 }
 
-/** The node that sums the countries past a side's limit. */
 export const OTHER = '\u0000other';
 
-/** The kit's reason to show before a request with no countries can load. */
 export function selectionMessage(resolved: { reason: string | null } | null, atMoment: { reason: string | null },
   measure: Measure, from: number, hour: number, groupUnobserved: readonly Span[] | null = null): string | null {
   if (!resolved?.reason) return null;
-  // An empty roster now does not explain missing membership earlier in the measured time.
   const missing = measure !== 'current' && groupUnobserved ? knownHours(groupUnobserved, from, hour) : 0;
   if (missing >= 1) return `Group membership is missing for ${formatDays(missing)}.`;
   return atMoment.reason ?? resolved.reason;
 }
 
-/** A native holder or the rest of one side, with exact supplying label dates. */
 export interface SideNode {
   id: string; side: 'source' | 'target'; identity: string | null; tag: string | null; factHour: number | null;
   members: string[]; memberValues: Map<string, number>; memberFacts: Map<string, TradeCountryFact>; value: number;
 }
-/** A ribbon of the diagram: the flows between two nodes for one resource. */
 export interface SideLink { id: string; source: string; target: string; resource: ResourceInfo; flows: Flow[]; value: number }
 export interface Diagram { nodes: SideNode[]; links: SideLink[]; total: number }
 
 const nodeId = (side: 'source' | 'target', identity: string | null) => `${side === 'source' ? 's' : 't'}:${identity ?? OTHER}`;
 const factOrder = (facts: ReadonlyMap<string, TradeCountryFact>, a: string, b: string) => compareTags(facts.get(a)?.tag ?? '', facts.get(b)?.tag ?? '') || compareTags(a, b);
 
-/** Positive amounts draw geometry. Exact signed/zero rows retain their flow keys. */
 export function buildDiagram(flows: readonly Flow[], measure: Measure, from: number, hour: number, perSide: number): Diagram {
   const valued = flows.map(flow => ({ flow, value: flowValue(flow, measure, from, hour) })).filter(item => item.value > 0);
   const facts = new Map<string, TradeCountryFact>();
@@ -512,7 +449,6 @@ export function buildDiagram(flows: readonly Flow[], measure: Measure, from: num
   return { nodes: [...nodes.values()], links: [...links.values()], total };
 }
 
-/** Fixed native-holder order, ranked by whole-window totals and dated aliases. */
 export function sideRanks(flows: readonly Flow[], from: number, to: number): { source: Map<string, number>; target: Map<string, number> } {
   const sellers = new Map<string, number>(), buyers = new Map<string, number>();
   const facts = new Map<string, TradeCountryFact>();
@@ -529,14 +465,8 @@ export function sideRanks(flows: readonly Flow[], from: number, to: number): { s
   return { source: rank(sellers), target: rank(buyers) };
 }
 
-/** The value that fills the diagram's height for one scale all campaign, never below
- * what a side's drawn flows carry at any hour of [from, to]. Only positive amounts draw
- * (`buildDiagram`), so a negative one never lowers it: the largest sum of positive daily
- * amounts at once (current), or the sum of each flow's highest positive total (total) or
- * running average (average). */
 export function campaignScale(flows: readonly Flow[], measure: Measure, from: number, to: number): number {
   if (measure === 'current') {
-    // The largest sum of positive daily amounts at any hour: a sweep over where runs start and end.
     const events: [number, number][] = [];
     for (const flow of flows) for (const run of flow.runs) {
       if (run.lastHour < from || run.firstHour > to || !(run.amount > 0)) continue;
@@ -551,9 +481,6 @@ export function campaignScale(flows: readonly Flow[], measure: Measure, from: nu
     }
     return most;
   }
-  // A flow's running total or average moves only toward the amount of the run it is in, so
-  // it peaks at the end of a run (cut to the time shown): its exact peak. The sum of the
-  // flows' peaks is never below what the diagram reaches at any hour.
   let most = 0;
   for (const flow of flows) {
     let amount = 0;
@@ -565,7 +492,6 @@ export function campaignScale(flows: readonly Flow[], measure: Measure, from: nu
       if (first > last) continue;
       amount += run.amount * (last - first + 1);
       hours += last - first + 1;
-      // Amount × hours: a daily amount held 24 hours delivers it once.
       peak = Math.max(peak, measure === 'total' ? amount / 24 : amount / hours);
     }
     most += peak;
@@ -573,20 +499,13 @@ export function campaignScale(flows: readonly Flow[], measure: Measure, from: nu
   return most;
 }
 
-/** A campaign scale kept for one scope (`key`). */
 export interface HeldScale { key: string; scale?: number }
 
-/** The campaign scale to draw: the one `read` now, else the last one read for the same
- * scope while another extent's is read; none until that scope's first is read. */
 export function heldScale(held: HeldScale | undefined, key: string, read: number | undefined): HeldScale {
   if (read !== undefined) return held?.key === key && held.scale === read ? held : { key, scale: read };
   return held?.key === key ? held : { key };
 }
 
-/** Each resource's colour by its place in the campaign's full list (`order`, the
- * game's order), whatever is shown: the first as many as the palette has take its
- * colours in turn, and the rest share `other`, as a ninth category folds into
- * "Other". A filter never repaints a resource. */
 export function resourceColours(resources: readonly ResourceInfo[], order: ReadonlyMap<number, number>, palette: readonly string[], other: string): Map<number, string> {
   return new Map(resources.map(item => {
     const place = order.get(item.id) ?? palette.length;
@@ -594,19 +513,14 @@ export function resourceColours(resources: readonly ResourceInfo[], order: Reado
   }));
 }
 
-/** A resource's readable name, with repeated declarations numbered. */
 export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
 
 
-/** Days as the game counts them, to a tenth where a day is not whole. */
 export const formatDays = (hours: number) => {
   const days = Math.round(hours / 2.4) / 10;
   return `${usNumber.format(days)} ${days === 1 ? 'day' : 'days'}`;
 };
 
-/** The rows saying what flows carried: at an hour for the current amount, else over
- * [from, hour] (the total, or the average per day over the days traded), with the
- * civilian factories paid and convoys used then (on average, over time). */
 export function measureRows(flows: readonly Flow[], measure: Measure, from: number, hour: number, decimals: number): TooltipRow[] {
   if (measure === 'current') {
     const terms = termsAt(flows, hour);
@@ -617,8 +531,6 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
       ...(terms.deals > 1 ? [{ label: 'Deals', value: usNumber.format(terms.deals) }] : []),
     ];
   }
-  // Each flow's averages over its own days traded, summed, as the ribbon is sized:
-  // for several flows, what they carried side by side while trading.
   let amountHours = 0n;
   let perDay = 0n;
   const factories: [bigint, number][] = [];
@@ -626,8 +538,6 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
   const required: [bigint, number][] = [];
   let traded = 0;
   let hours = 0;
-  // Whether any factory was paid, convoy used or convoy needed, from the exact sums,
-  // before anything is rounded for display.
   const any = { factories: false, assigned: false, required: false };
   for (const flow of flows) {
     const own = exactSums([flow], from, hour);
@@ -637,7 +547,6 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
     hours = own.hours;
     amountHours += own.amountHours;
     perDay += rescale(own.amountHours, length, 0);
-    // Keep fractions exact until their sum is rounded for display.
     factories.push([own.factoryHours, own.hours]);
     assigned.push([own.assignedHours, own.hours]);
     required.push([own.requiredHours, own.hours]);
@@ -646,7 +555,6 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
     any.required ||= own.requiredHours > 0n;
   }
   if (!traded) return [{ label: 'No trade recorded in this time', tone: 'muted' }];
-  // An average above zero that rounds to nothing at a tenth says so.
   const tenths = (values: readonly [bigint, number][], some = false) => {
     const rounded = rescaleSum(values, 1);
     return rounded === 0n && some ? '<0.1' : formatAmount(rounded, 1, 1);
@@ -661,9 +569,6 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
   ];
 }
 
-/** Flows' exact amount by `measure`, as a fixed-point integer with the reply's
- * decimals: their daily amount at `hour`, what they delivered over [from, hour], or
- * the sum of each one's average per day over the hours it traded then. */
 export function measureAmount(flows: readonly Flow[], measure: Measure, from: number, hour: number): bigint {
   if (measure === 'current') return termsAt(flows, hour).raw;
   let amount = 0n;
@@ -675,27 +580,20 @@ export function measureAmount(flows: readonly Flow[], measure: Measure, from: nu
   return measure === 'total' ? rescale(amount, 24, 0) : amount;
 }
 
-/** What a measure covers, for the tooltip's subtitle. */
 export function measureNote(measure: Measure): string {
   return measure === 'current' ? 'Per day' : measure === 'total' ? 'Total delivered' : 'Average per trading day';
 }
 
-/** A note on unrecorded days inside [from, hour] for the totals and averages, which
- * cover recorded days only; none when every hour was recorded. */
 export function unknownNote(known: readonly HourSpan[], from: number, hour: number): string | undefined {
   const missing = Math.max(0, hour - from + 1 - knownHours(known, from, hour));
   return missing >= 1 ? `Trade data is missing for ${formatDays(missing)}.` : undefined;
 }
 
-/** The order the product gives a selection's flows: by seller, buyer and resource, then by
- * the holders' identity keys as Rust orders strings. Country indexes share the campaign's
- * sorted alias list, so every page orders them alike. */
 export function compareFlows(a: TradeFlow, b: TradeFlow): number {
   return a.seller - b.seller || a.buyer - b.buyer || a.resource - b.resource
     || compareTags(a.sellerIdentity, b.sellerIdentity) || compareTags(a.buyerIdentity, b.buyerIdentity);
 }
 
-/** Hour spans joined where one continues the one before with the same value (`same`). */
 function joinSpans<T extends { firstHour: number; lastHour: number }>(spans: T[], next: readonly T[], same: (a: T, b: T) => boolean = () => true): void {
   for (const span of next) {
     const open = spans.at(-1);
@@ -704,9 +602,6 @@ function joinSpans<T extends { firstHour: number; lastHour: number }>(spans: T[]
   }
 }
 
-/** The windows held (`../../dashboard/heldWindows.ts`), joined in hour order into the reply of their hours together: each
- * flow's runs after its runs of the windows before, a run continuing one with the same terms and tags joined to it;
- * countries indexed again in tag order. Null while none is held. */
 export function mergeTrade(replies: readonly TradeFlowsReply[]): TradeFlowsReply | null {
   const held = [...replies].sort((a, b) => a.firstHour - b.firstHour);
   if (!held.length) return null;

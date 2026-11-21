@@ -64,7 +64,6 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
                 literal: b"localised_empty".to_vec(),
             },
         ]));
-    // The description keeps the named branches even when the faction name is empty.
     for template_token in [None, Some(17), Some(18)] {
         *fixture.frame.tables[TableId::Factions.index()] =
             TableView::Complete(TableRows::Factions(
@@ -117,8 +116,6 @@ fn same_faction_nonleader_preview_reads_only_subject_operands() {
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 
-    // The description can still name the target's outside-faction overlord,
-    // independently of the unreached removal/join subject loops.
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     else {
@@ -158,8 +155,6 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 
-    // A different-faction removal still requires the roster even though
-    // the source is a nonleader and therefore emits no join descriptions.
     *fixture.frame.tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![
             FactionRow {
@@ -212,8 +207,6 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
     );
 }
 
-/// Reached inventory predicates require both complete tables. Earlier native
-/// exits do not require the inventory at all.
 #[test]
 fn create_wargoal_refuses_without_complete_inventory_tables() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -759,7 +752,7 @@ fn faction_influence_environment_keeps_links() {
     *fixture.frame.tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![FactionRow {
             id: 9,
-            name: b"Union".to_vec(), // The faction stores the resolved literal name.
+            name: b"Union".to_vec(),
             ..Default::default()
         }]));
     *fixture.frame.tables[TableId::FactionMembers.index()] =
@@ -1021,7 +1014,6 @@ fn diplomacy_output_branches() {
                 },
             ],
         }]));
-    // Synthetic cases cover all 44 assigned classes and their own-text branches.
     for (body, object, mask, expected, refusal) in [
         (
             "add_autonomy_score={value=9}",
@@ -1442,13 +1434,13 @@ fn diplomacy_output_branches() {
             2,
             "Create Root literal\n",
             None,
-        ), // The reader does not consume a selector.
+        ),
         ("create_faction=\"\"", C(1), 2, "", None),
         ("create_faction=SYN_NAME", S(0), 2, "", None),
-        ("dismantle_faction=no", C(1), 2, "Dismantle Union\n", None), // The description ignores the boolean.
+        ("dismantle_faction=no", C(1), 2, "Dismantle Union\n", None),
         ("dismantle_faction=yes", C(2), 2, "", None),
         ("dismantle_faction=yes", C(3), 2, "", None),
-        ("leave_faction=ROOT", C(1), 2, "Remove alpha/Union\n", None), // Definite current name.
+        ("leave_faction=ROOT", C(1), 2, "Remove alpha/Union\n", None),
         ("leave_faction=yes", C(3), 2, "", None),
         ("leave_faction=yes", S(1), 2, "", None),
         (
@@ -1457,7 +1449,7 @@ fn diplomacy_output_branches() {
             2,
             "Remove Gamma/Union\n",
             None,
-        ), // No target-membership gate.
+        ),
         ("remove_from_faction=AAA", C(3), 2, "Remove Alpha\n", None),
         (
             "remove_from_faction=AAA",
@@ -1475,9 +1467,9 @@ fn diplomacy_output_branches() {
             "Rename Union/Charter AAA\n",
             None,
         ),
-        ("set_faction_name=ROOT", C(1), 2, "Rename Union/\n", None), // selector clears new name.
+        ("set_faction_name=ROOT", C(1), 2, "Rename Union/\n", None),
         ("set_faction_name=SYN_NAME", C(3), 2, "", None),
-        ("set_faction_spymaster=no", C(2), 2, "Spy Union\n", None), // Nonleader is allowed; boolean ignored.
+        ("set_faction_spymaster=no", C(2), 2, "Spy Union\n", None),
         ("set_faction_spymaster=yes", C(3), 2, "", None),
         (
             "add_faction_goal_slot={category=short_term value=1.5}",
@@ -1555,7 +1547,7 @@ fn diplomacy_output_branches() {
             2,
             "Unlock Military",
             None,
-        ), // No country/faction gate or LF.
+        ),
         (
             "set_faction_military_unlocked=no",
             C(1),
@@ -2147,9 +2139,6 @@ fn diplomacy_output_branches() {
         ),
         (
             "add_to_war={enemy=ROOT.ROOT targeted_alliance=BBB}",
-            // The selector follows the first ROOT to scope 1. Its terminal ROOT
-            // uses scope 1's country when linked scope 2 has
-            // neither a country nor a state.
             "War Beta/Beta\n",
         ),
     ] {
@@ -2174,8 +2163,6 @@ fn diplomacy_output_branches() {
         assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
-    // The formatter returns empty text for a genuine null template. A nonnull
-    // template still needs its recorded lexer spelling, even with empty text.
     for (template_token, dictionary_gap, expected, refusal) in [
         (None, true, "Spy \n", None),
         (
@@ -2357,7 +2344,6 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
     let suppressed = render(&fixture);
     assert_eq!(suppressed.text, "");
     assert!(suppressed.refusals.is_empty());
-    // The object can remain owned after its unused membership was consumed.
     *fixture.frame.tables[TableId::WargoalTargets.index()] =
         TableView::Complete(TableRows::WargoalTargets(vec![]));
     let consumed = render(&fixture);
@@ -2420,7 +2406,6 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
                 ..Default::default()
             },
         ]));
-    // Partial state coverage is decidably false even with duplicate types.
     let partial = fixture.render_native(
         "create_wargoal={target=BBB type=SynGoal generator={1 2}}",
         &mut EventScopes::new(vec![EventScope::of(C(1))]),

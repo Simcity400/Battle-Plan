@@ -1,4 +1,3 @@
-//! Air sortie capture: the sortie inputs and the air reference witnesses the air missions job joins with the wing census. The host owns the AirMissions job, the air pack loan and table assembly.
 
 use collector_primitives::table_capture;
 use collector_projection::table_conversion;

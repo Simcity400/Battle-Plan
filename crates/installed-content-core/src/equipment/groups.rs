@@ -9,24 +9,14 @@ use crate::{
     tokens::Token,
 };
 
-/// The equipment group database's directory.
 pub const GROUPS_DIRECTORY: &str = "common/equipment_groups/";
 
-/// The readers of an equipment group file.
 #[derive(Clone, Copy, Debug)]
 enum GroupNode {
-    /// Each top-level key declares a group.
     Top,
-    /// Equipment-group fields.
     Group,
 }
 
-/// Register each first-NUL key as a token. Repeated tokens report an error
-/// and skip their block, retaining the first declaration. New groups use
-/// persistent object reads: `icon` and `description` read strings, while
-/// `equipment_type` reads every token through the next `}` regardless of
-/// its opening value, resolving entries into the value slot ([`Shape::List`]).
-/// Other fields are reported.
 fn group_shape(node: GroupNode, field: &Field<'_>, declared: &mut Vec<Token>) -> Shape<GroupNode> {
     match node {
         GroupNode::Top => {
@@ -46,22 +36,15 @@ fn group_shape(node: GroupNode, field: &Field<'_>, declared: &mut Vec<Token>) ->
     }
 }
 
-/// One equipment group as its reader leaves it.
 #[derive(Clone, Debug)]
 pub struct Group {
-    /// Its name's token, by which the database keys it.
     token: Token,
-    /// The key as declared.
     pub name: Vec<u8>,
-    /// `description`; empty when absent.
     pub description: Vec<u8>,
-    /// Every token of every `equipment_type` field, in order.
     pub members: Vec<Vec<u8>>,
 }
 
 impl Group {
-    /// The display localisation key is its nonempty description, otherwise
-    /// its declared name.
     pub fn key(&self) -> &[u8] {
         if self.description.is_empty() {
             &self.name
@@ -71,21 +54,14 @@ impl Group {
     }
 }
 
-/// Named groups from `common/equipment_groups`.
 #[derive(Clone, Debug, Default)]
 pub struct Groups {
     groups: Vec<Group>,
-    /// Each place a file's reading leaves the text, and what the reader
-    /// reports, by file and line.
     pub misreads: Vec<String>,
-    /// Where the port cannot follow the reading, and why: the groups are
-    /// unknown from there on.
     pub lost: Option<String>,
 }
 
 impl Groups {
-    /// Direct `.txt` files in [`GROUPS_DIRECTORY`] in filename byte order,
-    /// without recursion.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         layers.recorded_product("equipment groups", 1, &[], Self::read).map(|groups| groups.as_ref().clone())
     }
@@ -101,14 +77,12 @@ impl Groups {
         Ok(groups)
     }
 
-    /// Append declarations from one file.
     fn read_file(&mut self, bytes: &[u8], path: &str) {
         let mut declared: Vec<Token> = self
             .groups
             .iter()
             .map(|group| group.token.clone())
             .collect();
-        // The file lexer uses mode 0.
         let read = native::read(
             bytes,
             native::Mode::KeepMark,
@@ -142,7 +116,6 @@ impl Groups {
                 .flat_map(|field| field.value.items().unwrap_or_default())
                 .map(|member| member.value.scalar().unwrap_or_default().to_vec())
                 .collect();
-            // The last `description` read stays.
             let description = fields
                 .iter()
                 .rev()
@@ -158,18 +131,12 @@ impl Groups {
         }
     }
 
-    /// Recursively replace group members with their members, retaining other
-    /// names once and omitting group names. Cyclic groups are refused by name
-    /// because the game would not return.
     pub fn expand(&self, names: &[impl AsRef<[u8]>]) -> Result<Vec<Vec<u8>>, String> {
         let mut out = Vec::new();
         self.expand_into(names, &mut out)?;
         Ok(out)
     }
 
-    /// [`Self::expand`] keeping each group's name too: a group member adds its
-    /// own name, then its members. The expansion an organisation's equipment
-    /// type list is tested against.
     pub fn expand_inclusive(&self, names: &[impl AsRef<[u8]>]) -> Result<Vec<Vec<u8>>, String> {
         let names: Vec<Vec<u8>> = names.iter().map(|name| name.as_ref().to_vec()).collect();
         let mut out = Vec::new();
@@ -177,7 +144,6 @@ impl Groups {
         Ok(out)
     }
 
-    /// Expand into an existing list, retaining names already present only once.
     pub fn expand_into(
         &self,
         names: &[impl AsRef<[u8]>],
@@ -226,15 +192,10 @@ impl Groups {
         Ok(())
     }
 
-    /// Member lookup uses a folded token, defaulting to token 0 for text
-    /// the lexer does not hold. A group with an empty name or one beginning
-    /// with a digit or `-` has token 0; resolving another member to that group
-    /// depends on all registered names and remains refused by name.
     pub fn group(&self, member: &[u8]) -> Result<Option<&Group>, String> {
         Ok(self.position(member)?.map(|at| &self.groups[at]))
     }
 
-    /// [`Self::group`]'s place among the groups.
     fn position(&self, member: &[u8]) -> Result<Option<usize>, String> {
         let token = Token::register(c_string(member));
         if let Some(at) = self.groups.iter().position(|group| group.token == token) {
@@ -255,9 +216,6 @@ impl Groups {
 mod tests {
     use super::*;
 
-    /// Inclusive expansion keeps each group's name, as written, before its members, nested
-    /// groups included, every name once without case; plain expansion drops group names.
-    /// A cycle is refused either way.
     #[test]
     fn inclusive_expansion_keeps_group_names() {
         engine_executable::executable_tables::initialize_for_tests()

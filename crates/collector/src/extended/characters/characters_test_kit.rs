@@ -49,9 +49,6 @@ fn empty_map(bytes: &mut [u8], character: usize, offset: usize, head: usize) {
     bytes[head + msvc_tree_node::NIL] = 1;
 }
 
-/// Base fixture plus one leader role, one heap-keyed advisor role, a
-/// valid skill on unit 0, army kind on unit 1, and a third navy character
-/// with a heap name.
 pub(crate) fn mapped_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     put(
@@ -65,8 +62,6 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
         3_u32.to_le_bytes(),
     );
     pointer(&mut bytes, ROSTER + 16, CHAR2);
-    // Single leader role on character 0 with ideology key 7. The map
-    // count lives in the character's map header, not the sentinel.
     put(
         &mut bytes,
         CHARACTERS[0] + ccharacter::LEADER_MAP_HEAD + 8,
@@ -97,7 +92,6 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
         LEAD_ROLE + ccountry_leader::CHARACTER,
         CHARACTERS[0],
     );
-    // Single advisor role on character 0 with a 20-byte heap key.
     put(
         &mut bytes,
         CHARACTERS[0] + ccharacter::ADVISOR_MAP_HEAD + 8,
@@ -132,7 +126,6 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     pointer(&mut bytes, ADV_ROLE + cadvisor::CHARACTER, CHARACTERS[0]);
     literal(&mut bytes, ADV_ROLE + cadvisor::IDEA_TOKEN, b"idea");
     literal(&mut bytes, ADV_ROLE + cadvisor::SLOT, b"slot");
-    // Valid skill definition on unit 0.
     put(
         &mut bytes,
         SKILL0,
@@ -155,7 +148,6 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
         5_i32.to_le_bytes(),
     );
     pointer(&mut bytes, UNITS[0] + cunit_leader::SKILL, SKILL0);
-    // Army kind with components on unit 1.
     put(
         &mut bytes,
         UNITS[1],
@@ -181,7 +173,6 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
         UNITS[1] + carmy_leader::LOGISTICS,
         44_i32.to_le_bytes(),
     );
-    // Third character with a heap name and a navy unit.
     put(
         &mut bytes,
         CHAR2,
@@ -265,8 +256,6 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     bytes
 }
 
-/// Reference typed walk with identical pooled capacities, outcomes and
-/// arenas installed exactly like `capture` installs them.
 pub(crate) fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     captured.set_character_activity([true; N]);
@@ -279,7 +268,6 @@ pub(crate) fn direct(memory: &impl engine_native::Memory, capacities: &Capacitie
     captured
 }
 
-/// Capture one owned payload the product's way and decode into fresh pooled buffers.
 pub(crate) fn split(
     memory: &impl engine_native::Memory,
     capacities: &Capacities,
@@ -332,9 +320,6 @@ pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
     assert_buffer("characters", &split.characters, &direct.characters);
     assert_buffer("leaders", &split.leaders, &direct.leaders);
     let len = assert_buffer_payload("advisors", &split.advisors, &direct.advisors);
-    // The mutation-certified cache packs definitions before fresh numeric
-    // caches. Empty spans may therefore point at different arena tails;
-    // they address no byte. Preserve every flag, failure and nonempty span.
     let empty_cache = |row: &cadvisor::Row| cadvisor::Row {
         modifier_start: if row.modifier_len == 0 {
             0

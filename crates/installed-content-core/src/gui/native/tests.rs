@@ -5,7 +5,6 @@ fn gui(text: &str) -> Gui {
     read(text.as_bytes())
 }
 
-/// The window `w` holding `body`.
 fn window(body: &str) -> Element {
     gui(&format!(
         "guiTypes = {{ containerWindowType = {{ name = \"w\" {body} }} }}\n"
@@ -51,7 +50,6 @@ fn grid<'a>(window: &'a Element, name: &str) -> &'a Grid {
     window.find(Kind::Grid, name).unwrap().grid().unwrap()
 }
 
-// Independently authored controls exercise each reader without game GUI or asset text.
 const SYNTHETIC_COMBAT: &str = r#"
     name = "synthetic_combat"
     size = { width = 71 height = 29 } position = { x = -4 y = 6 }
@@ -124,7 +122,6 @@ fn a_synthetic_window_reads_without_refusal_into_typed_children() {
     );
     let bg = button(window, "bg_btn");
     assert_eq!(bg.sprite, b"fixture_background");
-    // The post-load pass parsed the last orientation text.
     assert_eq!(bg.orientation, Some(Orientation::Center));
     assert!(bg.center_position && bg.enabled);
     assert_eq!((bg.position, bg.frame), ([6, -12], 0));
@@ -150,15 +147,11 @@ fn a_synthetic_window_reads_without_refusal_into_typed_children() {
     assert!(count.always_transparent && count.truncate && count.multiline);
     let progress = icon(window, "progress");
     assert_eq!((progress.frame, progress.scale), (1, 1.0));
-    // Each lookup is kind-specific.
     assert!(window.find(Kind::Icon, "bg_btn").is_none());
     assert_eq!(window.child_named("BG_BTN").unwrap().kind, Kind::Button);
     assert_eq!(window.children[3].name_bytes(), b"progress");
 }
 
-/// A window keeps buttons matching its current background name outside its lists. Its post-load
-/// pass copies unset listed fields from the `parent` chain, then gives a `fullScreen` window
-/// the root extent.
 #[test]
 fn window_types_list_their_children_and_inherit_as_the_game_does() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -180,7 +173,6 @@ fn window_types_list_their_children_and_inherit_as_the_game_does() {
          }
 ");
     let kid = gui.template("kid").unwrap().window().unwrap();
-    // The first `bg` is read before `background` names it; the second after.
     assert_eq!(kid.unlisted, [1]);
     assert_eq!(
         kid.size,
@@ -203,7 +195,6 @@ fn window_types_list_their_children_and_inherit_as_the_game_does() {
             "{name}: {refused:?}"
         );
     }
-    // Whether a max_resolution axis is unset depends on the load-time root extent.
     let wide = gui.template("wide").unwrap().refusals();
     assert!(
         wide.iter().any(|refusal| refusal.key == "size"
@@ -213,11 +204,7 @@ fn window_types_list_their_children_and_inherit_as_the_game_does() {
                 .starts_with("was read with no load-time GUI viewport given")),
         "{wide:?}"
     );
-    // A textBoxType's own name, which `create_sprite` may register as a sprite.
     assert!(gui.text_box_named(b"label") && !gui.text_box_named(b"Label"));
-    // With the reading client's own load-time viewport the axis is that extent less the
-    // position read before it (1): 1919 is set, so only the empty names are copied; a width
-    // of 1 leaves 0, unset, and the size comes from the parent too.
     let source = "guiTypes = {
          windowType = { name = \"base\" size = { x = 40 y = 20 } position = { x = 5 y = 6 }
            background = \"bg\" horizontalBorder = \"h\" verticalBorder = \"v\" }
@@ -251,7 +238,6 @@ fn window_types_list_their_children_and_inherit_as_the_game_does() {
     );
 }
 
-/// Lexer comments and separators decide what readers see.
 #[test]
 fn comments_and_separators_are_the_game_lexer_s() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -264,8 +250,6 @@ fn comments_and_separators_are_the_game_lexer_s() {
     assert_eq!(icon(&window, "i").frame, 3);
 }
 
-/// Default handling skips unknown blocks: mod keys, kinds a container does not build, quoted
-/// keys and `3dposition`, which the lexer numbers before keyword lookup.
 #[test]
 fn an_unknown_key_or_kind_is_skipped_whole() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -280,14 +264,11 @@ fn an_unknown_key_or_kind_is_skipped_whole() {
     );
     assert_eq!(window.name(), "w");
     assert_eq!(names(&window), ["b", "after"]);
-    // `allwaystransparent` is no button key: its block, `enabled` inside, is skipped.
     assert!(button(&window, "b").enabled);
     assert_eq!(icon(&window, "after").frame, 2);
     assert!(reasons(&window).is_empty(), "{:?}", reasons(&window));
 }
 
-/// A key whose reader does not read a block leaves it to be read as further keys of the
-/// element, whose `}` then ends the element.
 #[test]
 fn a_block_under_a_scalar_key_is_read_as_further_keys() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -307,8 +288,6 @@ fn a_block_under_a_scalar_key_is_read_as_further_keys() {
     assert_eq!(icon(&ignored, "d").frame, 5);
 }
 
-/// A key without an operator loses the following token and passes the previous value to the
-/// parser.
 #[test]
 fn a_key_without_an_operator_reads_the_previous_value() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -321,9 +300,6 @@ fn a_key_without_an_operator_reads_the_previous_value() {
     assert_eq!(icon(&window, "j").frame, 9);
 }
 
-/// Definitions: the first of a name wins, a taken name reads nothing more, a value starting
-/// with `@` is resolved as peeked and read again as the next key, and a quoted token is never
-/// a reference.
 #[test]
 fn script_variables_resolve_in_file_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -340,8 +316,6 @@ fn script_variables_resolve_in_file_order() {
     assert_eq!(icon(&window, "j").position, [4.0, 4.0]);
 }
 
-/// The shared token reader's variable rules: definitions in order and retained values, using
-/// one file-scoped table.
 #[allow(clippy::type_complexity)]
 const SHARED_VARIABLE_RULES: &[(&str, &[(&[u8], &[u8], bool)], (&[u8], bool), (&[u8], bool))] = &[
     (
@@ -388,7 +362,6 @@ const SHARED_VARIABLE_RULES: &[(&str, &[(&[u8], &[u8], bool)], (&[u8], bool), (&
     ),
 ];
 
-/// Variable resolution and definition through the shared file-scoped token reader.
 #[test]
 fn variables_agree_with_the_parser_model() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -434,9 +407,6 @@ fn variables_agree_with_the_parser_model() {
     assert_eq!(icon(&second, "j").frame, 1);
 }
 
-/// A bound reports unexpected tokens and skips blocks with variable resolution. Scalars skip
-/// nothing, leaving following coordinates readable; blocks skip through `}`, while a reference
-/// to a stored `{` starts nesting.
 #[test]
 fn a_bound_skips_what_it_does_not_read_as_the_game_does() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -450,9 +420,6 @@ position = { min = { junk x = 3 } max = { other = { a = { @o } } y = 9 } }",
     assert_ne!(container.position.max[1], Coordinate::pixels(9));
 }
 
-/// Position and size coordinates use signed decimal scanning with saturation. A `%` marks a
-/// percentage that stays one, `%%` in a size is position-relative, `auto` is 0 with the auto
-/// bit, and `min`, `max` and `step` are kept.
 #[test]
 fn positions_and_sizes_keep_their_bits() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -485,8 +452,6 @@ fn positions_and_sizes_keep_their_bits() {
     assert_eq!(container.show_position, container.position);
 }
 
-/// An empty coordinate, or a lone `%` in a size, reads 4 GiB past the text through the
-/// unchecked string byte lookup: the field is refused for good.
 #[test]
 fn short_coordinate_tokens_refuse_the_field_for_good() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -505,9 +470,6 @@ fn short_coordinate_tokens_refuse_the_field_for_good() {
     assert!(window.container().unwrap().position.x.percent);
 }
 
-/// The integer component reader peeks before each component and ends at a `}` or the end
-/// (token 0x13): a file that ends inside the block, at the end of the text or at a 0xFF,
-/// ends it, however the lexer's token was left.
 #[test]
 fn components_end_at_the_end_of_the_text() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -527,8 +489,6 @@ fn components_end_at_the_end_of_the_text() {
     }
 }
 
-/// Coordinate readers use text up to its first NUL. `%` and `%%` before that NUL mark the
-/// value; empty C strings and lone `%` sizes make the unchecked read.
 #[test]
 fn coordinates_read_their_value_to_its_nul() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -549,8 +509,6 @@ fn coordinates_read_their_value_to_its_nul() {
     }
 }
 
-/// `%i`, `%u` and `%f` store what the CRT stores: 64-bit scans cut to 32 bits, hexadecimal
-/// floats, infinities; nothing is refused.
 #[test]
 fn numbers_scan_as_the_crt_scans_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -576,8 +534,6 @@ fn numbers_scan_as_the_crt_scans_them() {
     assert!(reasons(&window).is_empty(), "{:?}", reasons(&window));
 }
 
-/// The window's one name tree keeps the first child of a name, whatever its kind; an unnamed
-/// child is named `unnamed_gui_<n>` after the counter, `positionType` included.
 #[test]
 fn the_first_child_of_a_name_wins() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -596,13 +552,10 @@ fn the_first_child_of_a_name_wins() {
     );
     assert_eq!(icon(&window, "a").frame, 2);
     assert!(window.find(Kind::Button, "a").is_none());
-    // An authored name can match a generated one: the later is a duplicate.
     assert_eq!(icon(&window, "unnamed_gui_1").frame, 4);
     assert_eq!(window.children[3].position_type().unwrap().position, [1, 1]);
 }
 
-/// The name counter spans files, skips backgrounds and drop-down inner containers, and advances
-/// for a destroyed duplicate.
 #[test]
 fn generated_names_follow_the_load_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -626,8 +579,6 @@ fn generated_names_follow_the_load_order() {
     assert!(second.template("unnamed_gui_3").is_some());
 }
 
-/// Templates are registered in their insertion order after bytewise sorting. Of `X` and `x`,
-/// `X` is inserted last and remains regardless of their declaration order.
 #[test]
 fn templates_register_in_the_batch_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -649,7 +600,6 @@ fn templates_register_in_the_batch_order() {
     assert_eq!(later.template("t").unwrap().icon().unwrap().frame, 3);
 }
 
-/// A button's keys.
 #[test]
 fn a_button_reads_every_key_its_parser_reads() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -682,9 +632,6 @@ fn a_button_reads_every_key_its_parser_reads() {
     assert_eq!(b.up_sprite, b"u");
 }
 
-/// Buttons, including checkboxes, inherit an empty sprite through the window's `parent` chain.
-/// Missing parents crash, chains without sprites hang, and other parent kinds cause a
-/// type-confused read.
 #[test]
 fn buttons_inherit_their_sprite_in_the_post_load_pass() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -717,7 +664,6 @@ fn buttons_inherit_their_sprite_in_the_post_load_pass() {
             "{name}: {refusals:?}"
         );
     }
-    // No post-load pass reaches a background: its orientation is never parsed.
     let bg = self::window("background = { name = \"bg\" orientation = center }");
     assert_eq!(
         bg.container().unwrap().backgrounds[0]
@@ -728,7 +674,6 @@ fn buttons_inherit_their_sprite_in_the_post_load_pass() {
     );
 }
 
-/// An instant text box's keys, the bound text included.
 #[test]
 fn a_text_box_reads_every_key_its_parser_reads() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -762,8 +707,6 @@ fn a_text_box_reads_every_key_its_parser_reads() {
     assert!(reasons(&window).is_empty(), "{:?}", reasons(&window));
 }
 
-/// Bound localization scalars form one node, including `token:` and `formatter|token` forms; a
-/// root without a key empties the whole result.
 #[test]
 fn bound_localisations_read_their_tree() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -795,8 +738,6 @@ fn bound_localisations_read_their_tree() {
     );
 }
 
-/// A grid's keys: the case-sensitive format, the orientations, `max_slots`' components (the
-/// fifth writes `add_horizontal`'s byte), padding and the first background.
 #[test]
 fn a_grid_reads_every_key_its_parser_reads() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -838,8 +779,6 @@ fn a_grid_reads_every_key_its_parser_reads() {
     assert_eq!(window.child_named("k").unwrap().refusals().len(), 1);
 }
 
-/// The integer component reader compares a label past its table of four with the stack: the
-/// game's walk is undefined from there.
 #[test]
 fn a_label_past_four_components_is_not_followed() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -856,7 +795,6 @@ fn a_label_past_four_components_is_not_followed() {
     );
 }
 
-/// An overlapping list's keys.
 #[test]
 fn a_list_reads_every_key_its_parser_reads() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -875,7 +813,6 @@ fn a_list_reads_every_key_its_parser_reads() {
     assert_eq!(list.parent, b"p");
 }
 
-/// A container's own keys, the hover, scroll and sound keys included.
 #[test]
 fn a_container_reads_every_key_its_parser_reads() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -918,7 +855,6 @@ fn a_container_reads_every_key_its_parser_reads() {
     assert!(reasons(&window).is_empty(), "{:?}", reasons(&window));
 }
 
-/// Common element keys on every kind: `hide`, tooltip hashes and anchor.
 #[test]
 fn generic_keys_are_read_on_every_kind() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -937,7 +873,6 @@ fn generic_keys_are_read_on_every_kind() {
     assert_eq!(icon(&window, "i").frame, 2);
 }
 
-/// A refusal names the element by its path from its template.
 #[test]
 fn a_refusal_names_the_template_path() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -950,8 +885,6 @@ fn a_refusal_names_the_template_path() {
     );
 }
 
-/// Every key the game reads is followed: nothing after bound text, `3dposition`, a text
-/// block or any family is refused.
 #[test]
 fn valid_native_keys_do_not_poison_later_siblings() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -984,7 +917,6 @@ fn valid_native_keys_do_not_poison_later_siblings() {
     }
 }
 
-/// The admitted families keep their fields.
 #[test]
 fn widget_families_keep_their_fields() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1028,9 +960,6 @@ fn widget_families_keep_their_fields() {
     );
     assert_eq!(edit.cursor(), [5, 6]);
     assert_eq!(edit.orientation(), 4);
-    // `use_special_chars` and `instantTextBoxType` kept; `only_numbers` set; `ignore_enter`
-    // cleared by a malformed value; a ninth position component writes the orientation slot
-    // before the later key replaces it.
     assert_eq!(edit.flags(), 0x2 | 0x4 | 0x8);
     assert!(!edit.is_multiline());
     let s = window.child_named("s").unwrap();
@@ -1046,7 +975,6 @@ fn widget_families_keep_their_fields() {
         panic!()
     };
     assert_eq!(x.track.as_ref().unwrap().button().unwrap().sprite, b"t");
-    // The second `track` read nothing: its `lockable` was the scrollbar's own.
     assert!(x.lockable);
     let d = window.child_named("d").unwrap();
     assert!(!d.hide);
@@ -1060,8 +988,6 @@ fn widget_families_keep_their_fields() {
         panic!()
     };
     assert_eq!((browser.position(), browser.size()), ([1, 2], [3, 4]));
-    // The third `size` component writes the first four bytes of the `spriteType` string's inline
-    // buffer, which its size (0) does not reach: nothing to refuse.
     let c = window.child_named("c").unwrap();
     assert!(c.refusals().is_empty(), "{:?}", c.refusals());
     let Fields::Browser(curve) = &c.fields else {
@@ -1070,10 +996,6 @@ fn widget_families_keep_their_fields() {
     assert!(curve.sprite.is_empty());
 }
 
-/// The integer component reader writes a browser's `position` on into its `spriteType` string:
-/// inline bytes change the text as far as its size reaches, a size past the inline buffer is
-/// refused, and the object's end (0x130) is a heap overflow; a scrollbar's `slider_pos_shift`
-/// reaches the child factory, which only a later child kind calls through.
 #[test]
 fn components_land_in_strings_and_pointers_past_their_fields() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1101,9 +1023,6 @@ fn components_land_in_strings_and_pointers_past_their_fields() {
     assert!(reasons(window.child_named("t").unwrap())[0].contains("child factory pointer"));
 }
 
-/// Past the child map (skipped by components `%i` stores nothing for), `slider_pos_shift`
-/// reaches the scrollbar type's own fields to its end; a listed-ids count decides which
-/// fields post-load pass tests and copies from the parent, and a count past the twelve is refused.
 #[test]
 fn slider_components_reach_the_scrollbar_types_end() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1144,20 +1063,16 @@ fn slider_components_reach_the_scrollbar_types_end() {
     assert_eq!((bar.horizontal, bar.listed, bar.scroll_speed), (1, 1, 3));
     assert!(bar.lockable && !bar.drag && bar.use_range_limit);
     assert_eq!(bar.range_limit_min, 150_000);
-    // Only the first listed id (the track) was tested and copied from the parent.
     assert_eq!(
         (bar.track.as_slice(), bar.slider.as_slice()),
         (&b"pt"[..], &b""[..])
     );
     assert_eq!(bar.size, [0, 0]);
-    // Thirteen without a parent: the unwritten id decides nothing.
     assert!(window.child_named("n").unwrap().refusals().is_empty());
     assert!(reasons(window.child_named("o").unwrap())[0].contains("listed field ids' count"));
     assert!(reasons(window.child_named("q").unwrap())[0].contains("heap overflow"));
 }
 
-/// An extended scrollbar passes its incoming lookup to its background's post-load pass. An
-/// empty background with `parent` inherits that sprite from the container's tree.
 #[test]
 fn an_extended_scrollbar_background_inherits_through_the_lookup_it_was_given() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1179,7 +1094,6 @@ fn an_extended_scrollbar_background_inherits_through_the_lookup_it_was_given() {
             b"GFX_from_parent"
         );
     }
-    // A background whose parent the lookup misses reads it through null, as a track does.
     let y = window.child_named("y").unwrap();
     assert!(
         reasons(y)[0].contains("button sprite inheritance"),
@@ -1188,9 +1102,6 @@ fn an_extended_scrollbar_background_inherits_through_the_lookup_it_was_given() {
     );
 }
 
-/// The integer point reader reads seven tokens through one uninitialised local; a zeroed-local
-/// caller (the icon) keeps 0 on an axis the walk did not reach, a direct one (the button) the
-/// old value; the icon stores floats.
 #[test]
 fn points_read_seven_tokens_through_one_local() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1223,9 +1134,6 @@ fn points_read_seven_tokens_through_one_local() {
     assert_eq!(button(w, "b").position, [7, 4]);
 }
 
-/// The stream ends as the game ends it: a 0xFF is one end of the stream (here the end of
-/// `guiTypes`), reading going on after it; a leading byte-order mark joins the first word,
-/// which is then no key; a NUL cuts a name.
 #[test]
 fn the_stream_ends_as_the_game_ends_it() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1236,8 +1144,6 @@ fn the_stream_ends_as_the_game_ends_it() {
     );
     assert!(gui.template("w").is_some() && gui.template("i").is_some());
     assert!(gui.refusals().is_empty());
-    // The key/operator/value reader copies the peeked end of the stream as the value, with the
-    // word it ended.
     let gui = read(b"guiTypes = { iconType = { name = \"i\" frame = 3");
     assert_eq!(gui.template("i").unwrap().icon().unwrap().frame, 3);
     let gui = self::gui("} guiTypes = { containerWindowType = { name = \"w\" } }\n");
@@ -1320,8 +1226,6 @@ fn recursive_lookup_tries_local_kind_then_child_containers_in_order() {
     assert!(root.find_recursive(Kind::Icon, "fixed_only").is_none());
 }
 
-/// Nesting has no limit of its own: a tree far deeper than any stack frame chain the test
-/// thread could hold is read, walked and dropped.
 #[test]
 fn deep_nesting_is_read_on_the_reader_s_own_stack() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1348,8 +1252,6 @@ fn deep_nesting_is_read_on_the_reader_s_own_stack() {
     assert!(gui.template("n").unwrap().subtree_refusals().is_empty());
 }
 
-/// Every shipped `.gui` file in the game folder `BATTLE_PLAN_GAME_DIR` names reads with nothing
-/// refused.
 #[test]
 #[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
 fn every_shipped_gui_file_reads() {
@@ -1382,8 +1284,6 @@ fn every_shipped_gui_file_reads() {
     assert!(read_any);
 }
 
-/// Files read at once name their unnamed elements exactly as files read in turn do, whatever
-/// the counter starts at.
 #[test]
 fn files_read_at_once_are_named_as_in_turn() {
     engine_executable::executable_tables::initialize_for_tests()

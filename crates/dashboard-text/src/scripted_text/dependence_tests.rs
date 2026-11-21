@@ -1,6 +1,3 @@
-//! Every declared text and name read reads no table, field or row it does
-//! not declare, and check mode reports a declaration that misses a read
-//! ([`super::dependence`]).
 
 use super::*;
 use crate::triggers::inputs::{
@@ -22,11 +19,6 @@ fn set(frame: &mut DecodedFrame, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
 }
 
-/// GER (link 100, slot 1) and SOV (link 200, slot 2), a subject of GER,
-/// each with a ruling party and its leader, a faction, an agency and an
-/// old name; state 64 owned by GER and controlled by SOV, holding province
-/// 5; GER the local player's; character 7 GER's, 8 SOV's; unit leader
-/// 1:4713 character 7's; and the reserved country.
 fn text_frame() -> DecodedFrame {
     let mut frame = super::tests::complete_frame();
     set(
@@ -225,7 +217,6 @@ fn text_frame() -> DecodedFrame {
     frame
 }
 
-/// A read of every declared text and name kind on the frame's countries.
 fn declared_keys() -> Vec<Key> {
     let leader = EventObject::UnitLeader(1 << 32 | 4713);
     let texts = [
@@ -289,15 +280,12 @@ fn declared_keys() -> Vec<Key> {
     texts.into_iter().chain(names).collect()
 }
 
-/// The declared reads no recorded table decides: constant answers.
 const CONSTANT: [&str; 3] = [
     "Text(CharacterProperty(7, \"GetIdeology\"))",
     "Text(EventObject(Country(1), \"THIS\"))",
     "Text(DateProperty(\"GetFoo\"))",
 ];
 
-/// Runs `check` with the text digests of `keys` at a frame, for the
-/// country of slot 1.
 fn with_texts(check: impl FnOnce(&dyn Fn(&DecodedFrame, &[Key]) -> Vec<Option<u64>>)) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -359,7 +347,6 @@ fn a_declared_text_or_name_read_reads_no_field_or_row_it_does_not_declare() {
                     }
                 },
             ),
-            // SOV's rows of the tables read by country.
             Change::new(
                 T::PoliticalParties,
                 &["popularity"],
@@ -412,7 +399,6 @@ fn a_declared_text_or_name_read_reads_no_field_or_row_it_does_not_declare() {
                     rows[1].faction = 11;
                 }
             }),
-            // Fields no read reads.
             Change::new(
                 T::Characters,
                 &["roster", "ordinal", "template_line"],
@@ -427,7 +413,6 @@ fn a_declared_text_or_name_read_reads_no_field_or_row_it_does_not_declare() {
                     }
                 },
             ),
-            // Another row of a table read by row.
             Change::new(T::Characters, &["gender"], Some(8), |rows| {
                 if let TableRows::Characters(rows) = rows {
                     rows[1].gender = 2;
@@ -465,7 +450,6 @@ fn a_declared_text_or_name_read_reads_no_field_or_row_it_does_not_declare() {
                     }
                 },
             ),
-            // Read fields: the ruling party, which names read.
             Change::new(T::Politics, &["ruling_party"], Some(100), |rows| {
                 if let TableRows::Politics(rows) = rows {
                     rows[0].ruling_party = Some(4);

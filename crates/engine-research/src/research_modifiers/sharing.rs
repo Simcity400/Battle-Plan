@@ -1,4 +1,3 @@
-//! Stored research-sharing operands.
 use super::*;
 use engine_sites::Rva;
 
@@ -58,7 +57,6 @@ impl Country {
     ) -> Result<Self, &'static str> {
         let roster = array_at(memory, at(status, 0x118)?, 8)?;
         let mut result = Self {
-            // Visit the complete signed sharing-roster count.
             groups: crate::allocation::default_vec(roster.count as usize)
                 .map_err(|_| "research sharing group allocation failed")?,
             len: 0,
@@ -75,8 +73,6 @@ impl Country {
             };
             let members = array(&bytes[24..40], 4)?;
             let bonuses = array(&bytes[48..64], 8)?;
-            // Scan the sharing list to its live count and index the parallel bonuses by the same
-            // ordinal; the headers are the only bound.
             if members.count != bonuses.count {
                 return Err("research sharing members invalid");
             }
@@ -150,15 +146,12 @@ impl Country {
         memo: &mut Witnesses,
         out: &mut Output<'_>,
     ) -> Result<(), &'static str> {
-        // The template's doctrine flag bypasses sharing.
         if self.len == 0 {
             return Ok(());
         }
         let doctrine = read::<u8>(memory, at(input.template_pointer, 0x409)?)
             .ok_or("research sharing doctrine flag unreadable")?;
         out.value(Kind::SharingDoctrine, i64::from(doctrine))?;
-        // Native dependency selection: doctrines never consult the sharing
-        // categories or member technology state. Preserve the flag itself.
         if doctrine != 0 {
             return Ok(());
         }
@@ -202,8 +195,6 @@ impl Country {
     }
 }
 
-/// Idle demanded countries need only the roster identities, with no group names,
-/// bonuses, templates, filters or member walks and no per-country scratch vector.
 pub(super) fn record_roster<M: Memory>(
     memory: &M,
     base: usize,
@@ -236,7 +227,6 @@ fn references(
     mut visit: impl FnMut(u32) -> Result<bool, &'static str>,
     mut found: impl FnMut(u32) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    // Bounded by the validated native header only; members are countries.
     let mut bytes = [0; 256];
     let mut first = 0;
     while first < source.count {
@@ -267,7 +257,6 @@ fn capture_categories(
     owner: u32,
     out: &mut Output<'_>,
 ) -> Result<(), &'static str> {
-    // Use the original template category roster.
     for index in 0..categories.count {
         let p = categories
             .element(index, 40)
@@ -292,8 +281,6 @@ struct Witness {
     present: bool,
     predecessors: Array,
 }
-/// Original member witnesses keyed by raw member and template, retained
-/// for the whole country pass with the selected member/template headers.
 #[derive(Default)]
 pub(super) struct Witnesses {
     entries: std::collections::HashMap<(u32, usize), Witness>,
@@ -384,7 +371,6 @@ impl Witnesses {
             raw,
             Text::default(),
         )?;
-        // Predecessor-classifier and maximum-level gates are replay calculations.
         pointer_pages(memory, witness.predecessors, |predecessor| {
             let classifier = read::<u32>(memory, at(predecessor, crate::ctechnology::CLASSIFIER)?)
                 .ok_or("research sharing predecessor unreadable")?;

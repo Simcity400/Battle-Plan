@@ -8,7 +8,6 @@ const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;
 const COUNT: usize = 5_000;
 const TRAITS: usize = 5;
-/// The complete native trait-training vector, independent of assigned traits.
 const EXPERIENCE: usize = 17;
 const TOKEN: &[u8] = b"mod_trait_name";
 

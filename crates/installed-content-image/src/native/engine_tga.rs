@@ -1,19 +1,7 @@
-//! The game's Targa decoding step, selected by a `.tga` texture name.
-//!
-//! It takes an 18-byte header, no colour map, image type 2 or 10 (true colour, raw or
-//! run-length), and 16, 24 or 32 bits. 32-bit pixels are `B8G8R8A8` (format `0xD`), the stored
-//! fourth byte the alpha. 24-bit pixels are `B8G8R8` (`0xB`, uploaded with an ignored fourth
-//! byte), and so are 16-bit ones, each 5-bit channel shifted left by 3 (`value << 3`, not
-//! rescaled) and the top bit dropped. Rows are flipped to top first unless the descriptor's
-//! `0x20` bit says they are stored so, and mirrored for its `0x10` bit. The loader never
-//! checks the file's length against the pixels it reads, and
-//! a run-length packet may write past the image; both are refused here as reads and writes
-//! outside the game's buffers.
 
 use super::{Failure, Zero, oversized, rgba};
 use crate::dds::Texture;
 
-/// The loader's failure messages, each the reason the chain goes on to FreeImage.
 const SHORT: &str = "Targa header is shorter than 18 bytes.";
 const COLOUR_MAP: &str = "Targa colour maps are unsupported.";
 const NOT_TRUE_COLOUR: &str = "Targa image type must be raw or run-length true colour.";
@@ -25,7 +13,6 @@ fn beyond(what: &str) -> Failure {
     ))
 }
 
-/// `Ok(Err(message))` when Targa decoding fails, so the chain goes on.
 pub(super) fn load(bytes: &[u8]) -> Result<Result<(Texture, Zero), &'static str>, Failure> {
     if bytes.len() < 18 {
         return Ok(Err(SHORT));
@@ -37,7 +24,6 @@ pub(super) fn load(bytes: &[u8]) -> Result<Result<(Texture, Zero), &'static str>
     if image_type.wrapping_sub(2) & 0xF7 != 0 {
         return Ok(Err(NOT_TRUE_COLOUR));
     }
-    // (bytes read per stored pixel, bytes kept per pixel)
     let (stored, kept) = match bytes[16] {
         32 => (4, 4),
         24 => (3, 3),
@@ -46,8 +32,6 @@ pub(super) fn load(bytes: &[u8]) -> Result<Result<(Texture, Zero), &'static str>
     };
     let width = u32::from(u16::from_le_bytes([bytes[12], bytes[13]]));
     let height = u32::from(u16::from_le_bytes([bytes[14], bytes[15]]));
-    // A zero side loads (no pixel is read); texture creation refuses it unless
-    // `pad_power_of_two` widens it first.
     oversized(width, height)?;
     let total = width as usize * height as usize * kept;
     let mut data = bytes.get(18 + usize::from(bytes[0])..).unwrap_or_default();
@@ -122,7 +106,6 @@ pub(super) fn load(bytes: &[u8]) -> Result<Result<(Texture, Zero), &'static str>
             ]);
         }
     }
-    // 32 bits are `0xD`; 24 and 16 bits `0xB`.
     let zero = if kept == 4 {
         Zero::Transparent
     } else {
@@ -157,7 +140,6 @@ mod tests {
         load(file).unwrap().unwrap().0.base().data.to_vec()
     }
 
-    /// Bottom-up rows come out top first; 16-bit channels shift left by 3 and drop the top bit.
     #[test]
     fn orientation_and_sixteen_bit_channels() {
         let rows = [[1_u8, 2, 3, 4], [5, 6, 7, 8]].concat();
@@ -174,15 +156,12 @@ mod tests {
             pixels(&targa(2, 1, 1, 16, 0x20, &white)),
             [248, 248, 248, 255]
         );
-        // A run of two 24-bit pixels.
         assert_eq!(
             pixels(&targa(10, 2, 1, 24, 0x20, &[0x81, 1, 2, 3])),
             [3, 2, 1, 255, 3, 2, 1, 255]
         );
     }
 
-    /// Greyscale and colour-mapped files fail here and go on to FreeImage; reads past the file
-    /// are refused rather than invented.
     #[test]
     fn failures_and_refusals() {
         assert_eq!(
@@ -202,7 +181,6 @@ mod tests {
             load(&targa(10, 1, 1, 24, 0, &[0x81, 0, 0, 0])),
             Err(Failure::Undefined(_))
         ));
-        // A zero side loads; the device refuses it later (`super::finish`).
         let (texture, zero) = load(&targa(2, 0, 1, 24, 0, &[])).unwrap().unwrap();
         assert_eq!((texture.width, texture.height, zero), (0, 1, Zero::Opaque));
     }

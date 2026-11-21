@@ -1,24 +1,3 @@
-//! The battle plan (`OrderField`) from rows at the head, built whole on the layer's own worker as
-//! the rows come, never on a step.
-//!
-//! A plan is one product, not a sum of orders: each order's geometry takes the overlap counters
-//! the orders visited before it left (in the roots' drawing order), and each label is placed
-//! against the labels before it. So it is made again whole when a table it reads changed, never
-//! per order from columns; its tables include the divisions, which change every step in a war, so
-//! in a war a plan is made for nearly every step.
-//!
-//! The worker owns its reader of the map side's view store, whose rows are made from the side's
-//! own mirrors inside the step. It builds the newest frame of rows it has not built, publishes
-//! the plan at the hour of those rows, and asks for the next; a build begun is always finished and
-//! always published, and only the newest frame is ever taken, so the plan is at most one build
-//! behind the rows and the hour it stands at only moves forward. A step's settle takes what is
-//! published and waits, within the step's budget, only while the plan it holds stands before the
-//! step's hour. So the build runs beside the step's other layers instead of after them, and a step
-//! whose budget is already spent is offered the plan of an earlier hour rather than none.
-//!
-//! Ordinary plans read only [`orders::memo_tables`], as today; invasions, active orders and
-//! labelled paradrops read the whole hour (their triggers may read any table), so the rows they
-//! read are learned as they read them and the plan before them stands until those rows arrive.
 
 #[cfg(test)]
 mod tests;
@@ -47,23 +26,16 @@ use viewer_foundation::map::{
     ribbon_content::OrderField,
 };
 
-/// How long a settle that waits however long the plan takes gives it.
 const WHOLE: Duration = Duration::from_secs(60);
 
-/// How long the worker waits for the rows to move before looking at what the layer asks of it (a
-/// new viewing country, a new picture): half a frame of a 60 Hz display, since what it looks for
-/// there costs far more than that anyway.
 const LOOK: Duration = Duration::from_millis(8);
 
-/// What builds a plan from a frame of rows: the recording's content in the viewer.
 pub trait Plans: Send + Sync {
     fn build(&self, frame: &DecodedFrame, ours: u32, show_allied: bool) -> io::Result<OrderField>;
 }
 
 impl Plans for crate::document::Content {
-    /// The memo tables alone unless the hour needs the whole frame, as today's plan.
     fn build(&self, frame: &DecodedFrame, ours: u32, show_allied: bool) -> io::Result<OrderField> {
-        // Invasions' triggers read the recording's executable tables.
         engine_executable::executable_tables::scope(self.tables, || {
             let at = replay_frame::cpu::scope("plan.links", Some("plan"));
             let links = crate::document::links_of(frame)?;
@@ -83,9 +55,6 @@ impl Plans for crate::document::Content {
     }
 }
 
-/// Where two plans' labels part: the first label by key and its first differing field, with both
-/// values. In order, since each draw names its label by index; the upload generation aside, as
-/// every plan made takes a new one.
 pub fn differ_labels(today: &Placements, layer: &Placements) -> Option<String> {
     let Placements { country, warnings, generation: _, near } = today;
     for (at, (theirs, ours)) in country.iter().zip(&layer.country).enumerate() {
@@ -137,49 +106,31 @@ fn each<T: Debug>(field: &str, today: &[T], layer: &[T]) -> Option<(String, Stri
     (today.len() != layer.len()).then(|| (format!("{field} length"), today.len().to_string(), layer.len().to_string()))
 }
 
-/// The newest plan the worker made, at the hour of the rows it was made from.
 #[derive(Clone)]
 struct Made {
-    /// The picture it was made for ([`Held::generation`]).
     generation: u64,
-    /// Plans published up to and including it, so a settle takes only one it does not hold.
     stamp: u64,
-    /// The hour of the rows it was made from.
     hour: Hour,
-    /// The viewing country's slot it was made for.
     ours: u32,
-    /// The newest hour those rows stand at: a step that changed no table of theirs moves it with
-    /// no build at all ([`RowReader::through`]).
     stands: Hour,
-    /// The frame it was made from while that frame is the reader's newest, which is while `stands`
-    /// can still move; let go after.
     frame: Option<Arc<DecodedFrame>>,
     plan: Result<Arc<OrderField>, String>,
-    /// The battle plan's limitation notes for those rows.
     notes: Vec<String>,
 }
 
-/// What the layer and its worker share.
 #[derive(Default)]
 struct Held {
-    /// The viewing country's slot the plan is made for and the allied-plan switch; none until the
-    /// layer is given a vision.
     asked: Option<(u32, bool)>,
-    /// The picture plans are made for, bumped by every compose: a plan of the picture before is
-    /// still drawn, and never counted as this picture's.
     generation: u64,
     made: Option<Made>,
     published: u64,
-    /// Why the rows stopped coming or the worker never started, by name: the layer is refused with it.
     stopped: Option<String>,
-    /// Plans made, those a table learned made again, and the microseconds they took.
     marked: [u64; 3],
     stop: bool,
 }
 
 struct Shared {
     held: Mutex<Held>,
-    /// A plan published, or the rows stopped.
     done: Condvar,
 }
 
@@ -188,14 +139,12 @@ impl Shared {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Waits for the worker to publish, until `until`.
     fn wait(&self, until: Instant) {
         let held = self.lock();
         let _ = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()));
     }
 }
 
-/// The battle plan's limitation notes for `own` orders of the viewing country, in today's words.
 fn plan_notes(own: Result<usize, String>) -> Vec<String> {
     match own {
         Ok(drawn) => {
@@ -207,7 +156,6 @@ fn plan_notes(own: Result<usize, String>) -> Vec<String> {
     }
 }
 
-/// The tables the readers read: the memo tables of the switch asked and those a build learned.
 fn declare(reader: &views::Reader, declared: &mut Vec<TableId>, learned: &[TableId], show_allied: bool) {
     let mut tables = orders::memo_tables(show_allied);
     tables.extend(learned.iter().copied());
@@ -219,13 +167,10 @@ fn declare(reader: &views::Reader, declared: &mut Vec<TableId>, learned: &[Table
     }
 }
 
-/// The worker: every frame of rows it has not built, built whole and published.
 fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timeline::Maker) {
     let mut declared = orders::memo_tables(false);
     let mut learned: Vec<TableId> = Vec::new();
-    // What the plan published was made from: the identities of the tables it reads and the ask.
     let mut built: Option<(TableKey, (u32, bool))> = None;
-    // The frame it last built or stood the plan at, by the reader's count of frames published.
     let mut handled: Option<(u64, (u32, bool))> = None;
     let mut generation = 0;
     loop {
@@ -236,7 +181,6 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
             }
             (held.asked, held.generation)
         };
-        // A new picture: the plan of the one before is not its plan, however new the rows it holds.
         if want != generation {
             (generation, built, handled) = (want, None, None);
         }
@@ -250,13 +194,10 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
             reader.wait_newer(seen, LOOK);
             continue;
         };
-        // The frame it has answered already, built or stood: nothing to look at until a newer one.
         if handled == Some((published, asked)) {
             reader.wait_newer(published, LOOK);
             continue;
         }
-        // Rows of the seek before are not this picture's: the step after its compose makes the
-        // rows of the hour sought.
         let Some((through, seek)) = reader.through_seek(Arc::as_ptr(&newest)) else {
             continue;
         };
@@ -267,8 +208,6 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         handled = Some((published, asked));
         timeline::mark(maker, Mark::Rows);
         let stands = through.max(newest.hour);
-        // The same tables in the same allocations: the plan built from them stands at these rows'
-        // hour with no build at all, as the hour the plan is of is their last change.
         let key = (TableKey::of(&*newest, &declared), asked);
         if built.as_ref() == Some(&key) {
             let mut held = shared.lock();
@@ -301,8 +240,6 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         timeline::mark(maker, Mark::BuildEnded);
         viewer_foundation::view_record::add("arrows", "builds", 1);
         viewer_foundation::view_record::add("arrows", "build_us", micros);
-        // Tables the build read that the frame did not hold: the plan is not taken, and the frame
-        // after the declaration holds them.
         let missed: Vec<TableId> = read.into_iter().filter(|table| !declared.contains(table)).collect();
         if !missed.is_empty() {
             learned.extend(missed);
@@ -316,7 +253,6 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         if held.stop {
             return;
         }
-        // A compose while it built: the plan is the picture before's and is not published as this one's.
         if held.generation != generation {
             (built, handled) = (None, None);
             continue;
@@ -345,21 +281,13 @@ pub struct Orders {
     plans: Arc<dyn Plans>,
     worker: Mutex<Option<JoinHandle<()>>>,
     given: Mutex<Option<(Choice, Arc<Vision>)>>,
-    /// The perspective and the viewing country's slot the plan is made for: all it reads of a
-    /// vision.
     vision: Option<(Choice, u32)>,
-    /// The side's rows the worker builds from; the layer asks it the hour they stand at.
     rows: Mutex<Option<Arc<views::Reader>>>,
     maker: timeline::Maker,
-    /// Registered in the window: its vision is read from the vision layer before it.
     window: bool,
     show_allied: bool,
-    /// The last hour the map's steps reached.
     head: Option<Hour>,
-    /// The newest plan taken from the worker: drawn whatever picture it was made for, counted as
-    /// this one's only while its generation is this one's.
     made: Option<Made>,
-    /// The picture it asks plans for, bumped by every compose.
     generation: u64,
     refused: Option<String>,
     marked: [u64; 3],
@@ -385,15 +313,12 @@ impl Orders {
         }
     }
 
-    /// The side's view store it builds from, and the worker that builds from it. Given once, as
-    /// the side is made.
     pub fn set_views(&self, store: &views::Store) -> io::Result<()> {
         let tables = orders::memo_tables(false);
         let reader = Arc::new(store.reader("orders", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>()));
         *self.rows.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&reader));
         let (shared, plans, maker) = (Arc::clone(&self.shared), Arc::clone(&self.plans), self.maker);
         let worker = std::thread::Builder::new().name("battle plan".into()).spawn(move || {
-            // A step's settle takes its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             work(&shared, &*plans, &reader, maker);
         });
@@ -404,13 +329,11 @@ impl Orders {
         Ok(())
     }
 
-    /// Registered in the window: its vision is read from the vision layer before it.
     pub fn in_window(mut self) -> Self {
         self.window = true;
         self
     }
 
-    /// What the viewer sees at the head: whose plan is drawn.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         *self.given.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((choice, vision));
     }
@@ -423,7 +346,6 @@ impl Orders {
         self.show_allied
     }
 
-    /// The newest plan and the hour of the rows it was made from.
     pub fn plan(&self) -> Option<(Hour, &Arc<OrderField>)> {
         self.shown().and_then(|made| made.plan.as_ref().ok().map(|plan| (made.hour, plan)))
     }
@@ -435,14 +357,10 @@ impl Orders {
         self.refused.as_deref()
     }
 
-    /// The hour the plan it shows stands for: none until one is made for the picture being drawn.
-    /// A plan's own hour is its tables' last change, so it stands at every later hour no step
-    /// changed a table it reads by.
     pub fn made_for(&self) -> Option<Hour> {
         self.shown().filter(|made| made.generation == self.generation).map(|made| made.stands)
     }
 
-    /// The plan's refusals and missing inputs, worded as today's; loading by name until a plan is made.
     pub fn warnings(&self) -> Vec<String> {
         match (self.plan(), self.refused()) {
             (Some((_, plan)), _) => plan.report.warnings(),
@@ -451,8 +369,6 @@ impl Orders {
         }
     }
 
-    /// The battle plan's limitation notes in today's words, for the rows its plan was made from:
-    /// stated only while the viewing country has orders.
     pub fn notes(&self) -> &[String] {
         self.shown().map_or(&[], |made| &made.notes)
     }
@@ -461,10 +377,6 @@ impl Orders {
         self.marked
     }
 
-    /// The plan of the rows at `hour`: the newest plan published is taken, and a step waits for
-    /// nothing, keeping the plan it has at that plan's own hour and joining the newer one at the
-    /// step after. A settle that waits ([`Settling::waits`]: a whole settle, or this plan at the
-    /// bound) waits for the plan of `hour` itself, and a whole settle refuses by name.
     fn settle_at(&mut self, hour: Hour, settling: Settling) -> io::Result<()> {
         if self.rows.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).is_none() {
             return Err(io::Error::other("The orders layer has no rows at the head"));
@@ -481,8 +393,6 @@ impl Orders {
                 }
                 return Ok(());
             }
-            // Rows past the hour answer a step (its plan then stands at a newer hour than the
-            // layers, as it did before they were joined); a whole settle wants the hour's own.
             if self.made_for().is_some_and(|stands| stands == hour || (stands > hour && !settling.strict())) {
                 self.mark_join(began, waited, true);
                 timeline::mark(self.maker, Mark::Joined);
@@ -496,8 +406,6 @@ impl Orders {
                 timeline::mark(self.maker, Mark::Joined);
                 return Ok(());
             }
-            // The flight record's arrows: whether the step waits for the rows of its hour or for
-            // the build of the rows it has.
             if viewer_foundation::view_record::on() {
                 let rows = self.rows.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
                 let held = rows.and_then(|rows| rows.newest()).is_some_and(|(frame, _)| frame.hour >= hour);
@@ -508,8 +416,6 @@ impl Orders {
         }
     }
 
-    /// What the worker and its rows hold when a settle has no plan to take: the picture asked for,
-    /// what the worker last published, and what its rows at the head stand at.
     fn maker_state(&self) -> String {
         let reader = self.rows.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let newest = reader.as_ref().and_then(|reader| reader.newest());
@@ -531,8 +437,6 @@ impl Orders {
         )
     }
 
-    /// The flight record's arrows: the joins a step made, those that waited at all, and those the
-    /// step's budget ran out in.
     fn mark_join(&self, began: Instant, waited: bool, joined: bool) {
         if !viewer_foundation::view_record::on() {
             return;
@@ -545,8 +449,6 @@ impl Orders {
         }
     }
 
-    /// Takes the newest plan published for the picture being drawn, and moves the hour the plan it
-    /// holds stands at to every later hour no step changed a table of its rows.
     fn take(&mut self) {
         {
             let held = self.shared.lock();
@@ -557,9 +459,6 @@ impl Orders {
             if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation)
                 && self.made.as_ref().is_none_or(|ours| ours.stamp < made.stamp)
             {
-                // The flight record's arrows: a plan taken, and one made from rows more than an
-                // hour past the plan before, whose arrows' tips step by more than an hour's
-                // progress (the arrows move only when a plan comes).
                 if made.plan.is_ok() && self.made.as_ref().is_none_or(|ours| made.hour != ours.hour) {
                     viewer_foundation::view_record::add("arrows", "installs", 1);
                     if self.made.as_ref().is_some_and(|ours| made.hour > ours.hour + 1) {
@@ -580,13 +479,10 @@ impl Orders {
         }
     }
 
-    /// The plan taken while it was made for the viewing country the layer reads now: one made for
-    /// another country is no plan of this one's, and none is drawn until its own is made.
     fn shown(&self) -> Option<&Made> {
         self.made.as_ref().filter(|made| self.vision.as_ref().is_some_and(|&(_, ours)| ours == made.ours))
     }
 
-    /// What the worker makes the plan for: the viewing country's slot and the allied-plan switch.
     fn take_vision(&mut self) {
         if let Some((choice, vision)) = self.given.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
             self.vision = Some((choice, vision.ours()));
@@ -616,8 +512,6 @@ impl Layer for Orders {
         "orders"
     }
 
-    /// The side's view store: its worker builds the plan from the rows the step makes of the
-    /// side's own mirrors.
     fn views(&mut self, store: &views::Store) -> io::Result<()> {
         self.set_views(store)
     }
@@ -630,15 +524,12 @@ impl Layer for Orders {
         if self.window {
             inputs.after("vision");
         }
-        // Its keys only: the hour the map's steps reached, and a reset to compose from.
         inputs.table(TableId::ArmyOrders, true)?;
         self.show_allied = view.graphics.show_allied_plans;
         Ok(())
     }
 
     fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-        // The plan held is the old picture's: it is drawn until one is made from rows after the
-        // reset, and counted as this picture's only then.
         self.generation += 1;
         self.shared.lock().generation = self.generation;
         Ok(())
@@ -648,12 +539,7 @@ impl Layer for Orders {
         self.head = Some(step.last());
     }
 
-    /// What the plan is made for: the step's hour and the viewing country, which is all the worker
-    /// needs to build the plan of the rows it is given next.
     fn ask(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<bool> {
-        // Only whose lines or plan are drawn: the viewing country, taken when it changes; none while
-        // another country chosen has no vision yet (being made or refused), so no plan of the
-        // country before stands. A seek's vision made again keeps the plan before until the next.
         if self.window
             && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
         {
@@ -677,10 +563,8 @@ impl Layer for Orders {
             self.refused = Some("The orders layer is refused: it is given no vision of the viewing country yet".into());
             return Ok(());
         }
-        // Taken again from the worker, which refuses it by name while the rows have stopped.
         self.refused = None;
         match self.head {
-            // A caller that drives the head settles whole: the plan of the rows at its hour.
             Some(head) => self.settle_at(head, settling),
             None => {
                 self.take();
@@ -702,9 +586,6 @@ impl Layer for Orders {
         Carried::default()
     }
 
-    /// The hour the plan it shows stands at: the applied hour once a plan standing there is
-    /// published ([`Published::Current`]), until then the hour the plan it holds stands at, made on
-    /// the rows' cadence, and nothing before the first plan of the picture being drawn.
     fn published(&self) -> Published {
         let Some(stands) = self.made_for() else { return Published::Nothing };
         match self.head {

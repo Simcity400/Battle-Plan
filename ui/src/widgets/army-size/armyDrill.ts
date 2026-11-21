@@ -1,4 +1,3 @@
-/** Army's native group decomposition; all unidentified amounts retain their total. */
 import { countryValueAt, countryValueMix, countryValuePartsReply, countryValueSegmentAt, countryValuesModel, rankCountryValues } from '../../charts/race/countryValues.ts';
 import type { CountryValueAt, CountryValuesModel } from '../../charts/race/countryValues';
 import { clipToSpans } from '../../charts/series.ts';
@@ -49,8 +48,6 @@ function armyDrillAmount(at: CountryValueAt, types: CountryValuesModel['reply'][
     missing: parts.filter(part => part.value === null).map(part => part.label) };
 }
 
-/** Reuse the shared sparse boundary join and mix projection, with a separately
- * computed exact residual. No hours are expanded or bridged across gaps. */
 export function armyDrillBands(reply: ArmySizeReply, tag: string, measure: ArmyMeasure, range: Span) {
   const projection = countryValuePartsReply(reply);
   const source = projection.series.find(series => series.tag === tag);
@@ -63,7 +60,6 @@ export function armyDrillBands(reply: ArmySizeReply, tag: string, measure: ArmyM
   return countryValueMix(countryValuesModel({ types, series }), tag, null, range);
 }
 
-/** Selected identity's aliases share a history but retain their native dates. */
 export function armyDrillIdentityReply(reply: ArmySizeReply, tag: string, originHour: number): ArmySizeReply {
   const byTag = countryDrillSpans(reply.series, tag, originHour);
   const aliases = reply.series.map(series => {
@@ -78,20 +74,16 @@ export function armyDrillIdentityReply(reply: ArmySizeReply, tag: string, origin
     segments: aliases.flatMap(series => series.segments).sort((a, b) => a.firstHour - b.firstHour) }] };
 }
 
-/** Standalone breakdowns retain every candidate; top N offers the drawn rank at
- * the opening hour, never its first country as an implicit selection. */
 export function armyDrillActors(model: CountryValuesModel, candidates: readonly string[], hour: number, top?: number): string[] {
   return top === undefined ? candidates.filter(tag => countryValueSegmentAt(model, tag, hour) !== null)
     : rankCountryValues(model, candidates, hour, top).map(entry => entry.tag);
 }
 
-/** Content labels and an appended window manifest do not change drawn operands. */
 export function armyDrillNumbers(reply: ArmySizeReply): ArmySizeReply {
   return { ...reply, warnings: [], windows: [], window: null, interval: null,
     types: reply.types.map(type => ({ ...type, name: 'Battalion group name unavailable' })) };
 }
 
-/** Preserve the displayed mix measure and the native selection date when pinned. */
 export function pinArmyDrill(widget: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
   hour: number, originHour: number, measure: ArmyMeasure, follow: boolean): WidgetSpec {
   const pin = pinPartsRace({ ...widget, time: follow ? { mode: 'follow' } : widget.time, options: { ...widget.options, measure, drillOriginHour: originHour } },

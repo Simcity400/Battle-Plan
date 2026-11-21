@@ -8,16 +8,11 @@ import './Select.css';
 
 export interface SelectOption { value: string; label: string; disabled?: boolean; reason?: string; detail?: string }
 
-/** A dropdown drawn like the app's other menus, where a native select would show the
- * system's list. Arrow keys move through the options, Enter picks and Escape closes. */
 export function Select({ id: triggerId, label, value, options, disabled = false, autoFocus, onChange }: {
-  /** The trigger's id, for a separate `<label htmlFor>`. */
   id?: string; label: string; value: string; options: readonly SelectOption[]; disabled?: boolean; autoFocus?: boolean; onChange: (value: string) => void;
 }) {
   const id = useId();
   const menu = usePopover('start');
-  // Held until their content changes: an equal list passed anew keeps the open menu's measured rows where they are, so a
-  // pointer aimed at one still lands on it.
   const [held, setHeld] = useState(options);
   if (held !== options && !sameOptions(held, options)) setHeld(options);
   const selected = held.find(option => option.value === value);
@@ -25,7 +20,7 @@ export function Select({ id: triggerId, label, value, options, disabled = false,
     <button ref={menu.trigger} id={triggerId} type="button" className="select-trigger" popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
       aria-label={label} disabled={disabled} data-detail={selected?.detail} data-tooltip={selected?.reason}>
       <span>{selected?.label ?? value}</span><Icon name="chevron-down" /></button>
-    {/* Kept in place: inside another popover this keeps native light-dismiss nested. */}
+    { }
     <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}>
       {menu.open && <SelectMenu label={label} value={value} options={held} onChoose={chosen => { menu.close(); if (chosen !== value) onChange(chosen); }} />}
 
@@ -55,8 +50,6 @@ function SelectMenu({ label, value, options, onChoose }: { label: string; value:
   const visible = Array.from({ length: end - start }, (_, i) => start + i);
   if (active >= 0 && active < options.length && !visible.includes(active)) visible.push(active);
   visible.sort((a, b) => a - b);
-  // Scan every authored label without mounting the catalogue. Canvas uses the
-  // option's computed typography; only the drawn rows need DOM measurements.
   useLayoutEffect(() => {
     const scroller = list.current;
     if (!scroller || typeof ResizeObserver === 'undefined') return;
@@ -129,8 +122,6 @@ function SelectMenu({ label, value, options, onChoose }: { label: string; value:
     const tab = event.key === 'Tab';
     const next = selectIndex(options, active, tab ? event.shiftKey ? 'ArrowUp' : 'ArrowDown' : event.key);
     if (next === null) return;
-    // Native Tab visits each enabled option. Keep that complete order while
-    // windowing, and let the browser leave either edge rather than wrapping.
     if (tab && (event.shiftKey ? next >= active : next <= active)) return;
     event.preventDefault();
     reveal(next); setActiveValue(options[next].value);

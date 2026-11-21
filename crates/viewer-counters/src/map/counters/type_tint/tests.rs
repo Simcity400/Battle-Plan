@@ -18,7 +18,6 @@ fn built(
 ) -> Result<Index, String> {
     let key = Key::read(sent, divisions, links, ours, frame.hour)?;
     let mut frame = frame.clone();
-    // Synthetic signed receiver IDs use the same resolved object/packet.
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *frame.tables[TableId::Countries.index()]
     {
@@ -53,7 +52,6 @@ fn empty_frame() -> DecodedFrame {
 #[test]
 fn foreign_division_icons_complete_war_census_survives_the_tint_memo_projection() {
     let (links, _, mut frame) = world(&[(1, 4)], &[(1, 9), (2, 9)], &[]);
-    // Current recordings derive directed wars; no per-country packet supplies a shortcut.
     if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *frame.tables[TableId::CountryCounterInputs.index()]
     {
@@ -227,7 +225,6 @@ fn country_identity_faction_subject_and_active_war_predicates() {
     }
     let reverse = built(&links, &ids, &relations, 3, &[], &[]).unwrap();
     assert_eq!(reverse.of(101, 101), Some(Friend));
-    // A common enemy alone (wartime ally) is neither faction nor subject.
     let (links, ids, relations) = world(&[(1, 4), (2, 4)], &[], &[]);
     assert_eq!(
         built(&links, &ids, &relations, 1, &[], &[])
@@ -267,7 +264,6 @@ fn directed_owner_veto_and_volunteer_tests_never_inherit_reverse_truth() {
     let (links, ids, mut frame) = world(&[(1, 4), (2, 3)], &[(1, 9), (4, 9)], &[]);
     edit_wars(&mut frame, 1, |packet| packet.cells[4].active = false);
     let index = built(&links, &ids, &frame, 1, &[], &[]).unwrap();
-    // Reverse4->1 is active, but viewer1->4 is clear, so sharing survives.
     assert_eq!(index.of(104, 104), Some(Side::Friend));
     assert_eq!(
         index.mission_item(false, 104, 104),
@@ -280,7 +276,6 @@ fn directed_owner_veto_and_volunteer_tests_never_inherit_reverse_truth() {
         ..Default::default()
     }];
     let index = built(&links, &ids, &frame, 1, &volunteers(&[10]), &divisions).unwrap();
-    // Host2->logical3 cannot stand in for the native logical3->host2 query.
     assert_eq!(index.of(103, 103), Some(Side::Neutral));
 }
 
@@ -293,7 +288,7 @@ fn unknown_directed_cells_refuse_only_unproved_sides_and_ordered_hosts() {
     let index = built(&links, &ids, &frame, 1, &[], &[]).unwrap();
     assert_eq!(index.of(104, 104), None);
     assert_eq!(index.of(501, 104), Some(Side::Friend));
-    assert_eq!(index.mission_item(false, 501, 104), None); // enemy-first port
+    assert_eq!(index.mission_item(false, 501, 104), None);
     assert_eq!(index.of(u32::MAX, 104), Some(Side::Friend));
     edit_wars(&mut frame, 3, |packet| {
         packet.cells.retain(|cell| cell.target_slot != 2)
@@ -316,7 +311,6 @@ fn unknown_directed_cells_refuse_only_unproved_sides_and_ordered_hosts() {
             .of(103, 103),
         None
     );
-    // Equality at the first occurrence precedes that occurrence's war test.
     assert_eq!(
         built(&links, &ids, &frame, 1, &volunteers(&[20, 10]), &divisions)
             .unwrap()
@@ -392,14 +386,12 @@ fn first_volunteer_match_and_friend_precedence_survive_aliases_and_stale_refs() 
     ];
     let build =
         |order: &[u64]| built(&links, &ids, &relations, 1, &volunteers(order), &divisions).unwrap();
-    // Host 2 fights the representative's logical host 3: stop before host 3.
     assert_eq!(build(&[10, 20]).of(103, 103), Some(Enemy));
     assert_eq!(build(&[20, 10]).of(103, 103), Some(Friend));
     assert_eq!(build(&[0, 999, 20, 10, 20]).of(103, 103), Some(Friend));
     assert_eq!(build(&[10, 20]).of(104, 103), Some(Friend));
     assert_eq!(build(&[10]).of(102, 107), Some(Friend));
     assert_eq!(build(&[10]).of(107, 103), Some(Enemy));
-    // Membership belongs to the vector owner, not the division roster owner.
     let mut sent = volunteers(&[10]);
     sent[0].country = 102;
     assert_eq!(
@@ -411,8 +403,6 @@ fn first_volunteer_match_and_friend_precedence_survive_aliases_and_stale_refs() 
 }
 #[test]
 fn plates_take_the_type_icons_relation_through_sent_volunteers() {
-    // The viewer (1) fights no one itself; its volunteers serve host 2, which
-    // fights 3 and 4. 5 shares the viewer's faction; 6 is unrelated.
     let (links, ids, relations) = world(&[(2, 3), (2, 4)], &[(1, 9), (5, 9)], &[]);
     let divisions = [DivisionRow {
         id: 10,
@@ -427,22 +417,15 @@ fn plates_take_the_type_icons_relation_through_sent_volunteers() {
     assert_eq!(plate_of(4), Allegiance::Enemy);
     assert_eq!(plate_of(5), Allegiance::Allied);
     assert_eq!(plate_of(6), Allegiance::Other);
-    // Without the volunteer the owner-only reading leaves 3 and 4 other.
     let alone = built(&links, &ids, &relations, 1, &[], &[]).unwrap();
     assert_eq!(plate(false, alone.of(103, 103)), Allegiance::Other);
-    // Ours needs no relation input; an unavailable relation is drawn as other.
     assert_eq!(plate(true, None), Allegiance::Ours);
     assert_eq!(plate(false, None), Allegiance::Other);
 }
 
-/// Port items and combat tiles test enemy before friend over the first task
-/// force's roster and logical owners, with no sent-volunteer loop and no bypass for a
-/// signed-nonpositive roster owner; the at-sea counter's relation differs on
-/// each of these.
 #[test]
 fn mission_items_test_enemy_first_without_the_volunteer_loop() {
     use Allegiance::*;
-    // The viewer (1) shares a faction with 2 and fights 4.
     let (links, ids, relations) = world(&[(1, 4)], &[(1, 7), (2, 7)], &[]);
     let index = built(&links, &ids, &relations, 1, &[], &[]).unwrap();
     for (own, roster, logical, expected) in [
@@ -450,11 +433,9 @@ fn mission_items_test_enemy_first_without_the_volunteer_loop() {
         (false, 102, 102, Allied),
         (false, 104, 104, Enemy),
         (false, 106, 106, Other),
-        // A friend and an enemy: the enemy byte wins, where the counter's friend does.
         (false, 102, 104, Enemy),
         (false, 104, 102, Enemy),
         (false, 106, 102, Allied),
-        // The null roster reference is no bypass here.
         (false, 0, 104, Enemy),
         (false, 0, 106, Other),
     ] {
@@ -466,7 +447,6 @@ fn mission_items_test_enemy_first_without_the_volunteer_loop() {
     }
     assert_eq!(index.of(102, 104), Some(Side::Friend));
     assert_eq!(index.of(0, 104), Some(Side::Friend));
-    // Volunteers the viewer sends to 2, which fights 3, colour only the counter.
     let (links, ids, relations) = world(&[(2, 3)], &[], &[]);
     let divisions = [DivisionRow {
         id: 10,
@@ -478,7 +458,6 @@ fn mission_items_test_enemy_first_without_the_volunteer_loop() {
     assert_eq!(index.of(103, 103), Some(Side::Enemy));
     assert_eq!(index.mission_item(false, 102, 102), Some(Other));
     assert_eq!(index.mission_item(false, 103, 103), Some(Other));
-    // Unavailable relations or an unlinked owner name no side.
     assert_eq!(
         Index::unavailable("x".into()).mission_item(false, 102, 102),
         None
@@ -529,7 +508,7 @@ fn indexed_first_match_agrees_with_the_ordered_native_loop() {
         .collect();
     let ordinary = Relations::read(&relations, &links).unwrap();
     for shift in 0..9 {
-        let mut order: Vec<_> = (0..9).collect(); // null and one unresolved handle
+        let mut order: Vec<_> = (0..9).collect();
         order.rotate_left(shift);
         for reverse in [false, true] {
             if reverse {
@@ -591,10 +570,8 @@ fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
     let memo = Memo::new(TABLES);
     let first = Index::read(&memo, &frame, &links, 1);
     assert_eq!(first.of(102, 102), Some(Side::Friend));
-    // Divisions is a new allocation every hour; an equal host keeps the index.
     frame.tables[TableId::Divisions.index()] = divisions(102);
     assert!(Arc::ptr_eq(&first, &Index::read(&memo, &frame, &links, 1)));
-    // A changed host or a changed relation table builds a new one.
     frame.tables[TableId::Divisions.index()] = divisions(103);
     let moved = Index::read(&memo, &frame, &links, 1);
     assert_eq!(moved.of(103, 103), Some(Side::Friend));
@@ -612,7 +589,6 @@ fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
     let at_war = Index::read(&memo, &frame, &links, 1);
     assert!(!Arc::ptr_eq(&moved, &at_war));
     assert_eq!(at_war.of(104, 104), Some(Side::Enemy));
-    // A missing input withholds rather than reusing an older index.
     frame.tables[TableId::SentVolunteers.index()] = TableView::Unavailable {
         reason: "not recorded".into(),
     }
@@ -698,8 +674,6 @@ fn type_tint_unit_scale() {
             ..Default::default()
         })
         .collect();
-    // Deliberately all divisions in this viewer's ordered sent list. The
-    // ordinary case references only a small part of the division census.
     let sent: Vec<_> = (0..d)
         .map(|i| SentVolunteerRow {
             country: 10_001,
@@ -709,7 +683,6 @@ fn type_tint_unit_scale() {
         .collect();
     let (mut keys, mut builds, mut lookups) = (Vec::new(), Vec::new(), Vec::new());
     for _ in 0..25 {
-        // Every hour reads the key; only a changed key or table builds.
         let start = Instant::now();
         let key = black_box(Key::read(&sent, &divisions, &links, 1, relations.hour).unwrap());
         keys.push(start.elapsed().as_secs_f64() * 1000.0);

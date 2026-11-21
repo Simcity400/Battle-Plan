@@ -1,12 +1,3 @@
-//! The collector's allocator: one private heap and no process-heap fallback.
-//! Each thread keeps its own free blocks per size class, so steady allocation
-//! and freeing take no lock. Acquisition workers allocate what the frame
-//! pipeline frees on other threads, so whole batches pass between threads
-//! through a lock-free depot. A block over the small limit is a page
-//! reservation of its own, kept for reuse in lock-free lists. Only a refill
-//! the depot cannot serve, a free into a full depot and an over-aligned small
-//! block reach the heap's lock, and a thread that holds the game never frees
-//! into it. Detach destroys the heap, the depot and every reservation.
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
@@ -30,33 +21,22 @@ use windows_sys::Win32::{
     },
 };
 
-// Collector requires Windows x64; ordinary heap blocks are 16-byte aligned.
 const HEAP_ALIGNMENT: usize = 16;
 const HEADER: usize = size_of::<*mut u8>();
 const DLL_PROCESS_DETACH: u32 = 0;
-/// Small classes: 16-byte steps to 1 KiB, then powers of two to `SMALL_LIMIT`.
 const FINE_CLASSES: usize = 64;
 const SMALL_LIMIT: usize = 32 * 1024;
 const CLASSES: usize = FINE_CLASSES + 5;
-/// Free bytes one thread keeps per class: its list and one spare batch.
 const CACHE_CLASS_BYTES: usize = 64 * 1024;
-/// Free bytes the depot keeps over every class; beyond it a thread that does
-/// not hold the game frees blocks back to the heap.
 const DEPOT_BYTES: usize = 32 * 1024 * 1024;
 const _: () = assert!(SMALL_LIMIT <= CACHE_CLASS_BYTES / 2);
 const PAGE: usize = 4096;
-/// Windows reserves address space in these steps, so every reservation's base is aligned to it.
 const GRANULARITY: usize = 64 * 1024;
-/// A reservation's record, then the body's base pointer in the word below the body.
 const RECORD_BYTES: usize = 64;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
-/// Power-of-two reservation sizes from `GRANULARITY` up.
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-/// Committed bytes free reservations keep; beyond it a thread that does not hold
-/// the game decommits a freed body.
 const KEPT_BYTES: usize = 64 * 1024 * 1024;
 
-/// The class of a block of `size` bytes, or `None` for a large block.
 fn class(size: usize) -> Option<usize> {
     if size <= FINE_CLASSES * 16 {
         Some(size.saturating_sub(1) / 16)
@@ -67,7 +47,6 @@ fn class(size: usize) -> Option<usize> {
     }
 }
 
-/// The bytes every block of `class` holds.
 const fn class_size(class: usize) -> usize {
     if class < FINE_CLASSES {
         (class + 1) * 16
@@ -76,8 +55,6 @@ const fn class_size(class: usize) -> usize {
     }
 }
 
-/// The blocks of `class` a thread passes to or takes from the depot at once:
-/// half its bound.
 const fn batch(class: usize) -> u32 {
     (CACHE_CLASS_BYTES / 2 / class_size(class)) as u32
 }
@@ -86,18 +63,14 @@ const fn batch_bytes(class: usize) -> usize {
     batch(class) as usize * class_size(class)
 }
 
-/// The next block of a list or batch: each free block's first word.
 fn next(block: *mut u8) -> *mut *mut u8 {
     block.cast()
 }
 
-/// Where a batch's first block keeps its successor while the depot's list
-/// link holds its first word: its second word, which every class's 16 bytes hold.
 fn parked_next(block: *mut u8) -> *mut *mut u8 {
     block.cast::<*mut u8>().wrapping_add(1)
 }
 
-/// The reservation size of a large block, or `None` when it cannot exist.
 fn reservation(size: usize, align: usize) -> Option<usize> {
     size.checked_add(RECORD_BYTES + align)?
         .checked_next_power_of_two()
@@ -112,17 +85,13 @@ const fn page_end(bytes: usize) -> usize {
     bytes.div_ceil(PAGE) * PAGE
 }
 
-/// A Windows interlocked list: lock-free push and pop of 16-byte aligned entries,
-/// safe against reuse of a popped entry.
 #[repr(C, align(16))]
 struct Stack(UnsafeCell<SLIST_HEADER>);
 
-// SAFETY: the header is only touched by the interlocked list functions.
 unsafe impl Sync for Stack {}
 
 impl Stack {
     const fn new() -> Self {
-        // An all-zero header is an empty list.
         Self(UnsafeCell::new(unsafe { std::mem::zeroed() }))
     }
 
@@ -139,7 +108,6 @@ impl Stack {
     }
 }
 
-/// Calls into one lock and their QPC ticks since attach.
 struct Counter {
     calls: AtomicU64,
     ticks: AtomicU64,
@@ -171,7 +139,6 @@ impl Counter {
     }
 }
 
-/// Calls that can wait on a lock another thread holds, their QPC ticks and the longest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Calls {
     pub calls: u64,
@@ -180,7 +147,6 @@ pub(crate) struct Calls {
 }
 
 impl Calls {
-    /// Calls and ticks since `earlier`; the longest stays the later total's.
     pub(crate) fn since(self, earlier: Self) -> Self {
         Self {
             calls: self.calls - earlier.calls,
@@ -190,7 +156,6 @@ impl Calls {
     }
 }
 
-/// One side's calls into the private heap's lock and into the address space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Waits {
     pub heap: Calls,
@@ -230,8 +195,6 @@ impl Side {
 const HOLD: usize = 0;
 const OTHER: usize = 1;
 
-/// One class's free blocks on one thread: up to a batch of them linked from
-/// `head`, and a full batch aside in `spare`.
 #[derive(Clone, Copy)]
 struct List {
     head: *mut u8,
@@ -256,7 +219,6 @@ impl Cache {
         lists: [List::EMPTY; CLASSES],
     };
 
-    /// A free block of `class`, or null when neither this cache nor the depot keeps one.
     fn take(&mut self, class: usize, depot: &Depot) -> *mut u8 {
         let list = &mut self.lists[class];
         if list.count == 0 {
@@ -277,11 +239,9 @@ impl Cache {
         head
     }
 
-    /// Keep a freed block of `class`; false only when `bounded` and the depot is full.
     fn keep(&mut self, class: usize, block: *mut u8, depot: &Depot, bounded: bool) -> bool {
         let list = &mut self.lists[class];
         if list.count == batch(class) {
-            // The full list becomes the spare, passing the old spare on.
             if !list.spare.is_null() && !depot.keep(class, list.spare, bounded) {
                 return false;
             }
@@ -296,21 +256,14 @@ impl Cache {
     }
 }
 
-/// What the allocator keeps per thread. Constant-initialised without a
-/// destructor, so it never allocates and is reachable for the thread's life.
 struct Thread {
-    /// The heap whose blocks `cache` holds; zero for none.
     heap: usize,
-    /// Set by collector threads that never hold the game.
     off_hold: bool,
-    /// Set when the thread flushed its cache on exit; later blocks bypass it.
     closed: bool,
     cache: Cache,
 }
 
 impl Thread {
-    /// This thread's cache for heap `id`, emptied when it held another heap's
-    /// blocks; `None` after the thread flushed it on exit.
     fn cache(&mut self, id: usize) -> Option<&mut Cache> {
         if self.closed {
             return None;
@@ -329,16 +282,10 @@ thread_local! {
     };
 }
 
-/// The calling thread's state. Valid for the thread's life; never held across
-/// a call that can allocate.
 fn thread() -> *mut Thread {
     THREAD.with(UnsafeCell::get)
 }
 
-/// Marks the calling collector thread as one that never holds the game: its
-/// waits count apart from the hold path's, and it frees into the heap rather
-/// than past the depot's bound. Every other thread, the game's own and the
-/// acquisition workers, is on the hold path.
 pub(crate) fn off_hold_path() {
     unsafe { (*thread()).off_hold = true };
 }
@@ -347,7 +294,6 @@ fn side() -> usize {
     if unsafe { (*thread()).off_hold } { OTHER } else { HOLD }
 }
 
-/// Every class's full batches that threads passed on, and the bytes they hold.
 struct Depot {
     classes: [Stack; CLASSES],
     bytes: AtomicUsize,
@@ -361,7 +307,6 @@ impl Depot {
         }
     }
 
-    /// Keep a full batch of `class`; false when `bounded` and the depot holds its bound.
     fn keep(&self, class: usize, batch_head: *mut u8, bounded: bool) -> bool {
         let bytes = batch_bytes(class);
         if bounded {
@@ -381,7 +326,6 @@ impl Depot {
         true
     }
 
-    /// A full batch of `class`, or null when none is kept.
     fn take(&self, class: usize) -> *mut u8 {
         let head = self.classes[class].pop();
         if !head.is_null() {
@@ -397,18 +341,14 @@ impl Depot {
     }
 }
 
-/// The start of a large block's reservation. Its first 16 bytes are the free
-/// list's link; the pages to `committed` are committed.
 #[repr(C)]
 struct Record {
     link: [usize; 2],
-    /// The next of every reservation made since attach.
     made: *mut Record,
     reserved: usize,
     committed: usize,
 }
 
-/// Every reservation, the free ones by size, and the bytes the free ones keep committed.
 struct Pages {
     free: [Stack; RESERVATIONS],
     kept: AtomicUsize,
@@ -439,8 +379,6 @@ impl Pages {
     }
 }
 
-/// The heap's handle, zero once destroyed or when creation failed, and the
-/// identity thread caches tag its blocks with.
 struct Domain {
     handle: AtomicUsize,
     id: usize,
@@ -449,15 +387,12 @@ struct Domain {
 static DOMAINS: AtomicUsize = AtomicUsize::new(1);
 
 pub(super) struct PrivateHeap {
-    // OnceLock initialization allocates no Rust memory. A failed creation is
-    // cached too; zero after detach is terminal, never a new allocation domain.
     heap: OnceLock<Domain>,
     depot: Depot,
     pages: Pages,
     sides: [Side; 2],
     #[cfg(test)]
     failures: AtomicUsize,
-    /// Refuses the page reservation or commit this many calls ahead; zero refuses none.
     #[cfg(test)]
     page_refusal: AtomicUsize,
 }
@@ -497,12 +432,10 @@ impl PrivateHeap {
         self.domain().handle.load(Ordering::Relaxed) as HANDLE
     }
 
-    /// The hold path's calls since attach: the game's threads and the acquisition workers.
     pub(crate) fn hold(&self) -> Waits {
         self.sides[HOLD].read()
     }
 
-    /// Calls since attach by the collector threads that never hold the game.
     pub(crate) fn other(&self) -> Waits {
         self.sides[OTHER].read()
     }
@@ -521,7 +454,6 @@ impl PrivateHeap {
         result
     }
 
-    /// Reserve or commit pages, counted as a page call; null when the system refuses.
     fn virtual_alloc(
         &self,
         address: *const u8,
@@ -588,16 +520,12 @@ impl PrivateHeap {
         if raw.is_null() {
             return raw;
         }
-        // Layout alignment is a power of two. The checked reserve covers the
-        // pointer-aligned header and every possible byte of alignment padding.
         let start = unsafe { raw.add(HEADER) };
         let aligned = unsafe { start.add(start.align_offset(align)) };
         unsafe { aligned.cast::<*mut u8>().sub(1).write(raw) };
         aligned
     }
 
-    /// A large block in a reservation of `reserved` bytes: a free one of that
-    /// size when kept, else a new one.
     unsafe fn allocate_large(
         &self,
         reserved: usize,
@@ -624,8 +552,6 @@ impl PrivateHeap {
             }
         }
         let base = record.cast::<u8>();
-        // The base is aligned to the granularity, so for any alignment up to it
-        // the body sits at the same offset in every reservation.
         let offset = (base as usize + RECORD_BYTES).next_multiple_of(align) - base as usize;
         let end = page_end(offset + size);
         if end > committed
@@ -651,7 +577,6 @@ impl PrivateHeap {
         unsafe { (*record).committed = end.max(committed) };
         let body = unsafe { base.add(offset) };
         if zeroed && committed > offset {
-            // Pages committed just now are zero; only reused ones hold old bytes.
             unsafe { body.write_bytes(0, size.min(committed - offset)) };
         }
         unsafe { body.cast::<*mut u8>().sub(1).write(base) };
@@ -662,8 +587,6 @@ impl PrivateHeap {
         unsafe { body.cast::<*mut Record>().sub(1).read() }
     }
 
-    /// Keep a large block's reservation for reuse. Past the bound a thread off
-    /// the hold path decommits the body; the hold path never makes that call.
     unsafe fn free_large(&self, body: *mut u8) {
         let record = Self::record(body);
         let committed = unsafe { (*record).committed };
@@ -695,7 +618,6 @@ impl PrivateHeap {
         self.pages.free[reservation_list(reserved)].push(record.cast());
     }
 
-    /// Resize a large block within its reservation, or move it when it outgrows it.
     unsafe fn reallocate_large(
         &self,
         body: *mut u8,
@@ -727,14 +649,10 @@ impl PrivateHeap {
         body
     }
 
-    /// Create the heap if needed, allocation-free. Process attach refuses the
-    /// load when this fails, so no infallible allocation can meet a null heap.
     pub(super) fn ready(&self) -> bool {
         !self.heap().is_null()
     }
 
-    /// Return the exiting thread's cached blocks: whole batches to the depot,
-    /// the rest to the heap. Later blocks on this thread bypass its cache.
     pub(super) fn thread_exit(&self) {
         let Some(domain) = self.heap.get() else {
             return;
@@ -762,12 +680,12 @@ impl PrivateHeap {
         }
     }
 
-    /// # Safety
-    /// On FreeLibrary detach no caller may still own an allocation it will use,
-    /// free or reallocate. Runtime must first restore/quiesce hooks and join all
-    /// workers; the loader has run the unloading thread's TLS destructors before
-    /// DllMain, and removes this module's callbacks before other threads exit.
-    /// No Rust static has an automatic destructor. Do not allocate/log here.
+    #[doc = " # Safety"]
+    #[doc = " On FreeLibrary detach no caller may still own an allocation it will use,"]
+    #[doc = " free or reallocate. Runtime must first restore/quiesce hooks and join all"]
+    #[doc = " workers; the loader has run the unloading thread's TLS destructors before"]
+    #[doc = " DllMain, and removes this module's callbacks before other threads exit."]
+    #[doc = " No Rust static has an automatic destructor. Do not allocate/log here."]
     pub(super) unsafe fn detach(&self, reason: u32, reserved: *mut c_void) -> bool {
         if reason != DLL_PROCESS_DETACH || !reserved.is_null() {
             return false;
@@ -807,10 +725,6 @@ impl PrivateHeap {
     }
 }
 
-// SAFETY: small blocks belong to this heap and pass between threads whole;
-// large blocks are reservations this allocator made; over-aligned small blocks
-// keep their original pointer in a header. Failure returns null without
-// unwinding or calling capture accounting: engine_allocation retains that path.
 unsafe impl GlobalAlloc for PrivateHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { self.allocate(layout.size(), layout.align(), false) }
@@ -857,15 +771,11 @@ unsafe impl GlobalAlloc for PrivateHeap {
         {
             return pointer;
         }
-        // A class block keeps its class's whole size, and an over-aligned block
-        // would change its padding, so either moves.
         unsafe { self.moved(pointer, layout, new_size) }
     }
 }
 
 impl PrivateHeap {
-    /// Copy into a new block and free the old one only after success, with no
-    /// second capture allocation attempt; failure preserves the old block.
     unsafe fn moved(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let replacement = unsafe { self.allocate(new_size, layout.align(), false) };
         if !replacement.is_null() {

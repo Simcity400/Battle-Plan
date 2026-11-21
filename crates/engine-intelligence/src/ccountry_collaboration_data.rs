@@ -1,15 +1,10 @@
-//! Country collaboration relation state.
 
 use engine_sites::Rva;
 use crate::Memory;
 
-/// Collaboration-data vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_76f8);
-/// Target country link, u32.
 pub const TARGET_COUNTRY: usize = 0x08;
-/// Progress, signed i64 scaled by 100000.
 pub const PROGRESS: usize = 0x10;
-/// Progress fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

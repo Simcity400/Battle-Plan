@@ -1,17 +1,3 @@
-//! `faction-state`: one faction's history over a timeline, each lane the runs of recorded cells
-//! read at the cost of their changes ([`replay::lanes::history`]), never a walk of hours.
-//!
-//! - `rules`: the faction's rule slots (`FactionRules`), shared programmes (`FactionPrograms`,
-//!   each named by its active project at the run's first hour), minimum upgrades per group
-//!   (`FactionMinimumUpgrades`), its members' upgrades per group (`FactionAccounts`' lists, over
-//!   the hours each account was an explicit member, `FactionAccountOwners`) and shared doctrines
-//!   (`FactionDoctrine`).
-//! - `manpower`: each member's contribution to the pool (`FactionManpower`), each recorded
-//!   occurrence of a country its own line.
-//!
-//! A run starts a segment where a stretch of the timeline does not continue the one before (a
-//! break, or a run of the recording that starts over) and after hours its cell was not shown.
-//! A selection's name is read at the run's first hour; a scripted name expands there.
 
 use super::ordinals;
 use crate::{
@@ -48,7 +34,7 @@ pub enum FactionStateParams {
         #[serde(rename = "branchId")]
         branch_id: String,
         faction: String,
-        /// None follows the recording client's playing or observer country.
+        #[doc = " None follows the recording client's playing or observer country."]
         viewpoint: Option<dashboard_base::products::Country>,
     },
     Manpower {
@@ -66,7 +52,6 @@ impl FactionStateParams {
     }
 }
 
-/// A selection held over consecutive hours: its token and name, or why it has no name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -91,19 +76,18 @@ pub struct FactionSelectionLane {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionMinimumLane {
-    /// The upgrade group's lexer token: `groups` names it.
+    #[doc = " The upgrade group's lexer token: `groups` names it."]
     pub group: u32,
     pub runs: Vec<FactionSelectionRun>,
 }
 
-/// A member's selection in one upgrade group, over the hours its account was an explicit member.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionMemberUpgradeLane {
-    /// Unique among the reply's lanes: the account, its holder and the group.
+    #[doc = " Unique among the reply's lanes: the account, its holder and the group."]
     pub key: String,
-    /// The member's tag at its last selection; none when no tag held its slot then.
+    #[doc = " The member's tag at its last selection; none when no tag held its slot then."]
     pub tag: Option<String>,
     pub slot: u32,
     pub country_id: u32,
@@ -130,7 +114,7 @@ pub struct FactionRulesReply {
     pub members: Vec<FactionMemberUpgradeLane>,
     pub doctrines: Vec<FactionSelectionLane>,
     pub groups: Vec<FactionUpgradeGroup>,
-    /// Hours of the timeline the recording does not hold.
+    #[doc = " Hours of the timeline the recording does not hold."]
     pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
@@ -145,13 +129,12 @@ pub struct FactionManpowerRun {
     pub starts_segment: bool,
 }
 
-/// One recorded occurrence of a country in the faction's manpower list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionManpowerMember {
     pub key: String,
-    /// The country's tag at the occurrence's first hour; none when no tag held it then.
+    #[doc = " The country's tag at the occurrence's first hour; none when no tag held it then."]
     pub tag: Option<String>,
     pub slot: Option<u32>,
     pub country_id: u32,
@@ -235,11 +218,8 @@ impl Product for FactionState {
     }
 }
 
-/// A key's runs of equal cells over one stretch: (first, last, cells), none while not shown.
 type Steps = Vec<(i32, i32, Option<Box<[Cell]>>)>;
 
-/// `table`'s `columns` for `keys` over each stretch of `query`'s timeline: per key, its steps
-/// cut into runs, with whether each stretch starts a segment.
 fn histories(query: &Query<'_>, table: TableId, columns: &[usize], keys: Keys<'_>, cancelled: &AtomicBool) -> io::Result<Vec<(u32, bool, i32, i32, BTreeMap<u128, Steps>)>> {
     let mut out = Vec::new();
     for (index, stretch) in query.timeline.stretches.iter().enumerate() {
@@ -267,7 +247,6 @@ fn number(cell: Option<&Cell>) -> Option<i64> {
     }
 }
 
-/// Runs of one lane, in hour order, adjacent equal runs joined unless a segment starts between.
 #[derive(Default)]
 pub(super) struct Lane {
     pub(super) runs: Vec<(i32, i32, u64, bool)>,
@@ -288,8 +267,6 @@ impl Lane {
     }
 }
 
-/// The lanes of `table`'s rows of `faction` (keyed by faction above an ordinal), one per ordinal,
-/// valued by `column`.
 fn ordinal_lanes(query: &Query<'_>, table: TableId, column: usize, faction: u64, cancelled: &AtomicBool) -> io::Result<BTreeMap<u32, Lane>> {
     let (low, high) = ordinals(faction);
     let mut lanes: BTreeMap<u32, Lane> = BTreeMap::new();
@@ -306,7 +283,6 @@ fn ordinal_lanes(query: &Query<'_>, table: TableId, column: usize, faction: u64,
     Ok(lanes)
 }
 
-/// Each lexer token's spelling in a run, read at its last hour: the dictionary only grows.
 #[derive(Default)]
 struct Lexicon {
     runs: HashMap<u32, HashMap<u32, String>>,
@@ -334,16 +310,13 @@ impl Lexicon {
     }
 }
 
-/// What the rules view names selections with.
 struct Naming<'q, 'r> {
     query: &'q Query<'r>,
     faction: u64,
     cat: Result<&'q Catalogue, String>,
     lexicon: Lexicon,
     names: Names,
-    /// The view's chosen tag that scripted names expand in; none follows the recording client.
     viewpoint: Option<&'q dashboard_base::products::Country>,
-    /// The frames a scripted name (true) or a programme (false) was read at, by hour.
     frames: HashMap<(i32, bool), Arc<replay_frame::frame::DecodedFrame>>,
 }
 
@@ -351,7 +324,6 @@ fn localise(cat: &Catalogue, key: &[u8]) -> Result<String, String> {
     cat.localisation.localise(key).map_err(|why| why.to_string())
 }
 
-/// The tables a scripted name reads (`scripted`), or a programme's name.
 fn naming_tables(scripted: bool) -> Vec<Read> {
     let mut tables: Vec<TableId> = if scripted { crate::scripted_text::TABLES.to_vec() } else { Vec::new() };
     tables.extend([TableId::LocalPlayer, TableId::CountryLinks, TableId::Countries, TableId::LexicalTokens]);
@@ -364,7 +336,6 @@ fn naming_tables(scripted: bool) -> Vec<Read> {
 }
 
 impl Naming<'_, '_> {
-    /// The hour's tables a name reads, read once per hour.
     fn frame(&mut self, hour: i32, scripted: bool) -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
         if let Some(frame) = self.frames.get(&(hour, scripted)) {
             return Ok(Arc::clone(frame));
@@ -374,8 +345,6 @@ impl Naming<'_, '_> {
         Ok(frame)
     }
 
-    /// `text` with its scripted parts expanded at `hour` in the selected country's scope, as the
-    /// game's faction view expands it.
     fn expand(&mut self, hour: i32, text: String) -> Result<String, String> {
         if !text.contains('[') {
             return Ok(text);
@@ -386,7 +355,6 @@ impl Naming<'_, '_> {
         ScriptedText::new(&*frame, &cat.localisation, cat.scripted_content()?, root).viewing(root).expand_faction(&text, self.faction)
     }
 
-    /// A rule's or a doctrine's selection: the token's localised name.
     fn plain(&mut self, hour: i32, token: u32) -> (Option<String>, Result<String, String>) {
         let spelling = match self.lexicon.spelling(self.query, hour, token) {
             Ok(spelling) => spelling,
@@ -401,7 +369,6 @@ impl Naming<'_, '_> {
         (Some(spelling), name)
     }
 
-    /// A member or minimum upgrade's name, from the content's upgrade definitions.
     fn upgrade(&mut self, hour: i32, token: u32) -> (Option<String>, Result<String, String>) {
         let spelling = match self.lexicon.spelling(self.query, hour, token) {
             Ok(spelling) => spelling,
@@ -433,7 +400,6 @@ impl Naming<'_, '_> {
         catalogue::plain_text(&text)
     }
 
-    /// A shared programme's name: its active project's, at `hour`.
     fn programme(&mut self, hour: i32, reference: u64) -> Result<Option<String>, String> {
         if reference as u32 != engine_projects::nproject_cprogram::REFERENCE_TYPE {
             return Err("Shared programme reference does not name a research programme".into());
@@ -494,14 +460,12 @@ fn selection(first: i32, last: i32, starts: bool, token: Option<String>, name: R
     FactionSelectionRun { first_hour: first, last_hour: last, token, name, reason, starts_segment: starts }
 }
 
-/// Counts a run's reason among the reply's warnings.
 fn note(warnings: &mut BTreeMap<String, usize>, run: &FactionSelectionRun) {
     if let Some(reason) = &run.reason {
         *warnings.entry(reason.clone()).or_default() += 1;
     }
 }
 
-/// How a lane's selections are named.
 #[derive(Clone, Copy)]
 enum Named {
     Plain,
@@ -509,7 +473,6 @@ enum Named {
     Programme,
 }
 
-/// `runs` of one lane named at each run's first hour.
 fn named(naming: &mut Naming<'_, '_>, runs: Vec<(i32, i32, u64, bool)>, how: Named, warnings: &mut BTreeMap<String, usize>) -> Vec<FactionSelectionRun> {
     runs.into_iter()
         .map(|(first, last, value, starts)| {
@@ -538,7 +501,6 @@ fn slot_lanes(naming: &mut Naming<'_, '_>, lanes: BTreeMap<u32, Lane>, how: Name
         .collect()
 }
 
-/// The rules view: every selection lane of `faction` over the timeline.
 fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, viewpoint: Option<&dashboard_base::products::Country>, cancelled: &AtomicBool) -> io::Result<FactionRulesReply> {
     let mut naming = Naming { query, faction, cat, lexicon: Lexicon::default(), names: Names::new(&query.holders), viewpoint, frames: HashMap::new() };
     let field = dashboard_declare::field;
@@ -592,13 +554,10 @@ fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, viewp
     })
 }
 
-/// A cell of a history's step: `columns` the columns read, ascending, as the cells are.
 fn cell(columns: &[usize], cells: &[Cell], column: usize) -> Option<i64> {
     number(columns.iter().position(|held| *held == column).and_then(|index| cells.get(index)))
 }
 
-/// The faction's minimum upgrades, a lane per group: each ordinal's selection while it holds
-/// the group.
 fn minimum_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Result<BTreeMap<u32, Lane>> {
     let table = TableId::FactionMinimumUpgrades;
     let (group_column, token_column) = (dashboard_declare::field(table, "group")?, dashboard_declare::field(table, "token")?);
@@ -629,7 +588,6 @@ fn minimum_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io:
         .collect())
 }
 
-/// Who a member upgrade lane is: the account, its holder, and the group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MemberLane {
     account: u32,
@@ -638,8 +596,6 @@ struct MemberLane {
     group: u32,
 }
 
-/// Each member's upgrade selections: its account's lists over the hours it was an explicit
-/// member of `faction` under one holder, a lane per group.
 fn member_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Result<BTreeMap<MemberLane, Vec<(i32, i32, u32, bool)>>> {
     let owners = TableId::FactionAccountOwners;
     let field = |name| dashboard_declare::field(owners, name);
@@ -652,7 +608,6 @@ fn member_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::
     list_columns.sort_unstable();
     let mut out: BTreeMap<MemberLane, Vec<(i32, i32, u32, bool)>> = BTreeMap::new();
     for (run, breaks, first, _, held) in histories(query, owners, &owner_columns, Keys::All, cancelled)? {
-        // Each account's membership spans of this faction, with its holder.
         let mut spans: BTreeMap<u32, Vec<(i32, i32, u32, u32)>> = BTreeMap::new();
         for (key, steps) in held {
             for (a, b, cells) in steps {
@@ -672,7 +627,6 @@ fn member_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::
         let keys: Vec<u128> = spans.keys().map(|account| u128::from(*account) << 64).collect();
         let (from, to) = spans.values().flatten().fold((i32::MAX, i32::MIN), |(lo, hi), span| (lo.min(span.0), hi.max(span.1)));
         let lists = dashboard_query::cost::storage(|| lanes::history(query.replay.recording(), run, accounts, &list_columns, Keys::These(&keys), from, to))?;
-        // The hours each account's lists were written, read there.
         let mut asks = Vec::new();
         let mut shown: BTreeMap<u32, Vec<(i32, i32, Option<i32>)>> = BTreeMap::new();
         for (key, steps) in &lists.keys {
@@ -723,7 +677,6 @@ fn member_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::
     Ok(out)
 }
 
-/// The manpower view: every recorded occurrence of a country in `faction`'s manpower list.
 fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Result<FactionManpowerReply> {
     let table = TableId::FactionManpower;
     let (country_column, value_column) = (dashboard_declare::field(table, "country")?, dashboard_declare::field(table, "value")?);
@@ -731,12 +684,10 @@ fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Resu
     columns.sort_unstable();
     let (low, high) = ordinals(faction);
     let names = Names::new(&query.holders);
-    // Each occurrence's values: (country, its occurrence among the ordinals holding it, slot) → runs.
     let mut members: BTreeMap<(u32, u32, Option<u32>), Vec<FactionManpowerRun>> = BTreeMap::new();
     let mut tags: HashMap<(u32, u32, Option<u32>), Option<String>> = HashMap::new();
     let mut unresolved = 0usize;
     for (run, breaks, first, _, held) in histories(query, table, &columns, Keys::Range(low, high), cancelled)? {
-        // (ordinal, first, last, country, value) of every shown run.
         let mut segments = Vec::new();
         for (key, steps) in held {
             for (a, b, cells) in steps {
@@ -747,7 +698,6 @@ fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Resu
             }
         }
         segments.sort_unstable_by_key(|segment| (segment.1, segment.0));
-        // Each country's canonical slot at the first hour of each of its runs, read for those rows alone.
         let asks: Vec<(i32, u128)> = segments.iter().map(|segment| (segment.1, u128::from(segment.3))).collect();
         let slot_column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
         let mut slots: HashMap<(i32, u32), u32> = HashMap::new();

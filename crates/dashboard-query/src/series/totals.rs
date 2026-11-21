@@ -1,9 +1,3 @@
-//! A declared running total ([`dashboard_declare::RUNNING_TOTALS`]) read as a set of an owner's
-//! parts, as itself or over a window: what it delivered in the window ending at a read is its total
-//! as of that read less its total as of the read exactly the window before, inside one holder's
-//! part of the timeline and one observation; never zero where either end is not known. A set of
-//! parts sums them, a part without a row reading the owner's rest; it is not known where any part
-//! is not, the part named. Each reply reads the hours it shows and the window before them.
 
 use super::{Ask, Line, Part, invalid};
 use crate::{
@@ -18,50 +12,35 @@ use std::{
     io,
 };
 
-/// Why a running total's value is not known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gap {
-    /// No row of the owner (nor its rest) is live: the table was not read, or the owner holds none.
     NotRecorded,
-    /// A part's cell is not recorded, with the reason its row gives.
     Cell { part: u128, reason: u8 },
-    /// No read exactly a window before, inside the holder's part.
     WindowIncomplete,
-    /// The totals began counting again inside the window.
     Restarted,
-    /// Past an exact 64-bit integer.
     OutOfRange,
 }
 
-/// One value over hours.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TotalRun {
     pub first: i32,
     pub last: i32,
     pub value: Result<i64, Gap>,
-    /// It starts a holder's part that is not the tag's first over the timeline.
     pub opens: bool,
 }
 
-/// Where a window ending at an hour starts; none: the running total itself.
 pub type Back<'f> = Option<&'f dyn Fn(i32) -> Option<i32>>;
 
-/// The parts a set names in a run of the recording (the same content may hold other ids in another).
 pub type Parts<'f> = &'f dyn Fn(u32) -> Vec<u128>;
 
-/// The reads and observation starts over some hours.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Clock {
-    /// Hours the totals were read, within the hours asked, ascending.
     pub reads: Vec<i32>,
-    /// The hours the totals counted from over the hours asked (the first may be before them).
     pub since: Vec<i32>,
 }
 
-/// The hours a reply first looks back for its window's start; widened while a read before them is missing.
 const REACH: i32 = 2 * 744;
 
-/// A key's value and the reason column's, over a span.
 struct Held<'r> {
     value: Option<&'r Runs>,
     reason: Option<&'r Runs>,
@@ -73,12 +52,10 @@ fn at(runs: Option<&Runs>, hour: i32) -> Option<i64> {
     runs.get(index).filter(|run| run.0 <= hour).and_then(|run| run.2)
 }
 
-/// One run of a clock column at `hour`.
 fn clock_at(runs: &HashMap<u128, Runs>, key: u128, hour: i32) -> Option<i32> {
     at(runs.get(&key), hour).and_then(|value| i32::try_from(value).ok())
 }
 
-/// A set's columns: the measure's and its reason's.
 struct Columns {
     value: usize,
     reason: usize,
@@ -105,18 +82,15 @@ impl<'q, 'a> Line<'q, 'a> {
         })
     }
 
-    /// The row keys of `owner`'s set `parts` in run `run`, each with its part, and its rest's key.
     fn set_keys(&self, running: &RunningTotal, owner: u128, parts: &[u128]) -> io::Result<(Vec<(u128, u128)>, Option<u128>)> {
         let layout = self.series.parts.ok_or_else(|| invalid(format!("{} has no parts", self.series.kind)))?;
         Ok((parts.iter().map(|&part| (part, layout.key(owner, part))).collect(), running.rest.map(|rest| layout.key(owner, rest))))
     }
 
-    /// `columns` of `keys` over `first..=last` of run `run`, by key.
     fn column_runs(&self, run: u32, column: usize, keys: &[u128], first: i32, last: i32) -> io::Result<HashMap<u128, Runs>> {
         read::runs(self.query.replay.recording(), run, self.series.table, Source::Cell(column), Some(keys), first, last)
     }
 
-    /// Each of `tags`' values of set `parts` over `from..=to`: the running total, or with `back` its window.
     pub fn totals<C: Clone + Into<Country>>(&self, tags: &[C], parts: Parts<'_>, back: Back<'_>, from: i32, to: i32) -> io::Result<Vec<Vec<TotalRun>>> {
         if self.series.key.unowned() {
             return Err(invalid(format!("{} is rows no country owns", self.series.kind)));
@@ -126,7 +100,6 @@ impl<'q, 'a> Line<'q, 'a> {
         let timeline = &self.query.timeline;
         let mut out = Vec::with_capacity(tags.len());
         for tag in tags {
-            // The tag's parts over the whole timeline: a window looks back to its part's first hour.
             let whole: Vec<Part> = self.held(&Ask::whole(tag.clone()), timeline.first, timeline.last);
             let opening = whole.first().map(|part| part.first);
             let mut runs: Vec<TotalRun> = Vec::new();
@@ -146,7 +119,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// The set's value at `hour` from its keys' runs.
     fn set_at(runs: &HashMap<usize, HashMap<u128, Runs>>, columns: &Columns, keys: &[(u128, u128)], rest: Option<u128>, hour: i32) -> Result<i128, Gap> {
         let held = |key: u128| Held { value: runs.get(&columns.value).and_then(|by| by.get(&key)), reason: runs.get(&columns.reason).and_then(|by| by.get(&key)) };
         let mut sum: i128 = 0;
@@ -174,7 +146,6 @@ impl<'q, 'a> Line<'q, 'a> {
         columns.iter().map(|&column| Ok((column, self.column_runs(run, column, &wanted, first, last)?))).collect()
     }
 
-    /// The running total of a set over `shown` of `part`.
     fn part_totals(&self, part: &Part, keys: &[(u128, u128)], rest: Option<u128>, columns: &Columns, (first, last): (i32, i32)) -> io::Result<Vec<(i32, i32, Result<i64, Gap>)>> {
         let runs = self.set_runs(part.run, &[columns.value, columns.reason], keys, rest, first, last)?;
         let mut cuts: BTreeSet<i32> = BTreeSet::from([first]);
@@ -193,10 +164,8 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// The window `back` of a set over `shown` of `part`: as of each read, until the next.
     #[allow(clippy::too_many_arguments, reason = "a part's set, its columns, the hours shown and the window")]
     fn part_windows(&self, running: &RunningTotal, part: &Part, keys: &[(u128, u128)], rest: Option<u128>, columns: &Columns, (first, last): (i32, i32), back: &dyn Fn(i32) -> Option<i32>) -> io::Result<Vec<(i32, i32, Result<i64, Gap>)>> {
-        // The clock from far enough back to know the read the first hour shown stands as of, and its window's start.
         let mut reach = REACH;
         let clock = loop {
             let from = first.saturating_sub(reach).max(part.first);
@@ -241,8 +210,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// The `n` tags whose set `parts` is greatest at `hour` (as of its read), greatest first and ties by
-    /// tag, among those `keep` takes: two reads of the table at an hour for a window, one for a total.
     pub fn totals_ranked(&self, hour: i32, n: usize, parts: Parts<'_>, back: Back<'_>, keep: &dyn Fn(i64) -> bool) -> io::Result<Vec<String>> {
         let running = self.running()?;
         let columns = self.total_columns(running)?;
@@ -301,7 +268,6 @@ impl<'q, 'a> Line<'q, 'a> {
             let value = match &start {
                 None => at,
                 Some((start, before)) => {
-                    // The window's start is the same holder's, in the same stretch.
                     let same = self.query.holders.at(tag, *start).is_some_and(|held| held.holder == run.holder && held.last >= hour);
                     let Some(before) = value_of(before, &keys, rest).filter(|_| same) else { continue };
                     at - before
@@ -317,7 +283,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(scored.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect())
     }
 
-    /// The reads and observation starts of the totals over `from..=to`.
     pub fn clock(&self, from: i32, to: i32) -> io::Result<Clock> {
         let running = self.running()?;
         let columns = self.total_columns(running)?;
@@ -334,7 +299,6 @@ impl<'q, 'a> Line<'q, 'a> {
 
 static EMPTY: Runs = Vec::new();
 
-/// Appends a run, joined to the one before where it continues it with the same value.
 fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, value: Result<i64, Gap>) {
     match out.last_mut() {
         Some(open) if open.2 == value && open.1.checked_add(1) == Some(first) => open.1 = last,
@@ -346,8 +310,6 @@ fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, valu
 mod tests {
     use super::*;
 
-    /// A set sums its parts; a part without a row reads the owner's rest; one not known leaves the set not
-    /// known, named; with no rest declared, or no rest row, a part without a row is not recorded.
     #[test]
     fn a_set_sums_its_parts_reads_the_rest_for_a_part_without_a_row_and_is_unknown_where_one_is() {
         let columns = Columns { value: 0, reason: 1, since: 2, as_of: 3 };

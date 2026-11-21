@@ -1,9 +1,6 @@
-//! Exact region areas retained by a layer whose province membership is unchanged.
 use super::Province;
 use std::collections::HashMap;
 
-/// Nonzero keys include members with no pixels. Zero area is not absent
-/// membership. Retained slots are used only after an exact source-key match.
 pub(super) fn areas(
     region_of: &[u32],
     provinces: &[Province],

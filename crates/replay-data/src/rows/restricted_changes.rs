@@ -1,7 +1,5 @@
-//! Plain changes between two tables known to be equal outside some keys.
 use super::*;
 
-/// `keys` and `changed` are ascending; the full table equals `previous` outside `keys`.
 pub fn encode_changes_at<T: RowCodec>(
     changed: &[T],
     previous: &[T],
@@ -13,7 +11,6 @@ pub fn encode_changes_at<T: RowCodec>(
     encode_at(changed, previous, keys, rows, output, deleted, None)
 }
 
-/// Note canonical row spans and deleted keys in their written order for [`delta_rows`].
 #[allow(clippy::too_many_arguments)]
 pub fn encode_changes_at_noted<T: RowCodec>(
     changed: &[T],
@@ -38,7 +35,6 @@ pub fn encode_changes_at_noted<T: RowCodec>(
     )
 }
 
-/// Only encoder-noted spans are valid here; their canonical field changes need no reparse.
 pub fn delta_rows(
     table: TableId,
     format: u16,
@@ -68,7 +64,6 @@ pub fn delta_rows(
     Ok(rows)
 }
 
-/// What [`encode_changes_at_noted`] notes: written row spans, deleted keys.
 type Notes<'a> = (&'a mut Vec<(usize, usize)>, &'a mut Vec<u128>);
 
 fn encode_at<T: RowCodec>(
@@ -113,7 +108,6 @@ fn encode_at<T: RowCodec>(
         };
         match (row, baseline) {
             (Some(row), baseline) => {
-                // As the whole-table merge does: equal rows write nothing.
                 if baseline == Some(row) {
                     continue;
                 }
@@ -151,7 +145,6 @@ fn encode_at<T: RowCodec>(
 mod tests {
     use super::*;
 
-    /// A fixed-seed sequence, so every run checks the same cases.
     struct Cases(u64);
     impl Cases {
         fn next(&mut self, below: u64) -> u64 {
@@ -194,7 +187,6 @@ mod tests {
         (rows, gone)
     }
 
-    /// Compare bytes, deletions and direct rows with the independent full-table encoder and decoder.
     fn agree<T: RowCodec>(table: TableId, rows: &[T], previous: &[T], keys: &[u128]) {
         let mut whole = vec![7];
         let mut whole_deleted = vec![9];
@@ -245,7 +237,6 @@ mod tests {
     fn changes_at_candidate_keys_equal_the_whole_table_merge() {
         let mut cases = Cases(0x5eed);
         for _ in 0..2_000 {
-            // A previous table over keys 1..48, about two thirds present.
             let previous: Vec<_> = (1..48)
                 .filter(|_| cases.next(3) != 0)
                 .map(|key| token(key, u64::from(key)))
@@ -255,7 +246,6 @@ mod tests {
             let mut held = previous.iter().peekable();
             for key in 0..52_u32 {
                 let before = held.next_if(|row| row.token == key);
-                // Candidates change, insert, delete, keep or name an absent key.
                 let candidate = cases.next(4) == 0;
                 let row = match (before, candidate) {
                     (Some(before), false) => Some(before.clone()),
@@ -273,7 +263,6 @@ mod tests {
             }
             agree(TableId::LexicalTokens, &rows, &previous, &keys);
         }
-        // Nothing to visit, and the first and last keys alone.
         let previous: Vec<_> = (1..6).map(|key| token(key, 0)).collect();
         agree(TableId::LexicalTokens, &previous, &previous, &[]);
         let mut rows = previous.clone();
@@ -281,7 +270,6 @@ mod tests {
         rows[4] = token(5, 5);
         agree(TableId::LexicalTokens, &rows, &previous, &[1, 5]);
         agree(TableId::LexicalTokens, &rows[1..], &previous, &[1, 5]);
-        // A row outside its keys is refused rather than written.
         let mut output = Vec::new();
         assert!(
             encode_changes_at(

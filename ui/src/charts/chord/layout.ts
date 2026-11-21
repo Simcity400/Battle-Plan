@@ -1,4 +1,3 @@
-/** Directed weighted chords. Values here are geometry only; widgets format exact data. */
 import type { CountryFlagLook } from '../../components/CountryFlag';
 export interface ChordNode { readonly id: string; readonly label: string; readonly color: string; readonly flag?: string | null; readonly countryFlag?: Readonly<CountryFlagLook> }
 export interface ChordFlow { readonly id: string; readonly source: string; readonly target: string; readonly value: number }
@@ -13,17 +12,12 @@ const TAU = 2 * Math.PI;
 export const ARC_BAND = 7;
 export const RIBBON_INSET = 8;
 export const ARC_GAP = 0.04;
-/** Retain the approved spacing for small diagrams. Any number of visible arcs
- * shares at most half the ring as gaps, leaving positive room for their values. */
 export const chordGap = (presence: number) => Math.min(ARC_GAP, Math.PI / Math.max(1, presence));
 
-/** Style-6's placement, bounded so a small widget never gets a negative radius. */
 export function chordSurface(width: number, height: number): ChordSurface {
   return { x: width / 2 - 40, y: height / 2 + 4, radius: Math.max(0, Math.min(width - 180, height) / 2 - 26) };
 }
 
-/** Linear in nodes + flows. Input order is the order of both arcs and their segments.
- * Zero nodes occupy no angle; presence eases their gap as they enter or leave. */
 export function layoutChord(data: ChordData, presence?: ReadonlyMap<string, number>, ringPresence = 1): ChordLayout {
   const arcs = data.nodes.map(node => ({ node, start: 0, end: 0, incoming: 0, outgoing: 0, presence: 0, offset: 0 }));
   const byId = new Map(arcs.map(arc => [arc.node.id, arc]));
@@ -42,7 +36,6 @@ export function layoutChord(data: ChordData, presence?: ReadonlyMap<string, numb
     arc.presence = arc.incoming + arc.outgoing > 0 ? Math.max(0, Math.min(1, presence?.get(arc.node.id) ?? 1)) : 0;
     gaps += arc.presence;
   }
-  // Departing and entering nodes share the ring by their eased presence.
   const gap = chordGap(gaps);
   const unit = total > 0 ? (TAU - gap * gaps) * Math.max(0, Math.min(1, ringPresence)) / total : 0;
   let angle = -Math.PI / 2;
@@ -56,7 +49,6 @@ export function layoutChord(data: ChordData, presence?: ReadonlyMap<string, numb
     const width = flow.value * unit;
     const sourceStart = source.offset;
     source.offset += width;
-    // Read after advancing source: a self-flow consumes two distinct segments.
     const targetStart = target.offset;
     target.offset += width;
     return { flow, sourceStart, sourceEnd: sourceStart + width, targetStart, targetEnd: targetStart + width };
@@ -80,7 +72,6 @@ function inAngle(angle: number, start: number, end: number): boolean {
   return offset < end - start;
 }
 
-/** Crossings of a rightward ray with a quadratic whose control point is the centre. */
 function quadraticCrossings(x: number, y: number, radius: number, start: number, end: number): number {
   const x0 = Math.cos(start) * radius, y0 = Math.sin(start) * radius;
   const x1 = Math.cos(end) * radius, y1 = Math.sin(end) * radius;
@@ -101,7 +92,6 @@ function arcCrossings(x: number, y: number, radius: number, start: number, end: 
     + Number(inAngle(Math.PI - angle, start, end) && -radius * Math.cos(angle) > x);
 }
 
-/** Exact ray intersections with the same circular arcs and quadratics Canvas draws. */
 export function ribbonContains(ribbon: ChordRibbon, x: number, y: number, radius: number): boolean {
   if (!(radius > 0) || x * x + y * y > radius * radius) return false;
   const { sourceStart: a, sourceEnd: b, targetStart: c, targetEnd: d } = ribbon;
@@ -110,7 +100,6 @@ export function ribbonContains(ribbon: ChordRibbon, x: number, y: number, radius
   return crossings % 2 === 1;
 }
 
-/** Topmost item first, matching paint order. Arcs take precedence over ribbons. */
 export function hitChord(layout: ChordLayout, surface: ChordSurface, x: number, y: number): ChordHit | null {
   x -= surface.x; y -= surface.y;
   const distance = Math.hypot(x, y), angle = Math.atan2(y, x);

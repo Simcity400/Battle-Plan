@@ -34,7 +34,6 @@ fn aliases_share_one_class_dispatch() {
     )
     .unwrap()
     .items;
-    // The aliases share a class and empty own text.
     assert!(renderer.effect_class(&items[0]).is_some());
     assert_eq!(
         renderer.effect_class(&items[0]),
@@ -45,7 +44,6 @@ fn aliases_share_one_class_dispatch() {
         renderer.leaf(&items[1], scopes)
     );
     assert_eq!(renderer.leaf(&items[0], scopes), Some(Ok(String::new())));
-    // Conditional tails alias the if effect and share its own description.
     assert!(renderer.effect_class(&items[2]).is_some());
     assert_eq!(
         renderer.effect_class(&items[2]),

@@ -98,7 +98,6 @@ fn content_description_cases() {
             "complete_national_focus={focus=SYN_FOCUS originator_name=SYN_FOCUS_TOOLTIP}",
             "Complete for BBB/Alpha:Focus AAA/AAA/AAA/AAA",
         ),
-        // Scalar empty still constructs one bound node.
         (
             "focus_empty_originator_keeps_bound_node",
             "complete_national_focus={focus=SYN_FOCUS originator_name=\"\"}",
@@ -116,9 +115,6 @@ fn content_description_cases() {
     }
 }
 
-/// The national focus effects read the national database alone: a refused
-/// continuous-focus file that could define the same id neither refuses nor
-/// replaces the national focus.
 #[test]
 fn national_focus_effects_ignore_a_refused_continuous_file() {
     engine_executable::executable_tables::initialize_for_tests()

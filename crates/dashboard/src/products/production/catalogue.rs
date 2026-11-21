@@ -1,7 +1,3 @@
-//! The production catalogue: who builds whose designs under licence (`production-licences`) and a
-//! country's industrial organisations (`industrial-organisations`), each the recorded rows at an
-//! hour, asked for an hour and followed as a panel at the head; and a country's saved designs with
-//! the hours each was its and flagged obsolete (`equipment-designs`), over the branch.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -35,15 +31,12 @@ pub struct ProductionLicences;
 pub struct IndustrialOrganisations;
 pub struct EquipmentDesigns;
 
-/// The lexer token a selected policy holds when none is selected.
 const UNSELECTED_POLICY: u32 = 0x4c17;
 
 fn validate_branch(branch: &str) -> Result<(), &'static str> {
     branch.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
 }
 
-/// A licence's party at the hour: its canonical slot and the tag its country holds, each none
-/// where its links or its country are not recorded.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -57,23 +50,22 @@ pub struct LicenceParty {
 #[serde(rename_all = "camelCase")]
 pub struct LicenceDesign {
     pub variant: String,
-    /// Null where the content does not name it or it has no definition at the hour.
+    #[doc = " Null where the content does not name it or it has no definition at the hour."]
     pub name: Option<String>,
 }
 
-/// One licence standing at the hour.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LicenceNow {
-    /// Unique at the hour: the licensee's reference and the licence's place in its roster.
+    #[doc = " Unique at the hour: the licensee's reference and the licence's place in its roster."]
     pub key: String,
     pub licensor: LicenceParty,
     pub licensee: LicenceParty,
-    /// Civilian factories the licensee lends.
+    #[doc = " Civilian factories the licensee lends."]
     pub lent: i32,
     pub required: i32,
-    /// The hour the licence started.
+    #[doc = " The hour the licence started."]
     pub since: i32,
     pub designs: Vec<LicenceDesign>,
 }
@@ -91,7 +83,7 @@ pub struct ProductionLicencesParams {
 pub struct ProductionLicencesReply {
     pub branch_id: String,
     pub licences: Vec<LicenceNow>,
-    /// Why the licences are not known at the hour, when they are not: never shown as none.
+    #[doc = " Why the licences are not known at the hour, when they are not: never shown as none."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -104,8 +96,6 @@ pub struct IndustrialOrganisationsParams {
     pub country: Country,
 }
 
-/// One organisation of the country at the hour; its state null where its details were not read.
-/// Its funds (fixed5) and unspent points move daily: they are live cells `(id, funds|points)`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -114,19 +104,19 @@ pub struct OrganisationNow {
     pub token: String,
     pub name: Option<String>,
     pub name_unknown: Option<String>,
-    /// The icon's key in `icons`.
+    #[doc = " The icon's key in `icons`."]
     pub icon: Option<String>,
     pub icon_unknown: Option<String>,
     pub size: Option<i32>,
-    /// Traits unlocked.
+    #[doc = " Traits unlocked."]
     pub traits: Option<u32>,
-    /// The selected policy's script key; null for none or where the state was not read.
+    #[doc = " The selected policy's script key; null for none or where the state was not read."]
     pub policy_token: Option<String>,
     pub policy_name: Option<String>,
-    /// Why a selected policy cannot be named, when it cannot.
+    #[doc = " Why a selected policy cannot be named, when it cannot."]
     pub policy_unknown: Option<String>,
-    /// The hour the policy may change again; null when none is set. The days left are counted
-    /// where they are shown, as the game counts them: its day less the shown hour's.
+    #[doc = " The hour the policy may change again; null when none is set. The days left are counted"]
+    #[doc = " where they are shown, as the game counts them: its day less the shown hour's."]
     pub cooldown_hour: Option<i32>,
 }
 
@@ -137,9 +127,9 @@ pub struct IndustrialOrganisationsReply {
     pub branch_id: String,
     pub tag: String,
     pub organisations: Vec<OrganisationNow>,
-    /// Why the organisations are not known at the hour, when they are not.
+    #[doc = " Why the organisations are not known at the hour, when they are not."]
     pub missing: Option<String>,
-    /// Why their state (size, funds, traits, policy) is not known at the hour, when it is not.
+    #[doc = " Why their state (size, funds, traits, policy) is not known at the hour, when it is not."]
     pub details_missing: Option<String>,
     pub icons: Vec<EquipmentIcon>,
     pub warnings: Vec<String>,
@@ -153,17 +143,16 @@ pub struct EquipmentDesignsParams {
     pub country: Country,
 }
 
-/// One saved design of the country over the branch.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DesignHistory {
     pub id: String,
-    /// Hours it was the country's saved design, ascending.
+    #[doc = " Hours it was the country's saved design, ascending."]
     pub lives: Vec<HourSpan>,
-    /// Hours of `lives` it was flagged obsolete.
+    #[doc = " Hours of `lives` it was flagged obsolete."]
     pub obsolete: Vec<HourSpan>,
-    /// Its names and picture, read at one hour it was the country's.
+    #[doc = " Its names and picture, read at one hour it was the country's."]
     pub name: VariantName,
 }
 
@@ -174,7 +163,7 @@ pub struct EquipmentDesignsReply {
     pub branch_id: String,
     pub tag: String,
     pub designs: Vec<DesignHistory>,
-    /// Hours a holder of the tag was recorded: outside them its designs are not known.
+    #[doc = " Hours a holder of the tag was recorded: outside them its designs are not known."]
     pub known: Vec<HourSpan>,
     pub icons: Vec<EquipmentIcon>,
     pub warnings: Vec<String>,
@@ -182,7 +171,6 @@ pub struct EquipmentDesignsReply {
 
 dashboard_base::reply_warnings!(ProductionLicencesReply, IndustrialOrganisationsReply, EquipmentDesignsReply);
 
-/// Each canonical slot's tag at the hour, from its country row.
 fn slot_tags(countries: &[CountryRow]) -> BTreeMap<u32, String> {
     countries.iter().filter_map(|row| Some((row.canonical_slot, std::str::from_utf8(&row.tag).ok()?.to_owned()))).collect()
 }
@@ -213,7 +201,6 @@ impl AtHour for ProductionLicences {
         vec![TableId::ProductionLicenseRecords, TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens, TableId::VariantDefinitions]
     }
 
-    /// Every licence with the countries; then the designs they cover; then the tokens those spell.
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match step {
             0 => [TableId::ProductionLicenseRecords, TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance].into_iter().map(Read::all).collect(),
@@ -264,7 +251,6 @@ impl AtHour for ProductionLicences {
     }
 }
 
-/// The organisations of the country in `owner`'s slot.
 fn organisations_of<'a>(frame: &'a DecodedFrame, owner: Owner) -> io::Result<Vec<&'a replay_data::rows::IndustrialOrganisationRow>> {
     let links = frame.complete::<tables::CountryLinks>()?;
     Ok(frame.complete::<tables::IndustrialOrganisations>()?.iter().filter(|row| link_slot(links, row.country) == Some(owner.slot)).collect())
@@ -298,8 +284,6 @@ impl AtHour for IndustrialOrganisations {
         tables
     }
 
-    /// The organisations with the countries; then the owner's organisations' details; then the
-    /// tokens their keys and selected policies spell.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let owned = || organisations_of(held, owner).unwrap_or_default();
@@ -386,7 +370,6 @@ impl AtHour for IndustrialOrganisations {
     }
 }
 
-/// `spans` with `span` appended, joined to the last where they touch.
 fn push_span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
     match spans.last_mut() {
         Some(held) if held.last_hour.checked_add(1) >= Some(first) => held.last_hour = held.last_hour.max(last),
@@ -418,7 +401,6 @@ impl Product for EquipmentDesigns {
         let creator = dashboard_declare::field(TableId::VariantDefinitions, "creator_link")?;
         let obsolete = dashboard_declare::field(TableId::VariantDefinitions, "obsolete")?;
         let mut designs: BTreeMap<u64, (Vec<HourSpan>, Vec<HourSpan>)> = BTreeMap::new();
-        // The last hour of each run each design was the country's: where it is named.
         let mut last_seen: BTreeMap<u64, (u32, i32)> = BTreeMap::new();
         for stretch in query.timeline.within(query.timeline.first, query.timeline.last) {
             crate::metadata::check_cancel(cancelled)?;

@@ -1,11 +1,3 @@
-//! `--viewpoint-switch`: the viewing country switched as a Ctrl+click or the host's choice switches
-//! it (the view's perspective set to the country's slot), in one process, the map drawn through the
-//! window's own frame path. Each switch runs from that moment to the first frame showing anything
-//! of the new country and to the first frame wholly of it: the side drawing the new perspective,
-//! the vision shown, the overlay's tables and every layer that holds a viewing country on the new
-//! one, and, held at an hour, every layer caught up and the picture whole at it; playing, every
-//! layer showing a product. Each part's catch-up is the start of the run of frames it stood correct in
-//! up to the settled frame, so the last of them names what held the switch back.
 use super::super::{Playhead, Viewer};
 use super::toggle;
 use super::{render_state, wait_until};
@@ -23,18 +15,13 @@ use std::{
 };
 use viewer_foundation::map::perspective::Country;
 
-/// The countries a run switches between and how it runs.
 pub(crate) struct Switches {
     pub countries: Vec<String>,
-    /// Passes through the countries held at the hour.
     pub rounds: u32,
-    /// Switches made while playing, after the held ones and the hour steps.
     pub play_switches: u32,
     pub play_speed: f64,
-    /// Single hour steps held between them: the cost a switch is compared with.
     pub hour_steps: u32,
     pub refresh_hz: f64,
-    /// Frames drawn after the settled one, each checked to still be settled.
     pub settle_frames: u32,
     pub timeout: Duration,
 }
@@ -45,10 +32,6 @@ pub(in crate::app) struct Target {
     pub(crate) tag: String,
 }
 
-/// The parts of the frame just drawn: per part, whether it stands correct for the switch and
-/// whether it shows the new country; whether the picture is whole at the head, and whether that is
-/// asked of it. Playing, the picture stands an hour or so behind the moving head for reasons of its
-/// own, so a playing switch asks only that a frame was drawn.
 pub(in crate::app) struct Seen {
     pub(crate) parts: Vec<(String, bool, bool)>,
     pub(crate) whole: bool,
@@ -61,9 +44,6 @@ impl Seen {
     }
 }
 
-/// What the frame just drawn shows against `target`; none for a target, every layer only caught up.
-/// The layers are read without waiting for the side, as a frame never waits for it: while it is busy
-/// they stand as last read (`layers`), and once it is free they may lead the picture by a publication.
 pub(in crate::app) fn seen(viewer: &Viewer, target: Option<&Target>, head: Option<Playhead>, playing: bool, layers: &mut Vec<crate::playhead_host::CaughtUp>) -> Seen {
     let whole = viewer.drew_frame && head.is_some_and(|head| viewer.presentation_ready(head, playing));
     let ready = if playing { viewer.drew_frame } else { whole };
@@ -93,14 +73,12 @@ pub(in crate::app) fn seen(viewer: &Viewer, target: Option<&Target>, head: Optio
     Seen { parts, whole, ready }
 }
 
-/// Why the map is not settled yet, for a timeout's message.
 fn waiting(viewer: &Viewer, seen: &Seen) -> String {
     let behind: Vec<&str> = seen.parts.iter().filter(|(_, good, _)| !good).map(|(name, ..)| name.as_str()).collect();
     let layers = viewer.playhead_map.as_ref().map(|side| side.with_side(crate::playhead_host::MapSide::shown_states));
     format!("whole {}, behind {behind:?}, layers {layers:?}, error {:?}", seen.ready, viewer.error.as_ref().or(viewer.map_error.as_ref()))
 }
 
-/// The run's clock and what each frame draws with.
 struct Run<'a> {
     viewer: &'a mut Viewer,
     ctx: egui::Context,
@@ -112,7 +90,6 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    /// One frame at the head (the side's playing clock while playing); how long it took.
     fn frame(&mut self, playing: bool) -> io::Result<f64> {
         let now = Instant::now();
         if playing
@@ -126,8 +103,6 @@ impl Run<'_> {
         Ok(now.elapsed().as_secs_f64() * 1e3)
     }
 
-    /// The frames from `requested`, paced to the refresh, until the first settled one for `target`
-    /// and the settle frames after it; the record of the change, named `name`.
     fn until_settled(&mut self, name: &str, target: Option<&Target>, head: Option<Playhead>, playing: bool, requested: Instant) -> io::Result<Value> {
         let (mut first_changed, mut settled) = (None, None);
         let mut since: BTreeMap<String, f64> = BTreeMap::new();
@@ -188,7 +163,6 @@ impl Run<'_> {
     }
 }
 
-/// The canonical slot of each of `tags` in the rows `frame` holds, in order.
 fn slots(frame: &replay_frame::frame::DecodedFrame, tags: &[String]) -> io::Result<Vec<Target>> {
     let countries = frame.complete::<tables::Countries>().map_err(|why| io::Error::other(format!("Countries: {why}")))?;
     tags.iter()
@@ -223,7 +197,6 @@ pub(crate) fn measure(config: dashboard::Config, mut options: Options, path: Pat
     options.headless_dump = false;
     let service = dashboard::Service::new(Arc::new(|_| true))?;
     service.configure_content(&config, options.allow_unverified)?;
-    // Named by its revision, so the service never upgrades the recording in place.
     let revision = dashboard::protocol::replay_revision(&path)?;
     let source = service.open_map(&path, Some(&revision)).map_err(io::Error::other)?;
     let mut viewer = toggle::viewer(&config, &options, &state, &service)?;
@@ -274,7 +247,6 @@ pub(crate) fn measure(config: dashboard::Config, mut options: Options, path: Pat
     if switches.play_switches > 0 {
         let at = run.viewer.playhead.expect("the map has a playhead");
         run.viewer.anchor_playback(at, true, switches.play_speed, false, None, Instant::now(), last);
-        // Playing a second first, so the switch lands in a steady stream of hours.
         let playing_from = Instant::now();
         while playing_from.elapsed() < Duration::from_secs(1) {
             wait_until(Instant::now() + Duration::from_secs_f64(1.0 / switches.refresh_hz));

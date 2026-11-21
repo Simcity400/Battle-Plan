@@ -1,8 +1,3 @@
-//! Session comparisons: the saved speed index and the world-threat sources.
-//!
-//! The world-threat writer saves only the ordered source vector.
-//! The manager total and the per-country aggregate cache are rebuilt on load, so neither has a saved counterpart; both are
-//! reported as printed limitations rather than skipped.
 
 use std::{collections::BTreeMap, io};
 
@@ -105,7 +100,6 @@ fn compare_sources(
                 report.difference(format!("{label}.{field}"), captured, saved);
             }
         }
-        // The game writes either tag only for a signed-positive reference.
         for (field, reference, expected) in [
             ("tag", actual.country, expected.tag.as_deref()),
             ("target", actual.second_country, expected.target.as_deref()),
@@ -282,7 +276,6 @@ threat={
         assert_eq!(report.compared_tables["ThreatSources"], 2);
         assert_eq!(report.compared_tables["GameSpeed"], 1);
         assert_eq!(report.compared_tables["WorldTension"], 1);
-        // The aggregate cache is never serialized and reports no comparisons.
         assert!(
             !report
                 .compared_tables
@@ -363,7 +356,6 @@ countries={} states={} provinces={}"#,
         let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
         let mut report = Report::default();
         compare(&frame(hour), &saved, &links, &mut report).unwrap();
-        // Missing speed and a missing threat block are both differences.
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 
         let mut broken = frame(hour);

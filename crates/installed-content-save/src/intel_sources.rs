@@ -1,5 +1,3 @@
-//! Ordered independent source state; native keyed zeros and duplicate keys
-//! remain occurrences, rather than being folded into a country map.
 use crate::{Decimal, block, boolean, bytes, field, integer, invalid, scalar};
 use installed_content_core::parser::{Item, Value};
 use std::io;
@@ -29,9 +27,7 @@ pub struct StaticPool {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DynamicPool {
-    /// Pending inputs serialized as `accumulator`; aggregation clears this list.
     pub pending: Vec<Keyed>,
-    /// Retained merge/decay results serialized as `values`.
     pub accumulated: Vec<Keyed>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

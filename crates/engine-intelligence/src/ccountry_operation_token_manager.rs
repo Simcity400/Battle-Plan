@@ -1,5 +1,3 @@
-//! Country operation-token manager. Repeated reads do not establish hourly
-//! writer coverage or consistency.
 
 use engine_sites::Rva;
 use crate::{
@@ -7,16 +5,10 @@ use crate::{
     walk::Outcome,
 };
 
-/// Operation-token manager vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_9558);
-/// Owning country pointer.
 pub const COUNTRY: usize = 0x08;
-/// Inline target-country map using hash-table insertion.
 pub const TARGETS: usize = 0x28;
 
-/// Native target membership with an ordered token vector in the caller arena.
-/// Tokens are lexer ordinals rather than hashes. Authored statement names are
-/// interned, and serialization retains membership through those ordinals.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub owner: u32,
@@ -36,11 +28,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Reads each canonical country's authenticated manager once. Missing arena capacity omits a whole
-/// target row. Empty vectors, raw country aliases and repeated token values remain exact. Resolve
-/// distinct token names through the shared callback dictionary when enabling this table; its slot
-/// in COperationToken is not used as an assumed authored id. Normal effect/lifecycle writer closure
-/// and live consistency/cost assessment remain prerequisites to collection.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

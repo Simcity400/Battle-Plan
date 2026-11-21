@@ -9,7 +9,6 @@ export class RefusedError extends Error {
   }
 }
 
-/** A failure whose `text` is written for the user; its message is the technical detail. */
 export class ShownError extends Error {
   readonly text: string;
   constructor(text: string, detail: string) {

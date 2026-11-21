@@ -1,4 +1,3 @@
-/** Identical synthetic content for the native, fully mounted Tab-order oracle. */
 import { memo, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
@@ -78,8 +77,6 @@ export function createTabFixture(render: (node: ReactNode) => void) {
   const nativeFrame = window.requestAnimationFrame.bind(window), nativeCancel = window.cancelAnimationFrame.bind(window);
   let deferredKey = false;
   let nativeKey = false;
-  // Native within-row moves settle in the key task. Prevented moves and virtual
-  // external entry can schedule a handoff frame; only those need a frame wait.
   document.addEventListener('keydown', event => {
     nativeKey = event.key === 'Tab';
     const active = document.activeElement, control = active?.getAttribute('data-control');
@@ -88,8 +85,6 @@ export function createTabFixture(render: (node: ReactNode) => void) {
   });
   document.addEventListener('keyup', () => { nativeKey = false; });
   document.addEventListener('focusin', event => {
-    // A native move from BODY may start a restored backward handoff only after
-    // the key's default action; wait for that frame just like prevented moves.
     if (nativeKey && !event.relatedTarget
       && (event.target as HTMLElement).closest('[data-side]')?.getAttribute('data-side') === 'virtual') deferredKey = true;
   });
@@ -135,8 +130,6 @@ export function createTabFixture(render: (node: ReactNode) => void) {
       await settle();
     },
     async reset() {
-      // Retain both keyed trees between mutation traces, clearing ownership via
-      // a real external focus before restoring the original immutable content.
       for (const side of ['reference', 'virtual'] as const) section(side).inert = false;
       section('reference').querySelector<HTMLElement>('[data-control="before"]')!.focus({ preventScroll: true });
       items = initial; disabledKey = undefined; flushSync(draw);

@@ -1,4 +1,3 @@
-//! Installed GUI effects: production submission against separately populated direct draws.
 use super::*;
 use crate::map::{native_gui as gui, sprites};
 use eframe::wgpu;
@@ -114,8 +113,6 @@ pub(super) fn views(
         .collect()
 }
 
-/// The test constructs projection and local placement directly; it does not use an emitted
-/// draw's matrix or its projection helper.
 pub(super) fn matrix(size: [u32; 2], translation: [f32; 3]) -> Vec<f32> {
     let sx = 2. / size[0] as f32;
     let sy = 2. / size[1] as f32;
@@ -139,8 +136,6 @@ pub(super) fn matrix(size: [u32; 2], translation: [f32; 3]) -> Vec<f32> {
     ]
 }
 
-/// ABI records for a local rectangle, with explicit submission order and optional packed text
-/// channels. `rect` uses the vertex buffer's upward-positive coordinates.
 pub(super) fn rectangle(
     rect: [f32; 4],
     uv: [f32; 4],
@@ -228,8 +223,6 @@ pub(super) fn inputs(
     }
 }
 
-/// An absent technique has no sampler slots. Any declared common or pixel sampler row
-/// establishes a slot range, including a row at slot zero.
 pub(super) fn has_sampler_slots(effect: &Arc<library::Effect>, technique: &str) -> bool {
     effect.source.technique(technique).is_some()
         && effect
@@ -644,8 +637,6 @@ fn compare_installed_native_models() {
     assert_eq!(failures, 0, "see the per-effect pixel report");
 }
 
-/// Separate triangle records for the reference circular geometry, including each sector's
-/// vertex attribute. The installed program determines their sampled colours.
 pub(super) fn fan_vertices(radius: [f32; 2], rotation: f32, weights: [i32; 2]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut triangle = 0;

@@ -1,4 +1,3 @@
-//! Hourly observer handoffs grow only on an admitted worker, in boundary order.
 use super::{
     Captured, construction_ic, event_feed, fuel_awards, land_events, line_output,
     operation_outcomes, peace_settlements, politics,
@@ -12,15 +11,6 @@ const N: usize = 8;
 pub(crate) struct ObserverBoundaryReport {
     pub ticks: [u64; N],
 }
-/// One worker job: the observer drains, then the completion and political
-/// lane seals. Both phases ran as separate jobs, the second dispatched and
-/// joined back to back after the country snapshot. Both seal before the
-/// hourly trampoline returns to the native update, where the lanes' writers
-/// Run  (the operation completion writer from pre-hourly update);
-/// the snapshot and `prepare_hour` between them call no native code that
-/// appends to a lane. One job seals the same events with one worker wake,
-/// behind the snapshot. The event feed only prepares its hour here; the
-/// EventFeedSeal job seals it after the Governance job's census joins.
 pub(crate) struct ObserverBoundaryRequest {
     hour: i32,
     continuous: bool,
@@ -51,7 +41,6 @@ impl ObserverBoundaryRequest {
     }
     pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
-        // The registry boundaries are charged with the land drain to the job's anchor.
         let boundaries = qpc();
         crate::market_changes::boundary(
             self.market_clock,
@@ -201,10 +190,6 @@ impl ObserverBoundaryRequest {
         }
     }
 }
-/// The reason a failed job gives its unsealed lanes. They were their own
-/// job, dispatched after the drains joined: a drain that failed stopped the
-/// pool first, which refused that job as stopped. Lanes the job reached
-/// after every drain keep its own reason.
 fn lane_reason(finished: &[bool; N], reason: &'static str) -> &'static str {
     if finished[..6].iter().all(|&finished| finished) {
         reason
@@ -318,9 +303,6 @@ mod tests {
         );
     }
 
-    /// The output logs are sized, and their replaced rings freed, only by the sizing thread: the
-    /// hold's boundary installs what it offered and allocates, frees and walks nothing for them.
-    /// A burst the installed ring cannot take goes to the log's spill, so no entry waits on it.
     #[test]
     fn the_sizing_thread_sizes_cold_output_logs_and_the_boundary_only_installs_them() {
         use super::super::production::production_rest_test_kit as kit;
@@ -350,8 +332,6 @@ mod tests {
                 bytes[address - kit::BASE..address - kit::BASE + value.len()]
                     .copy_from_slice(value);
             };
-            // The production reader needs only current roster counts. The
-            // construction reader visits every current queue occurrence.
             set(
                 &mut memory.0,
                 0x10000 + cproduction_status::LINES + 8,
@@ -403,13 +383,8 @@ mod tests {
         }
     }
 
-    /// A drain that fails refuses the lanes not yet sealed as stopped, the
-    /// reason their own later job had when the failure stopped the pool;
-    /// lanes reached after every drain keep the job's reason.
     #[test]
     fn lanes_after_a_failed_drain_keep_their_stopped_reason() {
-        // The reason alone: failing a pack would touch the drains' and
-        // lanes' process-wide state, which other tests hold.
         let panicked =
             crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Panicked);
         let stopped =
@@ -421,14 +396,10 @@ mod tests {
         }
         finished[..6].fill(true);
         assert_eq!(lane_reason(&finished, panicked), panicked);
-        // A lane already sealed does not change the reason of the other.
         finished[6] = true;
         assert_eq!(lane_reason(&finished, panicked), panicked);
     }
 
-    /// The completion and political lanes travel with the observer drains in
-    /// one job: their packs leave and return with it, and their seal costs
-    /// are charged to their own tables.
     #[test]
     fn lanes_travel_with_the_observer_drains_in_one_job() {
         let mut captured = Captured::with_capacities(&super::super::Capacities::default());

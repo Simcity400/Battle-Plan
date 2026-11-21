@@ -1,6 +1,3 @@
-//! One requested country's intel at one recorded hour: every intel row the recording holds for a
-//! viewing country, with the game's explanations and the player's estimate ranges (main's
-//! `intel-details`, read at the hour through the query layer).
 
 use crate::{Source, products::{LoadContext, Product}};
 use installed_content_core::defines::Defines;
@@ -50,7 +47,7 @@ pub struct IntelDetail {
     pub label: String,
     pub viewer: u32,
     pub target: Option<u32>,
-    /// All operands of this entry are evaluated at this supplying hour.
+    #[doc = " All operands of this entry are evaluated at this supplying hour."]
     pub supplying_hour: Option<i32>,
     pub values: Vec<IntelValue>,
     pub explanations: Vec<IntelValue>,
@@ -137,9 +134,6 @@ const TABLES: &[TableId] = &[
     TableId::SliceReads,
 ];
 
-/// The ledger's ordinary full-information predicate: self, then active-war
-/// veto, then a common faction or either subject-relation endpoint direction.
-/// Console fog bypass is independent and is refused only when it is reached.
 pub(super) fn diplomacy_unlock(
     frame: &DecodedFrame,
     viewer_raw: u32,
@@ -676,9 +670,6 @@ fn project(
     Ok(reply)
 }
 
-/// The fuel estimate's operands at CountryFuel's read hour: the frame asked where it read the
-/// table, else a frame of the fuel tables at that hour. A read hour the frame does not carry is
-/// refused by name (main recovered it from earlier blocks).
 fn fuel_frame(recording: &replay::columnar_frames::Recording, run: u32, frame: &DecodedFrame) -> Result<Box<DecodedFrame>, String> {
     let Some(hour) = frame.tables[TableId::CountryFuel.index()].sampled_at() else {
         frame.complete::<tables::CountryFuel>().map_err(|e| format!("country fuel for its read hour: {e}"))?;

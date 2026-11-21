@@ -1,19 +1,9 @@
-//! The presentation a map frame advances before it draws: model histories and placements,
-//! train and aircraft plans, strikes, map-frame actors, movement arrows and world text. It needs
-//! no GPU, so it can be stepped and compared without one.
-//!
-//! Display switches are not inputs to any of it. They only choose which placed actors draw
-//! (each pass's hidden set), so a hidden layer keeps its admission, plans, random draws,
-//! clocks, mesh budget and animation epochs, and shows exactly as if it had never been hidden.
 use super::{BUILDING_TILE, BuildingHistory, ModelPass, UnitGates, hidden_map_frame_actors};
 use crate::map::border_pass::wrap_offsets;
 use crate::map::terrain::MARGIN;
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::camera::Camera;
 
-/// One part of the presentation step in the flight record: its wall time
-/// (`presentation_wall_us`) and the thread's own CPU (`presentation_cpu_us`). Every part runs on
-/// the thread that draws the frame, which lends none of them.
 struct Part {
     name: &'static str,
     began: Option<(std::time::Instant, Option<std::time::Duration>)>,
@@ -40,7 +30,6 @@ impl Drop for Part {
     }
 }
 
-/// Every part of a scene that a frame advances, borrowed for one step.
 pub(super) struct Presentation<'a> {
     pub graphics: &'a dashboard_core::protocol::MapGraphics,
     pub trains: Option<&'a mut (
@@ -53,10 +42,8 @@ pub(super) struct Presentation<'a> {
     pub map_buildings: Option<&'a mut ModelPass>,
     pub unit_models: Option<&'a mut ModelPass>,
     pub unit_gates: Option<UnitGates>,
-    /// The map mode's layers: its land models and unit arrows.
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
     pub mesh_limit: i32,
-    /// `None` only where no device built the arrow player (the GPU-free tests).
     pub movement_arrows: Option<&'a mut crate::map::movement_arrows::Player>,
     pub animated_text: Option<&'a mut crate::map::animated_map_text::Player>,
     pub strikes: &'a mut crate::map::strike_effects::Presentation,
@@ -64,21 +51,11 @@ pub(super) struct Presentation<'a> {
     pub map_frame: Option<&'a mut ModelPass>,
     pub ambient: Option<&'a mut crate::map::mapframe::Presentation>,
     pub last_animation_time: Option<f32>,
-    /// The host's cut, or `None` to take updates at the walk.
     pub province_frame: Option<&'a viewer_foundation::map::province_schedule::ProvinceFrame>,
-    /// Whether this frame stands in a new pose tick ([`crate::map::poses::tick`]): only such a
-    /// frame advances the actors' plays and asks for their poses. Every other frame places,
-    /// clocks and draws them with the limbs the last tick left.
     pub pose_tick: bool,
 }
 
 impl Presentation<'_> {
-    /// Advances everything to `animation_time` for `camera`. `rails_shown` is the camera's
-    /// railway fade, below which trains run; display switches decide nothing here but which
-    /// placed actors draw.
-    /// `beside` takes back the [`Beside`] step that ran beside the walk and gives the missile
-    /// explosions since the missile clock's mark, when there are aircraft.
-    /// Returns the players of shown strike impacts, whose sounds are combat sounds.
     pub(super) fn step(
         self,
         camera: Camera,
@@ -113,7 +90,6 @@ impl Presentation<'_> {
         drop(view_span);
         let walk = || {
             let _walk = Part::new("walk");
-            // Trains run below the railway fade, whether or not the display shows them.
             if let Some((pass, assets, plan)) = trains
                 && rails_shown
             {
@@ -131,8 +107,6 @@ impl Presentation<'_> {
             if let Some(arrows) = &movement_arrows {
                 gates.arrows = arrows.cutoff();
             }
-            // The raids map mode draws no land unit models (ships stay), and it and the operatives
-            // mode no unit arrows, as the game's camera cutoffs would.
             let gates = gates.for_mode(&visibility);
             let history_part = Part::new("history");
             let history_profile = viewer_foundation::profiling::thread_span("history_update");
@@ -167,7 +141,6 @@ impl Presentation<'_> {
                 let _part = Part::new("buildings");
                 let _buildings_span = viewer_foundation::profiling::span("step_buildings");
                 if viewer_foundation::profile_writer::profiling() {
-                    // Observe the existing result only; no new reuse decision or input walk.
                     viewer_foundation::profiling::record_count(
                         "building_field_reused",
                         u64::from(models.buildings.is_none()),
@@ -204,8 +177,6 @@ impl Presentation<'_> {
                 let clocks_span = viewer_foundation::profiling::span("unit_clocks");
                 pass.set_clocks(unit_history.combat_clocks());
                 drop(clocks_span);
-                // Advance hidden entities too. History retires their players independently of
-                // render culling.
                 if pose_tick {
                     let _animate_span = viewer_foundation::profiling::span("unit_animate");
                     let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
@@ -215,9 +186,6 @@ impl Presentation<'_> {
         };
         let joined = Part::new("join");
         walk();
-        // Missile scenarios finished since the last frame start their explosions on the clock
-        // the flying aircraft share. Their own clock mark moves with the start, so a frame that
-        // fails later starts none of them again.
         let explosions = beside(missile_clock.unwrap_or(animation_time));
         drop(joined);
         if let Some(explosions) = explosions {
@@ -232,13 +200,10 @@ impl Presentation<'_> {
             let mut placed = ambient.update(camera, size, animation_time);
             drop(ambient_span);
             let strike_span = viewer_foundation::profiling::span("strike_update");
-            // Retirement reads the players the previous frame animated.
             let (impacts, clocks) = strikes.update(camera, size, animation_time, |key| {
                 pass.root_play_position(key)
             });
             drop(strike_span);
-            // The table and the impacts share this pass: a hidden one stays placed, so its
-            // admission, clocks and retirement carry on, and only stops drawing.
             let key = |(mesh, instance): &(usize, crate::map::models::ModelInstance)| {
                 let (seed, identity) = instance.animation_key();
                 (*mesh, seed, identity)
@@ -268,9 +233,6 @@ impl Presentation<'_> {
     }
 }
 
-/// The parts of the presentation step that share no state with the walk: the aircraft and the
-/// city sprawl. The scene lends them to a lane of their own and takes them back after the walk,
-/// which then starts the aircraft's missile explosions ([`Presentation::step`]).
 pub(super) struct Beside {
     pub graphics: dashboard_core::protocol::MapGraphics,
     pub aircraft: Option<(
@@ -284,7 +246,6 @@ pub(super) struct Beside {
     pub size: [u32; 2],
     pub animation_time: f32,
     pub pose_tick: bool,
-    /// The lane thread's profiling records, which join the frame's.
     pub records: Option<viewer_foundation::profiling::ThreadRecords>,
 }
 
@@ -293,10 +254,8 @@ impl Beside {
         let Self { graphics, camera, size, animation_time, pose_tick, .. } = self;
         if let Some((pass, assets, plan)) = self.aircraft.as_mut() {
             let _part = Part::new("aircraft");
-            // Every mission is placed; one the display hides stays placed and only stops drawing.
             let _aircraft_span = viewer_foundation::profiling::span("step_aircraft");
             let field_span = viewer_foundation::profiling::span("aircraft_field");
-            // The band reads the actors' players as the previous frame left them.
             let (mut field, hidden) = plan.field(
                 assets,
                 animation_time,
@@ -315,8 +274,6 @@ impl Beside {
             }
         }
         let (sprawl, city_presentation) = (self.sprawl.as_mut(), self.city_presentation.as_mut());
-        // City actors are precreated outside the dynamic mesh creation budget. Each province's
-        // damage inputs select their states.
         if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
             let _part = Part::new("cities");
             let _cities_span = viewer_foundation::profiling::span("step_cities");
@@ -352,7 +309,6 @@ impl Beside {
     }
 }
 
-/// The model passes whose animation events feed the frame's particle simulations and lights.
 pub(super) struct EventSources<'a> {
     pub map_frame: Option<&'a ModelPass>,
     pub sprawl: Option<&'a ModelPass>,
@@ -360,15 +316,9 @@ pub(super) struct EventSources<'a> {
     pub unit_models: Option<&'a ModelPass>,
     pub aircraft: Option<&'a ModelPass>,
     pub trains: Option<&'a ModelPass>,
-    /// The model a free camera mode's user steers, which every camera and switch shows.
     pub player: Option<&'a ModelPass>,
 }
 
-/// Every event the frame's passes emitted, in submission order. A hidden layer's or actor's
-/// events are kept and marked hidden, so every simulation, its retention included, advances on
-/// them, and only their particles and light go unsubmitted. Only the camera decides which layers
-/// emit at all, as before: aircraft above their draw height and trains above the railway fade
-/// do not.
 pub(super) fn frame_events(
     sources: EventSources<'_>,
     graphics: &dashboard_core::protocol::MapGraphics,
@@ -413,8 +363,6 @@ mod tests {
     use viewer_foundation::map::camera::{MapDefines, MapSize, Placement};
     use viewer_foundation::map::presentation::Continuity;
 
-    /// The GPU-free parts of a scene that a frame advances, with the entity particle
-    /// simulations its events feed.
     struct World {
         trains: (ModelPass, Arc<TrainAssets>, TrainPlan),
         unit_models: ModelPass,
@@ -431,7 +379,6 @@ mod tests {
         fn new() -> Self {
             use crate::map::unit_history::{Kind, test_support::target};
             let assets = Arc::new(crate::map::trains::tests::assets());
-            // Every unit figure plays a clip whose event emits kept particles.
             let mut rig = crate::map::entity_animation::stage_rig(false);
             rig.nodes[0].clips[0].animation = None;
             rig.nodes[0].clips[0]
@@ -494,7 +441,6 @@ mod tests {
             }
             .step(camera, [1024, 768], time, true, |_| None);
             self.last = Some(time);
-            // The frame's events reach the particle simulations as the scene hands them over.
             let events = frame_events(
                 EventSources {
                     map_frame: None,
@@ -522,7 +468,6 @@ mod tests {
             self.events = events;
         }
 
-        /// The next hour's plan, with a changed allocation, installed as the scene does.
         fn next_hour(&mut self) {
             let mut next = crate::map::trains::tests::next_hour_plan();
             next.carry_presentation(&mut self.trains.2, Continuity::Continue);
@@ -546,8 +491,6 @@ mod tests {
 
     #[test]
     fn coarse_animation_scopes_are_profile_only_and_preserve_state() {
-        // Each arm owns its process and PROFILE initialization; do not mutate the
-        // test runner's environment or compare nondeterministic clock values.
         const ARM: &str = "BATTLE_PLAN_TEST_ANIMATION_PROFILE_ARM";
         let Some(arm) = std::env::var_os(ARM) else {
             let name = concat!(
@@ -602,7 +545,6 @@ mod tests {
                     }
                 }
             }
-            // No reached pass means no sample, rather than a fabricated zero.
             for stage in ["aircraft_animate", "building_animate", "city_animate", "lights"] {
                 assert!(!line.contains(&format!("mt_{stage}=")));
             }
@@ -611,7 +553,6 @@ mod tests {
         }
     }
 
-    /// Every boolean choice off: every show/hide switch, main and part.
     fn everything_hidden() -> MapGraphics {
         let mut value = serde_json::to_value(MapGraphics::default()).unwrap();
         for choice in value.as_object_mut().unwrap().values_mut() {
@@ -632,7 +573,6 @@ mod tests {
         let mut particles_ran = false;
         for frame in 0..=400 {
             let time = frame as f32 / 10.0;
-            // The hour changes, with another allocation, while one scene hides everything.
             if frame == 200 {
                 drawn.next_hour();
                 undrawn.next_hour();
@@ -641,7 +581,6 @@ mod tests {
             undrawn.step(&hidden, time);
             assert_eq!(drawn.state(), undrawn.state(), "frame {frame}");
             trains_ran |= drawn.trains.2.live_trains() > 0;
-            // The same events reach both scenes' simulations; only the hidden marks differ.
             let keys = |world: &World| {
                 world
                     .events

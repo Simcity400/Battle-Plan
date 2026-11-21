@@ -1,5 +1,3 @@
-//! Enemy-template ledger disclosure from recorded operands. Map tooltips have
-//! their own gates; this query describes the army intel ledger.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,8 +35,6 @@ impl Defines {
     }
 }
 
-/// One observer's disclosure gates, using the supplying CountryIntel sample.
-/// This does not assert a newer intel observation than the recorded table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Disclosure {
     pub fraction: i64,
@@ -93,8 +89,6 @@ impl Disclosure {
         })
     }
 
-    /// Below the standard gate a nonnull fake template replaces the standard.
-    /// A hidden basic section has no admitted template entry.
     pub fn template(&self, standard: u64, fake: u64) -> Option<u64> {
         self.basic.then_some(if self.standard || fake == 0 {
             standard
@@ -103,7 +97,6 @@ impl Disclosure {
         })
     }
 
-    /// Range and whether the ledger displays it rather than unknown text.
     pub fn count(&self, template: u64, count: i32, seed: u32, hour: i32) -> ([i32; 2], bool) {
         (
             crate::map::count_math::count_range_seeded(
@@ -178,9 +171,6 @@ fn resolve(
     ))
 }
 
-/// Rebuild the target country's deployed-template ledger for one observer.
-/// Unused templates do not enter this view; their complete roster is recorded
-/// independently by DivisionTemplates and DivisionTemplateIcons.
 pub fn entries(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,

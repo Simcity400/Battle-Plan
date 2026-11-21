@@ -178,7 +178,6 @@ fn nonempty_published_prefix_does_not_invent_execution_or_transport() {
     input.finish().unwrap();
     assert!(old.delta(None).is_err());
 
-    // DivisionMovement was relaid since: that recording refuses it by name.
     assert_eq!(
         format.table_refusal(TableId::DivisionMovement).unwrap(),
         format!(

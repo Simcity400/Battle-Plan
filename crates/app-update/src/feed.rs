@@ -1,17 +1,11 @@
-//! A channel's update feed in Tauri's updater format, and its installer verified as Tauri's
-//! updater verifies one: a minisign signature by the key both apps carry, whose trusted comment
-//! names the version the feed offers (Tauri's `requireSignedVersion`).
 use base64::{Engine, engine::general_purpose::STANDARD};
 use minisign_verify::{PublicKey, Signature};
 use serde::Deserialize;
 use std::{collections::HashMap, time::Duration};
 
-/// The updater public key; the Tauri CLI signs releases for it (`plugins.updater.pubkey`).
 const PUBLIC_KEY: &str = include_str!("../updater.pub");
-/// Tauri's name for this build's platform in a feed.
 const PLATFORM: &str = "windows-x86_64";
 const FEED_TIMEOUT: Duration = Duration::from_secs(30);
-/// A download that delivers nothing for this long has stalled.
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize)]
@@ -28,7 +22,6 @@ struct Platform {
     url: String,
 }
 
-/// A release a feed offers.
 #[derive(Clone, Debug)]
 pub struct Release {
     pub version: String,
@@ -47,7 +40,6 @@ pub fn client(current: &str) -> Result<reqwest::Client, String> {
         .map_err(|error| format!("The update client could not start: {error}"))
 }
 
-/// The feed's release when it is newer than `current`.
 pub async fn newer(
     client: &reqwest::Client,
     feed: &str,
@@ -88,8 +80,6 @@ pub async fn newer(
     }))
 }
 
-/// Download `release`'s installer, telling `progress` the bytes so far and the total when known,
-/// then verify it.
 pub async fn download(
     client: &reqwest::Client,
     release: &Release,
@@ -127,13 +117,11 @@ fn minisign_text(encoded: &str, what: &str) -> Result<String, String> {
         .ok_or_else(|| format!("its {what} is not a Tauri {what}"))
 }
 
-/// Tauri's check: the signature verifies, and its trusted comment binds it to `version`.
 fn verify(package: &[u8], signature: &str, version: &str) -> Result<(), String> {
     let key = PublicKey::decode(&minisign_text(PUBLIC_KEY, "public key")?)
         .map_err(|error| format!("this build's updater key is not valid: {error}"))?;
     let signature = Signature::decode(&minisign_text(signature, "signature")?)
         .map_err(|error| format!("its signature is not valid: {error}"))?;
-    // Tauri's updater accepts signatures of the whole file as well as of its hash.
     key.verify(package, &signature, true)
         .map_err(|error| format!("it failed signature verification: {error}"))?;
     let signed = signature

@@ -1,8 +1,3 @@
-//! Data products: one module per widget data set, registered once below.
-//!
-//! A product turns a source plus typed parameters into one compact reply. The service,
-//! transport, host and frontend never name a product; they route by its key. A declared series
-//! answers its requests with no product of its own ([`crate::answer`]).
 
 pub mod air_aces;
 pub mod air_ledger;
@@ -55,53 +50,36 @@ pub mod subjects;
 pub mod technology_artwork;
 pub mod territory;
 pub mod factions;
-// Forces and people (P1).
 pub mod experience;
 pub mod forces;
 pub mod training_queue;
 pub mod volunteers;
-// Divisions and stockpile (P3a).
 pub mod divisions;
-// Production totals and spending (P8b).
 pub mod production_spending;
 #[cfg(test)]
 mod war_fixtures;
 pub mod wargoals;
-// Stability's breakdown and parts (P1b).
 pub mod stability;
-// Fuel, trade flows and convoy health (P7b).
 pub mod convoys;
 pub mod trade_flows;
-// Land battles and the division log (P9a).
 pub mod division_log;
 pub mod land_battles;
 pub mod combat_log;
 pub mod land_terrain;
-// Naval battles, ships sunk and naval losses (P9b).
 pub mod naval;
-// The event feed (P6).
 pub mod feed;
 pub mod air_missions;
-// Factions' state (P5b).
 pub mod faction_state;
-// Wars (P5d).
 pub mod wars;
-// Special projects (P12c).
 pub mod special_projects;
-// Air superiority (P11d).
 pub mod air_superiority;
-// Equipment losses (P14).
 pub mod army_losses;
 pub mod equipment_losses;
-// The scoreboard (P13).
 pub mod scoreboard;
-// Equipment produced (P8d).
 pub mod equipment_produced;
-// The power ledger (P4c).
 pub mod power_ledger;
 pub mod windows;
 
-// The product contract and the shared products, at their old paths.
 pub use dashboard_base::products::*;
 #[cfg(any(test, feature = "export-types"))]
 use dashboard_base::products::register_for_export as register_local;
@@ -121,8 +99,6 @@ dashboard_base::reply_warnings!(
     campaign_clock::CampaignClockReply,
 );
 
-/// The products that show rows at an hour ([`at_hour`]), one line each: each answers requests and
-/// shows a panel at the head under its key, and is registered from this line alone.
 pub const AT_HOUR: &[at_hour::Entry] = &[
     at_hour::local_entry::<army::TemplateRoster>(),
     at_hour::local_entry::<air_statistics::AirStatisticsAt>(),
@@ -176,7 +152,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     at_hour::local_entry::<air_missions::AirMissionWingsAt>(),
     at_hour::local_entry::<occupation::states::OccupiedStates>(),
     at_hour::local_entry::<occupation::detail::OccupationDetail>(),
-    // The market (P7c).
     at_hour::local_entry::<economy::market::MarketLendLease>(),
     at_hour::local_entry::<economy::fuel::CountryFuel>(),
     at_hour::local_entry::<stockpile::EquipmentStockpileAt>(),
@@ -188,15 +163,10 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     at_hour::local_entry::<air_superiority::AirSuperiorityAt>(),
     at_hour::local_entry::<equipment_losses::EquipmentLossHead>(),
     at_hour::local_entry::<army_losses::ArmyLosses>(),
-    // The power ledger (P4c).
     at_hour::local_entry::<power_ledger::day::PowerDay>(),
-    // A faction goal's completion rewards, asked by its tooltip (P5e).
     at_hour::local_entry::<faction_state::rewards::FactionGoalRewards>(),
 ];
 
-/// Every product the service answers: these, then [`AT_HOUR`]. Add a product here and in the
-/// frontend widget registry; nothing else needs to change. A family not yet moved to the
-/// recording's own tables has no product here.
 const OWN: &[Registered] = &[
     register_local::<campaign_clock::CampaignClock>(),
     register_local::<player_apm::PlayerApm>(),
@@ -252,7 +222,6 @@ const OWN: &[Registered] = &[
     register_local::<focus::FocusCompletionsProduct>(),
     register_local::<ideas::IdeaHistory>(),
     register_local::<party_history::PartyHistory>(),
-    // Casualties and peace (P5c).
     register_local::<casualties::CasualtyPairs>(),
     register_local::<casualties::CasualtyBreakdown>(),
     register_local::<casualties::CasualtyLabels>(),
@@ -284,7 +253,6 @@ const OWN: &[Registered] = &[
     register_local::<feed::EventChoices>(),
     register_local::<feed::Decisions>(),
     register_local::<feed::EventFeedSpan>(),
-    // The market (P7c).
     register_local::<economy::market::history::LendLeaseHistory>(),
     register_local::<economy::market::ledger::MarketLedger>(),
     register_local::<economy::fuel::awards::CountryFuelAwards>(),
@@ -300,31 +268,23 @@ const OWN: &[Registered] = &[
     register_local::<air_superiority::AirSuperiorityChoices>(),
     register_local::<combat_log::CombatLog>(),
     register_local::<equipment_losses::EquipmentLosses>(),
-    // The feed, research, air and weather's second pass (Q7).
     register_local::<air_statistics::AirStatisticsRegions>(),
-    // The scoreboard (P13).
     register_local::<scoreboard::ScoreboardColumns>(),
     register_local::<scoreboard::Scoreboard>(),
-    // Equipment produced (P8d).
     register_local::<equipment_produced::EquipmentProduced>(),
     register_local::<equipment_produced::EquipmentProducedTypes>(),
     register_local::<equipment_produced::EquipmentProducedCountry>(),
     register_local::<equipment_produced::EquipmentProducedAt>(),
-    // The power ledger (P4c).
     register_local::<power_ledger::PowerSpending>(),
-    // Stability's input reads, for the chart's "as of" marks (Q5).
     register_local::<stability::reads::StabilityReads>(),
     register_local::<air_superiority::timeline::AirSuperiorityTimeline>(),
     register_local::<air_superiority::timeline::AirSuperiorityRanking>(),
-    // The espionage types' tokens, apart from their names (L1).
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS,
 ];
 
 const ALL: [Registered; OWN.len() + AT_HOUR.len()] = at_hour::joined(OWN, AT_HOUR);
 pub static PRODUCTS: &[Registered] = &ALL;
 
-/// The products answered from the recording's tables through the query layer: these, then
-/// [`AT_HOUR`].
 const MOVED_OWN: &[&str] = &[
     army::ArmySize::KEY,
     identities::CountryIdentities::KEY,
@@ -425,7 +385,6 @@ const MOVED_OWN: &[&str] = &[
     equipment_produced::EquipmentProducedTypes::KEY,
     equipment_produced::EquipmentProducedCountry::KEY,
     equipment_produced::EquipmentProducedAt::KEY,
-    // The power ledger (P4c).
     power_ledger::PowerSpending::KEY,
     stability::reads::StabilityReads::KEY,
     air_superiority::timeline::AirSuperiorityTimeline::KEY,

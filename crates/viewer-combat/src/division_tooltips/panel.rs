@@ -1,4 +1,3 @@
-//! The deployed active-cache values shown by the division panel.
 use super::*;
 use replay_data::{rows::DivisionPanelStatsRow, rows::DivisionStatusRow};
 mod attrition;
@@ -271,7 +270,6 @@ fn combat_speed(
             .ok()
             .map(|at| &sides[at]);
         let tactics = &content.assets.tactics;
-        // Authenticate the same tactic pair and context as the existing combat hover.
         organisation_effects(tactics, detail, membership)?;
         let mut value = if reference.kind == 0 {
             content
@@ -324,8 +322,6 @@ mod tests {
         }
     }
 
-    /// The stored suppression word is the designer's witness, not a panel line: the panel's
-    /// selectors never reach it.
     #[test]
     fn the_panel_leaves_out_the_stored_suppression_word() {
         assert!(
@@ -422,7 +418,6 @@ fn sources(
                         .ok_or_else(|| {
                             format!("division source modifier {} has no definition", key)
                         })?;
-                    // The deployed army domain excludes unrelated political/naval modifiers.
                     if definition.category_mask & 2 == 0 && !panel_context_key(key) {
                         return Ok(String::new());
                     }

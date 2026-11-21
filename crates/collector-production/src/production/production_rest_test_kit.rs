@@ -36,7 +36,6 @@ const RDATA: usize = 0x11400;
 const RECORD: usize = 0x11500;
 const RLIST: usize = 0x11600;
 const EDATA: usize = 0x11700;
-/// The variant's equipment type, its own archetype, as constructed.
 pub(super) const EQUIPMENT_TYPE: usize = 0x12000;
 
 fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
@@ -77,7 +76,6 @@ pub fn fixture() -> Vec<u8> {
         COUNTRY + ccountry::DEPLOYMENT_MANAGER,
         &(DEPLOY as u64).to_le_bytes(),
     );
-    // Production manager.
     put(
         &mut bytes,
         PROD,
@@ -107,7 +105,6 @@ pub fn fixture() -> Vec<u8> {
     array(&mut bytes, PROD + cproduction_status::STOCKPILE, SDATA, 1);
     put(&mut bytes, SDATA, &(VARIANT as u64).to_le_bytes());
     put(&mut bytes, SDATA + 8, &77_i64.to_le_bytes());
-    // Production line (military).
     for (offset, value) in [
         (
             0,
@@ -137,7 +134,6 @@ pub fn fixture() -> Vec<u8> {
     ] {
         put(&mut bytes, PLINE + offset, &value.to_le_bytes());
     }
-    // Twenty per-factory efficiencies, Q15, of which the 12 active count.
     array(
         &mut bytes,
         PLINE + cequipment_production_line::FACTORY_EFFICIENCIES,
@@ -148,8 +144,6 @@ pub fn fixture() -> Vec<u8> {
         let value = (index as i64 + 40) << 15;
         put(&mut bytes, EDATA + index * 8, &value.to_le_bytes());
     }
-    // The variant's equipment type sets its own military maximum, so no
-    // define outside this memory is read.
     put(
         &mut bytes,
         VARIANT + cequipment_variant::DEFINITION,
@@ -170,7 +164,6 @@ pub fn fixture() -> Vec<u8> {
         EQUIPMENT_TYPE + engine_native::cequipment_type::MAX_MIL_FACTORIES,
         &[150, 0, 0, 0, 1],
     );
-    // Variant identity.
     put(
         &mut bytes,
         VARIANT,
@@ -181,7 +174,6 @@ pub fn fixture() -> Vec<u8> {
         VARIANT + cequipment_variant::TYPE,
         &0xfedc_ba98_0000_0046_u64.to_le_bytes(),
     );
-    // Licence record.
     put(
         &mut bytes,
         RECORD,
@@ -217,7 +209,6 @@ pub fn fixture() -> Vec<u8> {
         1,
     );
     put(&mut bytes, RLIST, &(VARIANT as u64).to_le_bytes());
-    // Deployment manager + queue (mirrors the deployment walk fixture).
     put(
         &mut bytes,
         DEPLOY,
@@ -487,7 +478,6 @@ pub fn split(
     let report = crate::production::copy_production_rest_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     captured.rest_raw_mode = report.raw_ok;
-    // Typed walks skip while staged; the worker fills the buffers.
     let divisions = Sources {
         rows: &[],
         outcome: Outcome::Rows { len: 0 },

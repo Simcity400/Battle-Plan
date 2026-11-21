@@ -1,4 +1,3 @@
-//! Shared movement-speed and arrival arithmetic over copied values.
 
 pub mod army {
 
@@ -9,11 +8,7 @@ pub mod army {
         a.wrapping_mul(b) / MOVEMENT_ONE
     }
 
-    /// Owned native CArmy speed operands. No game address is needed to evaluate
-    /// them; the common normal inputs are acquired once for the current army.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    // Transient inline acquisition value; boxing would allocate on the callback.
-    // The retained ETA packet stores common inputs once per division.
     #[allow(
         clippy::large_enum_variant,
         reason = "capture keeps owned movement operands inline"
@@ -47,9 +42,6 @@ pub mod army {
                 Self::Normal { common, edge } => common.prepare().evaluate(edge),
             }
         }
-        /// Normal-range operands prove a positive scaled minimum without deriving
-        /// the speed. Values outside the proof retain exact native evaluation for
-        /// the lazy zero-speed route guard, including all wrapping edge cases.
         pub fn is_zero(self) -> bool {
             if let Self::Normal { common, edge } = self
                 && common.bounded
@@ -71,8 +63,6 @@ pub mod army {
         bounded: bool,
     }
     impl NormalSpeedOperands {
-        /// Once-per-division worker preparation. All optional-read guards and
-        /// fallible native divisions were resolved during dependency acquisition.
         pub fn prepare(self) -> PreparedNormalSpeed {
             PreparedNormalSpeed {
                 modifier: self.modifier.evaluate(),
@@ -89,8 +79,6 @@ pub mod army {
             }
         }
     }
-    /// Public because a replayer recomposes it from the recorded per-division
-    /// terms and evaluates the same edges without any game address.
     #[derive(Clone, Copy)]
     pub struct PreparedNormalSpeed {
         pub modifier: i64,
@@ -147,9 +135,6 @@ pub mod army {
         }
     }
 
-    /// Public for the same reason as `PreparedNormalSpeed`: the recorded per-leg
-    /// operands are recomposed at replay time. `river` is (combined, adjustment,
-    /// crossing term) in the movement calculation's assembly order.
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct NormalEdgeOperands {
         pub additive: i64,
@@ -206,8 +191,6 @@ pub mod army {
                 organisation: Some((50_000, -40_000)),
                 fuel: Some((50_000, 20_000)),
                 outer_scale: 50_000,
-                // Inside the positive-scale proof the zero guard is answered without
-                // evaluating; the flag is the producer's, not derived here.
                 bounded: true,
             };
             let edge = NormalEdgeOperands {
@@ -215,14 +198,11 @@ pub mod army {
                 river: Some((50_000, -10_000, -20_000)),
             };
             let inputs = MovementSpeedInputs::Normal { common, edge };
-            // Native modifiers: common 56000, edge -25000; speed 310000,
-            // organisation 248000, fuel 148800, outer scale 74400.
             assert_eq!(inputs.evaluate(), 74_400);
             assert!(edge.bounded());
             assert!(!inputs.is_zero());
             for scale in [0, i64::MIN] {
                 common.outer_scale = scale;
-                // Outside the proof the guard falls back to exact native evaluation.
                 common.bounded = false;
                 let inputs = MovementSpeedInputs::Normal { common, edge };
                 assert_eq!(inputs.evaluate(), 0);
@@ -268,7 +248,6 @@ pub mod army {
                                 assert!(edge.bounded());
                                 let inputs = MovementSpeedInputs::Normal { common, edge };
                                 assert!(!inputs.is_zero());
-                                // The shortcut is sound only if exact evaluation agrees.
                                 assert!(inputs.evaluate() > 0);
                                 common.modifier.additive = i64::MAX;
                                 common.bounded = false;
@@ -298,8 +277,6 @@ pub mod unit {
         pub speed: EtaSpeed,
     }
 
-    /// Edge-local speed inputs; the larger common normal inputs live once per
-    /// division, including when its current edge is independently reacquired.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum EtaSpeed {
         Fixed(i64),
@@ -333,7 +310,6 @@ pub mod unit {
         }
     }
 
-    /// Owned callback operands only: no game pointers reach the duration evaluator.
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct EtaInputs {
         pub division: u64,
@@ -348,8 +324,6 @@ pub mod unit {
         pub normal: Option<super::army::NormalSpeedOperands>,
     }
 
-    /// Distance or progress fraction; evaluate each leg before reaching the next.
-    /// Its exceptional result is the positive low-word all-ones value.
     pub fn eta_ratio(value: i64, divisor: i64) -> Result<i64, &'static str> {
         if divisor == 0
             || (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
@@ -378,8 +352,6 @@ pub mod unit {
         Ok(duration.wrapping_sub(progress()?))
     }
 
-    /// Exact signed fixed5 durations to the next province and the route's end.
-    /// Each edge division truncates before the wrapping sum; no per-edge ceiling.
     pub fn eta_remaining(input: &EtaInputs, legs: &[EtaLeg]) -> Result<(i64, i64), &'static str> {
         if input.next_leg_count > 1
             || input.next_leg_count > input.leg_len
@@ -415,7 +387,6 @@ pub mod unit {
         Ok((evaluate(&legs[..input.next_leg_count])?, evaluate(legs)?))
     }
 
-    /// Signed fixed5 ceiling, including its wrapping round trip.
     pub fn eta_hours(duration: i64) -> i64 {
         let quotient = duration / 100_000;
         if duration == quotient * 100_000 {

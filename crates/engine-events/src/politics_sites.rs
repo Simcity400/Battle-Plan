@@ -1,6 +1,3 @@
-//! Power-writer observation points. Collector interval conservation checks
-//! writer coverage; constructors and loading establish baselines. Notifications
-//! alone do not store a government cause.
 use crate::{
     Memory, ccountry, cideology_group, cpolitical_party, cpolitical_status, msvc_string, read,
 };
@@ -13,153 +10,123 @@ pub struct HookSite {
     pub commit: bool,
 }
 
-/// Entry: RCX status, RDX signed fixed5; signal follows clamping.
 pub const ADD_POLITICAL_POWER: HookSite = HookSite {
     name: "AddPoliticalPower",
     rva: Rva(0xbfa720),
     commit: false,
 };
 
-/// Entry: RCX status, RDX signed fixed5; applies the no-deficit floor.
 pub const ADD_POLITICAL_POWER_NO_DEFICIT: HookSite = HookSite {
     name: "AddPoliticalPowerNoDeficit",
     rva: Rva(0xbfa810),
     commit: false,
 };
 
-/// Commit: RSI status, RCX evaluated target; a negative target floors to zero.
 pub const SET_POLITICAL_POWER: HookSite = HookSite {
     name: "SetPoliticalPower",
     rva: Rva(0x37c597),
     commit: true,
 };
 
-/// The set-political-power effect's entry. RCX effect, RDX scope. Its
-/// evaluated store and the conditional floor store both precede its return;
-/// the commit tap inside only stages its operands.
 pub const SET_POLITICAL_POWER_EFFECT: HookSite = HookSite {
     name: "SetPoliticalPowerEffect",
     rva: Rva(0x37c550),
     commit: false,
 };
 
-/// Entry: RCX status; retains the old government before party destruction.
 pub const CLEAR_POLITICS: HookSite = HookSite {
     name: "ClearPolitics",
     rva: Rva(0xbfb410),
     commit: false,
 };
 
-/// Entry: RCX country; command-power reset and nested clear/setup are observed separately.
 pub const RESET_COUNTRY: HookSite = HookSite {
     name: "ResetCountry",
     rva: Rva(0x72a990),
     commit: false,
 };
 
-/// Entry: RCX country, RDX pointer to signed fixed5; returns void.
 pub const ADD_COMMAND_POWER: HookSite = HookSite {
     name: "AddCommandPower",
     rva: Rva(0x7179b0),
     commit: false,
 };
 
-/// Entry: RCX country, RDX charge pointer; AL reports success, preserving full RAX.
 pub const SPEND_COMMAND_POWER: HookSite = HookSite {
     name: "SpendCommandPower",
     rva: Rva(0x75cd40),
     commit: false,
 };
 
-/// Entry: RCX country, RDX allocator, R8B charge; AL reports success, preserving full RAX.
 pub const ALLOCATE_COMMAND_POWER: HookSite = HookSite {
     name: "AllocateCommandPower",
     rva: Rva(0x75c9b0),
     commit: false,
 };
 
-/// Entry: RCX country, RDX allocator; nested command-power refund with its own cap.
 pub const RELEASE_COMMAND_POWER: HookSite = HookSite {
     name: "ReleaseCommandPower",
     rva: Rva(0x732a10),
     commit: false,
 };
 
-/// Entry: RCX country, RDX definition, R8 scope, R9B charge; upfront subtraction precedes nested allocation.
 pub const ACTIVATE_ABILITY: HookSite = HookSite {
     name: "ActivateAbility",
     rva: Rva(0x7320b0),
     commit: false,
 };
 
-/// Commit: R13 country, RCX balance, RDX charge, R15+RBX record; one commit per paid anniversary.
 pub const ABILITY_UPKEEP: HookSite = HookSite {
     name: "AbilityUpkeep",
     rva: Rva(0x7445bd),
     commit: true,
 };
 
-/// Entry: RCX country, RDX region, R8 allocator, R9 adjustment, fifth byte charge.
 pub const GROUND_CREW: HookSite = HookSite {
     name: "GroundCrew",
     rva: Rva(0x71b3c0),
     commit: false,
 };
 
-/// Commit: RBX status, RAX new party; precedes refresh and on-actions.
 pub const SET_RULING_PARTY: HookSite = HookSite {
     name: "SetRulingParty",
     rva: Rva(0xc01ba6),
     commit: true,
 };
 
-/// Commit: RBP status, RSI new party; precedes refresh and on-actions.
 pub const FORCE_RULING_PARTY: HookSite = HookSite {
     name: "ForceRulingParty",
     rva: Rva(0xc00b72),
     commit: true,
 };
 
-/// Commit: RBP status, RCX new party; setup and dynamic reuse.
 pub const SETUP_POLITICS: HookSite = HookSite {
     name: "SetupPolitics",
     rva: Rva(0xc01d60),
     commit: true,
 };
 
-/// Loop exit: R14 status and its stored final party. ZF is set on exhaustion
-/// or an empty roster and clear for the existing-party branch. Intermediate
-/// maxima emit no event.
 pub const FALLBACK_RULING_PARTY: HookSite = HookSite {
     name: "FallbackRulingParty",
     rva: Rva(0xc00063),
     commit: true,
 };
 
-/// Observation: R13 status, RDI gross, stack reduction, RAX net, R15 blockade count; precedes tooltip adjustment.
 pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
     name: "DailyPoliticalRate",
     rva: Rva(0xbfd435),
     commit: true,
 };
 
-/// Daily political-power application, separate timed charges and inline daily command-power application.
 pub const DAILY_PP_CALLER: Rva = Rva(0xbfb99c);
 pub const TIMED_PP_CALLER: Rva = Rva(0xbfbc23);
 pub const DAILY_CP_CALLER: Rva = Rva(0x72f4f7);
 
-/// Daily reduction observation after the cost call. The seven-byte patch span
-/// has no relative operand, interior target or return PC. R13 status, stack cost
-/// and daily caller remain unchanged.
 pub const DAILY_PP_MODIFIER: HookSite = HookSite {
     name: "DailyPpModifier",
     rva: Rva(0xbfc8c2),
     commit: true,
 };
-/// Post-signal observation after the assertion calls. The patch spans the
-/// five-byte stack adjustment and register restore, with no relative operand or
-/// interior target. Stack and receiver remain unchanged before the span; the
-/// signal in RCX is unused by the thread-local flush.
 pub const PP_SIGNAL: HookSite = HookSite {
     name: "PpSignal",
     rva: Rva(0xbfa7fb),
@@ -175,7 +142,6 @@ pub const PP_SIGNAL_NO_DEFICIT: HookSite = HookSite {
 pub struct Owner {
     pub pointer: usize,
     pub country: u32,
-    /// Raw surrender target retained under the recording's legacy field name.
     pub instance: u32,
     pub politics: Option<usize>,
 }
@@ -187,7 +153,6 @@ impl Owner {
     }
 }
 
-/// Command-power mutation authenticates the original country without selecting political status.
 pub fn command_owner(
     memory: &impl Memory,
     base: usize,
@@ -216,9 +181,6 @@ fn owner_identity(base: usize, pointer: usize, identity: [u8; 16]) -> Result<Own
     })
 }
 
-/// Read ownership independently of player, human or AI status. Authenticate
-/// country identity and the political-status owner/backlink. A null status from
-/// allocation failure is absence, distinct from a zero political-power balance.
 pub fn country_owner(
     memory: &impl Memory,
     base: usize,
@@ -341,7 +303,6 @@ mod tests {
             })
         );
         assert_eq!(*memory.reads.borrow(), [(COUNTRY, 16)]);
-        // The former CP reader requires an unrelated political-status selecting read.
         assert_eq!(
             country_owner(&memory, BASE, COUNTRY),
             Err("politics country identity unreadable")
@@ -499,7 +460,6 @@ mod tests {
     }
 }
 
-/// Charging-path call return addresses, independent of item identity or table differences.
 pub const CHARGING_CALLERS: &[(Rva, &str)] = &[
     (Rva(0x259452), "Console"),
     (Rva(0x2865c2), "Console"),
@@ -561,7 +521,7 @@ pub const CHARGING_CALLERS: &[(Rva, &str)] = &[
     (Rva(0x1f6b6e0), "ScientistRecruitment"),
 ];
 
-/// Synchronous charging scopes use up to five integer/pointer arguments and return through RAX.
+
 pub const SCOPES: &[HookSite] = &[
     HookSite {
         name: "PoliticsDaily",
@@ -705,8 +665,6 @@ pub const SCOPES: &[HookSite] = &[
     },
 ];
 
-/// A borrowed native literal, copied synchronously while its command/party is
-/// alive. Length follows the native descriptor; callers never choose a cap.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Literal {
     pub address: usize,
@@ -725,7 +683,6 @@ impl Literal {
         Ok(())
     }
 }
-/// MSVC string descriptor shared with content readers.
 pub fn literal(memory: &impl Memory, address: usize) -> Result<Literal, &'static str> {
     let descriptor = msvc_string::Descriptor::read(memory, address)?;
     Ok(Literal {
@@ -733,7 +690,6 @@ pub fn literal(memory: &impl Memory, address: usize) -> Result<Literal, &'static
         len: descriptor.len,
     })
 }
-/// Ideology IDs occupy a distinct identity space from lexer IDs.
 pub fn party_literal(
     memory: &impl Memory,
     base: usize,
@@ -754,8 +710,6 @@ pub fn party_literal(
     )))
 }
 
-/// Same-hour census inputs for conservation. Includes every authenticated live
-/// country, independently of its diplomatic activity or controller status.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BalanceSnapshot {
     pub country: u32,
@@ -810,8 +764,6 @@ pub fn balances(
     })
 }
 
-/// The loaded integer blockade define is multiplied into fixed5 and divided
-/// back. Preserve overflow at that conversion rather than cancelling operations.
 pub fn blockade_cost(count_register: usize, loaded_define: i64) -> i64 {
     (count_register as i32 as i64)
         .wrapping_mul(loaded_define)
@@ -820,11 +772,8 @@ pub fn blockade_cost(count_register: usize, loaded_define: i64) -> i64 {
 }
 pub const BLOCKADE_COST_DEFINE_RVA: Rva = Rva(0x33e3ab8);
 
-/// Daily rate, modifier and blockade records, plus applied political and command power.
 pub const DAILY_RECORDS: usize = 5;
 
-/// Off-thread staging hint from live roster headers. Scripted bursts still
-/// grow independently from rejected demand; these counts certify no values.
 pub fn daily_record_demand(
     memory: &impl Memory,
     base: usize,
@@ -855,7 +804,6 @@ pub fn daily_record_demand(
             continue;
         };
         let owner = country_owner(memory, base, country.pointer)?;
-        // One timed charge per stored entry and one upkeep observation per active ability.
         let mut count = DAILY_RECORDS;
         if let Some(status) = owner.politics {
             count = count
@@ -868,14 +816,12 @@ pub fn daily_record_demand(
             )
             .ok_or("politics staging record demand overflow")?;
         for (offset, vtable, backlink, roster) in [
-            // Daily political-power calculation visits every outgoing-relation occurrence.
             (
                 ccountry::DIPLOMACY_STATUS,
                 crate::cdiplomacy_status::VTABLE_RVA,
                 crate::cdiplomacy_status::COUNTRY,
                 crate::cdiplomacy_status::OWNED_RELATIONS,
             ),
-            // Visit organisations and each ordered assignment vector.
             (
                 ccountry::PRODUCTION_STATUS,
                 crate::cproduction_status::VTABLE_RVA,
@@ -918,7 +864,6 @@ pub fn daily_record_demand(
                         {
                             return Err("politics staging organisation identity mismatch");
                         }
-                        // Each assignment can select both cost getters.
                         extra = (array(
                             pointer,
                             organisation::PRODUCTION_LINES,
@@ -946,9 +891,6 @@ pub fn daily_record_demand(
     Ok(records)
 }
 
-/// Off-thread presizing from the live lexical dictionary. Newly authored or
-/// dynamic keys can grow beyond this witness: the collector counts a named
-/// identity shortage, preserves the known cause and grows its next staging.
 pub fn lexical_key_demand(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     let address = crate::cpdx_lexer::witness_address(base)?;
     let header = read::<[u8; 64]>(memory, address).ok_or("lexer witness unreadable")?;
@@ -979,7 +921,6 @@ mod capture_tests {
 
     #[test]
     fn politics_staging_demand_counts_daily_rosters() {
-        // regression: e51bb8d59d Size politics staging from native demand and count full rejected bursts
         use crate::{cpdx_array, nindustrial_organisation_corganisation as organisation};
 
         for countries in [1, 2] {
@@ -1027,7 +968,6 @@ mod capture_tests {
                         country
                     };
                     world.array(pointer + roster, data, count);
-                    // Allocation headroom is not daily demand.
                     world.u32(pointer + roster + cpdx_array::CAPACITY, 10_000);
                 }
             }
@@ -1090,14 +1030,10 @@ mod capture_tests {
     }
 }
 
-/// Synchronous operands use SEH-guarded reads. Country/status, upkeep and
-/// power-store lifetimes alone do not establish every authentication field or
-/// pointee as readable. Guard all three paths and copied literals; no pointer
-/// survives the observer or reaches a worker.
 pub struct NativeOperands(crate::memory::LiveMemory);
 impl NativeOperands {
-    /// # Safety
-    /// The caller runs inside the observed game process; spans still use SEH.
+    #[doc = " # Safety"]
+    #[doc = " The caller runs inside the observed game process; spans still use SEH."]
     #[inline(always)]
     pub unsafe fn new() -> Self {
         Self(unsafe { crate::memory::LiveMemory::new() })

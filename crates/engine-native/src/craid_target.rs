@@ -1,7 +1,3 @@
-//! Embedded raid location scope retaining every observed arm. Province
-//! resolution tries the province, target building province, secondary province,
-//! then state when allowed. The building arm records its lexer type token
-//! for `LexicalTokens` and raid-map sprite selection.
 
 use crate::{
     Memory, cbuilding, cbuilding_status, cprovince, cstate, raid_location_scope_layout as scope,
@@ -10,58 +6,31 @@ use crate::{
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The scope's CProvince id; zero when that arm is null.
     pub province: u32,
-    /// The scope's CProvince id, the save's `leader_province`; zero when that arm is null.
     pub leader_province: u32,
-    /// The scope's CState id; zero when that arm is null.
     pub state: u32,
-    /// The scope building's lexer type token; zero when that arm is null.
     pub building_type: u32,
-    /// The target building's location id (`cbuilding_status::ID`), which the save writes as
-    /// `target.building.location`; zero without a building arm.
     pub building_location: u32,
-    /// Building-location flags: bit 0 selects province and bit 1 selects state.
     pub building_flags: u32,
-    /// Raw building-status country override (`cbuilding_status::COUNTRY`); the country resolver
-    /// uses it when positive, else the location's controller.
     pub building_country: i32,
-    /// The scope's full character reference; zero when that arm is null.
     pub leader_reference: u64,
-    /// Resolved leader's captor is the target country. `None` when building,
-    /// province or state answers first, or an unresolved reference falls through
-    /// to the leader province; those branches do not read the leader.
     pub leader_country: Option<i32>,
-    /// The leader arm resolved to an object whose captor is not proven (not a
-    /// `CArmyLeader`, or unreadable). Not recorded: the walks refuse
-    /// and count just this row.
     pub leader_refused: bool,
 }
 
-/// The scope's building arm, at offset zero.
 pub const BUILDING: usize = 0x00;
-/// Province arm serialized as `province`.
 pub const PROVINCE_ARM: usize = scope::SECOND_POINTER;
-/// The state arm (`state`).
 pub const STATE_ARM: usize = scope::THIRD_POINTER;
-/// The character reference arm (`leader`).
 pub const LEADER_REFERENCE: usize = 0x18;
-/// The leader's province arm (`leader_province`).
 pub const LEADER_PROVINCE_ARM: usize = scope::FIFTH_POINTER;
 
-/// Army leaders hold the captor within their object. Navy leaders are too
-/// small, and base/operative layouts do not establish this field. Any other
-/// class refuses the row.
 const CAPTOR_VTABLE: engine_sites::Rva = crate::carmy_leader::VTABLE_RVA;
 
-/// Leader arm is reached only when building, province and state arms are null.
 pub fn reads_leader(building: bool, province: u32, state: u32) -> bool {
     !building && province == 0 && state == 0
 }
 
-/// The leader arm's captor: `Ok(None)` when the reference does not resolve,
-/// `Err(())` when it resolves to an object whose captor is not proven.
-#[allow(clippy::result_unit_err)] // Preserve the shared reader's existing refusal type.
+#[allow(clippy::result_unit_err)]
 pub fn leader_captor(memory: &impl Memory, base: usize, handle: u64) -> Result<Option<i32>, ()> {
     let Some(leader) = crate::creference_registry::resolve(memory, base, handle).map_err(|_| ())?
     else {
@@ -78,7 +47,6 @@ pub fn leader_captor(memory: &impl Memory, base: usize, handle: u64) -> Result<O
         .ok_or(())
 }
 
-/// The scope's five arms, contiguous from its start.
 pub(crate) const ARMS_BYTES: usize = LEADER_PROVINCE_ARM + 8;
 
 pub(crate) fn read_row(
@@ -93,7 +61,6 @@ pub(crate) fn read_row(
     row_from_arms(memory, base, &arms)
 }
 
-/// Resolve a scope whose arms were already copied (in a caller's batch).
 pub(crate) fn row_from_arms(
     memory: &impl Memory,
     base: usize,
@@ -111,7 +78,6 @@ pub(crate) fn row_from_arms(
         usize::try_from(u64::from_le_bytes(bytes))
             .map_err(|_| "raid target scope arm address overflow")
     };
-    // Each arm's identity and id in one guarded scattered copy.
     let identified = |pointer: usize, vtable: engine_sites::Rva, id: usize, what: &'static str| {
         if pointer == 0 {
             return Ok(0);
@@ -337,7 +303,6 @@ mod tests {
         assert!(read(&bytes).is_err());
     }
 
-    /// Sparse memory at native addresses, for the reference registry roots.
     #[derive(Default)]
     struct Sparse(std::collections::BTreeMap<usize, u8>);
 
@@ -360,8 +325,6 @@ mod tests {
         }
     }
 
-    /// A scope whose only arm is a leader reference resolving to an object
-    /// with `vtable` and captor 12; `province` also sets the province arm.
     fn leader_scope(vtable: usize, province: bool) -> Sparse {
         use crate::{creference_registry as registry, reference_bucket as bucket};
         const TABLE: usize = 0x1000;
@@ -410,7 +373,6 @@ mod tests {
     fn an_army_leader_answers_only_when_every_earlier_arm_is_null() {
         let row = read_row(&leader_scope(CAPTOR_VTABLE.0, false), 0, SCOPE).unwrap();
         assert_eq!((row.leader_country, row.leader_refused), (Some(12), false));
-        // The navy, operative and base classes are refused, row by row.
         for vtable in [
             crate::cnavy_leader::VTABLE_RVA,
             crate::coperative_leader::VTABLE_RVA,
@@ -419,8 +381,6 @@ mod tests {
             let row = read_row(&leader_scope(vtable.0, false), 0, SCOPE).unwrap();
             assert_eq!((row.leader_country, row.leader_refused), (None, true));
         }
-        // The province arm answers without reading the leader, so a foreign object
-        // in the unreached leader arm is not refused.
         let row = read_row(&leader_scope(7, true), 0, SCOPE).unwrap();
         assert_eq!(row.province, 6521);
         assert_eq!((row.leader_country, row.leader_refused), (None, false));

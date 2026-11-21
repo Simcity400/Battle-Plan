@@ -92,8 +92,6 @@ fn plane_and_result_air_records_preserve_distinct_names_and_conditional_kills() 
     assert_eq!(retained.planes[0].lost, None);
     assert_eq!(retained.planes[1].lost, Some(5));
 }
-/// Carrier wings without an external wave keep their initial date,
-/// written as -1.1.1.1.
 #[test]
 fn plane_without_external_wave_keeps_the_engine_invalid_date() {
     let items = |date: &str| {

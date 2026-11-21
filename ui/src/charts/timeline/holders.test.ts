@@ -26,17 +26,12 @@ test('ordinary lanes update a holder name and picture immediately while preservi
 });
 
 test('the left column redraws a holder whose name or picture changes under the same id', () => {
-  // A lane about one production line keeps its id; its variant's name and art change with the hour shown.
   const first = nextHolder(undefined, span('5#1', 'Gewehr 98k', 'b.png'));
   assert.deepEqual([first.current?.label, first.t], ['Gewehr 98k', 1]);
-  // The same holder drawn again keeps its state.
   assert.equal(nextHolder(first, span('5#1', 'Gewehr 98k', 'b.png')), first);
-  // Ending the range before the switch: same id, the earlier variant's name and art, faded in.
   const back = nextHolder(first, span('5#1', 'Infantry Equipment I', 'a.png'));
   assert.deepEqual([back.previous?.label, back.current?.label, back.current?.icon, back.t], ['Gewehr 98k', 'Infantry Equipment I', 'a.png', 0]);
-  // A picture alone changing also redraws it.
   assert.notEqual(nextHolder(back, span('5#1', 'Infantry Equipment I', 'c.png')), back);
-  // And a lane emptying fades out to nothing.
   assert.equal(nextHolder(back, null).current, null);
 });
 

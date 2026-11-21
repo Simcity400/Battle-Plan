@@ -36,10 +36,6 @@ fn a_switch_between_levels_with_equal_bounds_is_a_new_level_and_an_unshown_row_i
 
 #[test]
 fn relations_end_at_their_recorded_end_break_on_unknown_countries_and_join_across_a_load() {
-    // Overlord raw 1 holds subject raw 2 from before the timeline (start 50), ended by the game at
-    // hour 180; the row then stays with its end written. A second relation (start 190) follows.
-    // The subject's row was unread at hours 130-134: a gap inside one relation is unobserved.
-    // Subject raw 3 has no tag from 160: those hours are unobserved, not an end.
     let first = RunSubjects {
         relations: vec![
             (1, 2, vec![(100, 129, cell(50, 0)), (130, 134, None), (135, 149, cell(50, 0)), (150, 189, cell(50, 180)), (190, 199, cell(190, 0))]),

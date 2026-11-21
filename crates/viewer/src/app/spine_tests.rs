@@ -1,5 +1,3 @@
-//! The window takes where it is, whether it is ready, the mode on screen and its histories'
-//! continuity from the playhead's map.
 use super::{Config, Options, Playhead, Viewer};
 use crate::{
     layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
@@ -26,8 +24,6 @@ use viewer_world::map::map_mode::{MapMode, Stock};
 const BRANCH: BranchId = 1;
 const LAST: Hour = 11;
 
-/// A layer whose worker the test holds: it publishes the hour of the last step it was handed, and
-/// settles a change of view, only while `open`.
 struct Gated {
     open: Arc<AtomicBool>,
     next: Option<Hour>,
@@ -77,7 +73,6 @@ impl Layer for Gated {
     }
 }
 
-/// A map of branch [`BRANCH`] drawing only [`Gated`] over twelve recorded hours, its worker open.
 fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
     let units = record(name, LAST as u32 + 1, |at, store| {
         store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
@@ -94,7 +89,6 @@ fn map(viewer: &mut Viewer) -> &mut crate::playhead_host::side::SideThread {
     viewer.playhead_map.as_mut().expect("the window's reader")
 }
 
-/// Frames at `hour` until `done` holds, then the products a frame's window would have taken.
 fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
     side.with_side_mut(|side| {
         loop {
@@ -110,12 +104,10 @@ fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut 
     side.driven(|_| ());
 }
 
-/// Frames at `hour` until the map shows it, no reset composing.
 fn shown(side: &mut crate::playhead_host::side::SideThread, hour: Hour) {
     frames_at(side, hour, |side| !side.composing() && side.last_frame().drawn == Some(hour));
 }
 
-/// A window over `side` whose clock stands at `hour`.
 fn viewer(side: MapSide, hour: Hour) -> Viewer {
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     viewer.playhead = Some(at(hour));
@@ -131,13 +123,10 @@ fn at(hour: Hour) -> Playhead {
     Playhead { branch: BRANCH, hour, fraction: 0.0 }
 }
 
-/// The overlay the side made from the rows at the head of `hour`: its tables, its layout and the
-/// counter layers' products all stand at it.
 fn whole_at(viewer: &mut Viewer, hour: Hour) {
     viewer.overlay_hour = Some(hour);
 }
 
-/// What the end of a drawn frame records: the hour on screen, the layers' while their map is open.
 fn drawn(viewer: &mut Viewer) {
     viewer.rendered = viewer.layers_on_screen().map(|(branch, hour)| Playhead { branch, hour, fraction: 0.0 });
 }
@@ -164,8 +153,6 @@ fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
     }
 }
 
-/// With today's pipeline never started, the window is not ready until the host's first picture,
-/// then ready at the clock's hour; after a seek it loads until the drawn layer shows the new hour.
 #[test]
 fn the_window_is_ready_at_the_hosts_first_picture_and_loads_after_a_seek() {
     let (side, gate) = side("spine first picture");
@@ -196,8 +183,6 @@ fn the_window_is_ready_at_the_hosts_first_picture_and_loads_after_a_seek() {
     assert_eq!((state.loading, state.hour), (false, Some(8)), "{state:?}");
 }
 
-/// The window's frame last drew hour 2 and the host draws hour 8: the window is at hour 8 and
-/// ready there.
 #[test]
 fn the_hour_on_screen_is_the_hosts_drawn_hour() {
     let (side, _gate) = side("spine hour on screen");
@@ -211,8 +196,6 @@ fn the_hour_on_screen_is_the_hosts_drawn_hour() {
     assert_eq!((state.loading, state.hour), (false, Some(8)), "{state:?}");
 }
 
-/// The clock moves to another branch: the reader of the old one is let go, and the next frame opens
-/// one at the clock's branch and hour.
 #[test]
 fn a_branch_change_lets_the_reader_go_and_opens_one_on_the_clocks_branch() {
     let (side, _gate) = side("spine branch");
@@ -226,8 +209,6 @@ fn a_branch_change_lets_the_reader_go_and_opens_one_on_the_clocks_branch() {
     assert_eq!(viewer.playhead.map(|clock| (clock.branch, clock.hour)), Some((BRANCH + 1, 5)));
 }
 
-/// The map was reopened over other content (another set of visual mods): the reader made over the
-/// old content, whose layers draw its art, is let go, and the next frame opens one over the new.
 #[test]
 fn a_reader_not_made_over_the_maps_content_is_let_go_and_opens_again_over_it() {
     let (side, _gate) = side("spine content");
@@ -239,9 +220,6 @@ fn a_reader_not_made_over_the_maps_content_is_let_go_and_opens_again_over_it() {
     assert!(!viewer.playhead_opened, "the next frame opens a reader over the map's content");
 }
 
-/// A map opened fresh: its layers show the hour, settled, but its overlay has not been laid out
-/// over the rows at the head, nor its counter layers fed the tables made from them. Its picture
-/// has no counters, so it is not ready.
 #[test]
 fn a_map_whose_overlay_is_not_laid_out_is_not_ready() {
     let (side, _gate) = side("spine overlay");
@@ -256,10 +234,6 @@ fn a_map_whose_overlay_is_not_laid_out_is_not_ready() {
     assert!(!viewer.presentation_ready(at(2), false), "a read the overlay missed is still learned");
 }
 
-/// Today's hour is installed, no art decodes and the overlay and counters show hour 8, but a layer
-/// held on its worker still shows hour 2: the load is not over, so the content kept for it is not
-/// let go, until the layer shows hour 8 too. On the base the load ended with the layer behind,
-/// under the spinner.
 #[test]
 fn the_load_ends_only_once_the_picture_asked_for_is_whole() {
     let (side, gate) = side("spine load complete");
@@ -279,23 +253,17 @@ fn the_load_ends_only_once_the_picture_asked_for_is_whole() {
     assert!(!viewer.load_complete(true, true) && !viewer.load_complete(false, false), "art decoding, or an overlay laid out before it, holds the load");
 }
 
-/// The day and night playback took a fresh start since `hour` was last given to it: a fresh one
-/// shows the target at once, a running one eases toward it over a frame clock that has not moved.
 fn day_night_reset(viewer: &mut Viewer, hour: Hour) -> bool {
     let marker = DayNight { hour_fraction: 0.77, ..DayNight::at_hour(hour) };
     viewer.day_night.update(hour, marker, 0.0, 1.0).hour_fraction == marker.hour_fraction
 }
 
-/// A running day and night playback at `hour`.
 fn running(viewer: &mut Viewer, hour: Hour) {
     viewer.day_night = Default::default();
     viewer.day_night.update(hour, DayNight::at_hour(hour), 0.0, 1.0);
     viewer.audio_reset = false;
 }
 
-/// Playing forward continues; a seek, a step back, a viewing-country change, a gap crossed and a
-/// branch change reset, each as today's rule says, with day and night and the audio reset on
-/// exactly those pictures.
 #[test]
 fn the_windows_histories_follow_todays_continuity_over_the_hosts_pictures() {
     let (side, _gate) = side("spine continuity");
@@ -341,7 +309,6 @@ fn the_windows_histories_follow_todays_continuity_over_the_hosts_pictures() {
     assert!(day_night_reset(&mut viewer, 8));
 }
 
-/// A newly chosen map mode is the mode on screen only once the picture for it is settled.
 #[test]
 fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_is_settled() {
     let (side, gate) = side("spine mode");

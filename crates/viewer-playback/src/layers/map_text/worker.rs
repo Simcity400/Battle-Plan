@@ -1,16 +1,3 @@
-//! The map text layer's worker: makes the intervals that hold events, in the order they are sent,
-//! each from its events' context and, for events that read a province's fog, the viewer's sight,
-//! as the step that carries it left them. It holds them itself: a reader of those tables of its
-//! own ([`Stepped`]), stepped in order exactly to
-//! each interval's hour and no further than the frame side has handed every interval on
-//! ([`Worker::through`]), so the rows of every step are there however many steps the map took in
-//! one frame. A table that has not arrived (declared after a seek) holds the interval until a later
-//! step the frame side has handed on brings it: the interval is then made from those rows, once.
-//! A table the recording holds nothing of is refused by name. Nothing is given up for time. A reset
-//! makes earlier sends stale; the thread ends when the layer drops.
-//!
-//! Every request names the playhead's seek it came from: the reader applies only that seek's
-//! steps for it, and an interval of a seek since superseded is dropped unmade, its steps abandoned.
 
 use super::{Presented, Source, worker_tables};
 use crate::{layers::rebuilt::refusal, playhead_host::views::Stepped};
@@ -36,24 +23,18 @@ use viewer_foundation::map::{
 };
 use viewer_world::map::animated_map_text::events::Prepared;
 
-/// How often an interval held for a table not arrived yet looks again for a step bringing it while
-/// no message comes (a compose's settle waits on the worker): a poll, never a limit.
 const LOOK: Duration = Duration::from_millis(50);
 
-/// One interval holding events, as the frame side hands it over.
 pub(super) struct Job {
     pub at: (BranchId, Hour),
     pub seek: bool,
-    /// The playhead's seek of the step that carried it ([`playhead::Step::epoch`]).
     pub epoch: u64,
     pub interval: SharedView,
-    /// The perspective its events are decided for, with the vision derived from its own hour's rows.
     pub choice: Choice,
 }
 
 enum Work {
     Make { serial: u64, job: Job },
-    /// Every interval of seek `epoch` through `hour` has been handed on: the context may step there.
     Through { hour: Hour, epoch: u64 },
 }
 
@@ -72,13 +53,10 @@ pub(super) struct Worker {
     stop: Arc<AtomicBool>,
     #[cfg(any(test, feature = "test-support"))]
     alive: Arc<AtomicBool>,
-    /// Made intervals a wait received before they were taken.
     held: Vec<(u64, Presented)>,
 }
 
 impl Worker {
-    /// The worker, reading the events' context through `stepped` (every interval's context refused
-    /// by its name without it).
     pub(super) fn start(source: Arc<dyn Source>, branch: BranchId, stepped: Result<Stepped, String>) -> io::Result<Self> {
         let (jobs, received) = mpsc::channel::<Sent>();
         let (made, taken) = mpsc::channel::<Made>();
@@ -88,7 +66,6 @@ impl Worker {
         let run = Run { source, branch, stepped, generation: Arc::clone(&generation), stop: Arc::clone(&stop), vision: Keyed::new(VISION_TABLES) };
         let living = Arc::clone(&alive);
         std::thread::Builder::new().name("map text".into()).spawn(move || {
-            // The step's settle joins its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             run.run(&received, &made);
             living.store(false, Ordering::Release);
@@ -112,19 +89,16 @@ impl Worker {
         }
     }
 
-    /// Sends `job`; its serial.
     pub(super) fn send(&mut self, job: Job) -> u64 {
         self.serial += 1;
         self.post(Work::Make { serial: self.serial, job });
         self.serial
     }
 
-    /// Every interval of seek `epoch` through `hour` has been sent.
     pub(super) fn through(&self, hour: Hour, epoch: u64) {
         self.post(Work::Through { hour, epoch });
     }
 
-    /// Every interval made since the last call for the sends since the last reset, by serial.
     pub(super) fn take(&mut self) -> Vec<(u64, Presented)> {
         let generation = self.generation.load(Ordering::Acquire);
         let mut made = std::mem::take(&mut self.held);
@@ -132,8 +106,6 @@ impl Worker {
         made
     }
 
-    /// Waits up to `limit` for one more interval while `look`, called at each look, holds; false
-    /// when none came in the limit.
     pub(super) fn wait(&mut self, limit: Duration, mut look: impl FnMut() -> bool) -> bool {
         let generation = self.generation.load(Ordering::Acquire);
         let until = Instant::now() + limit;
@@ -153,7 +125,6 @@ impl Worker {
         }
     }
 
-    /// Earlier sends are stale: not made if not begun, and not taken.
     pub(super) fn reset(&mut self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.held.clear();
@@ -181,7 +152,6 @@ struct Run {
     vision: Keyed<Seen, VisionKey>,
 }
 
-/// The newest hour handed on: its generation, seek and hour.
 type Through = Option<(u64, u64, Hour)>;
 
 impl Run {
@@ -213,8 +183,6 @@ impl Run {
         }
     }
 
-    /// Makes the pending intervals in order while their context is there, then steps the context
-    /// to the hour handed on; false when the layer is gone.
     fn progress(&mut self, pending: &mut VecDeque<(u64, u64, Job)>, through: Through, made: &Sender<Made>) -> bool {
         let current = self.generation.load(Ordering::Acquire);
         pending.retain(|&(generation, ..)| generation == current);
@@ -239,9 +207,6 @@ impl Run {
         true
     }
 
-    /// The events' context tables as seek `epoch`'s step through `hour` left them; none until that
-    /// step is applied and while a table has not arrived, which a later step through `through` may
-    /// bring (the interval is made then).
     fn context(&mut self, hour: Hour, epoch: u64, through: Option<Hour>) -> Option<[SharedView; TABLE_COUNT]> {
         let refused = |reason: &str, tables: &[TableId]| -> [SharedView; TABLE_COUNT] {
             std::array::from_fn(|index| {

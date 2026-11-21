@@ -1,4 +1,3 @@
-//! Nonempty Orders/ChildFronts/Fronts differential fixture; synthetic content.
 use crate::extended::bench_world::{Heap, World};
 use engine_land_inputs::{cfront, cfront_section};
 use engine_native::{
@@ -12,17 +11,12 @@ const HEAP: usize = 0x0350_0000;
 pub(super) const GROUPS: usize = 8;
 pub(super) const ORDERS: usize = GROUPS * 3;
 pub(super) const FRONTS: usize = 2;
-// The child-front serializer stores 72-byte entries; Both child-front readers select the
-// child-front data and its signed count spans.
 const CHILD_DATA: usize = 0x380;
 const CHILD_STRIDE: usize = 0x48;
 const CHILD_VTABLE: usize = 0x02a0_2698;
-// Order serialization preserves the constructed subscriber counts.
 const SUBSCRIBER_VTABLE: usize = 0x029d_8b80;
 
 pub(super) fn build() -> World {
-    // As in bench_world, the sizing pass's pointers are never read. The final
-    // buffer has its complete capacity before any host pointers are installed.
     let len = build_in(Vec::new()).bytes.len();
     let world = build_in(Vec::with_capacity(len));
     assert_eq!(world.bytes.len(), len);
@@ -74,7 +68,6 @@ fn build_in(mut bytes: Vec<u8>) -> World {
         heap.vtable(country, ccountry::VTABLE_RVA);
         heap.u32(country + ccountry::ID, id);
         heap.u64(countries + id as usize * 8, heap.ptr(country));
-        // Known empty accumulators: no content-defined modifier keys or defines.
         heap.array(country + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
         if id == 1 {
             owner = country;
@@ -153,7 +146,6 @@ fn build_in(mut bytes: Vec<u8>) -> World {
         let unit = heap.alloc(cunit::LOGICAL_OWNER + 8);
         heap.vtable(unit, carmy::VTABLE_RVA);
         heap.vtable(unit + carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA);
-        // Synthetic dynamic reference type, not a vanilla division type.
         heap.u64(
             unit + cunit::HANDLE,
             ((index as u64 + 1) << 32) | u64::from(registry::DYNAMIC_TYPE_BASE + 17),
@@ -179,8 +171,6 @@ fn build_in(mut bytes: Vec<u8>) -> World {
             heap.u32(at + order::TYPE, kind as u32);
             heap.words(at + order::PATH_DATA, &[1, 2]);
             heap.words(at + order::TARGET_STATE_DATA, &[17 + index as u32]);
-            // Every group's line/move binds front 0 and invasion binds front 1:
-            // both handles recur across every nonempty Split::even part.
             heap.u64(
                 at + order::FRONT_BINDING,
                 fronts[usize::from(kind == order::TYPE_INVASION)].1,

@@ -1,14 +1,8 @@
-//! A state's effective occupation law: its own override, else the law its occupier set for the
-//! occupied country, else the occupier's default when the law's triggers admit it, else the
-//! database fallback. Eligibility is evaluated over the recorded trigger world at the hour.
 
 use installed_content_core::occupation_laws::Law;
 
-/// The law the occupier set for the occupied country.
 pub enum GroupLaw<'a> {
-    /// The occupier keeps no group inventory: the database fallback, unvalidated.
     Missing,
-    /// Its law, none for the occupier's default.
     Law(Option<&'a [u8]>),
     Unknown(String),
 }
@@ -18,20 +12,16 @@ pub struct LawInputs<'a> {
     pub key_resolved: bool,
     pub overrides_complete: bool,
     pub group: GroupLaw<'a>,
-    /// The occupier's default: whether it is set, and its token.
     pub default: Option<(bool, &'a [u8])>,
     pub fallback: Result<&'a [u8], String>,
 }
 
 impl LawInputs<'_> {
-    /// Whether the law falls to the occupier's default, which its triggers must admit.
     pub fn reaches_default(&self) -> bool {
         self.key_resolved && self.state.is_none() && self.overrides_complete && matches!(self.group, GroupLaw::Law(None)) && self.default.is_some()
     }
 }
 
-/// The effective law token, or why it cannot be established. `valid` decides whether the
-/// occupier's default is admitted.
 pub fn law_for(input: LawInputs<'_>, valid: impl FnOnce(&str) -> Result<bool, String>) -> Result<String, String> {
     let token = |bytes: &[u8]| std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| "The recorded occupation-law key is not UTF-8".to_owned());
     if !input.key_resolved {
@@ -59,9 +49,6 @@ pub fn law_for(input: LawInputs<'_>, valid: impl FnOnce(&str) -> Result<bool, St
     if valid(&candidate)? { Ok(candidate) } else { token(input.fallback?) }
 }
 
-/// Whether `law`'s visible and available triggers admit it for occupier `controller` over
-/// `occupied` (canonical slots): the occupier's FROM is the occupied country, the occupied's ROOT
-/// the occupier; availability is skipped where both are one country.
 pub fn admitted(world: &crate::triggers::World<'_>, law: &Law, controller: u32, occupied: u32) -> Result<bool, String> {
     use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
     let mut occupier_scope = EventScope::of(EventObject::Country(controller));
@@ -95,9 +82,7 @@ mod tests {
         assert_eq!(law_for(inputs(None, GroupLaw::Law(Some("group".as_bytes())), Some((true, "default".as_bytes()))), never), Ok("group".into()));
         assert_eq!(law_for(inputs(None, GroupLaw::Law(None), Some((true, "default".as_bytes()))), |law| Ok(law == "default")), Ok("default".into()));
         assert_eq!(law_for(inputs(None, GroupLaw::Law(None), Some((true, "default".as_bytes()))), |_| Ok(false)), Ok("fallback".into()));
-        // An unset default validates the fallback itself.
         assert_eq!(law_for(inputs(None, GroupLaw::Law(None), Some((false, "default".as_bytes()))), |law| Ok(law == "fallback")), Ok("fallback".into()));
-        // No group inventory: the database fallback, before any override and unvalidated.
         assert_eq!(law_for(inputs(Some("state".as_bytes()), GroupLaw::Missing, Some((true, "default".as_bytes()))), never), Ok("fallback".into()));
         assert!(inputs(None, GroupLaw::Law(None), Some((true, "default".as_bytes()))).reaches_default());
         assert!(!inputs(Some("state".as_bytes()), GroupLaw::Law(None), Some((true, "default".as_bytes()))).reaches_default());

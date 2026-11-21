@@ -1,18 +1,3 @@
-//! Nonzero opinions retained per owner between relation walks. Complete write
-//! observation allows rereading only an owner's changed statuses.
-//! Opinion recalculation is reached by modifier changes, expiry, diplomatic
-//! actions, improve relations and the daily sweep. Reset clears opinions during
-//! civil wars, annexation, transfer and country reuse. Loading and construction
-//! end observation. Matrix, vtable and target identities change only at world
-//! reset; diplomacy destruction frees statuses, and whole statuses are never
-//! copied. Unchanged owner controls therefore retain each status.
-//!
-//! Relations use daily owner slices at hourly cadence. Each mark carries the
-//! status's owning diplomacy pointer, fixed at construction and equal to the
-//! owner country's diplomacy. File it under that owner without memory reads,
-//! then authenticate and read it at the owner slice. Lost observation, overflow
-//! or changed identity invalidates the affected owner; its next slice reads
-//! in full and establishes a new valid baseline.
 
 use super::{
     Array, Counters, MARK_BYTES, MARK_FIELDS, MARK_LAYOUT, OpinionRow, POINTER_LAYOUT, Resolver,
@@ -20,57 +5,33 @@ use super::{
 };
 use crate::{Memory, memory::RecordSources};
 
-/// One observed opinion write: the status whose opinion changed and its owning diplomacy,
-/// (`DIPLOMACY_STATUS`), as the writer's detour read it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
     pub status: usize,
     pub diplomacy: usize,
 }
 
-/// The caller's observation of opinion writes. `token` names it: a new one
-/// after any load, gap or unobserved interval. `marks`, when present, holds
-/// every write a writer made since the previous walk under this token, in any
-/// order and possibly repeated; when absent (writes went unobserved), every
-/// owner is invalid and is read in full at its next slice.
 #[derive(Debug, Clone, Copy)]
 pub struct Observation<'a> {
     pub token: (u64, u64),
     pub marks: Option<&'a [Mark]>,
 }
 
-/// The caller's retained opinions. Storage grows only in [`Baseline::grow`],
-/// off the game thread; an owner whose rows or marks do not fit is invalid
-/// until its next slice after growth.
-///
-/// Memory is about 16 bytes per nonzero opinion and 8 bytes per pending mark,
-/// sized from acquired matrices and observed writes, plus per-country identities.
 #[derive(Default)]
 pub struct Baseline {
     scope: (usize, usize),
-    /// The observation the owners are current for; `None` when none is.
     token: Option<(u64, u64)>,
     census: u32,
-    /// Per canonical slot: the owner its rows were recorded for. A default
-    /// identity (no country) holds no rows and is read in full at its slice.
     owners: Vec<Identity>,
-    /// Per canonical slot: its nonzero opinions, in matrix-slot order.
     rows: Vec<Vec<Row>>,
-    /// Per canonical slot: statuses marked since its last read.
     pending: Vec<Vec<usize>>,
-    /// Per canonical slot: `[rows, pending]` it needed that did not fit.
     demand: Vec<[usize; 2]>,
-    /// `(diplomacy, slot)` of every valid owner, sorted, in the first
-    /// `recorded` entries.
     by_diplomacy: Vec<(usize, u32)>,
     recorded: usize,
-    /// This walk's marks of selected owners, `(owner slot, status)`.
     take: Vec<(u32, usize)>,
-    /// Their authenticated opinions, sorted by owner and matrix slot.
     updates: Vec<Row>,
     updates_len: usize,
     cursor: usize,
-    /// The owner being visited, its identity and its rows so far.
     owner: u32,
     visiting: Option<Identity>,
     scratch: Vec<Row>,
@@ -78,12 +39,10 @@ pub struct Baseline {
     scratch_count: usize,
     recording: bool,
     next_census: u32,
-    /// `[slots, scratch rows, marks taken in one walk]`.
     required: [usize; 3],
     counts: Counts,
 }
 
-/// What made an owner's statuses the same objects as last time.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Identity {
     pub country: usize,
@@ -98,8 +57,6 @@ impl Identity {
     }
 }
 
-/// One nonzero opinion: the owner's canonical slot, the matrix slot and the
-/// raw target reference it is emitted with.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Row {
     owner: u32,
@@ -108,43 +65,28 @@ struct Row {
     opinion: i32,
 }
 
-/// Cumulative work, for diagnostics and benches.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
-    /// Opinion walks without a usable observation: every selected owner read
-    /// in full.
     pub full_walks: u64,
-    /// Opinion walks under an observation.
     pub incremental_walks: u64,
-    /// Selected owners whose rows were replayed without reading their matrix.
     pub reused_owners: u64,
-    /// Selected owners read in full (invalid or changed) under an observation.
     pub read_owners: u64,
-    /// Marked statuses read.
     pub marks: u64,
-    /// Walks whose observation could not be used (lost writes, a mark that
-    /// did not authenticate, short storage): every owner became invalid.
     pub refused_observations: u64,
-    /// Owners made invalid on their own (rows or marks that did not fit, a
-    /// replaced country).
     pub invalidated_owners: u64,
 }
 
 impl Baseline {
-    /// Off the game thread: room for `marks` marks in one walk, as when the
-    /// caller knows its observation's bound.
     pub fn reserve_marks(&mut self, marks: usize) -> std::io::Result<()> {
         self.required[2] = self.required[2].max(marks);
         self.grow()
     }
 
-    /// Forget every owner: each is read in full at its next slice.
     pub fn clear(&mut self) {
         self.token = None;
         self.forget();
     }
 
-    /// The observation the owners are current for, if any.
     pub fn token(&self) -> Option<(u64, u64)> {
         self.token
     }
@@ -153,7 +95,6 @@ impl Baseline {
         self.counts
     }
 
-    /// The country id of the valid owner recorded with `diplomacy`.
     pub fn owner(&self, diplomacy: usize) -> Option<u32> {
         let recorded = &self.by_diplomacy[..self.recorded];
         let at = recorded
@@ -163,18 +104,15 @@ impl Baseline {
         owner.valid().then_some(owner.id)
     }
 
-    /// Nonzero opinions recorded, for sizing the caller's observation.
     pub fn rows(&self) -> usize {
         self.rows.iter().map(Vec::len).sum()
     }
 
-    /// Owners currently valid.
     #[cfg(test)]
     pub fn valid_owners(&self) -> usize {
         self.owners.iter().filter(|owner| owner.valid()).count()
     }
 
-    /// Whether the last walk needed more storage than it had.
     pub fn needs_growth(&self) -> bool {
         let [slots, scratch, take] = self.required;
         slots > self.owners.len()
@@ -183,8 +121,6 @@ impl Baseline {
             || self.demand.iter().any(|demand| *demand != [0, 0])
     }
 
-    /// Grow to acquired matrix extents and observed mark demand. Allocation
-    /// failure is reported before admitting another walk.
     pub fn grow(&mut self) -> std::io::Result<()> {
         fn fit<T: Default>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.len() {
@@ -234,14 +170,12 @@ impl Baseline {
         Ok(())
     }
 
-    /// Tests: `updates` shorter than `take`, as after its growth failed.
     #[cfg(test)]
     pub(super) fn shorten_updates(&mut self, len: usize) {
         self.updates.truncate(len);
         self.updates.shrink_to_fit();
     }
 
-    /// Heap payload only.
     pub fn allocated_bytes(&self) -> usize {
         self.owners.capacity() * size_of::<Identity>()
             + self
@@ -262,7 +196,6 @@ impl Baseline {
             + (self.updates.capacity() + self.scratch.capacity()) * size_of::<Row>()
     }
 
-    /// Every owner invalid, its rows and marks dropped (storage kept).
     fn forget(&mut self) {
         for owner in &mut self.owners {
             *owner = Identity::default();
@@ -276,7 +209,6 @@ impl Baseline {
         self.recorded = 0;
     }
 
-    /// One owner invalid: it is read in full at its next slice.
     fn invalidate(&mut self, slot: u32) {
         let slot = slot as usize;
         if self.owners.get(slot).is_some_and(Identity::valid) {
@@ -293,9 +225,6 @@ impl Baseline {
         }
     }
 
-    /// Continue the observation and file this walk's marks under their owners.
-    /// Returns whether this walk may replay valid owners; the selected owners'
-    /// marks are then authenticated, read and sorted in `updates`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
         &mut self,
@@ -309,8 +238,6 @@ impl Baseline {
     ) -> bool {
         self.cursor = 0;
         self.updates_len = 0;
-        // Only `finish` restores a token, so a walk that never finishes (a
-        // panic mid-walk, with owners half rewritten) leaves none.
         let token = self.token.take();
         let census = countries.count();
         let storage = self.owners.len() >= census as usize;
@@ -325,16 +252,12 @@ impl Baseline {
             && self.census == census
             && storage;
         let Some(marks) = observed.marks.filter(|_| continues) else {
-            // A new observation (a load, a gap, lost writes): no owner is
-            // current until its slice reads it again.
             if continues {
                 self.counts.refused_observations += 1;
             }
             self.forget();
             return true;
         };
-        // File each mark under its owner. A mark of an invalid owner, or of
-        // no recorded owner, is not needed: that owner is read in full.
         for mark in marks {
             let recorded = &self.by_diplomacy[..self.recorded];
             let Ok(at) =
@@ -343,7 +266,6 @@ impl Baseline {
                 continue;
             };
             let slot = recorded[at].1;
-            // An owner this filing made invalid stays listed until `finish`.
             if !self.owners[slot as usize].valid() {
                 if self.demand[slot as usize][1] != 0 {
                     self.demand[slot as usize][1] = self.demand[slot as usize][1].saturating_add(1);
@@ -352,15 +274,12 @@ impl Baseline {
             }
             let pending = &mut self.pending[slot as usize];
             if pending.len() == pending.capacity() {
-                // Retain the original burst demand, including all remaining
-                // marks for this owner. Its next slice still reads in full.
                 self.demand[slot as usize][1] = pending.len().saturating_add(1);
                 self.invalidate(slot);
                 continue;
             }
             pending.push(mark.status);
         }
-        // Take the selected valid owners' marks.
         let mut taken = 0;
         let mut needed = 0;
         for slot in 1..census.min(self.owners.len() as u32) {
@@ -378,11 +297,7 @@ impl Baseline {
             }
         }
         self.required[2] = self.required[2].max(needed);
-        // Both buffers hold every taken mark: they grow separately, so one
-        // may have grown where the other's allocation failed.
         if taken > self.take.len().min(self.updates.len()) {
-            // More marks than this walk can take: the selected owners are read
-            // in full now, and the storage grows for the next walk.
             for slot in 1..census.min(self.owners.len() as u32) {
                 let owner = self.owners[slot as usize];
                 if owner.valid() && select(owner.id) {
@@ -407,7 +322,6 @@ impl Baseline {
         }
         let updates = &mut self.updates[..self.updates_len];
         updates.sort_unstable_by_key(|row| (row.owner, row.slot));
-        // A status marked twice was read once per mark, at this instant.
         let mut kept = 0;
         for index in 0..updates.len() {
             if kept == 0
@@ -423,9 +337,6 @@ impl Baseline {
         true
     }
 
-    /// Authenticate the first `taken` marks as `status(owner, canonical(target))`
-    /// of their valid owner, under the diplomacy that owner was recorded with,
-    /// and read their opinions. `None` refuses the whole observation.
     fn read_marks(
         &mut self,
         memory: &impl Memory,
@@ -476,7 +387,6 @@ impl Baseline {
                 };
                 self.updates_len += 1;
             }
-            // The owner's matrix names this very status at that slot.
             let entries = &mut entries[..len * 8];
             if memory.copy_records(
                 RecordSources::Pointers(&addresses[..len]),
@@ -496,8 +406,6 @@ impl Baseline {
         Some(())
     }
 
-    /// Start recording this walk's owners when opinions are walked under an
-    /// observation and the per-slot storage holds the census.
     pub(super) fn begin(&mut self, scope: (usize, usize), recording: bool, census: u32) {
         if self.scope != scope {
             self.token = None;
@@ -510,22 +418,18 @@ impl Baseline {
         self.visiting = None;
     }
 
-    /// Whether `slot` holds rows recorded for this very owner.
     pub(super) fn unchanged(&self, slot: u32, identity: Identity) -> bool {
         self.owners
             .get(slot as usize)
             .is_some_and(|owner| owner.valid() && *owner == identity)
     }
 
-    /// An empty slot holds no owner.
     pub(super) fn empty(&mut self, slot: u32) {
         if self.recording {
             self.invalidate(slot);
         }
     }
 
-    /// An unselected owner keeps its rows and marks for its own slice, unless
-    /// its slot now holds another country.
     pub(super) fn carry(&mut self, slot: u32, country: usize) {
         if self.recording
             && self
@@ -537,11 +441,9 @@ impl Baseline {
         }
     }
 
-    /// Start the selected owner this walk reads or replays at `slot`.
     pub(super) fn visit(&mut self, slot: u32, identity: Identity) {
         self.owner = slot;
         self.visiting = Some(identity);
-        // Diplomacy serialization visits the signed matrix count.
         self.required[1] = self.required[1].max(identity.matrix.count as usize);
         if let Some(demand) = self.demand.get_mut(slot as usize)
             && self.pending[slot as usize].capacity() < identity.matrix.count as usize
@@ -552,7 +454,6 @@ impl Baseline {
         self.scratch_count = 0;
     }
 
-    /// One nonzero opinion of the owner being visited.
     pub(super) fn record(&mut self, slot: u32, target: u32, opinion: i32) {
         self.scratch_count += 1;
         if !self.recording {
@@ -569,8 +470,6 @@ impl Baseline {
         }
     }
 
-    /// Emit and record the visited owner's rows: the recorded ones, with each
-    /// marked status's fresh opinion in place of its recorded one.
     pub(super) fn replay(
         &mut self,
         slot: u32,
@@ -624,8 +523,6 @@ impl Baseline {
         Ok(())
     }
 
-    /// End the visited owner: keep its rows for its next slice when they fit,
-    /// else make it invalid and ask for the storage.
     pub(super) fn end_owner(&mut self, read_in_full: bool) {
         let Some(identity) = self.visiting.take() else {
             return;
@@ -649,8 +546,6 @@ impl Baseline {
         self.owners[slot] = identity;
     }
 
-    /// Keep this walk's owners for the next walks when the walk completed and
-    /// its caller observed every write; otherwise forget every owner.
     pub(super) fn finish(&mut self, complete: bool, observed: Option<(u64, u64)>) {
         let kept = complete && self.recording && observed.is_some();
         self.recording = false;
@@ -694,9 +589,7 @@ mod tests {
                 vec![row(2, 1, 1, 7)],
             ],
             updates: vec![
-                // Now zero: dropped.
                 row(1, 2, 2, 0),
-                // Newly nonzero: inserted in slot order.
                 row(1, 3, 30, 9),
             ],
             updates_len: 2,
@@ -732,8 +625,6 @@ mod tests {
         assert_eq!(counters.opinions, 3);
     }
 
-    /// A drained mark's diplomacy names the valid owner recorded with it;
-    /// an invalid owner or an unknown diplomacy names none.
     #[test]
     fn owners_are_found_by_their_recorded_diplomacy() {
         let identity = |id: u32, diplomacy| Identity {

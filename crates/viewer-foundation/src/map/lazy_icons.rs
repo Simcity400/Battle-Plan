@@ -1,26 +1,3 @@
-//! Icon textures decoded on first use instead of at content load.
-//!
-//! A content set indexes every flag file and portrait texture it ships, but a
-//! map draws only the flags of the countries and the portraits of the leaders
-//! it shows. With a flag per country for thousands of countries, decoding the
-//! whole index at load held hundreds of megabytes the session never drew.
-//!
-//! So the layout asks for a texture when it draws one. A texture already
-//! decoded answers at once; one that is not is queued and the layout draws the
-//! native fallback it would draw for an unreadable file (a flag's plain tag
-//! flag when that is loaded) or nothing, for that frame only. The queue is
-//! decoded on a bounded pool, off the UI thread ([`LazyTextures::schedule`]),
-//! or synchronously by a headless render ([`LazyTextures::settle`]), which then
-//! lays the frame out again. Every change bumps [`LazyTextures::version`], so
-//! a window that laid a frame out before the load lays it out again.
-//!
-//! Counter hour workers instead warm their flag candidates before publishing.
-//! [`LazyFlags::acquire`] packs those decoded images on request and synchronously
-//! decides any unwarmed candidates, so counters never draw a temporary stand-in.
-//!
-//! Texture ids of lazy textures start at [`DYNAMIC_BASE`], above every static
-//! icon page, and are never reused, so a quad laid out against an id that has
-//! since been evicted draws nothing rather than another texture.
 
 #[cfg(test)]
 use crate::map::test_support::TEST_HANG_GUARD;
@@ -39,25 +16,19 @@ use installed_content_image::{Rgba8Image, dds};
 use super::atlas_pages::{CellPages, page_limit};
 use installed_content_core::{ResolvedLayers, flags, flags::FlagSet};
 
-/// The first lazy texture id; static icon pages sit below it.
 pub const DYNAMIC_BASE: usize = 1 << 40;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// A queue of requested textures that can be decoded on demand.
 pub trait PendingLoad: Send + Sync {
-    /// Decodes every queued request; whether any was queued.
     fn load_pending(&self) -> bool;
-    /// Whether any request is queued.
     fn has_pending(&self) -> bool;
 }
 
-/// One lazy texture as the renderer uploads it.
 #[derive(Clone)]
 pub struct Resident {
-    /// Bumped whenever the texture's pixels change.
     pub revision: u64,
     pub texture: Arc<dds::Texture>,
     pub cells: Arc<BTreeMap<[u32; 4], u64>>,
@@ -66,23 +37,17 @@ pub struct Resident {
 #[derive(Default)]
 struct Registry {
     entries: BTreeMap<usize, Resident>,
-    /// The frame each texture was last drawn in ([`LazyTextures::mark_drawn`]).
     drawn: HashMap<usize, u64>,
     next: usize,
 }
 
-/// Frames a texture stays pinned after it was last drawn or asked for. Every
-/// rendered map view advances the frame, so this covers a few frames of each
-/// of several views sharing one content set.
 pub const PIN_FRAMES: u64 = 8;
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// Every lazy texture of one content set, and the loader that fills them.
 pub struct LazyTextures {
     registry: Mutex<Registry>,
     version: AtomicU64,
-    /// Rendered frames so far; the LRU clock of [`LazyImages`].
     frame: AtomicU64,
     loaders: Mutex<Vec<Weak<dyn PendingLoad>>>,
     running: AtomicBool,
@@ -103,7 +68,6 @@ impl LazyTextures {
         })
     }
 
-    /// Changes so far; any new texture, pixel change or eviction bumps it.
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Acquire)
     }
@@ -148,14 +112,10 @@ impl LazyTextures {
         self.bump();
     }
 
-    /// The current frame.
     pub fn frame(&self) -> u64 {
         self.frame.load(Ordering::Acquire)
     }
 
-    /// Records the lazy textures one rendered frame drew and ends the frame.
-    /// A texture drawn in the last [`PIN_FRAMES`] frames is never evicted, so
-    /// what is on screen does not thrash however many portraits it shows.
     pub fn mark_drawn(&self, ids: impl IntoIterator<Item = usize>) {
         let frame = self.frame();
         let mut registry = lock(&self.registry);
@@ -168,12 +128,10 @@ impl LazyTextures {
         self.frame.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// The frame `id` was last drawn in.
     fn drawn_at(&self, id: usize) -> Option<u64> {
         lock(&self.registry).drawn.get(&id).copied()
     }
 
-    /// Every resident texture, for the renderer to mirror.
     pub fn snapshot(&self) -> Vec<(usize, Resident)> {
         lock(&self.registry)
             .entries
@@ -182,7 +140,6 @@ impl LazyTextures {
             .collect()
     }
 
-    /// Bytes of every resident texture's pixels.
     pub fn resident_bytes(&self) -> usize {
         lock(&self.registry)
             .entries
@@ -210,8 +167,6 @@ impl LazyTextures {
             .collect()
     }
 
-    /// What a background load calls once it has decoded something, so a
-    /// still window repaints and lays its frame out again.
     pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
         *lock(&self.wake) = Some(Arc::new(wake));
     }
@@ -220,19 +175,14 @@ impl LazyTextures {
         lock(&self.wake).is_some()
     }
 
-    /// Whether any request is queued.
     pub fn has_pending(&self) -> bool {
         self.loaders().iter().any(|loader| loader.has_pending())
     }
 
-    /// Whether any request is queued or a background load is decoding one: a frame drawn
-    /// meanwhile may still lack what it asked for.
     pub fn busy(&self) -> bool {
         self.has_pending() || self.running.load(Ordering::Acquire)
     }
 
-    /// Decodes every queued request on this thread, waiting for a background
-    /// load already under way. Returns whether anything was decoded here.
     pub fn settle(&self) -> bool {
         let mut any = false;
         for loader in self.loaders() {
@@ -241,14 +191,10 @@ impl LazyTextures {
         any
     }
 
-    /// Whether a request starts a background load. A headless render turns
-    /// it off and settles each frame itself, so its cells land in the same
-    /// order on every run.
     pub fn set_background(&self, on: bool) {
         self.background.store(on, Ordering::Release);
     }
 
-    /// Starts a background load of the queued requests unless one is running.
     pub fn schedule(this: &Arc<Self>) {
         if !this.background.load(Ordering::Acquire) || this.running.swap(true, Ordering::AcqRel) {
             return;
@@ -261,8 +207,6 @@ impl LazyTextures {
                 loop {
                     while textures.settle() {}
                     textures.running.store(false, Ordering::Release);
-                    // A request queued after the last pass and before the flag
-                    // cleared would otherwise wait for the next one.
                     if !textures.has_pending() || textures.running.swap(true, Ordering::AcqRel) {
                         break;
                     }
@@ -273,18 +217,13 @@ impl LazyTextures {
                 }
             });
         if spawned.is_err() {
-            // No thread to spare: the next settle or schedule picks it up.
             this.running.store(false, Ordering::Release);
         }
     }
 }
 
-/// Reads the file the engine opens for a requested flag key, as its finished
-/// cell image, or `None` when that request opens nothing or the engine's reader
-/// would refuse it.
 pub type FlagReader = Arc<dyn Fn(&str) -> Option<Rgba8Image> + Send + Sync>;
 
-/// A flag key's character as a case-blind folder lookup compares it.
 fn fold(ch: char) -> char {
     let mut upper = ch.to_uppercase();
     match (upper.next(), upper.next()) {
@@ -293,36 +232,26 @@ fn fold(ch: char) -> char {
     }
 }
 
-/// A folded index key against a requested key, without allocating.
 fn folded_cmp(folded: &str, key: &str) -> std::cmp::Ordering {
     folded.chars().cmp(key.chars().map(fold))
 }
 
 #[derive(Default)]
 struct FlagState {
-    /// Decided keys: their cell, or `None` for a file the reader refused.
     cells: HashMap<String, Option<u32>>,
-    /// Readable images or refusals decided ahead of drawing, not yet packed.
     decoded: HashMap<String, Option<Rgba8Image>>,
-    /// The key of every cell, in cell order.
     keys: Vec<String>,
     pending: BTreeSet<String>,
-    /// Texture id of each page.
     pages: Vec<usize>,
     rejected: usize,
 }
 
-/// One flag set: its file index, and the cells decoded so far on fixed pages.
 pub struct LazyFlags {
-    /// Each file's folded `<TAG>_<group>` or `<TAG>` and its path, by folded key.
-    /// Folder lookups ignore case, so this admits every key that may open a file;
-    /// the read of the requested spelling decides.
     index: Vec<(String, String)>,
     pages: CellPages,
     read: FlagReader,
     state: Mutex<FlagState>,
     loading: Mutex<()>,
-    /// Serializes hour warm-ups without holding up already warmed draw requests.
     warming: Mutex<()>,
     textures: Arc<LazyTextures>,
 }
@@ -354,8 +283,6 @@ impl LazyFlags {
         flags
     }
 
-    /// Files indexed.
-    /// The version of the textures its flags decode into: it moves as a flag arrives.
     pub fn version(&self) -> u64 {
         self.textures.version()
     }
@@ -368,22 +295,18 @@ impl LazyFlags {
         self.index.is_empty()
     }
 
-    /// The set's cell size.
     pub fn cell_size(&self) -> [u32; 2] {
         self.pages.cell
     }
 
-    /// Requested files the reader has refused.
     pub fn rejected(&self) -> usize {
         lock(&self.state).rejected
     }
 
-    /// Cells packed so far.
     pub fn loaded(&self) -> usize {
         lock(&self.state).keys.len()
     }
 
-    /// The indexed file a request for `key` may open.
     fn file(&self, key: &str) -> Option<&str> {
         let at = self
             .index
@@ -392,12 +315,10 @@ impl LazyFlags {
         Some(self.index[at].1.as_str())
     }
 
-    /// Whether `key` names a file that is not known to be unreadable.
     pub fn contains(&self, key: &str) -> bool {
         self.file(key).is_some() && !matches!(lock(&self.state).cells.get(key), Some(None))
     }
 
-    /// Longest indexed key at the start of producer text, without decoding its artwork.
     pub fn key_prefix(&self, text: &[char]) -> Option<usize> {
         let mut prefix = String::new();
         let mut found = None;
@@ -420,12 +341,6 @@ impl LazyFlags {
         found
     }
 
-    /// The first readable candidate's page texture and rectangle.
-    ///
-    /// Candidates run in the engine's order (`<TAG>_<group>`, then `<TAG>`);
-    /// one it could not read is skipped, as the engine skips to its next
-    /// candidate. The first candidate not decoded yet is queued, and until it
-    /// is, a later candidate that is already decoded stands in for it.
     pub fn resolve(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
         let mut state = lock(&self.state);
         let mut queued = false;
@@ -455,11 +370,6 @@ impl LazyFlags {
         found
     }
 
-    /// Decides indexed keys on the calling worker, without requesting atlas cells.
-    ///
-    /// Hour preparation warms only its countries' candidates. Packing still follows
-    /// draw requests, so warming changes neither cell order nor UV rounding. Images
-    /// move into their pages when requested; unreadable files are remembered too.
     pub fn warm<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
         let _serial = lock(&self.warming);
         let keys: Vec<String> = {
@@ -478,17 +388,12 @@ impl LazyFlags {
         let images = crate::parallel::map(&keys, |key| (self.read)(key));
         let mut state = lock(&self.state);
         for (key, image) in keys.into_iter().zip(images) {
-            // A cold acquisition may have decided this key while the worker read it.
             if !state.cells.contains_key(&key) {
                 state.decoded.insert(key, image);
             }
         }
     }
 
-    /// [`Self::resolve`] with every candidate decided first: warmed images are packed
-    /// on request, and unwarmed candidates decode synchronously. This resolves as if
-    /// the set had been built whole at load, as the engine builds its flag atlases,
-    /// so a frame never draws a stand-in for a flag that is not decoded yet.
     pub fn acquire(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
         let queued = {
             let mut state = lock(&self.state);
@@ -507,12 +412,10 @@ impl LazyFlags {
         self.resolve(candidates)
     }
 
-    /// One exact key's cell, queued when not decoded yet.
     pub fn get(&self, key: &str) -> Option<(usize, [f32; 4])> {
         self.resolve(&[key])
     }
 
-    /// The key a quad of this set draws, if it is one of its cells.
     pub fn key_at(&self, texture: usize, uv: [f32; 4]) -> Option<String> {
         let state = lock(&self.state);
         let page = state.pages.iter().position(|page| *page == texture)?;
@@ -520,7 +423,6 @@ impl LazyFlags {
         state.keys.get(cell as usize).cloned()
     }
 
-    /// Whether `texture` is one of this set's pages.
     pub fn owns(&self, texture: usize) -> bool {
         lock(&self.state).pages.contains(&texture)
     }
@@ -553,8 +455,6 @@ impl PendingLoad for LazyFlags {
         if images.is_empty() && keys.is_empty() {
             return false;
         }
-        // Only unwarmed requests decode on the bounded pool. Both paths pack
-        // in key order, so one set of requests always lands in the same cells.
         let decoded = crate::parallel::map(&keys, |key| (self.read)(key));
         images.extend(keys.into_iter().zip(decoded));
         let mut state = lock(&self.state);
@@ -594,21 +494,17 @@ impl PendingLoad for LazyFlags {
             state.keys.push(key);
         }
         drop(state);
-        // A refused file changes no pixels but does change what is drawn: its
-        // fallback candidate. Lay the frame out again either way.
         self.textures.bump();
         true
     }
 }
 
-/// Decodes one texture file into an uploadable texture.
 pub type ImageReader = Arc<dyn Fn(&str) -> io::Result<dds::Texture> + Send + Sync>;
 
 enum ImageSlot {
     Loaded {
         id: usize,
         size: [u32; 2],
-        /// The frame this texture was last asked for in.
         used: u64,
     },
     Failed,
@@ -621,24 +517,17 @@ struct ImageState {
     failures: Vec<String>,
 }
 
-/// What [`LazyImages::get`] knows about a texture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lookup {
     Loaded {
         texture: usize,
         size: [u32; 2],
     },
-    /// Queued; ask again once [`LazyTextures::version`] moves.
     Pending,
-    /// The file cannot be read or decoded.
     Failed,
 }
 
-/// Whole textures (portraits) decoded on first use and kept while shown: a
-/// texture drawn or asked for in the last [`PIN_FRAMES`] frames stays resident,
-/// and the next load lets go of the others.
 pub struct LazyImages {
-    /// What the textures are, for warnings.
     what: &'static str,
     read: ImageReader,
     state: Mutex<ImageState>,
@@ -660,7 +549,6 @@ impl LazyImages {
         images
     }
 
-    /// The texture of `path`, queued when not decoded yet.
     pub fn get(&self, path: &str) -> Lookup {
         let frame = self.textures.frame();
         let mut state = lock(&self.state);
@@ -682,7 +570,6 @@ impl LazyImages {
         }
     }
 
-    /// What is known of `path`, without queuing it or counting it as used.
     pub fn peek(&self, path: &str) -> Lookup {
         match lock(&self.state).slots.get(path) {
             Some(ImageSlot::Loaded { id, size, .. }) => Lookup::Loaded {
@@ -694,7 +581,6 @@ impl LazyImages {
         }
     }
 
-    /// The path a resident texture was decoded from.
     pub fn path_of(&self, texture: usize) -> Option<String> {
         lock(&self.state)
             .slots
@@ -705,7 +591,6 @@ impl LazyImages {
             })
     }
 
-    /// Resident textures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn resident(&self) -> usize {
         lock(&self.state)
@@ -715,7 +600,6 @@ impl LazyImages {
             .count()
     }
 
-    /// Files that could not be decoded so far, with their errors.
     #[cfg(any(test, feature = "test-support"))]
     pub fn failures(&self) -> Vec<String> {
         lock(&self.state).failures.clone()
@@ -777,14 +661,11 @@ impl PendingLoad for LazyImages {
             }
         }
         drop(state);
-        // A failed texture changes what is drawn (a fallback, or nothing).
         self.textures.bump();
         true
     }
 }
 
-/// Which of `resident` (key, last frame drawn or asked for) are no longer
-/// shown: none used in the last [`PIN_FRAMES`] frames before `frame`.
 fn evictions(resident: impl Iterator<Item = (String, u64)>, frame: u64) -> Vec<String> {
     resident
         .filter(|(_, used)| used + PIN_FRAMES <= frame)
@@ -792,11 +673,6 @@ fn evictions(resident: impl Iterator<Item = (String, u64)>, frame: u64) -> Vec<S
         .collect()
 }
 
-/// Indexes one flag set's files for lazy decoding.
-///
-/// `finish` runs on every decoded cell (the medium set's cloth overlay, the
-/// combat set's shield mask). A file the engine's reader refuses stays out of
-/// the atlas, and lookups fall back past it as the engine does.
 pub fn flag_set(
     layers: &Arc<ResolvedLayers>,
     set: FlagSet,
@@ -825,7 +701,6 @@ pub fn flag_set(
         if stem.contains(&b'/') {
             continue;
         }
-        // The game builds flag paths from tag text, so non-UTF-8 filenames cannot name flags.
         let (Ok(key), Ok(path)) = (std::str::from_utf8(stem), std::str::from_utf8(path)) else {
             continue;
         };
@@ -833,10 +708,8 @@ pub fn flag_set(
     }
     let pages = CellPages::plan(cell, page_limit(), directory)?;
     let layers = Arc::clone(layers);
-    // A flag the visual mods break is the recording's own, named.
     let recorded = layers.without_overlays();
     let read: FlagReader = Arc::new(move |key: &str| {
-        // The engine opens the name it builds, under the layers' own case rules.
         let path = format!("{directory}{key}.tga");
         let decoded = |stack: &ResolvedLayers| flags::decode(&stack.read(&path).ok()?, cell);
         let mut image = match decoded(&layers) {
@@ -867,7 +740,6 @@ mod tests {
         }
     }
 
-    /// 5,000 synthetic tags with five flag files each.
     fn flag_set(textures: &Arc<LazyTextures>, cell: [u32; 2]) -> Arc<LazyFlags> {
         let groups = ["", "_fascism", "_communism", "_democratic", "_neutrality"];
         let index = (0..5_000)
@@ -880,7 +752,6 @@ mod tests {
             .collect();
         let pages = CellPages::plan(cell, 8192, "flags").unwrap();
         let read: FlagReader = Arc::new(move |key: &str| {
-            // Every file of tag 13 is unreadable.
             (!key.contains("T0013")).then(|| cell_image(cell, key.len() as u8))
         });
         LazyFlags::new(index, pages, read, textures)
@@ -923,11 +794,9 @@ mod tests {
         let cell = [82, 52];
         let flags = flag_set(&textures, cell);
         assert_eq!(flags.len(), 25_000);
-        // 300 of 5,000 tags are drawn, each under its ruling group.
         let wanted: Vec<String> = (0..300).map(|tag| format!("T{:04}", tag * 7)).collect();
         for tag in &wanted {
             let group = format!("{tag}_fascism");
-            // Nothing is decoded yet: no cell, and the request is queued.
             assert_eq!(flags.resolve(&[&group, tag]), None);
         }
         assert!(textures.settle());
@@ -935,7 +804,6 @@ mod tests {
         let page_bytes = CellPages::plan(cell, 8192, "flags").unwrap().page_bytes();
         assert_eq!(textures.snapshot().len(), 1);
         assert_eq!(textures.resident_bytes(), page_bytes);
-        // Every drawn tag now has its own cell on the one page.
         let mut seen = BTreeSet::new();
         for tag in &wanted {
             let group = format!("{tag}_fascism");
@@ -944,7 +812,6 @@ mod tests {
             assert!(seen.insert(uv.map(f32::to_bits)));
             assert_eq!(flags.key_at(texture, uv), Some(group));
         }
-        // More tags than one page holds take a second page, and no more.
         for tag in 1_000..2_100 {
             flags.get(&format!("T{tag:04}"));
         }
@@ -982,7 +849,6 @@ mod tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     flags.warm(candidates.iter().rev().flatten().copied());
-                    // Shared candidates and repeated hours decode only once.
                     flags.warm(candidates.iter().flatten().copied());
                 });
             });
@@ -993,7 +859,6 @@ mod tests {
             assert!(!textures.has_pending());
             assert!(textures.snapshot().is_empty());
             for keys in candidates {
-                // Any additional reader call, even on a pool thread, fails this count.
                 assert_eq!(flags.acquire(&keys), cold.acquire(&keys));
                 assert_eq!(*lock(&reads), before);
                 assert_eq!(flags.rejected(), cold.rejected());
@@ -1011,7 +876,6 @@ mod tests {
                 }
             }
             assert!(lock(&flags.state).decoded.is_empty());
-            // Correctness does not require a warm-up: an unprepared key still decodes.
             assert!(cold.acquire(&["T0005"]).is_some());
         }
     }
@@ -1043,7 +907,6 @@ mod tests {
             scope.spawn(|| flags.warm(["later"]));
             waiting.recv_timeout(TEST_HANG_GUARD).unwrap();
             assert!(flags.acquire(&["ready"]).is_some());
-            // The in-flight candidate is not ready: acquire still decides it now.
             assert!(flags.acquire(&["later"]).is_some());
             release.send(()).unwrap();
         });
@@ -1055,15 +918,12 @@ mod tests {
     fn an_unreadable_flag_falls_back_to_the_next_candidate() {
         let textures = foreground();
         let flags = flag_set(&textures, [10, 7]);
-        // The plain flag is loaded first, then the group flag is asked for.
         flags.get("T0001");
         textures.settle();
         let plain = flags.get("T0001").unwrap();
-        // Until the group flag decodes, the plain flag stands in for it.
         assert_eq!(flags.resolve(&["T0001_fascism", "T0001"]), Some(plain));
         textures.settle();
         assert_ne!(flags.resolve(&["T0001_fascism", "T0001"]), Some(plain));
-        // Tag 13's files cannot be read: its group flag is skipped, then its plain one.
         assert_eq!(flags.resolve(&["T0013_fascism", "T0013"]), None);
         textures.settle();
         assert!(!flags.contains("T0013_fascism"));
@@ -1106,7 +966,6 @@ mod tests {
         LazyImages::new("test portrait", read, textures)
     }
 
-    /// Ends `frames` rendered frames that drew `ids`.
     fn render(textures: &LazyTextures, ids: &[usize], frames: u64) {
         for _ in 0..frames {
             textures.mark_drawn(ids.iter().copied());
@@ -1124,7 +983,6 @@ mod tests {
     fn portraits_stay_resident_only_while_shown() {
         let textures = foreground();
         let images = image_set(&textures);
-        // 100 frames, each drawing 10 leaders of a 50,000-character roster.
         for frame in 0..100u32 {
             let drawn: Vec<String> = (0..10)
                 .map(|slot| format!("gfx/leaders/{}.dds", (frame * 10 + slot) * 37 % 50_000))
@@ -1135,20 +993,16 @@ mod tests {
             textures.settle();
             let ids: Vec<usize> = drawn.iter().map(|path| loaded(&images, path)).collect();
             render(&textures, &ids, 1);
-            // What the pinned frames drew.
             assert!(
                 images.resident() <= (PIN_FRAMES as usize + 1) * 10,
                 "frame {frame}"
             );
             assert_eq!(textures.snapshot().len(), images.resident());
         }
-        // Once the older frames unpin, a load lets go of them.
         render(&textures, &[], PIN_FRAMES);
         images.get("gfx/leaders/next.dds");
         textures.settle();
         assert_eq!(images.resident(), 1);
-        // A broken file is decided once, never retried, and still moves the
-        // version so the frame lays its fallback out at once.
         assert_eq!(images.get("gfx/leaders/broken.dds"), Lookup::Pending);
         let before = textures.version();
         textures.settle();
@@ -1167,8 +1021,6 @@ mod tests {
         }
         textures.settle();
         let ids: Vec<usize> = visible.iter().map(|path| loaded(&images, path)).collect();
-        // Every later frame draws them from its cached layout, without asking
-        // again, while other portraits come and go.
         for frame in 0..50 {
             render(&textures, &ids, 1);
             images.get(&format!("gfx/leaders/other{frame}.dds"));
@@ -1176,7 +1028,6 @@ mod tests {
             let now: Vec<usize> = visible.iter().map(|path| loaded(&images, path)).collect();
             assert_eq!(now, ids, "frame {frame}: an on-screen portrait was evicted");
         }
-        // What is on screen, plus the pinned newcomers.
         assert!(images.resident() <= 10 + PIN_FRAMES as usize + 1);
     }
 
@@ -1185,7 +1036,6 @@ mod tests {
         let resident =
             [("a", 1), ("b", 5), ("c", 2), ("d", 20)].map(|(key, used)| (key.to_owned(), used));
         assert_eq!(evictions(resident.clone().into_iter(), 20), ["a", "b", "c"]);
-        // `b` was used within the last PIN_FRAMES frames of 12: pinned.
         assert_eq!(evictions(resident.clone().into_iter(), 12), ["a", "c"]);
         assert!(evictions(resident.into_iter(), 2).is_empty());
     }
@@ -1239,7 +1089,6 @@ mod tests {
         let (base, archive) = (root.join("base"), root.join("flags.zip"));
         let cell = [2, 2];
         for (path, bytes) in [
-            // The flag folder's length ends inside this unrelated path's `é`.
             ("common/abé.txt", b"x".to_vec()),
             ("gfx/flags/GER.TGA", tga(cell, 1)),
             ("gfx/flags/sov_communism.tga", tga(cell, 2)),
@@ -1269,9 +1118,7 @@ mod tests {
         );
         let textures = foreground();
         let flags = super::flag_set(&layers, FlagSet::Normal, cell, |_| {}, &textures).unwrap();
-        // A nested file is no flag; a capitalised extension still is.
         assert_eq!(flags.len(), 3);
-        // A folder opens any spelling of its file's name.
         let (texture, uv) = flags.acquire(&["GER"]).expect("folder flag GER.TGA");
         assert_eq!(flags.key_at(texture, uv).as_deref(), Some("GER"));
         let (texture, uv) = flags
@@ -1280,7 +1127,6 @@ mod tests {
         assert_eq!(flags.key_at(texture, uv).as_deref(), Some("SOV_communism"));
         let text: Vec<char> = "SOV_communism army".chars().collect();
         assert_eq!(flags.key_prefix(&text), Some(13));
-        // An archive opens only its member's exact name, so the request falls through.
         assert!(flags.contains("ITA"));
         assert_eq!(flags.acquire(&["ITA"]), None);
         assert!(!flags.contains("ITA"));

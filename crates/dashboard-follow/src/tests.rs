@@ -23,12 +23,9 @@ use std::{
     time::Duration,
 };
 
-/// Countries, its first five columns as the schema has them: 1 is a text (the tag), 2 an optional
-/// number (political power).
 const TABLE: usize = 2;
 const KINDS: [Kind; 5] = [Kind::I32, Kind::Bytes, Kind::OptionalI64, Kind::I64, Kind::I64];
 const HOURS: u32 = 2 * BLOCK;
-/// Steps the harness's playhead builds past its head, at most.
 const RING: usize = 3;
 
 #[derive(Default)]
@@ -76,13 +73,10 @@ impl Pages for Recording {
     }
 }
 
-/// A run of [`HOURS`] hours from hour 0 in which `hour` makes Countries' changes; the other
-/// tables hold nothing. Countries is not recorded at hours 300 to 329.
 fn record(hour: impl FnMut(u32, &mut TableChanges<'_>)) -> Arc<Recording> {
     record_with(|_| Status::NotRecorded, hour)
 }
 
-/// As [`record`], Countries of the status `gap` gives at hours 300 to 329.
 fn record_with(mut gap: impl FnMut(&mut Store) -> Status, mut hour: impl FnMut(u32, &mut TableChanges<'_>)) -> Arc<Recording> {
     let kinds = vec![KINDS.to_vec(); TABLE + 1];
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -112,10 +106,6 @@ fn unread(at: u32) -> bool {
     (300..330).contains(&at)
 }
 
-/// Eight rows, keys 100 to 107 in slots 0 to 7. Column 0 of slots 0 to 4 moves every hour; column
-/// 3 of slot 5 is the hour over 100 (it moves at hours 100, 200 and 400 recorded); column 2 of slot 6 is written every hour and ends every
-/// step of whole days at the same value; column 2 of slots 0 and 1 moves every tenth hour; column 4
-/// of slot 7 moves once a day.
 fn quiet(at: u32, changes: &mut TableChanges<'_>) {
     if at == 0 {
         for slot in 0..8 {
@@ -138,7 +128,6 @@ fn quiet(at: u32, changes: &mut TableChanges<'_>) {
     changes.offer(7, 4, Cell::I64(i64::from(at / 24))).unwrap();
 }
 
-/// [`quiet`], and a row inserted every tenth hour recorded (key 1000 + the hour) that lives 25 hours.
 fn churn(at: u32, changes: &mut TableChanges<'_>) {
     quiet(at, changes);
     if at >= 25
@@ -153,7 +142,6 @@ fn churn(at: u32, changes: &mut TableChanges<'_>) {
     }
 }
 
-/// [`quiet`], and a row inserted every tenth hour recorded (key 1000 + the hour) that stays.
 fn appends(at: u32, changes: &mut TableChanges<'_>) {
     quiet(at, changes);
     if born(at) {
@@ -167,23 +155,18 @@ fn born(at: u32) -> bool {
     at.is_multiple_of(10) && at + 25 < HOURS && !unread(at)
 }
 
-/// A step and what it did. A part not read in time stalls Countries (the playhead counts it and
-/// the table catches up in a later step), so tests judge by the table's own hours.
 struct Played {
     stats: StepStats,
     message: Option<Message>,
-    /// The hours of Countries the step applied: its head before (none at a reset) and after.
     from: Hour,
     head: Hour,
 }
 
 impl Played {
-    /// The step applied an hour of Countries.
     fn moved(&self) -> bool {
         self.from <= self.head
     }
 
-    /// Each answer of the step: id, hour and body.
     fn answers(&self) -> Vec<(u32, Hour, Answer)> {
         self.message.iter().flat_map(|message| decode(&message.bytes).unwrap().answers.into_iter().map(|(id, hour, body)| (id, hour, Answer::parse(body).unwrap())).collect::<Vec<_>>()).collect()
     }
@@ -196,22 +179,16 @@ struct Harness {
     consumer: playhead::Consumer,
     played: mpsc::Receiver<Played>,
     head: Hour,
-    /// The last hour of the newest step received.
     seen: Hour,
-    /// Hours a step.
     every: Hour,
-    /// Countries' head at the newest step received.
     reached: Hour,
-    /// A seek's reset has not come yet.
     awaiting: bool,
 }
 
-/// A step a day; the follow hook's sink is a channel.
 fn harness(pages: &Arc<Recording>) -> Harness {
     stepping(pages, 24)
 }
 
-/// Steps of `every` hours; the follow hook's sink is a channel.
 fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
     let follow = Follow::new(0);
     let (send, played) = mpsc::channel();
@@ -230,8 +207,6 @@ fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
         *heads.lock().unwrap() = (from, head);
         inner(step, lanes);
     });
-    // A seek reads every part its read-ahead covers before its reset: the whole run, so no step
-    // waits on a read and every step's hours are the table's.
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: RING, speed: f64::from(every), rate: 1.0, ..Settings::default() };
     let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, Timeline::whole(&**pages).unwrap(), settings, Some(hook)).unwrap());
     let reader = playhead.declare(Vec::new(), None).unwrap();
@@ -254,14 +229,9 @@ impl Harness {
         self.awaiting = true;
     }
 
-    /// Every step until Countries reaches `to`, the head moving a step a frame (past `to` while the
-    /// table catches up from a stall). After a seek, steps built before it (still on their way)
-    /// are kept in the output but count for nothing until the seek's reset comes.
     fn play(&mut self, to: Hour) -> Vec<Played> {
         let mut out = Vec::new();
         loop {
-            // The head moves once a step reached it, so the ring always has room for the next; steps
-            // built ahead of the head may have reached `to` already.
             if !self.awaiting && self.seen >= self.head {
                 if self.head < to || self.reached < to {
                     self.head = (self.head + self.every).min(if self.head < to { to } else { HOURS as Hour - 1 });
@@ -281,7 +251,6 @@ impl Harness {
         }
     }
 
-    /// `query`'s answer from a lane of its own sought to `hour`.
     fn fresh(&self, query: &Query, hour: Hour) -> Answer {
         let mut lane = Lane::new(Arc::clone(&self.pages) as Arc<dyn Pages>, 0, TABLE, &(0..KINDS.len()).filter(|&column| column != 1).collect::<Vec<_>>(), false).unwrap();
         lane.seek(hour).unwrap();
@@ -303,12 +272,10 @@ fn keys(keys: &[u128], columns: &[usize]) -> Query {
     Query::Cells { table: TABLE, columns: columns.to_vec(), rows: Rows::Keys(keys.to_vec()) }
 }
 
-/// The step applied Countries' hour `hour`.
 fn covers(played: &Played, hour: Hour) -> bool {
     played.from <= hour && hour <= played.head
 }
 
-/// The step applied an hour recorded at which slot 5's column 3 moves (each hundredth).
 fn moves_slot_5(played: &Played) -> bool {
     (100..=played.head).step_by(100).any(|hour| !unread(hour as u32) && covers(played, hour))
 }
@@ -317,8 +284,6 @@ fn moves_slot_5(played: &Played) -> bool {
 fn a_query_is_evaluated_only_when_a_step_touched_its_columns_and_keys() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    // Slot 5's column 3 moves at hours 100 and 200; slot 0's column 3 never does, though its
-    // column 0 moves every hour.
     harness.follow.follow(1, keys(&[105], &[3])).unwrap();
     harness.follow.follow(2, keys(&[100], &[3])).unwrap();
     harness.seek(0);
@@ -341,7 +306,6 @@ fn a_query_is_evaluated_only_when_a_step_touched_its_columns_and_keys() {
 fn an_answer_equal_to_the_last_is_not_sent() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    // Written every hour, the same at every step's end.
     harness.follow.follow(7, keys(&[106], &[2])).unwrap();
     harness.seek(0);
     let played = harness.play(280);
@@ -459,12 +423,8 @@ fn unfollow_at_a_step_boundary_sends_nothing_more() {
     let after = harness.play(400);
     let ids = |played: &Played| played.answers().iter().map(|(id, ..)| *id).collect::<Vec<u32>>();
     let steps = || after.iter().map(|played| (played.from, played.head, ids(played))).collect::<Vec<_>>();
-    // `play` returns with every step to its head received, so the steps built before the unfollow
-    // reached the hook are those the ring held past the head: at most `RING`.
     let named: Vec<usize> = after.iter().enumerate().filter(|&(_, played)| ids(played).contains(&1)).map(|(at, _)| at).collect();
     assert!(named.iter().all(|&at| at < RING), "id 1 answered after the {RING} steps built before the unfollow: steps {named:?} of (from, head, ids) {:?}", steps());
-    // Id 2's answer moves with every hour recorded; "not recorded" is sent once, by the first step
-    // ending in hours 300 to 329 (a head past the newest step makes a short step, so two can end there).
     let mut unrecorded = before.iter().rev().find(|played| played.moved()).is_some_and(|played| unread(played.head as u32));
     for played in after.iter().filter(|played| played.moved()) {
         let now = unread(played.head as u32);
@@ -497,8 +457,6 @@ fn a_rank_reorders_only_when_its_column_was_written() {
 
 #[test]
 fn a_log_pushes_exactly_the_rows_inserted_since_its_last_push() {
-    // A row inserted and deleted inside one step is in no change set (the playhead nets them), so
-    // these rows stay.
     let pages = record(appends);
     let mut harness = harness(&pages);
     harness.follow.follow(4, Query::Cells { table: TABLE, columns: vec![0, 3], rows: Rows::Appended }).unwrap();
@@ -561,8 +519,6 @@ fn a_series_reads_its_tags_holder_at_the_head() {
     }
     let moved = played.iter().find(|played| covers(played, 150)).expect("the step the holder changes in");
     assert_eq!(moved.answers().len(), 1, "a new holder is answered in the step it takes the tag");
-    // Back before the holder changed: the tag is its first holder's again, watched as such, for a
-    // plain series and a ranked one alike.
     let top = Query::series_top(&POWER, &POWER.measures[0], 1, series_identity(&series));
     harness.follow.follow(6, top.clone()).unwrap();
     harness.play(260);
@@ -586,7 +542,6 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
     let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
-    // ZZZ's key (102) sorts before AAA's (103); their power is 0 alike, and one place is left after MMM's.
     let mut holders = Holders::default();
     holders.tags.insert("MMM".into(), held(1, 101));
     holders.tags.insert("ZZZ".into(), held(2, 102));
@@ -619,9 +574,6 @@ static PARTS: Series = Series {
     drops: false,
 };
 
-/// Keys 100 to 103 are owner 25's parts, 104 to 107 owner 26's: a followed owner's parts are its
-/// rows at the head in key order, or its top parts greatest first (ties by key), each named by its
-/// tag, as a lane sought to the hour answers them.
 #[test]
 fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
     let pages = record(quiet);
@@ -673,7 +625,6 @@ fn a_query_of_a_text_column_is_refused_by_name() {
 }
 
 
-/// A host with no playhead: its files hold the tables `held` marks; the anchors it was given.
 struct Paper {
     follow: Follow,
     held: Vec<bool>,
@@ -694,7 +645,6 @@ impl crate::registry::Hosted for Paper {
     }
 }
 
-/// Hosts by path, or by `path@clock` for a clock mapping other than 0.
 struct Papers(BTreeMap<String, Arc<Paper>>);
 
 impl crate::registry::Playheads for Papers {
@@ -736,9 +686,6 @@ fn a_follow_for_a_table_the_playhead_lacks_answers_not_available_and_makes_no_re
     assert_eq!(registry.followed(), 1);
 }
 
-/// Two tracks show one recording's timeline, one aligned at the calendar and one at an anchor a
-/// thousand hours on: each follows on a playhead of its own mapping, and each clock anchor moves
-/// only its own, to the game hour that track shows.
 #[test]
 fn two_tracks_of_one_timeline_at_different_anchors_each_follow_their_own_hours() {
     let (calendar, anchored) = (paper(), paper());
@@ -765,7 +712,6 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         Query::Series { series, measure, countries, top, .. } => assert_eq!((series.kind, measure.name, countries, top), ("country-measure", "commandPower", vec!["GER".into(), "SOV".into()], None)),
         _ => panic!("a series"),
     }
-    // The dashboard's selected country is its canonical slot, followed through any tag it holds.
     let slot = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-measure", "measure": "commandPower" }, "reads": [{ "country": 7, "hour": 5 }, { "country": "GER", "hour": 5 }] } });
     match crate::parse(&slot, &nobody()).unwrap() {
         Query::Series { countries, .. } => assert_eq!(countries, vec![dashboard_query::identity::Country::Slot(7), "GER".into()]),
@@ -817,7 +763,6 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     assert!(crate::parse(&world, &nobody()).is_err(), "a singleton is never ranked");
     let tension = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "reads": [{ "country": "World", "hour": 0 }] } });
     assert!(matches!(crate::parse(&tension, &nobody()).unwrap(), Query::Series { top: None, parts: false, .. }));
-    // A faction of 1,500 members is followed whole: no tag count we chose refuses it.
     let members: Vec<serde_json::Value> = (0..1_500).map(|at| serde_json::json!({ "country": format!("T{at:04}"), "hour": 0 })).collect();
     let many = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "reads": members } });
     match crate::parse(&many, &nobody()).unwrap() {
@@ -847,7 +792,6 @@ fn closing_a_recording_drops_its_follows() {
     assert_eq!(b.follow.declared().unwrap().len(), 1, "the other recording's stayed");
 }
 
-/// A message of one answer: id `id`'s one value at `hour`.
 fn one(id: u32, hour: Hour, value: i64) -> Vec<u8> {
     let mut message = Vec::new();
     crate::answer::begin(&mut message, 0, 0, hour, 0, false);
@@ -946,7 +890,6 @@ fn a_merge_that_fails_sends_both_messages_as_they_are_in_order() {
     use crate::push::{Push, read_frame};
     let push = Push::default();
     push.offer(rows_message(10, false, &[(1, 10)]));
-    // Rows changed naming a key the rows before do not hold: the two do not merge.
     push.offer(rows_message(10, true, &[(9, 1)]));
     for step in 0..3 {
         push.offer(one(7, 12 + step, i64::from(step)));
@@ -982,13 +925,10 @@ fn a_seek_sends_one_reset_message_and_follows_survive_it() {
     assert_eq!(harness.follow.held().queries, 1);
 }
 
-/// Messages wait for the head to reach their step, so a seek may abandon some never pushed: its
-/// reset sends every answer again, whole, though equal to the last sent.
 #[test]
 fn a_reset_sends_every_answer_again_whole_though_equal_to_the_last_sent() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    // Key 105's column 3 is the hour over 100: zero through hour 99.
     harness.follow.follow(1, keys(&[105], &[3])).unwrap();
     harness.follow.follow(2, Query::Cells { table: TABLE, columns: vec![3], rows: Rows::Live(vec![105]) }).unwrap();
     harness.seek(0);
@@ -1006,7 +946,6 @@ fn a_reset_sends_every_answer_again_whole_though_equal_to_the_last_sent() {
     }
 }
 
-/// One message of each kind of answer, as the UI's parser reads it (`ui/src/dashboard/follow/store.test.ts`).
 fn golden() -> Vec<u8> {
     use crate::answer::{Table, begin, not_recorded, push};
     let mut message = Vec::new();
@@ -1073,7 +1012,6 @@ fn a_table_never_recorded_in_the_files_is_not_held() {
     assert!(crate::host::held_tables(&*recorded, TABLE + 1)[TABLE], "one not recorded for some hours is");
 }
 
-/// The quiet rows, and every tenth hour recorded a row (key 1000 + the hour) that lives one hour.
 fn brief(at: u32, changes: &mut TableChanges<'_>) {
     quiet(at, changes);
     if at >= 1
@@ -1089,8 +1027,6 @@ fn brief(at: u32, changes: &mut TableChanges<'_>) {
     }
 }
 
-/// A row that lives one hour is born and gone inside a step of a day: the log pushes it, once,
-/// with its hour and its cells, in hour order.
 #[test]
 fn a_log_pushes_a_row_born_and_gone_inside_a_step_once() {
     let pages = record(brief);
@@ -1114,8 +1050,6 @@ fn a_log_pushes_a_row_born_and_gone_inside_a_step_once() {
 
 const LOG: [Kind; 4] = [Kind::I64, Kind::OptionalU32, Kind::I32, Kind::U16];
 
-/// Rows appended, listed, and forgotten again every 13th hour; every 50th hour every other row of the oldest ten forgotten;
-/// then the oldest while more than 30 are listed, consecutive ones as one run.
 fn log_hour(at: u32, changes: &mut TableChanges<'_>) {
     let listed = |changes: &TableChanges<'_>| changes.held().listed().unwrap().ones().collect::<Vec<u64>>();
     if at % 7 == 0
@@ -1152,7 +1086,6 @@ fn log_hour(at: u32, changes: &mut TableChanges<'_>) {
     }
 }
 
-/// A run of [`HOURS`] hours in which Countries is a log of [`LOG`] by [`log_hour`].
 fn record_log() -> Arc<Recording> {
     let kinds = vec![LOG.to_vec(); TABLE + 1];
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -1176,10 +1109,8 @@ fn record_log() -> Arc<Recording> {
     Arc::new(Recording { bytes: memory.bytes, runs: vec![Run::new(0, memory.pages).unwrap()], kinds })
 }
 
-/// A log's row as an answer shows it: key, hour and each cell of `columns`.
 type LogRow = (u128, Hour, Vec<(i64, State)>);
 
-/// Every row the log appended by game hour, and every ordinal it forgot, read directly by span.
 fn log_read_directly(pages: &Recording, columns: &[usize]) -> (Vec<(u64, LogRow)>, Vec<(Hour, u64)>) {
     let run = &pages.runs[0];
     let (mut appended, mut forgotten) = (Vec::new(), Vec::new());
@@ -1194,23 +1125,16 @@ fn log_read_directly(pages: &Recording, columns: &[usize]) -> (Vec<(u64, LogRow)
     (appended, forgotten)
 }
 
-/// The rows a log answer pushed: each one's key, insert hour and cells.
 fn pushed(answer: &Answer) -> Vec<LogRow> {
     let hours = answer.hours.clone().expect("rows appended");
     (0..answer.keys.len()).map(|row| (answer.keys[row], hours[row], (0..answer.columns).map(|column| (answer.values[row * answer.columns + column], answer.states[row * answer.columns + column])).collect())).collect()
 }
 
-/// The steps from a seek's reset on: those before it were built before the seek.
 fn since_the_reset(mut played: Vec<Played>) -> Vec<Played> {
     let reset = played.iter().position(|played| played.stats.reset).expect("the seek's reset");
     played.split_off(reset)
 }
 
-/// A followed feed of a log table reads the log's lane: the table is declared keyed and not
-/// passing (the playhead says it is a log), and at 1, 24 and 240 hours a step, across seeks forward
-/// and back, every stretch between seeks pushes exactly the rows the log's span gives for its
-/// hours, in order, with their hours and cells: rows forgotten in the hour of their append, before
-/// and after an append, and in runs included.
 #[test]
 fn a_followed_feed_of_a_log_pushes_what_its_span_gives() {
     let pages = record_log();
@@ -1238,13 +1162,6 @@ fn a_followed_feed_of_a_log_pushes_what_its_span_gives() {
     }
 }
 
-/// A followed list of what the game lists now holds, in every answer, the log's listed rows at
-/// the answer's hour (by key, in ordinal order, with their cells), at 20 seeks and the steps after
-/// them: the rows listed at a seek are asked by ordinal and the steps' appends and forgets kept.
-/// Their cells are read on a fetcher and taken in a later step's hook: after each seek's reset the
-/// test asks the rows itself and waits for them (one fetcher serves requests in order, so the
-/// hook's, made at the reset, is read by then), and the first step built after takes it: past the
-/// ring's steps, built before.
 #[test]
 fn a_followed_list_of_a_log_holds_its_listed_rows_at_twenty_seeks() {
     let pages = record_log();
@@ -1283,7 +1200,6 @@ fn a_followed_list_of_a_log_holds_its_listed_rows_at_twenty_seeks() {
     assert!(answered >= 20);
 }
 
-/// What the game lists now is a log's: followed on a table holding state, it answers why.
 #[test]
 fn a_followed_list_of_a_table_holding_state_is_refused_by_name() {
     let pages = record(quiet);
@@ -1294,7 +1210,6 @@ fn a_followed_list_of_a_table_holding_state_is_refused_by_name() {
     assert!(refused.contains("Countries holds state"), "{refused}");
 }
 
-/// An answer's rows as its reader holds them: each key's cells and reason.
 fn held_rows(answer: &Answer) -> Vec<(u128, Vec<(i64, State)>, Option<String>)> {
     (0..answer.rows())
         .map(|row| {
@@ -1304,7 +1219,6 @@ fn held_rows(answer: &Answer) -> Vec<(u128, Vec<(i64, State)>, Option<String>)> 
         .collect()
 }
 
-/// `changed`'s rows laid over `held` by key, as the UI's reader lays them.
 fn lay(held: &mut [(u128, Vec<(i64, State)>, Option<String>)], changed: &Answer) {
     for row in held_rows(changed) {
         let at = held.iter().position(|(key, ..)| *key == row.0).expect("rows changed name only keys held");
@@ -1316,8 +1230,6 @@ fn lay(held: &mut [(u128, Vec<(i64, State)>, Option<String>)], changed: &Answer)
 fn a_live_query_pushes_only_the_rows_that_changed_and_its_reader_holds_the_answer_at_every_step() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    // Key 100's column 0 moves every hour, key 105's column 3 at hours 100, 200 and 400, key 107 only in
-    // a column not asked, and no row has key 999.
     let asked = [100, 105, 107, 999];
     harness.follow.follow(1, Query::Cells { table: TABLE, columns: vec![0, 3], rows: Rows::Live(asked.to_vec()) }).unwrap();
     assert!(harness.follow.follow(2, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Live(vec![105, 100]) }).is_err(), "live keys are named ascending");
@@ -1352,7 +1264,6 @@ fn a_live_query_pushes_only_the_rows_that_changed_and_its_reader_holds_the_answe
     assert!(changes > 10, "{changes} answers of rows changed");
 }
 
-/// A message of one answer of rows (`changed`: rows changed) of id 4, a column each.
 fn rows_message(hour: Hour, changed: bool, rows: &[(u128, i64)]) -> Vec<u8> {
     let mut table = crate::answer::Table::default();
     table.clear(1, false);
@@ -1392,11 +1303,6 @@ fn rows_changed_queued_behind_the_rows_they_change_are_laid_over_them_never_drop
 fn a_live_step_reads_the_cells_of_the_rows_it_touched_only() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    // Of four rows, key 100 moves every hour, key 106's column 2 is written every hour with
-    // the hour's parity, key 105 moves at hours 100 and 200, and key 107 only in a column not asked:
-    // a step touches two rows, three at hours 100 and 200, never all four. A step ending in the hours
-    // Countries was not recorded (300 to 329, built ahead of the head) reads no cell and says why;
-    // the step after it reads every row again.
     harness.follow.follow(1, Query::Cells { table: TABLE, columns: vec![0, 2, 3], rows: Rows::Live(vec![100, 105, 106, 107]) }).unwrap();
     harness.seek(0);
     let played = harness.play(290);

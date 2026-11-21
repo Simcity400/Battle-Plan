@@ -1,35 +1,19 @@
-//! The Operatives map mode's province hover: the viewing country's intelligence network in
-//! the hovered state's controller, from the recorded IntelNetworks rows. In this mode the
-//! game shows this section alone, without the location, unit, air-region and selection
-//! text of the other modes.
-//!
-//! A state the network does not reach, or reaches at no strength, says so. Otherwise the
-//! header is followed by the quiet note when the state's subnetwork is quiet, or by the
-//! strength, the daily growth and its parts, the strength cap and its parts, and the
-//! network's effects on both countries: the content's `intel_network_state_level_bonus` for
-//! the viewing country and `intel_network_state_level_penalty` for the controller, scaled
-//! by the strength's share of 100%.
 use super::{Arg, Context, Tooltip, line};
 use installed_content_core::fixed5::fixed5_to_string;
 use replay_data::{rows::IntelNetworkRow, rows::tables};
 use viewer_foundation::map::native_text::{COLOR, FLAG};
 
-/// One whole in fixed5, and 100%.
 const ONE: i64 = 100_000;
 const FULL_STRENGTH: i64 = 100 * ONE;
-/// The static modifiers the network applies in the state.
 const BONUS: &str = "intel_network_state_level_bonus";
 const PENALTY: &str = "intel_network_state_level_penalty";
 
-/// What the section reads besides the network rows.
 trait Source {
     fn loc(&self, key: &str, args: &[(&str, Arg<'_>)]) -> Result<String, String>;
     fn slot(&self, raw: u32) -> Result<u32, String>;
     fn tag(&self, slot: u32) -> Result<String, String>;
-    /// The flag, tag and name of the country in `slot`.
     fn marked(&self, slot: u32) -> Result<String, String>;
     fn state_name(&self) -> Result<String, String>;
-    /// A static modifier's list, two spaces before each line, scaled by `scale`.
     fn effects(&self, token: &str, scale: i64) -> Result<String, String>;
     fn base_target(&self) -> Result<i64, String>;
 }
@@ -58,8 +42,6 @@ impl Source for Context<'_> {
     }
 }
 
-/// The hovered state, its controller (a raw reference), the viewing country's slot and
-/// the hour's network rows.
 #[derive(Clone, Copy)]
 struct Hover<'a> {
     state: u32,
@@ -68,8 +50,6 @@ struct Hover<'a> {
     rows: &'a [IntelNetworkRow],
 }
 
-/// The hovered state's section, or nothing over a province outside every state or a
-/// state without a controller.
 pub(super) fn append(context: &Context, out: &mut Tooltip) {
     let state = context.province.state;
     if state == 0 {
@@ -104,7 +84,6 @@ fn highlighted(text: &str) -> String {
     format!("{COLOR}H{text}{COLOR}!")
 }
 
-/// Ends `text` with at least `count` newlines when it is not empty.
 fn trailing_newlines(text: &mut String, count: usize) {
     if text.is_empty() {
         return;
@@ -118,7 +97,6 @@ fn trailing_newlines(text: &mut String, count: usize) {
     text.extend(std::iter::repeat_n('\n', count - held));
 }
 
-/// Two spaces before every line that is not empty.
 fn indented(text: &str) -> String {
     let mut out = String::new();
     for line in text.split_inclusive('\n') {
@@ -141,7 +119,6 @@ fn text(context: &impl Source, hover: &Hover) -> Result<String, String> {
         return Ok(String::new());
     }
     let controller_slot = context.slot(controller)?;
-    // The viewing country's network whose target is the controller, and the state's node.
     let mut node = None;
     for row in rows {
         if row.state_id == state as i32
@@ -210,8 +187,6 @@ fn text(context: &impl Source, hover: &Hover) -> Result<String, String> {
     Ok(text)
 }
 
-/// The effects' scale: the strength's share of 100% in fixed5, truncated; the fixed-point
-/// sentinels (the largest, smallest and next-smallest values) scale by `u32::MAX`.
 fn effect_scale(strength: i64) -> i64 {
     if matches!(strength, i64::MAX | i64::MIN) || strength == i64::MIN + 1 {
         return i64::from(u32::MAX);
@@ -219,10 +194,6 @@ fn effect_scale(strength: i64) -> i64 {
     strength.wrapping_mul(ONE) / (FULL_STRENGTH)
 }
 
-/// The daily growth's parts. A state outside every subnetwork is out of range of the
-/// operatives and decays; a subnetwork's state shows its decay over the cap, its gains from
-/// operatives and adjacent states and the target's garrison factor, or that it reached the
-/// cap.
 fn growth(context: &impl Source, node: &IntelNetworkRow) -> Result<String, String> {
     let value = |key: &str, value: i64| context.loc(key, &[("VALUE", Arg::Fixed5(value))]);
     let Some(factor) = node
@@ -251,7 +222,6 @@ fn growth(context: &impl Source, node: &IntelNetworkRow) -> Result<String, Strin
             node.gain_from_operatives_raw,
         )?);
     }
-    // The adjacency line starts a new line even without the operatives line.
     if node.gain_from_adjacency_raw != 0 {
         text.push('\n');
         text.push_str(&value(
@@ -269,8 +239,6 @@ fn growth(context: &impl Source, node: &IntelNetworkRow) -> Result<String, Strin
     Ok(text)
 }
 
-/// The strength cap's parts: the content's base target, then the parts from operatives and
-/// from counterintelligence that are not zero.
 fn cap_parts(context: &impl Source, node: &IntelNetworkRow) -> Result<String, String> {
     let base = context.base_target()?;
     let mut text = context.loc("STAT_BASE_VALUE", &[])?;
@@ -299,7 +267,6 @@ mod tests {
     use super::*;
     use installed_content_localisation::localisation::Localisation;
 
-    /// Raw 1 is GER (slot 0), raw 2 SOV (slot 1); state 7 is named Kiev.
     struct Fake(Localisation);
 
     impl Source for Fake {
@@ -369,7 +336,6 @@ mod tests {
         )
     }
 
-    /// GER's network in SOV holds state 7.
     fn node() -> IntelNetworkRow {
         IntelNetworkRow {
             owner_country: 1,
@@ -431,7 +397,6 @@ mod tests {
             growth(&fake(), &row).unwrap()
         };
         assert_eq!(with(|_| {}), "from ops 0.42\nfrom adj 0.21");
-        // The adjacency line starts a new line even alone; the factor's excess shows.
         assert_eq!(
             with(|row| {
                 row.gain_from_operatives_raw = 0;
@@ -448,7 +413,6 @@ mod tests {
             }),
             "\u{11}Yat cap\u{11}!"
         );
-        // Outside every subnetwork the state is out of range of the operatives.
         assert_eq!(
             with(|row| {
                 row.subnetwork_selector = -1;
@@ -463,7 +427,6 @@ mod tests {
         let mut quiet = node();
         quiet.subnetwork_quiet = 1;
         assert_eq!(hover(&[quiet]), "in Kiev \u{12}SOV\n\nquiet");
-        // No strength, another owner's network or another target's: none.
         let mut empty = node();
         empty.local_strength_raw = 0;
         let mut theirs = node();
@@ -471,11 +434,9 @@ mod tests {
         assert_eq!(hover(&[empty]), "none in Kiev \u{12}SOV");
         assert_eq!(hover(&[theirs]), "none in Kiev \u{12}SOV");
         assert_eq!(hover(&[]), "none in Kiev \u{12}SOV");
-        // A full cap is yellow.
         let mut full = node();
         full.strength_target_raw = Some(12_000_000);
         assert!(hover(&[full]).contains("cap \u{11}Y100%\u{11}!"));
-        // A state without a controller shows nothing.
         let section = text(
             &fake(),
             &Hover {

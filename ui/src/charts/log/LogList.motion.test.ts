@@ -8,7 +8,6 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
   const slots = new Map<number, unknown>(), layouts = new Map<number, Effect>(), effects = new Map<number, Effect>();
   const pendingLayouts = new Map<number, Effect>(), pendingEffects = new Map<number, Effect>();
   let cursor = 0, dirty = true;
-  // An effect without dependencies runs after every render.
   const changed = (before: readonly unknown[] | undefined, after: readonly unknown[] | undefined) => !before || !after
     || before.length !== after.length || after.some((value, index) => !Object.is(value, before[index]));
   const fixture = {
@@ -58,9 +57,6 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
   const descendants = (value: unknown): Node[] => Array.isArray(value) ? value.flatMap(descendants)
     : value && typeof value === 'object' && 'props' in value ? [value as Node, ...descendants((value as Node).props.children)] : [];
   let nodes: Node[] = [], outerHeight = 120;
-  // A native horizontal scrollbar takes ten layout pixels. Its oversized row
-  // lies just at the lower overscan boundary, so client-height windowing removes
-  // the row that created the scrollbar. The outer box never changes size.
   const scroller = { scrollTop: 0, clientWidth: 390,
     get clientHeight() { return outerHeight - (nodes.some(node => node.props['data-log-key'] === '9') ? 10 : 0); },
     get offsetHeight() { return outerHeight; },
@@ -86,7 +82,6 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'log-motion-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        // Every hook the list calls, its own and those of the modules it calls them from, is the fixture's.
         if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts') || path.endsWith('/dashboard/widgetPerf.ts')) {
           return source.replace(/import \{ ([^}]+) \} from 'react';/, "import * as React from 'react'; const { $1 } = { ...React, ...globalThis.__logMotionHooks };");
         }
@@ -107,15 +102,11 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
         const list = nodes.find(node => node.props.role === 'listbox')!;
         if (attached !== list.props.ref) { attached = list.props.ref; (attached as (node: unknown) => void)(scroller); }
         commit(layouts, pendingLayouts); commit(effects, pendingEffects);
-        // Updates queued for the next frame (`inFrame`) land in it.
         for (const frame of frames.splice(0)) frame();
         if (dirty) continue;
-        // ResizeObserver reports the post-layout client size, including changes
-        // to the scrollbar. An asynchronous oscillation must fail this test too.
         if (observedHeight !== scroller.clientHeight) {
           observedHeight = scroller.clientHeight;
           for (const observer of observers) observer.update();
-          // What the observer queued for its frame lands in it.
           for (const frame of frames.splice(0)) frame();
           if (dirty) continue;
         }
@@ -127,7 +118,6 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
     assert.equal(scroller.clientHeight, 110);
     assert.equal(nodes.filter(node => node.props.role === 'option').length, 10);
     assert.equal(observers.size, 1, 'the viewport keeps one observer through measured height updates');
-    // Grown past what the rows drawn cover (a resize that still covers draws nothing): more rows are drawn.
     outerHeight = 400;
     for (const observer of observers) observer.update();
     settle();
@@ -143,8 +133,6 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
     assert.ok(nodes.some(node => node.props['data-log-key'] === '19' && node.props['aria-selected']));
     props = { ...props, rows: [{ key: 'new', hour: 101, item: 'New row' }, ...props.rows!] };
     settle();
-    // Move back to the top to see the arriving row's normal shared motion.
-    // As a reader scrolls: the wheel, then the scroll it moves (the list reads back only a scroll the reader made).
     const scrolling = nodes.find(node => node.props.role === 'listbox')!;
     (scrolling.props.onWheel as (event: unknown) => void)({ currentTarget: scroller, deltaY: -760 });
     scroller.scrollTop = 0;

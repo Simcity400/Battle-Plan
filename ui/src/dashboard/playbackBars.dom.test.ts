@@ -21,8 +21,6 @@ test('place names landing after the block is drawn: the rows in view are asked f
         `${land ? 'land battles' : 'the division log'}: the rows in view are asked first, in a read of their own: ${ask.provinces.length} places from ${ask.provinces.slice(0, 8).join(', ')}`);
     }
     assert.equal(asked.length, 2, 'the rest wait for the rows in view to be named');
-    // Paused: the reads of the rows in view land; the frame they land in takes them and the next shows the names (`frames`
-    // counts the frame of the landing), at a commit a widget.
     type Landing = { frames: number; commits: Record<string, number> };
     const landing = await act<Landing>(`landAndCount([${asked.indexOf(first(true)!)}, ${asked.indexOf(first(false)!)}])`);
     t.diagnostic(`paused: named ${landing.frames} frames after landing, commits ${JSON.stringify(landing.commits)}`);
@@ -31,8 +29,6 @@ test('place names landing after the block is drawn: the rows in view are asked f
     await act('settle(4)');
     const rest = (await act<Ask[]>('asks()')).slice(2);
     assert.ok(rest.length >= 2 && rest.every(ask => !ask.landed), `the rest of the places are asked once the rows in view are named: ${rest.length} reads`);
-    // Playing: battles begin at the top of the view, their places in the reads still out; those land mid-play and the
-    // rows show their names in the next frame, as the clock moves 15 hours a frame.
     await act('play(48, 15)');
     const playing = await shown();
     assert.ok(playing.land.some(row => row.province > 300 && row.place === 'Loading…'), `battles begun while playing wait for their read: ${JSON.stringify(playing.land)}`);
@@ -50,9 +46,6 @@ test('place names landing after the block is drawn: the rows in view are asked f
   }, 120_000));
 });
 
-// Run 13 (Navy, Army at 1,440 h/s): a block drew through every window held, so the next began two or three windows on,
-// in a window nothing had asked; it was asked at the head with the one after it (naval-battles, ships-sunk, then their
-// places, details and terrain).
 test('following at 1,440 h/s over windows of 720 hours, every window, place and terrain read is asked ahead of the head, each once', async t => {
   await withNativePage('battle-windows', '/ui/src/widgets/battles/battleWindows.dom.fixture.tsx', page => page.stage('battle windows', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.battleWindows.${expression}`);
@@ -71,9 +64,6 @@ test('following at 1,440 h/s over windows of 720 hours, every window, place and 
   }, 120_000));
 });
 
-// Run 16 (Army at 1,440 h/s, 60% of frames dropped): every block of Land battles attached its rows' contents again
-// (about 3,000 elements a commit), because each flag was keyed by the hour its side was read, which moves every block,
-// and every row's cells rendered again for numbers the painter already writes.
 test('Land battles at a world war\'s density, following at 1,440 h/s: rows are bound by the frame loop into the same boxes, never mounted, each state once', async t => {
   await withNativePage('land-playback', '/ui/src/widgets/land-battles/landPlayback.dom.fixture.tsx', page => page.stage('land playback', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.landPlayback.${expression}`);
@@ -93,18 +83,12 @@ test('Land battles at a world war\'s density, following at 1,440 h/s: rows are b
   }, 180_000));
 });
 
-// Run 14: a cold Economy seek read the campaign (equipment produced 3.6 to 4.7 s); its replies, and those of trade flows,
-// production spending, naval supremacy and aircraft losses, are windows of hours now. Following, each widget asks the next
-// window ahead of the head once per window crossed and commits only as a window lands (naval supremacy and trade flows:
-// also as their view moves by a month), never per hour.
 test('the widgets whose replies are windows of hours, following at 1,440 h/s, ask each next window ahead of the head once and commit nothing per hour', async t => {
   await withNativePage('windowed-widgets', '/ui/src/dashboard/windowedWidgets.dom.fixture.tsx', page => page.stage('windowed widgets', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.windowedWidgets.${expression}`);
     await act('mount()');
     assert.deepEqual(await act('errors()'), {}, 'no widget threw');
     assert.deepEqual(await act('states()'), {}, `each widget drew its data, none a state: ${JSON.stringify(await act('all()'))}`);
-    // Aircraft losses' window carries every total before it: its race asks the window shown and the next, never the
-    // campaign's windows before it.
     const opened = await act<{ product: string; window: number | null }[]>('opened()');
     const shownWindow = Math.floor(30_000 / (4 * 720));
     assert.deepEqual(opened.filter(item => item.product === 'military-air-ledger').map(item => item.window).sort((a, b) => (a ?? 0) - (b ?? 0)), [shownWindow, shownWindow + 1],
@@ -123,8 +107,6 @@ test('the widgets whose replies are windows of hours, following at 1,440 h/s, as
       assert.deepEqual(windows.filter(item => item.window === null || item.window * window <= item.head), [], `${id}: every window asked is ahead of the head`);
       assert.equal(new Set(windows.map(item => item.window)).size, windows.length, `${id}: no window asked twice`);
       assert.ok(windows.length <= crossed + 1, `${id}: a window ahead once per window crossed: ${windows.length} for ${crossed}`);
-      // Naval supremacy's view and the trade diagram move by whole months while playing, as main's do: beside a window
-      // landing, a commit a month at most (two a second at 1,440 h/s).
       const monthly = id === 'supremacy' || id === 'trade';
       const allowed = crossed + 2 + (monthly ? Math.ceil((played.head - played.from) / 720) + 1 : 0);
       assert.ok((played.rendered[id] ?? 0) <= allowed, `${id}: a commit as a window lands${monthly ? ' or a month passes' : ''}, never per hour: ${played.rendered[id]} for ${crossed} windows`);
@@ -134,9 +116,6 @@ test('the widgets whose replies are windows of hours, following at 1,440 h/s, as
   }, 120_000));
 });
 
-// Run 13 (Overview at 1,440 h/s): the event feed asked its pages of 64 two blocks of rows ahead, a quarter second of a
-// feed that dense; a page took a second, landed after the head had passed it, and was asked again at the head (95), and
-// the pages of one block all asked from the cut's hour (ten "asked twice").
 test('a dense paged log following at 1,440 h/s asks every page ahead of the head, each once, from its own hour', async t => {
   await withNativePage('pages-ahead', '/ui/src/charts/log/logPagesAhead.dom.fixture.tsx', page => page.stage('pages ahead', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.pagesAhead.${expression}`);
@@ -156,8 +135,6 @@ test('a dense paged log following at 1,440 h/s asks every page ahead of the head
   }, 120_000));
 });
 
-// A page that fails (its block does not decode, though the counts are read) was asked again at every render, and with
-// no page of the head's bin held the list read as one with no rows.
 test('a paged log whose pages fail asks each once until retried, and says why it shows no rows', async () => {
   await withNativePage('pages-failed', '/ui/src/charts/log/logPagesAhead.dom.fixture.tsx', page => page.stage('pages failed', async () => {
     const failed = await page.evaluate<{ asked: number[]; error: string | null; retried: number[] }>('window.pagesAhead.failed(200)');
@@ -165,7 +142,6 @@ test('a paged log whose pages fail asks each once until retried, and says why it
     assert.equal(new Set(failed.asked).size, failed.asked.length, `a failed page is not asked again: ${failed.asked}`);
     assert.equal(failed.error, 'The page block does not decode', 'the failure is said, never a list without rows');
     assert.ok(failed.retried.length > 0 && new Set(failed.retried).size === failed.retried.length, `retried, each is asked once again: ${failed.retried}`);
-    // Every row of the campaign shown, no cut waits on the failed pages: still said, with a retry that asks them again.
     const campaign = await page.evaluate<{ asked: number[]; error: string | null; retried: number[] }>('window.pagesAhead.failed(200, true)');
     assert.ok(campaign.asked.length > 0 && new Set(campaign.asked).size === campaign.asked.length, `the pages in view are asked once: ${campaign.asked}`);
     assert.equal(campaign.error, 'The page block does not decode', 'a failed page of the whole campaign is said');
@@ -174,9 +150,6 @@ test('a paged log whose pages fail asks each once until retried, and says why it
   }, 120_000));
 });
 
-// Run 17's Politics: Event choices, below the fold, asked eleven pages of 120 KB as play began (each parsed for up to
-// 30 ms on the main thread): its counts were held by the prepare lane, and nothing but the counts' request checked that
-// the widget was off screen.
 test('a paged log off screen asks no page while playing, though its counts are held; shown, it asks the rows it draws', async () => {
   await withNativePage('pages-inactive', '/ui/src/charts/log/logPagesAhead.dom.fixture.tsx', page => page.stage('pages inactive', async () => {
     const asked = await page.evaluate<{ offScreen: number; shown: number }>('window.pagesAhead.inactive(300, 15)');
@@ -185,9 +158,6 @@ test('a paged log off screen asks no page while playing, though its counts are h
   }, 120_000));
 });
 
-// Run 18's candidate: after the playback phase, every paused step waited out its timeout on "commits 1". A paged log left
-// while playing (a page switch; the prepare lane's copy dropped as play begins) asked its pages again as its list let them
-// go, after its own cleanup had cancelled what it asked, and they landed on a hook gone.
 test('a paged log left while playing asks nothing more and leaves nothing in flight; paused, a setting changed settles within two frames of its commit', async t => {
   await withNativePage('pages-leaving', '/ui/src/charts/log/logPagesAhead.dom.fixture.tsx', page => page.stage('pages leaving', async () => {
     type Kinds = Record<string, number>;
@@ -201,8 +171,6 @@ test('a paged log left while playing asks nothing more and leaves nothing in fli
   }, 120_000));
 });
 
-// Followed panels are pushed only when their data changes: one held unchanged chose its rows at its last push's hour, so
-// crossing a hole in the chosen group's history (or a join) kept the empty result it had there.
 test('a held followed panel is chosen again where the chosen group changes: known empty, then unavailable, then its members, with no new push', async () => {
   await withNativePage('choice-hour', '/ui/src/dashboard/choiceHour.dom.fixture.tsx', page => page.stage('choice hour', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.choiceHour.${expression}`);
@@ -218,7 +186,6 @@ test('a held followed panel is chosen again where the chosen group changes: know
     assert.deepEqual(await act<Shown>('shown()'), all('Group membership is unavailable at this time.', 110), 'its history not recorded: never none');
     await act('play(130)');
     assert.deepEqual(await act<Shown>('shown()'), { exile: '7', balance: '0', state: '1', agreement: '1', at: 125 }, 'the members who joined at 125');
-    // Settled and paused with the panel pushed at 130, a seek back to 115 lands the same panel at 115 with no change.
     await act('land(130)');
     await act('rerender()');
     assert.deepEqual(await act<Shown>('shown()'), { exile: '7', balance: '0', state: '1', agreement: '1', at: 130 });

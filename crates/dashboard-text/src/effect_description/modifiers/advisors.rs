@@ -1,11 +1,9 @@
-//! Advisor-backed idea lookup and stored description.
 use super::*;
 use replay_data::rows::{
     AdvisorRoleRow, AvailableAdvisorRow, CharacterRoleTraitRow, CharacterRow,
     CountryCharacterRow,
 };
 
-/// The fields of each table the advisor descriptions read.
 const AVAILABLE: u64 = mask::<AvailableAdvisorRow>(&["idea", "character"]);
 const RETIRED: u64 = mask::<CountryCharacterRow>(&["character"]);
 const ROLE_IDEA: u64 = mask::<AdvisorRoleRow>(&["idea"]);
@@ -25,8 +23,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .raw_country(country)
             .ok_or_else(|| format!("Countries lacks advisor country {country}"))?;
         let frame = self.tables();
-        // exact string comparison, in array order. Both tables' keys are the raw country, then
-        // the ordinal.
         let (low, high) = (u128::from(raw) << 32, u128::from(raw) << 32 | u128::from(u32::MAX));
         let available = frame
             .complete::<tables::AvailableAdvisors>(AVAILABLE)
@@ -34,8 +30,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if let Some(row) = find(available.span(low, high), |row| row.idea == token.as_bytes())? {
             return Ok(Some(row.character));
         }
-        // retired records, then each character's tree order.
-        // folds the name, unlike the primary.
         let retired = each(
             frame
                 .complete::<tables::CountryRetiredCharacters>(RETIRED)
@@ -68,8 +62,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(None)
     }
 
-    // template research: equipment from current traits;
-    // rebuilds from those traits' ordered targeted blocks.
     fn advisor_idea_fragments(
         &self,
         character: &CharacterRow,
@@ -93,7 +85,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let mut before = String::new();
         for bonus in &template.research_bonuses {
             before.push_str(&self.research_bonus_line(bonus, scopes)?);
-            before.push('\n'); // appends LF unconditionally.
+            before.push('\n');
         }
         let key = u128::from(character.id) << 40
             | u128::from(CharacterRoleTraitRow::ADVISOR) << 32
@@ -116,8 +108,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     scopes,
                 )?);
                 for target in &trait_.targeted {
-                    // evaluates in an empty scope, then installs only
-                    // that country; it does not inherit caller ROOT/FROM/PREV.
                     let country = target
                         .operand
                         .as_deref()
@@ -162,8 +152,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         remove: bool,
         show: bool,
     ) -> Result<String, String> {
-        // resolves the role again by folded token,
-        // in tree order, even when availability selected a later role.
         let frame = self.tables();
         let low = u128::from(character.id) << 32;
         let role = find(
@@ -186,9 +174,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         } else {
             "idea addition"
         };
-        // calls raw: stored numbers and occupied tooltip
-        // slots, precision 2, full mask, unit scale. Older/unavailable keys
-        // leave the numeric fragment readable and retain a counted refusal.
         let numeric = match role
             .tooltip_keys
             .require("tooltip keys of advisor roles")
@@ -220,11 +205,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         details.push_str(&numeric);
         newline(&mut details);
         details.push_str(&targets);
-        // trim, LF -> comma, colon cleanup, four/two spaces -> one.
         let details = clean_modifiers(&details, true).replace("  ", " ");
         let name = self.effect_character_name(&character)?;
-        // always uses the detailed wrapper and appends LF;
-        // scope expansion belongs to the add/remove caller, not this helper.
         self.char_native_line(
             b"EFFECT_SHOW_IDEA_TOOLTIP_DETAILED",
             &[

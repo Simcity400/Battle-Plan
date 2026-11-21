@@ -12,20 +12,17 @@ fn portrait_tag_memo_holds_one_cell_per_country_and_expires_each_walk() {
     };
     let tag = crate::msvc_string::Text::<64>::default();
     let mut memo = PortraitTagMemo::default();
-    // An unsized memo holds nothing but records the live table's demand.
     memo.begin(5_001);
     assert!(memo.cell(4_999).is_none());
     assert_eq!(memo.required(), 5_001);
     memo.grow().unwrap();
     memo.begin(5_001);
-    // Slots that shared a cell in the old 64-entry memo stay separate.
     for slot in [1, 65, 4_097, 5_000] {
         *memo.cell(slot).unwrap() = Some((country(slot), slot, tag));
     }
     for slot in [1, 65, 4_097, 5_000] {
         assert_eq!(memo.cell(slot).unwrap().unwrap().0, country(slot));
     }
-    // The next walk never sees the previous walk's tags.
     memo.begin(5_001);
     assert!(
         [1, 65, 4_097, 5_000]
@@ -286,7 +283,7 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
     let mut arena = [0; 20];
     let result = walk_trait_experience(&source, IMAGE, ADDRESS, 0x8000_0001, &mut rows, &mut arena);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(source.guards.get(), 5); // Two root reads and three for one heap-backed entry.
+    assert_eq!(source.guards.get(), 5);
     assert_eq!(
         *source.spans.borrow(),
         [
@@ -316,10 +313,9 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
         .outcome,
         Outcome::Rows { len: 2 },
     );
-    assert_eq!(inline_source.guards.get(), 6); // Two root reads, two per inline entry.
+    assert_eq!(inline_source.guards.get(), 6);
     let source = traced(&bytes, None);
     assert!(read(&source, IMAGE, ADDRESS, 0xf000_0001).is_ok());
-    // Identity, state, demanded experience, skill, components, then owner and visibility.
     assert_eq!(source.guards.get(), 6);
     assert_eq!(
         source
@@ -328,13 +324,10 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
             .iter()
             .map(|span| span.1)
             .sum::<usize>(),
-        // Exact inherited fields, residual XP and owner/visibility inputs.
-        81 + 4 + 8 + 1 + 1 + 4 // + exile country
+        81 + 4 + 8 + 1 + 1 + 4
     );
 }
 
-/// The owner, both visibility inputs and, for an army leader only, the
-/// captured byte come from one more scattered read.
 #[test]
 fn owner_visibility_and_the_army_captured_byte_are_read() {
     let mut bytes = fixture(carmy_leader::VTABLE_RVA);
@@ -387,8 +380,6 @@ fn trait_batch_faults_preserve_prefix_stops_and_failure_precedence() {
             assert!(!source.spans.borrow().iter().any(|span| span.0 == *later));
         }
     }
-    // A readable invalid identity wins over an unreadable later scalar and
-    // never permits traversal of the string pointer from that object.
     u64_at(&mut bytes, SECOND_TRAIT, 0);
     let source = traced(&bytes, Some(definition + cunit_leader_trait::ORDINAL));
     let result = walk_trait_experience(
@@ -651,7 +642,6 @@ fn trait_faults_never_certify_prefixes_and_empty_vectors_are_available() {
     );
     assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
     assert_eq!(result.bytes_len, 0);
-    // The same bad pointer after capacity is not visited or certified.
     assert_eq!(
         walk_traits(
             &memory(&bytes),

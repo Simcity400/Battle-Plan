@@ -1,5 +1,3 @@
-//! A list or opaque cell's event: the cheapest of a literal, a same-length patch, a front-and-back
-//! edit and copied pieces, chosen from the encoded sizes; applied by the reader to the held cell.
 
 use super::{get_varint, put_varint, unzig, zig};
 use crate::invalid;
@@ -13,20 +11,15 @@ pub const SAME: u8 = 4;
 pub const POOLED: u8 = 5;
 pub const PIECES: u8 = 6;
 
-/// What finding a cell's copied pieces takes, kept between cells.
 #[derive(Default)]
 pub struct Matcher {
     alt: Vec<u8>,
     table: Vec<u32>,
-    /// Pieces: inserted or copied, where it starts (in the new cell when inserted, else the
-    /// old), its length, and a copied piece's patches' place and count.
     pieces: Vec<(bool, u32, u32, u32, u32)>,
-    /// A copied piece's patches: where in the piece, how many bytes, their difference.
     patches: Vec<(u32, u8, i64)>,
     runs: Vec<u8>,
 }
 
-/// The integer difference of `wide` bytes of `new` and `old`, sign-extended from its width.
 fn difference(new: &[u8], old: &[u8], wide: usize) -> i64 {
     let (mut x, mut y) = (0_u64, 0_u64);
     for step in 0..wide {
@@ -44,11 +37,6 @@ fn difference(new: &[u8], old: &[u8], wide: usize) -> i64 {
     difference as i64
 }
 
-/// `new` as pieces copied from `old` and pieces inserted, into `matcher.alt`: the count of
-/// pieces, then each one's length doubled, plus one and its bytes when inserted, else where in
-/// `old` it starts against the end of the piece copied before and its patches (their count, then
-/// each one's bytes since the last patch's end and width, and its difference). A copied piece
-/// runs on through up to eight differing bytes that eight equal bytes follow.
 fn pieces(new: &[u8], old: &[u8], matcher: &mut Matcher) {
     let Matcher { alt, table, pieces, patches, .. } = matcher;
     patches.clear();
@@ -135,8 +123,6 @@ fn pieces(new: &[u8], old: &[u8], matcher: &mut Matcher) {
     }
 }
 
-/// `new` written against `old` into `out`: a same-length patch, or a kept front and back around a
-/// new middle, or copied pieces when smaller. False when a literal is no larger.
 pub fn against(new: &[u8], old: &[u8], out: &mut Vec<u8>, matcher: &mut Matcher) -> bool {
     out.clear();
     if new.len() == old.len() {
@@ -207,8 +193,6 @@ fn patch_bytes(cell: &mut [u8], place: usize, wide: usize, difference: u64) -> i
     Ok(())
 }
 
-/// A PATCH payload (past its form byte) at `at` of `bytes` applied to `cell` in place; where the
-/// payload ends.
 pub fn patch(bytes: &[u8], mut at: usize, cell: &mut [u8]) -> io::Result<usize> {
     let count = get_varint(bytes, &mut at)?;
     let mut place = 0_usize;
@@ -223,8 +207,6 @@ pub fn patch(bytes: &[u8], mut at: usize, cell: &mut [u8]) -> io::Result<usize> 
     Ok(at)
 }
 
-/// An EDIT or PIECES payload (past its form byte) at `at` of `bytes` applied to `old`: the new
-/// cell in `out`, which it clears first; where the payload ends.
 pub fn rebuild(form: u8, bytes: &[u8], mut at: usize, old: &[u8], out: &mut Vec<u8>) -> io::Result<usize> {
     out.clear();
     match form {
@@ -269,7 +251,6 @@ pub fn rebuild(form: u8, bytes: &[u8], mut at: usize, old: &[u8], out: &mut Vec<
     Ok(at)
 }
 
-/// Skips one list event's payload at `at` (its form byte included), as pending or a track holds it.
 pub fn skip(bytes: &[u8], at: &mut usize, literal_is_reference: bool) -> io::Result<()> {
     let form = *bytes.get(*at).ok_or_else(|| invalid("A list event ends before its form"))?;
     *at += 1;

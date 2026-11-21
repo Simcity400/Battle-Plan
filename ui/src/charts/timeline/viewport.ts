@@ -6,14 +6,11 @@ export interface LaneWindow { top: number; height: number; first: number; end: n
 
 export const timelineHeight = (count: number, rowHeight = ROW_HEIGHT, rows?: TimelineRows) => AXIS_HEIGHT + (rows?.height ?? count * rowHeight) + 8;
 
-/** An absolute view needs a width: its absolute canvas cannot size it. */
 export function timelineViewStyle(height: number, viewportHeight: number, stickyAxis = true) {
   return stickyAxis ? { width: '100%', height: Math.min(height, viewportHeight) }
     : { width: '100%', position: 'absolute' as const, top: 0, height, overflow: 'visible' as const };
 }
 
-/** The canvas covers the clipped viewport and a viewport of overscan on either side.
- * Coordinates remain those of the full timeline, including its date axis. */
 export function laneWindow(count: number, visibleTop: number, visibleHeight: number, rowHeight = ROW_HEIGHT, rows?: TimelineRows): LaneWindow {
   const total = timelineHeight(count, rowHeight, rows);
   const overscan = Math.max(2 * rowHeight, visibleHeight);
@@ -27,21 +24,18 @@ export function laneWindow(count: number, visibleTop: number, visibleHeight: num
   };
 }
 
-/** Large scroll jumps need painting in the scroll event, before the next frame. */
 export function coversViewport(window: LaneWindow, count: number, visible: { top: number; height: number }, rowHeight = ROW_HEIGHT, rows?: TimelineRows): boolean {
   const total = timelineHeight(count, rowHeight, rows);
   return visible.height <= 0 || (window.top <= Math.max(0, visible.top)
     && window.top + window.height >= Math.min(total, visible.top + visible.height));
 }
 
-/** Leave unchanged styles alone during playback and pointer frames. */
 export function placeLaneWindow(style: Pick<CSSStyleDeclaration, 'top' | 'height'>, window: LaneWindow, offset = 0): void {
   const top = `${window.top - offset}px`, height = `${window.height}px`;
   if (style.top !== top) style.top = top;
   if (style.height !== height) style.height = height;
 }
 
-/** Measure after placing the window; backing writes reset the drawing context. */
 export function sizeLaneWindow(canvas: Pick<HTMLCanvasElement, 'style' | 'clientWidth' | 'clientHeight' | 'getBoundingClientRect' | 'width' | 'height'>,
   window: LaneWindow, offset: number, devicePixelRatio: number, backing: { width: number; height: number } = canvas) {
   placeLaneWindow(canvas.style, window, offset);
@@ -54,11 +48,8 @@ export function sizeLaneWindow(canvas: Pick<HTMLCanvasElement, 'style' | 'client
   return { ...size, layoutWidth, layoutHeight };
 }
 
-/** Full-timeline y from the viewport canvas's local y, shared by hover and Jump to. */
 export const timelineY = (localY: number, window: LaneWindow) => localY + window.top;
 
-/** Visible part of the full-height spacer in its own pixels, including Size zoom.
- * Existing widget scroll containers keep ownership of their scrolling. */
 export function visibleTimeline(element: HTMLElement): { top: number; height: number } {
   const rect = element.getBoundingClientRect();
   const scale = element.clientHeight ? rect.height / element.clientHeight : 1;
@@ -75,8 +66,6 @@ export function visibleTimeline(element: HTMLElement): { top: number; height: nu
   return { top: (top - rect.top) / Math.max(1e-6, scale), height: Math.max(0, bottom - top) / Math.max(1e-6, scale) };
 }
 
-/** The visible full-timeline coordinates and the sticky view's scroll offset. Both
- * axis modes use the same clipped, overscanned canvas and pointer coordinates. */
 export function timelineViewport(content: HTMLElement, view: HTMLElement, count: number, rowHeight = ROW_HEIGHT,
   stickyAxis = true, rows?: TimelineRows): { visible: { top: number; height: number }; offset: number } {
   if (!stickyAxis) return { visible: visibleTimeline(content), offset: 0 };

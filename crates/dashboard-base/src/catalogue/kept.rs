@@ -1,8 +1,3 @@
-//! The recording's own catalogue kept on disk: its localisation and its interface sprites, which
-//! the recording's game facts alone decide, built once into the cache folder and read in place by
-//! every later source of a recording with the same facts, so a cold request reads only the
-//! entries it uses. The installed art the catalogue mounts is never kept: it is the
-//! installation's, and is read as it is now.
 
 use crate::Source;
 use installed_content_core::content::diagnostics::Diagnostics;
@@ -16,28 +11,22 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"H4KEPT\0\x01";
-/// The form of the kept parts this build writes; the build itself is in every key too.
 const FORMAT: u32 = 1;
 const KEY: usize = 32;
 const CHECKSUM: usize = 32;
-/// What one thread verifies of a file's checksum.
 const PIECE: usize = 1 << 20;
 
-/// Whether a catalogue load reads and writes the kept parts: never for the catalogue built from
-/// the recording alone ([`super::built_catalogue`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Keeping {
     On,
     Off,
 }
 
-/// Where one kept part of a recording's catalogue lies, and the key its file must carry.
 pub(crate) struct Place {
     path: PathBuf,
     key: [u8; KEY],
 }
 
-/// A part of the catalogue that is kept: its file's name, and how it is written and read back.
 pub(crate) trait Part: Sized + PartialEq {
     const NAME: &'static str;
     fn keep(&self, out: &mut Vec<u8>) -> io::Result<()>;
@@ -84,8 +73,6 @@ fn decode_sprite(name: &str, body: &[u8]) -> Result<SpriteType, String> {
     })
 }
 
-/// The running program and its build: its executable's size and modification time, read once. A
-/// part another build kept is built again.
 fn build() -> Option<&'static (String, [u8; 24])> {
     static BUILD: OnceLock<Option<(String, [u8; 24])>> = OnceLock::new();
     BUILD
@@ -111,10 +98,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Where `P` of `source`'s catalogue is kept in `cache_dir`, keyed by `inputs` besides the
-/// recording's game facts, this build and the format. `None` when the recording's facts do not
-/// answer every read the part makes, as the installation then answers some: it carries none,
-/// they are another content's, or a layer's are withheld.
 pub(crate) fn place<P: Part>(source: &Source, cache_dir: &Path, inputs: &[u8]) -> Option<Place> {
     let replay = source.replay_ref();
     let facts = replay.fact_packs.last()?;
@@ -145,11 +128,6 @@ pub(crate) fn place<P: Part>(source: &Source, cache_dir: &Path, inputs: &[u8]) -
     })
 }
 
-/// `P` as `place` keeps it, with what its build noted: read in place when its file holds this
-/// key whole; else built by `build` and written for the next source, unless the build read
-/// anything outside the recorded content (which the installation answered) or it does not read
-/// back as built. A part that cannot be written is still returned, named on the error stream.
-/// Without a place it is built.
 pub(crate) fn kept<P: Part>(
     place: Option<Place>,
     build: impl FnOnce() -> (io::Result<P>, Diagnostics),
@@ -176,8 +154,6 @@ pub(crate) fn kept<P: Part>(
     (built, diagnostics)
 }
 
-/// The digest a kept file ends with: of its length and each piece's digest, the pieces hashed on
-/// the machine's threads.
 fn checksum(bytes: &[u8]) -> [u8; CHECKSUM] {
     let pieces: Vec<&[u8]> = bytes.chunks(PIECE).collect();
     let digests = installed_content_core::parallel::map(&pieces, |piece| *blake3::hash(piece).as_bytes());
@@ -189,8 +165,6 @@ fn checksum(bytes: &[u8]) -> [u8; CHECKSUM] {
     *whole.finalize().as_bytes()
 }
 
-/// The part `place`'s file holds, or `None` when it is missing, cut short, damaged or another
-/// key's.
 fn read<P: Part>(place: &Place) -> Option<(io::Result<P>, Diagnostics)> {
     let bytes = std::fs::read(&place.path).ok()?;
     let body = bytes.len().checked_sub(CHECKSUM)?;
@@ -207,7 +181,6 @@ fn read<P: Part>(place: &Place) -> Option<(io::Result<P>, Diagnostics)> {
     (end == body).then_some((Ok(part), diagnostics))
 }
 
-/// Writes `part` to `place` whole or not at all, after checking it reads back as it is.
 fn write<P: Part>(place: &Place, part: &P, diagnostics: &Diagnostics) -> io::Result<()> {
     let mut out = Vec::new();
     out.extend(MAGIC);
@@ -230,7 +203,6 @@ fn write<P: Part>(place: &Place, part: &P, diagnostics: &Diagnostics) -> io::Res
         .parent()
         .ok_or_else(|| io::Error::other("the cache folder has no parent"))?;
     std::fs::create_dir_all(folder)?;
-    // Each write its own, so sources building the part at once never write into one file.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let temporary = place.path.with_extension(format!(
         "{}-{}.tmp",
@@ -246,7 +218,6 @@ fn write<P: Part>(place: &Place, part: &P, diagnostics: &Diagnostics) -> io::Res
 
 #[cfg(test)]
 thread_local! {
-    /// How many kept parts this thread built because their file could not be read.
     static BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 

@@ -1,10 +1,6 @@
 .dashboard { position: relative; display: flex; flex-direction: column; height: 100%; min-width: 0; }
 
-/* Header bar: country · playback · tools, with the timeline along its lower edge. */
 .header-workspace-bar {
-  /* The flag shows at the content's large flag size, centred in the bar's height. The first row ends on the
-     timeline's line, so the controls centre between the bar's top and the line. The country's track and the
-     tools keep fixed widths whatever the name and editing state, so playback, centred between them, never moves. */
   --header-flag-width: 82px; --header-flag-inset: 12px;
   position: relative; display: grid; grid-template-columns: minmax(0, 240px) minmax(12px, 1fr) auto minmax(12px, 1fr) max-content; grid-template-rows: 69px 13px;
   grid-template-areas: 'country . playback . tools' 'timeline timeline timeline timeline timeline'; align-items: center; column-gap: 4px;
@@ -20,12 +16,9 @@
 .header-country-trigger .country-flag { position: absolute; top: calc((100% - 52px) / 2); left: var(--header-flag-inset); width: var(--header-flag-width); height: 52px; border-radius: var(--r-sm); box-shadow: none; transition: filter var(--t-fast) var(--ease); }
 [data-header-flag='large'] .header-workspace-bar { --header-flag-width: calc(82px * 82 / 52); --header-flag-inset: 0px; }
 [data-header-flag='large'] .header-country-trigger .country-flag { top: 0; height: 100%; border-radius: 0; }
-/* At native size the flag sits inside the button, so one hover covers the flag and the name; the button
-   spans both rows so the flag stays centred in the bar's height. */
 :root:not([data-header-flag='large']) .header-country { grid-row: 1 / -1; margin-left: calc(-14px - var(--header-flag-width)); max-width: calc(254px + var(--header-flag-width)); }
 :root:not([data-header-flag='large']) .header-country-trigger { height: 58px; padding: 0 12px 0 6px; }
 :root:not([data-header-flag='large']) .header-country-trigger .country-flag { position: static; flex: none; margin-right: 2px; }
-/* The name and chevron centre on the controls' row, not the bar, by clearing the timeline row's 13px below them. */
 :root:not([data-header-flag='large']) .header-country-trigger > :not(.country-flag) { margin-bottom: 13px; }
 .header-country-trigger:hover:not(:disabled) .country-flag, .header-country-trigger[aria-expanded='true'] .country-flag { filter: brightness(1.08); }
 .header-country-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
@@ -56,13 +49,10 @@
 .header-speed svg { width: 13px; height: 13px; color: var(--muted); }
 .header-speed:hover, .header-speed[aria-expanded='true'] { background: var(--control-fill-hover); border-color: var(--control-border-hover); }
 
-/* Rises by half its track so the track's line lies on the first row's lower edge. */
 .header-timeline-wrap { grid-area: timeline; position: relative; display: flex; align-items: center; align-self: start; height: 22px; margin-top: -9px; padding: 0 8px 4px; }
 .timeline-track { position: relative; flex: 1; min-width: 0; height: 18px; }
 .header-timeline { appearance: none; display: block; width: 100%; height: 18px; margin: 0; padding: 0; background: transparent; cursor: pointer; }
 .header-timeline::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: color-mix(in srgb, var(--text) 12%, transparent); }
-/* The slider takes input and holds the value; the playhead drawn over it (`.timeline-progress`) moves by
-   transform on its own layers every frame. The knob's rail is the track minus the thumb, as the range maps. */
 .header-timeline::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; opacity: 0; }
 .header-timeline:focus-visible { outline: none; }
 .header-timeline:disabled { cursor: default; }
@@ -91,7 +81,6 @@
 .toolbar-swap[data-editing] > .header-layout, .toolbar-swap:not([data-editing]) > .dash-toolbar { visibility: hidden; }
 .dash-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .map-controls-trigger { width: 32px; height: 32px; }
-/* Header buttons are outlined like T3 Code's; sidebar and widget-header buttons stay ghost. */
 .header-transport > .icon-button, .header-workspace-tools .icon-button { border: 1px solid var(--control-border); background: var(--control-fill); box-shadow: var(--control-shadow); color: var(--text); }
 :is(.header-transport > .icon-button, .header-workspace-tools .icon-button):is(:hover:not(:disabled), [aria-expanded='true']) { border-color: var(--control-border-hover); background: var(--control-fill-hover); }
 :is(.header-transport > .icon-button, .header-workspace-tools .icon-button):disabled { opacity: .45; }
@@ -103,7 +92,6 @@
   .toolbar-edit { width: 32px; padding: 0; }
 }
 
-/* Sidebar campaigns */
 .sidebar-campaigns { display: flex; flex-direction: column; gap: 2px; min-height: 0; flex: 1; }
 .sidebar-group-heading { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 2px 0 10px; color: var(--quiet); font-size: 0.75rem; font-weight: 500; }
 .sidebar-group-heading .icon-button { width: 24px; height: 24px; color: var(--quiet); }
@@ -124,7 +112,6 @@
 .sidebar-campaigns > .sidebar-search { margin: 0 0 2px; }
 .sidebar-search-empty { margin: 0; padding: 6px 10px; color: var(--quiet); font-size: 0.8125rem; }
 .sidebar-archive { display: flex; flex-direction: column; gap: 1px; min-height: 0; margin-top: auto; padding-top: 8px; }
-/* A quiet shelf: label, hairline to the edge, chevron that turns over when open. */
 .sidebar-shelf-toggle { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: transparent;
   color: color-mix(in srgb, var(--quiet) 75%, transparent); font-size: 0.75rem; font-weight: 500; text-align: left; transition: color var(--t-fast) var(--ease); }
 .sidebar-shelf-toggle:hover { color: var(--muted); }
@@ -134,16 +121,13 @@
 .sidebar-shelf-toggle > svg { flex: none; width: 12px; height: 12px; transition: transform var(--t-fast) var(--ease); }
 .sidebar-shelf-toggle[aria-expanded='true'] > svg { transform: rotate(180deg); }
 .sidebar-archive-list { min-height: 0; max-height: 40vh; overflow-y: auto; }
-/* Archived rows recede until hovered or focused. */
 .sidebar-archive-list .sidebar-row > svg { opacity: .4; transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .sidebar-archive-list .sidebar-row:hover > svg, .sidebar-archive-list .sidebar-row:focus-visible > svg { opacity: 1; }
 .sidebar-shelf-more { align-self: flex-start; height: 28px; margin-left: 10px; padding: 0; border: 0; background: transparent; color: var(--quiet); font-size: 0.75rem; }
 .sidebar-shelf-more:hover { color: var(--text); }
 
-/* Recordings library */
 .replay-filename { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Country picker */
 .country-flag { display: inline-block; width: 25px; height: 16px; flex: 0 0 25px; overflow: hidden; border-radius: 2px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent); }
 .country-flag-unavailable { background: var(--hover); box-shadow: inset 0 0 0 1px var(--line-soft); }
 .country-picker { width: 320px; padding: 8px; }
@@ -152,8 +136,6 @@
 .country-picker-search > svg { position: absolute; left: 12px; width: 15px; height: 15px; color: var(--muted); pointer-events: none; }
 .country-picker-search > input { padding-left: 32px; }
 .country-picker-list { max-height: 340px; overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
-/* Rows are virtualised: only rows in view exist, absolutely placed at index x
-   row height. The height matches COUNTRY_ROW_HEIGHT in countryList.ts. */
 .country-picker-options { position: relative; outline: none; }
 .country-picker-option { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 10px; height: 36px; padding: 6px 8px; border-radius: var(--r-sm); font-size: 0.8125rem; cursor: pointer; transition: background var(--t-fast) var(--ease); }
 .country-picker-option > span:not(.country-flag) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -171,7 +153,6 @@
 .widget-country-trigger > svg { width: 14px; height: 14px; color: var(--muted); }
 .widget-country-trigger:hover:not(:disabled), .widget-country-trigger[aria-expanded='true'] { border-color: var(--control-border-hover); background: var(--control-fill-hover); }
 
-/* Grid and widgets */
 .dash-banner { display: flex; align-items: center; gap: 10px; margin: 12px 16px 0; padding: 8px 8px 8px 12px; border-radius: var(--r-md); background: var(--warning-soft);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 30%, transparent); font-size: 0.8125rem; overflow-wrap: anywhere; animation: rise var(--t) var(--ease) both; }
 .dash-banner > svg { width: 16px; height: 16px; color: var(--warning); flex-shrink: 0; }
@@ -184,7 +165,6 @@
 .dash-grid-scroll.is-editing { background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--text) 13%, transparent) 1px, transparent 0); background-size: 22px 22px; background-attachment: local; }
 .dash-grid { min-width: 0; }
 .dash-grid .react-grid-item { transition: none; }
-/* The grid sizes each cell, so a widget's layout stays inside it. Paint containment would clip the dragged widget's shadow. */
 .dash-grid-cell { contain: size layout; }
 .dash-grid .react-grid-item.react-grid-placeholder { background: var(--accent-soft); opacity: 1; border: 1.5px dashed var(--accent-line); border-radius: var(--r-lg); transition-duration: 120ms; }
 .dash-grid .react-grid-item > .react-resizable-handle { width: 22px; height: 22px; background-image: none; padding: 0; }
@@ -192,7 +172,6 @@
 .dash-grid .react-grid-item.react-draggable-dragging, .dash-grid .react-grid-item.resizing { z-index: 5; }
 .dash-grid .react-grid-item.react-draggable-dragging .dash-widget { box-shadow: 0 0 0 1.5px var(--accent), var(--shadow-lg); }
 
-/* The prepare lane's hidden copy of a page lays out as the page does, where nothing sees or paints it. */
 .dash-prepare { position: fixed; top: 0; left: 0; display: flex; flex-direction: column; transform: translateX(-200vw); visibility: hidden; pointer-events: none; contain: strict; }
 .dash-widget, .dash-widget-prepared {
   display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; overflow: hidden; border-radius: var(--r-md); background: var(--panel);
@@ -237,11 +216,9 @@
 .dash-held-failures > .widget-state { flex: none; flex-direction: row; justify-content: flex-start; gap: 7px; padding: 6px 12px; }
 .dash-held-failures > .widget-state > svg { width: 14px; height: 14px; }
 .dash-widget-content { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-/* A column, so a widget's root (or a state) can fill the body with flex: 1 and a footer such as the Combat Log stays below it. */
 .dash-widget-scaled { position: absolute; inset: 0; display: flex; flex-direction: column; }
 .dash-empty-dashboard { height: 380px; margin-top: 8px; border: 1.5px dashed var(--line); border-radius: var(--r-lg); background: color-mix(in srgb, var(--surface) 30%, transparent); }
 
-/* Map widget */
 .dash-map-widget { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dash-map-surface { position: relative; flex: 1; min-height: 0; overflow: hidden; margin: 0 4px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--canvas) 70%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft); }
 .dash-map-surface::before {
@@ -258,20 +235,15 @@
 .dash-map-placeholder p { max-width: 300px; margin: 0 0 6px; color: var(--muted); font-size: 0.75rem; }
 .dash-map-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; height: 30px; padding: 0 10px; color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
 
-/* Placeholder widget */
 .placeholder-panel { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; height: 100%; min-height: 0; margin: 0 4px 4px; border-radius: var(--r-sm);
   border: 1.5px dashed var(--line-soft); color: var(--muted); text-align: center; }
 .placeholder-panel > svg { width: 22px; height: 22px; margin-bottom: 4px; color: var(--quiet); }
 .placeholder-panel > span { font-size: 0.8125rem; font-weight: 500; }
 .placeholder-panel > small { color: var(--quiet); font-size: 0.75rem; }
-/* On the widget itself, not the cell through :has(), which restyled every cell on each change inside it. */
 .dash-widget.kind-placeholder { container-type: size; }
 @container (max-height: 120px) { .placeholder-panel { flex-direction: row; gap: 8px; } .placeholder-panel > svg { margin: 0; width: 17px; height: 17px; } .placeholder-panel > small { display: none; } }
 
-/* Widget menus */
-/* Widget catalogue: a centred window with a category rail, cards and a live preview of the chosen widget. */
 .widget-catalogue { width: min(1120px, calc(100vw - 48px)); height: min(720px, calc(100dvh - 48px)); padding: 0; overflow: hidden; }
-/* Centred by layout rather than a half-size shift, which can land on half pixels and blur everything inside. */
 .widget-catalogue:popover-open { display: flex; flex-direction: column; inset: 0 !important; margin: auto; }
 .widget-catalogue::backdrop { background: rgb(0 0 0 / .42); }
 .widget-catalogue > .ui-popover-heading { flex: none; margin: 0; padding: 12px 12px 0 18px; }
@@ -293,7 +265,6 @@
 .widget-catalogue-rail > button > i { width: 10px; height: 10px; margin: 0 4px; flex: none; border-radius: 3px; background: var(--group-colour); }
 .widget-catalogue-rail > button > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .widget-catalogue-rail > button > small { color: var(--quiet); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-/* Small tiles, icon over name, so a narrow column still holds several across and the preview gets the width. */
 .widget-catalogue-cards { grid-area: cards; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; align-content: start; min-height: 0; overflow-y: auto; padding: 0 10px 10px; }
 .widget-card { position: relative; border-radius: var(--r-md); background: color-mix(in srgb, var(--hover) 60%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft); transition: box-shadow var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
 .widget-card:hover { background: var(--hover); }
@@ -303,7 +274,6 @@
 .widget-card-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--group-colour) 16%, transparent); color: var(--group-colour); }
 .widget-card-icon svg { width: 19px; height: 19px; }
-/* A view of the widget before it: an outlined icon instead of a filled one. */
 .widget-card[data-variant] .widget-card-icon { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--group-colour) 45%, transparent); }
 .widget-card-text { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; min-width: 0; }
 .widget-card-text strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 0.78125rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
@@ -333,7 +303,6 @@
   .widget-details { display: none; }
 }
 .widget-settings-menu { width: 300px; }
-/* A widget's campaign choice: the default, open campaigns, then the rest of the library. */
 .campaign-picker { width: 284px; max-height: min(420px, 70vh); overflow: auto; padding: 6px; }
 .campaign-picker .menu-item-label { display: flex; flex-direction: column; overflow: hidden; }
 .campaign-picker .menu-item-label, .campaign-picker .menu-item-label > small { text-overflow: ellipsis; white-space: nowrap; }
@@ -365,7 +334,6 @@
 .toolbar-save.is-dirty { color: var(--accent); }
 .toolbar-save.is-dirty::after { content: ''; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .toolbar-save { position: relative; }
-/* One-press Live switch beside each widget's settings. */
 .live-toggle {
   display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 9px 0 6px; border: 0; border-radius: 999px; background: transparent;
   color: var(--muted); font-size: 0.75rem; font-weight: 600; transition: background var(--t-fast) var(--ease), color var(--t) var(--ease);
@@ -391,7 +359,6 @@
 button.size-stepper-value:hover { background: var(--hover); }
 .dash-widget-country > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
 
-/* Styled flags already carry the content's mask and overlay. Keep the whole artwork visible. */
 :root :is(img, canvas).country-flag-art { object-fit: contain; border-radius: 0; box-shadow: none; }
 
 .timeline-prepared-markers { position: absolute; top: calc(50% + 5px); left: 7px; right: 7px; height: 2px; pointer-events: none; }

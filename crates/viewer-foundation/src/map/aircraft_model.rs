@@ -1,9 +1,6 @@
-//! Shared conventional-flight and raid-aircraft equipment selection.
 use replay_data::{rows::VariantDefinitionRow, rows::WingEquipmentRow, rows::tables};
 use replay_frame::frame::DecodedSource;
 
-/// Primary equipment is the largest signed
-/// amount in a nonempty bank, first native ordinal on ties; replay key order is unrelated.
 pub fn primary(rows: &[WingEquipmentRow], wing: u64) -> Option<u64> {
     let mut best: Option<&WingEquipmentRow> = None;
     for row in rows.iter().filter(|row| row.wing == wing) {
@@ -26,9 +23,6 @@ pub fn wing_primary(frame: &dyn DecodedSource, wing: u64) -> Result<Option<u64>,
     ))
 }
 
-/// Aircraft model lookup is declaration-based:
-/// a declaration the renderer refuses still stops the native ladder. Read
-/// country/content operands only when the native branch needs them.
 pub fn resolve_lazy(
     variant: &VariantDefinitionRow,
     dlc_mask: u32,
@@ -51,7 +45,6 @@ pub fn resolve_lazy(
     if dlc_mask & 0x100 != 0
         && let Some(name) = graphical()?
     {
-        // A nonnull override short-circuits even if the final lookup is null.
         return Ok(declared(&name).then_some(name));
     }
     prefixed()
@@ -85,8 +78,6 @@ pub fn candidates(
     names
 }
 
-/// Each prefix tries type, archetype, then sprite.
-/// The cosmetic prefix alone is conditional on a nonempty stored string.
 pub fn prefixed(
     cosmetic: &dyn Fn() -> Result<String, String>,
     tag: &dyn Fn() -> Result<String, String>,
@@ -119,9 +110,6 @@ pub fn prefixed(
     Ok(None)
 }
 
-/// An equipment type's archetype name and own sprite. The null archetype name
-/// is empty; reading an archetype fills an empty sprite. Refuse a type absent
-/// from the content by name.
 #[cfg(any(test, feature = "test-support"))]
 fn equipment_names(
     content: &installed_content_core::equipment::Database,
@@ -142,16 +130,6 @@ fn equipment_names(
     Ok((archetype, text(&kind.sprite, "sprite")?))
 }
 
-/// Resolve an aircraft designer model for a variant and raw country:
-///
-/// 1. With DLC feature 0x26 (bit 8 of `SimulationFeatures.dlc_mask`), use
-///    `variant_model`: graphics pools when the equipment type has a sub-unit
-///    list, otherwise the saved model. Its name wins when declared.
-/// 2. Use the variant's saved model when declared.
-/// 3. Use equipment-type candidates: country tag then bare prefixes over
-///    equipment, archetype and sprite names (`aircraft::candidates`).
-///
-/// Return `Ok(None)` when nothing is declared.
 #[cfg(any(test, feature = "test-support"))]
 pub fn designer_entity(
     variant: &replay_data::rows::VariantDefinitionRow,

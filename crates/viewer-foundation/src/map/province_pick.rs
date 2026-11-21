@@ -1,10 +1,8 @@
-//! Political-map province selection from the camera ray and height cells.
 
 use installed_content_core::map::MapData;
 
 use super::{camera::Camera, province_admission};
 
-/// Pick against native nearest-sampled height cells, then the y=0 plane.
 pub fn pick(
     camera: &Camera,
     screen: [f32; 2],
@@ -18,8 +16,6 @@ pub fn pick(
     )
 }
 
-/// The world point the pick finds under `screen`: the nearest height-cell hit, else the y=0 plane
-/// (the zero vector when no view reaches it). `None` for a non-finite screen point.
 pub fn ground_point(
     camera: &Camera,
     screen: [f32; 2],
@@ -30,9 +26,6 @@ pub fn ground_point(
     ground(camera, screen, viewport, map, heightmap, Views::Seams)
 }
 
-/// The point the camera's own motion picks under `screen`, as the wheel reads it: the shown view
-/// alone, without the seam copies or their recentring, and a y=0 plane fallback at any x, so the
-/// point stays in the eye's own coordinates across the map's wrap.
 pub fn motion_ground_point(
     camera: &Camera,
     screen: [f32; 2],
@@ -43,13 +36,9 @@ pub fn motion_ground_point(
     ground(camera, screen, viewport, map, heightmap, Views::Own)
 }
 
-/// Which views a pick searches.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Views {
-    /// The recentred view and the seam copies its footprint reaches; the plane fallback keeps x
-    /// within the map.
     Seams,
-    /// The camera's own view; the plane fallback takes any x.
     Own,
 }
 
@@ -77,8 +66,6 @@ fn ground(
         return Ok(None);
     }
     if camera.free().is_some() {
-        // A free eye finds no ground above the horizon; the seam pick keeps x on the map's first
-        // copy, the camera's own motion keeps the ray's copy.
         return Ok(free_ground(camera, screen, viewport, map, heightmap).map(
             |[x, y, z]| match mode {
                 Views::Seams => [x.rem_euclid(camera.map.x()), y, z],
@@ -90,7 +77,7 @@ fn ground(
         Views::Seams => views(*camera, viewport),
         Views::Own => [Some(*camera), None, None],
     };
-    let mut hits = [[0.0; 3]; 256]; // Candidate capacity used by the picking walk.
+    let mut hits = [[0.0; 3]; 256];
     let mut count = 0;
     let mut best = None;
     let mut nearest = f32::MAX;
@@ -106,7 +93,6 @@ fn ground(
             &mut hits,
             &mut count,
         );
-        // Evaluate the accumulated candidates against each view.
         let mut view_nearest = f32::MAX;
         let mut view_best = None;
         for hit in &hits[..count] {
@@ -126,11 +112,6 @@ fn ground(
     })))
 }
 
-/// The first ground a free eye's ray through `screen` meets: the same height cells the game's pick
-/// reads, walked in order along the ray from the eye out to the far plane (a forward depth, so
-/// further along the rays towards the view's edges), the map wrapping in `x` and ending in `z`.
-/// `None` when the ray passes above every cell, as it does above the horizon.
-/// The point's `x` stays on the ray's own map copy. `heightmap` holds one byte per map pixel.
 pub fn free_ground(
     camera: &Camera,
     screen: [f32; 2],
@@ -152,7 +133,6 @@ pub fn free_ground(
     march(origin, direction, camera.lens().far / depth, map, heightmap)
 }
 
-/// Walks the height cells a ray crosses within `far`, nearest first; see [`free_ground`].
 fn march(
     origin: [f32; 3],
     direction: [f32; 3],
@@ -163,7 +143,6 @@ fn march(
     const TOP: f32 = super::camera::frustum::TERRAIN_TOP;
     let [ox, oy, oz] = origin;
     let [dx, dy, dz] = direction;
-    // The part of the ray inside the band the terrain occupies.
     let mut start = 0.0f32;
     let mut end = far;
     if oy > TOP {
@@ -183,7 +162,6 @@ fn march(
     let [x, _, z] = at(start);
     let mut cell = [x.floor() as i64, z.floor() as i64];
     let step = [dx.signum() as i64, dz.signum() as i64];
-    // Ray distance to cross one cell along each axis, and to the next cell boundary.
     let delta = [1.0 / dx.abs(), 1.0 / dz.abs()];
     let next = |position: f32, cell: i64, direction: f32, delta: f32| {
         if direction > 0.0 {
@@ -199,7 +177,6 @@ fn march(
         start + next(z, cell[1], dz, delta[1]),
     ];
     let mut entered = start;
-    // Every cell is crossed at most once; the bound guards against a degenerate direction.
     let limit = ((end - start) * 2.0) as u64 + 4;
     for _ in 0..limit {
         let exit = boundary[0].min(boundary[1]).min(end);
@@ -219,7 +196,6 @@ fn march(
                 return Some([px, height, pz]);
             }
         } else if (cell[1] < 0 && dz <= 0.0) || (cell[1] >= rows && dz >= 0.0) {
-            // Past the map's top or bottom edge and moving away: nothing more to meet.
             return None;
         }
         if exit >= end {
@@ -237,7 +213,6 @@ fn march(
     None
 }
 
-/// Seam flags and the single-width recenter are , shared with admission.
 fn views(mut camera: Camera, viewport: [u32; 2]) -> [Option<Camera>; 3] {
     let width = camera.map.x();
     let corners = province_admission::footprint(camera, viewport);
@@ -262,7 +237,6 @@ fn views(mut camera: Camera, viewport: [u32; 2]) -> [Option<Camera>; 3] {
 }
 
 fn plane_pick(camera: &Camera, screen: [f32; 2], viewport: [u32; 2], mode: Views) -> [f32; 3] {
-    // Use y=0, |origin.y/direction.y|, epsilon .0001 and far 4000.
     let views = match mode {
         Views::Seams => views(*camera, viewport),
         Views::Own => [Some(*camera), None, None],
@@ -280,11 +254,9 @@ fn plane_pick(camera: &Camera, screen: [f32; 2], viewport: [u32; 2], mode: Views
             return [x, 0.0, direction[2] * distance + origin[2]];
         }
     }
-    // Native no-view fallback writes the zero vector.
     [0.0; 3]
 }
 
-/// Truncate coordinates; native raster rows count from the south.
 fn raster(map: &MapData, [x, _, z]: [f32; 3]) -> Option<u32> {
     if !x.is_finite() || !z.is_finite() {
         return None;
@@ -307,7 +279,6 @@ fn height_hits(
     hits: &mut [[f32; 3]; 256],
     count: &mut usize,
 ) {
-    // Halve only axes >=2, preserving native quadrant order.
     if width >= 2.0 || depth >= 2.0 {
         let width = if width >= 2.0 { width * 0.5 } else { width };
         let depth = if depth >= 2.0 { depth * 0.5 } else { depth };
@@ -317,7 +288,6 @@ fn height_hits(
             [x, z + depth],
             [x + width, z + depth],
         ] {
-            // The coarse height bound reaches 25.5 world units.
             if intersects(origin, direction, [x, 0.0, z], [x + width, 25.5, z + depth]) {
                 height_hits(
                     origin,
@@ -334,8 +304,6 @@ fn height_hits(
         let height = terrain_height(map, heightmap, [x, z]);
         let end = [x + width, height, z + depth];
         if intersects(origin, direction, [x, 0.0, z], end) {
-            // The game uses distance to the cell's upper corner minus .5, then
-            // forces hit.y to sampled height; it does not intersect a triangle.
             let distance = distance([end[0] - 0.5, height, end[2] - 0.5], origin);
             hits[*count] = [
                 distance * direction[0] + origin[0],
@@ -347,8 +315,6 @@ fn height_hits(
     }
 }
 
-/// The terrain height under a world `(x, z)`: the nearest texel, both axes clamped, times 0.1, at
-/// least the water height 9.5. `texels` holds one byte per map pixel.
 pub fn terrain_height(map: &MapData, texels: &[u8], [x, z]: [f32; 2]) -> f32 {
     let x = ((x + 0.5) as i32).clamp(0, map.width as i32 - 1) as usize;
     let z = ((z + 0.5) as i32).clamp(0, map.height as i32 - 1) as usize;
@@ -358,11 +324,9 @@ pub fn terrain_height(map: &MapData, texels: &[u8], [x, z]: [f32; 2]) -> f32 {
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     let [x, y, z] = std::array::from_fn::<_, 3, _>(|axis| a[axis] - b[axis]);
-    // Add y²+x² before z².
     (y * y + x * x + z * z).sqrt()
 }
 
-/// Ray-box slab intersection with strict near and far interval tests.
 fn intersects(origin: [f32; 3], direction: [f32; 3], min: [f32; 3], max: [f32; 3]) -> bool {
     let interval = |axis: usize| {
         let inverse = 1.0 / direction[axis];

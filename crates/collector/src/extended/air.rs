@@ -1,10 +1,3 @@
-//! Pooled air state. Allocating acquisition, conversion and growth are worker-only.
-//!
-//! A single independently bounded wing census acquires map, equipment,
-//! cumulative and naval-membership value rows. The worker installs owned
-//! extension rows without replaying native memory reads. The same census,
-//! joined by each wing's mission address, orders the registered missions and
-//! names the bases the flying-aircraft map needs.
 
 use crate::{
     raw::RawLog,
@@ -37,20 +30,15 @@ pub(crate) struct MissionSources<'a, C> {
     pub parent: Outcome,
     pub histories: &'a mut [air_histories::Staging],
     pub changes: &'a C,
-    /// Held registrations and what certifies them; `None` reads every
-    /// country air object afresh.
     pub carry: Option<MissionCarry<'a>>,
 }
 
-/// The AirRegionalMissions walk's held registrations ([`MissionStore`]) and
-/// the notifications that certify them.
 pub(crate) struct MissionCarry<'a> {
     pub store: &'a mut MissionStore,
     pub changes: &'a dyn crate::mission_changes::Changes,
 }
 
 pub const N: usize = 16;
-/// The tables `Capacities::rows` sizes; the sortie tables size themselves.
 pub const SIZED: usize = 9;
 pub const TABLES: [TableId; N] = [
     TableId::WingEquipment,
@@ -73,13 +61,10 @@ pub const TABLES: [TableId; N] = [
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
-    /// Witnesses count probed base handles.
     pub rows: [usize; SIZED],
     pub ace_names: usize,
-    /// The wing census joined to missions, and its base-handle scratch.
     pub wings: usize,
     pub sorties: air_sorties::Capacities,
-    /// RaidAirScores rows, region roster and strategic-air countries.
     pub scores: ScoreCapacities,
 }
 
@@ -105,8 +90,6 @@ collector_primitives::capacity_max!(ScoreCapacities {
 });
 
 impl Capacities {
-    /// Off-thread attach/cadence hints; capture still follows its own original
-    /// headers and grows every worker arena before publishing the hour.
     pub(crate) fn presize_missions(
         &mut self,
         memory: &impl Memory,
@@ -120,8 +103,6 @@ impl Capacities {
         self.scores.regions = self.scores.regions.max(regions.count as usize);
         let mut countries = 0usize;
         let mut missions = 0usize;
-        // Ordinary mission occurrences appear in both country lists;
-        // the complete region list additionally includes carrier-only regions.
         engine_native::cstrategic_air::visit(memory, base, state, |root| {
             let active = root
                 .address
@@ -146,8 +127,6 @@ impl Capacities {
             .ok_or("air reference sizing count overflow")?;
         self.wings = self.wings.max(wings).max(missions);
         self.rows[6] = self.rows[6].max(handles);
-        // Task-force combat census reaches native task-force combat occurrences. Every
-        // task-force roster occurrence is an independent upper bound.
         let task_forces =
             engine_native::cfleet::count(memory, base, state);
         self.rows[8] = self.rows[8].max(crate::country_scale::table_demand::rows(
@@ -161,34 +140,24 @@ impl Capacities {
         self.ace_names = self.ace_names.max(demand.ace_bytes);
     }
 
-    /// Every strategic-air country holds a RaidAirScores witness row; its
-    /// nonzero pairs grow the table on demand.
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.scores.countries, slots);
         crate::country_scale::raise(&mut self.scores.rows, slots);
     }
 }
 
-/// A wing of the shared authenticated AirWings walk: its pointer, which never
-/// reaches the replay, and its row.
 pub struct WingSource<'a> {
     pub pointer: usize,
     pub row: &'a cair_wing::Row,
 }
 
-/// RaidAirScores, captured in their own job with the attachment's held table
-/// ([`engine_raid_inputs::raid_air_scores::Held`]) and then installed in the frame's
-/// pack ([`Captured::install_scores`]). The walk reads only the game state
-/// and the hour, so it leaves in the first burst.
 pub(crate) struct ScorePart {
     rows: CaptureRows<engine_raid_inputs::raid_air_scores::Row>,
-    /// The walk's region and country demand, which sizes the held table.
     demand: [usize; 2],
     ticks: u64,
 }
 
 impl ScorePart {
-    /// Empty storage, which the walk grows on its worker.
     pub(crate) fn vacant() -> Self {
         Self {
             rows: CaptureRows::new(0),
@@ -201,10 +170,6 @@ impl ScorePart {
         self.rows.allocated_bytes()
     }
 
-    /// The hour's walk: phase-hour regions read, every other pair carried
-    /// from `held` while its premises and the clear token stand. `capacity`
-    /// is the pack's held-table capacity. Returns the worker ticks, also kept
-    /// for the install.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture(
         &mut self,
@@ -229,9 +194,7 @@ impl ScorePart {
         if force_full {
             held.invalidate();
         }
-        // Taken before the walk reads a pair.
         held.certify(crate::raid_changes::air_clear_token());
-        // Only a raised capacity allocates, on this pool worker.
         let [regions, countries] = capacity;
         if held.grow(regions, countries, self.rows.rows.len()).is_err() {
             self.rows.fail(Outcome::Unavailable {
@@ -253,8 +216,6 @@ impl ScorePart {
         self.ticks
     }
 
-    /// The job did not complete: the table fails, as the Late capture fails
-    /// it.
     pub(crate) fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.rows.reset();
         self.demand = [0; 2];
@@ -274,62 +235,34 @@ pub struct Captured {
     aces: CaptureRows<cace::Row>,
     statistics: CaptureRows<cloop_history::Row>,
     scores: CaptureRows<engine_raid_inputs::raid_air_scores::Row>,
-    /// Held-table sizes: this pack's capacities, then the last walk's demand.
     score_capacity: [usize; 2],
     score_demand: [usize; 2],
-    /// This hour's RaidAirScores were captured by their own job
-    /// ([`Self::install_scores`]); the Late capture keeps them, and its
-    /// worker ticks.
     scores_early: Option<u64>,
     names: Arena<u8>,
-    /// This hour's complete wing census by mission address. Acquisition
-    /// context only: pointers never reach the replay.
     identities: Arena<WingIdentity>,
     identity_outcome: Outcome,
-    /// The owned wing job installed the census; the typed visitor did not run.
     identities_owned: bool,
     registrations: CaptureRows<cair_regional_mission::Row>,
     mission_order: Vec<mission_store::OrderLabel>,
     registration_failure: cair_regional_mission::FailureContext,
-    /// Base handles to probe: registered pool bases, unregistered training
-    /// wings' pool bases and every transfer base.
     handles: Vec<u64>,
     references: CaptureRows<BaseWitness>,
     sorties: Sorties,
     ground_crews: CaptureRows<rows::AirGroundCrewRow>,
     ground_demand: Vec<ground_crews::Demand>,
     ground_merge: Vec<rows::AirGroundCrewRow>,
-    /// This hour's regional Air supply from its own job, installed at the
-    /// missions join; the Late job merges it into Ground Crews.
     supply: engine_map_air::map_air_supply::Capture,
     supply_ok: bool,
-    /// No registered missions: Ground Crews stands without a stable flag certificate.
     ground_lenient: bool,
     transfers: CaptureRows<rows::AirTransferInputRow>,
     transfer_demand: Vec<usize>,
     transfer_ticks: u64,
     patrol_combats: CaptureRows<rows::AirNavalPatrolCombatRow>,
-    /// The registrations' and combats' ticks once the AirMissions job, or
-    /// the Late job without it, captured them this hour.
     missions: Option<[u64; 2]>,
-    /// The joins of the registered missions (AirReferenceWitnesses, the
-    /// sortie inputs and Ground Crews) and their ticks, captured with them.
     joins: Option<[u64; 3]>,
-    /// Game-thread time installing the owned census, charged to
-    /// AirRegionalMissions, which joins it.
     identity_ticks: u64,
     active: [bool; N],
-    /// Raw-copy split gate for the scheduled air-statistics table. Set by the
-    /// callback on hours with a valid raw payload; `capture` then skips
-    /// the typed statistics walk and the decode worker fills these rows
-    /// before the ready handoff. Preserved across `reset` (set per hour,
-    /// cleared by the worker after decode).
     pub(crate) stats_raw_mode: bool,
-    /// Raw-copy split gate for the shared bases/registrations/aces payload
-    /// (copy/decode split). Set by the game thread every hour with a valid
-    /// raw payload; `capture` then skips the typed bases and aces walks and
-    /// the decode worker fills those rows (plus the fog registrations) before
-    /// the ready handoff. Preserved across `reset`, cleared by the worker.
     pub(crate) bases_raw_mode: bool,
 }
 
@@ -341,12 +274,10 @@ const SKIPPED: Outcome = Outcome::Unavailable {
     reason: replay_data::cadence::SKIPPED_REASON,
 };
 
-/// The hour staged no shared bases payload; the decode worker fills these tables from it.
 const BASES_NOT_STAGED: Outcome = Outcome::Unavailable {
     reason: "air bases payload not staged this hour",
 };
 
-/// The hour staged no air statistics payload.
 const STATISTICS_NOT_STAGED: Outcome = Outcome::Unavailable {
     reason: "air statistics payload not staged this hour",
 };
@@ -360,12 +291,8 @@ fn failed(active: bool, reason: &'static str) -> Outcome {
 }
 
 impl Captured {
-    /// An accepted Late job never retries. Independent owned payloads still
-    /// install their tables on decode; their raw gates must survive this path,
-    /// and so do the AirMissions job's registrations and combats.
     pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
-        // Scores captured by their own job keep that job's outcome.
         if self.scores_early.take().is_none() {
             self.scores.fail(failed(self.active[13], reason));
         }
@@ -392,7 +319,6 @@ impl Captured {
         }
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; SIZED],
@@ -454,8 +380,6 @@ impl Captured {
         }
     }
 
-    /// Reset before the shared map walk. `capture` deliberately preserves the
-    /// wing extension state prepared by begin/visit/finish_wings.
     pub fn reset(&mut self) {
         self.equipment.reset();
         self.equipment.outcome = NO_WING_SOURCE;
@@ -485,7 +409,6 @@ impl Captured {
         self.reset_joins();
     }
 
-    /// The joins of the registered missions.
     fn reset_joins(&mut self) {
         self.transfers.reset();
         self.transfer_demand.clear();
@@ -534,7 +457,6 @@ impl Captured {
         self.score_capacity = [scores.regions, scores.countries];
         self.names.grow(&mut capacity.ace_names);
         self.identities.grow(&mut capacity.wings);
-        // One pool base per registration plus one transfer base per wing.
         crate::table_capture::grow_vec(
             &mut self.handles,
             capacity.wings.saturating_mul(2).max(capacity.rows[6]),
@@ -544,23 +466,18 @@ impl Captured {
         self.sorties.grow(&mut capacity.sorties);
         self.ground_crews.grow(&mut capacity.wings);
         crate::table_capture::grow_vec(&mut self.ground_demand, capacity.wings);
-        // The reserved retired mine slot owns no acquisition storage.
         self.patrol_combats.grow(&mut capacity.rows[8]);
     }
 
-    /// Freeze the requested tables before contexts and shared map callbacks.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.active =
             TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
-    /// A new frame hour: no AirSupply result yet. Late's own `prepare_hour` runs after the
-    /// result was installed and must keep it.
     pub(crate) fn begin_supply_hour(&mut self) {
         self.supply_ok = false;
     }
 
-    /// The AirSupply job's capture, exchanged for the one this pack held.
     pub(crate) fn install_supply(
         &mut self,
         capture: &mut engine_map_air::map_air_supply::Capture,
@@ -570,8 +487,6 @@ impl Captured {
         self.supply_ok = ok;
     }
 
-    /// The Late job: this hour's regional Air supply into the Ground Crews
-    /// rows the AirMissions job left, reading the flags of regions they lack.
     pub(crate) fn merge_ground_supply(&mut self, memory: &impl Memory, base: usize) {
         if !self.supply_ok || !self.active[14] {
             return;
@@ -609,14 +524,10 @@ impl Captured {
         }
     }
 
-    /// Whether this hour's registrations and combats were captured.
     pub(crate) fn missions_captured(&self) -> bool {
         self.missions.is_some()
     }
 
-    /// Captures registered missions and combats, then opens the history certificates.
-    /// `parent` is the map census the typed visitor supplied the wing
-    /// identities in, when it did.
     pub(crate) fn capture_missions(
         &mut self,
         memory: &impl Memory,
@@ -644,8 +555,6 @@ impl Captured {
             let _reads = read_accounting::table(TableId::AirRegionalMissions);
             let identities = &mut self.identities.first[..len];
             identities.sort_unstable_by_key(|wing| wing.mission_pointer);
-            // The strict registrations alone: the retired selected transport
-            // preview's root, factor, wing and normalization words are not read.
             let original = match carry {
                 Some(MissionCarry { store, changes }) => {
                     let mut reuse = MissionReuse::begin(store, changes);
@@ -688,7 +597,6 @@ impl Captured {
             self.identity_outcome,
             &self.registrations,
         );
-        // Task-force combats are captured independently of regional history availability.
         let regions = {
             let _reads = read_accounting::table(TableId::AirNavalPatrolCombats);
             capture_patrol_combats(
@@ -710,8 +618,6 @@ impl Captured {
         self.missions = Some([registered_ticks, elapsed(begin)]);
     }
 
-    /// The AirMissions job, after its missions: their joins, which need
-    /// nothing else, so the Late job keeps them.
     pub(crate) fn join_missions(
         &mut self,
         memory: &impl Memory,
@@ -752,9 +658,6 @@ impl Captured {
         self.transfer_ticks = elapsed(begin);
     }
 
-    /// The joins of the registered missions with the wing census: the base
-    /// witnesses, the sortie inputs over them and Ground Crews. Ticks of
-    /// [references, sorties, Ground Crews].
     fn capture_joins(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; 3] {
         self.reset_joins();
         let mut ticks = [0; 3];
@@ -847,8 +750,6 @@ impl Captured {
         ticks
     }
 
-    /// The AirMissions job was interrupted: publish its tables unavailable;
-    /// history acquisition retains its independent writer verdict. Nothing is read again.
     pub(crate) fn fail_missions(
         &mut self,
         reason: &'static str,
@@ -869,10 +770,6 @@ impl Captured {
         self.patrol_combats.fail(failed(self.active[12], reason));
     }
 
-    /// The owned wing job's source census, installed on the game thread after
-    /// the job joins; the typed visitor does not run that hour. Its worker
-    /// built the census in storage it grew, and a job without one installs
-    /// that job's refusal.
     pub(crate) fn install_owned_mission_identities(&mut self, job: &mut AirWingJob) {
         let begin = qpc();
         let len = job.identity_outcome.len();
@@ -888,7 +785,6 @@ impl Captured {
         self.identity_ticks = self.identity_ticks.saturating_add(elapsed(begin));
     }
 
-    /// Both extensions require a complete parent census.
     pub fn finish_wings(&mut self, source: Outcome) {
         if !self.identities_owned {
             self.identity_outcome = require_parent(source, self.identity_outcome);
@@ -901,10 +797,6 @@ impl Captured {
         };
     }
 
-    /// The independent sources and the joins of the registered missions, after
-    /// the extensions supplied by the map visitor. Reset non-wing buffers here,
-    /// preserving the prepared extensions. `scores` is the attachment's held
-    /// RaidAirScores table, loaned each hour.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -967,21 +859,15 @@ impl Captured {
         ticks
     }
 
-    /// The pack's held-table capacities, which the ScoresRails job sizes the
-    /// held table by.
     pub(crate) fn score_capacity(&self) -> [usize; 2] {
         self.score_capacity
     }
 
-    /// Exchanges this pack's RaidAirScores with `part`'s.
     fn swap_scores(&mut self, part: &mut ScorePart) {
         std::mem::swap(&mut self.scores, &mut part.rows);
         std::mem::swap(&mut self.score_demand, &mut part.demand);
     }
 
-    /// The hour's RaidAirScores, captured by the ScoresRails job: they
-    /// replace this pack's, which `part` takes back as its storage, and the
-    /// Late capture keeps them.
     pub(crate) fn install_scores(&mut self, part: &mut ScorePart) {
         let ticks = part.ticks;
         self.swap_scores(part);
@@ -1054,7 +940,6 @@ impl Captured {
         )
     }
 
-    /// Base payloads are supplied separately through their borrowed projection.
     fn sampled_tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
         let [missions, containers, modifiers, special_bases, metadata] = self.sorties.tables();
@@ -1208,8 +1093,6 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
     }
 }
 
-/// The wing census sorted by handle and the registrations, both complete,
-/// for the joins that look wings up by handle.
 fn joins<'a>(
     identities: &'a mut Arena<WingIdentity>,
     identity_outcome: Outcome,
@@ -1225,7 +1108,6 @@ fn joins<'a>(
     }
 }
 
-/// Each registration's wing; `wings` is sorted by handle.
 fn registered_wings<'a>(
     wings: &'a [WingIdentity],
     registered: Option<&'a [cair_regional_mission::Row]>,
@@ -1239,9 +1121,6 @@ fn registered_wings<'a>(
     }))
 }
 
-/// Merges the regional Air supply summaries, sorted by (country, region), into
-/// the Ground Crews rows, sorted by the same key. A summary without a Ground
-/// Crews row gets one carrying its region's flag.
 fn merge_supply(
     ground: &mut Vec<rows::AirGroundCrewRow>,
     merged: &mut Vec<rows::AirGroundCrewRow>,
@@ -1287,7 +1166,6 @@ fn merge_supply(
     Ok(())
 }
 
-// Separate borrowed buffers preserve fixed and growing capture paths and optional demand.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn capture_references(memory: &impl Memory, base: usize, game_state: usize, wings: &[WingIdentity], registered: Option<&[cair_regional_mission::Row]>, handles: &mut Vec<u64>, output: &mut Vec<BaseWitness>) -> Result<Outcome, &'static str> {
@@ -1327,9 +1205,6 @@ fn capture_references_buffer(
             want(wing.air_base);
         }
     }
-    // Every wing can be selected for its current range, even with a nonzero
-    // mission mask but no regional registration. Deduplicate pool bases with
-    // the existing mission and transfer demands before any registry read.
     for wing in wings.iter().filter(|wing| wing.air_base != 0) {
         want(wing.air_base);
     }
@@ -1356,7 +1231,6 @@ fn capture_references_buffer(
     }
     let probes = &mut handles[..required];
     probes.sort_unstable();
-    // The distinct handles, in order.
     let (mut distinct, mut previous, mut next) = (0, 0, 0);
     while next < probes.len() {
         let handle = probes[next];
@@ -1372,8 +1246,6 @@ fn capture_references_buffer(
     let mut pass = map_air_base_reference::Pass::new(base);
     let mut gathered = [None; map_air_base_reference::BASE_BATCH];
     for chunk in probes[..distinct].chunks(map_air_base_reference::BASE_BATCH) {
-        // Gathered up to the first handle a copy or check stopped at; that
-        // handle and the rest read as before.
         let read = pass.read_bases(memory, game_state, chunk, &mut gathered);
         for (index, &handle) in chunk.iter().enumerate() {
             output.ensure(len.checked_add(1).ok_or("air reference count overflow")?)?;
@@ -1406,10 +1278,6 @@ fn capture_references_buffer(
     })
 }
 
-/// The first input for registered naval-patrol missions: each effective
-/// country's task forces in a naval combat in one of its patrolled
-/// regions, in native order. `scratch` holds the (country, region) pairs and
-/// then the regions those combats are in, whose span it returns.
 fn capture_patrol_combats(
     memory: &impl Memory,
     base: usize,
@@ -1560,9 +1428,6 @@ fn append(first: Outcome, next: Outcome) -> Outcome {
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// [`read_equipment_buffer`] with `reuse` carrying the rows of a wing whose
-/// held read it proves current ([`WingStore`]): a carried wing's pool,
-/// entries and variants are not read.
 fn read_equipment_carried(
     memory: &impl Memory,
     base: usize,
@@ -1580,7 +1445,6 @@ fn read_equipment_carried(
         && output.ensure(end) == Ok(true)
     {
         let carried = reuse.carry(&plan);
-        // The plan certifies the same full wing identity, including row ids.
         output[start..end].clone_from_slice(carried);
         return (Outcome::Rows { len: rows }, rows);
     }
@@ -1599,8 +1463,6 @@ fn read_equipment_buffer(
 ) -> (Outcome, usize) {
     let mut required = 0;
     let result = (|| {
-        // Each wing owns an equipment pool whose full entry count is retained.
-        // Grow from that original header once before reading the rows.
         let entries = cair_wing::equipment_pool(memory, base, source.pointer)?;
         required = entries.count as usize;
         let end = start
@@ -1677,9 +1539,6 @@ fn valid_names(outcome: Outcome, rows: &[cace::Row], bytes: &[u8], len: usize) -
         })
 }
 
-/// One complete source census, independent of the bounded map projection.
-/// All transient addresses stay owned opaque scalars and are consumed only
-/// during acquisition; the worker installs value rows without memory reads.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct WingMembershipRead {
     pub value: engine_native::ctheatre::WingMembership,
@@ -1752,28 +1611,15 @@ mod transport_witness_tests;
 #[cfg(test)]
 mod fixed_mirror_gather_tests;
 
-/// Shared synthetic address space for the wing-pack copy/decode harness:
-/// one country, one pool, two wings with equipment entries and cumulative
-/// counters. Mirrors the engine wing/equipment fixture shapes.
 #[cfg(test)]
 pub(crate) mod wing_test_kit;
 
-/// Shared synthetic address space for the air-statistics copy/decode
-/// harness: one owner with a two-region history table, each region holding
-/// one history with a valid yearly window, record and channel values.
-/// Mirrors the engine statistics fixture shapes contiguously.
 #[cfg(test)]
 pub(crate) mod stats_test_kit;
 
 #[cfg(test)]
 mod air_bases_memo_tests;
 
-/// Shared synthetic address space for the bases/registrations/aces
-/// copy/decode harness: two countries, a manager with two state bases
-/// (one indexed hole) plus one stateless host, per-base containers with
-/// pools and wings, and two aces (one alive with inline names, one dead
-/// with heap names). Mirrors the engine bases/registrations/aces fixture
-/// shapes.
 #[cfg(test)]
 pub(crate) mod air_bases_test_kit;
 

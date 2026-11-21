@@ -1,30 +1,3 @@
-//! The power ledger: `PowerSpendTotals`, `PowerItems`, `PowerDayParts`, `PowerHolds` and
-//! `PowerSpendCoverage`, from the recorded power tables. A payment's holder is the canonical slot
-//! its raw country links to at the hour it is read ([`TagHolderRow::NONE`] where none does).
-//!
-//! - Payments: a power change whose requested amount took power (or a subtraction whose amount
-//!   was not evaluated) is a payment of its item; a change that is neither, and not a daily gain,
-//!   cap correction, reset or console write, is a balance row of its item. A daily cost is a
-//!   payment of its item when its day's political application is recorded and it is positive, a
-//!   credit when negative, and counts as unmatched otherwise. Daily costs, daily deficits and
-//!   ability upkeep are recurring: merged by native day. A payment is covered when its raw
-//!   country's capture covers its hour in its currency at the read (a daily cost also needs the
-//!   daily costs stream and its day's costs adding up to the application).
-//! - Items: the typed operands alone; numbered per holder in the order first paid.
-//! - Days: a raw country's daily row counts its gains when it gives way to the next day's (or is
-//!   deleted), from its last cells; its daily costs are the day's latest publication, held by item
-//!   as the open day's parts and counted when the day ends. A day whose batch came no later than
-//!   the run's first hour is not the run's: never counted.
-//! - A run's first hour lists what the game held when the run began, not that hour's events: no
-//!   power change of it is counted, applied to holds or added to a part, and its coverage says
-//!   spending is counted from the next hour.
-//! - Coverage: per live country's slot, each hour, from the capture of its last linked raw
-//!   country holding one; a reply shows a part of the open day only while its currency was covered
-//!   since the day began. An input of the payments read in part or not at all leaves the totals
-//!   and parts with its own status, and the coverage names its reason.
-//!
-//! Countries and CountryLinks are required. The writer's state is its tables; the resume blob
-//! holds the last hour and the run's first, nothing of an input's rows.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -87,7 +60,6 @@ fn hold_key(holder: u32, hold: u64) -> u128 {
     u128::from(holder) << 64 | u128::from(hold)
 }
 
-/// A 64-bit hash of fields, each fixed-width or length-prefixed.
 struct Hash(u64);
 
 impl Hash {
@@ -129,7 +101,6 @@ const ITEM_SEED: u64 = 0xCBF2_9CE4_8422_2325;
 const HOLD_SEED: u64 = 0x8422_2325_CBF2_9CE4;
 const CHECK_SEED: u64 = 0x6C62_272E_07BB_0142;
 
-/// What makes two payments one item: their typed operands alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ItemId {
     kind: u8,
@@ -234,7 +205,6 @@ impl ItemId {
     }
 }
 
-/// An item's first payment, as its row names it.
 struct First {
     site: PowerSite,
     hour: i32,
@@ -244,8 +214,6 @@ struct First {
     sequence: u64,
 }
 
-/// The holder an allocation names, as two hashes of its operands: by object, character, item or
-/// region; none when it names none.
 fn hold_of(identity: &PowerIdentity) -> Option<(u64, u64)> {
     let of = |seed: u64| -> Option<u64> {
         let mut hash = Hash::new(seed);
@@ -276,14 +244,10 @@ fn hold_of(identity: &PowerIdentity) -> Option<(u64, u64)> {
     Some((of(HOLD_SEED)?, of(CHECK_SEED)?))
 }
 
-/// A command power row the writer reads as a hold: an allocation, a release, ground crew, or an
-/// allocation refund.
 fn is_hold(row: &CountryPowerChangeRow) -> bool {
     row.currency == PowerCurrency::Command && (matches!(row.site, PowerSite::AllocateCommandPower | PowerSite::ReleaseCommandPower | PowerSite::GroundCrew) || row.cause == PowerCause::AllocationRefund)
 }
 
-/// The charge of a power change: none when it is no payment, `Some(None)` when it is one whose
-/// amount was not evaluated. A daily political gain's costs are their own rows.
 fn charge(row: &CountryPowerChangeRow) -> Option<Option<i128>> {
     if is_hold(row) || (row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political) || !matches!(row.operation, PowerOperation::Add | PowerOperation::Subtract) {
         return None;
@@ -296,7 +260,6 @@ fn charge(row: &CountryPowerChangeRow) -> Option<Option<i128>> {
     }
 }
 
-/// Changes that are neither a payment nor a balance row of an item.
 fn skipped(cause: PowerCause) -> bool {
     matches!(cause, PowerCause::DailyGain | PowerCause::CapCorrection | PowerCause::ResetSetup | PowerCause::Console)
 }
@@ -305,74 +268,52 @@ fn recurring(cause: PowerCause) -> bool {
     matches!(cause, PowerCause::DailyGain | PowerCause::AbilityUpkeep)
 }
 
-/// A holder's open holds, by the hash of their operands; each row names the capture identity they
-/// were applied under.
 type Holds = BTreeMap<u64, Hold>;
 
-/// What a raw country's power changes of the hour say of its coverage.
 #[derive(Clone, Debug, Default)]
 struct RawHour {
-    /// Political daily gains, by hour.
     daily_gains: Vec<i32>,
-    /// Additions without an evaluated operand: epoch, hour, currency bit.
     unknown_adds: Vec<(u64, i32, u8)>,
-    /// A political daily gain read without its day's application.
     unmatched: bool,
 }
 
-/// What one hour's daily costs say of a holder's political spending.
 #[derive(Clone, Copy, Debug, Default)]
 struct CostHour {
     unmatched: bool,
     negative: bool,
 }
 
-/// A hold row of a capture identity read this hour, and whether its capture covered it.
 struct HoldRow {
     row: CountryPowerChangeRow,
     covered: bool,
 }
 
-/// What the hour writes, gathered.
 #[derive(Default)]
 struct Pending {
     totals: BTreeMap<u128, Total>,
     items: Vec<(Item, ItemId)>,
-    /// Ordinals given this hour, by holder and hash.
     fresh: HashMap<(u32, u64), Vec<usize>>,
-    /// The open day's part rows as the hour leaves them.
     parts: BTreeMap<u128, Part>,
     holds: Vec<HoldRow>,
     costs: HashMap<u32, CostHour>,
     raws: HashMap<u32, RawHour>,
-    /// Holders whose daily row the hour moved, with that row's raw country: their daily cost is
-    /// compared with their costs again.
     daily: BTreeMap<u32, u32>,
-    /// The power changes handed are the list at the run's start, not the hour's events.
     backlog: bool,
 }
 
 #[derive(Default)]
 pub struct PowerLedger {
-    /// The writer must read its own tables whole before its next hour: a resume.
     rebuild: bool,
     last: Option<i32>,
-    /// The run's first hour the writer read: a day whose batch is no later is not the run's.
     run_first: Option<i32>,
-    /// Each raw id's canonical slot, and each slot's raw ids ascending.
     links: HashMap<u32, u32>,
     aliases: HashMap<u32, Vec<u32>>,
-    /// Every live country's slot.
     live: HashSet<u32>,
-    /// Item ordinals by holder and hash of their operands, and each holder's next ordinal.
     items: HashMap<(u32, u64), Vec<u32>>,
     next: HashMap<u32, u32>,
-    /// Each holder's open day and its part keys.
     parts: HashMap<u32, (i32, Vec<u128>)>,
     holds: HashMap<u32, Holds>,
-    /// Holders whose capture's daily political cost does not add up to its costs.
     steady: HashSet<u32>,
-    /// No coverage row holds a current capture and no hold is open: a quiet hour writes nothing.
     idle: bool,
 }
 
@@ -395,7 +336,6 @@ impl PowerLedger {
         self.live = inputs::countries(hour).into_iter().map(|(_, slot)| slot).collect();
     }
 
-    /// Every index from the writer's own tables as they stand: its state is its tables.
     fn read_tables(&mut self, own: &Rows<'_>) -> io::Result<()> {
         self.items.clear();
         self.next.clear();
@@ -418,13 +358,11 @@ impl PowerLedger {
         Ok(())
     }
 
-    /// `holder`'s capture: that of its last linked raw country holding one.
     fn witness(&self, witnesses: Option<&replay_columnar::store::TableView<'_>>, holder: u32) -> Option<Witness> {
         let witnesses = witnesses?;
         self.aliases.get(&holder)?.iter().rev().find_map(|&raw| inputs::witness(witnesses, raw))
     }
 
-    /// The totals row `key` as the hour leaves it so far, `own` the writer's tables.
     fn total<'p>(own: &Rows<'_>, pending: &'p mut Pending, key: u128, make: impl FnOnce() -> Total) -> io::Result<&'p mut Total> {
         if !pending.totals.contains_key(&key) {
             let held = inputs::keyed::<Total>(&own.table(TableId::PowerSpendTotals), key)?.unwrap_or_else(make);
@@ -441,7 +379,6 @@ impl PowerLedger {
         Self::total(own, pending, total_key(holder, currency, Total::GAINS), || tally::gains(holder, currency))
     }
 
-    /// The part row `key` of open day `day` as the hour leaves it so far: none of an earlier day.
     fn held_part(own: &Rows<'_>, pending: &Pending, key: u128, day: i32) -> io::Result<Option<Part>> {
         if let Some(part) = pending.parts.get(&key) {
             return Ok(Some(part.clone()));
@@ -449,7 +386,6 @@ impl PowerLedger {
         Ok(inputs::keyed::<Part>(&own.table(TableId::PowerDayParts), key)?.filter(|part| part.day == day))
     }
 
-    /// Makes `part` the open day's row of its key.
     fn open_part(&mut self, pending: &mut Pending, part: Part) {
         let key = part.key();
         let open = self.parts.entry(part.holder).or_insert((part.day, Vec::new()));
@@ -459,7 +395,6 @@ impl PowerLedger {
         pending.parts.insert(key, part);
     }
 
-    /// Holder `holder`'s item `ordinal`, written or given this hour.
     fn item_row(own: &Rows<'_>, pending: &Pending, holder: u32, ordinal: u32) -> io::Result<Item> {
         if let Some((item, _)) = pending.items.iter().find(|(item, _)| item.holder == holder && item.ordinal == ordinal) {
             return Ok(item.clone());
@@ -467,7 +402,6 @@ impl PowerLedger {
         inputs::keyed::<Item>(&own.table(TableId::PowerItems), item_key(holder, ordinal))?.ok_or_else(|| invalid(format!("PowerItems holds no item {ordinal} of holder {holder} a day part names")))
     }
 
-    /// The ordinal of `holder`'s item `id`, numbered when first paid.
     fn item(&mut self, own: &Rows<'_>, pending: &mut Pending, holder: u32, id: ItemId, first: First) -> io::Result<u32> {
         let hash = id.hash();
         if let Some(fresh) = pending.fresh.get(&(holder, hash))
@@ -499,9 +433,6 @@ impl PowerLedger {
         Ok(ordinal)
     }
 
-    /// A day part of an ended day into the totals: a daily cost item's day as its payments, a
-    /// credit item's as credits, the unmatched costs on the political gains row; a balance
-    /// change's part was counted as it was read.
     fn settle(own: &Rows<'_>, pending: &mut Pending, part: &Part) -> io::Result<()> {
         if part.ordinal == Total::GAINS {
             let total = Self::gains_total(own, pending, part.holder, POLITICAL)?;
@@ -540,7 +471,6 @@ impl PowerLedger {
         Ok(())
     }
 
-    /// The day parts of every holder whose open day ended: counted into the totals, then deleted.
     fn roll(&mut self, hour: &Hour<'_>, pending: &mut Pending, out: &mut Rows<'_>) -> io::Result<()> {
         let day = midnight(hour.hour);
         let ended: Vec<u32> = self.parts.iter().filter(|(_, (opened, _))| *opened != day).map(|(&holder, _)| holder).collect();
@@ -559,9 +489,6 @@ impl PowerLedger {
         Ok(())
     }
 
-    /// The hour's power changes: payments and balance rows into their items' totals and the open
-    /// day's parts, hold rows set aside, and what each raw country's rows say of its coverage. A
-    /// run's first hour lists what the game held when the run began: none of it is counted.
     fn changes(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending) -> io::Result<()> {
         let at = hour.hour;
         let complete = inputs::changes_complete(hour);
@@ -634,8 +561,6 @@ impl PowerLedger {
         Ok(())
     }
 
-    /// The days that ended (a daily row giving way to the next day's, or deleted): their gains
-    /// counted when the run read their batch; and the hour's daily cost publications.
     fn days(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending) -> io::Result<()> {
         let run_first = self.run_first.unwrap_or(hour.hour);
         for day in inputs::closed_days(hour)? {
@@ -667,8 +592,6 @@ impl PowerLedger {
         Ok(())
     }
 
-    /// Whether raw country `raw`'s daily political cost differs from what its day's parts hold;
-    /// none while no part of that application is held (a day the run did not count).
     fn mismatch(&self, hour: &Hour<'_>, own: &Rows<'_>, pending: &Pending, holder: u32, raw: u32) -> io::Result<Option<bool>> {
         let Some(daily) = inputs::daily(hour, raw)? else { return Ok(Some(false)) };
         let Some(sequence) = daily.pp_sequence else { return Ok(Some(false)) };
@@ -688,10 +611,6 @@ impl PowerLedger {
         Ok(found.then(|| daily.pp_cost_raw.is_none_or(|cost| i128::from(cost) != sum)))
     }
 
-    /// One raw country's published daily costs: each application's costs, by item, as the open
-    /// day's parts (a later publication of the day replaces them), or counted at once for a day
-    /// already ended; costs of an application not recorded counted as unmatched. A day whose batch
-    /// came no later than the run's first hour is not the run's.
     fn publish(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, run_first: i32, publication: &inputs::Publication) -> io::Result<()> {
         let at = hour.hour;
         let raw = publication.country;
@@ -762,8 +681,6 @@ impl PowerLedger {
         Ok(())
     }
 
-    /// Every live country's spending coverage this hour; gives each holder's first covered hour
-    /// of each currency's unbroken stretch, and whether any holds a current capture.
     fn coverage(&self, hour: &Hour<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, adjacent: bool, pending: &Pending, out: &mut Rows) -> io::Result<bool> {
         let at = hour.hour;
         let changes_known = inputs::changes_complete(hour);
@@ -841,9 +758,6 @@ impl PowerLedger {
         Ok(current)
     }
 
-    /// Each holder's command power holds: carried while its capture's command power stream
-    /// goes on, the hour's covered hold rows applied (none of a run's first hour, which lists
-    /// what the game held), and settled against its allocated total.
     fn holds(&mut self, hour: &Hour<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, adjacent: bool, pending: &Pending, out: &mut Rows) -> io::Result<()> {
         let at = hour.hour;
         let complete = inputs::changes_complete(hour);
@@ -902,8 +816,6 @@ impl PowerLedger {
     }
 }
 
-/// Applies a covered hold row of capture `identity`: an allocation adds its holder, a release or
-/// refund removes it, and a refund that cannot name its allocation clears every hold.
 fn apply(active: &mut Holds, holder: u32, identity: (u32, u64), row: &CountryPowerChangeRow) -> io::Result<()> {
     if row.operation == PowerOperation::AllocationClamp {
         return Ok(());
@@ -965,7 +877,6 @@ fn apply(active: &mut Holds, holder: u32, identity: (u32, u64), row: &CountryPow
     Ok(())
 }
 
-/// Whether the hour moved any input as the writer reads it, or told its status.
 fn moved(hour: &Hour<'_>) -> bool {
     READS.iter().any(|read| {
         let changes = hour.changes(read.table);
@@ -973,8 +884,6 @@ fn moved(hour: &Hour<'_>) -> bool {
     })
 }
 
-/// The tables an input of the hour's payments being read in part, or not at all, leaves read in
-/// part with the input's own status: the totals and the open day's parts.
 fn partial(hour: &Hour<'_>, out: &mut Rows) {
     for table in [TableId::CountryPowerChanges, TableId::CountryPowerDailyCosts] {
         let status = hour.status(table);
@@ -1007,7 +916,6 @@ impl Writer for PowerLedger {
         READS
     }
 
-    // Hourly: coverage is told each hour, and a day's parts close at midnight.
     fn hourly(&self) -> bool {
         true
     }
@@ -1060,7 +968,6 @@ impl Writer for PowerLedger {
         Ok(())
     }
 
-    /// The last hour and the run's first: two hours; everything else is the tables.
     fn save(&self, blob: &mut Bytes) -> io::Result<()> {
         for hour in [self.last, self.run_first] {
             blob.varint(hour.map_or(0, |hour| u64::from(hour as u32) + 1))?;
@@ -1085,7 +992,6 @@ impl Writer for PowerLedger {
     }
 }
 
-/// `row`'s cells, one per schema field, as a typed row is set.
 fn cells<R: RowCodec>(row: &R, out: &mut Rows) -> io::Result<Vec<Value>> {
     let mut cells = Vec::new();
     row.visit_wire(&mut |column, field| {

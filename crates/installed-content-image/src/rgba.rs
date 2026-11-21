@@ -1,4 +1,3 @@
-//! CPU expansion of the shared DDS decoder's BC1/2/3 blocks and 16-bit surfaces for UI artwork.
 use super::{
     Rgba8Image,
     dds::{Texture, TextureFormat},
@@ -6,10 +5,6 @@ use super::{
 };
 use std::io;
 
-/// The base level of a two-dimensional texture as RGBA8. Its edges are those the
-/// decoder admitted: the native decoder refuses any past its device limit.
-/// Unshared RGBA8 is moved; a shared base level is copied. 16-bit surfaces expand as the device
-/// samples them ([`TextureFormat::sample_16`]).
 pub fn dds_base(mut texture: Texture) -> io::Result<Rgba8Image> {
     if texture.faces != 1 {
         return Err(invalid("UI artwork must be a two-dimensional texture"));
@@ -76,7 +71,6 @@ pub fn dds_base(mut texture: Texture) -> io::Result<Rgba8Image> {
     Ok(image)
 }
 
-/// Expands one BC1, BC2 or BC3 block to sixteen RGBA8 pixels.
 pub fn bc_block(block: &[u8], format: TextureFormat) -> [[u8; 4]; 16] {
     let mut rgba = [[0_u8; 4]; 16];
     let colors = if format == TextureFormat::Bc1 {
@@ -226,7 +220,6 @@ mod tests {
 
     #[test]
     fn sixteen_bit_surfaces_expand_as_sampled() {
-        // 5-6-5 pure red, then 1-5-5-5 half green with alpha clear.
         let red = 0xF800_u16.to_le_bytes().repeat(6);
         assert!(
             image(TextureFormat::B5G6R5, red)

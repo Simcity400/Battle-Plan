@@ -1,21 +1,12 @@
-//! CDecision definition identity. Completion/effect functions are retained sites. Authored
-//! definitions store the token's folded FNV-1a hash. The default placeholder stores the 0xFFFFFFFF
-//! sentinel and is outside content reach. Effect ownership follows the authored-definition argument
-//! and its token. The untyped hook ABI does not establish the concrete receiver class.
 
 use engine_sites::Rva;
 use crate::{Memory, msvc_string, read};
 
-/// CDecision MSVC string token.
 pub const TOKEN: usize = 0x120;
-/// CDecision primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_8570);
-/// Native fixed_random_seed content byte.
 pub const FIXED_RANDOM_SEED: usize = 0x962;
-/// Activation selects the timed targeted container when this byte is nonzero.
 pub const TARGETED_TIMED: usize = 0xb00;
 
-/// Exact token location. The caller copies bytes into its preallocated arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Token {
     pub address: usize,
@@ -65,21 +56,13 @@ pub(crate) fn token(
     })
 }
 
-/// Authored-decision cancel-effect entry; observes invocation only.
 pub const CANCEL_EFFECT_RVA: Rva = Rva(0x0077_0120);
-/// Authored-decision removal-effect entry; observes invocation only.
 pub const REMOVE_EFFECT_RVA: Rva = Rva(0x0077_0360);
-/// Authored targeted-decision cancel-effect entry.
 pub const TARGETED_CANCEL_EFFECT_RVA: Rva = Rva(0x0077_05a0);
-/// Authored targeted-decision removal-effect entry.
 pub const TARGETED_REMOVE_EFFECT_RVA: Rva = Rva(0x0077_0be0);
-/// Targeted decision's execute-effect entry.
 pub const TARGETED_EXECUTE_EFFECT_RVA: Rva = Rva(0x0077_08c0);
-/// The ordinary timed-mission success caller of execution.
 pub const MISSION_COMPLETION_RETURN_RVA: Rva = Rva(0x0077_f3f9);
 
-/// Event-feed-owned decision entries. Targeted timeout is forwarded by the
-/// politics owner and therefore has no second patch here.
 pub const EVENT_FEED_ENTRIES: [(&str, Rva); 5] = [
     ("DecisionCancellationEffects", CANCEL_EFFECT_RVA),
     ("DecisionRemovalEffects", REMOVE_EFFECT_RVA),

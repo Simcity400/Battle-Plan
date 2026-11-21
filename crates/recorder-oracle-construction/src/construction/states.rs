@@ -1,8 +1,5 @@
 use super::*;
 
-/// The sliced raid-state tables hold each state's rows as last read, up to a
-/// day earlier. Only states read at the frame's hour (`sampled`) are
-/// compared; the rest are reported, not compared.
 fn earlier_states(
     report: &mut Report,
     table: &str,
@@ -21,11 +18,6 @@ fn earlier_states(
     }
 }
 
-/// `StateResources.pool` against each saved state's `resources` block: the
-/// state resource pool. The save emits the block only if a value is positive;
-/// the game then writes every nonzero value, including negatives. The accumulator
-/// operands of the same rows are not saved. Only states `sampled` at the
-/// frame's hour are compared.
 pub fn state_pools(
     rows: &[replay_data::rows::StateResourceRow],
     saved: &BTreeMap<(u32, Vec<u8>), installed_content_save::Decimal>,
@@ -127,13 +119,6 @@ pub fn state_pools(
     Ok(())
 }
 
-/// `StateResourceInputs.origin` and `.infrastructure_level` against the save.
-/// A state has an origin when its controller's saved `resources` block has an
-/// `origin` of that state (the resource-origin state, the pointer the walk
-/// matches). The level is that of the state's building whose token the
-/// engine fixes (`engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN`), damage
-/// included: the saved `buildings` entry's `level`. It is read only with an
-/// origin. Only states `sampled` at the frame's hour are compared.
 #[allow(clippy::too_many_arguments)]
 pub fn resource_inputs(
     rows: &[replay_data::rows::StateResourceInputRow],
@@ -159,7 +144,6 @@ pub fn resource_inputs(
         .iter()
         .map(|state| (state.id, state.controller))
         .collect();
-    // A read covers every state of its slice with one row each.
     let captured: BTreeSet<u32> = rows.iter().map(|row| row.state).collect();
     for state in states
         .iter()
@@ -177,9 +161,6 @@ pub fn resource_inputs(
         let controller = controllers
             .get(&row.state)
             .ok_or_else(|| invalid(format!("{subject} has no captured state")))?;
-        // The game resolves raw0 to the reserved country.
-        // Its resources start empty; the game builds origins
-        // from controlled states, which the game adds only for positive tags.
         let origin = country_tag(*controller, links)?
             .and_then(|tag| saved.country_resources.get(tag))
             .is_some_and(|resources| resources.origin_states.contains(&row.state));
@@ -212,18 +193,8 @@ pub fn resource_inputs(
     Ok(())
 }
 
-/// A country's captured override entries: building token and its
-/// (resource token, amount) elements, in native order.
 type OverrideEntries = Vec<(u32, Vec<(u32, i64)>)>;
 
-/// `CountryBuildingResources` against each saved country's
-/// `resources.modify_building_resources` (the country resource save writer),
-/// entry by entry and element by element in native order. A saved element's
-/// key is the one-based resource database index (`ResourceDefinitions.id`)
-/// the walk turns into a token. The walk reads state controllers only. A
-/// country was read at this hour when `SliceReads` gives this hour, with or
-/// without rows; a controller without rows and without a `SliceReads` row has
-/// no known read and is named, not compared.
 #[allow(clippy::too_many_arguments)]
 pub fn building_overrides(
     rows: &[replay_data::rows::CountryBuildingResourceRow],
@@ -412,13 +383,6 @@ pub fn building_overrides(
     Ok(())
 }
 
-/// `StateCores` against the saved countries' `cores` and `claims` lists,
-/// inverted per state. The save writes both memberships reciprocally from the
-/// country side (the core-state and claimed-state rosters), so it certifies
-/// canonical membership, not the state lists' raw alias spelling or order:
-/// each recorded link is resolved to its country's tag and a state's tags
-/// compare as a sorted list. Only states whose StateCores row was read at the
-/// frame's hour are compared.
 pub fn state_cores(
     rows: &[replay_data::rows::StateCoreRow],
     countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
@@ -465,13 +429,6 @@ pub fn state_cores(
     Ok(())
 }
 
-/// `StateCores`' strategic locations against the save: each read state's
-/// (location, anchor province) pairs against its `strategic_region_data`,
-/// and its provinces' (province, location) entries against each province's
-/// `strategic_province_location`, both in stored order, the tokens spelled
-/// through the recorded lexical dictionary. Only states whose StateCores row
-/// was read at the frame's hour are compared; a state's provinces are the
-/// provinces its entries name and the save lists under its province ids.
 #[allow(clippy::too_many_arguments)]
 pub fn state_strategic_locations(
     rows: &[replay_data::rows::StateCoreRow],
@@ -534,7 +491,6 @@ pub fn state_strategic_locations(
                 .or_default()
                 .push(spell(entry as u32)?);
         }
-        // Every saved province of this state with a list must be captured.
         let saved: BTreeMap<u32, Vec<Vec<u8>>> = provinces
             .iter()
             .filter(|(id, province)| {
@@ -555,9 +511,6 @@ pub fn state_strategic_locations(
     Ok(())
 }
 
-/// One reciprocal membership: each read state's recorded links (`None` when
-/// not recorded, which compares nothing for it) against the saved countries
-/// listing it.
 fn membership<'a>(
     kind: &str,
     rows: impl Iterator<Item = (u32, Option<&'a [u32]>)>,
@@ -601,9 +554,6 @@ fn membership<'a>(
     Ok(())
 }
 
-/// `StateDynamicModifiers` against each saved state's `dynamic_modifier`
-/// container, in order: name, scope country and scope state. Only states
-/// `sampled` at the frame's hour are compared.
 pub fn state_modifiers(
     rows: &[replay_data::rows::StateDynamicModifierRow],
     saved: &BTreeMap<u32, Vec<installed_content_save::governance::DynamicModifier>>,

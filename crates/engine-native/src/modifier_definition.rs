@@ -1,74 +1,37 @@
-//! Shared modifier and define metadata table.
-//! Feature eligibility is read passively only for the authenticated flags callback.
-//!
-//! Static registration fills the built-in range, leaving a default-constructed
-//! gap before dynamic keys. Gap rows have empty strings, zero flags, zero index
-//! and token, and an all-ones category. Dynamic registration increases the count
-//! and may replace the data pointer and capacity. A copied table stays current
-//! while its data pointer and count are unchanged.
-//!
-//! Registered rows have an index equal to their position and a nonzero token;
-//! the default gap is skipped. `keys_by_names_at` resolves script names through
-//! these rows and the lexer's reverse dictionary. It reads every row, so callers
-//! resolve once per header.
 
 use crate::{Memory, ccharacter::Literal, cpdx_array::Array, cpdx_lexer, read, read_slice};
 use engine_sites::Rva;
 
-/// Modifier-definition table data-pointer global.
 pub const TABLE_RVA: Rva = Rva(0x033d_d1d0);
-/// Modifier-definition header: data pointer, signed i32 capacity and signed i32 count.
 pub const HEADER_LEN: usize = 16;
-/// Modifier-definition metadata row stride.
 pub const STRIDE: usize = 0x78;
-/// Name localization-key MSVC string; script definitions use their script name.
 pub const NAME_KEY: usize = 0x00;
-/// Postfix localization-key MSVC string, selected only when nonempty.
 pub const POSTFIX_KEY: usize = 0x20;
-/// Name-substitution argument MSVC string, used when nonempty.
 pub const ARGUMENT: usize = 0x40;
-/// Row's own u32 index.
 pub const INDEX: usize = 0x6c;
-/// Script-name lexer token ID, also used by serialization.
 pub const TOKEN: usize = 0x70;
-/// Signed i32 display precision, limiting the caller's requested precision.
 pub const PRECISION: usize = 0x74;
-/// Modifier-definition u32 flags used for value formatting.
 pub const FLAGS: usize = 0x60;
-/// Modifier-definition u32 category mask used by composition, outside ordinary lookup.
 pub const CATEGORY_MASK: usize = 0x64;
-/// Modifier-definition clamp-at-one flag.
 pub const CLAMP_MAXIMUM: u32 = 1 << 4;
-/// Modifier-definition 32-bit feature selector; dynamic keys use zero.
 pub const FEATURE_SELECTOR: usize = 0x68;
-/// Modifier-eligibility callback-pointer global.
 pub const ELIGIBILITY_CALLBACK_RVA: Rva = Rva(0x033d_e580);
-/// Authenticated callback supplying the u32 feature-flags word.
 pub const ELIGIBILITY_FLAGS_GETTER_RVA: Rva = Rva(0x001b_74a0);
-/// Country preferred-tactic weighting-factor global, signed i64 fixed5.
 pub const COUNTRY_PREFERRED_TACTIC_FACTOR_RVA: Rva = Rva(0x033e_0d88);
-/// Trade-feature flags u32 global.
 pub const TRADE_FEATURE_FLAGS_RVA: Rva = Rva(0x033d_d698);
 
-/// Passive metadata evaluation for a present accumulator key. No category
-/// field participates. The selected callback may be null (feature disabled) or
-/// the authenticated feature-flags callback; other targets are not called or
-/// guessed. Raw values and presence belong to the caller.
-/// The per-walk memo retains eligibility and flags for repeatedly requested keys.
 #[derive(Default)]
 pub struct DefinitionMemo {
     entries: std::cell::RefCell<Vec<(u32, Option<u32>)>>,
 }
 
 impl DefinitionMemo {
-    /// A memo that holds `keys` keys before its storage grows.
     pub fn try_with_capacity(keys: usize) -> std::io::Result<Self> {
         Ok(Self {
             entries: std::cell::RefCell::new(crate::allocation::vec(keys)?),
         })
     }
 
-    /// Forget every key for the next walk, keeping the storage.
     pub fn clear(&self) {
         self.entries.borrow_mut().clear();
     }
@@ -95,8 +58,6 @@ impl DefinitionMemo {
     }
 }
 
-/// Successful metadata observations for one acquisition pass, keyed by
-/// module and modifier key. Failed reads are never retained.
 #[derive(Default)]
 pub struct PassDefinitions {
     slots: std::cell::RefCell<std::collections::HashMap<(usize, u32), Option<u32>>>,
@@ -138,7 +99,6 @@ pub fn effective(
     effective_lazy(memory, base, key, || Ok(raw))
 }
 
-/// `effective` with the per-key metadata read once per walk.
 pub fn effective_memo(
     memory: &impl Memory,
     base: usize,
@@ -149,7 +109,6 @@ pub fn effective_memo(
     effective_observed_memo(memory, base, key, raw, memo).map(|(value, _)| value)
 }
 
-/// Requested-key evaluation with pass-local metadata and lazy raw-value access.
 pub(crate) fn effective_lazy_memo(
     memory: &impl Memory,
     base: usize,
@@ -164,8 +123,6 @@ pub(crate) fn effective_lazy_memo(
     }
 }
 
-/// The effective value and the metadata that enabled and clamped it, from
-/// the same observation. Disabled keys retain no clamp-flags read.
 pub fn effective_observed_memo(
     memory: &impl Memory,
     base: usize,
@@ -185,14 +142,11 @@ fn apply(flags: Option<u32>, raw: i64) -> i64 {
     }
 }
 
-/// The flags word of an enabled key, None for a disabled one.
 fn read_flags(memory: &impl Memory, base: usize, key: u32) -> Result<Option<u32>, &'static str> {
     let operands = operands(memory, base, key)?;
     Ok(operands.enabled().then_some(operands.flags))
 }
 
-/// Static per-key metadata. A null authenticated callback supplies no eligible
-/// feature bits, and a disabled key does not read its clamp flags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Operands {
     pub flags: u32,
@@ -205,7 +159,6 @@ impl Operands {
         self.selector == 0 || self.selector & self.eligibility_flags != 0
     }
 
-    /// Effective result for a present raw entry using metadata read in the same pass.
     pub fn effective(self, raw: i64) -> i64 {
         apply(self.enabled().then_some(self.flags), raw)
     }
@@ -215,7 +168,6 @@ pub fn operands(memory: &impl Memory, base: usize, key: u32) -> Result<Operands,
     read_operands(memory, base, key, true)
 }
 
-/// Tests eligibility without reading clamp flags.
 pub fn enabled(memory: &impl Memory, base: usize, key: u32) -> Result<bool, &'static str> {
     Ok(read_operands(memory, base, key, false)?.enabled())
 }
@@ -230,7 +182,6 @@ fn read_operands(
     let table = read::<u64>(memory, root)
         .filter(|&p| p != 0)
         .ok_or("modifier metadata table unreadable or null")?;
-    // The native uint key is cast to signed int before its 0x78-byte indexing.
     let displacement = (key as i32 as isize)
         .checked_mul(STRIDE as isize)
         .ok_or("modifier metadata index overflow")?;
@@ -275,8 +226,6 @@ fn read_operands(
     Ok(operands)
 }
 
-/// The table header's data pointer and live row count. A copy of the rows
-/// stays current while both are unchanged; registration moves or grows the table.
 pub fn table(memory: &impl Memory, base: usize) -> Result<Array, &'static str> {
     let root = engine_sites::at(base, TABLE_RVA).ok_or("modifier definition table withheld")?;
     let header =
@@ -284,19 +233,15 @@ pub fn table(memory: &impl Memory, base: usize) -> Result<Array, &'static str> {
     Array::from_header(header, STRIDE).ok_or("modifier definition table header invalid")
 }
 
-/// Byte range of one copied string in the walk's text arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub len: usize,
 }
 
-/// One registered definition row, with its native fields unchanged.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The row's own index, which equals its table position.
     pub index: u32,
-    /// Script-name lexer token id, nonzero for every registered row.
     pub token: u32,
     pub name_key: Span,
     pub postfix_key: Span,
@@ -305,9 +250,6 @@ pub struct Row {
     pub category_mask: u32,
     pub feature_selector: u32,
     pub precision: i32,
-    /// Process-wide eligibility callback state copied with the table: 0 for null
-    /// (every selected feature is ineligible), 1 for the authenticated flags callback.
-    /// Combat hovers consult it for a nonzero feature selector.
     pub eligibility: u8,
 }
 
@@ -315,8 +257,6 @@ pub struct Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub text_len: usize,
-    /// Text the next attempt needs: exact when every row fit, otherwise a
-    /// certified next growth step (`cpdx_lexer::probe_growth_prefix`).
     pub text_required: usize,
 }
 
@@ -332,12 +272,8 @@ impl Walk {
     }
 }
 
-/// Rows copied per guarded read; the table is one contiguous allocation.
 const ROWS_PER_READ: usize = 16;
 
-/// Whether a table position holds a registered definition. Registration
-/// writes its index and a nonzero token together; gap rows leave both zero.
-/// Any other combination is a layout this reader does not support.
 fn registered(position: u32, row: &[u8]) -> Result<bool, &'static str> {
     let index = u32::from_le_bytes(row[INDEX..INDEX + 4].try_into().unwrap());
     let token = u32::from_le_bytes(row[TOKEN..TOKEN + 4].try_into().unwrap());
@@ -348,8 +284,6 @@ fn registered(position: u32, row: &[u8]) -> Result<bool, &'static str> {
     }
 }
 
-/// Advisory storage demand from the original row and string headers.
-/// Payload bytes remain the independent settled-hour acquisition's responsibility.
 pub fn storage_demand(memory: &impl Memory, base: usize) -> Result<(usize, usize), &'static str> {
     let before = table(memory, base)?;
     let mut rows = 0_usize;
@@ -395,10 +329,6 @@ fn word(row: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(row[offset..offset + 4].try_into().unwrap())
 }
 
-/// Copies every registered definition row in table order. The three strings
-/// are copied exactly (MSVC small-string or heap layout); rows and text that do
-/// not fit publish a truncated prefix with the remaining registered rows
-/// counted. A header change during the copy discards the walk.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -433,7 +363,6 @@ fn walk_inner(
 ) -> Result<Walk, &'static str> {
     let before = table(memory, base)?;
     let eligibility = eligibility(memory, base)?;
-    // Registration publishes this table extent.
     rows.ensure(before.count as usize)?;
     let mut len = 0;
     let mut unread_rows = 0_u32;
@@ -483,8 +412,6 @@ fn walk_inner(
                 .ok_or("modifier definition text overflow")?;
             text.ensure(end)?;
             if end > text.len() {
-                // Certify only the next growth step from the first string that
-                // does not fit, as the lexical dictionary does.
                 let mut used = text_len;
                 let mut required = used;
                 for literal in [&name, &postfix, &argument] {
@@ -543,8 +470,6 @@ fn walk_inner(
     })
 }
 
-/// Eligibility callback state: 0 for null, 1 for the authenticated callback
-/// supplying feature flags. Other callbacks are not evaluated.
 fn eligibility(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
     let at = |key: Rva| engine_sites::at(base, key).ok_or("modifier eligibility site withheld");
     let callback = read::<u64>(memory, at(ELIGIBILITY_CALLBACK_RVA)?)
@@ -558,12 +483,6 @@ fn eligibility(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
     }
 }
 
-/// Modifier indices resolved from script names through this table and the
-/// lexer's reverse dictionary; `None` when no row carries a name. An index
-/// registered twice keeps only its later name, so earlier aliases are absent.
-/// Rows are copied in batches and each registered script name is read once.
-/// Returns the selecting table header, allowing reuse while [`table`] reports
-/// the same data pointer and count.
 pub fn keys_by_names_at<const N: usize>(
     memory: &impl Memory,
     base: usize,
@@ -614,8 +533,6 @@ pub fn keys_by_names_at<const N: usize>(
     Ok((found, before))
 }
 
-/// One script name's key, resolved by [`keys_by_names_at`] at most once per
-/// table header: later asks cost one header read while the header holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NamedKey {
     name: &'static [u8],
@@ -627,7 +544,6 @@ impl NamedKey {
         Self { name, held: None }
     }
 
-    /// The key, or `None` when no registered row carries the name.
     pub fn get(&mut self, memory: &impl Memory, base: usize) -> Result<Option<u32>, &'static str> {
         let current = table(memory, base)?;
         if let Some((key, header)) = self.held
@@ -642,7 +558,6 @@ impl NamedKey {
     }
 }
 
-/// A present entry's raw value is read only after feature eligibility.
 pub(crate) fn effective_lazy(
     memory: &impl Memory,
     base: usize,

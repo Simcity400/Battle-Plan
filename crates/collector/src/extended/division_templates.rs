@@ -1,13 +1,3 @@
-//! Template dictionary, every hour, with exact native text: the counter
-//! inputs, the stored 3D-model inputs and the saved model choices of one
-//! walk, whose sub-unit definitions resolve through caller-owned slots that
-//! grow off-thread, and the names and categories derived from the same walk
-//! ([`dictionary`]). The walk authenticates every roster occurrence; one whose
-//! writer certificate stands since its held read publishes that read (`core`,
-//! `held`) and nothing of it is read. Each read template's movement speed keys
-//! (DivisionTemplateIcons.speed_keys, [`engine_native::carmy::movement_speed_keys`])
-//! are read after the walk from its template object; a refused read is that
-//! row's None.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -30,18 +20,12 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryTemplateState,
 ];
 
-/// Distinct failure reasons one hour's summary keeps by name; the rest are
-/// counted together.
 pub const MODEL_REASONS: usize = 8;
 
-/// This hour's DivisionTemplateIcons rows whose model inputs failed, by
-/// reason, for status.json. Fixed size: nothing is allocated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelFailures {
     pub rows: u32,
-    /// (reason, rows) in first-seen order.
     pub reasons: [(&'static str, u32); MODEL_REASONS],
-    /// Rows whose reason did not fit `reasons`.
     pub other: u32,
 }
 
@@ -72,9 +56,7 @@ pub struct Capacities {
     country_rows: usize,
     icon_bytes: usize,
     name_bytes: usize,
-    /// The sub-unit database's length, for the hourly walk's two copies.
     database: usize,
-    /// The hourly walk's per-country definition slots.
     locals: usize,
 }
 
@@ -92,9 +74,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Country templates retain grouped subunits, model representatives,
-    /// and the literal or fallback name. Empty outputs still visit every
-    /// authenticated roster record and count its independent arena demands.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -116,9 +95,6 @@ impl Capacities {
         };
         let rows = demand(daily.outcome);
         let icon_rows = demand(icons.outcome);
-        // This sizing pass runs on the loader before hook publication and
-        // on existing sizing workers. Offer both certificate domains before
-        // the first boundary, including country-only demand if templates fail.
         crate::template_changes::prepare(icon_rows.as_ref().copied().unwrap_or(0), countries);
         crate::local_subunit_changes::prepare(countries);
         let rows = rows?;
@@ -156,7 +132,6 @@ struct CountryRow {
     garrisons: Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>,
     garrison_failure: Option<&'static str>,
 }
-/// The template stores of the latest settled hour, which the pool's next capture takes.
 #[derive(Default)]
 pub(crate) struct Stores {
     held: held::Store,
@@ -166,29 +141,24 @@ pub(crate) struct Stores {
     generation: u64,
 }
 
-/// One pool's [`Stores`]: every frame's capture takes them and its settlement returns them.
 #[derive(Default)]
 pub(crate) struct Shelf {
     stores: Option<Stores>,
-    /// The largest the stores were when returned, also while a capture has them out.
     bytes: usize,
 }
 
 pub(crate) type Home = engine_allocation::SharedBox<std::sync::Mutex<Shelf>>;
 
-/// A pool's empty home; a refused allocation is the collector's allocation failure.
 pub(crate) fn new_home() -> std::io::Result<Home> {
     engine_allocation::shared(std::sync::Mutex::default())
 }
 
-/// The high-water bytes of the pool's template stores.
 pub(crate) fn home_allocated_bytes(home: &Home) -> usize {
     home.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .bytes
 }
 
-/// A walked row's layout and settings, kept for conversion once the stores have gone home.
 struct Payload {
     key: (u64, usize, u32),
     layout: Option<std::sync::Arc<TemplateLayout>>,
@@ -211,36 +181,22 @@ pub struct Captured {
     sample_hour: Option<i32>,
     held: held::Store,
     core: core::Store,
-    /// None only in a placeholder.
     home: Option<Home>,
-    /// This hour's rows' payloads, by row key.
     payloads: Vec<Payload>,
     model_failures: ModelFailures,
     database: Arena<usize>,
     globals: Arena<native::GlobalSlot>,
     locals: Arena<native::LocalSlot>,
-    /// The hour's movement speed keys of every walked template, in walk order.
     speed_keys: Vec<u32>,
-    /// Each walked template's span of `speed_keys`, by template, ascending;
-    /// `None` is its counted refusal.
     speed_spans: Vec<(u64, Option<(usize, usize)>)>,
-    /// The roster of a walk that refused nothing with no writer running, for its settlement.
     clean: Option<[u64; 5]>,
-    /// Names the held rows and payloads; renewed by any hour that did not publish exactly them.
     generation: u64,
-    /// The held generation and roster of a clean hour, once settled.
     witness: Option<Witness>,
-    /// The hour's carried and read template occurrences.
     occurrences: [u64; 2],
-    /// The split walk's ranges, kept with their arenas from hour to hour; the first
-    /// `staged_parts` hold this hour's rows and speed keys.
     walk_parts: Vec<WalkPart>,
     staged_parts: usize,
-    /// Why this hour's split walk left the hour to the serial walk.
     split_fallback: Option<crate::hour_stages::TemplateFallback>,
-    /// The stores' loan to the ranges, allocated once.
     lent: Option<engine_allocation::SharedBox<split::Lent>>,
-    /// Each country slot's weight and templates, and the hour's templates, for the split.
     slot_weights: Vec<(u32, u64, u32)>,
     stitching: split::Stitching,
 }
@@ -253,7 +209,6 @@ impl Captured {
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.icon_rows
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
-        // A failed capture has no rows of its own to count.
         self.model_failures = ModelFailures::default();
         self.held.forget();
         self.core.forget();
@@ -262,7 +217,6 @@ impl Captured {
         self.country_rows.fail(Outcome::Unavailable { reason });
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::without_home(&Capacities {
             rows: 0,
@@ -286,7 +240,6 @@ impl Captured {
         }
     }
 
-    /// A frame's capture with no stores until the pool shares its home ([`Self::share_home`]).
     pub(crate) fn without_home(capacity: &Capacities) -> Self {
         Self {
             preacquired: None,
@@ -356,7 +309,6 @@ impl Captured {
             self.pending_owned = false;
         }
     }
-    /// This frame's own storage; the stores it borrows from its home are the pool's.
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self.bytes.allocated_bytes()
@@ -390,7 +342,6 @@ impl Captured {
         self.home.clone()
     }
 
-    /// Take and return the stores of `home`, shared with the pool's other frames.
     pub(crate) fn share_home(&mut self, home: &Home) {
         self.home = Some(home.clone());
     }
@@ -417,8 +368,6 @@ impl Captured {
             Outcome::Unavailable { .. } => 0,
         }
     }
-    /// Tests: the staggered whole-pack path, which takes a matching
-    /// preacquisition or reads afresh.
     #[cfg(test)]
     pub fn capture(
         &mut self,
@@ -499,10 +448,6 @@ impl Captured {
             ticks: Some([0; N]),
         });
     }
-    /// The ticks of the walk the template job preacquired,
-    /// taken as [`Self::capture`] takes them, without a native read. Without
-    /// a matching preacquisition the hour's templates are refused: this
-    /// never walks.
     pub(crate) fn take_preacquired(
         &mut self,
         base: usize,
@@ -554,8 +499,6 @@ impl Captured {
     ) -> [u64; N] {
         use crate::hour_stages::{Part, record_part};
         self.reset();
-        // Without the pool's settled stores (the last settlement is still pending, or
-        // failed), this walk reads every template.
         let stores = self
             .home
             .as_ref()
@@ -582,12 +525,9 @@ impl Captured {
         self.held.begin();
         self.core.begin();
         self.sample_hour = Some(hour);
-        // Carried and read templates.
         let templates: [u64; 2];
         let speed_refusals: u64;
         let country_refusals: u32;
-        // The counter/model inputs, each composition grid's entries and the
-        // demanded display-name inputs every hour.
         let country_ticks: u64;
         let icons = {
             let _reads = crate::read_accounting::table(TABLES[1]);
@@ -663,7 +603,6 @@ impl Captured {
         let country_native_ticks = country_ticks;
         self.country_cache.finish();
         self.pending_owned = true;
-        // The dictionary, from the same walk.
         let _reads = crate::read_accounting::table(TABLES[0]);
         let start = qpc();
         let icon_rows = self
@@ -709,8 +648,6 @@ impl Captured {
             && !self.held.reordered()
             && matches!(tokens, (Some(_), Some(_)))
             && (changes.quiet(), changes.core_dependencies()) == tokens;
-        // The counts catch an unhooked removal; an addition is always read. The
-        // roster digest separates pooled buffers that hold different roster orders.
         self.clean = clean.then(|| {
             let roster = icon_rows.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, row| {
                 [
@@ -737,7 +674,6 @@ impl Captured {
         ]
     }
 
-    /// The hour's walk on this thread, every store changed in walk order.
     fn walk_serial(
         &mut self,
         memory: &impl Memory,
@@ -799,7 +735,6 @@ impl Captured {
         }
     }
 
-    /// Owned observations and frozen `held` certificates; no Memory capability.
     pub(crate) fn settle_owned(&mut self) {
         if !self.pending_owned {
             return;
@@ -862,7 +797,6 @@ impl Captured {
         if clean.is_none() || self.core.changed() || self.held.changed() || self.generation == 0 {
             self.generation = collector_projection::projection::generation();
         }
-        // A clean hour published exactly what it holds, so a later unchanged hour matches it.
         self.witness = clean.map(|[base, state, icons, countries, roster]| {
             Witness::new([self.generation, base, state, icons, countries, roster])
         });
@@ -882,7 +816,6 @@ impl Captured {
         }
     }
 
-    /// The row's layout and settings as its settlement held them.
     fn payload(
         &self,
         row: &native::IconRow,
@@ -897,8 +830,6 @@ impl Captured {
                 (payload.layout.as_ref(), payload.settings.as_ref())
             })
     }
-    /// DivisionTemplateIcons.speed_keys of every walked template, read from its template object
-    /// after the walk, or by the split walk's range that read it; returns the refused templates.
     fn capture_speed_keys(
         &mut self,
         memory: &impl Memory,
@@ -914,7 +845,6 @@ impl Captured {
             .unwrap_or(&[]);
         let mut refused = 0_u64;
         if engine_allocation::reserve(&mut self.speed_spans, rows.len()).is_err() {
-            // No span to publish: every row refuses.
             refused = rows.len() as u64;
         } else {
             let parts = &self.walk_parts[..self.staged_parts.min(self.walk_parts.len())];
@@ -983,7 +913,6 @@ impl Captured {
         (&self.speed_keys, &self.speed_spans)
     }
 
-    /// The template's speed keys this hour; `None` is its refusal.
     fn speed_keys(&self, template: u64) -> Option<Vec<u32>> {
         self.speed_key_slice(template)
             .map(|keys| owned_vec(copy_vec(keys)))
@@ -998,7 +927,6 @@ impl Captured {
         self.speed_keys.get(start..start.checked_add(len)?)
     }
 
-    /// This hour's rows whose model inputs failed, by reason.
     #[cfg(test)]
     pub(crate) fn model_failures(&self) -> ModelFailures {
         self.model_failures
@@ -1020,9 +948,6 @@ impl Captured {
         })
     }
 
-    /// A display name equal to this frame's complete dictionary row is a
-    /// same-frame certificate; a failed or truncated dictionary leaves every
-    /// name a self-contained Changed override.
     #[cfg(test)]
     pub(crate) fn table_inputs(&self) -> [TableInput; N] {
         self.projected_inputs(None)
@@ -1047,9 +972,6 @@ impl Captured {
                 rows.rows::<tables::DivisionTemplates>()
             }
             TableInput::ComparedEqual(_) => previous,
-            // Icon name certificates compare with this frame's complete
-            // dictionary, not just the changed subset. Quiet frames borrow
-            // the encoder's identical rows without cloning names.
             TableInput::ComparedChanges { .. } => {
                 complete = self.templates(None);
                 match &complete {
@@ -1298,9 +1220,6 @@ impl Captured {
     }
 }
 
-/// Exact byte comparison, not a digest or pointer identity. Dictionary rows are
-/// sorted by the existing table conversion. New handles and changed values need
-/// no daily row; overrides make keyframes and direct seeks self-contained.
 enum NameValue<'a> {
     Same,
     Changed {

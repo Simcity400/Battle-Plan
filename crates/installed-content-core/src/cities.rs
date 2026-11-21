@@ -1,15 +1,3 @@
-//! `map/cities.txt` and `map/cities.bmp`: the city-sprawl style table.
-//!
-//! The file names a bitmap of *styles*, not of footprints. `cities.bmp` is the
-//! map's own size and its palette index at a pixel selects a `city_group`;
-//! where the sprawl actually stands comes from `map/terrain.bmp`, whose
-//! `spawn_city = yes` palette entry marks the urban blobs. Inside a blob,
-//! `distance` is the pixel's distance to the edge in map pixels, and each
-//! `building` block claims one distance ring with entity names to choose
-//! from at random.
-//!
-//! Any recorded reader error prevents city-sprawl construction, so a file
-//! with such an error is refused by name.
 
 use std::io;
 
@@ -21,30 +9,20 @@ use crate::{
     parser::native::{self, Shape},
 };
 
-/// One `building` block: a distance ring and the entities that may stand in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CityBuilding {
-    /// Distance to the edge of the urban area, in map pixels.
     pub distance: u32,
-    /// Entity names in `gfx/entities/*.asset`; the engine picks one at random.
     pub meshes: Vec<String>,
 }
 
-/// One `city_group` block: an architecture style keyed by palette index.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CityGroup {
-    /// The `map/cities.bmp` palette index this style claims.
     pub color_index: u8,
-    /// Signed displacement strength toward the ring-weighted neighbouring houses.
     pub density: f64,
-    /// The `building` blocks in declaration order.
     pub buildings: Vec<CityBuilding>,
 }
 
 impl CityGroup {
-    /// The ring a pixel at this distance from the blob edge belongs to:
-    /// scan the rings from the last declared backwards and take the first
-    /// whose `distance` the pixel reaches, meshes or none.
     pub fn building_for(&self, distance: u32) -> Option<&CityBuilding> {
         self.buildings
             .iter()
@@ -53,14 +31,10 @@ impl CityGroup {
     }
 }
 
-/// The whole of `map/cities.txt`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Cities {
-    /// `types_source`, the bitmap the palette indices are read from.
     pub types_source: String,
-    /// One sample per this many map pixels in x.
     pub pixel_step_x: u32,
-    /// One sample per this many map pixels in y.
     pub pixel_step_y: u32,
     pub groups: Vec<CityGroup>,
 }
@@ -73,8 +47,6 @@ impl Cities {
     }
 }
 
-/// Scan a field as an integer prefix; text with no digit records a reader
-/// error, while an empty input keeps its separate end-of-input outcome.
 fn integer(field: &crate::parser::Item, errors: &mut Vec<String>) -> Scanned<i32> {
     let text = field.value.scalar().unwrap_or_default();
     let scanned = crt::scan_i32(text);
@@ -88,8 +60,6 @@ fn integer(field: &crate::parser::Item, errors: &mut Vec<String>) -> Scanned<i32
     scanned
 }
 
-/// Reads city settings, groups and distance-ring meshes with persistent
-/// field consumption. Both pixel steps start at 1.
 pub fn parse(input: &[u8]) -> io::Result<Cities> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -98,7 +68,6 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
         Building,
     }
     let mut errors = Vec::new();
-    // The lexer keeps the leading mark for this map reader.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -111,7 +80,6 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
             (Node::File, Some(b"types_source" | b"pixel_step_x" | b"pixel_step_y"))
             | (Node::Group, Some(b"color_index" | b"density"))
             | (Node::Building, Some(b"distance")) => Shape::One,
-            // Unexpected fields record a reader error before their value is skipped.
             _ => {
                 errors.push(format!(
                     "line {}: key {} is reported",
@@ -157,12 +125,10 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                 }
             }
             Some(b"city_group") => {
-                // The group index and density start at zero.
                 let mut group = CityGroup::default();
                 for field in block(&field.value, "city_group")? {
                     match field.keyword().map(|key| key.folded()).as_deref() {
                         Some(b"color_index") => {
-                            // The local int is uninitialized on a failed scan. Do not guess it.
                             match integer(field, &mut errors) {
                                 Scanned::Stored(value) => group.color_index = value as u8,
                                 Scanned::NoMatch => {}
@@ -177,7 +143,6 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                             let text = field.value.scalar().unwrap_or_default();
                             let scanned = crt::scan_f32(text);
                             if scanned.is_none() && !text.trim_ascii().is_empty() {
-                                // A failed float conversion records a reader error.
                                 errors.push(format!(
                                     "density = {} does not scan as a float",
                                     String::from_utf8_lossy(text)
@@ -236,7 +201,6 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
     Ok(cities)
 }
 
-/// Reads `map/cities.txt` and the style bitmap it names.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Cities, IndexedImage)> {
     let cities = parse(&layers.read("map/cities.txt")?)
         .map_err(|error| invalid(format!("map/cities.txt: {error}")))?;
@@ -273,7 +237,6 @@ city_group = {
             } city_group={color_index=7}"#,
         )
         .unwrap();
-        // The first `}` ends the persistent read; an absent step keeps its 1.
         assert_eq!((cities.pixel_step_x, cities.pixel_step_y), (2, 1));
         assert_eq!(cities.groups.len(), 1);
         assert_eq!(cities.groups[0].color_index, 15);
@@ -282,8 +245,6 @@ city_group = {
         assert_eq!(cities.groups[0].buildings[0].distance, 3);
     }
 
-    /// Old World Blues' `distance = 0.5`: `%i` stores the `0` and stops at
-    /// the `.`, which is no error.
     #[test]
     fn a_fractional_distance_stores_its_integer_part() {
         let cities =
@@ -291,9 +252,6 @@ city_group = {
         assert_eq!(cities.groups[0].buildings[0].distance, 0);
     }
 
-    /// A reported key (an unknown one, a quoted one, which is no keyword)
-    /// and a number that does not scan are recorded errors, after which the
-    /// game builds no sprawl.
     #[test]
     fn a_recorded_error_discards_the_file() {
         for input in [
@@ -328,8 +286,6 @@ city_group = {
         assert!(cities.group_for(0).unwrap().building_for(4).is_none());
     }
 
-    /// Rings are scanned from the last declared: with SAMPLE's descending
-    /// rings the last, distance 1, answers every distance from 1.
     #[test]
     fn the_ring_is_the_last_declared_one_the_distance_reaches() {
         let cities = parse(SAMPLE).unwrap();

@@ -154,8 +154,6 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
         axes: { xFrom: null, xTo: null, yMin: null, yMax: null, log: false }, layers: [], active: false, revision: 0 }),
     ]) {
       const markup = renderToStaticMarkup(chart);
-      // Model only the caller's class/descendant selector inside this owned chart.
-      // The real rendered attributes distinguish the wrapper from its keyboard target.
       const rootClass = /^<div class="([^"]+)">/.exec(markup)?.[1];
       const selected = host.__armyFocusSelector!.split(',').flatMap(selector => {
         const [parent, child] = selector.trim().split(/\s+/);

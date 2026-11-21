@@ -1,7 +1,3 @@
-//! Retour owns ordinary hook relocation. Verified patches are published while
-//! existing process threads are suspended, without heap use in that interval.
-//! The hooked site is the hourly update, the once-per-hour full tick on the
-//! main thread.
 
 use retour::RawDetour;
 use std::{
@@ -34,10 +30,8 @@ use windows_sys::Win32::{
 
 pub mod installation;
 
-/// An initial enable refused before writing any byte and with no owned member.
 pub const BYTE_VERIFICATION_FAILURE: &str = "hook bytes differ from verified snapshot";
 
-/// Covers a counted callback's native target and its uncounted entry/exit.
 pub struct TapSafety {
     pub in_flight: &'static AtomicUsize,
     pub stub: Range<usize>,
@@ -86,26 +80,24 @@ pub struct Hook {
     tap: Option<TapSafety>,
     name: &'static str,
     publication_busy: AtomicBool,
-    /// A function no thread may be inside when this hook is enabled.
     guard: Option<Range<usize>>,
-    /// The last publication was held because a thread may have been inside it.
     guard_held: bool,
 }
 
 impl Hook {
-    /// # Safety
-    /// Caller verified the executable, all 16 sentinel bytes, and that no
-    /// native CALL return address falls in the five patched bytes: unwind
-    /// epilogue decoding must never see our jump at a caller's return PC.
+    #[doc = " # Safety"]
+    #[doc = " Caller verified the executable, all 16 sentinel bytes, and that no"]
+    #[doc = " native CALL return address falls in the five patched bytes: unwind"]
+    #[doc = " epilogue decoding must never see our jump at a caller's return PC."]
     pub unsafe fn new(site: usize, callback: usize, original: [u8; 16]) -> Result<Self, String> {
         unsafe { Self::new_span(site, callback, original, original.len()) }
     }
 
-    /// Bind the native flight counter and complete callback range before publication.
-    /// The owner must retain both on native escape and quiesce the DLL before unload.
-    ///
-    /// # Safety
-    /// The requirements of [`Self::new`] apply. Retain the flight counter and stub until native calls have quiesced before unloading the DLL.
+    #[doc = " Bind the native flight counter and complete callback range before publication."]
+    #[doc = " The owner must retain both on native escape and quiesce the DLL before unload."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The requirements of [`Self::new`] apply. Retain the flight counter and stub until native calls have quiesced before unloading the DLL."]
     pub unsafe fn new_with_safety(
         site: usize,
         callback: usize,
@@ -135,7 +127,6 @@ impl Hook {
             if site.checked_add(sentinel_len).is_none() {
                 return Err("hook sentinel address overflow".into());
             }
-            // A nearby relay lets retour relocate whole instructions covering the rel32 jump.
             let relay = allocate_near(site, 4096);
             if relay.is_null() {
                 return Err("cannot allocate a nearby detour relay".into());
@@ -155,7 +146,6 @@ impl Hook {
                 }
                 let relocation = unsafe { RawDetour::new(site as *const (), relay.cast()) }
                     .map_err(|e| e.to_string())?;
-                // Retour emits its trampoline after the relay; publish that code too.
                 if unsafe { FlushInstructionCache(GetCurrentProcess(), ptr::null(), 0) } == 0 {
                     return Err(io::Error::last_os_error().to_string());
                 }
@@ -204,13 +194,13 @@ impl Hook {
         })
     }
 
-    /// Relocate PUSH RBX; PUSH R15; SUB RSP,imm8 with partial-prologue unwind records.
-    ///
-    /// # Safety
-    /// Authenticate the full sentinel and exclude incoming branches and return PCs
-    /// inside the eight-byte prologue. The following instruction must reload RAX
-    /// from [RDX]. The callback must tail-jump to the trampoline
-    /// with the native entry stack and registers restored; quiesce before dropping.
+    #[doc = " Relocate PUSH RBX; PUSH R15; SUB RSP,imm8 with partial-prologue unwind records."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " Authenticate the full sentinel and exclude incoming branches and return PCs"]
+    #[doc = " inside the eight-byte prologue. The following instruction must reload RAX"]
+    #[doc = " from [RDX]. The callback must tail-jump to the trampoline"]
+    #[doc = " with the native entry stack and registers restored; quiesce before dropping."]
     pub unsafe fn new_push_frame(
         site: usize,
         callback: usize,
@@ -234,7 +224,6 @@ impl Hook {
             continuation[..8].copy_from_slice(&original[..8]);
             continuation[8..10].copy_from_slice(&[0x48, 0xb8]);
             continuation[10..18].copy_from_slice(&((site + 8) as u64).to_le_bytes());
-            // An unprefixed register JMP is not a Win64 epilogue; the resumed load kills RAX.
             continuation[18..].copy_from_slice(&[0xff, 0xe0]);
             let unwind = [
                 1,
@@ -287,7 +276,6 @@ impl Hook {
         })
     }
 
-    /// Whether the last tracked publication reached this site or tap while busy.
     pub fn publication_busy(&self) -> bool {
         self.publication_busy.load(Ordering::Relaxed)
     }
@@ -296,8 +284,6 @@ impl Hook {
         self.enabled || self.needs_flush
     }
 
-    /// Enable this hook only while no suspended thread may be inside `function`: none runs in it
-    /// and none holds a return into it on its live stack. `None` publishes without that check.
     pub fn guard(&mut self, function: Option<Range<usize>>) {
         self.guard = function;
     }
@@ -306,8 +292,6 @@ impl Hook {
         self.guard.is_some()
     }
 
-    /// Whether the last publication was held because a thread may have been inside the guarded
-    /// function.
     pub fn guard_held(&self) -> bool {
         self.guard_held
     }
@@ -320,12 +304,10 @@ impl Hook {
         Ok(self.guard_held)
     }
 
-    /// A static family/site label retained for publication diagnostics.
     pub fn named(mut self, name: &'static str) -> Self {
         self.name = name;
         self
     }
-    /// Name the exact site whose authenticated bytes no longer match.
     pub fn snapshot_failure(&self) -> Option<&'static str> {
         (!self.bytes_match(self.enabled)).then_some(self.name)
     }
@@ -338,13 +320,13 @@ impl Hook {
         }
     }
 
-    /// Replace one verified five-byte CALL with a CALL to the relay. The callback invokes the
-    /// original call target itself, then returns to return point after the five-byte CALL. Its
-    /// native caller's frame and unwind information stay intact. The relocation trampoline is
-    /// retained for ownership, never invoked.
-    ///
-    /// # Safety
-    /// Authenticate the executable and sentinel, provide a callback with the native call ABI, and retain its code until restoration and quiescence complete.
+    #[doc = " Replace one verified five-byte CALL with a CALL to the relay. The callback invokes the"]
+    #[doc = " original call target itself, then returns to return point after the five-byte CALL. Its"]
+    #[doc = " native caller's frame and unwind information stay intact. The relocation trampoline is"]
+    #[doc = " retained for ownership, never invoked."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " Authenticate the executable and sentinel, provide a callback with the native call ABI, and retain its code until restoration and quiescence complete."]
     pub unsafe fn new_call(
         site: usize,
         callback: usize,
@@ -353,11 +335,11 @@ impl Hook {
         unsafe { Self::new_call_span(site, callback, original, original.len()) }
     }
 
-    /// Verify only the owned span: the two naval CALLs need 16 / 13 bytes;
-    /// the latter ends at the next native function.
-    ///
-    /// # Safety
-    /// The requirements of [`Self::new_call`] apply to the complete owned sentinel span.
+    #[doc = " Verify only the owned span: the two naval CALLs need 16 / 13 bytes;"]
+    #[doc = " the latter ends at the next native function."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The requirements of [`Self::new_call`] apply to the complete owned sentinel span."]
     pub unsafe fn new_call_span(
         site: usize,
         callback: usize,
@@ -374,10 +356,10 @@ impl Hook {
         })
     }
 
-    /// Keep a counted native CALL's entry, original and exit alive through restore.
-    ///
-    /// # Safety
-    /// The requirements of [`Self::new_call`] apply. The supplied counter and stub must cover every native entry, target call, return and unwind until quiescence.
+    #[doc = " Keep a counted native CALL's entry, original and exit alive through restore."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The requirements of [`Self::new_call`] apply. The supplied counter and stub must cover every native entry, target call, return and unwind until quiescence."]
     pub unsafe fn new_call_with_safety(
         site: usize,
         callback: usize,
@@ -394,16 +376,16 @@ impl Hook {
         })
     }
 
-    /// Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay; NOP. The counted
-    /// stub forwards the live RAX-based target and native arguments, then returns to the return
-    /// point after the five-byte CALL. Their caller has no unwind handler/chain; the five- and
-    /// six-byte return points share the same body unwind state, after its ten-byte prologue. Its
-    /// counter must cover the target until its return PC is no longer in use, including unwind.
-    /// Rust cleanup must not clear it before Windows finishes traversing the stub. The stub range
-    /// covers uncounted entry/exit instructions.
-    ///
-    /// # Safety
-    /// Authenticate the executable and sentinel and verify the documented unwind state. The callback must preserve the native call ABI and the counter and stub must remain valid through every native return or unwind.
+    #[doc = " Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay; NOP. The counted"]
+    #[doc = " stub forwards the live RAX-based target and native arguments, then returns to the return"]
+    #[doc = " point after the five-byte CALL. Their caller has no unwind handler/chain; the five- and"]
+    #[doc = " six-byte return points share the same body unwind state, after its ten-byte prologue. Its"]
+    #[doc = " counter must cover the target until its return PC is no longer in use, including unwind."]
+    #[doc = " Rust cleanup must not clear it before Windows finishes traversing the stub. The stub range"]
+    #[doc = " covers uncounted entry/exit instructions."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " Authenticate the executable and sentinel and verify the documented unwind state. The callback must preserve the native call ABI and the counter and stub must remain valid through every native return or unwind."]
     pub unsafe fn new_indirect_call(
         site: usize,
         callback: usize,
@@ -443,8 +425,6 @@ impl Hook {
         if let Some(tap) = &self.tap
             && (!enabled || !self.enabled)
         {
-            // A native target can hold the five-byte return point on its stack while its current IP
-            // is outside every collector range. Keep the flight check first.
             return Ok(tap.in_flight.load(Ordering::SeqCst) != 0
                 || contains(&[relay, trampoline, tap.stub.clone()])?);
         }
@@ -518,15 +498,10 @@ impl Hook {
             == &expected[..self.sentinel_len]
     }
 
-    /// Recheck this hook's currently owned bytes for an installation diagnostic.
-    /// Call only after publication has resumed threads; this does not grant a
-    /// publication certificate or change ownership.
     pub fn matches_published_snapshot(&self) -> bool {
         self.bytes_match(self.enabled)
     }
 
-    /// Prepare protection/ranges before holding threads, validate every site
-    /// before any write, and publish the whole family under one suspension.
     pub fn set_family_enabled(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
         if !enabled && restoration::active() {
             return Ok(restoration::restore(hooks.iter_mut()));
@@ -569,13 +544,10 @@ impl Hook {
         publish(&mut references, enabled)
     }
 
-    /// One publication of scattered hooks (including taps), under its own suspension or, inside
-    /// an attach round, under the round's.
     pub fn set_enabled_batch(hooks: &mut [&mut Self], enabled: bool) -> Result<bool, String> {
         shared::batch::<false>(hooks, enabled)
     }
 
-    /// Retain the first busy site for callers that report publication deadlines.
     pub fn set_enabled_batch_tracking_busy(
         hooks: &mut [&mut Self],
         enabled: bool,
@@ -659,8 +631,6 @@ impl Hook {
         if hooks.is_empty() || !enabled && hooks.iter().all(|hook| !hook.is_enabled()) {
             return Ok(true);
         }
-        // Taken before any protection change and released after the last
-        // restore and resume; a panicking publisher cannot leave it unusable.
         let _publication = PUBLICATION
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -704,7 +674,6 @@ impl Hook {
             }
             protected += 1;
         }
-        // No allocation, formatting, locks or destruction while suspended.
         let outcome = if prepare_error.is_none() {
             (|| {
                 threads.suspend()?;
@@ -743,9 +712,6 @@ impl Hook {
                 }
                 if let Err(code) = flush() {
                     publication_failed = true;
-                    // Restore the complete prior family before releasing threads.
-                    // On a second flush failure retain executable allocations and
-                    // let detach retry publication of the restored bytes.
                     for (index, hook) in hooks.iter_mut().enumerate() {
                         let was_enabled = previous[index].0;
                         if !selected(index) || hook.enabled == was_enabled && !hook.needs_flush {
@@ -840,9 +806,6 @@ impl Hook {
     }
 }
 
-// Restore bookkeeping must remain possible after capture has stopped. These
-// temporary hook-family vectors are prepared before suspension; failed reserves
-// leave owned patches and executable storage intact for a later restore retry.
 pub fn publication_storage<T>(capacity: usize, enabled: bool) -> io::Result<Vec<T>> {
     if enabled {
         engine_allocation::vec(capacity)
@@ -865,26 +828,14 @@ pub fn fail_flushes(count: usize) {
 pub static FAMILY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
-    /// Thread suspensions this thread began ([`Threads::suspend`]).
     pub static SUSPENSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Held by one publication at a time, from its first page-protection change
-/// to its last restore. Two publications whose sites share a code page would
-/// otherwise race: one restores the page's original protection while the
-/// other, already past its own `VirtualProtect`, writes its patch into a
-/// page that is no longer writable (an access violation), or suspends the
-/// other publisher mid-suspension. The runtime publishes from one thread, so
-/// this lock is never contended in production; it makes the order a property
-/// of the publication itself rather than of its callers.
 pub static PUBLICATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Drop for Hook {
     fn drop(&mut self) {
-        // The worker never drops an enabled hook or an in-use trampoline.
         if self.is_enabled() {
-            // Retain the relay AND relocation on failed publication. Runtime
-            // restores and drains callbacks before dropping an owned family.
             return;
         }
         if self.push_frame
@@ -901,7 +852,6 @@ impl Drop for Hook {
     }
 }
 
-// Off-suspension only: the snapshot API allocates and maps storage.
 fn visit_threads(
     excluded: &[u32],
     mut visit: impl FnMut(u32) -> Result<(), u32>,
@@ -936,11 +886,6 @@ fn visit_threads(
     result
 }
 
-// NtQuerySystemInformation fills caller storage without user-mode allocation.
-// SystemProcessInformation (5) writes caller storage; STATUS_INFO_LENGTH_MISMATCH
-// reports the required length. The process and thread records are parsed
-// below without following native pointers.
-// https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtQuerySystemInformation(
@@ -963,7 +908,6 @@ fn query_census(buffer: &mut [usize], required: &mut u32) -> Result<usize, u32> 
     if status == STATUS_INFO_LENGTH_MISMATCH {
         return Err(ERROR_INSUFFICIENT_BUFFER);
     }
-    // Return NTSTATUS directly, without another user-mode helper while held.
     if status < 0 {
         return Err(status as u32);
     }
@@ -1016,13 +960,6 @@ fn visit_census(
     }
 }
 
-/// A refused `SuspendThread`: `Ok(false)` (not held) for a thread that has
-/// exited or is exiting, the error otherwise. A thread whose termination
-/// began (`NtTerminateThread`, after its DLL and TLS detach) refuses
-/// suspension with `STATUS_THREAD_IS_TERMINATING`, which Win32 reports as
-/// `ERROR_ACCESS_DENIED`, before its handle is signalled; it never runs
-/// user code again, so leaving it unheld is safe. Every other refusal fails
-/// the publication as before.
 fn refused_suspension(error: u32, exited: bool) -> Result<bool, u32> {
     if exited || error == ERROR_ACCESS_DENIED {
         Ok(false)
@@ -1031,13 +968,6 @@ fn refused_suspension(error: u32, exited: bool) -> Result<bool, u32> {
     }
 }
 
-/// Opens a thread a census of this process listed, or `None` when that
-/// thread has exited since. A thread id is unique only among live threads:
-/// once the listed thread exits, the id can name a thread of another process
-/// before this opens it. Such a thread is never ours to suspend, so a handle
-/// whose owner is another process is closed, and an id this process may not
-/// open (`ERROR_ACCESS_DENIED`, which no thread of this process returns for
-/// these rights) is the same exit.
 fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
     let handle = unsafe {
         OpenThread(
@@ -1051,7 +981,6 @@ fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
         )
     };
     if !handle.is_null() {
-        // An owned handle pins the id: its owner cannot change from here on.
         if unsafe { GetProcessIdOfThread(handle) } != unsafe { GetCurrentProcessId() } {
             unsafe {
                 CloseHandle(handle);
@@ -1061,8 +990,6 @@ fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
         Ok(Some(handle))
     } else {
         let error = unsafe { GetLastError() };
-        // The snapshot thread exited, and its id is free or another
-        // process's.
         if error == ERROR_INVALID_PARAMETER || error == ERROR_ACCESS_DENIED {
             Ok(None)
         } else {
@@ -1071,8 +998,6 @@ fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
     }
 }
 
-// The successful call's start excludes the exit precheck. Refusal handling
-// still probes exit after capturing the original suspension error.
 fn suspension_with(
     handle: HANDLE,
     diagnostics: &publication::Attempt,
@@ -1101,18 +1026,12 @@ fn acquire_context(handle: HANDLE, context: &mut AlignedContext) -> Result<(), u
     }
 }
 
-/// Raise a held thread to time-critical until it resumes; its prior priority, or `None` when
-/// unchanged. Synchronization waits for the thread itself to run a kernel callback, which an
-/// idle-priority thread (the graphics driver's workers) does only once no other thread on the
-/// machine wants the processor: on a busy machine that held the game for over a second. Raised
-/// only after its suspension was requested, the thread runs no user code at this priority.
 fn raise_priority(handle: HANDLE) -> (i32, Option<i32>) {
     #[cfg(test)]
     if snapshot_tests::exited(handle).is_some() {
         return (0, None);
     }
     let current = unsafe { GetThreadPriority(handle) };
-    // An unreadable priority (`i32::MAX`) is above time-critical too, and is left alone.
     if current >= THREAD_PRIORITY_TIME_CRITICAL {
         return (current, None);
     }
@@ -1128,8 +1047,6 @@ fn thread_exited(handle: HANDLE) -> bool {
     (unsafe { WaitForSingleObject(handle, 0) }) == 0
 }
 
-/// Whether a thread at `ip` with these live stack words may be inside `function`: it runs there,
-/// or a word lies there. The entry is never a return address, only a stored pointer.
 fn may_be_inside(ip: usize, words: &[usize], function: &Range<usize>) -> bool {
     function.contains(&ip)
         || words
@@ -1137,9 +1054,6 @@ fn may_be_inside(ip: usize, words: &[usize], function: &Range<usize>) -> bool {
             .any(|&word| word != function.start && function.contains(&word))
 }
 
-/// Whether `holds` accepts some words of the live stack from a suspended thread's `sp` to the end
-/// of the committed allocation holding it; `None` when part of that cannot be read. A system
-/// query and plain reads only: nothing a suspended thread can hold a lock in.
 fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Option<bool> {
     const WORD: usize = size_of::<usize>();
     const READABLE: u32 = PAGE_READONLY
@@ -1179,8 +1093,6 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
                 return None;
             }
             for (index, word) in buffer[..count].iter_mut().enumerate() {
-                // SAFETY: committed, readable memory of a suspended thread's stack; nothing frees
-                // it while that thread is held.
                 *word = unsafe { ptr::read_volatile((at as *const usize).add(index)) };
             }
             if holds(&buffer[..count]) {
@@ -1196,15 +1108,11 @@ struct Thread {
     handle: HANDLE,
     suspended: bool,
     ip: Option<usize>,
-    /// The stack pointer read with `ip`.
     sp: usize,
     exited: bool,
-    /// The priority to restore before it resumes, once raised for synchronization.
     priority: Option<i32>,
 }
 
-// The native x64 CONTEXT contract requires 16 bytes even though windows-sys
-// 0.61's Rust fields only give the generated struct eight-byte alignment.
 #[repr(C, align(16))]
 struct AlignedContext(CONTEXT);
 
@@ -1225,13 +1133,8 @@ impl Threads {
         Self::open_excluding(&[])
     }
 
-    /// During callback quiescence registered collector workers may remain inside
-    /// the DLL. Every excluded worker is joined before the final full-image check.
-    /// Hook patching never excludes workers.
     pub fn open_excluding(excluded_threads: &[u32]) -> Result<Self, String> {
         let mut diagnostics = publication::Attempt::new();
-        // Detach scratch must remain available after the capture allocation gate
-        // stops admission. All growth still finishes before holding threads.
         let mut excluded = Vec::new();
         if excluded.try_reserve_exact(excluded_threads.len()).is_err() {
             diagnostics.finish();
@@ -1275,7 +1178,6 @@ impl Threads {
     }
 
     fn suspend_prepared(&mut self) -> Result<(), u32> {
-        // Let the restoration owner observe every resume before retrying growth.
         self.suspend_resizing(false, |_| Err(ERROR_INSUFFICIENT_BUFFER))
     }
 
@@ -1286,8 +1188,6 @@ impl Threads {
     ) -> Result<(), u32> {
         #[cfg(any(test, feature = "test-support"))]
         SUSPENSIONS.with(|count| count.set(count.get() + 1));
-        // Query sizing and prepare aligned caller storage immediately before
-        // acquiring any hold. A resize retry always resumes before preparing.
         self.prepare_census_with_headroom(headroom)?;
         self.suspend_with(
             |handle, diagnostics| {
@@ -1337,7 +1237,6 @@ impl Threads {
             .try_reserve_exact(additional)
             .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
         self.census.resize(words.max(self.census.len()), 0);
-        // Headroom for threads created before every in-process creator is held.
         let additional = if headroom || self.threads.len() == self.threads.capacity() {
             self.threads.len() / 2 + 16
         } else {
@@ -1361,8 +1260,6 @@ impl Threads {
         mut discover: impl FnMut(&mut Self) -> Result<bool, u32>,
         mut resize: impl FnMut(&mut Self) -> Result<(), u32>,
     ) -> Result<(), u32> {
-        // Exited newcomers can keep recycling prepared slots. Refuse churn
-        // after a live-sized number of rounds instead of holding threads forever.
         for _ in 0..=self.threads.capacity() {
             self.snapshot_valid = false;
             for thread in self.threads.iter_mut().filter(|thread| !thread.suspended) {
@@ -1371,10 +1268,6 @@ impl Threads {
                     self.diagnostics.acquired(begin);
                 }
             }
-            // A thread can be created between the first snapshot and suspension.
-            // Game thread creation happens in-process; once all such callers are
-            // held and enumeration adds nobody, they cannot create another
-            // thread during the write. No heap use while held.
             match discover(self) {
                 Ok(false) => return Ok(()),
                 Ok(true) => {}
@@ -1392,8 +1285,6 @@ impl Threads {
     }
 
     fn discover(&mut self) -> Result<bool, u32> {
-        // GetThreadContext synchronizes with suspension before the next census.
-        // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadcontext
         self.discover_with(Self::synchronize, Self::discover_census)
     }
 
@@ -1443,8 +1334,6 @@ impl Threads {
                     return Ok(());
                 }
                 if self.threads.len() == self.threads.capacity() {
-                    // Never grow while threads are held: resume, grow and retry
-                    // through the bounded census resize path.
                     self.census_short = true;
                     self.census_refusal = Some("prepared thread storage insufficient");
                     return Err(ERROR_INSUFFICIENT_BUFFER);
@@ -1540,7 +1429,6 @@ impl Threads {
             .sample
             .longest_synchronization_ns
             .max(elapsed);
-        // Discovery still has to prove that this synchronized set is complete.
         result
     }
 
@@ -1561,7 +1449,6 @@ impl Threads {
         .map(|collision| collision.is_some())
     }
 
-    /// Return the first live collision from the ordinary suspended-thread scan.
     fn colliding_range(&mut self, ranges: &[Range<usize>]) -> Result<Option<usize>, u32> {
         self.find_collision(
             &[],
@@ -1570,8 +1457,6 @@ impl Threads {
         )
     }
 
-    /// Whether a suspended thread may be inside `function`: it runs there, or a word of its live
-    /// stack lies there. A stack that cannot be read counts as inside.
     fn may_run(&mut self, function: &Range<usize>) -> Result<bool, u32> {
         if !self.snapshot_valid && self.threads.iter().any(|thread| thread.suspended) {
             return Err(ERROR_RETRY);
@@ -1617,7 +1502,6 @@ impl Threads {
             let Some(collision) = locate(ip) else {
                 continue;
             };
-            // Only a collision needs an exit probe; healthy ranges add no syscall.
             if exited(thread.handle) {
                 thread.ip = None;
                 thread.exited = true;
@@ -1629,13 +1513,7 @@ impl Threads {
         Ok(None)
     }
 
-    /// Return only after every suspension acquired by this owner is resolved.
-    /// A failed OS resume is still reported after recovery; it never permits
-    /// callers to format errors, destroy owners or close unresolved handles.
-    /// Persistent uncertainty retains this controller and all caller storage
-    /// in the resume-only loop, even when an outer detach budget has expired.
     pub fn resume(&mut self) -> Result<(), u32> {
-        // Each raised thread gets its own priority back before it can run again.
         for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
             if let Some(priority) = thread.priority.take()
                 && unsafe { SetThreadPriority(thread.handle, priority) } == 0
@@ -1652,8 +1530,6 @@ impl Threads {
                     Ok(())
                 }
             },
-            // open_excluding owns a stable thread handle with SYNCHRONIZE.
-            // Only a signaled handle proves exit; timeout/WAIT_FAILED do not.
             |handle| unsafe { WaitForSingleObject(handle, 0) } == 0,
             || unsafe { Sleep(1) },
         )
@@ -1694,9 +1570,6 @@ impl Threads {
                 }
             }
             if self.threads.iter().any(|thread| thread.suspended) {
-                // No heap use, formatting, locks, destruction or Rust unwind.
-                // Handles and all surrounding publication/runtime roots stay
-                // owned until actual resume or actual thread exit is proved.
                 retry();
             }
         }
@@ -1725,7 +1598,6 @@ pub mod restoration;
 pub mod shared;
 #[path = "hook/tap.rs"]
 mod tap;
-/// The bytes a [`Tap`] at a sentinel replaces, for the site-overlap test.
 pub use tap::instruction_span as tap_span;
 pub use tap::{Registers, Tap};
 
@@ -1752,8 +1624,6 @@ impl TestCode {
         assert!(!memory.is_null());
         Self(memory)
     }
-    // Five NOPs give retour a frameless, position-independent relocation;
-    // the remaining indirect jump preserves every native argument and return.
     pub fn stub(&self, offset: usize, target: usize) -> (usize, [u8; 16]) {
         assert!(offset + 19 <= 4096);
         let mut code = [0x90; 19];
@@ -1904,7 +1774,6 @@ mod safety_tests {
         assert!(may_be_inside(0x1000, &[], &function));
         assert!(may_be_inside(0x1fff, &[], &function));
         assert!(may_be_inside(0x3000, &[0x0fff, 0x1234], &function));
-        // A stored pointer to the entry is no return into the function.
         assert!(!may_be_inside(0x3000, &[0x1000], &function));
     }
 
@@ -1939,7 +1808,6 @@ mod safety_tests {
             |threads| {
                 rounds += 1;
                 assert!(rounds <= limit, "thread census did not refuse churn");
-                // The held thread exited and a newcomer reuses its slot.
                 threads.diagnostics.resolved();
                 threads.threads[0] = Thread {
                     id: rounds as u32 + 1,
@@ -2104,7 +1972,6 @@ mod safety_tests {
         assert_eq!(calls, [1, 0, 2]);
         assert_eq!(waits, 1);
         assert!(threads.threads.iter().all(|thread| !thread.suspended));
-        // Synthetic handles must never reach the OS cleanup.
         threads.threads.clear();
         unsafe { ManuallyDrop::drop(&mut threads) };
     }
@@ -2114,8 +1981,6 @@ mod safety_tests {
 mod thread_resume_policy_tests {
     use super::*;
 
-    // These labels never reach Windows. ManuallyDrop also prevents a failed
-    // assertion from passing synthetic handles to the real Threads::drop.
     fn fixture(count: usize) -> ManuallyDrop<Threads> {
         ManuallyDrop::new(Threads {
             threads: (1..=count)
@@ -2165,7 +2030,7 @@ mod thread_resume_policy_tests {
             |_| false,
             || waits += 1,
         );
-        assert_eq!(result, Err(41)); // reverse order: the first fault survives
+        assert_eq!(result, Err(41));
         assert_eq!(calls, [2, 2]);
         assert_eq!(waits, 1);
         assert!(threads.threads.iter().all(|thread| !thread.suspended));

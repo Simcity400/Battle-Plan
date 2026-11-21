@@ -158,7 +158,6 @@ fn a_native_readback_keeps_fixed_pixels_and_refusal_order() {
             ),
             "scene presentation exceeds device texture extent",
         );
-        // Fixed opaque endpoint colours are exact through gamma conversion and dithering.
         assert_eq!(
             present(&state, &ctx, id, [4, 4], 1.25).unwrap(),
             [

@@ -11,9 +11,6 @@ import './ContentSetPicker.css';
 
 const LIST_HEIGHT = 340;
 
-/** A complete multi-choice catalogue, with only the visible rows mounted. `single`
- * picks one choice and closes; `trigger` and `triggerClassName` dress its button. While
- * `unavailable`, it says why instead of listing `choices`. */
 export default function ContentSetPicker({ label, automatic, choices, selected, onToggle, onReset, single = false, trigger, triggerClassName, unavailable }: {
   label: string; automatic: string; choices: readonly ContentChoice[]; selected: readonly string[];
   onToggle: (value: string) => void; onReset: () => void;
@@ -28,7 +25,6 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(-1);
   const [view, setView] = useState({ scrollTop: 0, height: LIST_HEIGHT });
-  // Saved choices are resolved against the final catalogue only, not one still loading.
   const rows = useMemo(() => unavailable ? [] : contentChoices(choices, selected), [choices, selected, unavailable]);
   const chosen = useMemo(() => new Set(selected), [selected]);
   const filtered = useMemo(() => filterContent(rows, query), [rows, query]);

@@ -1,4 +1,3 @@
-/** API story based on military-1.html; synthetic content, never a game catalogue. */
 import { createElement as h } from 'react';
 import type { TableColumn, TableProps } from './Table';
 

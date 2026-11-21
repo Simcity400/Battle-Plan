@@ -21,17 +21,14 @@ const reply = (): ProductionSpendingReply => ({
   production: [{ firstHour: 100, lastHour: 171, present: true, emptyCensusHour: null }],
   leaves: [
     leaf({}),
-    // The same design refitted to: its own leaf under Refits.
     leaf({ purpose: 'refit', runs: [known(100, 147, '0'), known(148, 171, '500000')] }),
     leaf({ variant: '12', typeKey: 'mod_hull_b', name: 'Hull B', names: [], runs: [known(100, 171, '0')] }),
-    // Land production is another widget's.
     leaf({ variant: '13', typeKey: 'mod_rifle', name: 'Rifles', domain: 'land', runs: [known(100, 171, '9')] }),
   ],
   total: [known(100, 123, '0'), known(124, 147, '3000009'), known(148, 171, '3500009')],
   totalWithoutRefits: [known(100, 171, '0')],
   equipmentTotal: [known(100, 123, '0'), known(124, 147, '3000009'), known(148, 171, '3500009')],
   equipmentTotalWithoutRefits: [known(100, 171, '0')],
-  // 2.4 IC a day from hour 100; split by design while it is known.
   repairs: { denominator: 24, total: [known(100, 171, '240000')], parts: [
     { variant: '11', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', names: [], runs: [known(100, 135, '100000'), unknown(136, 171)] },
     { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(100, 135, '140000'), unknown(136, 171)] },
@@ -61,14 +58,11 @@ test('new ships and refits group by type and design beside repairs, land designs
   assert.equal(purposeSum(items, 'new'), 3000000n);
   assert.equal(purposeSum(items, 'refit'), 500000n);
   assert.ok(!items.some(item => item.path.some(key => key.id === 'mod_rifle')));
-  // Repairs from hour 100 through 160: 61 hours at 2.4 IC a day, over 24; the split refused from 136 keeps the
-  // whole, the design's share withdrawn and the rest unattributed.
   const repairs = items.filter(item => item.path[0].id === 'repair');
   const total = repairs.reduce((sum, item) => sum + (item.exact ?? 0n), 0n);
   assert.equal(total, 61n * 240000n);
   assert.equal(repairs.find(item => item.path.at(-1)?.id === '11')?.exact, null);
   assert.equal(repairs.find(item => item.path.at(-1)?.id === 'unattributed')?.exact, 61n * 240000n);
-  // While the split is known each part is its own.
   const early = repairItems(data, { from: null, hour: 110, end: 120 });
   assert.deepEqual(early.map(item => item.exact), [11n * 100000n, 11n * 140000n]);
 });
@@ -81,11 +75,9 @@ test('months are the calendar’s, clipped, each with its purposes and repairs, 
   assert.deepEqual(month.bands.map(band => band.exact), [3000000n, 500000n, 72n * 240000n, 0n, 0n]);
   assert.deepEqual(month.total, { exact: (3000000n + 500000n) * 24n + 72n * 240000n, reason: null, denominator: 24n });
   assert.deepEqual(monthColumns([month], 5)[0].values, [30, 5, 7.2, 0, 0]);
-  // A month after the branch's first counts its own change; the lines' whole not known leaves it not known.
   assert.equal(dockyardMonth(data, 148, 171, 100).bands[1].exact, 500000n);
   data.equipmentTotal[2] = unknown(148, 171);
   assert.deepEqual(dockyardMonth(data, 148, 171, 100).bands[0], { exact: null, reason: 'spendingUnavailable' });
-  // A design whose type content cannot resolve marks the month: its whole is not known.
   const other = reply();
   other.leaves.push(leaf({ variant: '14', typeKey: ':mod_odd', name: null, domain: null, runs: [known(100, 147, '0'), known(148, 171, '7')] }));
   const marked = dockyardMonth(other, 148, 171, 100);

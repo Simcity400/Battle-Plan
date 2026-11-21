@@ -135,7 +135,6 @@ fn naval_management_task_controls_keep_independent_refit_designs_and_target() {
     memory.word(TARGET, crate::cprovince::VTABLE_RVA.0 as u64);
     memory.put(TARGET + crate::cprovince::ID, &2_u32.to_le_bytes());
     memory.word(TASK + crate::ctask_force::REPAIR_TARGET, TARGET as u64);
-    // No registry is present: even an unresolved rejoin reference is retained raw.
     let rejoin = u64::from(crate::ctask_force::DEFAULT_HANDLE_TYPE) | (8_u64 << 32);
     memory.word(TASK + MERGE_AFTER_REPAIR, rejoin);
     memory.integer(TASK + REPAIR_MODE, -7);

@@ -77,9 +77,6 @@ pub fn compare_land_combats(
                 report.difference(format!("{label}.{side}"), actual, expected);
             }
         }
-        // Each saved participant's class follows the roster that holds its
-        // handle: the save loader appends any saved unit reference. A handle
-        // no saved roster holds states no class; the handles compare above.
         for (side, classes, members) in [
             (
                 "attacker_classes",
@@ -114,8 +111,6 @@ pub fn compare_land_combats(
     Ok(())
 }
 
-/// The unit class of the saved unit `handle` names, from the roster that
-/// holds it; `None` when no roster does.
 fn unit_class(save: &Save, handle: u64) -> Option<u32> {
     if save.divisions.contains_key(&handle) {
         Some(0)
@@ -128,9 +123,6 @@ fn unit_class(save: &Save, handle: u64) -> Option<u32> {
     }
 }
 
-/// Saves hold no battle-sound list: it is the recording client's runtime
-/// ambience state. The rows must hold the list's places in order and name
-/// provinces of the verified map.
 pub fn compare_battle_sounds(
     frame: &DecodedFrame,
     membership: &installed_content_save::PartialMapMembership,
@@ -183,8 +175,6 @@ pub fn compare_division_movement(
         };
         let saved = &saved.presentation;
         let label = format!("division movement {}", row.division);
-        // A division with a route moves from its stat-block speed, the panel's word; a division
-        // without one is outside its demand.
         if (row.path_total as i32) > 0 {
             let panel = panels.and_then(|rows| {
                 rows.binary_search_by_key(&row.division, |panel| panel.division)
@@ -200,8 +190,6 @@ pub fn compare_division_movement(
                 ),
             }
         }
-        // A mover's fuel is the saved `fuel`, omitted at zero; a division without a
-        // route is outside its demand.
         match report.recorded(&row.fuel, "DivisionMovement.fuel", &label) {
             Some(Some(fuel)) => {
                 report.scalar_checks += 1;
@@ -225,8 +213,6 @@ pub fn compare_division_movement(
                 (&saved.path, saved.path.len()),
             );
         }
-        // The unit save writer emits the movement target as support_attack
-        // when nonnull, and the alternate route as full_path when nonempty.
         if row.target != saved.support_attack.unwrap_or(0) {
             report.difference(
                 format!("{label}.target"),
@@ -363,9 +349,6 @@ pub fn compare_division_movement(
     Ok(())
 }
 
-/// `camo_show_at` is the content's `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`,
-/// which the recorded camouflage is compared under.
-/// The save certifies roster membership; active-cache values need a matched native panel.
 pub fn compare_division_panel_stats(
     frame: &DecodedFrame,
     save: &Save,
@@ -431,7 +414,6 @@ pub fn compare_division_status(
     let references = super::combat_details::MemberTemplates::new(rows);
     let templates =
         super::combat_details::NameTemplates::new(frame, save, report, references.any())?;
-    // The game writes in roster order, independently of logical owner.
     let ordinals = save
         .counter_inputs
         .division_orders
@@ -442,8 +424,6 @@ pub fn compare_division_status(
                 .map(|(ordinal, &division)| (division, ordinal as u32))
         })
         .collect::<BTreeMap<_, _>>();
-    // The combat movement word's branch is checked against the division's combat
-    // count and withdrawal byte.
     let movements = frame
         .complete::<tables::DivisionMovement>()
         .ok()
@@ -646,11 +626,6 @@ pub fn compare_division_status(
             camo_show_at,
             report,
         );
-        // The army writer saves both signed fixed5 fields
-        // unconditionally. An older recording's appended field stays absent.
-        // The remaining grace is stored at the whole percent of its share
-        // (DivisionStatusRow::displayed_grace); the save's exact value is
-        // rounded the same way with the content's SUPPLY_GRACE.
         if let Some(value) = report.recorded(
             &row.supply_grace_maximum,
             "DivisionStatus.supply_grace_maximum",
@@ -659,7 +634,6 @@ pub fn compare_division_status(
             let label = format!("division status {}", row.division);
             report.scalar(&label, "supply_grace_maximum", Some(*value), saved.presentation.max_supply.as_ref());
         }
-        // The shown remaining grace.
         if let Some(value) = report.recorded(
             &row.supply_grace_remaining,
             "DivisionStatus.supply_grace_remaining",
@@ -682,7 +656,6 @@ pub fn compare_division_status(
                 |raw| DivisionStatusRow::displayed_grace(raw, supply_grace.clone().ok()),
             );
         }
-        // Days out of supply are saved only when nonzero.
         if let Some(days) = report.recorded(
             &row.out_of_supply_days,
             "DivisionStatus.out_of_supply_days",
@@ -700,9 +673,6 @@ pub fn compare_division_status(
                 None => report.difference(label, "unavailable", "a recorded value"),
             }
         }
-        // The exact supply is kept only with nonzero days out of supply; its remaining
-        // grace is the save's exact value. The received ratio is not saved, so the exact
-        // one is checked against the row's own stepped ratio.
         if report
             .recorded(
                 &row.supply_ratio_exact,
@@ -728,8 +698,6 @@ pub fn compare_division_status(
                         Some(grace),
                         saved.presentation.army_current_supply_ratio.as_ref(),
                     );
-                    // The save holds no received ratio. The exact pair holds the shown ratio, so
-                    // the row stores no stepped one beside it.
                     let _ = ratio;
                     report.scalar_checks += 1;
                     if row.supply_ratio.is_some() {
@@ -759,11 +727,6 @@ pub fn compare_division_status(
             let label = format!("division status {}", row.division);
             match supply {
                 Some(supply) => {
-                    // The supply consumer save writer emits token 0x4CF2
-                    // only for disruption > 0; omission never proves zero.
-                    // The footer is stored at its display step
-                    // (replay_data::display), which keeps the sign; the save's
-                    // exact value is rounded the same way.
                     if let Some(saved) = saved.presentation.disrupted_supply.as_ref() {
                         report.scalar_displayed(
                             &label,
@@ -851,15 +814,10 @@ pub fn compare_division_status(
     Ok(())
 }
 
-/// The collector records a crew only under the crew writers' quiet token; the game always holds
-/// a number, so a `None` crew is that refusal (the row encoder has no not-recorded cell).
 const CREW_NOT_RECORDED: &str = "crew not recorded at this hour: the crew writers were not observed, or one ran across the read";
 
-/// The collector records a demanded stop flag only under a wing-registry certificate or quiet
-/// token; the game always holds the byte, so a missing one is that refusal.
 const TRAINING_STOP_NOT_RECORDED: &str = "air wing stop_training_at_max_xp not recorded at this hour: the wing writers were not observed, one ran across the read, or the byte was unreadable";
 
-/// Every `DivisionStatusRow::move_flags` bit the format defines.
 const DEFINED_MOVE_FLAGS: u8 = DivisionStatusRow::MOVE_EXILED
     | DivisionStatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST
     | DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS
@@ -868,10 +826,6 @@ const DEFINED_MOVE_FLAGS: u8 = DivisionStatusRow::MOVE_EXILED
     | DivisionStatusRow::MOVE_ORGANISATION_REFUSED
     | DivisionStatusRow::MOVE_NONCORE_AIR_REFUSED;
 
-/// A recorded combat movement word belongs to a division in combat
-/// (DivisionMovement.combat_count nonzero) that is not withdrawing (its withdrawal
-/// byte zero). Every division may record none: one outside combat or withdrawing,
-/// and one in combat whose first matching combat is naval or that has none.
 fn compare_combat_movement(
     row: &DivisionStatusRow,
     movements: Option<&BTreeMap<u64, &DivisionMovementRow>>,
@@ -929,13 +883,6 @@ fn compare_combat_movement(
     }
 }
 
-/// The division's camouflage choice, decided again over the saved block
-/// with the recorded content's define. The division writer emits the block
-/// only when it finds an entry, so an omitted block shows no category.
-/// Inside it, the acclimatization writer writes every nonzero weight by its
-/// category's name in original order, and the maximum unless it is 100. Zero
-/// weights never win, so the saved entries select the live winner. Older recordings hold every entry instead
-/// ([`compare_acclimatization`]).
 pub fn compare_camouflage(
     label: &str,
     row: &replay_data::rows::DivisionStatusRow,
@@ -1002,7 +949,6 @@ pub fn compare_camouflage(
     }
 }
 
-/// Category names as diagnostic text; distinct bytes never read alike.
 fn shown_entries(entries: &[(&[u8], i64)]) -> Vec<(String, i64)> {
     entries
         .iter()
@@ -1010,12 +956,6 @@ fn shown_entries(entries: &[(&[u8], i64)]) -> Vec<(String, i64)> {
         .collect()
 }
 
-/// An older recording's entries and maximum. The division writer emits the
-/// acclimatization block only when it finds an entry: the first of the largest
-/// weights, and only a weight above zero. With none, the whole block is omitted,
-/// whatever the maximum. Inside the block, the acclimatization writer writes
-/// each nonzero weight by its category's name in native order and the maximum unless it
-/// is 100.
 pub fn compare_acclimatization(
     label: &str,
     row: &replay_data::rows::DivisionStatusRow,
@@ -1084,9 +1024,6 @@ pub fn compare_acclimatization(
     }
 }
 
-/// The game gates both template strings on stored length, independently of
-/// display-name fallback demand. The game emits the first-NUL
-/// prefix even when it is empty; only a stored-empty string omits the key.
 fn compare_template_text(
     report: &mut Report,
     label: &str,
@@ -1157,8 +1094,6 @@ pub fn compare_country_template_state(
                 expected.garrison_priority,
             );
         }
-        // The writer emits only a resolving reference; the raw retained word
-        // remains in replay even when the selected template has been destroyed.
         let selected = save
             .division_templates
             .contains_key(&row.selected_staff)
@@ -1312,9 +1247,6 @@ pub fn compare_division_templates(
     Ok(())
 }
 
-/// The hourly counter and model inputs: one row per saved template, with the
-/// saved icon choice, the template's country operands and its composition.
-/// The selected priority unit and the representative are derived engine caches.
 pub fn compare_division_template_icons(
     frame: &DecodedFrame,
     save: &Save,
@@ -1365,9 +1297,6 @@ pub fn compare_division_template_icons(
                 saved.custom_icon_nato,
             );
         }
-        // The composition owner is saved as `country`; its foreign owner
-        // is saved as `foreign_template_tag`. A nonpositive reference is the null tag,
-        // whose spelling the writer maps through an unrecorded entry.
         for (field, reference, saved_tag) in [
             ("country", row.country, Some(&saved.country)),
             (
@@ -1396,8 +1325,6 @@ pub fn compare_division_template_icons(
                 (None, Some(_)) => report.limitation("a null template country reference is written through the unrecorded country-tag entry0; its literal spelling is unmapped here, not assumed", label),
             }
         }
-        // Fresh hourly GetDisplayName operands compare independently of the
-        // dictionary row and of optional model acquisition failures.
         if let Some(captured) = report.recorded(
             &row.display_name,
             "DivisionTemplateIcons.display_name",
@@ -1552,8 +1479,6 @@ pub fn compare_division_template_icons(
                 Some(&expected.forbidden_equipment)
             );
         }
-        // The movement speed keys are the nonzero modifier keys of the movement
-        // priority sub-unit and its categories, read independently of the model inputs.
         if let Some(keys) = report.recorded(
             &row.speed_keys,
             "DivisionTemplateIcons.speed_keys",
@@ -1662,13 +1587,6 @@ pub fn compare_division_template_icons(
                 );
             }
         }
-        // The recorded grouped entries group the three grids by definition, a
-        // local clone apart from its global definition; each recorded grid
-        // groups its own cells the same way; the save names each occupied
-        // cell under its grid (kinds 0, 1 and 2: regiments, support and
-        // regimental support, the recorded grids' order). Each reduces to a
-        // count per sub-unit name: the grouped entries against every saved
-        // cell, each grid against its own.
         let grids = report.recorded(
             &row.grids,
             "DivisionTemplateIcons.grids",
@@ -1861,8 +1779,6 @@ pub fn compare_naval_units(
                 expected.mission,
             );
         }
-        // The unit writer writes the route as `path`; its
-        // length is the count the strait-fleet test reads.
         if usize::try_from(actual.route_count).ok() != Some(expected.path.len()) {
             report.difference(
                 format!("{label}.route_count"),
@@ -1967,9 +1883,6 @@ pub fn compare_naval_units(
             Some(actual.organisation),
             Some(&expected.organisation),
         );
-        // The ship writer writes the ship's experience whole; the recording stores it at its
-        // display step, so the save's value is rounded the same way (an older recording holds it
-        // exact).
         report.scalar_displayed(
             &label,
             "experience",
@@ -1990,12 +1903,6 @@ pub fn compare_naval_units(
     Ok(())
 }
 
-/// The vectors behind the naval combat icons. The naval combat save writer writes each
-/// slot of a combat's transfer vector as `naval_transport`, and
-/// the naval transfer save writer each live unit handle as `unit` (nonzero and
-/// resolving to a unit, the rule the recorder applies too); both are compared in order. The
-/// province combat vectors are not saved: each entry is joined to the
-/// combat census of its class instead.
 pub fn compare_naval_combat_sources(
     frame: &DecodedFrame,
     save: &Save,
@@ -2050,7 +1957,6 @@ pub fn compare_naval_combat_sources(
     {
         report.difference("NavalCombatTransfers combat", combat, "absent");
     }
-    // A named transfer has a units row exactly when it was live, which is when it was saved.
     let saved = &save.counter_inputs.naval_transfers;
     let named: BTreeSet<u64> = save
         .naval_combats
@@ -2228,9 +2134,6 @@ pub fn compare_air_wings(
             return Err(invalid("null or duplicate full air wing handle"));
         }
     }
-    // The air pack reads the same `air_wings` blocks; its `ace` is the wing's
-    // carrier reference is written only
-    // when it is nonzero and reference resolution finds it.
     let mut saved_aces = BTreeMap::new();
     for wing in &save.air.wings {
         if saved_aces.insert(wing.id, wing.ace).is_some() {
@@ -2291,8 +2194,6 @@ pub fn compare_air_wings(
                 expected.reinforcement_setting,
             );
         }
-        // The game emits name unconditionally outside checksum mode. This
-        // oracle consumes ordinary text saves; absence never proves empty.
         if expected.name.is_none() {
             report.difference(
                 format!("{label}.name presence"),
@@ -2312,8 +2213,6 @@ pub fn compare_air_wings(
             ),
             replay_data::rows::Recorded::Value(Some(name)) => {
                 report.compared("AirWings.name", 1);
-                // The game writes the key unconditionally outside
-                // checksum mode. A missing saved key never proves an empty name.
                 let text = super::serialized_text(report, &format!("{label}.name"), name);
                 if expected
                     .name
@@ -2407,8 +2306,6 @@ pub fn compare_air_wings(
             }
             Some(_) => {}
             None if actual.ace == 0 => {}
-            // A saved ace is a registered object, so the writer would have
-            // resolved and written this reference.
             None if ace_ids.contains(&actual.ace) => {
                 report.difference(
                     format!("{label}.ace"),
@@ -2567,9 +2464,6 @@ pub fn compare_divisions(
                 expected.expeditionary_owner.as_deref(),
             ),
         ] {
-            // The unit writer drops signed-nonpositive expeditionary tags. Country selection
-            // clears to zero, but a negative raw value cannot be verified as
-            // that null. Refuse it instead of reporting an exact comparison.
             if field == "expeditionary_owner" && (captured as i32) < 0 {
                 return Err(invalid(format!(
                     "{label}.expeditionary_owner has invalid signed country reference {}; the save omits nonpositive references and cannot verify these bits",
@@ -2601,8 +2495,6 @@ pub fn compare_divisions(
         } else if expected.template.is_none() {
             report.limitation("division has a null standard template and the save omits its template reference; no fake-intel template was substituted", label.clone());
         }
-        // Both are stored at their display steps (replay_data::display); the
-        // save's exact values are rounded the same way.
         report.scalar_displayed(
             &label,
             "hit_points (save strength)",

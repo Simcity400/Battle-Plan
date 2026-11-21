@@ -17,7 +17,6 @@ const all = () => true;
 const keyOf = (row: ElectionRow) => row.key;
 
 test('days left and the term meter come from the recorded interval, next date and term start', () => {
-  // A modded four-month term: started at hour 100, next election at 3,000.
   const data = validateElectionsReply(reply([holder('MOD', { held: [run(0, 5000, '1')], interval: [run(0, 5000, '4')], next: [run(0, 5000, '3000')], last: [run(0, 5000, '100')] })]));
   const [row] = electionsAt(data, 1550, all).rows;
   assert.equal(row.tag, 'MOD');
@@ -48,7 +47,6 @@ test('missing operands give null values, an empty meter and sort last in both di
   assert.equal(byTag.get('TWO')!.next, null);
   assert.equal(hoursLeftAt(byTag.get('TWO')!, 50), null);
   assert.equal(termAt(byTag.get('TWO')!, 50), null);
-  // No interval, or no term start: no meter, though the next date stays known.
   assert.equal(termAt(byTag.get('THR')!, 50), null);
   assert.equal(hoursLeftAt(byTag.get('THR')!, 50), 20);
   assert.equal(termAt(byTag.get('FOU')!, 50), null);
@@ -77,22 +75,17 @@ test('countries that do not hold elections are hidden, and unknown eligibility i
   const data = validateElectionsReply(reply([
     holder('YES', { held: [run(0, 100, '1')], next: [run(0, 100, '500')] }),
     holder('NOT', { held: [run(0, 100, '0')], interval: [run(0, 100, '48')], next: [run(0, 100, '500')] }),
-    // Absent from the complete read at hour 50: it held no schedule then.
     holder('GAP', { held: [run(0, 40, '1'), run(60, 100, '1')] }),
-    // Its schedule was read, its eligibility not.
     holder('SCH', { refused: [run(0, 100, '1')], interval: [run(0, 100, '48')] }),
-    // Refused before its first decided read, after its last, and throughout.
     holder('LED', { refused: [run(0, 60, '1')], held: [run(61, 100, '1')] }),
     holder('TRL', { held: [run(0, 40, '1')], refused: [run(41, 100, '1')] }),
     holder('ALL', { refused: [run(0, 100, '1')], last: [run(0, 100, '0')] }),
-    // Not yet read: neither listed nor counted.
     holder('NEW', { held: [run(80, 100, '1')] }),
   ]));
   const view = electionsAt(data, 50, all);
   assert.deepEqual(view.rows.map(row => row.tag), ['YES']);
   assert.equal(view.unknown, 4);
   assert.deepEqual(electionWarnings(data, view), ['4 refused election eligibility: not recorded at this hour']);
-  // Once decided, a country is listed; the others stay unknown.
   const later = electionsAt(data, 90, all);
   assert.deepEqual(later.rows.map(row => row.tag), ['YES', 'GAP', 'LED', 'NEW']);
   assert.equal(later.unknown, 3);
@@ -105,7 +98,6 @@ test('rows are named by the holder tag at the hour and narrowed by country', () 
   const data = validateElectionsReply(reply([holder('OLD', { held: [run(0, 200, '1')] }, tags), holder('OTH', { held: [run(0, 200, '1')] })]));
   assert.deepEqual(electionsAt(data, 50, all).rows.map(row => row.tag), ['OLD', 'OTH']);
   assert.deepEqual(electionsAt(data, 150, all).rows.map(row => row.tag), ['NEW', 'OTH']);
-  // The holder keeps one row identity across its tag change.
   assert.equal(electionsAt(data, 50, all).rows[0].key, electionsAt(data, 150, all).rows[0].key);
   const chosen = (tag: string, hour: number) => tag === (hour < 100 ? 'OLD' : 'NEW');
   assert.deepEqual(electionsAt(data, 50, chosen).rows.map(row => row.tag), ['OLD']);
@@ -128,17 +120,14 @@ test('the table is drawn at the last hour a schedule changed, and only the count
   const at = countdownTexts(rows, 1550);
   assert.equal(at.get(`days\u0000${rows[0].key}`), '61 days');
   assert.equal(at.get(`term\u0000${rows[0].key}`), '50%');
-  // The meter, tooltip and sort read the shown hour, never the hour the rows were drawn at.
   assert.equal(termAt(rows[0], 1550), 0.5);
   assert.equal(electionTooltip(rows[0], { name: 'Old' }, 1550).rows[2].value, '61 days');
-  // A country joining the chosen group at 40 changes the rows there, though no schedule does.
   assert.deepEqual(changeHours(data, [40, 60]), [0, 40, 60, 100, 201, 10_001]);
   const joined = (_tag: string, hour: number) => hour >= 40;
   assert.deepEqual(electionsAt(data, settledHour(changeHours(data, [40]), 45), joined).rows.map(row => row.tag), ['OLD']);
 });
 
 test('the term order the table sorts by moves with the shown hour', () => {
-  // A's term runs 0 to 2,400 and B's 600 to 1,800: at 600 A has served more of its term, at 1,500 B has.
   const data = validateElectionsReply(reply([
     holder('A', { held: [run(0, 3000, '1')], interval: [run(0, 3000, '48')], next: [run(0, 3000, '2400')], last: [run(0, 3000, '0')] }),
     holder('B', { held: [run(0, 3000, '1')], interval: [run(0, 3000, '48')], next: [run(0, 3000, '1800')], last: [run(0, 3000, '600')] }),

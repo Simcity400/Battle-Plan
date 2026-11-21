@@ -30,7 +30,6 @@ fn fixture(name: &str, files: &[(&str, &str)]) -> (Ideologies, Vec<String>) {
     (ideologies, messages)
 }
 
-// A duplicate skips its body, not the rest of the file.
 #[cfg(feature = "test-support")]
 #[test]
 fn duplicate_groups_keep_the_first_file_and_skip_the_later_body() {
@@ -72,7 +71,6 @@ fn duplicate_groups_keep_the_first_file_and_skip_the_later_body() {
     );
 }
 
-// An unexpected top-level key stops this file; the next file still loads.
 #[cfg(feature = "test-support")]
 #[test]
 fn top_level_stop_keeps_the_prefix_and_only_stops_its_file() {
@@ -105,7 +103,6 @@ fn top_level_stop_keeps_the_prefix_and_only_stops_its_file() {
     );
 }
 
-// Later blocks reread owned groups and reset omitted groups.
 #[cfg(feature = "test-support")]
 #[test]
 fn later_blocks_in_the_defining_file_reset_group_contents() {
@@ -126,9 +123,6 @@ fn later_blocks_in_the_defining_file_reset_group_contents() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-/// Three floating-point components, each divided by 255 when above 1.0,
-/// with alpha set to 1.0; a fourth component is the alpha as read.
-/// No `color` leaves the initial white.
 #[test]
 fn groups_keep_colours_and_sub_ideologies() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -144,7 +138,6 @@ fn groups_keep_colours_and_sub_ideologies() {
         Ok([150.0 / 255.0, 75.0 / 255.0, 0.0, 128.0])
     );
     assert_eq!(color(&ideologies, "odd"), Ok([0.1, 0.5, 0.5, 1.0]));
-    // 1 is not above 1.0: full red, not 1/255.
     assert_eq!(color(&ideologies, "red"), Ok([1.0, 0.0, 0.0, 1.0]));
     assert_eq!(color(&ideologies, "plain"), Ok([1.0; 4]));
     assert_eq!(
@@ -154,8 +147,6 @@ fn groups_keep_colours_and_sub_ideologies() {
     assert!(ideologies.group_of("unknown").unwrap().is_none());
 }
 
-/// Groups and sub-ideologies are found by lexer token, under the ASCII case
-/// fold; a sub-ideology keeps its authored spelling.
 #[test]
 fn groups_and_sub_ideologies_are_found_whatever_their_case() {
     let ideologies = parsed(b"ideologies = { Democratic = { types = { Mod_Subtype = { } } } }");
@@ -171,10 +162,6 @@ fn groups_and_sub_ideologies_are_found_whatever_their_case() {
     assert!(ideologies.group_of("mod_subtype_other").unwrap().is_none());
 }
 
-/// A later `color` updates the same colour from where the last left
-/// it. A component that cannot be scanned keeps its value; a `{`-less form
-/// is refused by name when it is a packed hexadecimal number and otherwise
-/// changes nothing (reported). A variable resolves first.
 #[test]
 fn colours_follow_component_reads_in_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -190,9 +177,6 @@ fn colours_follow_component_reads_in_order() {
             .contains("the packed colour 16711680")
     );
     assert_eq!(color(&ideologies, "c"), Ok([1.0, 0.0, 0.0, 1.0]));
-    // The division follows the attempted store, so a component `%f`
-    // cannot read is divided again when above 1.0; a quoted number is
-    // no number token (0xF): reported, the colour unchanged.
     let ideologies = parsed(
         b"ideologies = { d = { color = { 510 0 0 } color = { bad 0 0 } } \
               e = { color = \"123\" } f = { color = { \"12\" 0 0 } } }",
@@ -202,8 +186,6 @@ fn colours_follow_component_reads_in_order() {
     assert_eq!(color(&ideologies, "f"), Ok([12.0 / 255.0, 0.0, 0.0, 1.0]));
 }
 
-/// A later read storing every component replaces a packed colour the port
-/// does not convert; one leaving a component unstored keeps the refusal.
 #[test]
 fn a_later_complete_colour_replaces_a_packed_one() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -223,9 +205,6 @@ fn a_later_complete_colour_replaces_a_packed_one() {
     }
 }
 
-/// The colour reader always reads three components: a two-component
-/// colour's `}` is its third, and its group's `}` ends it, so the next
-/// group is read inside this one.
 #[test]
 fn a_short_colour_reads_its_groups_closing_brace() {
     let ideologies = parsed(b"ideologies = { b = { color = { 0 0 } } c = { } }");
@@ -233,7 +212,6 @@ fn a_short_colour_reads_its_groups_closing_brace() {
     assert_eq!(ideologies.get("c"), Ok(None));
 }
 
-/// A group whose token is not UTF-8 is a named gap, never dropped.
 #[test]
 fn a_group_that_is_not_text_stops_the_file() {
     let (read, _, _) = read_file_in(
@@ -251,9 +229,6 @@ fn a_group_that_is_not_text_stops_the_file() {
     );
 }
 
-/// The colour reader accepts a number token or `{`: `rgb` is reported
-/// and nothing more read, so the block after it is read as the group's
-/// fields and its `}` ends the group.
 #[test]
 fn a_tagged_colour_leaves_its_block_to_the_group_reader() {
     let (read, _, _) = read_file_in(
@@ -274,8 +249,6 @@ fn a_tagged_colour_leaves_its_block_to_the_group_reader() {
     );
 }
 
-/// A sub-ideology's other keys go to its modifier object:
-/// a block value there is a modifier block the registry decides.
 #[test]
 fn a_sub_ideologys_other_keys_are_its_modifier() {
     let (read, undecided, _) = read_file_in(
@@ -287,10 +260,6 @@ fn a_sub_ideologys_other_keys_are_its_modifier() {
     assert_eq!(undecided[0].name, "odd");
 }
 
-/// The replay's classes through this reader: a quoted key is no keyword
-/// and a bare one folds; a variable holds within its file; a block where
-/// a string list or one value is expected reads as the reader reads it;
-/// the end of the text closes every loop.
 #[test]
 fn the_replay_classes_hold_for_ideologies() {
     let (read, _, _) = read_file_in(
@@ -302,8 +271,6 @@ fn the_replay_classes_hold_for_ideologies() {
     let (found, _) = groups(&read.items);
     assert_eq!(found[0].color, Ok([0.0, 0.0, 1.0, 1.0]));
     assert_eq!(found[0].types, ["x"]);
-    // `can_be_boosted` read `{`; the block's colour is b's own and its
-    // `}` ended b.
     assert_eq!(
         found[1].color,
         Ok([9.0 / 255.0, 9.0 / 255.0, 9.0 / 255.0, 1.0])
@@ -322,10 +289,6 @@ fn the_replay_classes_hold_for_ideologies() {
     assert_eq!(groups(&read.items).0[0].types, ["y"]);
 }
 
-/// Each group is numbered by its place in its block's list: a key
-/// repeated in the block, or first read by an earlier file, takes no place
-/// and keeps its first number; a later block of the same file resets the
-/// groups it omits and numbers its own; a file stopping short refuses all.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_group_frame_is_its_place_in_the_defining_block() {
@@ -345,7 +308,6 @@ fn a_group_frame_is_its_place_in_the_defining_block() {
         "common/ideologies/b.txt",
         "ideologies = { COMMUNISM = { } democratic = { } }",
     );
-    // Two blocks: the second resets anarchism by omitting it; monarchism is 1.
     write(
         "common/ideologies/c.txt",
         "ideologies = { anarchism = { } } ideologies = { monarchism = { } } \
@@ -363,7 +325,6 @@ fn a_group_frame_is_its_place_in_the_defining_block() {
     assert_eq!(ideologies.frame("absent"), Ok(None));
 
     let _ = std::fs::remove_dir_all(&root);
-    // A file stopping short could define any group first or shift its place.
     let stopped = Ideologies::from_groups(Vec::new(), Some(("common/ideologies/d.txt", "x")));
     assert!(stopped.frame("neutrality").is_err());
 }

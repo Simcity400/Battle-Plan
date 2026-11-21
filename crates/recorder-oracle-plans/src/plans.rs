@@ -1,4 +1,3 @@
-//! Exact saved plan operands; each table is compared independently.
 use super::*;
 
 fn eq<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actual: T, expected: T) {
@@ -25,8 +24,6 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         .flat_map(|theatre| &theatre.definitions)
         .map(|group| (group.id, (group.is_army_group, group.children.len())))
         .collect();
-    // Only successors are serialized (the order save writer);
-    // reciprocal predecessor membership is exact, its order is not saved.
     let mut predecessors: BTreeMap<(u64, u32), Vec<u32>> = BTreeMap::new();
     for (&(group, instance), order) in &save.plans.orders {
         for &successor in &order.successors {
@@ -120,8 +117,6 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
                             stored_count,
                         ),
                     }
-                    // Demand comes from the save, so a missing/shrunken capture
-                    // count cannot suppress another independently saved field.
                     let reached = stored_count > 0
                         && saved.order_type == engine_native::corder_instance::TYPE_LINE;
                     let mut expected_prefix = (stored_count == 0).then_some(0);
@@ -250,8 +245,6 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
             actual,
             expected,
         );
-        // Names are recorded only for the arrows GfxCommonArrowUpdateCallback
-        // names; every other order records none.
         let named = matches!(saved.order_type, 1 | 3 | 4);
         let recorded = [
             &row.name_prefix,
@@ -298,7 +291,6 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// Saved truth/progress remain independent of later unsaved term refusals.
 fn execution(
     row: &replay_data::rows::ArmyOrderPlanRow,
     saved: &save::plans::Order,
@@ -391,7 +383,6 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
     let actual: BTreeSet<_> = rows.iter().map(|r| r.group).collect();
     let expected: BTreeSet<_> = save.plans.colors.keys().copied().collect();
     eq(report, "OrdersGroupPlans.group census", actual, expected);
-    // Every recorded root is an instance of the group's own order census.
     let census: Option<BTreeSet<(u64, u32)>> = frame
         .complete::<tables::ArmyOrders>()
         .ok()
@@ -401,8 +392,6 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         let [saved_primary, saved_fallback] =
             save.plans.group_orders.get(&row.group).unwrap_or(&empty);
         let label = format!("OrdersGroupPlans {}", row.group);
-        // The game tests stored length before the game writes the first-NUL
-        // prefix. A leading NUL emits name=""; a zero-length string omits it.
         let name = (!row.name.is_empty()).then(|| installed_content_core::parser::c_string(&row.name));
         if name.is_some_and(|prefix| prefix.len() < row.name.len()) {
             report.limitation(
@@ -425,9 +414,6 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
             &row.fallback_orders,
             saved_fallback,
         );
-        // The serializer writes each primary root followed by its successor
-        // graph, so the roots are an ordered subsequence of the saved list and
-        // the first saved instance is the first root.
         if let Some(first) = saved_primary.first() {
             eq(
                 report,
@@ -470,9 +456,6 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
 }
 fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::Fronts>()?;
-    // The game writes root_front for any nonnull binding, including one
-    // whose front was destroyed before its order; only live theatre fronts
-    // have sections, so only those bindings require a Fronts row.
     let required: BTreeSet<_> = save
         .plans
         .orders
@@ -512,10 +495,6 @@ fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// InvasionPreparations against the saved naval invasions: one row per saved
-/// type-3 order, keyed as ArmyOrders, whose `progress` is the saved `time`
-/// (the accumulated preparation, which the order writer
-/// emits only when nonzero) exactly.
 fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let mut rows = BTreeMap::new();
     for row in frame.complete::<tables::InvasionPreparations>()? {
@@ -757,7 +736,6 @@ mod tests {
                 name_prefix: b"o_operation".to_vec(),
                 name_first: b"o_x".to_vec(),
                 name_second: b"o_y".to_vec(),
-                // This saved-prefix fixture predates the child-front packet.
                 child_fronts: replay_data::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]));
@@ -793,7 +771,6 @@ mod tests {
             .reverse();
         saved.plans.orders.get_mut(&(group, 1)).unwrap().blitz = true;
         saved.plans.fronts.get_mut(&front).unwrap().pairs.reverse();
-        // A reordered name, a successor and a renamed group each differ too.
         saved
             .plans
             .orders
@@ -809,7 +786,6 @@ mod tests {
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
         assert_eq!(report.differences.len(), 7, "{:?}", report.differences);
-        // A saved binding to a front absent from the theatres requires no row.
         let stale = (10_u64 << 32) | 66;
         saved.plans.orders.insert(
             (group, 2),
@@ -979,8 +955,6 @@ mod tests {
                 report.differences
             );
         }
-        // The save independently demands one indexed child from two stored
-        // entries. Neither captured count can suppress that saved prefix.
         saved
             .naval_history
             .theatre_countries
@@ -1232,9 +1206,7 @@ mod tests {
         let (_, mut saved, _, _) = super::super::fixtures::fixture();
         let group = (8_u64 << 32) | 53;
         saved.plans.colors.insert(group, None);
-        // The group's name matches, so only the roots can differ.
         saved.plans.group_names.insert(group, None);
-        // Root 1 is saved with its successor 5 before root 2; 3 is a fallback.
         saved
             .plans
             .group_orders
@@ -1277,10 +1249,8 @@ mod tests {
             report.differences.len()
         }
         assert_eq!(run(&mut frame, &saved, group, vec![1, 2], vec![3]), 0);
-        // A recording without the saved first root fails, empty or not.
         assert_eq!(run(&mut frame, &saved, group, vec![], vec![3]), 1);
         assert_eq!(run(&mut frame, &saved, group, vec![2], vec![3]), 1);
-        // A root outside the census fails, even where the save lists it.
         saved
             .plans
             .group_orders
@@ -1302,7 +1272,6 @@ mod tests {
             .plans
             .orders
             .insert((group, 1), invasion(Some(b"12.34567")));
-        // No saved time is zero progress; a move order has no row.
         saved.plans.orders.insert((group, 2), invasion(None));
         saved.plans.orders.insert(
             (group, 3),
@@ -1341,7 +1310,6 @@ mod tests {
         assert_eq!(run(vec![(1, 1_234_568), (2, 0)]), 1);
         assert_eq!(run(vec![(1, 1_234_567)]), 1);
         assert_eq!(run(vec![(1, 1_234_567), (2, 0), (3, 0)]), 1);
-        // A complete but empty table misses both saved invasions.
         assert_eq!(run(Vec::new()), 2);
     }
 }

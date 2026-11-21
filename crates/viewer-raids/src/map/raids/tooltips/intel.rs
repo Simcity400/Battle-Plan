@@ -1,6 +1,3 @@
-//! Evaluate CURRENT for the viewing country. Preserve fixed5 operation order
-//! for products, divisions and the final subtraction. The displayed rating
-//! is derived rather than stored.
 use super::super::{RaidAssets, script::World};
 use replay_data::{
     rows::RaidCounterOperative, rows::RaidIntelInputRow, rows::RaidScope, rows::tables,
@@ -18,13 +15,10 @@ pub struct Defines {
     pub base_counter: i64,
     pub operative_base: i64,
     pub stacking: i64,
-    /// `NOperatives.COUNTER_INTELLIGENCE_FOREIGN_AGENT_FACTOR`: each counteroperative's base
-    /// is multiplied by one plus it when it is not zero.
     pub foreign_agent: i64,
     pub crypto: dashboard_text::cryptology::Defines,
     pub required: i64,
 }
-// Zero operands belong only to synthetic tooltip fixtures. Production reads content.
 #[cfg(test)]
 impl Default for Defines {
     fn default() -> Self {
@@ -78,7 +72,6 @@ fn times(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / 100_000
 }
 
-/// Neutral when the wrapping sum is below 1.
 pub fn air_ratio(friendly: i64, enemy: i64) -> Result<i64, String> {
     let total = friendly.wrapping_add(enemy);
     if total < 1 {
@@ -93,8 +86,6 @@ pub fn air_ratio(friendly: i64, enemy: i64) -> Result<i64, String> {
         .ok_or_else(|| "air superiority signed division overflow".into())
 }
 
-/// One counteroperative's base before stacking: the operative base plus its defense and
-/// context, then multiplied by one plus the foreign-agent factor when that is not zero.
 pub(crate) fn counteroperative_base(
     operative: &RaidCounterOperative,
     base: i64,
@@ -110,9 +101,6 @@ pub(crate) fn counteroperative_base(
     }
 }
 
-/// Each unique counteroperative's weighted contribution, by handle, strongest first:
-/// deduplicate objects, sort by signed base then (type, id), and iterate backwards, the first
-/// weighted one, each later one by the running product of the stacking factor.
 pub(crate) fn contributions(
     operatives: &[RaidCounterOperative],
     base: i64,
@@ -151,7 +139,6 @@ pub(crate) fn contributions(
     Ok(out)
 }
 
-/// The contributions' wrapping sum ([`contributions`]).
 fn stacked(
     operatives: &[RaidCounterOperative],
     base: i64,
@@ -252,7 +239,6 @@ pub fn current(
     lane: usize,
     d: &Defines,
 ) -> Result<i64, String> {
-    // A null country reference contributes zero terms.
     if ours == 0 {
         return Ok(0);
     }
@@ -300,7 +286,6 @@ pub fn current(
         .ok_or("target state has no neighbour roster")?
         .iter()
         .any(|id| world.state_controller(*id) == Some(ours));
-    // Select the template's first province.
     let first = world
         .state_order(state)
         .map_err(|why| why.to_string())?
@@ -399,12 +384,10 @@ mod tests {
             context: 0,
         };
         let operatives = [op(1, 100_000), op(2, 50_000)];
-        // Zero leaves every base as it was.
         assert_eq!(
             contributions(&operatives, 0, 50_000, 0),
             Ok(vec![(1, 100_000), (2, 25_000)])
         );
-        // One plus a half: 150,000 and 75,000, the second weighted by the stacking factor.
         assert_eq!(
             contributions(&operatives, 0, 50_000, 50_000),
             Ok(vec![(1, 150_000), (2, 37_500)])

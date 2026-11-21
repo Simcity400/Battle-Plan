@@ -1,12 +1,3 @@
-//! One step of the map's side as a timeline: when its apply began and ended, when the settles
-//! began, and per maker when it was asked, when the rows it waits for reached it, when its build
-//! began and ended, and when the layer joined its product. The harness reports the medians, so a
-//! step that costs the sum of its makers rather than its slowest is read off the marks instead of
-//! guessed at.
-//!
-//! Kept only while the flight record is on: off, a mark is one relaxed atomic read. A maker's
-//! marks are written from its own worker thread; a mark from before the step began is left out of
-//! it.
 
 use std::{
     sync::{
@@ -16,36 +7,27 @@ use std::{
     time::Instant,
 };
 
-/// What is marked of one maker, in order.
 pub const MARKS: [&str; 8] = ["asked", "rows", "build_began", "build_ended", "published", "join_began", "waited", "joined"];
 
-/// What is marked of the step itself, after its start.
 const STEP: [&str; 5] = ["apply_ended", "settles_began", "ended", "views_settled", "joins_began"];
 
-/// Makers that can be named; a map side registers one per worker.
 const MAKERS: usize = 16;
 
 const SLOTS: usize = MAKERS * MARKS.len() + STEP.len();
 
-/// A mark not made in this step.
 const NONE: u64 = u64::MAX;
 
-/// One maker's place in the marks, taken when it is built.
 #[derive(Clone, Copy)]
 pub struct Maker(usize);
 
-/// Which of a maker's marks is written.
 #[derive(Clone, Copy)]
 pub enum Mark {
     Asked = 0,
     Rows = 1,
     BuildBegan = 2,
     BuildEnded = 3,
-    /// Its worker handed an answer to the layer's join.
     Published = 4,
-    /// The layer's join began.
     JoinBegan = 5,
-    /// The join's wait for the product ended, whether it came or the budget ran out.
     Waited = 6,
     Joined = 7,
 }
@@ -68,7 +50,6 @@ fn on() -> bool {
     viewer_foundation::view_record::on()
 }
 
-/// The maker named `name`, registered once when it is built. Names past [`MAKERS`] are not marked.
 pub fn maker(name: &'static str) -> Maker {
     let mut names = NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let at = names.iter().position(|held| *held == name).unwrap_or_else(|| {
@@ -78,8 +59,6 @@ pub fn maker(name: &'static str) -> Maker {
     Maker(at)
 }
 
-/// `maker`'s `mark`, now. The first ask, the first rows and the first build of a step are marked;
-/// the last of its builds to end and the last join are, since those are what the step waited for.
 pub fn mark(maker: Maker, mark: Mark) {
     if !on() || maker.0 >= MAKERS {
         return;
@@ -93,7 +72,6 @@ pub fn mark(maker: Maker, mark: Mark) {
     }
 }
 
-/// A step begins: the marks of the one before are cleared.
 pub fn step() {
     if !on() {
         return;
@@ -104,22 +82,18 @@ pub fn step() {
     ORIGIN.store(now(), Ordering::Relaxed);
 }
 
-/// The step's apply is done.
 pub fn applied() {
     step_mark(0);
 }
 
-/// The step's settles begin.
 pub fn settling() {
     step_mark(1);
 }
 
-/// The views the step before posted are all made: the side owns the mirrors again and may apply.
 pub fn views_settled() {
     step_mark(3);
 }
 
-/// Every layer that joins no maker has settled: the joins begin.
 pub fn joining() {
     step_mark(4);
 }
@@ -131,8 +105,6 @@ fn step_mark(at: usize) {
     AT[MAKERS * MARKS.len() + at].store(now(), Ordering::Relaxed);
 }
 
-/// The step is done: its marks are kept as offsets from its start. A step that composed is left
-/// out, as no maker joins one.
 pub fn close(composing: bool) {
     if !on() {
         return;
@@ -158,8 +130,6 @@ fn percentile(values: &mut Vec<u32>, share: f64) -> Option<f64> {
     values.get(at).map(|&ns| f64::from(ns) / 1e6)
 }
 
-/// The timeline of the steps marked: per step mark and per maker mark, the milliseconds from the
-/// step's start at the median and at the ninetieth, and how many steps marked it.
 pub fn report() -> serde_json::Value {
     use serde_json::json;
     let steps = std::mem::take(&mut *STEPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner));

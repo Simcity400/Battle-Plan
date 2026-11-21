@@ -79,7 +79,6 @@ fn production_verdict_indirect_foreign_unwind() {
         .try_into()
         .unwrap();
     assert_eq!(sentinel[..6], native::DISPATCH_LEADER_CALL_SENTINEL);
-    // This assignment fails if the production body loses its unwind ABI.
     let body: unsafe extern "system-unwind" fn(usize, usize, usize) -> usize = leader_tap_body;
     assert!(registered(site) && registered(leader_tap_entry as *const () as usize));
     assert!(registered(body as *const () as usize));
@@ -176,8 +175,6 @@ fn production_verdict_indirect_foreign_unwind() {
                 assert!(!refused.complete);
                 assert_eq!(refused.reason, TAP_UNWIND_RETENTION);
             }
-            // Normal native work still returns while the installed collector
-            // is retained; only its new ASM flight retires, not the old latch.
             RAISE.store(0, Ordering::SeqCst);
             unsafe {
                 probe.run(
@@ -197,10 +194,6 @@ fn production_verdict_indirect_foreign_unwind() {
             assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 1);
             assert_eq!(DISPATCH.get().seen, [false; 2]);
             assert!(!observing());
-            // Test-only completion is proved here: the authored single-thread
-            // native handler and subsequent normal driver have both returned,
-            // and run verified handler/GPR/XMM/RSP witnesses. No production
-            // callback/loader exposes this reset or assumes concurrent safety.
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 1);
             ACTIVE.store(0, Ordering::SeqCst);
             CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);

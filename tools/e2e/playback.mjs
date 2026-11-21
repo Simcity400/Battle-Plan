@@ -1,18 +1,11 @@
-// The playback phase's judge: one verdict table from the runs tools/e2e/playback.py made, or from a desktop app's perf log.
-// usage: node tools/e2e/playback.mjs map <phase folder>
-//        node tools/e2e/playback.mjs verify <run folder>
-//        node tools/e2e/playback.mjs dashboard --perf-log <file> --out <folder> [--refresh-hz 60] [--page <name>] [--playing-seconds S] [--seeks N]
-// Exits 0 when every judged bar passed, 1 when any failed or a run was partial, 2 when it could not judge.
 import { existsSync } from 'node:fs';
 import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { FAIL, PARTIAL, dashboardRows, floorOf, floorRows, pacedRows, passed, proofRows, spread, table, wholeHarness, wholeProof } from './playbackVerdicts.mjs';
 
-/** The phase's runs in the order playback.py makes them. */
 const ROLES = ['floor', 'layers', 'layers-seeks', 'proof'];
 const readJSON = async file => (existsSync(file) ? JSON.parse((await readFile(file, 'utf8')).replace(/^﻿/, '')) : null);
 
-/** A JSON-lines file: its records, and whether a line failed to parse (a run cut off while writing). */
 async function readLines(file) {
   if (!existsSync(file)) return null;
   const lines = (await readFile(file, 'utf8')).split(/\r?\n/).filter(line => line.trim());
@@ -24,7 +17,6 @@ async function readLines(file) {
   return { records, frames: records, cut };
 }
 
-/** What one run left: the runner's record and the harness's or proof's output. */
 async function load(folder) {
   const run = await readJSON(path.join(folder, 'run.json'));
   if (!run) return null;

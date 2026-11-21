@@ -1,33 +1,16 @@
-//! An unbound offensive line preceded by a move is redrawn along the far
-//! borders of its target provinces when enough form one pair chain.
-//!
-//! Cross the line tangent at the move's end with the move direction to choose
-//! the side. A neighbour of a line province outside the line is a candidate
-//! when its direction falls on that side of the local tangent or within 0.2
-//! of it. For every seed the
-//! builder grows the longest `(line province, candidate)` chain through
-//! mutually adjacent candidates; it snaps when at most `max(1, candidates / 5)`
-//! candidates are left out. Neighbour order is the native province-definition
-//! order (the content movement map), which decides seeds and swap-removal ties.
 
 use std::collections::BTreeSet;
 
 use super::fixed::{self, Point, SCALE};
 
-/// Fixed5 tolerance: how far off the side a candidate may still lie.
 const SIDE_TOLERANCE: i64 = 20_000;
 
-/// What the builder reads from the content.
 pub struct World<'a> {
     pub centroid: &'a dyn Fn(u32) -> Option<[i32; 2]>,
-    /// Ordered neighbours from the content movement map.
     pub neighbours: &'a dyn Fn(u32) -> Option<&'a [u32]>,
-    /// A neighbour listed by the first province, excluding impassable kind 4.
     pub adjacent: &'a dyn Fn(u32, u32) -> bool,
 }
 
-/// A snapped line: its temporary pairs (zero overlap units) and the arrow
-/// Teeth side.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snap {
     pub pairs: Vec<[u32; 2]>,
@@ -38,8 +21,6 @@ fn centre(world: &World<'_>, province: u32) -> Option<Point> {
     (world.centroid)(province).map(fixed::from_pixel)
 }
 
-/// Sum of the consecutive centroid steps `path[j] -> path[j + 1]` for the `j`
-/// in `range` that exist, divided by their count and normalized.
 fn mean_direction(
     world: &World<'_>,
     path: &[u32],
@@ -65,7 +46,6 @@ fn mean_direction(
     Some(fixed::normalize(sum))
 }
 
-/// The move's arriving direction: its last one or two steps.
 fn move_direction(world: &World<'_>, approach: &[u32]) -> Option<Point> {
     let n = approach.len() as i64;
     let mut sum = [0i64, 0];
@@ -84,8 +64,6 @@ fn move_direction(world: &World<'_>, approach: &[u32]) -> Option<Point> {
     (sum != [0, 0]).then(|| fixed::normalize(sum))
 }
 
-/// The snapped line, or `None` when the native builder falls back to the
-/// centroid polyline.
 pub fn snap(line: &[u32], approach: &[u32], world: &World<'_>) -> Option<Snap> {
     if approach.len() < 2 || line.is_empty() {
         return None;
@@ -96,7 +74,6 @@ pub fn snap(line: &[u32], approach: &[u32], world: &World<'_>) -> Option<Snap> {
     let single = line.len() == 1;
     let tangent_at = |range: std::ops::RangeInclusive<i64>| -> Option<Point> {
         if single {
-            // A one-province line turns the move direction by a quarter.
             Some(fixed::rotate_quarter(incoming))
         } else {
             mean_direction(world, line, range)
@@ -131,8 +108,6 @@ pub fn snap(line: &[u32], approach: &[u32], world: &World<'_>) -> Option<Snap> {
             } else {
                 side >= 0 || value <= SIDE_TOLERANCE
             };
-            // The native marker bit is set but never tested: a neighbour of two
-            // line provinces is a candidate twice.
             if accepted {
                 candidates.push(neighbour);
             }
@@ -174,9 +149,6 @@ pub fn snap(line: &[u32], approach: &[u32], world: &World<'_>) -> Option<Snap> {
     })
 }
 
-/// For an unsnapped line, choose the teeth side by crossing the move's arriving
-/// direction with the line tangent at the control nearest its destination,
-/// averaged over four controls either way.
 pub fn unsnapped_side(controls: &[Point], approach: &[u32], world: &World<'_>) -> Option<i32> {
     if approach.len() < 2 || controls.len() < 2 {
         return None;
@@ -230,9 +202,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// A 3 x 3 grid of provinces `1..=9`, row-major from the south-west, each
-    /// centred on its cell, eight-connected (real maps have the mutually
-    /// adjacent triangles the pair walk needs).
     struct Grid {
         centroids: BTreeMap<u32, [i32; 2]>,
         neighbours: BTreeMap<u32, Vec<u32>>,
@@ -284,17 +253,11 @@ mod tests {
     #[test]
     fn a_line_across_the_grid_snaps_to_its_forward_neighbours() {
         let g = grid();
-        // The move arrives northwards (2 -> 5) at the middle row line 4-5-6;
-        // the candidates are the north row 7, 8, 9.
-        // Seven candidates (duplicates included) leave at most one out.
         let north = with_world(&g, |w| snap(&[4, 5, 6], &[2, 5], w)).unwrap();
         assert!(north.pairs.iter().all(|p| [7, 8, 9].contains(&p[1])));
-        // Seed 8 walks 4-8, 4-7, 5-7, 5-8, 5-9, 6-9, 6-8; the first longest wins.
         assert_eq!(north.pairs.len(), 7);
         assert_eq!(north.pairs[0], [4, 8]);
-        // Tangent east crossed with move north is negative: side 1.
         assert_eq!(north.side, 1);
-        // Arriving southwards the far side is the south row and the side flips.
         let south = with_world(&g, |w| snap(&[4, 5, 6], &[8, 5], w)).unwrap();
         assert!(south.pairs.iter().all(|p| [1, 2, 3].contains(&p[1])));
         assert_eq!(south.side, -1);
@@ -304,8 +267,6 @@ mod tests {
     fn a_single_province_line_uses_the_quarter_turned_move_direction() {
         let g = grid();
         let snap = with_world(&g, |w| snap(&[5], &[2, 5], w)).unwrap();
-        // Every neighbour of 5 other than the approach side's rear is tested
-        // against the turned tangent; the north neighbour must be among them.
         assert!(snap.pairs.iter().any(|p| p == &[5, 8]));
     }
 
@@ -326,7 +287,6 @@ mod tests {
         ];
         let north = with_world(&g, |w| unsnapped_side(&controls, &[2, 5], w));
         let south = with_world(&g, |w| unsnapped_side(&controls, &[8, 5], w));
-        // The same sign law as the snapped branch.
         assert_eq!(north, Some(1));
         assert_eq!(south, Some(-1));
     }

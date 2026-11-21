@@ -1,13 +1,8 @@
-//! Province-keyed supply parent map.
 use crate::{Memory, read};
 
-/// Companion parent-map data/count/mask/probe header.
 pub const HEADER: usize = 0x28;
-/// Parent buckets have a marker, a key and a signed parent province.
 pub const STRIDE: usize = 12;
 
-/// Shared bounded lookup for the three province-keyed supply maps,
-/// using the same mixer and forward probing.
 #[derive(Clone, Copy)]
 pub(crate) struct Map {
     data: usize,
@@ -18,8 +13,6 @@ pub(crate) struct Map {
     marker: usize,
 }
 impl Map {
-    /// Hint the first possible bucket of a freshly admitted key. No value is
-    /// acquired: the ordered probe and its first failure still run in `find`.
     pub(crate) fn hint(&self, key: u32) {
         if self.count == 0 {
             return;
@@ -43,7 +36,6 @@ impl Map {
         let count = u32::from_le_bytes(header[8..12].try_into().unwrap());
         let mask = u32::from_le_bytes(header[12..16].try_into().unwrap());
         let probe = header[16];
-        // Lookup uses the full stored mask without a population ceiling.
         let capacity = mask
             .checked_add(1)
             .filter(|v| v.is_power_of_two())

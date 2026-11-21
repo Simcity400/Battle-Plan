@@ -52,7 +52,6 @@ fn row() -> StateResistanceRow {
         level: 3_199_999,
         speed: -5,
         compliance: 1_050_000,
-        // The marker has no active-byte gate.
         active: 0,
         map: Recorded::Value(Some(OccupationMap {
             stored_target: None,
@@ -607,7 +606,6 @@ fn assert_same_entry(
     assert!((actual.opacity() - expected.opacity()).abs() < 1e-6);
     let mut actual = actual.bindings(controls.item, resources).unwrap();
     let mut expected = expected.bindings(controls.item, resources).unwrap();
-    // The full retained drawable binding includes its animation clock even when hidden.
     assert_eq!(actual.bind(controls.badge), expected.bind(controls.badge));
 }
 

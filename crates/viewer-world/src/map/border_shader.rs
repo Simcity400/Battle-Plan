@@ -1,4 +1,3 @@
-//! Border uses authored program/blend/samplers and forced map depth/raster.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
@@ -37,25 +36,21 @@ pub struct Inputs<'a> {
 pub struct Run<'a> {
     pub vertices: &'a wgpu::Buffer,
     pub indices: &'a wgpu::Buffer,
-    /// The indices of `indices` drawn.
     pub range: std::ops::Range<u32>,
 }
 
 pub struct Batch<'a> {
     pub texture: &'a wgpu::TextureView,
     pub alpha: f32,
-    /// Palette color for this native reason group within a material bucket.
     pub selection: [f32; 4],
     pub runs: Vec<Run<'a>>,
 }
 
-/// The pixel slot the engine binds the shadow screen buffer to for borders.
 pub const SHADOW_SLOT: u32 = 3;
 
 pub struct Border {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
-    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub texel_reads: Option<String>,
 }
 
@@ -67,7 +62,6 @@ impl Border {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, samples, format, depth)
         })
@@ -124,7 +118,6 @@ impl Border {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // Use counterclockwise fronts and enabled depth testing without depth writes.
         let raster = RasterizerState {
             front_ccw: true,
             ..Default::default()
@@ -165,8 +158,6 @@ impl Border {
         batches: &[Batch<'_>],
         visible: bool,
     ) -> io::Result<super::shader_constants::WorldPixelConstants> {
-        // Uploads before the strip-count check, even for no draws. A hidden bank keeps every
-        // retained input it would have left for the passes after it and submits nothing.
         let mut retained =
             super::shader_constants::WorldPixelConstants::border(inputs.time, [0.; 4], 1.);
         if let Some(state) = inputs.retained {

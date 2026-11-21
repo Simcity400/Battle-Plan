@@ -1,5 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{Hour, columns};
 use replay_columnar::store::TableView;
@@ -20,15 +18,12 @@ pub(super) const LINK_SLOT: [usize; 1] = columns::<CountryLinkRow, 1>(["canonica
 const COVERAGE: [usize; 3] = columns::<LandEventCoverageRow, 3>(["from_hour", "to_hour", "complete"]);
 const RESULT: [usize; 7] = columns::<LandCombatResultsRow, 7>(["combat", "province", "duration", "end_hour", "sides", "winners", "losses"]);
 
-/// A LandCombats row as a battle reads it.
 pub(super) struct Combat {
     pub province: u32,
     pub duration: i32,
-    /// Distinct units of each side; none while a roster is not recorded.
     pub counts: Option<[u32; 2]>,
 }
 
-/// The distinct handles of a list cell of 8-byte items.
 fn distinct(bytes: &[u8]) -> io::Result<u32> {
     if bytes.len() % 8 != 0 {
         return Err(invalid("A LandCombats roster is not whole handles"));
@@ -46,7 +41,6 @@ fn u32s(bytes: &[u8]) -> io::Result<impl Iterator<Item = u32> + '_> {
     Ok(bytes.chunks_exact(4).map(|item| u32::from_le_bytes(item.try_into().expect("4 bytes"))))
 }
 
-/// The LandCombats row in `slot`, its rosters counted when `rosters`.
 pub(super) fn combat(view: &TableView<'_>, slot: u32, rosters: bool) -> io::Result<Combat> {
     let unread = || invalid(format!("LandCombats slot {slot} does not hold its province and duration"));
     let province = view.number(COMBAT[0], slot).ok_or_else(unread)? as u32;
@@ -58,8 +52,6 @@ pub(super) fn combat(view: &TableView<'_>, slot: u32, rosters: bool) -> io::Resu
     Ok(Combat { province, duration, counts })
 }
 
-/// A combat's side country references, attacker then defender, primary before secondary; none
-/// while LandCombatSides is not complete or holds no row of it.
 pub(super) fn sides(hour: &Hour<'_>, combat: u64) -> io::Result<Option<[Vec<u32>; 2]>> {
     if !hour.complete(TableId::LandCombatSides) {
         return Ok(None);
@@ -74,7 +66,6 @@ pub(super) fn sides(hour: &Hour<'_>, combat: u64) -> io::Result<Option<[Vec<u32>
     Ok(Some(sides))
 }
 
-/// A combat's manpower loss counters, attacker then defender; none while not read.
 pub(super) fn manpower(hour: &Hour<'_>, combat: u64) -> [Option<i32>; 2] {
     if !hour.complete(TableId::LandCombatProgress) {
         return [None; 2];
@@ -84,7 +75,6 @@ pub(super) fn manpower(hour: &Hour<'_>, combat: u64) -> [Option<i32>; 2] {
     PROGRESS.map(|column| view.number(column, slot).map(|value| value as i32))
 }
 
-/// A raw country reference's canonical slot, while CountryLinks is complete and resolves it.
 pub(super) fn link(hour: &Hour<'_>, raw: u32) -> Option<u32> {
     if !hour.complete(TableId::CountryLinks) {
         return None;
@@ -93,7 +83,6 @@ pub(super) fn link(hour: &Hour<'_>, raw: u32) -> Option<u32> {
     links.slot(u128::from(raw)).and_then(|slot| links.number(LINK_SLOT[0], slot)).map(|slot| slot as u32)
 }
 
-/// The land event drain of this hour read whole: since the read at `from`, through the hour.
 pub(super) fn drain(hour: &Hour<'_>) -> Option<(i32, i32)> {
     if !hour.complete(TableId::LandEventCoverage) {
         return None;
@@ -106,7 +95,6 @@ pub(super) fn drain(hour: &Hour<'_>) -> Option<(i32, i32)> {
     })
 }
 
-/// A finalizer of the hour's drain.
 pub(super) struct Finalizer {
     pub id: u64,
     pub combat: u64,
@@ -114,14 +102,11 @@ pub(super) struct Finalizer {
     pub duration: i32,
     pub end_hour: i32,
     pub winners: u8,
-    /// Each side's countries, references as recorded.
     pub countries: [Vec<u32>; 2],
     pub manpower: [i32; 2],
-    /// Each side's equipment pool by design after the flush.
     pub equipment: [Vec<LandEquipmentLoss>; 2],
 }
 
-/// The finalizers LandCombatResults gave this hour, by id; none while it is not complete.
 pub(super) fn finalizers(hour: &Hour<'_>) -> io::Result<Vec<Finalizer>> {
     let table = TableId::LandCombatResults;
     if !hour.complete(table) {
@@ -152,12 +137,10 @@ pub(super) fn finalizers(hour: &Hour<'_>) -> io::Result<Vec<Finalizer>> {
     Ok(out)
 }
 
-/// A LandBattles row's cells as the store holds them.
 pub(super) struct Held {
     pub start: i32,
     pub exact: bool,
     pub counter_base: i32,
-    /// Each peak's value and hour, total, attackers, defenders.
     pub peaks: [Option<(u32, i32)>; 3],
 }
 
@@ -171,7 +154,6 @@ pub(super) fn held(view: &TableView<'_>, slot: u32) -> Option<Held> {
     })
 }
 
-/// A held LandBattleEnds row's combat and kind.
 pub(super) fn end(view: &TableView<'_>, slot: u32) -> Option<(u64, u8)> {
     Some(((view.key(slot)? >> 33) as u64, view.number(0, slot)? as u8))
 }

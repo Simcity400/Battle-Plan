@@ -1,4 +1,3 @@
-//! Tree receiver ->(mode1), before terrain receiver.
 use eframe::wgpu;
 use installed_content_core::{
     pdxshader::DepthStencilState, pdxshader::RasterizerState, pdxshader::program::Stage,
@@ -12,8 +11,6 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-/// The 80-byte b1 allocation carries the wrap view's receiver matrix, zero season interpolation
-/// and column, and fade. Bytes 76 through 79 remain unknown.
 fn constants(matrix: [[f32; 4]; 4], fade: f32) -> Vec<u8> {
     let mut bytes = vec![0; 80];
     bytes[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
@@ -30,7 +27,6 @@ impl Receiver {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, format, depth)
         })
@@ -55,7 +51,6 @@ impl Receiver {
             .retain(|key, _| (0..16).any(|slot| *key == binding(slot, Stage::Pixel)));
         let mut pass = gpu::Pass::packed(&compiled, &state, format, 1);
         pass.vertices = super::tree_caster::vertex_layouts(&compiled.vertex.inputs)?;
-        // The caller forces default depth and retains the preceding caster's raster state.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
         pass.depth_stencil =

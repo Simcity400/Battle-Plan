@@ -1,4 +1,3 @@
-//! Regional air combat capture: the air region combat holders, read only where the record updater wrote them, and that updater's observer. The host owns dispatch, loans and table assembly.
 
 use collector_hooks::hook;
 use collector_lifetime::world_lifetime;

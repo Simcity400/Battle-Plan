@@ -121,7 +121,6 @@ const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
-// This offscreen composite independently applies the painter's set/draw/submit/free order.
 fn composite(
     state: &egui_wgpu::RenderState,
     ctx: &egui::Context,
@@ -279,7 +278,6 @@ fn local_commands_preserve_script_pixels_and_texture_lifetimes() {
         [WHITE; 16].concat()
     );
 
-    // X7 rejects managed IDs; check their upload/draw/free ordering separately.
     let mut pending = egui::TexturesDelta::default();
     let managed = TextureId::Managed(41);
     let options = egui::TextureOptions::NEAREST;

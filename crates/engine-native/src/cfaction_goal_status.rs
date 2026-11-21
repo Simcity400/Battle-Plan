@@ -1,6 +1,3 @@
-//! Stored faction goal state. The caller supplies a faction already authenticated
-//! by its existing roster acquisition, and reads this companion only after its
-//! goal writer certificate changed. No roster walk or game getter lives here.
 
 use engine_sites::Rva;
 use crate::{Memory, allocation, cgame_date, cpdx_array::Array, read};
@@ -18,8 +15,6 @@ pub const GOAL_STRIDE: usize = 0x540;
 pub const GOAL_DEFINITION: usize = 0;
 pub const GOAL_STATUS: usize = 0x08;
 pub const GOAL_PROGRESS_STATUS: usize = 0x10;
-/// Stored progress cache used by the faction screen; evaluating the authored
-/// trigger again could produce a newer value than the game currently shows.
 pub const GOAL_PROGRESS: usize = 0x520;
 pub const GOAL_DATE: usize = 0x528;
 pub const DEFINITION_VTABLE_RVA: Rva = Rva(0x0279_7990);
@@ -29,9 +24,6 @@ pub const DATE_STRIDE: usize = 0x18;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Goal {
     pub token: u32,
-    /// Preserve the stored status, including pending completion/cancellation.
-    /// The save's projection maps zero to active, one to completed and all
-    /// other values to cancelled; that projection is not the runtime state.
     pub status: i32,
     pub progress_raw: i64,
     pub date: i32,
@@ -41,13 +33,8 @@ pub struct Goal {
 pub struct Snapshot {
     pub manifest: Option<u32>,
     pub goals: Vec<Goal>,
-    /// Acquisition-only addresses, valid solely while the caller's structural
-    /// owner certificate holds. Never persisted or followed during playback.
     pub goal_addresses: Vec<usize>,
-    /// Ordered held section indices per runtime goal. Raw signed words are
-    /// retained as bits; a malformed index must not silently select content.
     pub active_sections: Vec<Vec<u32>>,
-    /// Nullable definition occurrences remain in native order.
     pub completed: Vec<Option<u32>>,
     pub cancelled: Vec<Option<u32>>,
     pub extra_slots: Vec<i32>,
@@ -124,9 +111,6 @@ fn date(memory: &impl Memory, base: usize, address: usize) -> Result<i32, &'stat
     cgame_date::read_raw(memory, base, address)
 }
 
-/// Worker-only acquisition into retained storage. A failure leaves the snapshot
-/// unpublished; its partially filled buffers may be reused by the next changed
-/// owner read. Empty arrays never require their data pointer to be readable.
 pub fn read_into(
     memory: &impl Memory,
     base: usize,
@@ -136,8 +120,6 @@ pub fn read_into(
     read_selected_into(memory, base, faction, output, true)
 }
 
-/// Structural acquisition excludes progress caches, which have independent
-/// writer certificates. Cached addresses require this owner's lifetime proof.
 pub fn read_structure_into(
     memory: &impl Memory,
     base: usize,
@@ -244,8 +226,6 @@ fn read_sections_into(
     )
 }
 
-/// Read only a selected cache. The caller must hold the structural owner's
-/// lifetime certificate and the named progress-status writer certificate.
 pub fn read_progress_into(
     memory: &impl Memory,
     address: usize,

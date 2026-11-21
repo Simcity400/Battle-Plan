@@ -1,13 +1,3 @@
-//! Province placement for active naval combat map icons.
-//!
-//! first walks each province's ordered direct combat vector,
-//! then the global combat registry. The second pass can add an engaged combat
-//! to a sea province occupied by one of its transferred units. The two passes
-//! are independent: an unresolved transfer chain cannot erase a direct icon.
-//!
-//! The recorded transfer units are live ones only ( skips a stale
-//! unit handle, and the recorder does too), so a recorded unit without a
-//! location is unresolved, not stale.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,15 +30,10 @@ pub struct Units {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Occurrence {
-    /// Province whose native category-9 bucket owns and deduplicates the icon.
     pub province: u32,
-    /// Direct entries keep combat H even when their source province is P != H.
     pub anchor_province: u32,
     pub combat: u64,
-    /// Direct icons run home rotation/progress; global spillovers do not.
     pub home: bool,
-    /// Last admitted call's per-source-province ordinal. `None` means a prior
-    /// unknown admission or incomplete global pass makes placement uncertain.
     pub ordinal: Option<u32>,
 }
 
@@ -66,12 +51,8 @@ pub struct Sources<'a> {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Occurrences {
     pub by_province: BTreeMap<u32, Vec<Occurrence>>,
-    /// Missing operands omit global spillovers and may make sea-bucket direct
-    /// offsets unknown; their proven direct presence remains in by_province.
     pub spillover_gap: Option<&'static str>,
-    /// Each direct call, as (province, combat), whose combat the census lacks.
     pub direct_gaps: Vec<(u32, u64)>,
-    /// Each direct call, as (province, combat), whose admission is unknown.
     pub admission_gaps: Vec<(u32, u64)>,
 }
 
@@ -105,7 +86,6 @@ fn apply_call(
     let rows = out.by_province.entry(province).or_default();
     let indices = indices.entry(province).or_default();
     if let Some(&index) = indices.get(&combat) {
-        // Advance the retained walk cursor on every admitted call, including deduplication hits.
         rows[index].ordinal = ordinal;
     } else {
         indices.insert(combat, rows.len());
@@ -147,7 +127,6 @@ fn unknown_sea_offsets(out: &mut Occurrences, kind: &dyn Fn(u32) -> Option<Provi
     }
 }
 
-/// Multiply the final category-nine ordinal by integer GUI height, with positive screen Y downward.
 pub fn screen_y_offset(ordinal: u32, gui_height: f32) -> Option<f32> {
     if !gui_height.is_finite()
         || gui_height < 0.0
@@ -191,8 +170,6 @@ pub fn derive(
                     true,
                 );
             } else {
-                // The authenticated native call still consumed a slot. Its
-                // missing combat row prevents us from placing the icon.
                 out.direct_gaps.push((row.province, id));
                 let slot = slots.entry(row.province).or_default();
                 if let Some(next) = slot.next.checked_add(1) {
@@ -207,9 +184,6 @@ pub fn derive(
         return out;
     }
 
-    // A missing direct census makes the relative order of a global entry and
-    // a possible earlier direct entry unknowable. Proven direct entries above
-    // are still safe to show.
     let gap = if !sources.direct_complete {
         Some("direct naval-combat province census is incomplete")
     } else if !sources.combats_complete {
@@ -256,13 +230,10 @@ pub fn derive(
     let mut spillovers = Vec::new();
     for combat in ordered {
         let primary = admitted(combat.id);
-        // Test the engagement before it walks any transfer, so a combat known to
-        // be unengaged needs none of its units resolved.
         let seen = engaged(combat.id);
         if primary == Some(false) || seen == Some(false) {
             continue;
         }
-        // A complete sparse table omits combats with no transfer slots.
         let Some(handles) = transfers.get(&combat.id) else {
             continue;
         };
@@ -272,8 +243,6 @@ pub fn derive(
                 continue;
             }
             let Some(unit_handles) = units.get(&handle) else {
-                // A complete sparse transfer-unit table omits stale native
-                // references after the source reader fails their live join.
                 continue;
             };
             for &unit in *unit_handles {
@@ -316,8 +285,6 @@ pub fn derive(
             spillovers.push((province, combat.id));
         }
     }
-    // Commit only after all chains are proven. An unresolved earlier registry
-    // member could otherwise invalidate relative icon order in a province.
     for (province, combat) in spillovers {
         apply_call(
             &mut out,

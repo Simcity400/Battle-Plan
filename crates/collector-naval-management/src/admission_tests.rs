@@ -61,7 +61,6 @@ impl Census {
     fn populated(phase: i32) -> Self {
         use engine_native::{ccountry, cgame_state, cstrategic_navy, cstrategic_navy_manager};
         let mut memory = Self::default();
-        // Real country links and navy ownership exercise production authentication.
         memory.array(STATE + cgame_state::COUNTRIES, LISTS, 8);
         memory.array(STATE + cgame_state::COUNTRY_LINKS, LISTS + 0x100, 8);
         memory.word(LISTS + 7 * 8, COUNTRY as u64);
@@ -245,7 +244,6 @@ impl Census {
     }
 }
 
-// Expectations are independent of the captured snapshots and compare every column/key.
 fn expected(phase: i32) -> [TableRows; 9] {
     [
         TableRows::NavalRepairCountries(vec![NavalRepairCountryRow {
@@ -373,7 +371,6 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
                 "{id:?}"
             );
         }
-        // A following off-slot census must hand off the same complete values.
         changes::boundary(false);
         let (forces, bases) = memory.capture();
         let quiet = encoder
@@ -383,9 +380,6 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
             .unwrap();
         assert_values(decoder.advance(&quiet).unwrap(), 0);
 
-        // A spool gap need not disable the native observer. Change the underlying
-        // values without any writer marks, retaining every selecting identity.
-        // Only the production recovery boundary can invalidate these old holds.
         memory = Census::populated(1);
         changes::boundary(true);
         let (forces, bases) = memory.capture();
@@ -395,7 +389,6 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
             .decode()
             .unwrap();
         assert_values(decoder.advance(&recovered).unwrap(), 1);
-        // The recovery keyframe is independently decodable without earlier hours.
         assert_values(FrameDecoder::new().advance(&recovered).unwrap(), 1);
         for id in forces::TABLES.into_iter().chain(bases::TABLES) {
             assert!(
@@ -436,7 +429,6 @@ fn naval_management_populated_observer_loss_refuses_then_readmits_every_column()
             "{id:?}"
         );
     }
-    // Reinstall observation using the same observer path as initial attach.
     changes::fixture::prepare();
     let (forces, bases) = Census::populated(1).capture();
     let recovered = encoder
@@ -447,8 +439,6 @@ fn naval_management_populated_observer_loss_refuses_then_readmits_every_column()
     assert_values(decoder.advance(&recovered).unwrap(), 1);
 }
 
-/// A base census too large for its table refuses its first hour only: the census offers every
-/// base it saw, and the next hour registers them all. It was refused until the next load.
 #[test]
 fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
     const BASES: u32 = 1024;
@@ -487,7 +477,6 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
     changes::fixture::prepare();
 }
 
-/// Missing bytes read as zero, as a live object's untouched fields do.
 struct Zeroed<'a>(&'a Census);
 impl Memory for Zeroed<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -498,8 +487,6 @@ impl Memory for Zeroed<'_> {
     }
 }
 
-/// A task force whose roster owner is another country than its fleet's is
-/// read by the core census, so the settings census it selects is whole.
 #[test]
 fn naval_management_census_with_a_foreign_task_force_is_complete() {
     use engine_native::{ccountry, cfleet, cship, cstrategic_navy, ctask_force, cunit};

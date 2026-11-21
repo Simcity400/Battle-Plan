@@ -222,7 +222,6 @@ fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
                 .collect(),
         ),
     );
-    // A missing row remains a named unknown even with a complete slice witness.
     assert!(
         combined(&frame)
             .unwrap_err()
@@ -241,7 +240,6 @@ fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
             },
         );
     }
-    // A successfully read, zero-contributing leader has a row; all four HQ sources add.
     assert_eq!(combined(&frame), Ok(10));
 }
 
@@ -332,7 +330,6 @@ fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
         let inputs = hour(frame, &anchors, &native, countries);
         inputs.terrain_value(inputs.force(11).unwrap(), keys::NAVAL_COORDINATION)
     };
-    // The cruiser clamps .5+.9 to1; the unregistered class uses common .5.
     assert_eq!(check(&frame), Ok(75_000));
     if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
         &mut *frame.tables[TableId::ModifierDefinitions.index()]
@@ -539,7 +536,6 @@ fn dominance_patrol_preserves_registration_repeats_and_zero_designs() {
         }
     );
     assert_eq!(hour.dominance_region(3, 100, &[]).unwrap().patrol, 0);
-    // The naval region view's derivation of one region is that region of the whole hour's.
     let all = hour.dominance_sources_in(None);
     let one = hour.dominance_sources_in(Some(2));
     assert_eq!(one.as_ref().map(|map| map.keys().copied().collect::<Vec<_>>()), Ok(vec![2]), "{one:?}");

@@ -62,7 +62,5 @@ fn set_malformed_child_and_parent_links_are_bounded() {
     let mut bytes = fixture();
     put(&mut bytes, 0x300, PARENT, 0x300);
     put(&mut bytes, 0x300, RIGHT, 0x300);
-    // Its right child has a nil left link, then the next successor loops
-    // through the node's self-parent and self-right links.
     assert_eq!(walk(&bytes, 5), Err(SetError::ExcessNodes));
 }

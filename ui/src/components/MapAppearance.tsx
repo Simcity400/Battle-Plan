@@ -12,15 +12,12 @@ const ANTI_ALIASING = 'Anti-aliasing';
 const TEXTURE_QUALITY = 'Texture quality';
 const COUNTER_FILTER = 'Counters shown for';
 type Switch = Exclude<keyof MapGraphics, 'samples' | 'textureQuality'>;
-/** The anti-aliasing sample counts a map setting can name. */
 const MAP_SAMPLE_COUNTS = [1, 2, 4, 8];
 type Item = { key: Switch; label: string; parts?: [Switch, string][] };
-/** Quality choices that change how the map looks rather than what it shows. */
 const QUALITY: [Switch, string][] = [
   ['fullResolution', 'Full map resolution'], ['highGfxShaders', 'High-quality shaders'], ['waterReflections', 'Water reflections'],
   ['shadows', 'Shadows'], ['dayNight', 'Day/night cycle'], ['natoCounters', 'NATO counters'],
 ];
-/** Every show/hide switch: one main switch per item, its parts under Advanced. */
 const GROUPS: { title: string; items: Item[] }[] = [
   { title: 'World', items: [
     { key: 'water', label: 'Water' },
@@ -54,17 +51,13 @@ const GROUPS: { title: string; items: Item[] }[] = [
   ] },
   { title: 'Interface', items: [{ key: 'tooltips', label: 'Tooltips' }] },
 ];
-/** Aircraft by mission, under the 3D units and aircraft switches. */
 const AIR_MISSIONS: [Switch, string][] = [['airPatrols', 'Patrol flights'], ['airReconnaissance', 'Reconnaissance flights'], ['airSupport', 'Close air support flights'],
   ['airBombing', 'Bombing flights'], ['airCombat', 'Air combat'], ['airKamikaze', 'Kamikaze strikes'], ['airSupply', 'Air supply flights'], ['airMissiles', 'Missiles']];
 const AUDIO: [keyof MapAudio, string][] = [['master', 'Master volume'], ['ambient', 'Ambient volume'], ['units', 'Unit volume'], ['combat', 'Combat volume'], ['interface', 'Interface volume'], ['voice', 'Voice volume'], ['music', 'Music volume']];
-/** Every option row's label, in order; settings search reveals rows by these. */
 export const MAP_OPTION_LABELS = [ANTI_ALIASING, TEXTURE_QUALITY, ...QUALITY.map(([, label]) => label),
   ...GROUPS.flatMap(group => group.items.flatMap(item => [item.label, ...(item.parts ?? []).map(([, label]) => label)])), ...AIR_MISSIONS.map(([, label]) => label),
   COUNTER_FILTER, ...AUDIO.map(([, label]) => label)];
 
-/** The stored settings with every choice inheriting, in the same shape, so reverting to what is
- * already stored is not a change. Visual mods are kept: they have their own control. */
 export const inheritingAll = (settings: CampaignMapSettings): CampaignMapSettings => ({
   graphics: Object.fromEntries(Object.keys(settings.graphics).map(key => [key, null])) as CampaignMapSettings['graphics'],
   audio: Object.fromEntries(Object.keys(settings.audio).map(key => [key, null])) as CampaignMapSettings['audio'],
@@ -72,8 +65,6 @@ export const inheritingAll = (settings: CampaignMapSettings): CampaignMapSetting
 });
 const isSet = (value: unknown) => value !== null && value !== undefined;
 const overridden = (settings: CampaignMapSettings) => Object.values(settings.graphics).some(isSet) || Object.values(settings.audio).some(isSet) || settings.counters !== null;
-/** What a row tells the acceptance suite: the setting it holds (`graphics.<key>`, `audio.<key>`, `counters` or
- * `visualMods`) and, once its draft is saved, the value the map must report drawing with. */
 const applied = (setting: string, value: unknown) => ({ 'data-map-setting': setting, 'data-map-value': JSON.stringify(value ?? null) });
 const filterLabel = (filter: CounterFilter) => filter.kind === 'all' ? 'All countries' : filter.kind === 'players' ? 'Players only' : `${filter.tags.length} chosen`;
 
@@ -103,7 +94,6 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   useEffect(() => () => saveRequest.current?.abort(), []);
   const mapDirty = !!reply && !!draft && JSON.stringify(reply.settings) !== JSON.stringify(draft);
   const dirty = mapDirty || (global && video.dirty);
-  // Reverting is offered only while something differs from what it reverts to.
   const graphicsCustom = !!draft && !!reply && overridden(draft);
   const videoCustom = global && video.canReset && !video.atGame;
   const inherited = reply?.inheritedSettings;
@@ -132,7 +122,6 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       <Select label={label} disabled={!enabled} value={isSet(own) ? String(own) : ''} onChange={value => setGraphics(key, value === '' ? null : Number(value))}
         options={[{ value: '', label: !draft ? (!available ? 'No campaign' : error ? 'Unavailable' : 'Loading...') : `Inherit (${describe(parent)})` }, ...choices]} /></div>;
   };
-  // Until a map renderer has reported its counts every map count is a choice; the renderer refuses one its adapter lacks.
   const supported = reply?.sampleCounts ?? null;
   const samples = [...new Set([...(reply ? supported ?? MAP_SAMPLE_COUNTS : []), ...(isSet(draft?.graphics.samples) ? [draft!.graphics.samples!] : [])])].sort((a, b) => a - b)
     .map(count => {
@@ -142,7 +131,6 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   const filter = draft?.counters ?? null;
   const shownFilter = filter ?? inherited?.counters ?? { kind: 'all' as const };
   const chosen = shownFilter.kind === 'countries' ? shownFilter.tags : [];
-  // Any installed mod can be shown; one no longer installed keeps its place by name.
   const selected = draft?.visualMods ?? reply?.inheritedSettings.visualMods ?? [];
   const mods = [...(reply?.mods ?? []), ...selected.filter(choice => !reply?.mods.some(mod => mod.id === choice.id)).map(choice => ({ ...choice, problem: 'No longer installed' }))]
     .filter(mod => mod.name.toLowerCase().includes(query.trim().toLowerCase()));
@@ -152,7 +140,6 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     setBusy(true); setError(null);
     try {
       const value = await client.mapSettings(source?.id ?? '', source?.revision ?? '', null, new AbortController().signal, target); setReply(value); if (!mapDirty) setDraft(value.settings);
-      // Open maps whose visual mods were installed, updated or removed reload where they are.
       if (desktopAvailable) await mapAction({ kind: 'refreshVisualMods' });
     }
     catch (cause) { setError(errorMessage(cause)); }
@@ -198,7 +185,6 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       {source && shownFilter.kind === 'countries' && <div className="map-counter-countries">
         <CountryPicker source={source} client={client} countries={source.metadata.countries} playerCountryId={source.metadata.playerCountryId ?? null} selectedTag={null} field chosen={chosen}
           disabled={!enabled} addLabel={`${chosen.length} ${chosen.length === 1 ? 'country' : 'countries'}: add or remove`} onChange={tag => {
-            // Applying replaces the draft with what was saved, so no edit is taken meanwhile.
             if (!tag || !draft || !enabled) return;
             setDraft({ ...draft, counters: { kind: 'countries', tags: chosen.includes(tag) ? chosen.filter(item => item !== tag) : [...chosen, tag] } });
           }} />

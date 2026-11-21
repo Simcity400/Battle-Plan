@@ -42,7 +42,6 @@ function currentRows(rows: readonly LogRow<ShipsSunkRow>[], reply: ShipsSunkRepl
   return rows.filter(row => reply?.rows[Number(row.key)] === row.item);
 }
 
-/** Content keys survive other recordings; unresolved lexical tokens stay branch-specific. */
 export function shipClassKey(reply: ShipsSunkReply, type: ShipClassInfo, campaignKey: string): string {
   return type.key ?? campaignToken(campaignKey, `${reply.branchId}:${type.token}`);
 }
@@ -53,7 +52,6 @@ export function shipClassName(reply: ShipsSunkReply, row: ShipsSunkRow): string 
   return type.name ?? recorded ?? 'Class name unavailable';
 }
 
-/** The class choice over the whole branch, from the manifest's classes. */
 export function manifestClassChoices(manifest: ShipsSunkManifestReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null; hint?: string }[] {
   if (!manifest) return [];
   const choices = manifest.classes.map(type => ({ value: type.key ?? campaignToken(campaignKey, `${manifest.branchId}:${type.token}`),
@@ -72,7 +70,6 @@ export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey:
   }).map(choice => [choice.value, choice])).values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
-/** Immutable event order is built once per reply, not on every playback hour. */
 const shipOrders = new WeakMap<ShipsSunkReply, ReadonlyArray<LogRow<ShipsSunkRow>>>();
 export function shipLogOrder(reply: ShipsSunkReply): ReadonlyArray<LogRow<ShipsSunkRow>> {
   let rows = shipOrders.get(reply);
@@ -80,7 +77,6 @@ export function shipLogOrder(reply: ShipsSunkReply): ReadonlyArray<LogRow<ShipsS
   return rows;
 }
 
-/** Event dates stay separate from an explicitly dated supplying-read country. */
 export const shipCountryHour = (row: ShipsSunkRow, role: 'victim' | 'sinker') =>
   (role === 'victim' ? row.victimAsOf : row.attackerAsOf) ?? row.sinkHour;
 
@@ -100,7 +96,6 @@ export function shipCountryLabels(row: ShipsSunkRow, labelAt: (hour: number) => 
   };
 }
 
-/** Visibility starts at the supplying read; event dates still order and filter rows. */
 export function shipLogRows(reply: ShipsSunkReply, hour: number, classes: readonly string[], role: CountryRole,
   country: (tag: string | null, hour: number) => boolean, from: number | null,
   ordered: readonly LogRow<ShipsSunkRow>[] = shipLogOrder(reply), campaignKey = ''): ReadonlyArray<LogRow<ShipsSunkRow>> {

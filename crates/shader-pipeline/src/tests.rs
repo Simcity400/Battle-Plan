@@ -9,8 +9,6 @@ pub(crate) fn initialize_runtime_tables() {
 
 pub(crate) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// One compiler: the DLL at the place named, never another. A missing one and a file that is
-/// not DXC are refused by name.
 #[test]
 fn the_compiler_is_the_named_dll_and_nothing_else() {
     let scratch = Scratch::new().unwrap();
@@ -20,7 +18,6 @@ fn the_compiler_is_the_named_dll_and_nothing_else() {
     assert_eq!(Compiler::at(&library).err().as_deref(), Some("dxcompiler.dll carries no product version"));
 }
 
-/// The pinned DLL beside the test program reports the pinned version.
 // quarantine: #1453 needs the pinned dxcompiler.dll beside the test program
 #[test]
 #[ignore = "requires the pinned shader compiler"]
@@ -210,7 +207,6 @@ Effect Default { }
     assert_eq!(state.depth_write_enabled, Some(false));
     assert_eq!(state.depth_compare, Some(wgpu::CompareFunction::Always));
     assert_eq!(state.stencil, wgpu::StencilState::default());
-    // Reader defaults: depth LESS_EQUAL with writes, solid, back culled, CW.
     let (state, reference) = gpu::depth_stencil(
         &program.depth_stencil(default),
         &program.rasterizer(default),
@@ -256,8 +252,6 @@ fn compile_installed_gui_effects() {
         if path.extension().is_none_or(|e| e != "shader") {
             continue;
         }
-        // This sweep includes the GUI family and text. Other map effects use a different
-        // geometry/constant ABI and are not draws submitted by the native GUI module.
         if !is_gui_effect(&name) {
             continue;
         }
@@ -348,7 +342,6 @@ fn compile_installed_gui_effects() {
     assert!(failures.is_empty(), "{} failed techniques", failures.len());
 }
 
-// Sprite animation selection uses these define families.
 fn is_gui_effect(name: &str) -> bool {
     name.ends_with(".shader")
         && (name.starts_with("buttonstate")
@@ -366,7 +359,6 @@ fn is_gui_effect(name: &str) -> bool {
             ))
 }
 
-// Compile each path only where the authored code tests it; names do not select a model.
 fn variants(program: &Program) -> Vec<Vec<String>> {
     let source = [&program.common, &program.vertex, &program.pixel]
         .iter()
@@ -455,7 +447,6 @@ Effect Raw { VertexShader = V PixelShader = Raw }
     compile("Prefix").unwrap();
     let reason = compile("Raw").unwrap_err();
     assert!(reason.contains("Raw") && reason.contains("no PdxShader declaration"));
-    // Registers past D3D11's slots are refused by name before any binding arithmetic.
     for (declaration, register) in [
         (
             "ConstantBuffer(2147483648,0) { float4 k;\n};",
@@ -485,16 +476,8 @@ Effect Raw { VertexShader = V PixelShader = Raw }
     }
 }
 
-/// An invented constant buffer `b2` for both stages: the restart at byte 64 and the clock at 68,
-/// between bytes the programs read directly (the restart and `Shift` from 72).
 const CLOCK_CONSTANTS: &str = "ConstantBuffer( 2, 7 ) { float4x4 Transform;\nfloat Restart;\nfloat Clock;\nfloat2 Shift;\nfloat4 Tint;\n};\n";
 
-/// Each compiled program answers for itself how long it changes after its restart: not at all
-/// without the clock (the restart alone is fixed); until its saturating function of the clock less
-/// the restart saturates (on the way down too, through `smoothstep`, and through a local
-/// variable, a loop and a branch that does not read the clock; a `step` going down only past its
-/// edge); never for the clock read otherwise, in either stage, as a moment rather than a
-/// duration, or deciding a `discard`.
 #[test]
 #[ignore = "requires a shader compiler"]
 fn compiled_programs_answer_how_long_they_change() {
@@ -552,7 +535,6 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
             .settles(2, 68, 64)
     };
     assert_eq!(settles("Still"), Some(clock::Settling::NOW));
-    // Literal-scaled durations settle at their saturation, f32 rounding allowed for.
     let near = |name, seconds: f32| {
         let settling = settles(name).unwrap_or_else(|| panic!("{name} never settles"));
         assert!(
@@ -564,8 +546,6 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
     near("Shade", 0.125);
     near("Fade", 3.0);
     near("Looped", 1.0 / 32.0);
-    // `step` is `x >= edge`: going down, 1 at its edge and 0 only past it; going up, final at
-    // its edge.
     near("Drop", 0.25_f32.next_up());
     near("Rise", 0.75);
     for name in ["Pulse", "Moment", "Gate", "Wobble"] {
@@ -573,8 +553,6 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
     }
 }
 
-/// The installed button-state effect settles after a quarter second for `Over` and a
-/// sixteenth for `Down`; `Up` and `Disable` do not change with time, with or without `MASKING`.
 #[test]
 #[ignore = "requires installed content and a shader compiler; set BATTLE_PLAN_GAME_DIR"]
 fn vanilla_button_states_settle_as_their_programs_say() {
@@ -675,7 +653,6 @@ Effect Mod { VertexShader = V PixelShader = P }
         .unwrap();
     assert!(std::sync::Arc::ptr_eq(&pipeline, &second));
     assert_eq!(cache.created, 1);
-    // Packed state hits must agree with the complete-pass cache, including sampler bits.
     for variant in 0..6 {
         let mut changed = state.clone();
         let mut format = wgpu::TextureFormat::Rgba8Unorm;
@@ -797,7 +774,6 @@ Effect Mod { VertexShader = V PixelShader = P }
     stream.bind_constants(0, Stage::Vertex, Some(bytemuck::cast_slice(&c0)));
     c0[18] = 1.0;
     stream.bind_constants(0, Stage::Pixel, Some(bytemuck::cast_slice(&c0)));
-    // Missing technique keeps the input declaration, even when the caller is now text.
     stream
         .bind_effect(None, vertices::Declaration::Text)
         .unwrap();
@@ -845,7 +821,6 @@ fn render(
     render_with(device, queue, arena, |pass| pipeline.draw(pass, draw))
 }
 
-/// Submits `draw`, whose uploads are in `arena`, and starts the arena's next frame.
 pub(crate) fn render_with(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -960,7 +935,6 @@ MainCode P [[ float4 main(O v) : SV_TARGET { return FogVolume.SampleLevel(Fog_Sa
 Effect Map { VertexShader = V PixelShader = P }
 "#.to_vec()
     } else { Vec::new() })).unwrap();
-    // `Type = 3d` declares Texture2D; a volume is the authored code's own view.
     assert!(
         program
             .hlsl(&program.techniques[0], Stage::Pixel, &[])
@@ -1051,7 +1025,6 @@ Effect Map { VertexShader = V PixelShader = P }
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    // W = 1.25 wraps to the first slice's centre; a clamp would read the second.
     queue.write_texture(
         tex.as_image_copy(),
         &[255, 128, 64, 255, 0, 0, 0, 255],
@@ -1113,7 +1086,6 @@ Effect Map { VertexShader = V PixelShader = P }
         Some(tex.create_view(&Default::default())),
         Some(&state.samplers[&binding(4, Stage::Pixel)]),
     );
-    // Missing effects cannot replace the two native streams with an empty declaration.
     stream.bind_program(None, Vec::new());
     stream.bind_constants(7, Stage::Pixel, None);
     stream.bind_partial_constants(
@@ -1137,7 +1109,6 @@ Effect Map { VertexShader = V PixelShader = P }
             .prepare_pass(&arena, "inherited unknown alpha", &pass)
             .is_err()
     );
-    // A complete later upload restores validity; it does not mutate the scoped copy.
     stream.bind_constants(7, Stage::Pixel, Some(bytemuck::cast_slice(&[1_f32; 4])));
     let padded = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("retained input declaration with replacement buffer stride"),
@@ -1158,7 +1129,6 @@ Effect Map { VertexShader = V PixelShader = P }
             assert_eq!(layout[1], pass.vertices[1]);
         }
         if null {
-            // Null SRV clears texture; null PS sampler retains its physical handle.
             stream.bind_texture(4, Stage::Pixel, None, None);
         }
         let submission = stream
@@ -1181,8 +1151,6 @@ Effect Map { VertexShader = V PixelShader = P }
         stream.cache.created, 2,
         "buffer stride changes pipeline identity; null SRV and template RED mask do not"
     );
-    // Native IA permits attribute offsets beyond a bound stride. WebGPU does
-    // not, so repack the same fetches while retaining the original formats.
     let mut overlap = pass.vertices.clone();
     overlap[0].attributes[0].offset = 16;
     stream.bind_program(Some(selection), overlap);
@@ -1253,9 +1221,6 @@ Effect Map { VertexShader = V PixelShader = P }
     );
 }
 
-/// Every installed vanilla GUI effect, technique and define variant through one persistent
-/// cache: the first process compiles, the second must not even discover DXC. Map effects also
-/// need the renderer's map-derived global defines, which their consumer supplies.
 #[test]
 #[ignore = "run twice in separate processes with BATTLE_PLAN_CACHE_TEST_DIR and BATTLE_PLAN_EXPECT_COMPILES=1 then 0"]
 fn installed_vanilla_persistent_cache_across_processes() {

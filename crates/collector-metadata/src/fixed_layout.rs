@@ -1,7 +1,3 @@
-//! The first clocked hour checks the fixed layout; a consistent result is
-//! kept for the attachment, an interrupted one is repeated next hour.
-//! Refusals replace the affected tables after carry/slice merging, so no held
-//! baseline reintroduces an unchecked value, and they never request a refresh.
 
 use crate::status::{self, DebugValue, DisplayValue};
 use engine_fixed_layout::fixed_layout::Report;
@@ -11,12 +7,8 @@ use replay_frame::{frame::TableInput, frame::TableView};
 use serde::Serialize;
 use std::{fmt, io};
 
-/// A final report, or why this hour's check could not complete.
 pub type Layout = Result<Report, &'static str>;
 
-/// Derive one field-local guard from the attachment's existing check. The
-/// report retains the exact layout failure for status; receivers do not check
-/// the native dictionary again or withhold the established motion prefix.
 pub fn task_force_eta_guard(layout: Option<&Layout>) -> Result<(), &'static str> {
     let Some(Ok(report)) = layout else {
         return Err("fresh task-force modifier layout unverified");
@@ -138,8 +130,6 @@ mod tests {
 
     fn inputs() -> [TableInput; TABLE_COUNT] {
         TableId::ALL.map(|table| {
-            // Every singleton but the reserved naming the fixture fills is
-            // outside it, taken from the registry so new singletons stay out too.
             if table.key_bits() == 0 && table != TableId::ReservedCountryNaming {
                 TableInput::Sampled(TableView::Unavailable {
                     reason: "outside fixed-layout fixture".into(),
@@ -191,8 +181,6 @@ mod tests {
         }
     }
 
-    /// Every fixed-key family's tables are refused naming `text`; no other
-    /// table is touched.
     fn assert_key_families_refused(input: &[TableInput; TABLE_COUNT], text: &str) {
         let keyed: Vec<_> = FAMILIES
             .iter()
@@ -228,9 +216,6 @@ mod tests {
         );
     }
 
-    /// Every singleton table in the registry is outside the fixture or filled
-    /// with its one row, so a newly registered singleton cannot reach the encoder
-    /// as an empty complete table.
     #[test]
     fn fixed_layout_inputs_cover_every_singleton_table() {
         let input = inputs();
@@ -292,8 +277,6 @@ mod tests {
         }));
     }
 
-    /// A built-in no reader uses is part of the same index contract: after a
-    /// patch moves or renames it, every fixed key is refused by its name.
     #[test]
     fn an_unused_builtin_mismatch_refuses_every_key_family_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -356,7 +339,6 @@ mod tests {
         }
         assert!(untouched(&input, TableId::LexicalTokens));
 
-        // The save oracle alone consumes the fixed15 token: named, nothing refused.
         let mut report = valid();
         report.tokens[engine_fixed_layout::fixed_layout::tokens()
             .unwrap()

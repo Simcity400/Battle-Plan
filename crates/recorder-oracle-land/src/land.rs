@@ -1,5 +1,3 @@
-//! Saved combat history and division manpower comparisons.
-//! No inferred deletion causes.
 use super::*;
 use installed_content_core::{parser::Item, parser::Value};
 
@@ -71,8 +69,6 @@ fn handle(v: &Value) -> io::Result<u64> {
     let kind: u32 = number(required(i, b"type")?)?;
     Ok(u64::from(id) << 32 | u64::from(kind))
 }
-/// Unit and division writers both serialize this identity at division depth (the second
-/// copy follows seed). Keep the first, authenticate every later copy.
 fn division_handle(items: &[Item]) -> io::Result<u64> {
     let mut copies = items.iter().filter(|i| i.key.as_deref() == Some(b"id"));
     let first = handle(
@@ -89,9 +85,6 @@ fn division_handle(items: &[Item]) -> io::Result<u64> {
     Ok(first)
 }
 
-// Combat sides contain a `log` with `combat_side_data`, including
-// `manpower_lost` and `equipment_lost`.
-// The pool writer writes equipment{id,amount}, omitting zero unless allow_zero_entries.
 fn saved_losses(side: &[Item]) -> io::Result<(replay_data::rows::LandSideLosses, Option<bool>)> {
     let log = block(required(side, b"log")?)?;
     let stats = block(required(log, b"combat_side_data")?)?;
@@ -160,7 +153,6 @@ pub fn read(items: &[Item], comparison: Comparison) -> io::Result<Saved> {
                 out.allow_zero.insert(id, [attacker.1, defender.1]);
             }
         }
-        // The history writer may omit empty history; the manager parent is unconditional.
         if comparison != Comparison::Losses
             && let Some(history) = field(combats, b"history")?
             && let Some(entries) = field(block(history)?, b"history")?
@@ -212,8 +204,6 @@ fn read_division_countries<'a>(
             {
                 let i = block(&army.value)?;
                 let id = division_handle(i)?;
-                // The division's saved grace compares with DivisionStatus
-                // (military oracle); DivisionLandInputs no longer copies it.
                 let mut division = Division::default();
                 let manpower = block(required(i, b"army_manpower")?)?;
                 let values = block(required(manpower, b"army_manpower_value")?)?;
@@ -233,8 +223,6 @@ fn read_division_countries<'a>(
     Ok(())
 }
 
-/// Compare the same hour's live counters, never a later terminal value with
-/// an earlier live save. Ended history does not serialize these side pools.
 pub fn compare_losses(frame: &DecodedFrame, saved: &Saved, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatProgress>()?;
     let mut seen = BTreeSet::new();
@@ -339,12 +327,7 @@ pub fn compare_divisions(
         };
         let mut manpower = Vec::new();
         for entry in &row.manpower {
-            // The manpower writer intentionally omits nonpositive amounts; retain them in
-            // the recording but compare only the serializer's projection.
             if entry.amount > 0 {
-                // Manpower saves raw-indexed strings, not the
-                // canonical country's tag. Countries records its own raw id
-                // only; CountryLinks does not preserve an alias's spelling.
                 let tag = if entry.country == 0 {
                     None
                 } else {
@@ -408,7 +391,6 @@ fn retained_span_count(spans: &[(i32, i32)], manager_hour: i32) -> usize {
     spans
         .iter()
         .filter(|&&(from, to)| {
-            // Coverage is (from,to], while retention is [oldest,H_u].
             i64::from(to) >= oldest && from < manager_hour
         })
         .count()
@@ -423,8 +405,6 @@ fn compare_certified_history(
     if spans.iter().any(|&(from, to)| from >= to) || spans.windows(2).any(|w| w[0].1 > w[1].0) {
         return Err(invalid("land event coverage overlaps or is invalid"));
     }
-    // A drain (from,to] holds results stamped from..=to: a command after the read at
-    // `from` still carries its hour.
     if captured.iter().any(|e| {
         !spans
             .iter()
@@ -432,18 +412,11 @@ fn compare_certified_history(
     }) {
         return Err(invalid("land event outside certified history span"));
     }
-    // An hour is whole only with the drains on both sides of its read; the save's hour is
-    // compared at its read.
     let steps = |a: i32, b: i32| spans.iter().any(|&(from, to)| from <= a && b <= to);
     let certified = |hour: i32| {
         steps(hour.saturating_sub(1), hour)
             && (hour == manager_hour || steps(hour, hour.saturating_add(1)))
     };
-    // History pruning, called at the beginning of manager update,
-    // drops head entries dated < now - 168 (equality survives),
-    // and future head entries. The hourly update advances the clock before that call:
-    // for a settled fresh save at H, last manager update H_u = H, NOT H - 1.
-    // The inclusive lower bound is H - 168.
     let oldest =
         i64::from(manager_hour) - i64::from(engine_land_inputs::ccombat_history::RETENTION_HOURS);
     let retained = |e: &History| i64::from(e.hour) >= oldest;
@@ -477,8 +450,6 @@ fn compare_certified_history(
         whole(&recorded),
         whole(&saved),
     );
-    // Missing coverage explains saved results the recording never saw, never a recorded one
-    // the save lacks.
     for (e, &n) in recorded.iter().filter(|(e, _)| !certified(e.hour)) {
         let held = saved.get(e).copied().unwrap_or(0);
         if held < n {
@@ -563,8 +534,6 @@ pub fn compare_events(
             || Ok(()),
         )?;
     }
-    // Only timestamps wholly within a certified interval participate in the
-    // reverse comparison. A missing interval is unknown, never zero events.
     let compared = compare_certified_history(captured, &spans, &saved.history, frame.hour, report)?;
     for w in spans.windows(2).filter(|w| w[0].1 < w[1].0) {
         report.limitation(
@@ -795,8 +764,6 @@ mod tests {
     }
     #[test]
     fn land_divisions_leave_the_saved_grace_to_division_status() {
-        // DivisionLandInputs no longer copies the grace DivisionStatus
-        // records, so its save join neither needs nor reads the two fields.
         let division = br#"combat={} countries={ opaque={ units={ division={
             id={id=9 type=4713} army_manpower={army_manpower_value={}}
         } } } }"#;
@@ -844,7 +811,6 @@ mod tests {
             compare_certified_history(vec![event.clone()], &[], &saved, 100, &mut Report::default())
                 .is_err()
         );
-        // A command after the read at 99 ends a combat stamped 99 into the drain (99,100].
         let mut before = event.clone();
         before.hour = 99;
         let mut report = Report::default();
@@ -949,8 +915,6 @@ mod tests {
             &std::fs::read(expectations_path).expect("read land expectations"),
         )
         .expect("parse land expectations");
-        // Parse every division and history block, including repeated IDs and
-        // lexical fixed5 representations, then check the supplied expectations.
         let saved = read(&std::fs::read(path).unwrap()).unwrap();
         assert!(!saved.divisions.is_empty());
         let id = u32::try_from(expected["division_id"].as_u64().expect("division_id"))
@@ -1022,8 +986,6 @@ mod tests {
         );
         assert!(report.differences.is_empty());
         assert_eq!(report.limitations.len(), 1);
-        // Equality must still fail in either direction, even when the run is
-        // longer than retention; using H-1 would incorrectly include 831.
         for (captured, saved) in [(vec![], vec![event(832)]), (vec![event(832)], vec![])] {
             let mut report = Report::default();
             compare_certified_history(captured, &[(830, 1000)], &saved, 1000, &mut report).unwrap();

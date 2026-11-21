@@ -18,8 +18,6 @@ import { unrecordedReason } from '../../dashboard/tiles/view.ts';
 
 type ArmyLine = { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] };
 
-/** A read of a chart's view, one at a time per lane (`lane`: what is read): a view that moves while a read runs is
- * read once that one lands, and the newest landed reply stays shown meanwhile. It renders when a reply lands. */
 function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string, active: boolean, read: (view: V, signal: AbortSignal) => Promise<T>) {
   const [state, setState] = useState<{ lane: string; viewKey: string; data?: T; error?: Failure; errorKey?: string }>();
   const [landed, setLanded] = useState(0), [attempt, setAttempt] = useState(0);
@@ -43,8 +41,6 @@ function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string
       flight.current = null;
       if (!controller.signal.aborted) setLanded(count => count + 1);
     });
-    // The view's key is its identity; the view object is made again each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lane, viewKey, active, landed, attempt]);
   useEffect(() => () => { if (flight.current?.lane === lane) { flight.current.controller.abort(); flight.current = null; } }, [lane, active]);
   const current = state?.lane === lane ? state : undefined;
@@ -52,33 +48,26 @@ function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string
     retry: () => { setState(undefined); setAttempt(count => count + 1); } };
 }
 
-/** The army chart's lines over its view. A chosen set of countries is drawn from tiles (an hourly view's bins an
- * hour), which a view following the head asks one per 256 bins of travel; a ranked view (its members change bin by
- * bin, and the summaries keep no rank yet) is read for the view, one read at a time. */
 export function usePreparedArmy(client: DashboardClient, track: BoundTrack | undefined, params: ArmySizeParams | null, manifest: ArmySizeReply | undefined, active: boolean,
   live = false) {
   const key = JSON.stringify([track?.source.id, track?.source.revision, params]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
   const alive = useRef(owner); alive.current = owner;
   const pending = useRef(new Set<AbortController>());
-  // Only the latest key's request may answer the chart's pending navigation.
   const navigation = useRef<AbortController | null>(null);
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
   const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: Failure }>();
   useEffect(() => () => { for (const request of pending.current) request.abort(); pending.current.clear(); }, [owner, active]);
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const [tiled, setTiled] = useState<{ key: string; dense: boolean }>();
-  // A view reported with the same density sets nothing: the chart reports one each interval while the head moves.
   const told = useRef(tiled); told.current = tiled;
   const ranked = params?.top != null;
   const dense = tiled?.key === key && tiled.dense;
   const tiles = useTiles(client, track && params && !ranked ? { source: track.source, branchId: params.branchId,
     family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: null }, tags: params.countries.map(countryKey), lastHour: track.branch.lastHour } : null, active, live);
-  // Followed, a tile landing repaints the lines from this, never rendering the widget.
   const tileSource = tiles.live;
   const lineData = useMemo(() => !ranked && live ? liveSummaries(tileSource) : undefined, [ranked, live, tileSource]);
   const tileView = tiles.onView;
-  // One summary read at a time while the chart's view moves, for the ranked views tiles do not draw.
   const content = useContentRevision(client);
   const shown = view?.key === key && ranked ? view : null;
   const incoming = useViewReply<{ from: number; to: number; width: number }, { series: (ArmyLine & { missing: MissingSpan[] })[] }>(
@@ -142,11 +131,9 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
     keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
     onSummaryView, ...incoming, data: lines === undefined ? undefined : { series: lines },
     error: (fromTiles ? tilesError : incoming.error) ?? navigationFailure, retry,
-    /** Why no line holds a value in view, when none does. */
     unrecorded: fromTiles ? tiles.unrecorded : rankedUnrecorded };
 }
 
-/** A tiled line's holders as identity runs, a holder's parts on consecutive hours joined. */
 function identityRuns(parts: readonly { firstHour: number; lastHour: number; slot: number; countryId: number }[]): CountryIdentityRun[] {
   const out: CountryIdentityRun[] = [];
   for (const part of [...parts].sort((a, b) => a.firstHour - b.firstHour)) {

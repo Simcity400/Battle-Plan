@@ -25,24 +25,15 @@ import type { MeasureParts, StabilityPart } from './types';
 
 export const MEASURE_NAMES: Record<Measure, string> = { stability: 'Stability', warSupport: 'War support' };
 
-/** The drill view of Stability & War support: the chosen measure's parts at one day as bars with their share and
- * the total, and the same parts over time as a stacked chart whose click picks another day. Following playback,
- * the bars are the head's parts, painted. */
 export default function StabilityDrill({ client, clock, source, branchId, lastHour, tag, measure, onMeasure, hour, following, liveHead, onPick,
   onContextMenu, extent, playback, branchStart, hoursPerSecond, active, tokens, within, onDiagnostics }: {
   client: DashboardClient; clock: PlaybackController; source: DashboardSource; branchId: string; lastHour: number;
-  /** The tag whose parts are shown at the day: the country's tag then. */
   tag: string | null;
-  /** The widget's own playback, so the parts chart shows the same hours as the main chart. */
   playback: { playhead: number | null; mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
-  /** No tabs without it: a pinned breakdown shows the measure its Show setting names. */
   measure: Measure; onMeasure?: (measure: Measure) => void;
-  /** Hours the country is shown (a group's membership); null for all. */
   within: readonly HourSpan[] | null;
-  /** The day shown, or null when none is chosen yet. */
   hour: number | null; onPick?: (hour: number) => void;
-  /** While following playback: the bars are the head's, and the chart's head moves each frame. */
   following: boolean; liveHead?: Live<number>;
   extent: readonly [number, number]; branchStart: number; hoursPerSecond: number | undefined; active: boolean; tokens: ChartTokens;
   onDiagnostics?: (notes: readonly string[]) => void;
@@ -52,18 +43,15 @@ export default function StabilityDrill({ client, clock, source, branchId, lastHo
   const [hover, setHover] = useState<number | null>(null);
   const parts = useStabilityParts(client, clock, source, branchId, tag, within, extent, lastHour, measure, hour, hover, following, active, root);
   const shownParts = useMemo<MeasureParts>(() => partsWithin(partsWithin(parts.geometry, [{ firstHour: extent[0], lastHour: extent[1] }]), within),
-    [parts.geometry, within, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+    [parts.geometry, within, extent[0], extent[1]]);
   const named = (part: StabilityPart) => parts.ready ? partName(part, measure)
     : part.term || part.id === 'remainder' || part.id === 'clamp' ? partName(part, measure) : { name: 'Not identified', recorded: false };
   const chartOwner = useMemo(() => ({ client, tag, measure, membership: JSON.stringify(within), geometry: shownParts }), [client, tag, measure, within, shownParts]);
   const until = shownUntil(playback.playhead, playback.mode, playback.afterPlayhead);
   const decimals = 5;
-  // Ranked by size times duration over the hours drawn: the bins' first values weighted by their hours.
   const layers = useMemo(() => partLayers(shownParts, measure, tokens.categories, tokens.muted), [shownParts, measure, tokens.categories, tokens.muted]);
   const colorOf = useMemo(() => new Map(layers.flatMap(layer => layer.members.map(id => [id, layer.color] as const))), [layers]);
-  const segments = useMemo(() => partsStack(shownParts, layers, decimals, extent[0], extent[1]), [shownParts, layers, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Following, the stack is made from the newest lines as it draws, the head's bin at the followed values: a tile
-  // landing or the head moving repaints and renders nothing. Its parts and colours are the rendered structure's.
+  const segments = useMemo(() => partsStack(shownParts, layers, decimals, extent[0], extent[1]), [shownParts, layers, extent[0], extent[1]]);
   const newest = useRef<{ geometry: MeasureParts; segments: ReturnType<typeof partsStack> } | null>(null);
   const segmentsAt = (head: number | null) => {
     if (!following) return segments;
@@ -107,7 +95,7 @@ export default function StabilityDrill({ client, clock, source, branchId, lastHo
       unattributed: remainder ? { label: REMAINDER_LABEL, value: percent(remainder.raw), text: formatPercent(remainder.raw, decimals, true), color: colorOf.get('remainder') } : undefined };
   };
   const live: LiveDrillParts | undefined = useMemo(() => following && parts.live ? parts.live(values => drillRows(values, 0)
-    ?? { parts: [], total: null, totalText: 'Not recorded at this hour' }) : undefined, [following, parts.live, layers, parts.ready]); // eslint-disable-line react-hooks/exhaustive-deps
+    ?? { parts: [], total: null, totalText: 'Not recorded at this hour' }) : undefined, [following, parts.live, layers, parts.ready]);
   const day = hour == null ? null : Math.floor(hour);
   const values = day == null || live ? null : drillRows(parts.at(day), day);
   const notes = useMemo(() => [...(parts.named.data?.warnings ?? []), ...(parts.error ? [parts.error.message] : [])], [parts.named.data, parts.error]);

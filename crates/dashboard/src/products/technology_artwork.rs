@@ -1,4 +1,3 @@
-//! Technology images load independently of research history and its titles.
 use super::{LoadContext, Product, artwork};
 use crate::{Artwork, Source, metadata::check_cancel};
 use serde::{Deserialize, Serialize};
@@ -13,7 +12,7 @@ pub struct TechnologyArtwork;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TechnologyArtworkParams {
     pub tokens: Vec<String>,
-    /// Repeated definitions have separate recorded indices; null means an unindexed use.
+    #[doc = " Repeated definitions have separate recorded indices; null means an unindexed use."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub recorded: Option<BTreeMap<String, Vec<Option<u32>>>>,
@@ -56,7 +55,6 @@ impl Product for TechnologyArtwork {
         {
             return Err("Invalid technology artwork tokens");
         }
-        // The null template is index 0, so a recorded index is at least 1.
         if params.recorded.as_ref().is_some_and(|recorded| {
             recorded.iter().any(|(token, indices)| {
                 !params.tokens.contains(token) || indices.is_empty() || indices.contains(&Some(0))

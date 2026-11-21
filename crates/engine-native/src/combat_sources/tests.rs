@@ -12,25 +12,17 @@ use std::cell::{Cell, RefCell};
 
 const PAGE: usize = 4096;
 const GAME: usize = 0x4000_0000;
-/// Addresses below this fault, as a process's first pages do; a null
-/// object's field (address 8, say) fails as it does live.
 const UNMAPPED: usize = 0x1_0000;
 
-/// Sparse memory: every mapped address reads, as zero unless written.
 #[derive(Default)]
 struct World {
     pages: HashMap<usize, Box<[u8; PAGE]>>,
     next: usize,
-    /// Guarded calls; a scatter or a record gather is one, as live.
     copies: Cell<usize>,
     roster: Vec<Option<ccountry::Country>>,
     arrays: Option<[Array; 2]>,
-    /// Whether country lookups use the authenticated roster, as the
-    /// Ordinary job's memory does.
     authenticated: bool,
-    /// Byte ranges whose reads fail.
     poisoned: RefCell<Vec<(usize, usize)>>,
-    /// Every guarded span, when logging.
     log: RefCell<Option<Vec<(usize, usize)>>>,
 }
 
@@ -57,7 +49,6 @@ impl World {
         self.next += size.next_multiple_of(64);
         at
     }
-    /// A CPdxArray header: data, capacity, count.
     fn array(&mut self, at: usize, data: usize, count: u32) {
         self.u64(at, data as u64);
         self.u32(at + 8, count);
@@ -68,7 +59,6 @@ impl World {
         self.u64(at, vtable as u64);
         at
     }
-    /// A sorted modifier accumulator census.
     fn accumulator(&mut self, at: usize, entries: &[(u32, i64)]) {
         let data = self.alloc(entries.len().max(1) * 16);
         for (index, (key, value)) in entries.iter().enumerate() {
@@ -169,9 +159,6 @@ impl Memory for World {
             })
             .flatten()
     }
-    /// The core-supply predicate's own tests cover its native walk; here
-    /// it is one counted call whose answer depends only on its inputs, so
-    /// the test sees whether the walk asks it once per (owner, area).
     fn core_supply_access(
         &self,
         _base: usize,
@@ -191,36 +178,26 @@ struct Shape {
     templates: usize,
     states: usize,
     provinces: usize,
-    /// Owned relations each owner's diplomacy walks, none a war.
     relations: usize,
     transports: usize,
-    /// Army leaders; every fourth division, from the second, has one.
     leaders: usize,
 }
 
-/// Addresses the targeted fault cases break.
 struct Built {
     world: World,
-    /// Divisions in combat: (army pointer, handle).
     divisions: Vec<(usize, u64)>,
-    /// Per owner: its intel table and its navy's regional operands.
     intel: Vec<usize>,
     regional: Vec<usize>,
-    /// Enemy owner indices, per owner.
     enemies: Vec<Vec<usize>>,
     subunits: Vec<usize>,
-    /// The modifier definition table.
     table: usize,
 }
 
-/// The priority sub-units' token: a key every owner's country census has
-/// and no earlier reader of the division looks up.
 const TOKEN: u32 = 0x1a0;
 
 fn world(shape: &Shape) -> Built {
     let mut w = World::default();
     let slots = shape.countries as usize + 1;
-    // Module data: the definition table, defines and singletons.
     let table = w.alloc(0x78 * 0x300);
     w.u64(modifier_definition::TABLE_RVA.0, table as u64);
     for key in [0x2b_usize, 0x5e, 0x17f, 0x1e9, 0xfb, 0x10f, TOKEN as usize] {
@@ -233,7 +210,6 @@ fn world(shape: &Shape) -> Built {
     w.u64(cbuilding_database::SINGLETON_RVA.0, database as u64);
     let definition = w.alloc(0x400);
     w.u64(database + 0x3b0, definition as u64);
-    // Countries, links and an authenticated roster.
     let countries = w.alloc(slots * 8);
     let links = w.alloc(slots * 4);
     w.array(GAME + cgame_state::COUNTRIES, countries, slots as u32);
@@ -303,7 +279,6 @@ fn world(shape: &Shape) -> Built {
         );
         diplomacies.push(diplomacy);
         objects.push(country);
-        // A fog network, so the country can be another's transport enemy.
         w.u32(
             country + ccountry::FOG_NETWORK_TABLE_COUNT,
             u32::from(owner % 4 != 3),
@@ -349,7 +324,6 @@ fn world(shape: &Shape) -> Built {
         });
         owners.push(slot as u32);
     }
-    // Intel tables and enemy lists, now every owner's slot is known.
     let mut intel_tables = Vec::new();
     let mut enemy_lists = Vec::new();
     for (index, (&country, &diplomacy)) in objects.iter().zip(&diplomacies).enumerate() {
@@ -366,10 +340,6 @@ fn world(shape: &Shape) -> Built {
         w.array(intel + crate::ccountry_intel::DATA, rows, slots as u32);
         w.u64(country + ccountry::INTEL_TABLE, intel as u64);
         intel_tables.push(intel);
-        // The enemy-country count (after `cdiplomacy_status::ENEMY_COUNTRIES`), the at-war test in
-        // `air()`, is this list's count, so an owner with enemies never walks its relations. Every
-        // third owner is at war with the next three (one of which has capitulated); the rest have
-        // no enemies and walk their relations.
         let enemies: Vec<usize> = if index % 3 == 0 {
             (1..=3).map(|step| (index + step) % owners.len()).collect()
         } else {
@@ -390,8 +360,6 @@ fn world(shape: &Shape) -> Built {
             &[u8::from(index % 5 == 4)],
         );
     }
-    // Each owner's relation matrix row: a tuple per other owner, none at war, every other pair
-    // friendly through the relation's war pointer.
     for (from, &diplomacy) in diplomacies.iter().enumerate() {
         let row = w.alloc(slots * 8);
         w.array(
@@ -417,7 +385,6 @@ fn world(shape: &Shape) -> Built {
         Array::read(&w, GAME + cgame_state::COUNTRIES, 8).unwrap(),
         Array::read(&w, GAME + cgame_state::COUNTRY_LINKS, 4).unwrap(),
     ]);
-    // Weather: no province records; two strategic regions with records.
     let weather = w.object(0x100, cweather_manager::VTABLE_RVA.0);
     w.u64(GAME + cgame_state::WEATHER_MANAGER, weather as u64);
     let records = w.alloc(sweather_per_region::STRIDE * 2);
@@ -433,7 +400,6 @@ fn world(shape: &Shape) -> Built {
         w.u32(region + 0x60, id + 1);
         regions.push(region);
     }
-    // Sub-units, half with a priority token and categories, and templates.
     let subunits: Vec<usize> = (0..6)
         .map(|index| {
             let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA.0);
@@ -470,7 +436,6 @@ fn world(shape: &Shape) -> Built {
             t
         })
         .collect();
-    // States and provinces, registered by id.
     let states: Vec<usize> = (0..shape.states)
         .map(|index| {
             let state = w.object(0x1000, cstate::VTABLE_RVA.0);
@@ -522,7 +487,6 @@ fn world(shape: &Shape) -> Built {
             province
         })
         .collect();
-    // Army leaders, each in its own orders group.
     let groups: Vec<usize> = (0..shape.leaders)
         .map(|index| {
             let leader = w.object(0x1000, crate::carmy_leader::VTABLE_RVA.0);
@@ -543,7 +507,6 @@ fn world(shape: &Shape) -> Built {
             group
         })
         .collect();
-    // Acclimatization definitions.
     let climates: Vec<usize> = (0..2)
         .map(|index| {
             let climate = w.alloc(0x40);
@@ -567,16 +530,12 @@ fn world(shape: &Shape) -> Built {
         let owner = owners[index % owners.len()];
         w.u32(army + cunit::ROSTER_OWNER, owner);
         w.u32(army + cunit::LOGICAL_OWNER, owner);
-        // A generated name (programmatic override flag set), of a
-        // nonzero type every other division; neither reads further.
         let name = w.alloc(0x100);
         w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
         w.u64(name, crate::cname_group_member::VTABLE_RVA.0 as u64);
         w.u32(name + crate::cname_group_member::TYPE, (index % 2) as u32);
         w.u32(name + crate::cname_group_member::ORDER, index as u32);
         w.put(name + crate::cname_group_member::FLAG_B, &[1]);
-        // Every other division bypasses core supply; the rest ask the predicate, which half of them
-        // fail.
         w.put(army + 0x2e, &[u8::from(index % 2 == 0)]);
         if !groups.is_empty() && index % 4 == 1 {
             w.u64(
@@ -596,7 +555,6 @@ fn world(shape: &Shape) -> Built {
             w.u64(object + 0x38, 40);
         }
         if index % 5 == 2 {
-            // A route: the next province and the destination.
             let route = w.alloc(8);
             w.u32(
                 route,
@@ -639,10 +597,8 @@ struct Captured {
 
 type Walked = Vec<Result<Captured, &'static str>>;
 
-/// Divisions per image gather in the test walk: a combat's.
 const IMAGE_BATCH: usize = 20;
 
-/// Scratch for comparison with the unshared reader baseline.
 struct Scratch {
     widths: Vec<inputs::WidthTerm>,
     modifiers: Vec<reinforcement::ModifierTerm>,
@@ -684,8 +640,6 @@ impl Scratch {
     }
 }
 
-/// Unshared per-division chain: one country reader for the combat, the
-/// per-pass context memo and every division read in full.
 fn walk_main(memory: &World, divisions: &[(usize, u64)]) -> Walked {
     use super::{main_combat as combat, main_reinforcement as reinforcement};
     let mut memo = combat::ContextModifiers::default();
@@ -733,8 +687,6 @@ fn walk_main(memory: &World, divisions: &[(usize, u64)]) -> Walked {
         .collect()
 }
 
-/// The collector's per-division chain over every division, in one pass,
-/// through each division's image.
 fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]) -> Walked {
     sources.clear();
     let mut s = Scratch::new();
@@ -744,7 +696,6 @@ fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]
         .iter()
         .enumerate()
         .map(|(index, &(army, handle))| {
-            // Images gathered twenty divisions at a time, as a combat's.
             let row = index % IMAGE_BATCH;
             if row == 0 {
                 let armies: Vec<usize> = divisions[index..]
@@ -799,8 +750,6 @@ fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]
 
 type Row = Result<reinforcement::ContextRow, &'static str>;
 
-/// The reinforcement reader alone, with nothing authenticated before it:
-/// main's, then the shared one over one pass.
 fn reinforcement_alone(memory: &World, divisions: &[(usize, u64)]) -> [Vec<Row>; 2] {
     let mut s = Scratch::new();
     let main = divisions
@@ -842,8 +791,6 @@ fn reinforcement_alone(memory: &World, divisions: &[(usize, u64)]) -> [Vec<Row>;
     [main, shared]
 }
 
-/// Main's walk and the shared walk over the same memory, with the calls
-/// each made.
 fn both(built: &Built) -> ((Walked, usize), (Walked, usize)) {
     let w = &built.world;
     w.copies.set(0);
@@ -867,12 +814,6 @@ fn small() -> Shape {
     }
 }
 
-/// Sharing changes no output: every division's stats, naming, context,
-/// width, reinforcement, modifier, supply, acclimatization and transport
-/// terms equal the unshared walk's, over divisions sharing owners, templates,
-/// states, provinces, regions and leaders, with routes, air entries,
-/// relation walks, weather, core supply and transport divisions; with and
-/// without the authenticated roster. And it reads far less.
 #[test]
 fn shared_sources_change_no_output() {
     for authenticated in [true, false] {
@@ -887,7 +828,6 @@ fn shared_sources_change_no_output() {
         assert_eq!(main, shared);
         let rows: Vec<_> = main.iter().map(|r| r.as_ref().unwrap()).collect();
         let r = |row: &&Captured| row.reinforcement;
-        // The fixture reaches each shared branch.
         assert!(
             rows.iter()
                 .map(r)
@@ -925,11 +865,6 @@ fn shared_sources_change_no_output() {
     }
 }
 
-/// Every failure is main's: a read that fails at a chosen ordinal of
-/// main's walk fails every division as main's walk fails it, with main's
-/// reason, and the divisions around it read the same rows. Both the
-/// chain and the reinforcement reader alone, with and without the
-/// authenticated roster (whose absence makes country lookups read).
 #[test]
 fn shared_sources_fail_as_main_does() {
     let shape = Shape {
@@ -943,7 +878,6 @@ fn shared_sources_fail_as_main_does() {
         walk_main(&built.world, &built.divisions);
         let _ = reinforcement_alone(&built.world, &built.divisions);
         let log = built.world.log.borrow_mut().take().unwrap();
-        // Each distinct span once, in main's first-read order.
         let mut seen = std::collections::HashSet::new();
         let spans: Vec<_> = log.into_iter().filter(|span| seen.insert(*span)).collect();
         let step = (spans.len() / 200).max(1);
@@ -960,14 +894,10 @@ fn shared_sources_fail_as_main_does() {
     }
 }
 
-/// Failures the shared walk would reorder if it read a source's stages
-/// together: each keeps main's order.
 #[test]
 fn staged_sources_keep_main_failure_order() {
     type Faults = fn(&Built) -> Vec<(usize, usize)>;
     let cases: [(&str, Faults); 3] = [
-        // An owner's first enemy's regional operand and the next enemy's
-        // intel: main meets the regional read first.
         ("regional before later intel", |built| {
             let owner = (0..built.enemies.len())
                 .find(|&owner| built.enemies[owner].len() >= 2)
@@ -978,8 +908,6 @@ fn staged_sources_keep_main_failure_order() {
                 (built.intel[second] + crate::ccountry_intel::OWNER, 4),
             ]
         }),
-        // One enemy's intel lane and its own regional operand: main reads
-        // the regional operand first.
         ("regional before own intel", |built| {
             let owner = (0..built.enemies.len())
                 .find(|&owner| !built.enemies[owner].is_empty())
@@ -990,8 +918,6 @@ fn staged_sources_keep_main_failure_order() {
                 (built.intel[enemy] + crate::ccountry_intel::OWNER, 4),
             ]
         }),
-        // The priority token's definition and the category header: main
-        // appends the token's modifier first.
         ("token before categories", |built| {
             vec![
                 (
@@ -1013,8 +939,6 @@ fn staged_sources_keep_main_failure_order() {
         let [main, shared] = reinforcement_alone(&built.world, &built.divisions);
         assert_eq!(main, shared, "{label} alone");
     }
-    // With both reads failing, the reasons differ: the category header
-    // is invalid rather than unreadable.
     let mut built = world(&small());
     let unit = built.subunits[0];
     let data = built.world.get_u64(unit + 0x508);
@@ -1033,11 +957,6 @@ fn staged_sources_keep_main_failure_order() {
     assert_eq!(first(&both_fail), Some("reinforcement input unreadable"));
 }
 
-/// The image layouts hold every army and stat block field the division
-/// readers read on this fixture (leaders, routes, acclimatization,
-/// transports, manpower): every read of a division's army or stat block
-/// lies inside a gathered span. (A scatter that also reads a module
-/// define goes to the source whole, as one call either way.)
 #[test]
 fn images_serve_every_division_field() {
     let mut built = world(&small());
@@ -1081,10 +1000,6 @@ fn images_serve_every_division_field() {
     assert!(misses.is_empty(), "{misses:x?}");
 }
 
-/// A record that does not copy completely is served nothing: the gather
-/// resumes after it (one more call per failed record, nothing reread),
-/// and that division's reads go to the source, as do the stat block reads
-/// of a division whose army record failed.
 #[test]
 fn images_resume_after_a_failed_record() {
     let built = world(&small());
@@ -1094,7 +1009,6 @@ fn images_resume_after_a_failed_record() {
         .iter()
         .map(|&army| w.get_u64(army + cunit::STAT_BLOCK) as usize)
         .collect();
-    // Division 2's army and division 4's stat block fail inside a span.
     w.poisoned.borrow_mut().extend([
         (armies[2] + carmy::STRENGTH_FACTOR, 8),
         (stats[4] + 0x298, 8),
@@ -1103,7 +1017,6 @@ fn images_resume_after_a_failed_record() {
     w.copies.set(0);
     *w.log.borrow_mut() = Some(Vec::new());
     images.capture(w, &armies).unwrap();
-    // Armies: rows 0-1, then 3-5. Stat blocks: rows 0-1, then 3, then 5.
     assert_eq!(w.copies.get(), 5);
     let log = w.log.borrow_mut().take().unwrap();
     let mut seen = std::collections::HashSet::new();
@@ -1121,8 +1034,6 @@ fn images_resume_after_a_failed_record() {
         assert_eq!(army, (true, usize::from(row == 2)), "row {row}");
         assert_eq!(stat, (true, usize::from(row == 2 || row == 4)), "row {row}");
     }
-    // A read outside every span, and a division the row does not hold,
-    // go to the source.
     assert_eq!(read(0, armies[0] + 0x700), (true, 1));
     let other = images.division(w, 1, armies[0]);
     let before = w.copies.get();
@@ -1265,9 +1176,6 @@ fn image_scatter_keeps_whole_source_fallback_and_untouched_failure_suffix() {
     assert_eq!(source.calls.get(), [1, 1]);
 }
 
-/// The batched owned-relation walk answers as the one-by-one walk does,
-/// with its failure: a war at any position, none, a null relation, an
-/// unreadable pointer and an unreadable type. No span is read twice.
 #[test]
 fn batched_relation_walk_matches_the_sequential_walk() {
     #[derive(Clone, Copy, Debug)]
@@ -1350,11 +1258,6 @@ fn batched_relation_walk_matches_the_sequential_walk() {
     }
 }
 
-/// Guarded calls and CPU time per pass, main's walk and the shared walk,
-/// at 153, 1,000, 3,000 and 5,000 divisions, then the world-war relation
-/// walk at 1,500 and 5,000 countries. The time is this fixture's
-/// in-process copy, not the game's guarded read. Run in release with
-/// `--ignored --nocapture`.
 #[test]
 #[ignore]
 fn shared_sources_cost_at_scale() {
@@ -1365,7 +1268,6 @@ fn shared_sources_cost_at_scale() {
         let ((main, main_reads), _) = both(&built);
         let main_ms = started.elapsed().as_secs_f64() * 1e3;
         let mut sources = Sources::new();
-        // A first pass warms storage, as a running recorder's has been.
         let _ = walk_shared(&built.world, &mut sources, &built.divisions);
         built.world.copies.set(0);
         let started = std::time::Instant::now();

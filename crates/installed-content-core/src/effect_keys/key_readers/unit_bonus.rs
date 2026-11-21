@@ -1,4 +1,3 @@
-//! Unit bonus bodies use recorded subunits, categories, equipment and terrain.
 
 use crate::{
     key_names::KeyNames,
@@ -107,7 +106,6 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
         )
         .map(|()| Node::EquipmentPool),
 
-        // Unknown support multiplier fields report without skipping their value.
         Node::SupportMultiplier => Shape::One,
     }
 }

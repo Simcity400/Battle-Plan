@@ -7,7 +7,7 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import release_smoke as rs  # noqa: E402
+import release_smoke as rs
 
 FIVE = ["collector.dll", "dxcompiler.dll", "dxil.dll", "battle-plan-recorder.exe", "replay-desktop.exe"]
 

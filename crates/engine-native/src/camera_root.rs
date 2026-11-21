@@ -1,18 +1,10 @@
-//! The in-game idler's active camera root: eye, look-at and viewport, read by tools outside the
-//! game. The root has no vtable to authenticate it, so a read holds only when the root names the
-//! idler as its owner and its embedded current render view repeats the root's eye and look-at.
 
 use crate::{Memory, read};
 
-/// In-game idler member: the active camera root pointer.
 pub const IDLER_CAMERA: usize = 0x760;
-/// The camera root's owning idler.
 pub const OWNER: usize = 0x8;
-/// The embedded current render view's eye then look-at, three f32 each.
 pub const RENDER_VIEW_EYE: usize = 0x190;
-/// Eye then look-at, three f32 each.
 pub const EYE: usize = 0x680;
-/// Viewport x, y, width and height, i32 each.
 pub const VIEWPORT: usize = 0x6c0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,7 +14,6 @@ pub struct Camera {
     pub viewport: [i32; 4],
 }
 
-/// The camera of the in-game idler at `idler`; `None` when it has none or the root does not verify.
 pub fn read_camera(memory: &impl Memory, idler: usize) -> Option<Camera> {
     let root = read::<u64>(memory, idler.checked_add(IDLER_CAMERA)?)?;
     let root = usize::try_from(root).ok().filter(|&root| root != 0)?;

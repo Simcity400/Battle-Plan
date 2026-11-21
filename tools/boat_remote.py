@@ -17,7 +17,6 @@ import time
 ROOT = Path('/home/user/hoi4')
 SRC = ROOT / 'src'
 CLAIM = ROOT / 'claim'
-# Beside the claim, which older runners release with rmdir: the token and boot of a job whose processes outlived it.
 STRANDED = ROOT / 'stranded'
 MANIFEST = ROOT / 'source-manifest.json'
 TARGET = 'x86_64-pc-windows-msvc'
@@ -26,8 +25,6 @@ TEST_TARGET = ROOT / 'target-test'
 
 METADATA = ROOT / 'cache-mtimes.json.gz'
 BOOT_MARKER = ROOT / 'cache-mtimes-boot'
-# Release builds reuse any crate this VM compiled before from the same inputs, whichever lane built it:
-# Cargo keeps one build of each crate, so 47-102 crates were rebuilt per build after another lane's (29 Oct).
 SCCACHE_VERSION = 'v0.18.0'
 SCCACHE_SHA256 = '45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89'
 SCCACHE_HOME = ROOT / 'sccache'
@@ -52,7 +49,6 @@ def checkpoint():
     BOOT_MARKER.write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
 
 def prune_incremental():
-    # Every lane's checks leave incremental sessions behind (106 of 147 GB seen on one VM).
     usage = shutil.disk_usage(ROOT)
     if usage.used < usage.total * 0.7:
         return
@@ -85,7 +81,6 @@ def start_cache(token):
     """Starts the compile cache's server outside the job's process group; the environment of its clients, or None and a warning."""
     try:
         if not SCCACHE.is_file():
-            # A failed download is retried an hour later, not by every job.
             failed = SCCACHE_HOME / 'download-failed'
             if failed.exists() and time.time() - failed.stat().st_mtime < 3600:
                 raise RuntimeError(f'the download failed within the hour: {failed.read_text().strip()}')
@@ -107,13 +102,8 @@ def start_cache(token):
             partial.chmod(0o755)
             partial.replace(SCCACHE)
         environment = {**os.environ, **SCCACHE_ENV}
-        # Until its stop is confirmed the server may write into target outside Cargo's group, where
-        # older helpers' busy checks miss it: the claim is marked stranded ahead, which no helper
-        # takes over once this runner is gone.
         STRANDED.write_text(f'{token}\n{boot_id()}')
-        # A server an interrupted job left behind would hold the port with its own settings.
         subprocess.run([str(SCCACHE), '--stop-server'], env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        # The server inherits these handles: a pipe would keep this job's output open while it runs.
         with (SCCACHE_HOME / 'server.log').open('w') as log:
             subprocess.run([str(SCCACHE), '--start-server'], env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=60, check=True)
         return environment
@@ -126,7 +116,6 @@ def cache_processes():
     found = []
     for stat_file in Path('/proc').glob('[0-9]*/stat'):
         try:
-            # comm is field 2, in parentheses; the state follows it.
             text = stat_file.read_text()
             comm, state = text[text.index('(') + 1:text.rindex(')')], text[text.rindex(')') + 2:][:1]
         except (OSError, ValueError):
@@ -146,8 +135,6 @@ def stop_cache():
             print('Compile cache: ' + '; '.join(' '.join(line.split()) for line in stats), file=sys.stderr, flush=True)
     except Exception as error:
         print(f'WARNING: the compile cache did not stop cleanly: {error!r}', file=sys.stderr, flush=True)
-    # The stop does not wait: a server restoring a hit still writes into target, and its compilers
-    # run outside Cargo's group. Only this job runs on the VM, so every one of them is its own.
     for wait, kill in ((30, True), (5, False)):
         deadline = time.monotonic() + wait
         while cache_processes() and time.monotonic() < deadline:
@@ -161,7 +148,6 @@ def stop_cache():
 
 def drain(process):
     """True once the job's process group is gone within five seconds; it is killed only while its leader is unreaped."""
-    # A reaped leader frees its ID for reuse, so a group outliving its leader is never signalled, only kept claimed.
     deadline = time.monotonic() + 5
     if process.poll() is None:
         try:
@@ -226,7 +212,6 @@ def process_start(pid):
     """When a live process started, which tells it from a later one given the same id; None once it has ended."""
     try:
         fields = (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
-    # A process reaped between opening and reading its stat reads as ESRCH.
     except (FileNotFoundError, ProcessLookupError):
         return None
     return None if fields[0] == 'Z' else fields[19]
@@ -284,7 +269,6 @@ def apply(incoming):
             raise RuntimeError(f'Upload checksum mismatch: {name}')
     for name in new:
         safe_path(name)
-    # Nothing has changed yet; from here an interrupted sync leaves no manifest, so the next run rehashes the tree.
     MANIFEST.unlink(missing_ok=True)
     for name in old.keys() - new.keys():
         path = safe_path(name)
@@ -354,19 +338,14 @@ elif mode == 'acquire':
     try:
         CLAIM.mkdir()
     except FileExistsError:
-        # The caller holds the VM's local lock, so the claim's own run is gone; only its remote work may remain.
         holder = (CLAIM / 'token').read_text() if (CLAIM / 'token').exists() else None
         with (ROOT / 'running.lock').open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                # Its runner still runs, and releases the claim or marks it stranded itself.
-                # Older helpers quarantine on 73; this one reads the marker and only passes the VM by.
                 print('busy')
                 print('VM is still finishing a detached job', file=sys.stderr)
                 sys.exit(73)
-            # Its runner is gone. A claim it marked stranded, ahead of a compile cache or for
-            # processes it could not stop, is never taken over: they may still write into target.
             if STRANDED.exists() and STRANDED.read_text() == f'{holder}\n{boot_id()}':
                 print('VM holds processes a job could not stop; refusing to overlap', file=sys.stderr)
                 sys.exit(73)
@@ -374,14 +353,12 @@ elif mode == 'acquire':
                 print('busy')
                 print('VM is still finishing a detached job', file=sys.stderr)
                 sys.exit(73)
-            # Its run may have stopped mid-sync: without a manifest the tree is rehashed below.
             MANIFEST.unlink(missing_ok=True)
             shutil.rmtree(CLAIM)
             CLAIM.mkdir()
             print('Took over the claim of a run that ended without releasing it', file=sys.stderr)
     STRANDED.unlink(missing_ok=True)
     (CLAIM / 'token').write_text(token)
-    # Earlier runs' downloads, uploads and job files are done with by now.
     for leftover in [*ROOT.glob('artifacts-*'), *ROOT.glob('incoming-*'), *ROOT.glob('runner-*.b64-*'), *ROOT.glob('job-*')]:
         if leftover.is_dir() and not leftover.is_symlink():
             shutil.rmtree(leftover)
@@ -405,7 +382,6 @@ elif mode == 'outcome':
     except FileNotFoundError:
         print('The job has not started', file=sys.stderr)
         sys.exit(78)
-    # The job's process leaves its outcome before it ends, so once it has ended the outcome is there or never will be.
     if started['boot'] == boot_id() and process_start(started['pid']) == started['start']:
         sys.exit(74)
     path = job_file(job, 'outcome')
@@ -425,18 +401,11 @@ elif mode in {'check', 'build', 'test', 'ui'}:
     if mode == 'test':
         options, args = args[:args.index('--')], args[args.index('--') + 1:]
         pdb = '--pdb' in options
-        # An image's warm-up compiles only: it has nothing to deliver.
         warm = '--warm' in options
         wanted = {option.split('=', 1)[1] for option in options if option.startswith('--bin-exe=')}
-        # Workspace crates keep Cargo's incremental default, as in checks: a test program is a binary the
-        # cache never keeps, and replay-columnar's took 160 s again without a session and 2 s with one (12 Nov).
-        # Apart from target, where older runners build tests without sessions: each turn would void the other's.
         os.environ['CARGO_TARGET_DIR'] = str(TEST_TARGET)
-        # A cache of their own: the release builds' cache was full (16 GiB), and test objects would push theirs out.
         SCCACHE_ENV.update(SCCACHE_DIR=str(SCCACHE_HOME / 'cache-test'), SCCACHE_CACHE_SIZE='8G')
     memory_gib = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024 ** 3)
-    # Releasing recorder, collector and viewer with 8 jobs left 1.2 of 15.6 GiB free on a large VM, so builds run 7;
-    # a workspace check with 7 left 8.3 GiB free (28 Oct), so checks run one per vCPU.
     os.environ['CARGO_BUILD_JOBS'] = str(max(1, min(os.cpu_count() or 1, int(memory_gib / (2.2 if mode in {'build', 'test'} else 1.2)))))
     with (ROOT / 'running.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -467,7 +436,6 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                     previous.rename(modules)
                 link = SRC / 'node_modules'
                 if not modules.exists() or not stamp.exists() or stamp.read_text().strip() != package_hash:
-                    # The stamp goes first: an install that fails must not leave it naming the old cache.
                     stamp.unlink(missing_ok=True)
                     if link.is_symlink():
                         link.unlink()
@@ -476,7 +444,6 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                         shutil.rmtree(modules)
                     link.rename(modules)
                     stamp.write_text(package_hash)
-                # A failed install elsewhere can leave a real partial directory where the cache link belongs.
                 if link.is_symlink() and link.resolve() != modules:
                     link.unlink()
                 elif link.exists() and not link.is_symlink():
@@ -491,7 +458,6 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                 command = ['cargo', 'xwin', *args, '--target', TARGET]
                 if mode in {'build', 'test'}:
                     command.append('--message-format=json-render-diagnostics')
-                    # Checks compile workspace crates incrementally, which the cache passes through.
                     cache_started = True
                     cache = start_cache(token)
             print('Remote command: ' + ' '.join(command), file=sys.stderr, flush=True)
@@ -540,7 +506,6 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                         out.append({'path': name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size})
                     bundle = ROOT / ('artifacts-' + token + '.tar.xz')
                     with bundle.open('wb') as compressed:
-                        # Level 6 on four threads took 28 s for the viewer; level 2 on every core is 16% larger and takes seconds.
                         packer = subprocess.Popen(['xz', '-T0', '-2', '-c'], stdin=subprocess.PIPE, stdout=compressed)
                         with tarfile.open(fileobj=packer.stdin, mode='w|') as archive:
                             for artifact in out:
@@ -552,17 +517,12 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                     outcome.update(artifacts=out, bundle={'path': str(bundle), 'size': bundle.stat().st_size, 'sha256': hashlib.sha256(bundle.read_bytes()).hexdigest()})
             sys.exit(result.returncode)
         except SystemExit as stop:
-            # The status the process exits with: Linux keeps the low byte.
             outcome['exit'] = stop.code & 0xFF if isinstance(stop.code, int) else 1
             raise
         finally:
-            # The job's command group (Cargo, npm check) must not outlive its claim: the next job prunes incremental files under it.
-            # A launch interrupted before Popen returned may have left Cargo running without a handle.
             drained = not launched or (result is not None and drain(result))
-            # A start that failed part way may still have left a server.
             if cache_started:
                 stopped = stop_cache()
-                # A server a compile started in Cargo's place, had ours gone, would keep Cargo's group alive.
                 if stopped and not drained and result is not None:
                     drained = drain(result)
                 drained = drained and stopped

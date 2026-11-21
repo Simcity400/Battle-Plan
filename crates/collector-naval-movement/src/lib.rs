@@ -1,4 +1,3 @@
-//! Country naval movement inputs: the physical navy census and launch sources the appearance, counter and naval mission families read. The host owns the navy pass, loans and installation.
 
 use collector_primitives::country_slots as country_scale;
 use collector_primitives::table_capture;

@@ -1,4 +1,3 @@
-//! Presentation of the shared native repair-capacity query.
 use super::*;
 
 pub(super) struct Sources<'a>(replay_derive::naval_repairs::Sources<'a>);
@@ -24,12 +23,10 @@ impl<'a> Sources<'a> {
     }
 }
 
-/// The shared capacity query's result as the base text writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Capacity {
     pub used: i32,
     pub level: i32,
-    /// Native text colour control, absent for the ordinary authored colour.
     pub colour: Option<char>,
 }
 impl Capacity {

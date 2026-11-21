@@ -17,8 +17,6 @@ use std::{
     },
 };
 
-/// The lane a product request waits in: a page replaying tables to its rows' hours apart from
-/// every reply, then replies the query layer answers, hover reads, and whole-branch reads.
 pub(super) fn product_lane(product: &str, params: &serde_json::Value) -> Lane {
     let registered = products::find(product);
     if registered.is_some_and(|product| product.replays) {
@@ -32,8 +30,6 @@ pub(super) fn product_lane(product: &str, params: &serde_json::Value) -> Lane {
     }
 }
 
-/// What a request's work is: content work, cancelled by the request, or work that reads no
-/// content, which reads the recording's own artwork and never mounts a binding's.
 fn work(content_dependent: bool, request: &Arc<Request>) -> crate::source::Work {
     if content_dependent {
         crate::source::Work::Content(Arc::clone(request) as Arc<dyn crate::presentation::Cancel>)
@@ -46,10 +42,7 @@ fn work(content_dependent: bool, request: &Arc<Request>) -> crate::source::Work 
 pub(super) struct Sources {
     next: u64,
     pub(super) entries: BTreeMap<(PathBuf, String), Weak<Source>>,
-    /// Sources opening: registered before their first binding so every configuration writer
-    /// rebinds them too, and handed to no one until they are bound ([`Inner::bound_sources`]).
     pub(super) binding: Vec<Weak<Source>>,
-    // Failed openers leave their waiters' gate discoverable; idle gates expire.
     opening: BTreeMap<(PathBuf, String), Weak<Mutex<()>>>,
 }
 
@@ -67,9 +60,6 @@ impl Sources {
 
 const RECORDING_CHANGED: &str = "The recording changed. Reopen it before requesting another view.";
 
-/// The first sentence is suitable for the sidebar; retain the technical reason
-/// after it for bug reports. Cancellation and ordinary filesystem errors keep
-/// their existing meaning.
 fn recording_open_error(error: std::io::Error) -> String {
     let sentence = if engine_allocation::is_allocation_error(&error) {
         "There isn't enough memory to open this recording."
@@ -94,9 +84,6 @@ impl Inner {
         self.content.get()
     }
 
-    /// Gives a recording made before recordings carried their game facts the facts it depends
-    /// on, proven from the game folders, as a revision of its own ([`recording_upgrade`]). A
-    /// recording no folder holds any of stays as it is, and opens with its facts withheld.
     pub(super) fn upgrade(&self, path: &Path) {
         static UPGRADING: Mutex<()> = Mutex::new(());
         let lacks_facts = |path: &Path| {
@@ -133,11 +120,6 @@ impl Inner {
         }
     }
 
-    /// The content options of work on `source` admitted now (`Source::admit`): the source's
-    /// binding as it is, which everything the work reads and every reply it gives keeps to, on
-    /// any thread. This is the work's entry: the mount it draws is resolved here, before any
-    /// product code runs, waiting on another request's mount only while the work is not
-    /// cancelled (`Source::admit_resolved`).
     pub(super) fn content_for(
         &self,
         source: &Source,
@@ -146,8 +128,6 @@ impl Inner {
         source.admit_resolved(work)
     }
 
-    /// Every source a configuration writer must rebind: those open and those still opening
-    /// (registered before their first binding, not yet handed to anyone).
     pub(super) fn bound_sources(&self) -> Vec<Arc<Source>> {
         let sources = self
             .sources
@@ -161,17 +141,6 @@ impl Inner {
             .collect()
     }
 
-    /// Binds `source` to the configuration as it is ([`crate::presentation::rebind`]): the
-    /// configured content and its campaign's visual mods, as the Campaign map shows them, with
-    /// what they mount now ([`crate::presentation::Presentation::current`]), or no binding
-    /// without configured content. The identity is derived outside every lock and installed
-    /// (`Source::bind`, one swap of the whole binding) only while the configuration (folders,
-    /// unverified choice, cache folder, saved map settings) is still the one it was derived
-    /// from; otherwise it is derived again, so the newest configuration always wins. A change
-    /// advances the presentation generation, which clients refetch on.
-    /// Binds `source` to the configuration as it is now. A binding that changed, its first at
-    /// open included, retires what the one before it held and starts the replay's shared setup
-    /// under the new one, off every widget's first ask.
     pub(super) fn rebind(&self, source: &Arc<Source>, cancelled: &AtomicBool) -> Result<(), String> {
         use crate::presentation::Presentation;
         let moved = std::cell::Cell::new(false);
@@ -199,8 +168,6 @@ impl Inner {
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                         return Err(error);
                     }
-                    // Shown as unavailable when mounted; a later check that reads the mods is
-                    // another identity.
                     Err(error) => Presentation {
                         visual_mods: selected,
                         revision: format!("unreadable: {error}"),
@@ -208,7 +175,6 @@ impl Inner {
                 };
                 #[cfg(test)]
                 {
-                    // Taken before it runs: a hook that rebinds reaches this lock again.
                     let hook = self
                         .test_rebind_derived
                         .lock()
@@ -244,7 +210,6 @@ impl Inner {
         }
     }
 
-    /// Starts the replay's shared setup under `source`'s binding now, on its own thread.
     fn warm(&self, source: &Arc<Source>) {
         let Some(content) = self.content_for(source, crate::source::Work::Recorded) else {
             return;
@@ -255,9 +220,6 @@ impl Inner {
         }));
     }
 
-    /// Reads the game's own settings from the user folder configured now into the map settings,
-    /// installed only while that folder is still the one configured
-    /// ([`crate::presentation::rebind`]): work admitted under other folders never restores theirs.
     pub(super) fn configure_game(&self) {
         let _ = crate::presentation::rebind(
             &self.content,
@@ -281,15 +243,10 @@ impl Inner {
         );
     }
 
-    /// Catches every source up to the configuration as committed now ([`Self::present`]). Once
-    /// a change is committed the catch-up belongs to the service: only its closing stops it,
-    /// never the request that made the change, so no source stays on a configuration that is
-    /// no longer the one saved. A newer change landing meanwhile is caught up by the same loop.
     pub(super) fn catch_up(&self) -> Result<(), String> {
         self.present(&self.bound_sources(), &self.closed)
     }
 
-    /// [`Self::rebind`] for each of `sources`.
     pub(super) fn present(
         &self,
         sources: &[Arc<Source>],
@@ -305,8 +262,6 @@ impl Inner {
         self.presentation_generation.load(Ordering::Acquire)
     }
 
-    /// Duplicate opens share a per-revision gate. Disk reads and opted-in cache
-    /// inheritance never hold the global sources lock.
     pub(super) fn open(
         &self,
         path: &Path,
@@ -368,15 +323,12 @@ impl Inner {
             }
         };
         let source = Arc::new(Source::open(key, path, cancelled).map_err(recording_open_error)?);
-        // A publication between the revision read and the open leaves other bytes under it.
         if self.recording_revision(source.path()).ok().as_ref() != Some(&source.key().revision) {
             return Err(RECORDING_CHANGED.into());
         }
         if let Some(previous) = previous {
             source.inherit_append_states(&previous);
         }
-        // Registered before its first binding, so a configuration change from here on rebinds
-        // it too; handed to no one until it is bound to the configuration as it is.
         let registered = Arc::downgrade(&source);
         self.sources
             .lock()
@@ -426,8 +378,6 @@ impl Inner {
         self.submit_to(lane, request, job);
     }
 
-    /// Queue `job` on `lane`, or refuse it with the retryable capacity error
-    /// when the lane is full.
     pub(super) fn submit_to(&self, lane: Lane, request: Arc<Request>, job: LoadJob) {
         if let Some(timing) = &request.timing {
             timing.queued(lane);
@@ -487,11 +437,8 @@ impl Inner {
             catalogue.as_ref().expect("catalogue loaded").2.clone()
         };
         let sample_counts = map_settings::sample_counts();
-        // Any installed mod can be chosen, and a chosen mod that is no longer installed keeps
-        // its place by name; what cannot be shown is named when it is mounted.
         if let Some(settings) = &settings {
             settings.validate().map_err(str::to_owned)?;
-            // Until the renderer has said, it is the one to refuse a count its adapter lacks.
             if let (Some(samples), Some(counts)) = (settings.graphics.samples, &sample_counts)
                 && !counts.contains(&samples)
             {
@@ -510,8 +457,6 @@ impl Inner {
                 .save(key.clone(), settings)
                 .map_err(|e| e.to_string())?;
         }
-        // A flip reads the value it flips here, under the lock every save takes, so an edit or
-        // reset saved before it is what it flips and no other choice is written.
         if let Some(setting) = flip {
             store
                 .flip(key.clone(), setting)
@@ -547,14 +492,9 @@ impl Inner {
             presentation_generation: 0,
         };
         drop(store);
-        // Widgets follow every source's campaign selection as saved now, and the mods as they
-        // are now: a save, a Refresh or a mod installed, updated or removed since. Saved
-        // settings are part of the configuration bindings are derived from.
         self.content.update(|_| ());
         self.catch_up()?;
         reply.presentation_generation = self.presentation_generation();
-        // The order the resolved selection mounts in, read from the descriptors alone. The
-        // settings are saved by now, so a failure to read the mods is a note, not an error.
         match installed_content_core::content::visual::plan(
             &options,
             &selected,
@@ -578,8 +518,6 @@ impl Inner {
     pub(super) fn run_loader(self: &Arc<Self>, jobs: &Mutex<Receiver<LoadJob>>, lane: Lane) {
         loop {
             let job = {
-                // Before it can block, a loader returns what its last jobs freed: here when
-                // another loader holds the receiver, else as the receiver finds no job.
                 let receiver = match jobs.try_lock() {
                     Ok(receiver) => receiver,
                     Err(TryLockError::Poisoned(error)) => error.into_inner(),
@@ -600,7 +538,6 @@ impl Inner {
             if let Some(timing) = request.as_ref().and_then(|request| request.timing.as_ref()) {
                 timing.started();
             }
-            // Measurement only: the job's CPU by product, when enabled.
             let _cpu = match &job {
                 LoadJob::Product { body, .. } => {
                     ::replay_frame::cpu::scope_named("product load", &body.product)
@@ -608,7 +545,6 @@ impl Inner {
                 LoadJob::Open(_) => ::replay_frame::cpu::scope("service job", Some("open")),
                 _ => ::replay_frame::cpu::scope("service job", Some("other")),
             };
-            // Work on a recording reads its own executable tables.
             let tables = job.source().and_then(|source| source.tables());
             let result = request_result(|| {
                 engine_executable::executable_tables::scope(tables, || self.run_job(job, lane));
@@ -667,7 +603,6 @@ impl Inner {
         }
     }
 
-    /// A registered product's reply.
     fn product(
         &self,
         request: &Arc<Request>,
@@ -684,7 +619,6 @@ impl Inner {
         (product.load)(source, lease_id, body.params, &context, &request.cancelled)
     }
 
-    /// A declared series' reply, read through the query layer, in the product envelope.
     fn answer(
         &self,
         request: &Arc<Request>,
@@ -730,15 +664,12 @@ impl Inner {
             Some(&job.revision),
             &job.request.cancelled,
         );
-        // Everything the open goes on to read is the recording's, with its own tables.
         let tables = opened.as_ref().ok().and_then(|source| source.tables());
         engine_executable::executable_tables::scope(tables, || self.opened(job, opened));
     }
 
-    /// The rest of [`Self::open_job`] once the source is open, in its tables' scope.
     fn opened(&self, job: OpenJob, opened: Result<Arc<Source>, String>) {
         let result = opened.and_then(|source| {
-            // The query layer's index of every timeline, once: identity and each run's histories.
             crate::answer::open_all(&source).map_err(|error| error.to_string())?;
             read_key_names_ahead(&source, self.content());
             read_naming_ahead(&source);
@@ -750,12 +681,7 @@ impl Inner {
                 .map_err(|error| error.to_string())?;
             Ok(source)
         });
-        // What the source's first game window reads is read ahead at low priority, once the
-        // open has answered.
         let ahead = result.as_ref().ok().map(|source| {
-            // The read-ahead is cancelled once its binding is retired: a swap, an unbinding,
-            // the source dropped or the service closing.
-            // Its mount is resolved on the read-ahead's own thread, not before this open answers.
             let content = source.admit(crate::source::Work::Ahead);
             (Arc::clone(source), content)
         });
@@ -823,10 +749,6 @@ impl Inner {
     }
 }
 
-/// Reads the key names of `content`'s stack on a thread of its own while the open names the
-/// countries: the store check after the naming waits for them (through the icon content), as do
-/// most first replies. The content is resolved here, as the naming next resolves it, so the
-/// thread binds nothing.
 fn read_key_names_ahead(source: &Source, content: Option<ContentOptions>) {
     let Some(resolved) = content.and_then(|content| source.content(&content.options).ok()) else {
         return;
@@ -836,67 +758,49 @@ fn read_key_names_ahead(source: &Source, content: Option<ContentOptions>) {
         .spawn_carried(move || drop(resolved.layers.key_names()));
 }
 
-/// Restores the event feed's naming readers at the head of the main timeline on a thread of its
-/// own, on half the processors, while the open answers ([`products::feed::warm_naming`]): the
-/// feed's first page then moves on from them. It holds the source only while it reads.
 fn read_naming_ahead(source: &Arc<Source>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new().name("feed naming ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            // A failure is the pages' to report when they read.
             let _ = source.in_scope(|| products::feed::warm_naming(&source, branch));
         })
     });
 }
 
-/// Reads every run of the main timeline's feed log into the country scope's index on a thread of
-/// its own, on half the processors, while the open answers ([`products::feed::scope::warm`]): a
-/// scoped page or count then passes over no log. It holds the source only while it reads.
 fn read_feed_scope_ahead(source: &Arc<Source>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new().name("feed scope ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            // A failure is the scoped replies' to report when they read.
             let _ = source.in_scope(|| products::feed::scope::warm(&source, branch));
         })
     });
 }
 
-/// Keeps each run of the main timeline's observed stretches of both air ledger families on the
-/// source, on a thread of its own, on half the processors, while the open answers
-/// ([`products::air_ledger::warm_observed`]): a late window's reach back is then a lookup. It
-/// holds the source only while it reads.
 fn read_air_observed_ahead(source: &Arc<Source>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new().name("air observed ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            // A failure is the ledger's replies' to report when they read.
             let _ = source.in_scope(|| products::air_ledger::warm_observed(&source, branch));
         })
     });
 }
 
-/// Reads each run's lexicon on a thread of its own, on half the processors, while the open
-/// answers ([`crate::answer::warm_lexicons`]): replies mapping text to tokens then look it up.
 fn read_lexicons_ahead(source: &Arc<Source>) {
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new().name("lexicons ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            // A failure is the replies' to report when they read.
             let _ = source.in_scope(|| crate::answer::warm_lexicons(&source));
         })
     });
 }
 
-/// Keeps the viewer's choice of the recorded segment `segment` of the recording at `path` goes
-/// on from, then marks the recording changed, so every reader opens it again under the choice.
 fn history_choice(path: &Path, segment: &str, parent: Option<&str>) -> std::io::Result<()> {
     use replay::campaign::{Replay, timelines};
     use std::io;
@@ -925,7 +829,6 @@ pub(super) struct MapSettingsJob {
     pub(super) source_id: String,
     pub(super) source: Option<Arc<Source>>,
     pub(super) settings: Option<CampaignMapSettings>,
-    /// A setting to flip under the store's lock, the opposite of its value when it runs.
     pub(super) flip: Option<crate::protocol::MapSetting>,
     pub(super) options: installed_content_core::ResolveOptions,
 }
@@ -954,7 +857,6 @@ pub(super) enum LoadJob {
 }
 
 impl super::queue::Classed for LoadJob {
-    /// A product's requests share their lane's threads as one kind; other jobs by what they do.
     fn class(&self) -> &str {
         match self {
             Self::Product { body, .. } => &body.product,
@@ -966,7 +868,6 @@ impl super::queue::Classed for LoadJob {
 }
 
 impl LoadJob {
-    /// The recording this job works on, whose executable tables it reads.
     fn source(&self) -> Option<&Arc<Source>> {
         match self {
             Self::Product { source, .. } => Some(source),
@@ -982,7 +883,6 @@ impl LoadJob {
         })
     }
 
-    /// Whether its request was cancelled: a queued job no one waits for.
     fn cancelled(&self) -> bool {
         self.request().is_some_and(|request| request.cancelled())
     }
@@ -992,9 +892,6 @@ impl LoadJob {
 mod lane_tests {
     use super::*;
 
-    /// The feed, card and division-log pages replay tables to their rows' hours and wait in a lane
-    /// of their own; every other registered product waits where it did, beside the replies or
-    /// before them.
     #[test]
     fn pages_that_replay_hours_wait_apart_from_every_reply() {
         let params = serde_json::json!({});

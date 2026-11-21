@@ -8,7 +8,6 @@ const organisation = (id: string, read: boolean, policy: Partial<OrganisationNow
   nameUnknown: null, icon: 'sprite:a#1', iconUnknown: null, size: read ? 6 : null, traits: read ? 3 : null,
   policyToken: null, policyName: null, policyUnknown: null, cooldownHour: null, ...policy });
 
-// Day 1,000 starts at hour 24,000; the first organisation may change its policy again on day 1,012.
 const HOUR = 24_005;
 const reply: IndustrialOrganisationsReply = { branchId: '1', tag: 'GER', missing: null, detailsMissing: null, warnings: [], icons: [{ key: 'sprite:a#1', image: 'artwork:a.png' }], organisations: [
   organisation('1', true, { policyToken: 'mio_policy_general_assembly_line_optimisers', policyName: 'Assembly Line Optimisers', cooldownHour: 1_012 * 24 + 3 }),

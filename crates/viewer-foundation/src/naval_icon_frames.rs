@@ -1,4 +1,3 @@
-//! Naval icon admission and forward-group census, shared by retained history and map bindings.
 
 use crate::{
     engaged::Engaged,
@@ -8,10 +7,6 @@ use replay_data::{rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::t
 use replay_frame::frame::Tables;
 use std::{collections::BTreeMap, io};
 
-/// The naval combat icons' hour for the engaged index ([`icon_frames`]): `alive`
-/// comes from [`admitted`], `seen` from the combat's naval engaged `flag`, and the
-/// frame from the convoy variant over the forward-group census ([`censuses`]).
-/// The game writes `bg_btn`'s frame only while engaged and otherwise retains it.
 pub fn naval_icon_hour<F: Tables + ?Sized>(
     frame: &F,
     flag: &dyn Fn(u64) -> Engaged,
@@ -32,7 +27,6 @@ pub fn naval_icon_hour<F: Tables + ?Sized>(
                     match censuses.get(&combat.id) {
                         Some(Ok(census)) => Some(*census),
                         Some(Err(_)) => None,
-                        // A combat with no forward member has empty sides.
                         None => Some(Default::default()),
                     }
                     .map(|census| u32::from(convoy_variant(census)))
@@ -49,18 +43,14 @@ pub fn naval_icon_hour<F: Tables + ?Sized>(
     })
 }
 
-/// Drop an active icon when either side's primary country list is empty;
-/// an absent detail row cannot decide it.
 pub fn admitted(detail: Option<&NavalCombatDetailsRow>) -> Option<bool> {
     admitted_of(detail.map(|detail| [detail.sides[0].summary.countries.as_slice(), detail.sides[1].summary.countries.as_slice()]))
 }
 
-/// [`admitted`] from values: each side's primary country list.
 pub fn admitted_of(countries: Option<[&[u32]; 2]>) -> Option<bool> {
     countries.map(|sides| sides.iter().all(|countries| !countries.is_empty()))
 }
 
-/// The fields of a `NavalCombatShips` row the census, the forward groups and the HQ frame read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CensusMember {
     pub combat: u64,
@@ -95,15 +85,10 @@ pub struct Census {
     pub convoys: u32,
 }
 
-/// Count live convoys and live ships in each side's current forward groups.
-/// Ships are submarines when formation bit 7 is set without capital bit 6 or
-/// screen bit 8; all others use the other category. A combat has two sides. A
-/// member recording a third leaves its combat's census undecided, with a named cause.
 pub fn censuses(members: &[NavalCombatShipRow]) -> BTreeMap<u64, Result<[Census; 2], String>> {
     censuses_of(members.iter().map(CensusMember::of))
 }
 
-/// [`censuses`] from values.
 pub fn censuses_of(members: impl IntoIterator<Item = CensusMember>) -> BTreeMap<u64, Result<[Census; 2], String>> {
     let mut out: BTreeMap<u64, Result<[Census; 2], String>> = BTreeMap::new();
     for member in members {
@@ -136,7 +121,6 @@ pub fn censuses_of(members: impl IntoIterator<Item = CensusMember>) -> BTreeMap<
     out
 }
 
-/// the convoy variant of the combat sprite.
 pub fn convoy_variant([a, b]: [Census; 2]) -> bool {
     (a.convoys > 0 && (a.other == 0 || (b.other == 0 && b.submarines > 0)))
         || (b.convoys > 0 && (b.other == 0 || (a.other == 0 && a.submarines > 0)))
@@ -187,8 +171,6 @@ mod tests {
                 convoys: 1
             }
         );
-        // A forward member recording a third side leaves its combat's census undecided, named
-        // by ship and side (main's census named the same cause).
         let third = NavalCombatShipRow {
             ship: 44,
             side: 2,

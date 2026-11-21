@@ -4,7 +4,6 @@ import { useIdeaHistory } from '../../dashboard/ideaHistory';
 import type { WidgetSpec } from '../../dashboard/model';
 import { timelineCategories } from './ideaTimelineData';
 
-/** The Category setting's choices: the campaign's own categories, named as the game names them. */
 export function useCategoryChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data } = useIdeaHistory(widget, runtime, true);
   return { category: timelineCategories(data?.categories ?? []).map(category => ({ value: category.token, label: contentTitle(category.name, category.token, 'Category name unavailable') })) };

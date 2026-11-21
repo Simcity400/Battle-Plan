@@ -44,10 +44,6 @@ fn content(name: &str) -> (Stack, Content) {
     (stack, content)
 }
 
-/// A battle within its recorded radius plus the distant effect's falloff
-/// maximum, with enough divisions, plays the distant ambience at its centre
-/// and the layers whose sub-unit count is in range; one too small, or out of
-/// hearing, plays nothing.
 #[test]
 fn audible_battles_play_their_ambience_and_layers() {
     let (_stack, content) = content("battle_emitters");
@@ -56,7 +52,6 @@ fn audible_battles_play_their_ambience_and_layers() {
             battle(1, [0.0, 0.0], 9.0, 6, 5),
             battle(2, [500.0, 0.0], 9.0, 5, 9),
             battle(3, [1000.0, 0.0], 9.0, 9, 4),
-            // A wide recorded radius reaches a listener far from its centre.
             battle(4, [3000.0, 0.0], 400.0, 6, 0),
         ],
         refusals: Vec::new(),
@@ -70,14 +65,11 @@ fn audible_battles_play_their_ambience_and_layers() {
         out.iter()
             .all(|emitter| emitter.restart && emitter.group == Group::Combat)
     );
-    // Just beyond hearing: 109 away horizontally with radius 9 and falloff 100.
     out.clear();
     emitters(&battles, &content, [109.5, 0.0, 0.0], &mut out);
     assert!(out.is_empty());
-    // Near the battle of too few divisions: nothing.
     emitters(&battles, &content, [500.0, 0.0, 0.0], &mut out);
     assert!(out.is_empty());
-    // Below its layer's range: only the distant ambience.
     emitters(&battles, &content, [1000.0, 0.0, 0.0], &mut out);
     assert_eq!(out.len(), 1);
     assert_eq!(&*out[0].effect, "distant");
@@ -87,8 +79,6 @@ fn audible_battles_play_their_ambience_and_layers() {
     assert_eq!(out[0].position, [3000.0, BATTLE_HEIGHT, 0.0]);
 }
 
-/// A battle's sounds keep their identity while its key does, wherever it
-/// stands in the list; another key is another instance.
 #[test]
 fn emitter_keys_follow_the_battle_key_not_its_place() {
     let (_stack, content) = content("battle_keys");
@@ -128,8 +118,6 @@ fn emitter_keys_follow_the_battle_key_not_its_place() {
     assert!(other.iter().zip(&first).all(|(a, b)| a.key != b.key));
 }
 
-/// Without the distant effect the game skips the whole update: no layer
-/// plays either.
 #[test]
 fn a_missing_distant_effect_silences_every_battle_sound() {
     let (_declared_stack, declared) = content("battle_declared");
@@ -142,7 +130,6 @@ fn a_missing_distant_effect_silences_every_battle_sound() {
     let mut out = Vec::new();
     emitters(&battles, &content, [0.0; 3], &mut out);
     assert!(out.is_empty());
-    // The silence is named, not left for the listener to notice.
     assert_eq!(
         silence(&content).unwrap(),
         "the battle sound effect absent is not declared, so no battle plays (the game skips its whole battle-sound update)"

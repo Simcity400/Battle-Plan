@@ -1,0 +1,11 @@
+# 0903. Derive the selected army's modifiers in native demand order
+
+The attack preview takes the last two route provinces, using the division's province as the start when the route names one target. It ends before reading modifier entries when either controller is nonpositive, both resolve to the same country, or the division's logical owner has no direct war against the target. The recorded definition and DLC mask determine effective inputs. Each entry requests only its own reached operands, and a missing operand withholds that entry by name. This preserves other readable entries and does not show an unknown as zero.
+
+Entries appear in terrain, river, fort, snow, region-weather, night and enemy-air order. The printed entry holds only its first value. The river, fort and region-weather eligibility still uses the second value. The terrain stat block uses the one-based content terrain index minus one and adds the terrain's authored attack adjustment. The commander uses the native terrain lookup, which falls back to the first entry when the index lies outside its vector. Missing stat block entries for a mod terrain withhold the terrain entry.
+
+Only a direct neighbour supplies a directed crossing and effective snow. The small and large river kinds demand their own defines. The healthy active land-fort sum wraps as a signed 32-bit value. Its base uses the noncoastal controller and state terms, with the define alone for a null controller. Region-weather rows use the region's two attack and breakthrough terms times the division's acclimatization. Night requires a factor strictly above 0.8 and uses its own owner modifier, following the positive expeditionary source where present. Enemy air checks the logical owner's strategic-air entry in the division's own region. The marker can be present with a zero printed value.
+
+Apply fixed5 products with wrapping 64-bit arithmetic and truncation toward zero. Format 101 captured effective operands, including the per-terrain sum, and can still answer those reads without applying the terrain adjustment twice. Current rows carry stat-block and other raw operands plus their recorded content metadata. Packet reads enforce their captured hour.
+
+[Attack preview and operands](../../crates/replay-derive/src/attack_derive.rs) · [Attack tests](../../crates/replay-derive/src/attack_derive/tests.rs)

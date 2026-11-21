@@ -1,20 +1,11 @@
-//! Army names take precedence over wing names. Cached and programmatic
-//! names lose their authored source after localisation; preserve the group
-//! key and user bytes.
 use super::*;
 use crate::{cname_group_member as member, msvc_string};
 use engine_sites::Rva;
 
-/// Shared stored-text descriptor. AirWings, railway guns and the historical
-/// raid projection use this exact scalar header, SSO/heap and overflow
-/// protocol.
 pub struct StoredString {
     pub len: usize,
     source: usize,
-    /// The inline buffer, when a whole header read holds the text.
     inline: Option<[u8; 16]>,
-    /// [`Self::read_whole`] took the descriptor: a heap text is copied with
-    /// its terminator in one guarded round.
     whole: bool,
 }
 
@@ -23,13 +14,6 @@ impl StoredString {
         Self::parse(memory, at, None)
     }
 
-    /// [`Self::read`] from the whole header, read in one guarded round, which
-    /// also holds an inline text; [`Self::copy`] then reads a heap text with
-    /// its terminator in one more. Each field the protocol reads lies in
-    /// those spans, so they read exactly when the field reads would. When the
-    /// header does not, its field reads run in protocol order and their first
-    /// failure names the reason; when a heap text does not, the terminator,
-    /// which the protocol reads first, decides it.
     pub(crate) fn read_whole(memory: &impl Memory, at: usize) -> Result<Self, NameReadError> {
         let header = crate::read::<[u8; msvc_string::STRIDE]>(memory, at);
         Ok(Self {
@@ -38,8 +22,6 @@ impl StoredString {
         })
     }
 
-    /// [`Self::read_whole`] from a header already copied whole, in a census
-    /// record gather: the same parse of the same bytes.
     pub(crate) fn from_whole_header(
         memory: &impl Memory,
         at: usize,
@@ -91,7 +73,6 @@ impl StoredString {
         use NameReadError::{Overflow, Terminator, Unreadable};
         let output = output.get_mut(..self.len).ok_or(Overflow)?;
         if let Some(inline) = &self.inline {
-            // An inline length is at most its capacity, 15.
             if inline[self.len] != 0 {
                 return Err(Terminator);
             }
@@ -107,8 +88,6 @@ impl StoredString {
             return match copied {
                 2 if terminator[0] == 0 => Ok(()),
                 2 => Err(Terminator),
-                // The text did not read: the protocol reads the terminator
-                // first, so a stored nonzero one is the reason.
                 0 => match field::<u8>(memory, self.source, self.len) {
                     Ok(0) | Err(_) => Err(Unreadable),
                     Ok(_) => Err(Terminator),
@@ -143,10 +122,6 @@ fn string(
         .checked_add(u32::try_from(count).map_err(|_| Overflow)?)
         .ok_or(Overflow)?;
     if end <= sink.rows.len() {
-        // Reuse unpublished integer rows as byte scratch. Pack backwards so
-        // writing a row cannot overwrite bytes of a chunk still to be read.
-        // SAFETY: count rows hold at least len+1 bytes; only a successful
-        // copy's initialized prefix is read, and every Row field accepts all bits.
         unsafe {
             let rows = sink.rows.as_mut_ptr().add(sink.required);
             {
@@ -187,8 +162,6 @@ fn string(
         sink.ordinal = ordinal;
         return Ok(());
     }
-    // A shortage still counts full demand and preserves the readable prefix;
-    // it has no complete row buffer to borrow for the bulk copy.
     if field::<u8>(memory, source, len).map_err(|_| Unreadable)? != 0 {
         return Err(Terminator);
     }
@@ -220,7 +193,6 @@ pub(super) fn capture(
     } else {
         return Ok(());
     };
-    // Test reference resolution, not equality to this raid.
     sink.push(NAME, UNIT_RAID_REFERENCE, reference as i64)?;
     sink.push(
         NAME,
@@ -228,19 +200,12 @@ pub(super) fn capture(
         i64::from(creference_registry::resolve(m, base, reference)?.is_some()),
     )?;
     let Some(army) = army else {
-        // The wing name uses inline or heap MSVC string storage (`cair_wing::NAME`). Generated and
-        // renamed text share that setter without a source flag; the selected number, key and
-        // unused-name choice are not retained. The viewer uses the recording language for stored
-        // text.
         return independent_string(m, wing.unwrap() + 0x998, WING_NAME, sink);
     };
     let p = field::<u64>(m, army, 0x340)? as usize;
     member(m, base, p, NAME, NAME_GROUP, CUSTOM_NAME, None, sink)
 }
 
-/// A stored string as `kind` rows, or its read failure as one negative
-/// length row: the failure drops any partial rows and leaves the caller's
-/// other operands standing.
 fn independent_string(
     m: &impl Memory,
     at: usize,
@@ -268,8 +233,6 @@ fn member(
 ) -> Result<(), &'static str> {
     context::authenticate(m, base, p, member::VTABLE_RVA)?;
     if let Some(kind) = cached_kind {
-        // The retained display text, exactly as the game shows it, before
-        // any naming operand whose read could end this member.
         independent_string(m, p + member::CACHED_NAME, kind, sink)?;
     }
     let ty = field::<i32>(m, p, member::TYPE)?;
@@ -290,8 +253,6 @@ fn member(
             Ok(())
         };
     }
-    // The stored naming-group key identifies the selected template or variant
-    // without recording a renderer-local name.
     let group = match ty {
         0 => {
             let reference = field::<u64>(m, p, 0x58)?;
@@ -334,11 +295,11 @@ fn member(
             context::authenticate(m, base, variant, crate::cequipment_variant::VTABLE_RVA)?;
             field::<u64>(m, variant, 0x480)? as usize
         }
-        _ => return Ok(()), // Consumer names unsupported member types.
+        _ => return Ok(()),
     };
     if group != 0 {
         context::authenticate(m, base, group, Rva(0x029b_3cd8))?;
-        string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?; // Stored raw key.
+        string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?;
     }
     Ok(())
 }
@@ -359,7 +320,6 @@ pub(super) fn source(
     sink.push(NAME, SOURCE_SHIP_RESOLVED, i64::from(ship.is_some()))?;
     if let Some(ship) = ship {
         context::authenticate(m, base, ship, crate::cship::VTABLE_RVA)?;
-        // Ship names use the stored naming-group member.
         member(
             m,
             base,
@@ -567,9 +527,6 @@ mod tests {
         );
     }
 
-    /// A source ship's member writes its retained display text before the
-    /// naming operands, including where those operands end early (a stored
-    /// programmatic name), and a failed cache read keeps them.
     #[test]
     fn source_member_records_the_cached_display_name_independently() {
         let member_at = 64usize;
@@ -580,7 +537,6 @@ mod tests {
                 .copy_from_slice(&(member::VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[member_at + member::TYPE..member_at + member::TYPE + 4]
                 .copy_from_slice(&1i32.to_le_bytes());
-            // A stored programmatic override: the naming operands stop there.
             let custom = member_at + member::OVERRIDE_NAME;
             bytes[custom..custom + 3].copy_from_slice(b"Old");
             bytes[custom + 16..custom + 24].copy_from_slice(&3u64.to_le_bytes());
@@ -644,7 +600,6 @@ mod tests {
                 .collect();
             assert_eq!(bytes, text);
             assert_eq!(cached.len(), 1 + text.len().div_ceil(8));
-            // The naming operands follow and keep their programmatic stop.
             assert!(rows.iter().any(|row| row.kind == SOURCE_NAME
                 && row.key == member::FLAG_B as u32
                 && row.raw == 1));

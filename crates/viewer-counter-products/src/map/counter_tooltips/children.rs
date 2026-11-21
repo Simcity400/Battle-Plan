@@ -1,4 +1,3 @@
-//! Counter child tooltip matches use the child control's tooltip target.
 
 use super::*;
 #[cfg(test)]
@@ -57,8 +56,6 @@ pub(super) fn specific(context: &Context<'_>, input: &CounterHover) -> Option<To
                 ),
                 Err(reason) => {
                     refuse(&mut out, "leader withdrawing", reason);
-                    // The cached class-zero eligibility could not be decided;
-                    // never substitute an authored fallback for that unknown.
                     if input.authored.is_some() {
                         refuse(
                             &mut out,
@@ -90,8 +87,6 @@ fn dig_in(context: &Context<'_>, input: &CounterHover) -> Result<String, String>
     };
     if input.members.len() == 1 {
         let status = context.status(input.members[0])?;
-        // A singleton scales by the define before the fresh
-        // commander factor. The multi-member arm multiplies in reverse order.
         let factor = factor(status)?;
         let define = define()?;
         let bonus =
@@ -111,8 +106,6 @@ fn dig_in(context: &Context<'_>, input: &CounterHover) -> Result<String, String>
         .map_err(|error| error.to_string())?;
     let mut values = Vec::with_capacity(input.members.len());
     for &id in input.members.iter() {
-        // Skip an unresolved contribution, but divides
-        // by the original member count. Keep its zero in that denominator.
         if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
             values.push(0);
             continue;
@@ -133,8 +126,6 @@ fn leader_enroute_eligible(context: &Context<'_>, input: &CounterHover) -> Resul
     let Some(&id) = input.members.first() else {
         return Ok(false);
     };
-    // The hover tests the first division's cached withdrawing flag, independently
-    // of the group's glyph and HQ-suffix gates.
     let icons = context
         .frame
         .complete::<tables::ArmyIconInputs>()
@@ -143,7 +134,6 @@ fn leader_enroute_eligible(context: &Context<'_>, input: &CounterHover) -> Resul
         .binary_search_by_key(&id, |row| row.division)
         .map(|index| &icons[index])
         .map_err(|_| format!("ArmyIconInputs division {id} is absent"))?;
-    // Fall through to the generic callback when this is zero.
     Ok(icon.separate_counter != 0)
 }
 
@@ -182,8 +172,6 @@ fn no_orders(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
         );
         return;
     }
-    // A border-war group suppresses only that member's
-    // no-order check. The two final fragments remain independent.
     let mut border = false;
     let mut missing = false;
     let mut border_unknown = None;
@@ -194,9 +182,6 @@ fn no_orders(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
             .as_ref()
             .is_ok_and(|rows| rows.binary_search_by_key(&id, |row| row.id).is_err())
         {
-            // Unlike the other member loops, this one dereferences
-            // a null native pointer. The loop never short-circuits on earlier
-            // positives, and emits final fragments only after every member.
             refuse(
                 out,
                 "no-orders native callback",
@@ -260,7 +245,6 @@ fn railway_warning(context: &Context<'_>, input: &CounterHover) -> Result<String
         .map_err(|error| error.to_string())?;
     let mut unknown = None;
     for &id in input.members.iter() {
-        // Skip complete-census dangling gun references.
         let Ok(index) = rows.binary_search_by_key(&id, |row| row.gun) else {
             continue;
         };
@@ -321,7 +305,6 @@ fn stack_attrition(context: &Context<'_>, input: &CounterHover) -> Result<String
     let mut count = 0_i32;
     let mut maximum = 0_i64;
     for &id in input.members.iter() {
-        // Skip an unresolved reference before the getter.
         if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
             continue;
         }
@@ -331,7 +314,6 @@ fn stack_attrition(context: &Context<'_>, input: &CounterHover) -> Result<String
             maximum = maximum.max(status.attrition_value);
         }
     }
-    // The child branch formats even zero, unlike the normal stack header helper.
     localise(
         context.loc,
         "ATTRITION_SOME_UNITS",
@@ -356,7 +338,6 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
             .complete::<tables::RailwayGunCounterInputs>()
             .map_err(|e| e.to_string())?;
         for &id in input.members.iter() {
-            // The game skips unresolved full refs before incrementing a bucket.
             let Ok(index) = rows.binary_search_by_key(&id, |row| row.gun) else {
                 continue;
             };
@@ -388,7 +369,6 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
 }
 
 fn action_text(loc: &Localisation, counts: &[i32; 13]) -> Result<String, String> {
-    // Leave code zero empty; its caller still appends the LF.
     const KEYS: [&str; 12] = [
         "ACTION_UNIT_STANDING_STILL",
         "ACTION_UNIT_DEFENDING",
@@ -474,8 +454,6 @@ fn invalid_orders(context: &Context<'_>, input: &CounterHover) -> Result<String,
         .complete::<tables::Divisions>()
         .map_err(|error| error.to_string())?;
     for &id in input.members.iter() {
-        // Resolve each original full ref before reading
-        // the warning byte. Only a complete census proves a dangling skip.
         if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
             continue;
         }
@@ -566,8 +544,6 @@ mod tests {
             hidden: false,
             railway_gun: false,
             ours: false,
-            // Generation-distinct dangling ref between resolved operands must
-            // not hide the later warning or become an invented unknown unit.
             members: vec![1, (1_u64 << 32) | 1, 2, 3].into(),
             timing: Arc::from([]),
         };
@@ -798,8 +774,6 @@ mod tests {
             render(&frame, CounterControl::Action).unwrap(),
             "2 standing\n"
         );
-        // These resolved guns are in transfer, so location topology is not
-        // reached. A dangling neighbor must not turn the known false into Err.
         let mut guns = frame
             .complete::<tables::RailwayGunCounterInputs>()
             .unwrap()
@@ -846,7 +820,6 @@ mod tests {
         put(
             &mut frame,
             TableRows::DivisionStatus(vec![
-                // A border-group member's no-order cache is irrelevant.
                 DivisionStatusRow {
                     division: 1,
                     has_order: 0,
@@ -902,13 +875,13 @@ mod tests {
         let mut out = Tooltip::default();
         no_orders(&context, &hover, &mut out);
         assert_eq!(out.title, "borderorders");
-        assert!(out.refused.is_empty()); // Both existential branches are proven.
+        assert!(out.refused.is_empty());
         let dangling = (1_u64 << 32) | 1;
         for members in [vec![1, dangling, 2], vec![1, 2, dangling]] {
             hover.members = members.into();
             let mut out = Tooltip::default();
             no_orders(&context, &hover, &mut out);
-            assert!(out.title.is_empty()); // No final fragments precede the invalid reach.
+            assert!(out.title.is_empty());
             assert_eq!(out.refused.values().sum::<usize>(), 1);
             assert!(out.refused.keys().any(|reason| {
                 reason.starts_with("counter no-orders native callback:")
@@ -1007,7 +980,6 @@ mod tests {
                 "cached",
             ),
             (Recorded::NotRecorded, 1, 1, Some(""), "cached"),
-            // A clear division withdrawing flag declines this arm even when its group is withdrawing.
             (Recorded::Value(Some(1)), 1, 0, None, "cached one 1"),
         ] {
             put(

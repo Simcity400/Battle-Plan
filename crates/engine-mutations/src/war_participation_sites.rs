@@ -1,9 +1,3 @@
-//! Directional participation writers. Damage settlement, bombing decay,
-//! first province credit and casualty refresh mutate stored ledgers. Display
-//! aggregation and lend-lease score addition operate only on temporary breakdowns.
-//! Whole-ledger replacement copies both scalars and captured membership.
-//! Construction/loading bind endpoints before linking; the existing war domain
-//! authenticates their lifetime and status reset/load boundaries.
 
 use engine_sites::Rva;
 pub struct Site {

@@ -1,4 +1,3 @@
-//! Selected runtime decision records for writer observations and demanded baselines.
 use engine_sites::Rva;
 use crate::{
     Memory, cdecision, cdecision_cooldown as cooldown, cdecision_status as status,

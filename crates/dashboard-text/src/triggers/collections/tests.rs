@@ -116,7 +116,6 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
         )])));
         let evaluator = Evaluator::new(world, None).with_event_scopes(graph);
         let caller = evaluator.event_scopes(0).unwrap();
-        // The country itself fails the limit, so its subjects are read.
         let spec =
             collection("input=game:scope operators={country_and_all_subjects limit={tag=GER}}");
         let Err(error) = evaluator.collection_representative(&spec, caller) else {

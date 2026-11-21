@@ -2,7 +2,6 @@ use super::*;
 use installed_content_core::{province_graph::Crossing, province_graph::ProvinceGraph};
 use viewer_foundation::map::ribbon_content::ArrowType;
 
-/// Raw links: 10 and 11 are the viewed country (slot 1), 20 another (slot 2), 30 a third.
 fn links() -> Vec<CountryLinkRow> {
     [(10, 1), (11, 1), (20, 2), (30, 3)]
         .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
@@ -63,7 +62,6 @@ fn client(
     }
 }
 
-/// Every line of the fixture, as (layer, route key, bad, reverse).
 fn summary(lines: &[Line<'_>]) -> Vec<(Layer, RouteKey, bool, bool)> {
     lines
         .iter()
@@ -94,29 +92,19 @@ fn each_layer_takes_the_viewed_countrys_clients_and_its_route_kinds() {
     ];
     let origins = vec![
         origin(5, 10, OWN_ORIGINS, true),
-        // A land production route is not drawn.
         origin(6, 10, OWN_ORIGINS, false),
-        // Another country's origin, and a rights holder's.
         origin(7, 20, OWN_ORIGINS, false),
         origin(8, 10, 1, false),
     ];
     let clients = vec![
-        // Its supply transfer, whatever the route kind.
         client(1, SUPPLY_TRANSFER, 10, 0, (10, 2, 1), false),
-        // It imports from 20.
         client(2, IMPORT, 10, 20, (20, 1, 10), false),
-        // 20 imports from it, through its other link.
         client(3, IMPORT, 20, 11, (11, 1, 20), true),
-        // It gives 20 lend-lease over land: not drawn.
         client(4, LEND_LEASE, 10, 20, (10, 1, 20), false),
-        // 20 gives it lend-lease by sea.
         client(5, LEND_LEASE, 20, 10, (20, 1, 10), false),
-        // Two contracts it buys on one route, one of them bad.
         client(6, MARKET, 20, 10, (20, 1, 10), false),
         client(7, MARKET, 20, 10, (20, 1, 10), true),
-        // A contract it sells over land.
         client(8, MARKET, 10, 20, (10, 1, 20), false),
-        // Somebody else's trade.
         client(9, IMPORT, 20, 30, (20, 1, 30), false),
     ];
     let tables: Tables<'_> = Tables {
@@ -134,7 +122,6 @@ fn each_layer_takes_the_viewed_countrys_clients_and_its_route_kinds() {
             (Layer::SupplyTransfer, (10, 2, 1), false, false),
             (Layer::Export, (11, 1, 20), true, false),
             (Layer::Import, (20, 1, 10), false, false),
-            // The receiver differs from the giver: delivery keeps source-to-destination order.
             (Layer::LendLeaseReceived, (20, 1, 10), false, false),
             (Layer::MarketBought, (20, 1, 10), true, false),
             (Layer::MarketSold, (10, 1, 20), false, false),
@@ -143,14 +130,10 @@ fn each_layer_takes_the_viewed_countrys_clients_and_its_route_kinds() {
     assert_eq!(report.lines, [2, 1, 1, 1, 1, 1, 1, 1]);
     assert_eq!(report.filtered, 2);
     assert!(report.refused.is_empty(), "{:?}", report.refused);
-    // Market lines carry no convoys.
     assert_eq!(lines[5].convoys_assigned, 0);
     assert_eq!(lines[3].convoys_assigned, 7);
 }
 
-/// A line's layer id is the game's route collection and the kind its hover text switches on:
-/// production, supply transfers, exports, imports, lend-lease given and received, market bought
-/// and sold. The hover walks the collections in this order; the lines draw in another.
 #[test]
 fn layer_ids_are_the_games_route_collections() {
     assert_eq!(
@@ -212,13 +195,9 @@ fn import_and_lend_lease_direction_uses_the_native_client_country() {
         route(10, 2, 3, NAVAL_ROUTE),
     ];
     let clients = vec![
-        // The importer is the route's country through another link: reversed.
         client(1, IMPORT, 11, 20, (10, 1, 20), false),
-        // The importer is not the route's country.
         client(2, IMPORT, 10, 20, (20, 1, 10), false),
-        // The giver owns its delivery route, but the receiver supplies direction.
         client(3, LEND_LEASE, 10, 20, (10, 1, 20), false),
-        // Supply transfers and market lines never reverse.
         client(4, SUPPLY_TRANSFER, 10, 0, (10, 2, 3), false),
         client(5, MARKET, 10, 20, (10, 1, 20), false),
     ];
@@ -264,7 +243,6 @@ fn lend_lease_delivery_keeps_giver_to_receiver_direction_in_both_views() {
         assert_eq!(summary(&lines), [(layer, (10, 1, 20), false, false)]);
         assert!(report.refused.is_empty());
     }
-    // Link equivalence of the receiver and giver still controls the reverse branch.
     let clients = vec![client(1, LEND_LEASE, 10, 11, (10, 1, 11), false)];
     let routes = vec![route(10, 1, 11, NAVAL_ROUTE)];
     let tables: Tables<'_> = Tables {
@@ -352,7 +330,6 @@ fn each_layer_reads_its_colour_and_a_bad_line_the_bad_colour() {
     {
         assert!((actual - expected.powf(2.2)).abs() < 1e-6);
     }
-    // Three components are HSV; the converted colour is opaque.
     let supply = defines.line_color(Layer::SupplyTransfer, false);
     for (actual, expected) in supply[..3].iter().zip([0.6_f32, 0.8, 0.4]) {
         assert!((actual - expected.powf(2.2)).abs() < 1e-6);
@@ -379,7 +356,6 @@ fn each_layer_reads_its_colour_and_a_bad_line_the_bad_colour() {
 fn a_bad_naval_line_takes_the_hotspot_variant_where_the_viewed_country_is_inefficient() {
     let links = links();
     let regional = vec![
-        // The viewed country, through both of its links.
         RegionalConvoyEfficiencyRow {
             country: 10,
             region: 100,
@@ -390,7 +366,6 @@ fn a_bad_naval_line_takes_the_hotspot_variant_where_the_viewed_country_is_ineffi
             region: 101,
             efficiency: 80_000,
         },
-        // Another country's efficiency does not count.
         RegionalConvoyEfficiencyRow {
             country: 20,
             region: 102,
@@ -424,8 +399,6 @@ fn a_bad_naval_line_takes_the_hotspot_variant_where_the_viewed_country_is_ineffi
             client: 0,
         }
     }
-    // Every province, including the destination, is evaluated independently.
-    // Crossings take the minimum; a region without our row is full.
     assert_eq!(
         control_variants(&line(true, &naval), &stops, &efficiency, 80_000),
         [1, 0, 0, 0, 0, 0, 1]
@@ -464,16 +437,12 @@ fn convoy_counts_round_the_scaled_assignment_into_one_to_the_maximum() {
         .map(|assigned| convoy_count(assigned, &defines))
         .collect();
     assert_eq!(counts, [0, 1, 1, 2, 2, 3, 4]);
-    // Strictly below the units cutoff, with units drawn, in a trade-route mode.
     assert!(convoys_shown(119.9, &defines, true, true));
     assert!(!convoys_shown(120.0, &defines, true, true));
     assert!(!convoys_shown(50.0, &defines, false, true));
     assert!(!convoys_shown(50.0, &defines, true, false));
 }
 
-/// The convoys made again from the lines a build kept are the ones a whole build pushes: each
-/// line's count from the row it assigns now, the lines assigned none left out, and the ordinals
-/// running over what is left. With no entity kept, none is made: the lines are built whole.
 #[test]
 fn convoys_made_again_from_the_lines_kept_are_counted_and_numbered_as_a_whole_build_does() {
     let defines = ConvoyDefines { scale_factor: 0.3, max: 4, speed: 0.6, sleep: 3.0, route_offset: 0.5, cutoff: 120.0 };
@@ -523,7 +492,6 @@ fn overlapping_lines_alternate_sides_modulo_the_line_count() {
     };
     let straight = [[0.0, 0.0], [10.0, 0.0]];
     let shaped = geometry::shape(&straight, &[0, 0], false, smoothing);
-    // Eastward, the positive normal points north (+z).
     assert_eq!(shaped.controls, [[0, 0], [1_000_000, 0]]);
 }
 
@@ -533,7 +501,6 @@ fn shaping_preserves_region_boundary_controls_in_both_directions() {
         smoothness: 0,
         passes: 1,
     };
-    // Regular province, regular crossing, two hotspot provinces and their crossing.
     let points = [
         [0.0, 0.0],
         [5.0, 0.0],
@@ -559,7 +526,6 @@ fn subdivision_takes_the_maximum_on_both_sides_of_an_isolated_hotspot() {
         [15.0, 0.0],
         [20.0, 0.0],
     ];
-    // Province/crossing controls keep both boundary crossings regular.
     let variants = [0, 0, 1, 0, 0];
     for (passes, expected) in [
         (0, vec![0, 0, 1, 0, 0]),
@@ -611,12 +577,10 @@ fn the_ribbon_widens_and_takes_the_secondary_colour_in_hotspot_regions() {
         let [a, b] = [&field.vertices[pair * 2], &field.vertices[pair * 2 + 1]];
         (a.position[2] - b.position[2], a.uv_head_variant[3])
     };
-    // Global scale at three controls of an unscaled type is 1; half-width times uv scale.
     let (regular, variant) = across(0);
     assert!((regular - 0.8).abs() < 1e-5 && variant == 0.0, "{regular}");
     let (hotspot, variant) = across(2);
     assert!((hotspot - 1.6).abs() < 1e-5 && variant == 1.0, "{hotspot}");
-    // On the surface plus 0.01.
     assert!((field.vertices[0].position[1] - 9.51).abs() < 1e-4);
 }
 
@@ -679,12 +643,12 @@ fn trade_search_visits_provinces_and_inserts_crossings_instead_of_region_waypoin
         ..Default::default()
     };
     let stops = stops(&route, &content).unwrap().unwrap();
-    assert_eq!(stops.provinces, [1, 2, 3, 5, 6]); // Destination pixel count changes the chosen branch.
+    assert_eq!(stops.provinces, [1, 2, 3, 5, 6]);
     assert_eq!(stops.regions, [99, 100, 100, 101, 102]);
     let mut shared = BTreeMap::new();
     let first = geometry::province_uses(&stops, &mut shared);
     let points = geometry::points(&stops, &content, 100., &first, 6, 0.5).unwrap();
-    assert_eq!(points.len(), 9); // All anchors plus raw crossings, including port edges.
+    assert_eq!(points.len(), 9);
     assert_eq!(points[1], [15., 2.]);
     let other = Stops {
         provinces: vec![2, 3, 5, 6],
@@ -693,7 +657,7 @@ fn trade_search_visits_provinces_and_inserts_crossings_instead_of_region_waypoin
     assert_eq!(geometry::province_uses(&other, &mut shared), [1, 1, 1, 1]);
     let displaced = geometry::points(&stops, &content, 100., &[1; 5], 6, 0.5).unwrap();
     assert_eq!(displaced[0], points[0]);
-    assert_eq!(displaced[8], points[8]); // Port endpoints stay fixed.
+    assert_eq!(displaced[8], points[8]);
     assert_ne!(displaced[4], points[4]);
     assert_eq!(
         geometry::shape(
@@ -740,12 +704,11 @@ fn swap_removed_origins_keep_native_shared_corridor_displacement() {
     for (ordinal, row) in origins.iter_mut().enumerate() {
         row.ordinal = ordinal as u32;
     }
-    // The native list swap-removes its first entry: [1,2,3] becomes [3,2].
     origins.swap_remove(0);
     for (ordinal, row) in origins.iter_mut().enumerate() {
         row.ordinal = ordinal as u32;
     }
-    origins.sort_by_key(|row| row.state); // Recorder row keys deliberately differ from list order.
+    origins.sort_by_key(|row| row.state);
     let routes = vec![route(10, 0, 2, NAVAL_ROUTE), route(10, 0, 3, NAVAL_ROUTE)];
     let tables: Tables<'_> = Tables {
         origins: &origins,
@@ -863,8 +826,6 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
                 )
             })
             .collect();
-        // Distinct governments share native endpoint states. Their ports/path caches need
-        // not match; neither those caches nor country identities take part in grouping.
         for route in &mut routes {
             route.source_state = Some(70);
             route.destination_state = Some(80);
@@ -873,9 +834,7 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
         routes[1].to = 4;
         routes[1].path = vec![9];
         routes[3].source_state = Some(80);
-        routes[3].destination_state = Some(70); // Endpoint order remains significant.
-        // Handle order deliberately disagrees with native directional order. The first
-        // native occurrence is good; a later equivalent contract turns the whole group bad.
+        routes[3].destination_state = Some(70);
         let mut clients: Vec<_> = [1, 0, 2, 3]
             .into_iter()
             .enumerate()

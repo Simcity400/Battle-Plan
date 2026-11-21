@@ -1,26 +1,16 @@
-//! Country-embedded manpower operands. Mobilization is independent of the free
-//! manpower pool; these layouts do not supply a new manpower walker.
 
 use engine_sites::Rva;
-/// Residual, i32, added to the controlled-state pool sum.
 pub const RESIDUAL: usize = 0xc;
-/// Country-tag handle, u32.
 pub const COUNTRY: usize = 8;
-/// Signed i64 mobilization ratio.
 pub const MOBILIZATION: usize = 0x10;
-/// Daily mobilization and exile growth using the embedded object.
 pub const DAILY_UPDATE_RVA: Rva = Rva(0x00d5_d890);
 
 use crate::{Memory, ccountry, read};
 
-/// Exile pool and its stored admission cap, signed people.
 pub const EXILE_POOL: usize = 0x18;
-/// Diplomacy's signed host reference; positive means the country is in exile.
 pub const HOST: usize = 0x1f0;
 pub const LEGITIMACY: usize = 0x1f8;
 
-/// Daily-sliced operands. A missing scalar is its own refusal. Exile-only
-/// resources are absent for a known non-exile, without touching their memory.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub ratio: Option<i64>,
@@ -31,9 +21,6 @@ pub struct Row {
     pub exile_cap: Option<i32>,
 }
 
-/// The caller already authenticated both country and diplomacy, including
-/// its owner backlink. Called only for the existing daily slice and writers'
-/// marked countries; this is not a census and allocates nothing.
 pub fn read_authenticated(memory: &impl Memory, country: usize, diplomacy: usize) -> Row {
     let mut row = Row {
         ratio: country

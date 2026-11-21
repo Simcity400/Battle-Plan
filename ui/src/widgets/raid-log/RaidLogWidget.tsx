@@ -34,8 +34,6 @@ import '../../dashboard/intelligence.css';
 const NO_ROWS: readonly LogRow<RaidAt>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
 
-/** The campaign's raids, read once, at the hour shown: each dated by the phase it shows. Following, the list renders
- * only when a raid's phase starts or stops being read, and a preparing raid's hours are painted each frame. */
 export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
@@ -59,7 +57,6 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read), from) : NO_ROWS,
   [data, match, types, from, widget.countries.kind, inBranch, hour]);
   const liveHour = useCallback(() => following ? trackHour(runtime.clock.getHour()) ?? hour ?? 0 : hour ?? 0,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [following, runtime.clock, hour, track, widget]);
   useShownEachFrame(runtime.clock, () => data && hour !== null ? Math.floor(liveHour()) : null);
   const report = useShownHour();
@@ -68,7 +65,6 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const preparation = useMemo(() => data && preparing.length ? liveTexts(runtime.clock, () => Math.floor(liveHour()),
     at => new Map(preparing.map(row => [row.key, raidPreparationText(data, row.item, at) ?? '']))) : null,
   [data, preparing, runtime.clock, liveHour]);
-  // Names at each row's date, asked with the rows (which change only with the structure), not as rows scroll into view.
   const wanted = useMemo(() => logCountryRequests(rows, row => ({ hour: row.hour, tags: [row.item.episode.raider, row.item.episode.victim] })), [rows]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const labels = useCallback((row: LogRow<RaidAt>): { raider: ReturnType<CountryLabel>; victim: ReturnType<CountryLabel> } => {
@@ -76,7 +72,6 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     return { raider: row.item.episode.raider === null ? { name: 'Raider not known' } : at(row.item.episode.raider),
       victim: row.item.episode.victim === null ? { name: 'Controller not known' } : at(row.item.episode.victim) };
   }, [labelAt]);
-  // Every raid's target named once per reply, at the branch's last hour: one frame read, no request as the hour moves.
   const lastHour = track?.branch.lastHour;
   const namesAsked = useMemo(() => data && lastHour !== undefined ? targetNameRequest(data.episodes, lastHour) : null, [data, lastHour]);
   const placeNames = useProduct<PlaceNamesReply>(runtime.client, track && namesAsked && (namesAsked.places.length || namesAsked.states.length) ? {

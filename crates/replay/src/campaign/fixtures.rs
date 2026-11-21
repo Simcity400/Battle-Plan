@@ -1,9 +1,3 @@
-//! Campaign recordings made from spool records, for tests: every frame decoded as the row
-//! decoder does, written through the collector's frame writer ([`crate::native_frame`]) and
-//! the recorder's store into the recording's world log ([`HourWriter`]), saved with the records. And
-//! the same records as the journal a collector writes of them ([`write_journal`]), for tests
-//! of what reads one.
-
 use super::{Records, Replay};
 use crate::{
     BranchId, Hour,
@@ -28,33 +22,26 @@ use std::{
 };
 
 impl Replay {
-    /// The recording of `segments`' records, in order, of campaign `campaign_id`.
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
         Self::open(encode_records(campaign_id, segments)?)
     }
 
-    /// [`Self::from_records`], and each frame's hour as the writer's store held the derived
-    /// tables after it ([`HourWriter::derived_frame`]): what a reader is to read back of them.
     pub fn from_records_derived(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<(Self, Vec<DecodedFrame>)> {
         let mut derived = Vec::new();
         let bytes = encoded(campaign_id, segments, Some(&mut derived))?;
         Ok((Self::open(bytes)?, derived))
     }
 
-    /// Writes a recording opened from memory to `path`, through a sibling renamed into place.
     pub fn write_atomic(&self, path: &std::path::Path) -> io::Result<()> {
         let temporary = path.with_extension("write.tmp");
         std::fs::write(&temporary, self.bytes())?;
         std::fs::rename(&temporary, path)
     }
 
-    /// Every hour of `block` as a frame holding each table whole, as the row decoder applies
-    /// them to the same views [`Self::read_block_alone`] builds.
     pub fn read_block(&self, block: &super::BlockIndex) -> io::Result<Vec<crate::frame::Frame>> {
         self.read_block_selected(block, &crate::rows::TableId::ALL)
     }
 
-    /// [`Self::read_block`] of `tables` (and Campaign); every other table unavailable.
     pub fn read_block_selected(
         &self,
         block: &super::BlockIndex,
@@ -73,7 +60,6 @@ impl Replay {
         Ok(frames)
     }
 
-    /// [`Self::read_block_selected`], as the row recording's shared frames.
     pub fn read_block_recorded_selected(
         &self,
         block: &super::BlockIndex,
@@ -86,7 +72,6 @@ impl Replay {
             .collect())
     }
 
-    /// The recording of recovered spool segments' records, in segment order.
     pub fn from_recovered(campaign_id: Vec<u8>, segments: &[(u32, Recovery<Record>)]) -> io::Result<Self> {
         let mut ordered: Vec<_> = segments.iter().collect();
         ordered.sort_unstable_by_key(|(number, _)| *number);
@@ -97,9 +82,6 @@ impl Replay {
         Self::from_records(campaign_id, &records)
     }
 
-    /// The bytes of this recording, opened from memory, with every frame of `block`'s page
-    /// damaged mid-frame: its clock and every table's parts and restores. The index still lists
-    /// the block and reading its hours fails.
     pub fn damaged_block(&self, block: &super::BlockIndex) -> io::Result<Vec<u8>> {
         let page = self.recording().block(block.run, block.page)?;
         let mut frames = vec![(page.head.clock.offset, u64::from(page.head.clock.stored))];
@@ -109,7 +91,6 @@ impl Replay {
         Ok(self.damaged(&frames))
     }
 
-    /// [`Self::damaged_block`] of `table`'s parts in `block`'s page alone.
     pub fn damaged_table(&self, block: &super::BlockIndex, table: crate::rows::TableId) -> io::Result<Vec<u8>> {
         let entry = self.recording().table_entry(block.run, block.page, table.index())?;
         let frames: Vec<(u64, u64)> = entry.unit.parts.iter().flat_map(|part| part.frames.iter().map(|frame| (frame.offset, u64::from(frame.stored)))).collect();
@@ -119,7 +100,6 @@ impl Replay {
         Ok(self.damaged(&frames))
     }
 
-    /// Its bytes with a byte flipped in the middle of each frame (offset, stored length).
     fn damaged(&self, frames: &[(u64, u64)]) -> Vec<u8> {
         let mut bytes = self.bytes().to_vec();
         for &(offset, stored) in frames.iter().filter(|(_, stored)| *stored > 0) {
@@ -131,12 +111,10 @@ impl Replay {
 
 const SETTINGS: Settings = Settings { level: LEVEL };
 
-/// The bytes of the recording [`Replay::from_records`] opens.
 pub fn encode_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
     encoded(campaign_id, segments, None)
 }
 
-/// [`encode_records`], each hour's derived tables pushed to `derived` when given.
 fn encoded(campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut Vec<DecodedFrame>>) -> io::Result<Vec<u8>> {
     let records = records_of(segments, None)?;
     let identity = identity_of(campaign_id, &records)?;
@@ -147,8 +125,6 @@ fn encoded(campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut 
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-/// [`encode_records`] with its records naming row format `format` though written as this build's:
-/// what a build of a later format whose change leaves this build's schema digest alone writes.
 pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
     let records = records_of(segments, None)?;
     let identity = identity_of(campaign_id, &records)?;
@@ -162,9 +138,6 @@ pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-/// [`encode_records`] as a build of row format `format` wrote it: its identity naming that
-/// format's schema, its journal, store and pages holding the tables it held, each framed as then,
-/// and its records recorded in that format. Each frame's Clock and Campaign rows are its hours.
 pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
     use crate::{
         columnar_frames::synthetic::{Input, Sample, Synthetic},
@@ -201,7 +174,6 @@ pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Reco
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-/// Names `records`, recorded in `format`, in the revision `file` publishes next.
 fn add_records<W: Write + Seek + Read>(file: &mut FileWriter<W>, records: &Records, format: FormatVersion) -> io::Result<()> {
     let bytes = records.encode(format)?;
     let container = file.container();
@@ -210,8 +182,6 @@ fn add_records<W: Write + Seek + Read>(file: &mut FileWriter<W>, records: &Recor
 }
 
 impl Replay {
-    /// This recording with `segments` added in one more saved revision: its bytes through the
-    /// revision opened, then the new one.
     pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
         let records = records_of(segments, Some(self))?;
         let resumed = Resumed {
@@ -228,11 +198,6 @@ impl Replay {
     }
 }
 
-/// The journal of capture `capture` in `directory` that a collector recording `segments`'
-/// records of campaign `campaign_id` writes: each frame an hour with its segment's next clock
-/// witness of that hour, every other record a control record in its place, a run for each stretch of
-/// consecutive hours of a branch and a segment for each run and each full block. Ended when
-/// `finish`; left as a collector that stopped leaves it otherwise.
 pub fn write_journal(
     directory: &Path,
     capture: u32,
@@ -261,7 +226,6 @@ pub fn write_journal(
     let mut controls = Vec::new();
     for segment in segments {
         let mut decoder = FrameDecoder::new();
-        // Rows give a frame's witness with it, before or after: each hour's are taken in order.
         let mut witnesses: std::collections::BTreeMap<Hour, std::collections::VecDeque<Witness>> = Default::default();
         for record in segment {
             if let Record::Control(ControlRecord::ClockWitness {
@@ -326,7 +290,6 @@ pub fn write_journal(
     Ok(())
 }
 
-/// `decoded` as the frame writer takes an hour.
 fn input_of(decoded: &DecodedFrame) -> FrameInput {
     FrameInput {
         branch: decoded.branch,
@@ -339,7 +302,6 @@ fn input_of(decoded: &DecodedFrame) -> FrameInput {
     }
 }
 
-/// The identity a recording of `records`' first session takes.
 fn identity_of(campaign_id: Vec<u8>, records: &Records) -> io::Result<envelope::Identity> {
     let first = records
         .sessions
@@ -357,8 +319,6 @@ fn identity_of(campaign_id: Vec<u8>, records: &Records) -> io::Result<envelope::
 
 const LEVEL: i32 = 3;
 
-/// The records `segments` add to `existing`: each session and branch once, a branch from its
-/// start or from the command phase that declares it.
 fn records_of(segments: &[Vec<Record>], existing: Option<&Replay>) -> io::Result<Records> {
     let mut records = Records::default();
     for record in segments.iter().flatten() {
@@ -377,14 +337,12 @@ fn records_of(segments: &[Vec<Record>], existing: Option<&Replay>) -> io::Result
                     records.branches.push(branch.clone());
                 }
             }
-            // A writer retries a gap whose segment failed; the same gap is kept once.
             Record::Gap(gap) => {
                 if !records.gaps.contains(gap) && !existing.is_some_and(|replay| replay.gaps.contains(gap)) {
                     records.gaps.push(gap.try_clone()?);
                 }
             }
             Record::Control(control) => {
-                // A command phase declares its branch when no branch start did.
                 if let ControlRecord::PlayerCommands { packet, .. } = control
                     && let Some(phase) = &packet.phase
                     && !records.branches.iter().any(|known| known.id == phase.start.id)
@@ -392,7 +350,6 @@ fn records_of(segments: &[Vec<Record>], existing: Option<&Replay>) -> io::Result
                 {
                     records.branches.push(phase.start.clone());
                 }
-                // A writer retries an event loss whose segment failed; the same loss is kept once.
                 if matches!(control, ControlRecord::EventLoss { .. })
                     && (records.controls.contains(control)
                         || existing.is_some_and(|replay| replay.controls.contains(control)))
@@ -407,9 +364,6 @@ fn records_of(segments: &[Vec<Record>], existing: Option<&Replay>) -> io::Result
     Ok(records)
 }
 
-/// Writes `segments`' frames into `file`'s world log: a run for each stretch of consecutive
-/// hours of a branch, the first a recording's first run unless it `started` before. With
-/// `derived`, each hour's derived tables as the store holds them after it, in that mode.
 fn write_runs<W: Write + Seek + Read>(
     file: FileWriter<W>,
     segments: &[Vec<Record>],
@@ -455,7 +409,6 @@ fn write_runs<W: Write + Seek + Read>(
     file.finish()
 }
 
-/// `decoded` as a frame holding each table whole; a keyframe when it starts its block.
 fn whole(decoded: &crate::frame::DecodedFrame, keyframe: bool) -> io::Result<crate::frame::Frame> {
     use crate::frame::TableUpdate;
     let tables = std::array::from_fn(|index| match &*decoded.tables[index] {
@@ -478,7 +431,6 @@ fn whole(decoded: &crate::frame::DecodedFrame, keyframe: bool) -> io::Result<cra
     })
 }
 
-/// Every frame a table's entry names: its parts' and its restores' chunks.
 fn unit_frames(entry: &replay_columnar::unit::TableEntry) -> Vec<(u64, u64)> {
     let mut out: Vec<(u64, u64)> = entry.parts.iter().flat_map(|part| part.frames.iter().map(|frame| (frame.offset, u64::from(frame.stored)))).collect();
     for restore in entry.first.iter().chain(&entry.restore) {

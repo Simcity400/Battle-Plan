@@ -1,5 +1,3 @@
-//! Passive operands for the occupied state's resistance and compliance hover.
-//! Sources remain pass-local; only country/state identities and owned values are recorded.
 use super::*;
 use crate::{ccountry, msvc_string, read};
 use engine_native::{allocation, cdiplomacy_status, modifier_accumulator};
@@ -14,7 +12,6 @@ pub const COMPLIANCE_GROWTH: u32 = 0x1e5;
 pub const OCCUPIED_COMPLIANCE_GROWTH: u32 = 0x1e6;
 pub const COMPLIANCE_GAIN: u32 = 500;
 pub const NO_COMPLIANCE_GAIN: u32 = 501;
-/// The controller/state/relation key and the occupied-country key, in hover section order.
 pub const KEYS: [(u32, u32); 6] = [
     (TARGET, OCCUPIED_TARGET),
     (GROWTH, OCCUPIED_GROWTH),
@@ -60,11 +57,8 @@ pub struct Inputs {
     pub flow: i64,
     pub gain_ratio: i64,
     pub added: Vec<Added>,
-    /// Controller, state-for-controller, relation and occupied country accumulators.
     pub sources: [usize; 4],
-    /// State, controller, occupied country, occupied diplomacy, relation, state source and exile-host certificates.
     pub receivers: [usize; 7],
-    /// Resistance and compliance effects, in native key order.
     pub effects: [Vec<(u32, i64)>; 2],
     pub effect_extras: [EffectExtra; 2],
 }
@@ -95,8 +89,6 @@ pub fn read_inputs(
         receivers: [source.pointer, 0, 0, 0, 0, 0, 0],
         ..Default::default()
     };
-    // Province text omits inactive objects, but an admitted occupation marker
-    // still requests the detailed resistance description without an active gate.
     if resistance.active == 0 && resistance.country as i32 <= 0 {
         return Ok(result);
     }
@@ -260,7 +252,6 @@ pub fn read_inputs(
                 raw,
                 &definitions,
             )?;
-            // The native emptiness gate ignores disabled keys even when SHOW_ZERO is set.
             if flags.is_some() {
                 entries[used] = (key, value);
                 used += 1;
@@ -316,7 +307,6 @@ pub(super) mod tests {
                 (country as u64).to_le_bytes(),
             );
         }
-        // Alias three resolves to the occupied country's physical slot.
         put(&mut bytes, 0x11100 + 12, 2_u32.to_le_bytes());
         for (pointer, id) in [(0x6000, 7_u32), (0x7000, 9)] {
             put(
@@ -454,8 +444,6 @@ pub(super) mod tests {
     #[test]
     fn occupation_exile_host_dependency_requires_authenticated_diplomacy() {
         let mut bytes = fixture();
-        // Host is the controller in this fixture, so its owner mismatch is already fatal.
-        // A nonexistent host must not silently register the reserved country's diplomacy.
         put(&mut bytes, 0xa000 + EXILE_HOST, 99_i32.to_le_bytes());
         assert!(
             read_inputs(
@@ -535,8 +523,6 @@ pub(super) mod tests {
             root + EFFECT_CUSTOM_TOOLTIP_COUNT,
             3_i32.to_le_bytes(),
         );
-        // Child data is deliberately inaccessible: this description uses the
-        // root's already aggregated values, not a second traversal of sources.
         put(&mut bytes, root + EFFECT_CHILD_COUNT, 1_i32.to_le_bytes());
         let memory = EffectMemory(&bytes, Cell::new(0), false);
         let input = read_inputs(

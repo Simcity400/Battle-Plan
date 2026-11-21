@@ -1,14 +1,3 @@
-//! `LeaderCommandSpans` and `LeaderCommands`: the formations (orders groups and fleets) each
-//! leader commands. A span starts at the first hour a formation's leader column names the leader
-//! and ends the hour before it names another or none, the formation is deleted, or the writer next
-//! runs after hours it did not (its last hour run). An open span is a `LeaderCommandSpans` row,
-//! keyed by the formation, holding the leader, the first hour, the kind (an orders group's army or
-//! army group then, a fleet) and the formation's stored name then; an ended span is a
-//! `LeaderCommands` row of the log appended the hour it ended and forgotten at the writer's next
-//! hour, keyed by the leader, the hour and its place among the leader's rows of the hour.
-//!
-//! State: the last hour the writer ran (a span ending in hours it did not run ends there); the
-//! open spans are the table's.
 
 #[cfg(test)]
 mod tests;
@@ -33,7 +22,6 @@ const READS: &[Read] = &[
     Read { table: TableId::Fleets, columns: Columns::These(&FLEET), watch: Watch::Changed, required: true },
 ];
 
-/// A formation table: its source number, its leader column and its name column.
 struct Source {
     source: u8,
     table: TableId,
@@ -50,7 +38,6 @@ fn span_key(source: u8, formation: u64) -> u128 {
     u128::from(source) << 64 | u128::from(formation)
 }
 
-/// An opaque cell's bytes as it is held; none where it is not recorded.
 fn bytes(held: Held<'_>) -> Option<Vec<u8>> {
     match held {
         Held::List(bytes) => Some(bytes.to_vec()),
@@ -62,7 +49,6 @@ fn opaque(out: &mut Rows, bytes: Option<Vec<u8>>) -> Value {
     bytes.map_or(Value::Unrecorded, |bytes| out.opaque(bytes))
 }
 
-/// A span that ended this hour, before its place among its leader's rows.
 struct Ended {
     leader: u64,
     source: u8,
@@ -72,12 +58,10 @@ struct Ended {
 
 #[derive(Default)]
 pub struct LeaderCommands {
-    /// The last hour it ran.
     last: Option<i32>,
 }
 
 impl LeaderCommands {
-    /// Ends the open span of `key` at `last`, its row deleted.
     fn end(out: &mut Rows, key: u128, last: i32, ended: &mut Vec<Ended>) {
         let spans = out.table(TableId::LeaderCommandSpans);
         let Some(slot) = spans.slot(key) else { return };
@@ -90,8 +74,6 @@ impl LeaderCommands {
         ended.push(Ended { leader: leader as u64, source, formation, cells });
     }
 
-    /// Opens a span of `source`'s formation in `slot` under its leader at the hour, unless it has
-    /// none.
     fn open(hour: &Hour<'_>, out: &mut Rows, source: &Source, slot: u32, leader: u64) -> io::Result<()> {
         let view = hour.table(source.table);
         let formation = view.key(slot).ok_or_else(|| invalid(format!("{:?} slot {slot} holds no row", source.table)))? as u64;
@@ -105,12 +87,10 @@ impl LeaderCommands {
         Ok(())
     }
 
-    /// The leader `source`'s formation in `slot` names: none for zero or a cell without one.
     fn leader(hour: &Hour<'_>, source: &Source, slot: u32) -> u64 {
         hour.table(source.table).number(source.leader, slot).map_or(0, |leader| leader as u64)
     }
 
-    /// Every open span ended at the last hour run, and every formation's leader read whole.
     fn whole(&self, hour: &Hour<'_>, out: &mut Rows, ended: &mut Vec<Ended>) -> io::Result<()> {
         let open = crate::forces::held(out, TableId::LeaderCommandSpans);
         for key in open {
@@ -131,7 +111,6 @@ impl LeaderCommands {
         Ok(())
     }
 
-    /// The formations the hour deleted, or whose leader column it wrote or inserted.
     fn changed(hour: &Hour<'_>, out: &mut Rows, ended: &mut Vec<Ended>) -> io::Result<()> {
         let at = hour.hour;
         for source in &SOURCES {
@@ -179,7 +158,6 @@ impl Writer for LeaderCommands {
         READS
     }
 
-    // Hourly: its log rows are forgotten at its next hour, and a span ending in hours it did not run ends at its last.
     fn hourly(&self) -> bool {
         true
     }

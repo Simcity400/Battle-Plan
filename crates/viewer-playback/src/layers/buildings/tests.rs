@@ -18,9 +18,7 @@ use replay_data::rows::TableId;
 use viewer_foundation::map::perspective::{Choice, VISION_TABLES, Vision};
 use viewer_world::map::map_buildings::{CityTerrain, Defines, MapBuildingAssets};
 
-/// StateBuildings not recorded over these hours.
 const GAP: std::ops::Range<i32> = 40..48;
-/// The hour from which the viewer no longer sees province 1.
 const FOGGED: i32 = 52;
 
 struct Stub {
@@ -52,10 +50,6 @@ fn at(state: u32, kind: &str, x: f32, adjacent_sea: u32) -> BuildingPosition {
     BuildingPosition { state, kind: kind.to_owned(), x, y: 0.0, z: x, rotation: 0.5, adjacent_sea }
 }
 
-/// Four types: infrastructure and an industrial complex of two slots by state, a bunker that needs
-/// detection and a supply hub by province. Slot ids: 0 the bunker over province 3, 1 the hub over
-/// province 4, 2 and 3 the complex over provinces 1 and 2, 4 infrastructure over province 1, 5 a
-/// floating harbour on sea province 9.
 fn catalogue() -> Arc<dyn Catalogue> {
     let kinds = [
         kind("infrastructure", 1, |_| {}),
@@ -97,7 +91,6 @@ fn key(location: u32, token: u32) -> u128 {
     u128::from(location) << 32 | u128::from(token)
 }
 
-/// One building row: status flags, country override, level and healthy level.
 fn row(store: &mut Store, table: TableId, slot: u32, at: u128, flags: u32, country: u32, level: i16, healthy: i16) {
     let mut changes = store.table(table.index()).unwrap();
     changes.insert_at(slot, at).unwrap();
@@ -108,12 +101,6 @@ fn row(store: &mut Store, table: TableId, slot: u32, at: u128, flags: u32, count
     changes.write(slot, 5, Cell::I64(0)).unwrap();
 }
 
-/// Tokens 1 to 4 name the four types, token 5 nothing and token 6 has no LexicalTokens row. The
-/// complex's level written twice inside one step, a row of an unknown type inserted, the bunker
-/// detected by a raid target and later controlled by the viewer, the complex deleted while a row
-/// of an unnamed token refuses the city damage, token 5 renamed to infrastructure, a harbour
-/// opening on the hub's province, the floating harbour withdrawn, and StateBuildings not recorded
-/// for a stretch.
 fn side(name: &str) -> MapSide {
     let strings = |at: u32| match at {
         0 => ["infrastructure", "industrial_complex", "bunker", "supply_node", "nonsense", "\u{2}"].map(str::to_owned).to_vec(),
@@ -212,8 +199,6 @@ fn buildings(side: &MapSide) -> &Buildings {
     side.parts().unwrap().1[0].any().downcast_ref::<Buildings>().unwrap()
 }
 
-/// The layer settled at every step against itself composed from the mirrors, and its slots, city
-/// damage and warnings against the recorded story.
 #[test]
 fn buildings_settled_every_step_equal_composed_and_follow_rows_tokens_gates_vision_and_gaps() {
     let mut side = side("buildings-steps");
@@ -284,7 +269,6 @@ fn buildings_settled_every_step_equal_composed_and_follow_rows_tokens_gates_visi
     assert_eq!(buildings(&side).applied_reads(), 0, "its applies only mark: every row written, gone or come is read at the settle");
 }
 
-/// A layer given no vision refuses by name and draws once it is given one.
 #[test]
 fn buildings_without_vision_refuse_by_name_then_draw() {
     let layer = Buildings::new(catalogue());
@@ -298,7 +282,6 @@ fn buildings_without_vision_refuse_by_name_then_draw() {
     assert!(buildings(&side).refused().is_some_and(|why| why.contains("no vision")));
     assert_eq!(buildings(&side).carried().entities, 0, "refused, a settle can do none of its marked work, so it carries none");
     buildings(&side).set_vision(Choice::default(), vision(false));
-    // The host settles every frame: a vision given after the recording's last step is taken too.
     frames_until(&mut side, |side, _| !side.composing() && buildings(side).refused().is_none());
     assert_eq!(buildings(&side).slots().len(), 6);
 }
@@ -307,12 +290,8 @@ fn column(table: TableId, name: &str) -> usize {
     (0..64).find(|&at| table.field_name(at) == Some(name)).unwrap_or_else(|| panic!("{table:?}.{name}"))
 }
 
-/// The hour province 4, two provinces from the viewer's, changes hands to the viewer.
 const TAKEN: i32 = 13;
 
-/// The catalogue's buildings beside a vision world: countries 101 (the viewer, slot 1) and 102 at
-/// war, provinces 1 and 2 the viewer's, 3 and 4 the enemy's, sea 9 beyond; a division of the
-/// viewer in province 1; province 4 changes hands at `TAKEN`, which moves its fog decisions.
 fn vision_side(layer: impl Layer + 'static, name: &str) -> MapSide {
     let strings = |at: u32| match at {
         0 => ["infrastructure", "industrial_complex", "bunker", "supply_node", "AAA", "BBB"].map(str::to_owned).to_vec(),
@@ -381,11 +360,6 @@ fn vision_side(layer: impl Layer + 'static, name: &str) -> MapSide {
     side
 }
 
-/// The proof tool's layer (given today's vision whole) and the window's (reading the vision layer),
-/// each with the vision layer, whose fold runs on its worker, registered before it: after every
-/// step, a fog decision moving among them, a few whole settles leave nothing carried, and the slots
-/// equal the layer composed anew. Given its vision, the layer once marked fog work from the vision
-/// layer's changes that only the reading layer ever drains, and carried it for ever.
 #[test]
 fn buildings_with_the_vision_layer_upstream_settle_after_a_fog_decision_moves_and_equal_composed() {
     const SETTLES: usize = 8;
@@ -408,7 +382,6 @@ fn buildings_with_the_vision_layer_upstream_settle_after_a_fog_decision_moves_an
             let hour = frame.applied.unwrap();
             side.settle_all().unwrap();
             if !reading {
-                // As the proof gives it: the hour's vision (an unlimited settle waits for the vision worker), then a settle takes it.
                 let (_, layers) = side.parts().unwrap();
                 let vision = layers[0].any().downcast_ref::<Sight>().unwrap();
                 buildings_at(&side, 1).set_vision(vision.choice().clone(), Arc::new(vision.vision().expect("the vision layer draws")));
@@ -423,7 +396,6 @@ fn buildings_with_the_vision_layer_upstream_settle_after_a_fog_decision_moves_an
             let (mirrors, layers) = side.parts().unwrap();
             let sight = layers[0].any().downcast_ref::<Sight>().unwrap();
             assert!(sight.fog_drawn(), "a fog is drawn at hour {hour}");
-            // No province of the viewer borders 4 before it is taken; from then it is the viewer's own.
             assert_eq!(sight.province_byte(4), Some(if hour >= TAKEN { 255 } else { 0 }), "province 4's fog at hour {hour}");
             let layer = buildings_at(&side, 1);
             assert_eq!(layer.refused(), None, "reading the layer {reading} at hour {hour}");
@@ -452,12 +424,6 @@ fn fed(side: &MapSide) -> &BuildingsFed {
     side.parts().unwrap().1[1].any().downcast_ref::<BuildingsFed>().unwrap()
 }
 
-/// The window's buildings made on their worker, which keeps its own copies of the tables and of the
-/// vision layer's bytes the slots read: the frame hands it the steps it applied and the provinces
-/// the vision layer names as moved. Settled whole at each hour, through province 4 changing hands
-/// (its fog decisions move), the worker's slots, city damage, refusal and warnings equal the layer
-/// composed anew from the frame's mirrors and the vision layer, the layer is current, and the hub
-/// over province 4 is seen once the viewer takes it.
 #[test]
 fn on_their_worker_the_buildings_reading_the_vision_layer_equal_composed_at_each_hour() {
     let mut side = vision_side(BuildingsFed::new(Buildings::reading_vision(catalogue())), "buildings-fed");
@@ -497,10 +463,6 @@ fn hidden() -> View {
     view
 }
 
-/// A view that hides buildings and city sprawl declares nothing; either switch on declares every
-/// table read. (Hidden, then shown, its tables return as a reset: the host's rule and test.)
-/// A camera above the height the game creates and updates both figures at declares nothing either,
-/// and the height a zoom is sending the camera to declares them again during its ease.
 #[test]
 fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every_table() {
     let kinds = replay::columnar_frames::schema().unwrap();
@@ -515,8 +477,6 @@ fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every
         layer.inputs(&view, &mut inputs).unwrap();
         assert_eq!(inputs.into_tables().len(), 10, "buildings {buildings}, city sprawl {sprawl}: every table read is declared");
     }
-    // The camera's own height: 110 draws both figures, the fit camera neither (the stub's
-    // MAP_BUILDINGS_SHRINK_DISTANCE is 180 and CITY_SPRAWL_SHRINK_DISTANCE 220).
     let placed = |height: f32, target: Option<f32>| {
         let mut view = hidden();
         (view.graphics.buildings, view.graphics.city_sprawl) = (true, true);
@@ -533,12 +493,6 @@ fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every
     }
 }
 
-/// The city damage index the scene is given, after a run of city damage moves decided in the
-/// settle: a move inside one drawn state (idle, damaged, burning) makes no entry due and leaves
-/// the index as it was (the same allocation: no install is owed for it); a move across a threshold,
-/// or a province gaining its entry, patches that province alone; and every province then draws as
-/// the index made whole from the layer's damage draws it. Before, every move patched the index for
-/// every province of the moved location and installed it.
 #[test]
 fn buildings_the_city_index_after_its_moves_draws_as_the_index_made_whole() {
     use map_display_data::value_index::ValueIndex;
@@ -554,7 +508,6 @@ fn buildings_the_city_index_after_its_moves_draws_as_the_index_made_whole() {
     layer.city_whole = false;
     assert!(layer.index_due.is_empty(), "made whole, nothing is due");
     let drawn = |index: &ValueIndex<u32, Option<i64>>| (0..=9u32).map(|province| super::city_class(index.get(&province).copied(), thresholds)).collect::<Vec<_>>();
-    // (state, health, provinces due): ticks inside a state, then across thresholds.
     let moves: [(u32, i64, &[u32]); 6] = [(2, 85_000, &[]), (2, 70_000, &[5, 6]), (2, 75_000, &[]), (3, 40_000, &[]), (3, 20_000, &[8]), (2, 95_000, &[5, 6])];
     for (state, health, due) in moves {
         layer.city[0].insert(state, health);
@@ -573,11 +526,6 @@ fn buildings_the_city_index_after_its_moves_draws_as_the_index_made_whole() {
     assert_eq!(layer.index_due.iter().copied().collect::<Vec<_>>(), [9], "a province gaining its entry is due");
 }
 
-/// Writes to what a slot does not read move nothing: a building's partial health ticking inside
-/// its health class marks no row and no slot, and a sea province's supply flags changing in a bit
-/// other than the deployment's mark no harbour; the deployment bit itself marks the harbour.
-/// Before, every written row was marked and reread at the settle, and every ProvinceSupply write
-/// over a harbour's sea marked it.
 #[test]
 fn buildings_a_write_to_what_the_slots_do_not_read_marks_nothing() {
     let strings = |at: u32| if at == 0 { ["infrastructure", "industrial_complex", "bunker", "supply_node"].map(str::to_owned).to_vec() } else { Vec::new() };
@@ -630,7 +578,6 @@ fn buildings_a_write_to_what_the_slots_do_not_read_marks_nothing() {
     });
     let layer = Buildings::new(catalogue());
     layer.set_vision(Choice::default(), vision(false));
-    // Hours 3, 22 and 26 end no four-hour step: one-hour steps, so each is reached.
     let mut side = crate::layers::rails::tests::side_at_pace(pages, Box::new(layer), "buildings-unread-writes", 1.0);
     crate::layers::rails::tests::settle_at(&mut side, 3);
     let before = buildings(&side).causes;

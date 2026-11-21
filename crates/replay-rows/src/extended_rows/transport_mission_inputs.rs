@@ -1,6 +1,3 @@
-//! Value types of the retired TransportSearchRegions and TransportReceivers
-//! tables ([`super::RESERVED_SPLIT_TABLES`]): wire tombstones that keep the
-//! tables' framing. Nothing reads or writes them.
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -17,7 +14,6 @@ pub struct TransportNavalEdge {
     pub to: u32,
     pub flags: u8,
     pub unrestricted: u8,
-    /// Original order and repeats. None is the native null rule.
     pub rules: Vec<Option<u32>>,
 }
 value_struct!(TransportNavalEdge { to: u32, flags: u8, unrestricted: u8, rules: Vec<Option<u32>> });
@@ -26,22 +22,13 @@ value_struct!(TransportNavalEdge { to: u32, flags: u8, unrestricted: u8, rules: 
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportMissionReceiver {
     pub task_force: u64,
-    /// Original embedded mission's country, independent of task logical owner.
     pub mission_owner: Option<u32>,
-    /// Genuine same-pass raw logical owner, if its original graph reached it.
     pub logical_owner: Option<u32>,
-    /// Nonboolean mission gate and signed original combat-header count.
-    /// Their lazy native gate distinguishes unreached fields from refusals.
     pub in_regions: Option<u8>,
     pub combat_references: Option<i32>,
-    /// Reached full NAVAL_DETECTION before the native unity addition.
     pub combined_detection: Option<i64>,
-    /// One original sixteen-byte cache copy: the mission's two cached signed64 words.
     pub detection_cache: Option<[i64; 2]>,
-    /// Borrowed original raw supply, independent of the other graph results.
     pub received_supply_ratio: Option<i64>,
-    /// Independent leaves from the same original ETA/risk graph. Absence
-    /// refuses this graph after the outer native mission/combat gates.
     pub risk: Option<TransportReceiverRisk>,
 }
 value_struct!(TransportMissionReceiver {
@@ -72,7 +59,6 @@ value_struct!(TransportTaskForceStats {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportReceiverRisk {
-    /// Raw common modifier results before each caller's unity addition.
     pub coordination: Option<i64>,
     pub spotting_chance: Option<i64>,
     pub night_spotting_chance: Option<i64>,
@@ -87,9 +73,7 @@ pub struct TransportReceiverRisk {
     pub location_controller: Option<u32>,
     pub detached_activity: Option<i32>,
     pub ship_count: Option<i32>,
-    /// Original current roster/location-controller relation key1C5.
     pub targeted_spotting_modifier: Option<i64>,
-    /// Native class terrain-speed fold from the original ship traversal.
     pub actual_terrain_speed: Option<i64>,
 }
 value_struct!(TransportReceiverRisk {

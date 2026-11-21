@@ -1,4 +1,3 @@
-//! Aggregate reader operations, enabled only by the CPU measurement harness.
 use std::{
     cell::Cell,
     sync::{
@@ -11,11 +10,9 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static COUNTS: OnceLock<Vec<AtomicU64>> = OnceLock::new();
 static SOURCES: OnceLock<Vec<AtomicU64>> = OnceLock::new();
 static TABLES: AtomicUsize = AtomicUsize::new(0);
-/// No table: counts land in the slot after every table's.
 const NONE: usize = usize::MAX;
 thread_local! { static TABLE: Cell<usize> = const { Cell::new(NONE) }; }
 
-/// A recording table by its dense position, as the registry numbers it.
 pub trait Table: Copy {
     fn position(self) -> usize;
     fn at(position: usize) -> Option<Self>;
@@ -108,7 +105,6 @@ pub fn enabled() -> bool {
     }
     ENABLED.load(Ordering::Acquire)
 }
-/// Counts from now on, for `tables` recording tables.
 pub fn enable(tables: usize) {
     TABLES.store(tables, Ordering::Release);
     COUNTS.get_or_init(|| {

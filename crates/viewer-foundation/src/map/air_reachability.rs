@@ -1,8 +1,3 @@
-//! Flying-aircraft mission admission from same-hour simulation operands.
-//!
-//! Mission eligibility and a nonzero recorded reached count independently gate aircraft admission.
-//! Reached province ids can be stale after transfers or earlier missions; admission neither rebuilds
-//! nor region-filters them.
 
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::Cell;
@@ -35,8 +30,6 @@ use crate::map::{
     visibility::Families,
 };
 
-/// The destination array selects. The base-equipment branch builds
-/// an aircraft at the air base, not a bomber flight route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
     Transport,
@@ -46,8 +39,6 @@ pub enum Category {
     Fighter,
 }
 
-/// `last_target_province` is only tested for nonzero here; it need not be a
-/// member of the (possibly stale) reached vector.
 pub fn category(mask: u32, last_target_province: i32, definition_flags: u64) -> Option<Category> {
     let has_target = last_target_province != 0;
     if mask & (1 << 10) != 0 && has_target {
@@ -69,16 +60,13 @@ pub fn category(mask: u32, last_target_province: i32, definition_flags: u64) -> 
     }
 }
 
-/// Missing operands that leave a mission target branch undecided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cause {
     Tactical,
     Strategic,
     StrategicRetry,
-    /// An unidentified province occupant that may be a railway gun.
     StrategicRailwayGun,
     Naval,
-    /// An embarked railway gun with unavailable target operands.
     NavalRailwayGun,
     Port,
     Mine,
@@ -138,7 +126,6 @@ impl Cause {
     }
 }
 
-/// Every undecided branch of one wing's target chain.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Causes(u16);
 
@@ -153,14 +140,11 @@ impl Causes {
             .filter(move |&cause| self.0 & (1 << cause as u16) != 0)
     }
 
-    /// The unrecorded railway-gun arms are the only undecided branches.
     pub fn railway_gun_only(self) -> bool {
         self.0 != 0 && self.iter().all(Cause::railway_gun)
     }
 }
 
-/// Mission target alternatives. Unknown retains every branch whose operands are unavailable, so
-/// omitted flights report each reached reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetAdmission {
     Allowed,
@@ -168,8 +152,6 @@ pub enum TargetAdmission {
     Unknown(Causes),
 }
 
-/// Existential mission target scans. None means unavailable operands rather than an established
-/// absence of targets.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TargetPredicates {
     pub tactical: Option<bool>,
@@ -179,19 +161,15 @@ pub struct TargetPredicates {
     pub naval_occupants: NavalOccupants,
     pub mine: Option<bool>,
     pub strategic: Option<bool>,
-    /// Strategic targets are undecided only by the railway-gun branch.
     pub strategic_railway_gun: bool,
 }
 
-/// Static fixed-five province-kind fractions: divide the kind count times 100000 by the province
-/// count, rounding down.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegionFractions {
     pub land_raw: i64,
     pub sea_raw: i64,
 }
 
-/// `land` and `sea` count disjoint listings of the `total`.
 pub fn region_fractions(total: u64, land: u64, sea: u64) -> RegionFractions {
     if total == 0 {
         return RegionFractions::default();
@@ -203,8 +181,6 @@ pub fn region_fractions(total: u64, land: u64, sea: u64) -> RegionFractions {
     }
 }
 
-/// Target-scan mask bits: no scans follow the bit-6 bypass, and bits 12 through 16 are not reached
-/// after the bit-9/10 bypass.
 pub fn scanned_bits(mask: u32) -> u32 {
     if mask & (1 << 6) != 0 {
         0
@@ -215,11 +191,6 @@ pub fn scanned_bits(mask: u32) -> u32 {
     }
 }
 
-/// Evaluate mission target branches after common wing/base admission checks. A nonzero reached count
-/// gates every category. Existential scans over reached provinces arrive as targets.
-///
-/// Branch order: bit 6 bypass; bits 1, 3, 4/7, 8; bits 9/10 bypass; bits 12 through 16; then success
-/// if the remaining target mask is clear.
 pub fn target_admission(
     mask: u32,
     reached_count: i32,
@@ -287,7 +258,6 @@ pub fn target_admission(
         }
     }
 
-    // These masks succeed even after an earlier unresolved target scan.
     if mask & ((1 << 9) | (1 << 10)) != 0 {
         return TargetAdmission::Allowed;
     }
@@ -330,8 +300,6 @@ pub fn target_admission(
         return TargetAdmission::Allowed;
     }
 
-    // Unconditional success outside the target-dependent set; an earlier
-    // unknown cannot negate it.
     if mask & 0x1f7fa == 0 {
         TargetAdmission::Allowed
     } else if unknown != Causes::default() {
@@ -360,17 +328,10 @@ fn war_pair(first: u32, second: u32) -> (u32, u32) {
     (first.min(second), first.max(second))
 }
 
-/// Tests war from a mission country toward a raw reference, using canonical active-war pairs.
-///
-/// A complete WarRelations table proves absence as well as presence. Installed relation pointers and
-/// owned-list membership change together; removals remove both, so the complete list covers active
-/// wars.
 pub struct Wars<'a> {
     pairs: Option<BTreeSet<(u32, u32)>>,
-    /// Each slot's own country reference, tested by the signed admission gate.
     own: Option<BTreeMap<u32, u32>>,
     links: &'a BTreeMap<u32, u32>,
-    /// War tests answered, for the scaling test.
     #[cfg(any(test, feature = "test-support"))]
     pub tests: Cell<usize>,
 }
@@ -403,8 +364,6 @@ impl<'a> Wars<'a> {
         })
     }
 
-    /// The mission country's own reference is compared with the target's raw reference and must be
-    /// signed-positive; the same canonical country is never at war.
     fn at_war(&self, first: MissionCountry, second_raw: u32) -> Option<bool> {
         #[cfg(any(test, feature = "test-support"))]
         self.tests.set(self.tests.get() + 1);
@@ -422,8 +381,6 @@ impl<'a> Wars<'a> {
         Some(self.pairs.as_ref()?.contains(&war_pair(first.slot, second)))
     }
 
-    /// Full visibility between canonical slots: a live war vetoes faction, overlord and subject
-    /// relations.
     fn share_visibility(&self, families: &Families, a: u32, b: u32) -> Option<bool> {
         if a == b {
             return Some(true);
@@ -435,8 +392,6 @@ impl<'a> Wars<'a> {
     }
 }
 
-/// Recorded mixed province occupants. Divisions and TaskForces identify armies and fleets; any
-/// remaining occupant may be a railway gun.
 #[derive(Clone, Copy)]
 struct Occupants<'a> {
     province_units: Option<&'a [ProvinceUnitOrderRow]>,
@@ -457,8 +412,6 @@ impl<'a> Occupants<'a> {
         find(self.province_units?, province, |row| row.province)
     }
 
-    /// Neither a recorded division nor a recorded task force; `None`
-    /// without the Divisions census.
     fn railway_gun(self, handle: u64) -> Option<bool> {
         if find(self.divisions?, handle, |row| row.id).is_some() {
             return Some(false);
@@ -470,8 +423,6 @@ impl<'a> Occupants<'a> {
     }
 }
 
-/// Port-strike targets: any-level naval bases at reached provinces with a hostile controller and a
-/// task force whose logical owner is also hostile.
 pub struct PortTargetSources<'a> {
     provinces: Option<&'a [ProvinceRow]>,
     naval_bases: Option<&'a [NavalBaseRow]>,
@@ -491,8 +442,6 @@ impl<'a> PortTargetSources<'a> {
         })
     }
 
-    /// `None` is Unknown; a later reached province may still prove success.
-    /// Without a naval base in any reached province the scan is false.
     pub fn admit(&self, country: MissionCountry, reached: &[u32]) -> Option<bool> {
         let naval_bases = self.naval_bases?;
         let mut unknown = false;
@@ -539,12 +488,8 @@ impl<'a> PortTargetSources<'a> {
     }
 }
 
-/// Find the first hostile land combat at a reached province, checking primary countries in attacker-
-/// then-defender order. Recon and output collection are disabled. An attached orders group also
-/// requires an attacking or defending army in that group.
 pub struct TacticalTargetSources<'a> {
     wars: &'a Wars<'a>,
-    /// Each province's land combats; `None` without complete LandCombats.
     combats: Option<BTreeMap<u32, Vec<&'a LandCombatRow>>>,
     sides: Option<&'a [LandCombatSideRow]>,
     divisions: Option<&'a [DivisionRow]>,
@@ -567,7 +512,6 @@ impl<'a> TacticalTargetSources<'a> {
         })
     }
 
-    /// `None` is Unknown; a later combat may still prove success.
     pub fn admit(
         &self,
         wing: &AirWingRow,
@@ -575,8 +519,6 @@ impl<'a> TacticalTargetSources<'a> {
         reached: &[u32],
     ) -> Option<bool> {
         let combats = self.combats.as_ref()?;
-        // The recording authenticates the group handle against its pointer identity. None marks a group
-        // that did not authenticate.
         let group = wing.attached_orders_group;
         let mut unknown = false;
         for combat in reached
@@ -634,25 +576,12 @@ impl<'a> TacticalTargetSources<'a> {
     }
 }
 
-/// Strategic targets use reached provinces in states touched by the region; the province itself can
-/// lie outside it. Both state and province controllers must be hostile. Scan active building vectors
-/// rather than complete lists. Buildings at level one or above qualify. Lower-level railway buildings
-/// require a hostile railway gun among their province occupants; other types are skipped. A state
-/// building lacks a province, so its lower-level railway branch remains undecided. Complete
-/// division/task-force identification can prove no railway gun; an unidentified occupant cannot.
-/// What the strategic and scout scans read of the content's regions and the hour's provinces, and
-/// nothing else: each region's states, and the scout's overlap count and coverage of them. It
-/// stands while the Provinces view does, so a reader that keeps it reads it once for every hour
-/// that leaves those rows alone ([`Self::read`]).
 pub struct RegionStates {
-    /// Empty without a complete Provinces table; `None` for a region with a province missing from it.
     strategic: BTreeMap<u32, Option<BTreeSet<u32>>>,
     scout: Option<BTreeMap<u32, Option<ScoutRegion>>>,
 }
 
 impl RegionStates {
-    /// What [`Self::read`] reads of the hour's provinces and nothing else: each row's province and
-    /// its state, in row order. Two hours that read the same have the same regions' states.
     pub fn states_read(frame: &DecodedFrame) -> io::Result<Vec<u64>> {
         Ok(complete::<tables::Provinces>(frame)?.map_or_else(Vec::new, |provinces| provinces.iter().map(|province| u64::from(province.id) << 32 | u64::from(province.state)).collect()))
     }
@@ -698,20 +627,15 @@ pub struct StrategicTargetSources<'a> {
     occupants: Occupants<'a>,
 }
 
-/// Building levels from one location's active vector.
 #[derive(Clone, Copy, Debug, Default)]
 struct ActiveBuildings {
-    /// Level 1 or more: a target.
     counted: bool,
-    /// A rail way below level 1: a target only through the railway-gun arm.
     railway_below_one: bool,
 }
 
-/// Strategic-target result for one wing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Strategic {
     pub found: Option<bool>,
-    /// `found` is undecided only by the railway-gun arm.
     pub railway_gun: bool,
 }
 
@@ -762,8 +686,6 @@ impl<'a> StrategicTargetSources<'a> {
                 missing = true;
                 continue;
             };
-            // Test the state controller first, then the province controller when hostile.
-            // Established peace in either rejects the province despite an unknown other controller.
             let hostile = match self.wars.at_war(country, state.controller) {
                 Some(false) => continue,
                 state_war => match self.wars.at_war(country, province.controller) {
@@ -815,8 +737,6 @@ impl<'a> StrategicTargetSources<'a> {
     }
 }
 
-/// Building censuses are hourly, so a complete one proves this hour's active
-/// vectors.
 fn active_buildings(rows: Option<&[BuildingRow]>) -> Option<BTreeMap<u32, ActiveBuildings>> {
     rows.map(|rows| {
         let mut locations = BTreeMap::<u32, ActiveBuildings>::new();
@@ -832,12 +752,8 @@ fn active_buildings(rows: Option<&[BuildingRow]>) -> Option<BTreeMap<u32, Active
     })
 }
 
-/// The bit-14 land-scout branch reads region state controllers rather than reached-province
-/// controllers. Families use the effective country's hourly diplomacy; viewpoint and fog do not
-/// participate.
 pub struct ScoutTargetSources<'a> {
     states: Option<&'a [StateRow]>,
-    /// With the attache slots `allied_for_fog` reads.
     families: Option<&'a Families>,
     wars: &'a Wars<'a>,
     links: &'a BTreeMap<u32, u32>,
@@ -856,7 +772,6 @@ impl ScoutRegion {
         state_totals: &BTreeMap<u32, u64>,
     ) -> Option<Self> {
         let mut overlaps = BTreeMap::<u32, u8>::new();
-        // AddProvince does not append a duplicate listing but still counts it.
         for &id in ids {
             let province = find(provinces, id, |row| row.id)?;
             if province.state != 0 {
@@ -864,8 +779,6 @@ impl ScoutRegion {
                 *count = count.wrapping_add(1);
             }
         }
-        // Count each region/state overlap in a byte, then derive coverage from that count and the state's
-        // full province count.
         let has_coverage = overlaps.iter().any(|(&state, &overlap)| {
             state_totals
                 .get(&state)
@@ -895,8 +808,6 @@ impl<'a> ScoutTargetSources<'a> {
         })
     }
 
-    /// Exclude the same country and directional fog allies, then accept air-role bit 18 or an active
-    /// war. Volunteer base controllers do not replace the effective country here.
     fn foreign_state(&self, wing: &AirWingRow, controller: u32, flags: u64) -> Option<bool> {
         let effective = canonical(effective_raw(wing), self.links)?;
         let target = canonical(controller, self.links)?;
@@ -913,7 +824,6 @@ impl<'a> ScoutTargetSources<'a> {
             .at_war(MissionCountry { slot: effective }, controller)
     }
 
-    /// Any positive coverage entry qualifies; it need not be the entry for the foreign state itself.
     pub fn admit(&self, wing: &AirWingRow, region: u32, flags: u64) -> Option<bool> {
         let states = self.states?;
         let regional = self.regional?.get(&region)?.as_ref()?;
@@ -936,15 +846,10 @@ impl<'a> ScoutTargetSources<'a> {
     }
 }
 
-/// Naval-combat targets are independent of other naval predicates. A negative combat result cannot
-/// prove a negative overall naval result. Both recorded sides expose ordered primary-country lists.
 pub struct NavalCombatTargetSources<'a> {
-    /// Combats by province, in NavalCombats order.
     combats: Option<BTreeMap<u32, Vec<&'a NavalCombatRow>>>,
     details: Option<&'a [NavalCombatDetailsRow]>,
-    /// Active, detected combat-group members, indexed by `(combat, side)`.
     detected: Option<BTreeSet<(u64, usize)>>,
-    /// Families only: [`Wars`] holds the hour's one war census.
     families: Option<&'a Families>,
     wars: &'a Wars<'a>,
     links: &'a BTreeMap<u32, u32>,
@@ -986,10 +891,6 @@ impl<'a> NavalCombatTargetSources<'a> {
         })
     }
 
-    /// No spotting roll runs with output disabled, seed zero, recon off and stop-on-first. A reached
-    /// combat needs a hostile primary participant and a side with an active detected group member
-    /// whose primary country shares visibility with the mission country. Wars preserves the raw-
-    /// reference gate.
     pub fn admit_combat(&self, country: MissionCountry, reached: &[u32]) -> Option<bool> {
         let combats = self.combats.as_ref()?;
         let details = self.details?;
@@ -1005,8 +906,6 @@ impl<'a> NavalCombatTargetSources<'a> {
                 unknown = true;
                 continue;
             }
-            // One participant at war decides the war test, whatever others
-            // leave undecided.
             let mut war = Arm::default();
             for &participant in detail.sides.iter().flat_map(|side| &side.summary.countries) {
                 war.war(self.wars.at_war(country, participant));
@@ -1045,7 +944,6 @@ impl<'a> NavalCombatTargetSources<'a> {
     }
 }
 
-/// Air mine targets use the same complete sparse Navy vector as Navy map mode.
 pub struct MineTargetSources<'a> {
     levels: Option<super::naval_mine_levels::Levels<'a>>,
 }
@@ -1055,7 +953,6 @@ impl<'a> MineTargetSources<'a> {
             levels: super::naval_mine_levels::Levels::read(frame, links).ok(),
         })
     }
-    /// Unknown certification or an index outside the native vector refuses.
     pub fn admit(&self, wing: &AirWingRow, region: u32, maximum_raw: i64) -> Option<bool> {
         if region == 0 {
             return None;
@@ -1070,14 +967,10 @@ impl<'a> MineTargetSources<'a> {
     }
 }
 
-/// Independent existential scans over reached sea provinces. None means an unavailable operand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NavalOccupants {
-    /// Task-force occupants.
     pub task_force: Option<bool>,
-    /// Embarked armies eligible for naval targeting.
     pub embarked: Option<bool>,
-    /// Embarked railway guns whose required operands are not recorded.
     pub railway_gun: Option<bool>,
 }
 
@@ -1107,10 +1000,6 @@ impl Arm {
     }
 }
 
-/// Scan task forces, embarked armies and railway guns at reached provinces. A sea task force
-/// qualifies without combat when its logical owner is hostile. An embarked unit needs a sea location,
-/// naval transfer, no combat and hostile owner. ProvinceUnitOrder supplies the naval list; Occupants
-/// supplies the mixed list. Output and spotting are disabled.
 pub struct NavalOccupantSources<'a> {
     wars: &'a Wars<'a>,
     occupants: Occupants<'a>,

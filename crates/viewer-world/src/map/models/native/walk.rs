@@ -1,4 +1,3 @@
-//! Installed source-order routes. No content, pose or GPU demand happens here.
 use super::*;
 
 type PlayerKey = (usize, u32, u32);
@@ -13,8 +12,6 @@ pub(super) struct Row {
     pub hidden: bool,
 }
 
-/// The mesh's descriptor/LOD/part tables remain shared in ModelMesh. These rows
-/// join only placement identities, never the instance's live transform or pose.
 #[derive(Default)]
 pub(in crate::map::models) struct Layout {
     pub(super) rows: Vec<Row>,
@@ -22,7 +19,6 @@ pub(in crate::map::models) struct Layout {
     libraries: Vec<usize>,
     keyed: Vec<(PlayerKey, usize)>,
     pub(super) installed: bool,
-    /// Each group's route positions, in walk order.
     pub(super) by_group: Vec<Vec<usize>>,
 }
 
@@ -43,8 +39,6 @@ impl<'a> Iterator for Routes<'a> {
 }
 
 impl Layout {
-    /// Optional metadata failure selects scalar routes, not a separate preparation
-    /// implementation. This iterator never allocates or demands content/poses.
     pub(super) fn routes<'a>(&'a self, field: &'a ModelField) -> Routes<'a> {
         if self.installed {
             Routes::Installed(self.rows.iter())
@@ -73,8 +67,6 @@ impl Layout {
                 positions.push(position);
             }
         }
-        // This is optional acceleration metadata. A failed reserve selects the
-        // direct walk at its ordinary use point, not a new content refusal.
         let count = field.native_order.len();
         if self.rows.try_reserve(count).is_err()
             || self.players.try_reserve(count).is_err()
@@ -94,7 +86,6 @@ impl Layout {
                 field.groups.get(group_index),
                 field.instances.get(instance_index),
             ) else {
-                // Keep malformed private/test fields on the original demand path.
                 return;
             };
             let (seed, identity) = instance.animation_key();
@@ -142,8 +133,6 @@ struct ActorHandle {
     value: Option<ActorPoses>,
 }
 
-/// Owned results only: no saved reference into the player tree or frame inputs.
-/// Reuse is limited to one prepare invocation, not an Arena's numeric frame.
 #[derive(Default)]
 pub(super) struct FrameHandles {
     invocation: u64,
@@ -177,8 +166,6 @@ impl FrameHandles {
     ) -> ActorPoses {
         let handle = &mut self.actors[player];
         if handle.invocation != self.invocation || handle.mesh != mesh || handle.frozen != frozen {
-            // A redirected player may be read with different rigs in one invocation.
-            // Re-evaluate when that route changes, preserving its last native-cache rig.
             *handle = ActorHandle {
                 invocation: self.invocation,
                 mesh,

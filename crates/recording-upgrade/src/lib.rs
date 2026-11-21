@@ -1,6 +1,3 @@
-//! Recording upgrades. Each step adds to a recording lacking one change of the recording format
-//! what it lacks, losing nothing it held: the steps run in order, each added as a revision of the
-//! recording in place, after which the revision before stays in the file.
 
 use std::{
     io,
@@ -10,11 +7,8 @@ use std::{
 use installed_content_core::content::{ResolveOptions, facts, proof};
 use replay::campaign::{Replay, writer};
 
-/// The system error for a file another process holds against this open.
 const SHARING_VIOLATION: i32 = 32;
 
-/// Where an upgrade looks for what a recording needs: game folders, newest first, which may
-/// hold older versions of the game, and the user folder whose mods they mount.
 #[derive(Clone, Debug)]
 pub struct Folders {
     pub games: Vec<PathBuf>,
@@ -22,18 +16,14 @@ pub struct Folders {
     pub cache: PathBuf,
 }
 
-/// What upgrading a recording did.
 #[derive(Clone, Debug)]
 pub enum Outcome {
-    /// It has every change already.
     Current,
     Upgraded {
-        /// One line per step taken.
         steps: Vec<String>,
     },
 }
 
-/// One change of the recording format, made losslessly: what it adds, and a line saying so.
 struct Step {
     name: &'static str,
     applies: fn(&Replay) -> bool,
@@ -42,13 +32,10 @@ struct Step {
 
 const STEPS: &[Step] = &[Step {
     name: "game facts",
-    // A recording carrying facts this build reads keeps them; a pack rebuilt from installations
-    // now could only withhold layers they carry.
     applies: |replay| replay.fact_packs.is_empty(),
     add: add_facts,
 }];
 
-/// Upgrades the recording at `path` in place.
 pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     let opened = Replay::open_newest(path)?;
     if STEPS.iter().all(|step| !(step.applies)(&opened)) {
@@ -56,7 +43,6 @@ pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     }
     uncontinued(path, &opened)?;
     drop(opened);
-    // No save adds to it meanwhile: every save holds the folder's naming lock.
     let folder = std::fs::canonicalize(path)?;
     let folder = folder.parent().unwrap_or_else(|| Path::new("."));
     let _names = replay::recording_files::NamesLock::wait(folder)?;
@@ -78,10 +64,7 @@ pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     })
 }
 
-/// Refuses a recording that holds hours not saved: a discard cuts them away with whatever
-/// followed them, so it is upgraded once they are saved or discarded.
 fn uncontinued(path: &Path, replay: &Replay) -> io::Result<()> {
-    // Its own folder, however `path` was spelled.
     let path = std::fs::canonicalize(path)?;
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
     let deferred = |why: &str| Err(io::Error::new(io::ErrorKind::WouldBlock, why));
@@ -94,8 +77,6 @@ fn uncontinued(path: &Path, replay: &Replay) -> io::Result<()> {
     Ok(())
 }
 
-/// Adds the game facts the recording depends on, proven layer by layer from whichever game
-/// folders still hold each as recorded; facts no folder holds are withheld by name.
 fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<String> {
     let identity = &replay.identity;
     let mut candidates = Vec::new();
@@ -112,7 +93,6 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         }
     }
     let (layers, withheld, executable) = proof::assemble(identity, &candidates)?;
-    // A pack proving nothing would keep a later upgrade from proving what it can.
     if withheld.len() == layers.layers.len() && executable.is_none() {
         let mut why = vec!["no game folder holds any of its content as recorded".to_owned()];
         why.extend(withheld.into_values().take(1));
@@ -138,7 +118,6 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         facts: Some(&pack),
         ..writer::Addition::default()
     };
-    // A recorder writing the recording holds it against every other writer.
     writer::revise(path, replay.recording(), &addition, true, level).map_err(|error| match error.raw_os_error() {
         Some(SHARING_VIOLATION) => io::Error::new(
             io::ErrorKind::WouldBlock,
@@ -178,8 +157,6 @@ mod tests {
 
     const CAMPAIGN: &[u8] = b"upgrade-test";
 
-    /// `pack`, written by this build without equipment facts, as the version before them packed
-    /// it: its manifest without the equipment section.
     fn unequipped(pack: &[u8]) -> Vec<u8> {
         let why = facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap().sub_unit_needs().unwrap_err();
         let compressed = u32::from_le_bytes(pack[6..10].try_into().unwrap()) as usize;
@@ -196,9 +173,6 @@ mod tests {
         out
     }
 
-    /// A recording already carrying readable game facts of the version before is left as it is
-    /// when one of its mods has changed since: the upgrade never stacks over them a pack rebuilt
-    /// from the installation that withholds the layer they carry.
     #[test]
     fn a_recording_carrying_older_facts_keeps_every_layer_they_carry_when_a_mod_changed() {
         let root = std::env::temp_dir().join(format!("hoi4-upgrade-older-facts-{}", std::process::id()));

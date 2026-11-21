@@ -11,9 +11,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// One hour's inputs: countries 1 AAA, 2 BBB and 3 CCC, each linked to its own slot; each
-/// state's owner; war pairs (first, second, start, end); each country's owned states; the
-/// conference roster (id, turn, finalized).
 struct World {
     owners: Vec<(u32, u32)>,
     wars: Vec<(u32, u32, i32, i32)>,
@@ -21,7 +18,6 @@ struct World {
     roster: Vec<(u64, i32, u8)>,
 }
 
-/// Makes `table` hold exactly `rows`.
 fn sync<R: RowCodec>(store: &mut Store, table: TableId, rows: &[R]) {
     let keep: Vec<u128> = rows.iter().map(RowCodec::key).collect();
     for (key, _) in testing::rows(store, table) {
@@ -58,8 +54,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, world: &World) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// The outcome rows living at the hour: after hour, ordinal, observation, conference, before
-/// hour, change, group, state, from (slot, id), to (slot, id) and victory points.
 type Outcome = (i32, u32, u8, Option<u64>, i32, u8, u32, u32, (u32, u32), (u32, u32), Option<i64>);
 
 fn outcomes(store: &Store) -> Vec<Outcome> {
@@ -90,16 +84,12 @@ fn outcomes(store: &Store) -> Vec<Outcome> {
     rows
 }
 
-/// The span row of `conference` the last hour wrote; empty when it wrote none. Every row is the
-/// hour's own.
 fn span(store: &Store, hour: i32, conference: u64) -> Vec<String> {
     let rows = testing::rows(store, TableId::PeaceConferenceSpans);
     assert!(rows.iter().all(|(key, _)| *key as u32 as i32 == hour), "a span row lives the hour it was written");
     rows.into_iter().find(|(key, _)| (key >> 32) as u64 == conference).map(|(_, cells)| cells).unwrap_or_default()
 }
 
-/// A war-end transfer of state 100 from BBB to AAA, and state 101 handed to CCC, which owned
-/// nothing before, at hour 2; no conference listed.
 fn unsampled(hour: i32) -> World {
     let war = |end| vec![(1, 2, 0, end)];
     match hour {
@@ -108,8 +98,6 @@ fn unsampled(hour: i32) -> World {
     }
 }
 
-/// Conference 5 listed at hour 1, finalized at hour 2 when state 100 passes from BBB to AAA and
-/// their war pair goes, gone at hour 3.
 fn sampled(hour: i32) -> World {
     let before = World { owners: vec![(100, 2), (102, 1)], wars: vec![(1, 2, 0, 0)], owned: vec![(1, 1), (2, 1)], roster: vec![] };
     let after = |roster| World { owners: vec![(100, 1), (102, 1)], wars: vec![], owned: vec![(1, 2), (2, 0)], roster };

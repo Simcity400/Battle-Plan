@@ -1,24 +1,3 @@
-//! The post-load pass: each registered template visits its children using the parent's name
-//! tree as the lookup.
-//!
-//! Containers pass their own tree, retaining the first child of each lowered name. Backgrounds are
-//! outside that tree, so the pass does not reach them. Windows and scrollbars pass their own trees,
-//! retaining the last child of each name. Drop-downs and extended scrollbars pass on the incoming
-//! tree, while a drop-down's inner container passes its own. All five extended scrollbar parts,
-//! including its background, receive the incoming tree. Grids do nothing in this pass. Templates
-//! use the global registry for parent lookup.
-//!
-//! Buttons with a set `parent` and empty sprite copy the parent's sprite without a null check.
-//! While still empty, they follow that parent's `parent` when set and different from the button's
-//! own name; otherwise the loop repeats forever. The orientation text is parsed afterwards.
-//! Scrollbars with a set `parent` copy unset fields among their twelve listed fields: empty names,
-//! points with a zero coordinate and zero floats. They continue up the parent chain until all are
-//! set; a chain that cannot finish hangs or reads through null. List boxes always treat `step` as
-//! unset, so a set `parent` ends in a null read or an endless walk. Windows visit their children
-//! first. With a set `parent`, they copy any unset field among the five listed window keys,
-//! continuing up the chain while any stay unset. A `fullScreen` window then takes the GUI root's
-//! extent as its size. Pass order matters: a previously visited parent supplies its pass result,
-//! while an unvisited parent supplies the values it read ([`windows`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,12 +6,9 @@ use super::{
     WindowExtent,
 };
 
-/// Where a post-load pass looks a `parent` up.
 #[derive(Clone, Copy)]
 enum Scope<'a> {
-    /// The global registry: each lowered name's (file, template).
     Global(&'a BTreeMap<Vec<u8>, (usize, usize)>, &'a [&'a mut Gui]),
-    /// A parent's own tree over its children: the first of a name, or the last.
     Children(&'a [Element], bool),
 }
 
@@ -54,24 +30,17 @@ impl<'a> Scope<'a> {
     }
 }
 
-/// What the pass writes into one element.
 enum Edit {
     Sprite(Vec<u8>),
     Orientation(Orientation),
     Scrollbar(Box<Scrollbar>),
     Window(Box<Window>),
     Refuse(&'static str, String),
-    /// A refusal for a value of the recording client's session the recording does not hold.
     Unrecorded(&'static str, String),
 }
 
-/// An element by its place: the file, the template, then indices into each level's
-/// [`Element::nested`].
 type Place = (usize, usize, Vec<usize>);
 
-/// Run every registered template's post-load pass over `files`, with later templates of a name
-/// replacing earlier ones. `viewport` is the reading client's GUI root extent at load, stored less
-/// the authored number by a `max_resolution` size.
 pub(super) fn pass(files: &mut [&mut Gui], viewport: Option<[i32; 2]>) {
     let mut global: BTreeMap<Vec<u8>, (usize, usize)> = BTreeMap::new();
     for (file, gui) in files.iter().enumerate() {
@@ -149,7 +118,6 @@ fn apply(element: &mut Element, edit: Edit) {
     }
 }
 
-/// One element's post-load pass with `scope`, and its children's, on a stack of its own.
 fn visit<'a>(element: &'a Element, scope: Scope<'a>, place: Place, edits: &mut Vec<(Place, Edit)>) {
     let mut stack = vec![(element, scope, place)];
     while let Some((element, scope, place)) = stack.pop() {
@@ -199,8 +167,6 @@ fn visit<'a>(element: &'a Element, scope: Scope<'a>, place: Place, edits: &mut V
                     ));
                 }
             }
-            // Their parts (the extended scrollbar's background included) with the lookup they
-            // were given.
             Fields::DropDown(_) | Fields::ExtendedScrollbar(_) => {
                 for (index, part) in nested.iter().enumerate().take(offset) {
                     stack.push((part, scope, child(index, &place)));
@@ -211,7 +177,6 @@ fn visit<'a>(element: &'a Element, scope: Scope<'a>, place: Place, edits: &mut V
     }
 }
 
-/// One button's post-load pass.
 fn button(element: &Element, scope: Scope, place: &Place, edits: &mut Vec<(Place, Edit)>) {
     let Some(own) = element.button() else {
         return;
@@ -231,7 +196,6 @@ fn button(element: &Element, scope: Scope, place: &Place, edits: &mut Vec<(Place
     ));
 }
 
-/// The sprite a button's `parent` chain gives it, or what the game does instead.
 fn inherited_sprite(element: &Element, parent: &[u8], scope: Scope) -> Result<Vec<u8>, String> {
     let name = element.name_bytes();
     let mut seen = BTreeSet::new();
@@ -266,7 +230,6 @@ fn inherited_sprite(element: &Element, parent: &[u8], scope: Scope) -> Result<Ve
     }
 }
 
-/// Copy a scrollbar's unset fields from its `parent` chain.
 fn scrollbar(
     element: &Element,
     own: &Scrollbar,
@@ -274,9 +237,6 @@ fn scrollbar(
     place: &Place,
     edits: &mut Vec<(Place, Edit)>,
 ) {
-    // Inspect the `listed` field ids on every pass, even without a parent. A negative count never
-    // reaches the end pointer; a count past thirteen reads beyond the block. The thirteenth slot is
-    // unwritten and decides copying only when a parent is set.
     let listed = match usize::try_from(own.listed) {
         Ok(count) if count <= SCROLLBAR_LISTED.len() => count,
         Ok(13) if own.parent.is_empty() => SCROLLBAR_LISTED.len(),
@@ -392,8 +352,6 @@ fn scrollbar(
     }
 }
 
-/// A listed field is unset when its name is empty, its point has a zero coordinate or its float
-/// is zero.
 fn is_set(bar: &Scrollbar, id: u32) -> bool {
     let point = |point: [i32; 2]| point[0] != 0 && point[1] != 0;
     let float = |slot: usize| f32::from_bits(bar.slots[slot]) != 0.0;
@@ -413,12 +371,10 @@ fn is_set(bar: &Scrollbar, id: u32) -> bool {
     }
 }
 
-/// Whether all listed fields are set.
 fn all_set(bar: &Scrollbar, ids: &[u32]) -> bool {
     ids.iter().all(|id| is_set(bar, *id))
 }
 
-/// Copy each listed field found unset from `from`.
 fn copy_unset(bar: &mut Scrollbar, from: &Scrollbar, ids: &[u32]) {
     for id in ids {
         if is_set(bar, *id) {
@@ -441,10 +397,6 @@ fn copy_unset(bar: &mut Scrollbar, from: &Scrollbar, ids: &[u32]) {
     }
 }
 
-/// The window part of the post-load pass, in encounter order: registry templates in name tree
-/// order, then each window's children first and the window itself. Its child tree visits each
-/// lowered name once in order, selecting the last child. A parent supplies its values at the time
-/// of copying: its pass result if already visited, otherwise the values it read.
 fn windows(
     global: &BTreeMap<Vec<u8>, (usize, usize)>,
     files: &[&mut Gui],
@@ -465,7 +417,6 @@ fn windows(
     }
 }
 
-/// One window's children's passes, then its own ([`window_fields`]).
 fn window_pass<'a>(
     element: &'a Element,
     scope: Scope<'a>,
@@ -517,17 +468,11 @@ fn window_pass<'a>(
     }
 }
 
-/// Why a window's own pass is refused: the game cannot finish it, or it depends on what the
-/// recording does not hold.
 enum Unfinished {
     Game(&'static str, String),
     Unrecorded(&'static str, String),
 }
 
-/// Test the five listed window keys: `size` 0x2F, `position` 0x4C, `background` 0x9C,
-/// `verticalBorder` 0xA7 and `horizontalBorder` 0xA6. A point with a zero coordinate or an empty
-/// name is unset. A `max_resolution` axis stores the reading client's root extent less its number
-/// as an `i32`; return `Err` if the caller supplied no `viewport`.
 fn any_unset(window: &Window, viewport: Option<[i32; 2]>) -> Result<bool, String> {
     let size = stored_size(window, viewport)?;
     let point = |point: [i32; 2]| point[0] == 0 || point[1] == 0;
@@ -538,8 +483,6 @@ fn any_unset(window: &Window, viewport: Option<[i32; 2]>) -> Result<bool, String
         || window.horizontal_border.is_empty())
 }
 
-/// The size as the game stored it at load: a `max_resolution` axis the GUI root's extent less its
-/// number (window size reader, `i32`).
 fn stored_size(window: &Window, viewport: Option<[i32; 2]>) -> Result<[i32; 2], String> {
     let mut size = [0i32; 2];
     for (axis, extent) in window.size.iter().enumerate() {
@@ -562,8 +505,6 @@ fn stored_size(window: &Window, viewport: Option<[i32; 2]>) -> Result<[i32; 2], 
     Ok(size)
 }
 
-/// The window's own post-load pass: the resulting fields, with `Ok(None)` when unchanged, or
-/// the refused key and why the game cannot finish.
 fn window_fields(
     element: &Element,
     scope: Scope,
@@ -601,7 +542,6 @@ fn window_fields(
                 .get(&(found as *const Element))
                 .unwrap_or(from)
                 .clone();
-            // The window field inheritance copies each unset key's whole field (`size` both axes, 8 bytes).
             let size_unset = stored_size(&own, viewport)
                 .map_err(unrecorded)?
                 .contains(&0);
@@ -623,9 +563,6 @@ fn window_fields(
             if !any_unset(&own, viewport).map_err(unrecorded)? {
                 break;
             }
-            // The parent's `parent` (read through its vtable) against the window's own name, byte
-            // for byte: equal, the walk keeps the same parent, which copies nothing new, and never
-            // ends; a chain that comes back round does the same.
             if from.parent == name || !seen.insert(next.to_ascii_lowercase()) {
                 return Err(parent(
                     "leaves a listed key unset along a chain of parents that turns back, which \
@@ -636,7 +573,6 @@ fn window_fields(
             next = from.parent;
         }
     }
-    // A `fullScreen` window takes the GUI root's extent (as it then is) as its size.
     if own.full_screen {
         own.size = [WindowExtent::MaxResolution { less: 0 }; 2];
     }

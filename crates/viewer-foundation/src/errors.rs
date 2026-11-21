@@ -1,4 +1,3 @@
-//! Shared input refusal construction.
 use std::io;
 
 pub fn invalid(message: impl Into<String>) -> io::Error {

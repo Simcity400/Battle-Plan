@@ -1,4 +1,3 @@
-//! Synthetic raster fixture shared by resource tests.
 
 pub fn tga(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = vec![0; 18];

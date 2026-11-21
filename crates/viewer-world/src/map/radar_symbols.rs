@@ -1,5 +1,3 @@
-//! Radar range symbols in the shared map-arrow manager. Station icons and
-//! this display switch are independent; an icon hover keeps one range visible.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use super::{arrow_shader::Arrow, order_pass::NativeInputs};
 use eframe::wgpu;
@@ -14,22 +12,10 @@ use viewer_foundation::map::{
     visibility::Families,
 };
 
-/// Hundred-thousandths of a radian: the fixed point an angle is carried in, recorded
-/// ([`Symbol::angle`]) or pooled here.
 const FIXED5: f64 = 100_000.0;
 
-/// The game's presentation frame period, which a page's `rotation` is one frame's turn at
-/// ([`viewer_foundation::map::ribbon_content::SymbolPage::rotation`]: "fixed5 angular step per
-/// presentation frame"). Thirty frames a second, the same period this repository already takes
-/// for the game's frame-stepped presentation in the aircraft easing (`EASING_FRAME_MS`). The
-/// sweep turns by the elapsed presentation time at this rate, so a 240 Hz display shows it
-/// turning exactly as fast as a 60 Hz one does.
 const GAME_FRAME: f32 = 1.0 / 30.0;
 
-/// Turns each pooled slot's angle by what `elapsed` seconds of presentation time make at the
-/// game's frame rate ([`GAME_FRAME`]); `flip` turns every other slot the other way, as the air
-/// ranges do. The fraction a frame leaves is kept in the angle itself, so no display rate loses
-/// it and the same wall time gives the same angle at every rate.
 fn turn(angles: &mut [f64], rotation: i64, flip: bool, elapsed: f32) {
     if rotation == 0 || !elapsed.is_finite() || elapsed <= 0.0 {
         return;
@@ -47,12 +33,9 @@ pub struct Symbol {
     pub country: u32,
     pub state: u32,
     pub own: bool,
-    /// Own/family groups belong to the enabled overlay; other groups can
-    /// still be supplied by a station hover while the overlay is off.
     pub roster: bool,
     pub position: [f32; 3],
     pub diameter: f32,
-    /// A simulation-derived orientation replaces pooled presentation rotation.
     pub angle: Option<i64>,
 }
 
@@ -72,7 +55,6 @@ pub struct Field {
     pub refused: BTreeMap<String, usize>,
 }
 
-/// Host-template centres are content facts, computed once rather than on camera rebuilds.
 pub struct Centers(BTreeMap<u32, Result<[i32; 2], String>>);
 
 impl Centers {
@@ -97,8 +79,6 @@ impl Centers {
 }
 
 impl Field {
-    /// The enabled roster uses direct faction/subject relationships. All
-    /// recorded groups remain available for the independent station hover.
     pub fn read(
         frame: &DecodedFrame,
         ours: u32,
@@ -145,7 +125,6 @@ impl Field {
         out
     }
 
-    /// The symbols of the recorded groups in table order, as [`Self::read`] makes them.
     pub fn groups(&mut self, groups: impl IntoIterator<Item = Group>, ours: u32, heights: HeightField<'_>, centers: &Centers) {
         let out = self;
         {
@@ -206,8 +185,6 @@ impl Field {
     }
 }
 
-/// One recorded radar group: its country's canonical slot (none when unresolved), whether the
-/// viewer's family admits it to the roster or why that is unknown, its host state and range.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub country: Option<u32>,
@@ -217,8 +194,6 @@ pub struct Group {
     pub radius: Option<i64>,
 }
 
-/// The host template combines ordinary and seam-shifted province boxes,
-/// keeps the narrower one (ordinary on ties), then halves integer extents.
 fn state_center(
     provinces: &[u32],
     bounds: &BTreeMap<u32, [f32; 4]>,
@@ -270,7 +245,6 @@ fn state_center(
     Ok([x, b[1].wrapping_add(b[3].wrapping_sub(b[1]) / 2)])
 }
 
-/// Native symbol quad: XYZ followed by UV3, four strip vertices.
 const QUAD: [[f32; 6]; 4] = [
     [-0.5, 0., -0.5, 0., 1., 0.],
     [0.5, 0., -0.5, 1., 1., 0.],
@@ -286,7 +260,6 @@ pub struct Pass {
     size: f32,
     colors: [[f32; 4]; 3],
     step: i64,
-    /// Each pooled slot's angle in [`FIXED5`], its fraction kept.
     angles: Vec<f64>,
     field: Field,
     random: super::entity_animation::Random,
@@ -358,9 +331,6 @@ impl Pass {
         }
     }
 
-    /// Pooled wrappers retain angles by draw slot, including when their group changes.
-    /// `elapsed` is the presentation seconds since the last frame: the sweep turns by what that
-    /// time makes at the game's frame rate ([`turn`]), never by one step a display frame.
     pub fn advance(&mut self, elapsed: f32) {
         let count = self
             .field
@@ -380,7 +350,6 @@ impl Pass {
         turn(&mut self.angles, self.step, self.label == "Air ranges", elapsed);
     }
 
-    // Keep native frame inputs and the existing render targets borrowed for this draw.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -487,8 +456,6 @@ impl Pass {
         Ok(())
     }
 
-    /// How the symbol program reads the shadow screen buffer by texel
-    /// ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self) -> Option<&str> {
         self.program.texel_reads.as_deref()
     }
@@ -516,9 +483,6 @@ impl Pass {
 mod tests {
     use super::*;
 
-    /// The sweep's angle is a function of elapsed presentation time, not of the frames a display
-    /// draws: one second of presentation gives the same angle at 60, 120 and 240 frames a second,
-    /// and that angle is what the game's own frame rate makes of a second.
     #[test]
     fn a_sweep_turns_by_elapsed_time_whatever_the_display_s_rate() {
         let rotation = 700;
@@ -538,12 +502,9 @@ mod tests {
                 );
             }
         }
-        // A second is thirty of the game's frames, each one `rotation`; every other slot of the
-        // air ranges turns the other way.
         let whole = FIXED5 * f64::from(std::f32::consts::TAU);
         assert!((sixty[0] - 30.0 * rotation as f64).abs() < 1.0, "{}", sixty[0]);
         assert!((sixty[1] - (whole - 30.0 * rotation as f64)).abs() < 1.0, "{}", sixty[1]);
-        // A clock that stood still turns nothing, and a page with no rotation never turns.
         let mut standing = vec![5.0_f64];
         turn(&mut standing, rotation, false, 0.0);
         turn(&mut standing, 0, false, 1.0);
@@ -654,7 +615,6 @@ mod tests {
         assert!(foreign.shown(false, Some((1, 3))));
         assert!(!foreign.shown(false, None));
         assert_eq!(field.refused.values().sum::<usize>(), 1);
-        // A gap in relationships does not take away a proved own range.
         frame.tables[TableId::Subjects.index()] = TableView::Unavailable {
             reason: "gap".into(),
         }

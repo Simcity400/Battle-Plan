@@ -1,5 +1,3 @@
-//! The ordinary all-active vector's paint order, under the registration certificate.
-//! A failed certified read stays unknown until its certificate changes.
 use super::{Certificate, Entry};
 use engine_allocation as allocation;
 use engine_native::{
@@ -15,7 +13,6 @@ pub(crate) struct OrderLabel {
 
 struct OrderedRoot {
     certificate: Certificate,
-    /// Sorted by wing after labels are assigned in native vector order.
     members: Vec<OrderLabel>,
     known: bool,
 }
@@ -34,7 +31,6 @@ pub(super) struct Orders {
     roots: Vec<OrderedRoot>,
     scratch: Vec<OrderLabel>,
     expected: Vec<usize>,
-    /// Sorted projection reused verbatim while no certified root changes.
     all: Vec<OrderLabel>,
     dirty: bool,
 }
@@ -98,7 +94,6 @@ impl Orders {
                         },
                     );
                     self.dirty = true;
-                    // A newly admitted root still needs its first observation.
                     self.read(
                         index,
                         memory,
@@ -109,9 +104,6 @@ impl Orders {
                     index
                 }
             };
-            // The carrier pass can change the active-region header without
-            // touching either ordinary mission vector. Its churn needs no
-            // additional all-active pointer copy.
             if !same_order_certificate(self.roots[index].certificate, certificate) {
                 self.dirty = true;
                 self.read(
@@ -159,7 +151,6 @@ impl Orders {
         registrations: &[Registration],
     ) {
         let root = &mut self.roots[index];
-        // Failure is held under the same certificate, rather than retried hourly.
         root.known = false;
         root.certificate = certificate;
         self.scratch.clear();
@@ -234,8 +225,6 @@ impl Orders {
     }
 }
 
-/// Preserve increasing surviving labels. Fill insertion gaps in one forward
-/// pass; only a changed vector can exhaust a gap and require wider relabelling.
 fn assign_labels(rows: &mut [OrderLabel]) {
     const SPACE: u64 = 1 << 16;
     let mut left = 0;

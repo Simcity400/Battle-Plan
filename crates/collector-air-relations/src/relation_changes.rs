@@ -1,11 +1,3 @@
-//! Allocation-free notifications from the native writers of the country
-//! vectors AirCountryRelations records ([`engine_events::diplomacy_mutations`]). A
-//! detour only notifies the shared watch registry ([`WatchRegistry`]) and
-//! calls the original; it never changes game behaviour. Receivers are
-//! diplomacy status or country object addresses the collector registered; a
-//! notification never infers an owner. Anything unobserved (disabled,
-//! poisoned, a refused registration, an epoch change) makes the collector
-//! read afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -18,30 +10,23 @@ use std::{
 };
 
 static WATCHES: WatchRegistry = WatchRegistry::new();
-/// Receivers watched per country slot: its country object and diplomacy status.
 const RECEIVERS_PER_COUNTRY: usize = 2;
 static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static EVENTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for `slots` country slots.
 pub fn presize(slots: usize) {
     WATCHES.offer(slots.saturating_mul(RECEIVERS_PER_COUNTRY));
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.collect();
 }
@@ -51,13 +36,8 @@ fn mutation(receiver: usize, site: usize) -> Notification<'static> {
     WATCHES.notify(receiver)
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes {
-    /// `(epoch, revision)` when observation is live and no writer is running;
-    /// equal values across hours prove no vector changed.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of one receiver, registering it; `None` when it
-    /// cannot be observed.
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)>;
 }
 
@@ -71,7 +51,6 @@ impl Changes for Observer {
     }
 }
 
-/// Countries reused, re-read for a writer and reached this hour.
 pub fn record(reused: u64, read: u64, quiet_hours: u64) {
     for (target, value) in READS.iter().zip([reused, read, quiet_hours]) {
         target.fetch_add(value, Ordering::Relaxed);
@@ -83,12 +62,12 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "relation_changes") {
@@ -125,23 +104,16 @@ impl Hooks {
             );
             crate::war_changes::forwarder(crate::war_changes::Forwarder::Relations, false);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
             return Ok(false);
         }
         WATCHES.set_enabled(enabled && !self.hooks.is_empty());
-        // The country inputs observe diplomacy reset and
-        // wartime ally rebuild here.
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::Relations,
             enabled && !self.hooks.is_empty(),
         );
-        // The war domain observes the reset, which ends a country's wars.
         crate::war_changes::forwarder(
             crate::war_changes::Forwarder::Relations,
             enabled && !self.hooks.is_empty(),
@@ -154,9 +126,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.release() };
     }
 }
@@ -164,8 +133,6 @@ impl Drop for Hooks {
 unsafe extern "system" fn rebuild(diplomacy: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RelationChanges);
     let _notification = mutation(diplomacy, 0);
-    // The rebuild rewrites the co-belligerent bytes and candidate vectors
-    // the country's counter row reads.
     let _inputs = crate::country_input_changes::forwarded(
         crate::country_input_changes::Forward::WartimeAllies,
         diplomacy,
@@ -175,11 +142,9 @@ unsafe extern "system" fn rebuild(diplomacy: usize) {
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(diplomacy) })
 }
-// The second argument points at the reset's options; forward it whole.
 unsafe extern "system" fn reset(diplomacy: usize, options: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RelationChanges);
     let _notification = mutation(diplomacy, 1);
-    // The reset clears the exile host other countries' war flags read.
     let _inputs = crate::country_input_changes::forwarded(
         crate::country_input_changes::Forward::DiplomacyReset,
         diplomacy,

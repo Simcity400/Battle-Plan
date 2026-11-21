@@ -150,8 +150,6 @@ struct Fault<'a> {
 impl Memory for Fault<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if address <= self.fail && self.fail < address.saturating_add(destination.len()) {
-            // A failed guarded copy may modify a prefix. Its bytes must not
-            // become a successful scalar or shortened origin vector.
             destination.fill(0xa5);
             return false;
         }
@@ -265,12 +263,12 @@ fn field_and_origin_faults_never_certify_a_partial_pack_and_header_drift_is_refu
 fn unrelated_consumer_bytes_and_origin_fields_are_not_read() {
     let bytes = fixture(&[Origin::default()]);
     for fail in [
-        UNIT + 0x40,               // stored ratio
-        UNIT + DIVISION_COUNT + 4, // padding
-        DATA,                      // native origin sort key
-        DATA + 8,                  // native consumer pointer
-        DATA + 0x20,               // third amount not used by the footer
-        DATA + 0x2c,               // source country not used by the footer
+        UNIT + 0x40,
+        UNIT + DIVISION_COUNT + 4,
+        DATA,
+        DATA + 8,
+        DATA + 0x20,
+        DATA + 0x2c,
     ] {
         let memory = Fault {
             memory: SliceMemory {
@@ -312,8 +310,6 @@ fn worker_origins_grow_from_original_header_before_first_and_later_publication()
     }
 }
 
-/// Units at `0x100` strides from [`BASE`], each with its own scalars and
-/// the given origin rows, then every origin vector.
 fn units_fixture(origins: &[Vec<Origin>]) -> (Vec<u8>, Vec<usize>) {
     const STRIDE: usize = 0x100;
     let rows: usize = origins.iter().map(Vec::len).sum();
@@ -369,7 +365,6 @@ fn units_fixture(origins: &[Vec<Origin>]) -> (Vec<u8>, Vec<usize>) {
     (bytes, pointers)
 }
 
-/// The scalars [`units_fixture`] stores for unit `index`.
 fn unit_inputs(index: usize, origins_len: Result<usize, Failure>) -> Inputs {
     let index = index as i64;
     Inputs {
@@ -429,7 +424,6 @@ fn batched_units_keep_each_footer_and_native_origin_order_across_batches() {
         assert_eq!(unit.origins_start, start, "{index}");
         assert_eq!(&arena[start..start + expected.len()], expected.as_slice());
         start += expected.len();
-        // The single-unit reader agrees with every batched footer.
         let mut single = vec![Origin::default(); expected.len()];
         assert_eq!(capture_buffer(&memory, pointers[index], crate::walk::Buffer::Growing(&mut single)), unit.inputs);
         assert_eq!(&single, expected);
@@ -455,7 +449,6 @@ impl Memory for Faults<'_> {
         }
         let copied = self.memory.copy(address, destination);
         if copied && Some(address) == self.changed && destination.len() == 16 {
-            // The scalar batch sees the stored header; the witness a grown one.
             let reads = self.header_reads.get() + 1;
             self.header_reads.set(reads);
             if reads == 2 {
@@ -482,8 +475,6 @@ fn a_fault_fails_only_its_own_unit_or_origin_fragment() {
         })
         .collect();
     let (bytes, pointers) = units_fixture(&origins);
-    // Unit 3's second origin row follows the four rows of units 0 to 2 and
-    // its own first one.
     let unit_3_second_row = BASE + origins.len() * 0x100 + 5 * ORIGIN_STRIDE;
     let memory = Faults {
         memory: SliceMemory {
@@ -506,19 +497,15 @@ fn a_fault_fails_only_its_own_unit_or_origin_fragment() {
     );
     assert_eq!(units[0].inputs, Ok(unit_inputs(0, Ok(1))));
     assert_eq!(&arena[..1], origins[0].as_slice());
-    // A scalar fault withholds its unit's pack and nothing else.
     assert_eq!(units[1].inputs, Err(Failure::Unreadable));
-    // A header that changed while its rows were read withholds them.
     assert_eq!(
         units[2].inputs,
         Ok(unit_inputs(2, Err(Failure::OriginsChanged)))
     );
-    // A faulting origin row withholds its unit's rows, never its scalars.
     assert_eq!(
         units[3].inputs,
         Ok(unit_inputs(3, Err(Failure::Unreadable)))
     );
-    // The gather resumes after the faulting row.
     assert_eq!(units[4].inputs, Ok(unit_inputs(4, Ok(1))));
     assert_eq!(units[4].origins_start, 4);
     assert_eq!(&arena[4..5], origins[4].as_slice());
@@ -546,12 +533,12 @@ fn batched_units_read_no_unrelated_consumer_bytes() {
     let (bytes, pointers) = units_fixture(&origins);
     let data = BASE + origins.len() * 0x100;
     for fail in [
-        pointers[1] + 0x40,               // stored ratio
-        pointers[1] + DIVISION_COUNT + 4, // padding
-        data + ORIGIN_STRIDE,             // native origin sort key
-        data + ORIGIN_STRIDE + 8,         // native consumer pointer
-        data + ORIGIN_STRIDE + 0x20,      // third amount not used by the footer
-        data + ORIGIN_STRIDE + 0x2c,      // source country not used by the footer
+        pointers[1] + 0x40,
+        pointers[1] + DIVISION_COUNT + 4,
+        data + ORIGIN_STRIDE,
+        data + ORIGIN_STRIDE + 8,
+        data + ORIGIN_STRIDE + 0x20,
+        data + ORIGIN_STRIDE + 0x2c,
     ] {
         let memory = Faults {
             memory: SliceMemory {

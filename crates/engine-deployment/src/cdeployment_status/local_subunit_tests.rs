@@ -1,7 +1,6 @@
 use super::*;
 use crate::memory::SliceMemory;
 
-/// Base zero; the subunit database pointer reads as 0x9800.
 struct Fixture(Vec<u8>);
 impl Memory for Fixture {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -52,8 +51,6 @@ impl Fixture {
 const ARCHETYPE: u64 = 0xa000;
 const OTHER: u64 = 0xa100;
 
-/// One country whose status holds two clones of global token 5: one equal
-/// to the global definition, one with a different amount.
 fn fixture() -> Fixture {
     let mut memory = Fixture(vec![0; 0xc000]);
     memory.array(0x1000 + crate::cgame_state::COUNTRIES, 0x2000, 2);
@@ -153,7 +150,6 @@ fn growing_local_clone_rows_reserve_the_original_changed_requirement_header() {
     assert_eq!(requirements[511].amount_raw, 300_000);
 }
 
-/// A held row the walk publishes in place of a country's clones.
 fn held_row() -> (LocalSubunitRow, LocalRequirement) {
     (
         LocalSubunitRow {
@@ -168,9 +164,6 @@ fn held_row() -> (LocalSubunitRow, LocalRequirement) {
     )
 }
 
-/// A carried country publishes its held rows without reading its deployment
-/// status; a confirmed one publishes them only while its status and clone
-/// header are the expected ones, and is read otherwise.
 #[test]
 fn selected_walks_carry_confirm_or_read_each_country() {
     let mut memory = fixture();
@@ -221,7 +214,6 @@ fn selected_walks_carry_confirm_or_read_each_country() {
     );
     assert_eq!((rows[0].token, requirements[0].amount_raw), (9, 7));
     assert!(!visits[0].read && visits[0].rows == (0..1));
-    // An appended clone moves the header: the country is read again.
     memory.array(0x3800 + LOCAL_SUBUNITS, 0x3a00, 1);
     let (rows, _, visits) = walk(
         &memory,
@@ -231,7 +223,6 @@ fn selected_walks_carry_confirm_or_read_each_country() {
         },
     );
     assert!(rows.is_empty() && visits[0].read);
-    // Carried, even an unreadable status is not read.
     memory.word(0x3000 + ccountry::DEPLOYMENT_MANAGER, 0);
     let (rows, _, visits) = walk(&memory, LocalSelection::Carry(held));
     assert_eq!(rows[0].token, 9);

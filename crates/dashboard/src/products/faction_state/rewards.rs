@@ -1,7 +1,3 @@
-//! `faction-goal-rewards`: what completing one faction goal gives, described as the game words it
-//! at an hour, in the scope of the faction's leader then (its scripted values and flags read at
-//! that hour). Asked when a goal's tooltip opens, never with the faction's state: an effect may
-//! read any scope, so the effect operands' tables are read whole at the hour.
 
 use crate::{
     Source,
@@ -28,9 +24,9 @@ pub struct FactionGoalRewards;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactionGoalRewardsParams {
     pub branch_id: String,
-    /// The recorded faction id, as a decimal string.
+    #[doc = " The recorded faction id, as a decimal string."]
     pub faction: String,
-    /// The goal's token, as `faction-details` names it.
+    #[doc = " The goal's token, as `faction-details` names it."]
     pub goal: String,
 }
 
@@ -39,23 +35,20 @@ pub struct FactionGoalRewardsParams {
 #[serde(rename_all = "camelCase")]
 pub struct FactionGoalRewardsReply {
     pub goal: String,
-    /// The completion effect's description with the game's markup; none where the goal authors no
-    /// completion effect or `reason` says why it cannot be described.
+    #[doc = " The completion effect's description with the game's markup; none where the goal authors no"]
+    #[doc = " completion effect or `reason` says why it cannot be described."]
     pub text: Option<String>,
-    /// Why the completion effect cannot be described at the hour.
+    #[doc = " Why the completion effect cannot be described at the hour."]
     pub reason: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(FactionGoalRewardsReply);
 
-/// The longest goal token a request may name.
 const MAX_GOAL: usize = 256;
 
-/// The effect the goal tooltip describes.
 const COMPLETION: &str = "complete_effect";
 
-/// Every table a description reads, with the rosters and links that find the leader.
 pub(super) fn tables() -> BTreeSet<TableId> {
     let mut out: BTreeSet<TableId> = effect_description::recorded_tables().collect();
     out.extend([TableId::FactionMembers, TableId::CountryLinks]);
@@ -108,7 +101,6 @@ impl AtHour for FactionGoalRewards {
     }
 }
 
-/// The canonical slot of `faction`'s leader at the frame's hour: its member at order zero.
 fn leader(frame: &DecodedFrame, faction: u64) -> Result<u32, String> {
     let raw = frame
         .complete::<tables::FactionMembers>()
@@ -121,7 +113,6 @@ fn leader(frame: &DecodedFrame, faction: u64) -> Result<u32, String> {
     metadata::link_slot(links, raw).ok_or_else(|| format!("The faction's leader (country {raw}) has no link at this hour"))
 }
 
-/// Goal `goal`'s completion effect, described in the scope of `faction`'s leader at the frame's hour.
 pub(super) fn rewards(frame: &DecodedFrame, faction: u64, goal: &str, cat: &Catalogue) -> io::Result<FactionGoalRewardsReply> {
     let mut reply = FactionGoalRewardsReply { goal: goal.to_owned(), text: None, reason: None, warnings: Vec::new() };
     let definitions = installed_content_core::faction_goals::cached(&cat.content.layers).map_err(dashboard_core::refused)?;

@@ -4,7 +4,6 @@ import { columnTooltip, modifierText, shownRegions, temperatureText, uncoveredSp
 import type { RegionalWeatherColumns as WeatherColumns } from '../../generated/dashboard';
 
 const colours = { flag: (index: number) => `c${index}`, ramp: (value: number, highest: number) => `r${value / highest}`, clear: 'surface', gap: 'gap' };
-/** Three days, one per column; the third was not sampled. */
 const days: WeatherColumns = { days: 1, columns: [{ firstHour: 0, lastHour: 23, sampledHour: 23, readHour: 23, recorded: 1 },
   { firstHour: 24, lastHour: 47, sampledHour: 47, readHour: 47, recorded: 1 }, { firstHour: 48, lastHour: 71, sampledHour: null, readHour: null, recorded: 0 }], regions: [
   { id: '1', observed: [1, 1, 0], clear: [0, 0, 0], measures: [{ id: 'rain', days: [1, 1, 0] }, { id: 'snow', days: [0, 1, 0] },

@@ -106,8 +106,6 @@ fn advisor_templates_and_idea_notes_share_one_read() {
         ),
         (
             "common/ideas/b.txt",
-            // Same-group redeclarations replace in place;
-            // different groups retain duplicate tokens.
             "ideas={other={synthetic_idea={}}}",
         ),
         (
@@ -125,8 +123,6 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     ]);
     let scripted = catalogue.scripted_content().unwrap();
     let environment = scripted.environment().unwrap();
-    // Reached readers can run in any order; their published notes retain the
-    // environment's native ideology, terrain, leader-trait order.
     let _ = environment.leader_traits();
     let _ = environment.terrain();
     let _ = environment.ideologies();
@@ -739,12 +735,10 @@ fn native_country_target_saved_probe_order_reads_separate_country_member() {
                 .tooltip_targets
                 .insert(1, vec![(b"chosen".to_vec(), EventObject::Country(1))]);
         } else if stage == 4 {
-            // A live state has country zero; it shadows every later store.
             graph
                 .tooltip_targets
                 .insert(1, vec![(b"chosen".to_vec(), EventObject::State(3))]);
         } else if stage == 5 {
-            // Find returns the first name match, then decides its validity.
             graph.tooltip_targets.insert(
                 1,
                 vec![
@@ -910,7 +904,6 @@ fn state_leaves_refuse_unavailable_and_partial_rosters_before_invalid_state_logi
                 "{leaf}: {:?}",
                 out.refusals
             );
-            // The world words a core table's gap; the frame names the table.
             assert!(
                 out.refusals
                     .keys()
@@ -1007,7 +1000,7 @@ fn empty_own_generic_builder_keeps_children_and_multiple_probe() {
         &mut fresh(),
         Content::default(),
     );
-    assert_eq!(out.text, "XP2\n"); // A refused own operand cannot hide independent children.
+    assert_eq!(out.text, "XP2\n");
     assert_eq!(out.refusals.values().sum::<usize>(), 1);
     assert!(out.refusals.keys().any(|why| {
         why.contains("key add_doctrine_cost_reduction:")
@@ -1216,7 +1209,7 @@ fn generic_join_and_both_indent_operations_are_native() {
     );
     assert_eq!(out.text, "XP2\n");
     let out=fixture.render("BBB={AAA={if={limit={tag=BBB} add_political_power=1 army_experience=2} else={add_political_power=3}} army_experience=4}",&mut fresh(),Content::default());
-    assert_eq!(out.text, "PP3\n   XP4\n"); // Context probes in the supplied scope.
+    assert_eq!(out.text, "PP3\n   XP4\n");
 }
 
 #[test]
@@ -1227,7 +1220,7 @@ fn branches_share_one_evaluator_and_description_does_not_execute_setters() {
     let out=fixture.render("set_country_flag=x if={limit={has_country_flag=x} army_experience=9} ignored_invalid=1 else_if={limit={check_variable={num_owned_states>4} any_owned_state={state=2}} add_political_power=2} else={army_experience=8} clear_variable=x clr_country_flag=x clr_state_flag=x",
         &mut fresh(),Content::default());
     assert_eq!(out.text, "PP2\n");
-    assert_eq!(out.refusals.values().sum::<usize>(), 1); // invalid content remains named.
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
 }
 
 #[test]
@@ -1414,7 +1407,6 @@ fn reached_event_compositions_keep_scope_and_hidden_effect_behavior() {
         events: Some(&reference),
         ..Default::default()
     };
-    // Cases combine scalar operands, nested children and scope selectors.
     let cases = [
         (
             "Greece36",
@@ -1530,8 +1522,6 @@ fn native_leaf_conditions_and_missing_content_refusals_remain_local() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    // Add equipment returns empty text for a null type;
-    // a concrete token reaches the required equipment catalogue instead.
     let out=fixture.render("annex_country=BBB add_state_claim=1 delete_unit_template_and_units={division_template=guard disband=yes disband=invalid} hidden_effect={add_equipment_to_stockpile={type=synthetic_missing amount=1}} army_experience=2",&mut fresh(),Content::default());
     assert_eq!(
         out.text,
@@ -1633,8 +1623,6 @@ fn country_event_random_block_is_described_as_a_native_child() {
         events: Some(&reference),
         ..Default::default()
     };
-    // The block adds a random-effect child,
-    // whereas the scalar remains a delay operand.
     let output = fixture.render_native(
         "country_event={id=synthetic.1 random=3 random={chance=100 army_experience=2}}",
         &mut fresh(),
@@ -1679,7 +1667,7 @@ fn country_event_uses_title_only_fresh_from_root_and_advances_seed_lane() {
         &mut fresh(),
         Content::default(),
     );
-    assert_eq!(result.text, "tip\n"); // first child's false clears the context header.
+    assert_eq!(result.text, "tip\n");
     let result = fixture.render(
         "BBB={country_event={id=synthetic.1 desc=\"\"}}",
         &mut fresh(),
@@ -1784,7 +1772,7 @@ fn wtt_shaped_immediate_and_option_keep_marker_links_and_recorded_flag_condition
     *fixture.frame.tables[TableId::ScriptFlags.index()] =
         TableView::Complete(TableRows::ScriptFlags(Vec::new()));
     let result = fixture.render(option, &mut graph, content);
-    assert_eq!(result.text, "Annex Alpha/Beta\n"); // describing the setter did not execute it.
+    assert_eq!(result.text, "Annex Alpha/Beta\n");
 }
 
 #[test]
@@ -1858,8 +1846,6 @@ fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() 
 #[path = "recorded_source_tests.rs"]
 mod recorded_source;
 
-/// Every table the effect descriptions and their shared formatters read is in
-/// [`recorded_tables`], which the effect-describing products select.
 #[test]
 fn recorded_tables_cover_every_effect_operand() {
     let selected: BTreeSet<_> = recorded_tables().map(|table| format!("{table:?}")).collect();
@@ -1867,7 +1853,6 @@ fn recorded_tables_cover_every_effect_operand() {
         .iter()
         .map(|table| format!("{table:?}"))
         .collect();
-    // A test built on Boat runs here: the run-time variable names this checkout.
     let root = std::env::var_os("CARGO_MANIFEST_DIR")
         .map_or_else(
             || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
@@ -1896,7 +1881,6 @@ fn recorded_tables_cover_every_effect_operand() {
     }
     for file in files {
         let source = std::fs::read_to_string(&file).unwrap();
-        // Production code ends where an inline test module begins.
         let end = source
             .match_indices("#[cfg(test)]")
             .map(|(at, marker)| (at, source[at + marker.len()..].trim_start()))

@@ -1,5 +1,3 @@
-//! The pipe each app answers on, so the other app and the installer can ask whether it may be
-//! replaced now and ask it to close for an update. `installer-hooks.nsh` speaks the same bytes.
 use crate::Role;
 use std::{ffi::c_void, io, sync::Arc};
 use windows_sys::Win32::{
@@ -18,26 +16,19 @@ use windows_sys::Win32::{
     },
 };
 
-/// Close for an update: answered `CLOSING` (and the app closes) or `REFUSED`.
 pub const CLOSE: u8 = b'C';
-/// May this app be replaced now: answered `FREE`, or `BUSY` followed by the reason in UTF-8.
 pub const QUERY: u8 = b'Q';
 const CLOSING: u8 = b'Y';
 const REFUSED: u8 = b'N';
 const FREE: u8 = b'I';
 const BUSY: u8 = b'B';
 
-/// What a request asks the app that answers it.
 pub trait Answer: Send + Sync + 'static {
-    /// Whether this app will close for an update.
     fn close_for_update(&self) -> Result<(), String>;
-    /// Close, once the asker has read the answer: an app gone before it answered would leave
-    /// the installer unsure what to start again.
     fn closed_for_update(&self) {}
     fn install_blocked(&self) -> Option<String>;
 }
 
-/// `\\.\pipe\HOI4Replay.<session>.<role>`: one name per Windows session, as the installer builds it.
 fn pipe_name(role: Role) -> io::Result<Vec<u16>> {
     let mut session = 0_u32;
     if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 {
@@ -49,10 +40,8 @@ fn pipe_name(role: Role) -> io::Result<Vec<u16>> {
         .collect())
 }
 
-/// Answer requests on this app's pipe for as long as it runs.
 pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
     let name = pipe_name(role)?;
-    // Unlimited instances: two copies of Battle Plan each answer, so each can be closed.
     let pipe = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
@@ -68,7 +57,6 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
     if pipe == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
-    // A handle is an address; the thread takes it as a number.
     let raw = pipe as usize;
     std::thread::Builder::new()
         .name("update control".into())
@@ -126,7 +114,6 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
                             &mut written,
                             std::ptr::null_mut(),
                         );
-                        // Returns once the asker has read the reply.
                         FlushFileBuffers(pipe);
                     }
                     if closing {
@@ -143,7 +130,6 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
         })
 }
 
-/// Why `role` cannot be replaced now; `None` when it is free or not running.
 pub fn install_blocked(role: Role) -> Option<String> {
     let name = match pipe_name(role) {
         Ok(name) => name,
@@ -170,7 +156,6 @@ pub fn install_blocked(role: Role) -> Option<String> {
     } != 0;
     if !answered {
         let error = unsafe { GetLastError() };
-        // No pipe: the app is not running.
         if error == ERROR_FILE_NOT_FOUND {
             return None;
         }

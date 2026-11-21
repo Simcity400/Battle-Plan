@@ -1,8 +1,3 @@
-//! State base scalar observations and metadata-only pool projections.
-//! Membership follows the existing registration segment; fuel words never
-//! come from its deliberately zeroed carried spans. Every hourly acquisition
-//! reads both current fuel words of every container on the existing AirBases
-//! worker, in one guarded gather.
 use super::{AirBasesJob, bases::HeldSegment};
 use crate::raw::RawLog;
 use engine_native::{
@@ -50,7 +45,6 @@ pub(crate) struct Store {
     visited: HashSet<u64>,
     index: Vec<SnapshotSpan>,
     index_scratch: Vec<SnapshotSpan>,
-    /// Each output row's container and its gathered fuel words.
     fuel_pointers: Vec<usize>,
     fuel_words: Vec<u8>,
 }
@@ -209,7 +203,6 @@ impl Store {
 }
 
 const UNREADABLE: &str = "state air-base fuel scalar unreadable";
-/// Both fuel words of one container, demand first.
 const FUEL_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: container::FUEL_DEMAND_RAW,
@@ -226,8 +219,6 @@ const FUEL_LAYOUT_BYTES: usize = 16;
 const FUEL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&FUEL_FIELDS, FUEL_LAYOUT_BYTES).expect("valid record layout");
 
-/// Each row's fuel from its container in `pointers`, in one guarded gather
-/// resumed after a failed word, so a failure withholds no other value.
 fn gather_fuel(
     memory: &impl Memory,
     pointers: &[usize],
@@ -256,7 +247,6 @@ fn gather_fuel(
             break;
         }
         rows[failed].fuel = if completed % FUEL_FIELDS.len() == 0 {
-            // Demand failure must not suppress the independent allocation read.
             ContainerFuel {
                 demand: Err(UNREADABLE),
                 allocated: scalar(memory, pointers[failed], container::FUEL_ALLOCATED_RAW),
@@ -271,12 +261,6 @@ fn gather_fuel(
     }
 }
 
-/// The AirBaseRegistrations cadence audit puts FUEL_DEMAND_RAW in the hourly
-/// strategic-air worker stage; air_base_mutations documents its task-group join.
-/// engine_fuel::fuel_awards places FUEL_ALLOCATED_RAW in the serial pre-boundary
-/// country pass. Both phases are quiescent while a capture reads;
-/// these sources do not establish an exhaustive demand-updater caller set.
-/// A failed value never withholds its readable sibling.
 fn update_fuel(memory: &impl Memory, pointer: usize) -> ContainerFuel {
     let addresses = [container::FUEL_DEMAND_RAW, container::FUEL_ALLOCATED_RAW].map(|offset| {
         pointer
@@ -296,7 +280,6 @@ fn update_fuel(memory: &impl Memory, pointer: usize) -> ContainerFuel {
                 Err("state air-base fuel scalar unreadable")
             },
             allocated: match completed {
-                // Demand failure must not suppress the independent allocation read.
                 0 => scalar(memory, pointer, container::FUEL_ALLOCATED_RAW),
                 1 => Err("state air-base fuel scalar unreadable"),
                 _ => Ok(i64::from_le_bytes(words[1])),
@@ -316,11 +299,6 @@ fn scalar(memory: &impl Memory, pointer: usize, offset: usize) -> Result<i64, &'
         .and_then(|at| read(memory, at))
         .ok_or("state air-base fuel scalar unreadable")
 }
-/// Extra subtype/owner leaves may read live only during a fresh membership
-/// projection. Existing observations always win; held fuel words are unused.
-// Metadata projects subfields of complete original spans. This indexed view
-// uses owned bytes only, preserving a failed covering observation instead of
-// rereading it. It is independent of the typed replay's exact-key cursor.
 #[derive(Debug, Clone, Copy)]
 struct SnapshotSpan {
     start: usize,
@@ -333,8 +311,6 @@ fn prepare_snapshot(
     index: &mut Vec<SnapshotSpan>,
     scratch: &mut Vec<SnapshotSpan>,
 ) -> Result<(), &'static str> {
-    // Ordinals and covering geometry alone define this index. New values,
-    // including failures, are always read from the current owned log.
     if index.len() == log.spans.iter().filter(|span| span.len != 0).count()
         && index.iter().all(|entry| {
             log.spans.get(entry.index).is_some_and(|span| {
@@ -356,7 +332,6 @@ fn prepare_snapshot(
         .filter(|(_, span)| span.len != 0)
     {
         let Some(end) = span.addr.checked_add(span.len as usize) else {
-            // A partial, unsorted index must not become next hour's geometry.
             index.clear();
             return Err("state air-base snapshot address overflow");
         };
@@ -395,8 +370,6 @@ fn sort_snapshot(index: &mut Vec<SnapshotSpan>, scratch: &mut Vec<SnapshotSpan>)
         return;
     }
     scratch.resize(index.len(), first);
-    // Input ordinals are increasing. Stable address-byte passes retain their
-    // order for equal starts, including the last covering failed observation.
     for shift in (0..usize::BITS).step_by(8) {
         if (varying >> shift) & 255 == 0 {
             continue;
@@ -605,8 +578,6 @@ fn read_pools<M: Memory>(
     Ok(result)
 }
 
-/// Called only from the existing allocating AirBases worker, after its
-/// registration snapshot completed. Failure preserves every predecessor row.
 pub(crate) fn capture(job: &mut AirBasesJob, memory: &impl Memory, image: usize) {
     job.state_fuel.clear();
     if job.log.overflowed || job.registration_demand.is_none() {
@@ -693,8 +664,6 @@ mod tests {
         allocation: Cell<Option<i64>>,
         reads: Cell<usize>,
     }
-    // Each container's words sit at their offsets from a 0x1000-aligned
-    // container; any other container's fault.
     impl Memory for ScalarMemory {
         fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
@@ -792,8 +761,6 @@ mod tests {
         }
     }
 
-    /// Every container's fuel is one guarded gather; a faulting word resumes
-    /// the gather after it, and fails only itself.
     #[test]
     fn every_containers_fuel_is_one_gather_resumed_only_after_a_failed_word() {
         use engine_native::read_counts::{CountedMemory, ReadCounts};

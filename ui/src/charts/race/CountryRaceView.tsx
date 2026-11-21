@@ -56,20 +56,16 @@ export interface CountryRaceViewProps {
   options: Readonly<Record<string, OptionValue>>; view: RaceView;
   extent: [number, number]; playhead: number | null; moment: number; slots: number;
   ranked: readonly CountryRaceEntry[]; lines: readonly CountryRaceLine[];
-  /** The race's entries at the head, painted every frame: `ranked` is then only which rows there are. */
   liveRanked?: LiveRaceEntries;
   remoteRows?: RemoteRaceRows;
   parts?: readonly CountryRacePart[];
   raceLegendParts?: readonly CountryRacePart[]; partsLabel?: string;
   mix?: { tag: string; tagAt?: (hour: number) => string | null; bands?: readonly (readonly Run[])[]; compactStack?: boolean; lines?: readonly CountryRaceLine[]; parts?: readonly CountryRacePart[]; approximate?: ChartSummary['approximate'] } | null;
   countryTags?: readonly string[];
-  /** The lost spans of the reply its lines and mix draw: nothing is drawn across them. */
   gaps?: readonly LostSpan[];
   entityLooks?: CountryRaceLooks;
   lineLegendLabel?: string;
-  /** Exact per-country reads for a sampled race's names, flags and Jump to. */
   countryLookHours?: ReadonlyMap<string, number>;
-  /** Supplying read at any shown hour; null tag means a shared time-axis action. */
   countryLookHour?: (tag: string | null, hour: number) => number | null;
   segmentAt?: (tag: string, hour: number) => number | null;
   tooltip: (tag: string, hour: number, name: string, colours: ReadonlyMap<string, string>, labelAt: LabelAt) => Iterable<TooltipContent> | null;
@@ -79,35 +75,24 @@ export interface CountryRaceViewProps {
   timeTooltip?: (hour: number) => Iterable<TooltipContent> | null;
   keyHours?: readonly number[]; strip?: ChartStrip; beforeChart?: ReactNode;
   pending?: readonly Span[];
-  /** Dated events for lines and mix; race bars have no time-marker strip. */
   badges?: readonly EventBadge[];
-  /** Actual lines/mix viewport, including zoom, pan and playback, for window loads. */
   onViewChange?: (x: readonly [number, number]) => void;
   lineSummaries?: ReadonlyMap<string, ChartSummary>;
-  /** The newest line summaries, read as the chart draws (tiles landing while the lines follow the head): beside
-   * `lineSummaries`, which names the lines (structure), so a tile landing repaints without a render. */
   lineData?: Live<ReadonlyMap<string, ChartSummary> | null>;
   onSummaryView?: import('../TimeChart').TimeChartProps['onSummaryView'];
-  /** While following, the head the lines move with every frame. */
   liveHead?: import('../TimeChart').LiveHead;
   onReachHour?: (hour: number | null) => void;
   exactLineTags?: (hour: number) => Promise<readonly string[] | null>;
   navigation?: Pick<import('../TimeChart').TimeChartProps, 'onNavigateHour' | 'keyboardHour' | 'keyboardRevision'>;
   onPick?: (hour: number, tag?: string, choices?: readonly string[]) => void;
-  /** Caller owns recording/branch/view, selection and numeric-model lifetime;
-   * exclude playback, metadata and looks. Forwarded unchanged when supplied. */
   pickOwner?: unknown;
   selectedHour?: number | null;
-  /** The selected hour is the live head's: drawn where the head is now. */
   selectedHead?: boolean;
-  /** Keeps country requests mounted while the widget shows its product state. */
   state?: ReactNode;
   formatAxis?: (value: number, ticks: readonly number[]) => string;
   formatTick?: (value: number, ticks: readonly number[]) => string;
-  /** `race` dated by the hour the race shows: read again as a live race paints, so its day is never the render's. */
   labels?: { race?: string | ((hour: number) => string); lines?: string; mix?: (name: string) => string; actions?: string };
   lineEmpty?: { icon?: IconName; message: string };
-  /** Why none of the time chart's lines holds a value in view: shown over it as not recorded (`TimeChart`'s `notRecorded`). */
   notRecorded?: string | null;
   mixEmpty?: { icon?: IconName; message: string; unavailable: (name: string) => string };
   resetKey?: string;
@@ -118,7 +103,6 @@ export interface CountryRaceViewProps {
     strongMixName?: boolean; mixKeyHours?: 'boundaries' | 'starts'; raceEmptyState?: boolean;
     resetTimeView?: boolean;
     windowedLegend?: boolean;
-    /** False when the caller draws the mix's key itself. */
     mixLegend?: boolean;
   };
   label: string; empty: string; formatValue: (value: number) => string;
@@ -131,13 +115,10 @@ const COUNTRY_NAME_SAMPLES = ['Country name unavailable'];
 type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
   lines: readonly Pick<CountryRaceLine, 'tag' | 'id' | 'runs'>[] | undefined; bands: readonly (readonly Run[])[] | undefined };
 
-/** Race, country lines and one-country mix use the same colours, hour-specific
- * identities, exact reads, chart controls and Jump to across all race widgets. */
 export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows, present, arsenal,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, lineData, onSummaryView, liveHead, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, selectedHead = false, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, notRecorded, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue, gaps }: CountryRaceViewProps) {
-  // Callers build the extent each render; its hours, not the array, keep the chart's layers.
   const [extentFirst, extentLast] = shownExtent;
   const extent = useMemo<[number, number]>(() => [extentFirst, extentLast], [extentFirst, extentLast]);
   const tokens = useChartTokens();
@@ -149,7 +130,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const endLabels = options.endLabels !== false;
   const drawnLines = view === 'mix' ? mix?.lines ?? [] : lines;
   const linesView = view === 'lines' || (view === 'mix' && mix?.lines !== undefined);
-  // Rendered only when the looks the line labels read change, not each hour a line grows.
   const [labelView, setLabelView] = useState<[number, number] | null>(null);
   const labelKey = useRef<{ shown: string | null; rendered: () => string; of: (bounds: readonly [number, number]) => string }>({ shown: null, rendered: () => '', of: () => '' });
   const onViewChange = useCallback((x: readonly [number, number]) => {
@@ -159,7 +139,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     labelKey.current.shown = key;
     setLabelView(before => before?.[0] === bounds[0] && before[1] === bounds[1] ? before : bounds);
   }, []);
-  // Following, the labels end at the head now, as the chart draws them.
   const labelUntil = liveHead && playhead != null ? shownUntil(liveHead.read(), playback, options.afterPlayhead === true) : until;
   const labelHours = (bounds: readonly [number, number] | null, last: number | null) => lineLabelHours(drawnLines,
     endLabels ? Math.max(extent[0], bounds?.[0] ?? extent[0]) : extent[0], endLabels ? Math.min(extent[1], bounds?.[1] ?? extent[1]) : extent[1], last);
@@ -168,7 +147,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
       ? undefined : onViewChange;
     return reportViewport ? (x: readonly [number, number]) => { labels?.(x); reportViewport(x); } : labels;
   }, [presentation.countryLooks, presentation.mixKeyHours, view, onViewChange, reportViewport]);
-  const hours = useMemo(() => labelHours(labelView, labelUntil), [drawnLines, endLabels, extent, labelView, labelUntil]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hours = useMemo(() => labelHours(labelView, labelUntil), [drawnLines, endLabels, extent, labelView, labelUntil]);
   const tags = useMemo(() => presentation.countryLooks === false ? NO_TAGS : countryTags
     ?? (view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? [...new Set(lines.map(line => line.tag))] : mix ? [mix.tag] : []),
     [presentation.countryLooks, countryTags, view, ranked, lines, mix]);
@@ -178,15 +157,13 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     const read = readHour(tag, linesView ? at.get(tag) ?? moment : moment);
     return read === null ? [] : [[tag, read] as const];
   })) : view === 'race' ? countryLookHours : linesView ? at : undefined;
-  const lookHours = useMemo(() => lookHoursOf(hours), [countryLookHour, tags, readHour, linesView, hours, moment, view, countryLookHours]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lookHours = useMemo(() => lookHoursOf(hours), [countryLookHour, tags, readHour, linesView, hours, moment, view, countryLookHours]);
   const exactLooks = countryLookHour !== undefined || (view === 'race' && countryLookHours !== undefined);
-  // A race painted at the head names its rows as they are at the hour it paints, read where one last changed.
   const followedLooks = active && view === 'race' && !!liveRanked && !exactLooks && presentation.countryLooks !== false && !entityLooks;
   const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, followedLooks,
     () => liveRanked && track ? branchHour(track.branch, liveRanked.hour()) : null);
   const lookRead = looksRead(followedLooks, identityHour, moment, segmentAt, lookHours, exactLooks);
   const looks = useCountryLooks(runtime.client, track, tags, lookRead.hour, active, lookRead.segmentAt, lookRead.hours, lookRead.exact);
-  // What a view's labels read: each line's look sample, or, named by the caller, each line's label hour.
   const labelsOf = (at: ReadonlyMap<string, number>) => entityLooks ? JSON.stringify([...at])
     : JSON.stringify(lookPlan(track?.branch, tags, moment, segmentAt, lookHoursOf(at), exactLooks).samples);
   labelKey.current.of = bounds => labelsOf(labelHours(bounds, liveHead && playhead != null ? shownUntil(liveHead.read(), playback, options.afterPlayhead === true) : until));
@@ -202,7 +179,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
   const items = useMemo(() => countryRaceItems(ranked, colours, country, tokens.muted, presentation.exact !== false),
     [ranked, colours, country, tokens.muted, presentation.exact]);
-  // At the head the race reads its entries as it draws: values and order are painted, never rendered.
   const raceLabel = useRef(chartLabels?.race);
   raceLabel.current = chartLabels?.race;
   const dateOverlay = options.dateOverlay === true;
@@ -304,7 +280,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
       && before.lines.every((line, index) => line.tag === rawPickLines[index].tag && line.id === rawPickLines[index].id
         && line.runs === rawPickLines[index].runs) : before?.lines === rawPickLines;
     if (before && before.scope === rawPickScope && before.client === runtime.client && before.bands === rawPickBands && sameLines) return before;
-    // Keep run references and native identities, never label/style wrappers or a history copy.
     return fallback.owner = { scope: rawPickScope, client: runtime.client, bands: rawPickBands,
       lines: rawPickLines?.map(({ tag, id, runs }) => ({ tag, id, runs })) };
   }, [fallback, pickOwner, rawPickScope, runtime.client, rawPickLines, rawPickBands]);
@@ -314,14 +289,12 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const mixTagAt = (hour: number) => mix?.tagAt ? mix.tagAt(hour) : mix?.tag ?? null;
   const mixName = mixTagAt(moment) ? nameOf(mixTagAt(moment)!) : 'Selected country unavailable';
   const raceTag = (key: string, item?: RaceItem) => item?.tag ?? key;
-  // A live race's rows are at the head now: their entries are kept while their values hold.
   const raceHour = (item?: RaceItem) => liveRanked ? liveRanked.hour() : item?.hour ?? moment;
   const raceCountryFlag = (key: string, item?: RaceItem) => {
     const tag = raceTag(key, item), hour = readHour(tag, raceHour(item));
     return (hour === null ? undefined : entity.countryFlag?.(tag, hour))
       ?? { flagReason: 'The country flag is unavailable at this date.' };
   };
-  // Kept while nothing they draw changes, so a render that changes nothing drawn repaints nothing.
   const timeLayers = useMemo(() => [pendingLayer(pending), ...(linesView ? lineLayers : mixLayers)], [pending, linesView, lineLayers, mixLayers]);
   const timeOverlay = useCallback((ctx: CanvasRenderingContext2D, frame: PlotFrame, chartTokens: ChartTokens) => {
     if (selectedHour != null) drawPlayhead(ctx, frame, chartTokens, selectedHead && liveHead ? Math.floor(liveHead.read()) : selectedHour);
@@ -403,7 +376,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
           onHover={hour => { if (hour === null) showTip(null); }}
           onViewChange={observeView}
           onSummaryView={onSummaryView} liveHead={liveHead} data={linesView ? lineChartData : undefined}
-          // Its three fields only: a caller's navigation is often a larger object (the army's prepared lines carry `data`).
           onNavigateHour={navigation?.onNavigateHour} keyboardHour={navigation?.keyboardHour} keyboardRevision={navigation?.keyboardRevision}
           padding={linesView ? presentation.linePadding !== undefined
             ? { right: endLabels ? presentation.linePadding : CHART_LAYOUT.right } : endLabels ? { right: tokens.fontSize.body * 12 } : undefined : undefined}
@@ -415,7 +387,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
             let choices: string[];
             if (lineSummaries?.size && known) {
               const knownTags = new Set(known);
-              // Separate measures have separate geometry; choices remain native countries.
               const summaryLines = drawnLines.flatMap((line, index) => {
                 const held = lineData?.read() ?? lineSummaries;
                 const summary = held.get(line.id ?? line.tag) ?? held.get(line.tag);

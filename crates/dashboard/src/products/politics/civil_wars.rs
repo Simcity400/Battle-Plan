@@ -1,20 +1,3 @@
-//! `civil-wars`: each holder's stored civil-war rivals over the branch (runs of
-//! `CountryCivilWars.target`), grouped into episodes at the reply, with outcomes only where
-//! annexation evidence proves one.
-//!
-//! An episode is the holders joined by rival listings that overlap or meet in time; listings
-//! apart in time are separate episodes, and no two-coalition split is forced on three or more
-//! sides. A side lasts from its first listing to its last. A side "broke from" the
-//! earliest-listed of its rivals at its first listing that was already a side then. A side whose
-//! holder held a tag before the outbreak existed before it.
-//!
-//! The war is ongoing at an hour while the game's predicate holds for a side: a listing whose
-//! listed or listing country exists (owns a state). A stale listing naming a country that no
-//! longer exists keeps a side's span but not the war.
-//!
-//! The winner is shown only when every other side was annexed by a side. An annexation by a
-//! country that was not a side yet decides nothing; a side recorded existing after its
-//! annexation within the episode was restored.
 
 use super::{HolderTag, by_id, holdings, pieces, stretch_runs, tag_at, tags_of, value_at, within};
 use crate::{
@@ -33,14 +16,12 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// One recorded annexation, its countries as tagged at its hour.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Annexation {
     pub hour: i32,
     pub read_hour: i32,
     pub annexer: Option<String>,
     pub annexed: Option<String>,
-    /// Whether it ran within a civil war's resolution.
     pub civil_war: bool,
 }
 
@@ -55,15 +36,11 @@ pub struct CivilWarsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum SideExitKind {
-    /// Annexed by another side through a civil war's resolution.
     AnnexedBySide,
-    /// Annexed by another side otherwise.
     AnnexedBySideOtherwise,
-    /// Annexed by a country that was not a side.
     AnnexedByOther,
 }
 
-/// How a side left, as an annexation recorded it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +48,7 @@ pub struct SideExit {
     pub kind: SideExitKind,
     pub hour: i32,
     pub read_hour: i32,
-    /// The annexer's tag at the annexation.
+    #[doc = " The annexer's tag at the annexation."]
     pub by: Option<String>,
 }
 
@@ -79,19 +56,17 @@ pub struct SideExit {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarSide {
-    /// The holder's tags from each hour it held them.
+    #[doc = " The holder's tags from each hour it held them."]
     pub tags: Vec<HolderTag>,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The side it broke from, by index.
+    #[doc = " The side it broke from, by index."]
     pub parent: Option<u32>,
-    /// Whether the holder held a tag before the outbreak.
+    #[doc = " Whether the holder held a tag before the outbreak."]
     pub existed_before: bool,
     pub exit: Option<SideExit>,
 }
 
-/// A proven outcome: the side left after every other was annexed by a side, dated by the last
-/// such annexation.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -108,8 +83,8 @@ pub struct CivilWar {
     pub id: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The hours the game's civil-war predicate held for a side, within the listings: the war is
-    /// ongoing while it holds.
+    #[doc = " The hours the game's civil-war predicate held for a side, within the listings: the war is"]
+    #[doc = " ongoing while it holds."]
     pub at_war: Vec<HourSpan>,
     pub sides: Vec<CivilWarSide>,
     pub outcome: Option<CivilWarOutcome>,
@@ -120,9 +95,9 @@ pub struct CivilWar {
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarsReply {
     pub branch_id: String,
-    /// The branch's last hour: the reply reads through it.
+    #[doc = " The branch's last hour: the reply reads through it."]
     pub last_hour: Option<i32>,
-    /// The hours the civil-war lists were read; others are unknown.
+    #[doc = " The hours the civil-war lists were read; others are unknown."]
     pub known: Vec<HourSpan>,
     pub wars: Vec<CivilWar>,
     pub warnings: Vec<String>,
@@ -155,7 +130,6 @@ impl Product for CivilWars {
     }
 }
 
-/// Two holders' listing of each other over hours.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Listing {
     pub a: u32,
@@ -164,10 +138,8 @@ pub(crate) struct Listing {
     pub last: i32,
 }
 
-/// Each holder's hours of one predicate: (first, last, value).
 type HolderRuns = BTreeMap<u32, Vec<(i32, i32, i64)>>;
 
-/// Every civil war on `query`'s timeline.
 pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBool) -> io::Result<CivilWarsReply> {
     let mut reply = CivilWarsReply { branch_id: params.branch_id.clone(), last_hour: Some(query.timeline.last), known: Vec::new(), wars: Vec::new(), warnings: Vec::new() };
     let held = holdings(&query.holders);
@@ -208,7 +180,6 @@ pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBoo
     for runs in exists.values_mut() {
         runs.sort_unstable_by_key(|run| run.0);
     }
-    // The recorded annexations, the outcome evidence: the event feed's rows.
     let evidence = crate::products::feed::annexations(query)?;
     let tags: BTreeMap<u32, Vec<HolderTag>> = held.iter().map(|(&slot, held)| (slot, tags_of(held))).collect();
     reply.wars = episodes(listings, &tags, &exists, &evidence);
@@ -218,11 +189,8 @@ pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBoo
     Ok(reply)
 }
 
-/// Each holder's tags.
 type Tags = BTreeMap<u32, Vec<HolderTag>>;
 
-/// `listings` grouped into episodes: listings joined by a shared holder while overlapping or
-/// meeting.
 pub(crate) fn episodes(mut listings: Vec<Listing>, tags: &Tags, exists: &HolderRuns, annexations: &[Annexation]) -> Vec<CivilWar> {
     listings.sort_by_key(|listing| (listing.first, listing.a, listing.b));
     let mut groups: Vec<Vec<Listing>> = Vec::new();
@@ -250,7 +218,6 @@ pub(crate) fn episodes(mut listings: Vec<Listing>, tags: &Tags, exists: &HolderR
     wars
 }
 
-/// The hours within a listing the game's predicate holds: the listed or listing holder exists.
 fn predicate(listing: &Listing, exists: &HolderRuns) -> Vec<(i32, i32)> {
     let none = Vec::new();
     let a = exists.get(&listing.a).unwrap_or(&none);
@@ -265,7 +232,6 @@ fn war(mut group: Vec<Listing>, tags: &Tags, exists: &HolderRuns, annexations: &
     group.sort_by_key(|listing| (listing.first, listing.a, listing.b));
     let first = group.iter().map(|listing| listing.first).min().unwrap_or(0);
     let last = group.iter().map(|listing| listing.last).max().unwrap_or(0);
-    // Sides in the order they were first listed, holders breaking ties.
     let mut spans = BTreeMap::<u32, (i32, i32)>::new();
     for listing in &group {
         for holder in [listing.a, listing.b] {
@@ -283,7 +249,6 @@ fn war(mut group: Vec<Listing>, tags: &Tags, exists: &HolderRuns, annexations: &
         .iter()
         .map(|&holder| {
             let (side_first, side_last) = spans[&holder];
-            // The earliest-listed rival, among those at its first listing, already a side then.
             let parent = group
                 .iter()
                 .filter(|listing| listing.first == side_first)
@@ -303,16 +268,13 @@ fn war(mut group: Vec<Listing>, tags: &Tags, exists: &HolderRuns, annexations: &
         })
         .collect();
     let side_at = |tag: &str, hour: i32| order.iter().position(|&holder| tag_at(tags_of(holder), hour) == Some(tag));
-    // The hour after the episode's last listing; a restoration later than it is another episode's.
     let ended = sides.iter().map(|side| side.last_hour).max().unwrap_or(i32::MIN).saturating_add(1);
     let existed_after = |holder: u32, hour: i32| exists.get(&holder).is_some_and(|runs| runs.iter().any(|run| run.2 != 0 && run.1 > hour && run.0 <= ended));
     let mut annexations: Vec<&Annexation> = annexations.iter().collect();
     annexations.sort_by_key(|annexation| (annexation.hour, annexation.read_hour));
     for annexation in annexations {
         let annexed = annexation.annexed.as_deref().and_then(|tag| side_at(tag, annexation.hour));
-        // A country annexes as a side only once it is listed.
         let by = annexation.annexer.as_deref().and_then(|tag| side_at(tag, annexation.hour)).filter(|&by| sides[by].first_hour <= annexation.hour);
-        // Annexing anyone after its own annexation, the side was restored: that exit was not last.
         if let Some(by) = by
             && annexed != Some(by)
             && annexation.hour <= ended

@@ -1,5 +1,3 @@
-//! Template-bound headquarters deployment operands from an authenticated group.
-//! The caller owns writer demand and reuses its existing group census.
 use crate::{
     Memory, allocation, cequipment_type, cequipment_variant_pool, corders_group, cpdx_array::Array,
     equipment_entry, read,
@@ -25,7 +23,6 @@ const ASSEMBLED_MANPOWER: usize = 0x88;
 const REQUESTED_MANPOWER: usize = 0x8c;
 const ORDER: usize = 0x90;
 pub const REQUISITIONED: usize = 0x94;
-/// Target template's cached archetype requirements supplied to the rebuild.
 pub const TEMPLATE_REQUIREMENTS: usize = 0x120;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +40,6 @@ pub struct Deployment {
 pub struct Header {
     pub holder: usize,
     pub target: u64,
-    /// Deployed and queued bytes, in native order.
     pub state: [u8; 2],
     pub deployment: Option<Deployment>,
     equipment: [u8; 16],
@@ -66,8 +62,6 @@ pub struct Pools {
     pub required: Vec<Requirement>,
 }
 
-/// The same-pass group census and counter prefix authenticated this root.
-/// A retained unresolved target remains a raw reference, as in country selection.
 pub fn header(
     memory: &impl Memory,
     base: usize,
@@ -132,8 +126,6 @@ pub fn header(
     Ok(header)
 }
 
-/// Fill retained live-sized vectors. Repeated writer acquisitions reuse capacity;
-/// immutable replay payloads need rebuilding only when these operands differ.
 pub fn pools(
     memory: &impl Memory,
     base: usize,

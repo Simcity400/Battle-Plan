@@ -1,0 +1,9 @@
+# 0308. Project occupation from recorded ownership and garrison evidence
+
+The occupation panel uses the game's active resistance predicate with a positive occupied-country reference. It retains the distinct original occupied country and the legal owner. Availability of a state roster requires reading the resistance rows and resolving both parties. A law is selected from recorded scopes and authored definitions. The trigger world is read only when a state falls through to the occupier's default and must evaluate eligibility. Names and icons come from the recorded content stack, with the reason when unavailable.
+
+Resistance, compliance, their rates and the moving garrison amounts use live cells. The required template amount and displayed strength are different quantities. The required amount's sign can change the row structure. The assigned manpower sum uses all contributing rows, with a known zero when a complete assignment table holds none. Strength requires the recorder's derived value and support for its equipment operands in the recorded content. Refusals leave no strength cell. The occupation trend reads separate occupier totals and can include collaboration toward each occupier. Active resistance and garrison references both supply the collaboration roster.
+
+A read of the holder's occupation status certifies an empty reserve as a zero. Reserve entries keep their list order and signed amounts. A holder with recorded zero owned states is excluded, consistent with the game's existence check. History splits where an entry, the admission row or coverage changes, and resolves the sources' changing tags over their dated runs.
+
+[Occupied states](../../crates/dashboard/src/products/occupation/states.rs) · [Occupation trend](../../crates/dashboard/src/products/occupation/detail.rs) · [Reserve](../../crates/dashboard/src/products/occupation_reserve.rs)

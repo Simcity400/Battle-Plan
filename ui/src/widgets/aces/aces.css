@@ -1,4 +1,3 @@
-/* Approved Aces table measures; colours come from the active theme. */
 .aces-widget { --military-portrait-column: 38px; --military-status-column: 90px; --military-name-min: 150px; --military-portrait-width: 34px; --military-portrait-height: 38px; --military-flag-width: 15px; --military-flag-height: 10px; --military-subtitle-font: 0.65625rem; --military-column-gap: 10px; }
 .aces-widget .chart-table { --military-subtitle-font: calc(var(--type-sm) * 10.5 / 12); padding-inline: 0; }
 .aces-widget .chart-table tr { gap: var(--military-column-gap); padding-inline: var(--space-4); }

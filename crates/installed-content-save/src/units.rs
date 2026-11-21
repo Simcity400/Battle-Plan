@@ -8,12 +8,6 @@ use super::{
     typed_handle,
 };
 
-/// One `country_intel` triple of a saved unit, in serialized order.
-///
-/// The unit writer emits three signed integers per stored viewer entry: the
-/// viewer key word, the low 32 bits of the entry's decay accumulator, and the
-/// sign-extended level byte. Every entry is written, including nonpositive
-/// levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntelEntry {
     pub viewer: i32,
@@ -21,141 +15,87 @@ pub struct IntelEntry {
     pub level: i32,
 }
 
-/// One serialized `railway_gun` in a country's `units` roster.
-///
-/// A simulation object, not a map counter or a country-view result. The unit
-/// writer omits some fields conditionally; options keep that distinction for
-/// the recording oracle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RailwayGun {
     pub id: u64,
-    /// The unit writer emits `name` only for
-    /// nonzero length. The text writer truncates at the first NUL, so the
-    /// oracle keeps any difference against the full captured bytes.
     pub name: Option<Vec<u8>>,
     pub roster_owner: Vec<u8>,
     pub logical_owner: Vec<u8>,
     pub expeditionary_owner: Option<Vec<u8>>,
     pub province: Option<u32>,
     pub path: Vec<u32>,
-    /// The movement target (`support_attack`) and alternate route (`full_path`).
     pub support_attack: Option<u32>,
     pub full_path: Vec<u32>,
     pub strategic_redeployment: bool,
-    /// `exile` is emitted iff its byte is nonzero, as Boolean truth.
     pub exile: bool,
-    /// `withdraw=yes` is emitted iff the withdrawal byte is nonzero.
     pub withdrawal: bool,
     pub strength: Decimal,
-    /// The gun's own combat reference array, in stored order; the unit writer
-    /// never writes the separate unit combat vector.
     pub combats: Vec<u64>,
-    /// Serialized per-viewer simulation intel triples, in stored order.
     pub country_intel: Vec<IntelEntry>,
-    /// The entries of `commandlist`, the unit writer's queued order list ([`queued_actions`]).
     pub queued_actions: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Division {
-    /// Reference qword: type in the low u32, id in the high u32.
     pub id: u64,
-    /// The country's enclosing units roster, independently of logical_country.
     pub roster_owner: Vec<u8>,
     pub logical_owner: Vec<u8>,
     pub expeditionary_owner: Option<Vec<u8>>,
-    /// Location is omitted only when its pointer is null.
     pub province: Option<u32>,
-    /// The standard template, not fake intel, is emitted iff nonnull.
     pub template: Option<u64>,
-    /// The alternate template is written only when nonnull.
     pub alternate_template: Option<u64>,
-    /// The separate-counter byte is written only when nonzero; text retains truthiness.
     pub separate_counter: bool,
-    /// Saved strength is absolute current hit points in /100000 units.
     pub hit_points: Decimal,
     pub organisation: Decimal,
-    /// Ordered viewer entries; the writer omits the field for an empty array.
     pub country_intel: Vec<IntelEntry>,
     pub presentation: DivisionPresentation,
 }
 
-/// Fields independently serialized by the unit and army writers.
-/// Positive-only fields retain omission, rather than inventing a zero value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionPresentation {
-    /// Stored division XP, independent of exercising status and country XP.
     pub experience: Option<Decimal>,
     pub history: Option<DivisionHistory>,
     pub pending_template: Option<u64>,
     pub officer_experience: Option<Decimal>,
     pub career_counter: Option<i32>,
-    /// `fuel_requested`: signed fixed5, omitted exactly at zero.
     pub fuel_requested: Option<Decimal>,
     pub path: Vec<u32>,
-    /// The movement target (`support_attack`) and alternate route (`full_path`).
     pub support_attack: Option<u32>,
     pub full_path: Vec<u32>,
     pub previous: Option<u32>,
     pub movement_progress: Option<Decimal>,
-    /// `withdraw` is written for a nonzero withdrawal byte.
     pub withdrawal: bool,
-    /// `exile` is emitted iff its byte is nonzero, as Boolean truth.
-    /// Omission certifies zero; nonzero byte magnitude is not serialized.
     pub exile: bool,
-    /// Priority 1 is omitted. The writer emits front_order (0),
-    /// player_order (2) or ai_player_order (3); preserve key presence.
     pub movement_priority: Option<i32>,
     pub dig_in: Option<Decimal>,
     pub dig_in_cap: Option<Decimal>,
-    /// Maximum supply is written unconditionally.
     pub max_supply: Option<Decimal>,
-    /// Current supply ratio is written unconditionally.
     pub army_current_supply_ratio: Option<Decimal>,
-    /// Disrupted supply is written only when positive.
-    /// Absence proves nonpositive only.
     pub disrupted_supply: Option<Decimal>,
-    /// Days out of supply; absent at zero.
     pub out_of_supply_days: Option<i32>,
-    /// The division's fuel; absent at zero.
     pub fuel: Option<Decimal>,
     pub strategic_redeployment: bool,
-    /// The army's name-group member is written under `division_name`.
     pub division_name: Option<DivisionName>,
     pub acclimatization: Option<Acclimatization>,
-    /// The entries of `commandlist`, the unit writer's queued order list ([`queued_actions`]).
     pub queued_actions: usize,
 }
 
-/// One saved `division_name` block. The writer emits `type`
-/// unconditionally and every other key conditionally, so absence is
-/// kept distinct from a written value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionName {
     pub kind: i32,
-    /// `name_order`, written only when the order word is nonzero.
     pub order: Option<i32>,
-    /// `is_name_ordered`, written as `no` only when the ordered flag is clear.
     pub ordered: Option<bool>,
-    /// The custom name when its length is nonzero, outside checksum mode.
     pub custom: Option<Vec<u8>>,
-    /// The programmatic flag, written only when set.
     pub programmatic: Option<bool>,
 }
 
-/// Each nonzero-weight acclimatization entry is keyed by its category's lexer
-/// token in stored order, followed by three engine-owned progress
-/// fields, then `max_acclimatization` unless it is 100.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Acclimatization {
-    /// (category name, weight) for every nonzero weight, in stored order.
     pub entries: Vec<(Vec<u8>, Decimal)>,
-    /// Omitted when the maximum is exactly 100.
     pub maximum: Option<Decimal>,
 }
 
 impl Acclimatization {
-    /// The maximum the writer omits.
     pub const OMITTED_MAXIMUM_RAW: i64 = 10_000_000;
 }
 
@@ -164,26 +104,14 @@ pub struct DivisionTemplate {
     pub origin_type: Option<Vec<u8>>,
     pub template: u64,
     pub country: Vec<u8>,
-    /// Saved bytes, still empty for either omission or an emitted empty value.
     pub name: Vec<u8>,
-    /// `name` key presence, independent of its saved byte length. The writer
-    /// gates emission on the composition's stored name length and emits its
-    /// first-NUL prefix, including `name=""` when a
-    /// stored-nonempty string starts with NUL; stored-empty strings are omitted.
     pub name_present: bool,
-    /// The composition's saved localisation-key bytes; omission still reads as empty here.
     pub name_key: Vec<u8>,
-    /// The same writer independently gates `localization_key` on its stored
-    /// length, then emits that string's first-NUL prefix.
     pub name_key_present: bool,
     pub custom_icon: i32,
     pub custom_icon_nato: bool,
-    /// `foreign_template_tag`, verbatim.
     pub foreign_template_tag: Option<Vec<u8>>,
-    /// Grid kind (regiments/support/regimental support), x, y -> literal unit name.
     pub composition: BTreeMap<(u8, u32, u32), Vec<u8>>,
-    /// `division_names_group`: the selected name group's key is written only
-    /// when the composition's group is set.
     pub names_group: Option<Vec<u8>>,
     pub settings: DivisionTemplateSettings,
     pub excluded_variants: Vec<u64>,
@@ -192,9 +120,6 @@ pub struct DivisionTemplate {
     pub model_entity_present: bool,
 }
 
-/// The template writer's saved restriction and equipment settings. Required
-/// keys retain their presence, so the oracle cannot turn a missing value into
-/// a matching default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionTemplateSettings {
     pub priority: Option<i32>,
@@ -221,7 +146,6 @@ pub struct LandCombat {
     pub province: u32,
     pub day: i32,
     pub duration: i32,
-    /// Direct side unit references, not the separate front subset.
     pub attackers: Vec<u64>,
     pub defenders: Vec<u64>,
     pub details: combat_details::LandDetails,
@@ -232,7 +156,6 @@ pub struct Fleet {
     pub id: u64,
     pub owner: Vec<u8>,
     pub home_base: Option<u32>,
-    /// The fleet name is written except in checksum writer mode.
     pub name: Option<Vec<u8>>,
     pub leader: Option<u64>,
 }
@@ -241,35 +164,19 @@ pub struct Fleet {
 pub struct TaskForce {
     pub id: u64,
     pub fleet: u64,
-    /// The task-force writer uses the unit writer for `name`. With checksum
-    /// mode off it writes the name only when its raw length is nonzero;
-    /// text ends at the first NUL.
-    /// Omission and saved empty text remain distinct.
     pub name: Option<Vec<u8>>,
     pub roster_owner: Vec<u8>,
     pub logical_owner: Vec<u8>,
     pub expeditionary_owner: Option<Vec<u8>>,
     pub province: Option<u32>,
     pub mission: i32,
-    /// Ordered viewer entries; the writer omits the field for an empty array.
     pub country_intel: Vec<IntelEntry>,
-    /// The ordinary route is written as `path`, omitted when empty.
     pub path: Vec<u32>,
-    /// The movement-target province id, written only for a non-null target, so
-    /// `None` is the null pointer. Its saved key is `support_attack`; the
-    /// alternate route's is `full_path`. A saved moving division writes
-    /// `support_attack=<province>` between `previous` and `last_combat_date`.
     pub target: Option<u32>,
-    /// The alternate route, `full_path`, written only when its count is nonzero.
-    /// The writer saves no combat list for a task force: its combat vector is
-    /// not serialized ([`NavalCombat::attackers`] is the saved membership).
     pub alternate_path: Vec<u32>,
-    /// `movement_progress` is written only when nonzero.
     pub movement_progress: Option<Decimal>,
-    /// `retreat`/`withdraw` retain Boolean truth only.
     pub retreat: bool,
     pub withdrawal: bool,
-    /// `exile` is emitted iff its byte is nonzero, as Boolean truth.
     pub exile: bool,
 }
 
@@ -278,10 +185,7 @@ pub struct Ship {
     pub ship_name: Option<ShipName>,
     pub manpower: Option<i32>,
     pub max_manpower: Option<i32>,
-    /// The serializer emits this wrapper iff its critical array is nonempty,
-    /// even when every unnamed entry is omitted from the wrapper.
     pub has_criticals: bool,
-    /// Position in the task force serializer's ordered ship list.
     pub roster_ordinal: u32,
     pub id: u64,
     pub task_force: u64,
@@ -289,8 +193,6 @@ pub struct Ship {
     pub organisation: Decimal,
     pub experience: Decimal,
     pub sunk_convoys: i32,
-    /// The embedded pool is written under `equipment`.
-    /// Absence is retained so the oracle can reject a missing required wrapper.
     pub equipment: Option<production::Pool>,
 }
 
@@ -300,7 +202,6 @@ pub struct ArmyOrder {
     pub instance: u32,
     pub country: Vec<u8>,
     pub order_type: i32,
-    /// Saved can_execute is a signed byte spelling; preserve all stored bits.
     pub active: u8,
     pub paradrop_target: u32,
     pub path: Vec<u32>,
@@ -309,34 +210,22 @@ pub struct ArmyOrder {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AirWing {
-    /// Written only for a signed-positive exile country reference.
     pub government_in_exile_tag: Option<Vec<u8>>,
     pub manpower: Option<i32>,
     pub id: u64,
     pub owner: Vec<u8>,
-    /// Ordinary saves emit the raw byte as an unsigned integer unconditionally.
     pub reinforcement_setting: Option<u8>,
-    /// Stored text, mandatory even when empty in ordinary saves. Optional
-    /// parsing preserves omitted-key evidence for the oracle.
     pub name: Option<Vec<u8>>,
     pub country_override: Vec<u8>,
     pub air_base: u64,
     pub planes: i32,
     pub mission_mask: u32,
     pub mission_region: Option<u32>,
-    /// The mission's `active` flag, when written.
     pub mission_active: Option<bool>,
-    /// The mission writer emits this key only for a nonzero stored byte.
     pub stop_training_at_max_xp: bool,
-    /// Raw fixed5 region-change penalty, written with a mission region.
     pub region_change_penalty: Option<i64>,
-    /// Omitted outside the serializer's relocation branch. Total distance
-    /// and the destination's direct registration order are not saved.
     pub transfer_progress: Option<i64>,
     pub transferring_to: Option<u32>,
-    /// The wing's position among its country's `air_wing_pool` blocks'
-    /// `air_wings`, in file order: the pools retain their stored order, as do
-    /// each pool's wings.
     pub pool_ordinal: u32,
 }
 
@@ -344,9 +233,6 @@ pub struct AirWing {
 pub struct NavalCombat {
     pub id: u64,
     pub province: u32,
-    /// Each side's participant array, written in array order as repeated
-    /// `unit` references. Adding a unit appends it here and adds its logical
-    /// owner to the side's country set.
     pub attackers: Vec<u64>,
     pub defenders: Vec<u64>,
     pub attacker_positioning: Decimal,
@@ -354,8 +240,6 @@ pub struct NavalCombat {
     pub attacker_anti_air: Decimal,
     pub defender_anti_air: Decimal,
     pub details: combat_details::NavalDetails,
-    /// Every `naval_transport` reference in writer order: each slot of the
-    /// transfer vector is written, zero and stale ones included.
     pub transfers: Vec<u64>,
 }
 
@@ -410,8 +294,6 @@ pub(super) fn parse_division_templates(
                 }
             }
         }
-        // Keep save emission presence without changing the existing byte fields
-        // or the shared bytes() reader's duplicate/scalar validation.
         let country = required_bytes(fields, b"country")?;
         let name = bytes(fields, b"name")?;
         let name_key = bytes(fields, b"localization_key")?;
@@ -517,8 +399,6 @@ pub(super) fn parse_division_templates(
 mod tests;
 
 pub(super) fn parse_railway_gun(roster_owner: &[u8], items: &[Item]) -> io::Result<RailwayGun> {
-    // The unit and its supply-consumer base can both write the same reference.
-    // Equal repeated ids are game output; conflicting ids are malformed.
     let mut id = None;
     for item in items
         .iter()
@@ -577,8 +457,6 @@ pub(super) fn parse_railway_gun(roster_owner: &[u8], items: &[Item]) -> io::Resu
 }
 
 pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<Division> {
-    // The unit and supply-consumer writers each serialize the same reference object.
-    // Repeated equal id blocks are game output; conflicting ones are not.
     let mut id = None;
     for item in items
         .iter()
@@ -690,8 +568,6 @@ pub(super) fn division_name(items: &[Item]) -> io::Result<DivisionName> {
     })
 }
 
-/// The unit writer emits `commandlist` only for a nonzero count, one entry keyed by each queued
-/// order's type, so absence is zero.
 fn queued_actions(items: &[Item]) -> io::Result<usize> {
     let Some(value) = field(items, b"commandlist")? else {
         return Ok(0);
@@ -710,8 +586,6 @@ fn flag(items: &[Item], key: &[u8]) -> io::Result<bool> {
         .unwrap_or(false))
 }
 
-/// The default priority is never written. Unknown stored words take the
-/// front_order branch, so its spelling cannot certify their bits.
 fn movement_priority(items: &[Item]) -> io::Result<Option<i32>> {
     bytes(items, b"move_priority")?
         .map(|value| match value.as_slice() {
@@ -735,7 +609,6 @@ fn acclimatization(items: &[Item]) -> io::Result<Option<Acclimatization>> {
             .filter(|key| !key.is_empty())
             .ok_or_else(|| invalid("acclimatization entry lacks a key"))?;
         match key {
-            // The writer's own progress fields.
             b"actively_gaining" | b"actively_gaining_speed" | b"other_loss" => {}
             b"max_acclimatization" => {
                 if result
@@ -754,7 +627,6 @@ fn acclimatization(items: &[Item]) -> io::Result<Option<Acclimatization>> {
     Ok(Some(result))
 }
 
-/// The writer emits one anonymous flat list of three signed integers per entry.
 fn country_intel(items: &[Item]) -> io::Result<Vec<IntelEntry>> {
     let Some(value) = field(items, b"country_intel")? else {
         return Ok(Vec::new());
@@ -843,8 +715,6 @@ pub(super) fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::
     })
 }
 
-/// Saved ship-name wrapper. Optional operands retain omission independently
-/// of explicit empty, zero and false spellings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShipName {
     pub kind: i32,
@@ -1083,7 +953,6 @@ pub(super) fn parse_naval_combat(
     })
 }
 
-/// The saved division's ordered career and awarded-medal lists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DivisionHistory {
     pub amount: Option<i32>,

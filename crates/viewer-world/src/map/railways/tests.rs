@@ -202,13 +202,10 @@ fn a_train_route_runs_over_the_boundary_crossings_and_out_of_its_first_province(
     let route = geo.train_route(&[1, 2, 3], &network, &h).unwrap();
     assert!(!route.open_end);
     let route = route.points;
-    // The terminal stubs end a fifth of the way out from the anchor, and
-    // the interior province is the curve between its two crossings.
     assert!((route[0][0] - 4.8).abs() < 0.01, "{:?}", route[0]);
     assert!((route.last().unwrap()[0] - 19.2).abs() < 0.01);
     assert!(route.windows(2).all(|p| p[1][0] > p[0][0]));
     assert!(route.iter().all(|p| (p[2] - 8.0).abs() < 0.01));
-    // terrain height alone, without the strip's 0.9 lift.
     assert!(route.iter().all(|p| (p[1] - 10.0).abs() < 0.01));
     assert_eq!(geo.train_route(&[1], &network, &h), None);
 }
@@ -216,8 +213,6 @@ fn a_train_route_runs_over_the_boundary_crossings_and_out_of_its_first_province(
 fn a_route_ends_before_a_province_whose_railway_lacks_its_segment() {
     let geo = geography();
     let h = heights();
-    // Province 2 skips the 1-3 curve (triangle); 1 has two neighbours, so
-    // it has a spur only as a supply source.
     let triangle = edges(&[(1, 2, 2), (2, 3, 4), (1, 3, 3)]);
     let network = RailNetwork::new(&triangle, &[], &[]);
     assert_eq!(geo.train_route(&[1, 2, 3], &network, &h), None);
@@ -229,7 +224,6 @@ fn a_route_ends_before_a_province_whose_railway_lacks_its_segment() {
     let network = RailNetwork::new(&triangle, &[source], &[]);
     let route = geo.train_route(&[1, 2, 3], &network, &h).unwrap();
     assert!(route.open_end);
-    // Only province 1's spur remains, ending at its crossing with 2.
     assert!(
         route.points.iter().all(|p| p[0] <= 8.01),
         "{:?}",
@@ -344,7 +338,6 @@ fn the_rail_fade_settles_first_then_moves_at_the_cutoff_speed() {
     assert!(!fade.trains_visible());
     camera.height = 299.0;
     assert!((fade.update(&camera, 6.2) - 0.6).abs() < 1e-5);
-    // A clock that runs backwards, as a seek or a new dump, settles.
     camera.height = 400.0;
     assert_eq!(fade.update(&camera, 0.0), 0.0);
     camera.height = 100.0;
@@ -446,7 +439,6 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
         assert!(unprepared.is_none());
         let fallback =
             PreparedRailGeometry::for_install(&device, &mesh, unprepared.as_ref()).unwrap();
-        // Alternate publication of builder-ready and initially CPU-only hours.
         let install = if hour % 2 == 0 {
             geometry
         } else {

@@ -149,13 +149,13 @@ fn air_registration_projection_matches_complete_tables_across_membership_and_ref
         };
         match hour {
             3 => state.rows[0].fuel.allocated = Ok(-99),
-            4 => {} // New registration with independently absent optional inputs.
-            5 => {} // Withdraw the second registration.
+            4 => {}
+            5 => {}
             6 => {
                 state.rows[0].fuel.demand = Err("synthetic scalar refusal");
                 state.rows[0].pools = Err("synthetic pool refusal");
             }
-            7 => state.rows.clear(), // Revoked state packet must not keep old values.
+            7 => state.rows.clear(),
             8 => {
                 captured.registrations.outcome = Outcome::Unavailable {
                     reason: "synthetic registration refusal",

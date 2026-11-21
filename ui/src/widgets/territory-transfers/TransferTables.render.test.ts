@@ -35,7 +35,6 @@ const cells = (html: string) => [...html.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map(
 test('the actual Countries table nets each holder, colours signed values and leaves an unknown VP blank', () => {
   const html = renderToStaticMarkup(createElement(CountryTable, { ...shared, rows: countryBalances(data.all), sort: { column: 'net', direction: 'descending' },
     onPick() {}, tooltip: () => ({ title: '', rows: [] }) }));
-  // Winners first: Winnerland +2, Freedonia +1, Loserland −3; Loserland's lost VP is unknown.
   assert.deepEqual(cells(html), ['Winnerland', '2', '0', '+2', '+9', 'Freedonia', '1', '0', '+1', '—', 'Loserland', '0', '3', '−3', '—']);
   assert.match(html, /class="transfer-gain">\+2</);
   assert.match(html, /class="transfer-loss">−3</);

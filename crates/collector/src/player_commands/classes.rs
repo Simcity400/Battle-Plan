@@ -1,6 +1,5 @@
 use replay::commands::Category;
 
-// FNV-1a hashes of the supported executable's command class names, by category.
 pub(super) const CATEGORIES: [(Category, &[u64]); 18] = [
     (
         Category::Army,
@@ -546,7 +545,6 @@ pub(super) const CATEGORIES: [(Category, &[u64]); 18] = [
     ),
 ];
 
-// Commands that can change the session roster or a player's country.
 pub(super) const ROSTER: [u64; 9] = [
     0x0bc3_c8f4_c822_9668,
     0x17f5_f9db_82be_4b4f,
@@ -559,7 +557,6 @@ pub(super) const ROSTER: [u64; 9] = [
     0xd239_1f84_525a_4861,
 ];
 
-// The command that removes one session player.
 pub(super) const REMOVE_PLAYER: u64 = 0x837a_706b_1053_227c;
 
 #[cfg(test)]

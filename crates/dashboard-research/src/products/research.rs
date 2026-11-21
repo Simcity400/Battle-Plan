@@ -1,17 +1,3 @@
-//! Family 35, research: each country's research slots, their assignments and outcomes, read from
-//! the recorder's `ResearchAssignments` and `ResearchCoverage` and the recorded research tables.
-//!
-//! - `research` ([`Research`]): a tag's whole history on a branch in one request: when its research
-//!   was covered by a read, each slot's availability and its assignments. An assignment is the last
-//!   cells of the rows that held it (its history is their change history, read with
-//!   [`lanes::history`]), named and placed in folders from the recorded content.
-//! - `research-slots` ([`slots::ResearchSlots`]): what each slot holds at an hour, as the holder's
-//!   latest research read recorded it; a rows-at-an-hour product followed at the head.
-//! - `research-breakdown` ([`breakdown::ResearchBreakdown`]): one technology's reads over its
-//!   assignments, asked when its time breakdown is opened.
-//!
-//! A holder is a country whose link resolves to its own canonical slot (the recorder's rule); a
-//! tag is read through the holders the identity index gives it, never resolved here.
 
 pub mod breakdown;
 mod grants;
@@ -35,7 +21,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// A stretch of hours.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -54,26 +39,25 @@ pub enum ResearchOutcome {
     Unknown,
 }
 
-/// One assignment of a technology to a slot, as observed.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchEntry {
     pub token: String,
     pub technology_handle: u32,
-    /// The technology's template occurrence: repeated ids have their own.
+    #[doc = " The technology's template occurrence: repeated ids have their own."]
     pub database_index: u32,
-    /// Attribution never joins across missing hours or a changed holder.
+    #[doc = " Attribution never joins across missing hours or a changed holder."]
     pub continuity_start_hour: i32,
-    /// Completed level when it was first observed.
+    #[doc = " Completed level when it was first observed."]
     pub level: i32,
     pub first_observed_hour: i32,
-    /// The read before, which saw something else; none at a first read or after a gap.
+    #[doc = " The read before, which saw something else; none at a first read or after a gap."]
     pub started_after_hour: Option<i32>,
     pub last_observed_hour: i32,
-    /// The read at which it had left the slot; never shown before this hour.
+    #[doc = " The read at which it had left the slot; never shown before this hour."]
     pub ended_by_hour: Option<i32>,
-    /// The read that proved a completion arriving after the end.
+    #[doc = " The read that proved a completion arriving after the end."]
     pub outcome_observed_hour: Option<i32>,
     pub outcome: ResearchOutcome,
 }
@@ -95,7 +79,6 @@ pub struct ResearchHistory {
     pub slots: Vec<ResearchSlotHistory>,
 }
 
-/// A recorded definition's own text, where one token has several.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -122,7 +105,6 @@ pub struct ResearchReply {
 
 dashboard_base::reply_warnings!(ResearchReply);
 
-/// A slot's state as one read recorded it, held from `first_hour` (the read) through `last_hour`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +113,7 @@ pub struct ResearchSlotState {
     pub last_hour: i32,
     pub token: Option<String>,
     pub entry_first_observed_hour: Option<i32>,
-    /// Native fixed5 operands as decimal text.
+    #[doc = " Native fixed5 operands as decimal text."]
     pub speed_multiplier_raw: String,
     pub banked_days_raw: String,
     pub applied_days_raw: String,
@@ -143,9 +125,9 @@ pub struct ResearchSlotState {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchDetails {
-    /// The game's days-left estimate at the read; none where its rate is not known.
+    #[doc = " The game's days-left estimate at the read; none where its rate is not known."]
     pub remaining_days: Option<u32>,
-    /// None where the bonuses were not read with the slot or do not attribute.
+    #[doc = " None where the bonuses were not read with the slot or do not attribute."]
     pub bonuses: Option<Vec<ResearchBonus>>,
     pub modifiers: Option<ResearchModifiers>,
 }
@@ -191,7 +173,6 @@ pub struct ResearchBonus {
     pub ahead_reduction_years_raw: Option<String>,
 }
 
-/// An assignment's progress at a read.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -199,12 +180,11 @@ pub struct ResearchProgress {
     pub first_hour: i32,
     pub last_hour: i32,
     pub entry_first_observed_hour: Option<i32>,
-    /// Base duration in fixed5 days, from the recorded cost operands.
+    #[doc = " Base duration in fixed5 days, from the recorded cost operands."]
     pub base_days_raw: Option<String>,
     pub progress_raw: String,
 }
 
-/// SliceReads' `table` of each research table's read hours.
 pub(crate) const INPUTS: u32 = TableId::ResearchInputs.index() as u32;
 pub(crate) const BONUSES: u32 = TableId::ResearchAppliedBonuses.index() as u32;
 pub(crate) const MODIFIERS: u32 = TableId::ResearchModifiers.index() as u32;
@@ -213,19 +193,16 @@ pub(crate) fn slice_key(table: u32, owner: u32) -> u128 {
     u128::from(table) << 32 | u128::from(owner)
 }
 
-/// Every `ResearchAssignments` key of a holder.
 pub(crate) fn assignment_keys(slot: u32, id: u32) -> (u128, u128) {
     let base = u128::from(slot) << 80 | u128::from(id) << 48;
     (base, base | ((1 << 48) - 1))
 }
 
-/// Every `ResearchCoverage` key of a holder.
 pub(crate) fn coverage_keys(slot: u32, id: u32) -> (u128, u128) {
     let base = u128::from(slot) << 64 | u128::from(id) << 32;
     (base, base | u128::from(u32::MAX))
 }
 
-/// One holder of the asked tag over one stretch of the timeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Span {
     pub run: u32,
@@ -235,7 +212,6 @@ pub(crate) struct Span {
     pub id: u32,
 }
 
-/// `tag`'s holders over `query`'s timeline, cut at its stretches, and the hours no holder resolved.
 pub(crate) fn spans(query: &Query<'_>, tag: &Country) -> (Vec<Span>, Vec<(i32, i32)>) {
     let mut out = Vec::new();
     let mut unresolved = Vec::new();
@@ -248,7 +224,6 @@ pub(crate) fn spans(query: &Query<'_>, tag: &Country) -> (Vec<Span>, Vec<(i32, i
     (out, unresolved)
 }
 
-/// A step's cells at `at`, aligned with its history's columns.
 pub(crate) fn number(cells: &[Cell], at: usize) -> Option<i64> {
     match cells.get(at) {
         Some(Cell::Number(value)) => Some(*value),
@@ -256,18 +231,15 @@ pub(crate) fn number(cells: &[Cell], at: usize) -> Option<i64> {
     }
 }
 
-/// The cells `steps` hold at `hour`: the last step at or before it; none while not shown.
 pub(crate) fn cells_at(steps: &[Step], hour: i32) -> Option<&[Cell]> {
     let at = steps.partition_point(|step| step.hour <= hour);
     steps[..at].last()?.cells.as_deref()
 }
 
-/// Every column of `table`, ascending: a history read with them aligns its cells to columns.
 pub(crate) fn all_columns(table: TableId) -> Vec<usize> {
     (0..table.field_count()).collect()
 }
 
-/// Appends `first..=last` to `spans`, joined with the last one where it meets it.
 fn push_span(spans: &mut Vec<ResearchCoverage>, first: i32, last: i32) {
     match spans.last_mut() {
         Some(held) if held.last_hour.checked_add(1).is_some_and(|next| next >= first) => held.last_hour = held.last_hour.max(last),
@@ -275,7 +247,6 @@ fn push_span(spans: &mut Vec<ResearchCoverage>, first: i32, last: i32) {
     }
 }
 
-/// The hours `steps` show a row live through `to`, adjacent stretches joined.
 pub(crate) fn live_spans(steps: &[Step], to: i32, spans: &mut Vec<ResearchCoverage>) {
     for (at, step) in steps.iter().enumerate() {
         if step.cells.is_none() {
@@ -288,7 +259,6 @@ pub(crate) fn live_spans(steps: &[Step], to: i32, spans: &mut Vec<ResearchCovera
     }
 }
 
-/// A holder's coverage and each slot's availability from its `ResearchCoverage` history.
 pub(crate) fn coverage(history: &History, holder: &mut Vec<ResearchCoverage>, slots: &mut BTreeMap<u32, Vec<ResearchCoverage>>) {
     for (key, steps) in &history.keys {
         let member = *key as u32;
@@ -297,7 +267,6 @@ pub(crate) fn coverage(history: &History, holder: &mut Vec<ResearchCoverage>, sl
     }
 }
 
-/// The positions of `ResearchAssignments`' columns in a history's cells.
 pub(crate) struct AssignmentCells {
     handle: usize,
     occurrence: usize,
@@ -333,8 +302,6 @@ impl AssignmentCells {
         })
     }
 
-    /// The entry `cells` hold; none where a cell the entry needs is not recorded. Its last
-    /// observed hour, unknown while it is active, is its first until [`entries`] sets it.
     fn entry(&self, history: &History, cells: &[Cell]) -> Option<ResearchEntry> {
         let optional = |at: usize| number(cells, at).map(|value| value as i32);
         let first = optional(self.first)?;
@@ -361,12 +328,6 @@ impl AssignmentCells {
     }
 }
 
-/// Each slot's assignments in one span of a holder's `ResearchAssignments` history, by first
-/// observed hour: an assignment is the last cells any of its rows held (it moves to another lane
-/// when its slot starts another and waits there for completion evidence); `unreadable` counts the
-/// rows whose cells could not be read. An assignment still active at the span's end is observed
-/// through `last_read`, or, where the timeline goes on in another stretch (`ends`), ends unknown
-/// there: no read after it is of the same run.
 pub(crate) fn entries(history: &History, last_read: Option<i32>, ends: Option<i32>, unreadable: &mut usize) -> io::Result<BTreeMap<u32, Vec<ResearchEntry>>> {
     let cells = AssignmentCells::of(history)?;
     let mut held: BTreeMap<(u32, i32, i32), (i32, ResearchEntry)> = BTreeMap::new();
@@ -402,8 +363,6 @@ pub(crate) fn entries(history: &History, last_read: Option<i32>, ends: Option<i3
     Ok(slots)
 }
 
-/// The latest research read of a holder's owners at `hour` of run `run`: the greatest
-/// ResearchInputs read hour among the raw countries linked to its slot.
 fn last_read(source: &Source, query: &Query<'_>, span: &Span) -> io::Result<Option<i32>> {
     let links = crate::answer::links(source, span.run)?;
     let mut keys: Vec<u128> = links.slots.keys().filter(|&&raw| links.slot_at(raw, span.last) == Some(span.slot)).map(|&raw| slice_key(INPUTS, raw)).collect();
@@ -416,7 +375,6 @@ fn last_read(source: &Source, query: &Query<'_>, span: &Span) -> io::Result<Opti
     Ok(frame.complete::<tables::SliceReads>().ok().and_then(|rows| rows.iter().map(|row| row.sample_hour).filter(|&read| read <= span.last).max()))
 }
 
-/// `tag`'s research history on `query`'s timeline, with the warnings it names.
 fn history(source: &Source, query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<(ResearchHistory, Vec<String>)> {
     let (spans, unresolved) = spans(query, tag);
     if spans.is_empty() {
@@ -439,7 +397,6 @@ fn history(source: &Source, query: &Query<'_>, tag: &Country, cancelled: &Atomic
         let positions = AssignmentCells::of(&assigned)?;
         let active = assigned.keys.iter().any(|(_, steps)| steps.last().and_then(|step| step.cells.as_deref()).is_some_and(|cells| number(cells, positions.ended).is_none()));
         let read = if active { last_read(source, query, span)? } else { None };
-        // A later stretch of the same holder is another run: what was active here is not seen to end.
         let ends = spans[at + 1..].iter().any(|later| later.slot == span.slot && later.id == span.id).then_some(span.last + 1);
         for (index, entries) in entries(&assigned, read, ends, &mut unreadable)? {
             assignments.entry(index).or_default().extend(entries);
@@ -464,13 +421,11 @@ fn history(source: &Source, query: &Query<'_>, tag: &Country, cancelled: &Atomic
 
 pub struct Research;
 
-/// The technology content a research reply names, loaded once and shared.
 #[derive(Default)]
 struct State {
     artwork: Option<Arc<artwork::Context>>,
 }
 
-/// The technology content for `context`'s folders, shared by every research reply.
 pub(crate) fn content(source: &Source, context: &LoadContext) -> io::Result<Arc<artwork::Context>> {
     let state = source.state::<State>();
     let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -514,8 +469,6 @@ impl Product for Research {
     }
 }
 
-/// `history` named from the recorded content: each technology's text, its definitions' own text
-/// where one token has several, and its folder.
 fn present(source: &Source, context: &LoadContext, history: ResearchHistory, mut warnings: Vec<String>, cancelled: &AtomicBool) -> io::Result<ResearchReply> {
     let art = match content(source, context) {
         Ok(art) => art,
@@ -552,13 +505,11 @@ fn present(source: &Source, context: &LoadContext, history: ResearchHistory, mut
     Ok(ResearchReply { history, artwork, folders, technology_folders, warnings: named, definitions: (!definitions.is_empty()).then_some(definitions) })
 }
 
-/// Base research duration in fixed5 days from the recorded cost operands.
 pub(crate) fn base_cost(row: &ResearchInputRow) -> Option<i128> {
     let cost = if row.cost_debug != 0 { 100_000 } else { i128::from(row.cost_raw).checked_mul(i128::from(row.cost_scale_raw))? / 100_000 };
     (cost > 0 && cost <= i128::from(i64::MAX)).then_some(cost)
 }
 
-/// The game's days-left estimate of `row` at the fixed5 daily `rate`.
 pub(crate) fn remaining(row: &ResearchInputRow, rate: i128) -> Option<u32> {
     if rate <= 0 || row.progress_raw < 0 {
         return None;
@@ -567,8 +518,6 @@ pub(crate) fn remaining(row: &ResearchInputRow, rate: i128) -> Option<u32> {
     u32::try_from((left + rate - 1) / rate).ok()
 }
 
-/// Whether a read's slots can be observed: each at its position, and a technology held with a
-/// template occurrence and a token.
 pub(crate) fn valid_inputs(inputs: &[&ResearchInputRow]) -> bool {
     inputs.iter().enumerate().all(|(at, row)| {
         row.index as usize == at
@@ -578,8 +527,6 @@ pub(crate) fn valid_inputs(inputs: &[&ResearchInputRow]) -> bool {
     })
 }
 
-/// The bonuses `rows` attribute to `input`'s slot: its owner's rows of the slot with the slot's
-/// technology, as many as it applied and numbered from zero; none otherwise.
 pub(crate) fn attributed_bonuses(input: &ResearchInputRow, rows: &[ResearchAppliedBonusRow]) -> Option<Vec<ResearchBonus>> {
     let matching: Vec<_> = rows.iter().filter(|row| row.country == input.country && row.index == input.index && row.technology_handle == input.technology_handle).collect();
     if matching.len() != input.bonus_count as usize || matching.iter().enumerate().any(|(at, row)| row.ordinal as usize != at || row.resolved > 1 || row.name.len() > 512) {
@@ -603,23 +550,17 @@ pub(crate) fn attributed_bonuses(input: &ResearchInputRow, rows: &[ResearchAppli
     )
 }
 
-/// What one read of a slot shows: its state from the read on and the joined assignment's progress.
 pub(crate) struct SlotRead {
     pub state: ResearchSlotState,
     pub progress: Option<ResearchProgress>,
 }
 
-/// The joined assignment of a slot read: its first observed hour and whether it started at the
-/// read before, a day at most earlier (its speed then is the slot's).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Joined {
     pub first_observed: i32,
     pub fresh: bool,
 }
 
-/// `input`'s state at its read `read` through `through`, the bonuses and modifiers read with it
-/// where they were, `daily` its rate from a read a day earlier where one is known, every name
-/// localised with `localise`.
 pub(crate) fn slot_read(
     input: &ResearchInputRow,
     read: i32,
@@ -668,8 +609,6 @@ pub(crate) fn slot_read(
     }
 }
 
-/// Whether `next`, read the hour after `last` ends, continues it: equal in all but its days-left
-/// estimate, which either stays or counts down by the whole days since `last` began.
 pub(crate) fn continues(last: &ResearchSlotState, next: &ResearchSlotState) -> bool {
     let (before, now) = (last.details.as_ref(), next.details.as_ref());
     let details = match (before, now) {

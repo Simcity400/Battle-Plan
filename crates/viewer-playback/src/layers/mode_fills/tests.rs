@@ -1,8 +1,3 @@
-//! The mode fills layer on a recording made in memory, with a painter standing in for today's
-//! political part: at the default mode it declares and holds nothing; at another it declares what
-//! the painter reads, shows nothing until its first picture and then that picture's hour; a mode
-//! change builds for the new mode and never shows the old one's picture; a table the recording
-//! holds nothing of refuses it by name.
 
 use super::{Fill, ModeFills, Paint, TABLES};
 use crate::{
@@ -35,11 +30,8 @@ use viewer_world::map::map_mode::{MapMode, Stock};
 
 const LIMIT: Duration = Duration::from_secs(120);
 
-/// Shut, a picture waits at it, so the worker holds its build; shut past the limit, the build fails
-/// by name.
 #[derive(Default)]
 struct Gate {
-    /// Whether it is open, and whether a build has reached it.
     state: Mutex<(bool, bool)>,
     moved: Condvar,
 }
@@ -69,7 +61,6 @@ impl Gate {
     }
 }
 
-/// Opens the gate when the test ends, so the worker's build ends and the layer can stop.
 struct Opens(Arc<Gate>);
 
 impl Drop for Opens {
@@ -78,7 +69,6 @@ impl Drop for Opens {
     }
 }
 
-/// Passes the gate, reads `reads` and paints an empty picture of the mode asked.
 struct Painter {
     reads: Vec<TableId>,
     gate: Arc<Gate>,
@@ -100,8 +90,6 @@ impl Paint for Painter {
     }
 }
 
-/// Forty hours of the Clock and the territory's tables, held whole and empty; a recording of its
-/// own name.
 fn record() -> Units {
     static RECORDED: AtomicUsize = AtomicUsize::new(0);
     let name = format!("mode fills test {}", RECORDED.fetch_add(1, Ordering::Relaxed));
@@ -125,7 +113,6 @@ fn view(mode: Stock) -> View {
     View { map_mode: MapMode::Stock(mode), ..View::default() }
 }
 
-/// The layer as the window makes it, alone on the map, at `at`, given its first reset.
 fn side_of(units: Units, painter: Painter, at: View) -> MapSide {
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let layer = super::new(Arc::new(painter), false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
@@ -137,7 +124,6 @@ fn side_of(units: Units, painter: Painter, at: View) -> MapSide {
     side
 }
 
-/// Frames at the newest step built until `done` holds; fails naming `what` after 120 s.
 fn until(side: &mut MapSide, what: &str, mut done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
     let deadline = Instant::now() + LIMIT;
     loop {
@@ -168,7 +154,6 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
     let air = view(Stock::StrategicAir);
     let mut side = side_of(record(), Painter { reads: vec![TableId::Subjects], gate: Arc::clone(&gate) }, air.clone());
 
-    // Another mode: it reads the Clock at the head and builds on its worker, which the gate holds.
     assert!(side.parts().unwrap().0.get(TableId::Clock).is_some(), "at another mode it declares the Clock");
     until(&mut side, "the worker's first build", |_, _| gate.reached());
     assert_eq!(fills(&side).published(), Published::Nothing, "before its first picture it has published nothing");
@@ -188,7 +173,6 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
     assert!(TABLES.iter().all(|table| tables.contains(table)), "it declares the tables the painter reads: {tables:?}");
     assert_eq!(fills(&side).refusal(), None);
 
-    // A mode change takes the old mode's picture down at once and shows only the new mode's.
     let resources = view(Stock::Resources);
     side.set_view(resources.clone()).unwrap();
     assert!(fills(&side).product().is_none(), "the old mode's picture is let go with the change");
@@ -201,9 +185,6 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
     }
     assert_eq!(shown_mode(&side), Some(resources.map_mode.clone()), "the first picture after the change is the new mode's, never the old one's");
 
-    // The default mode is the political layer's: it holds and carries nothing there. (What it
-    // declares is no longer the side's mirrors: those hold every table of the recording for the
-    // makers, whatever a layer reads.)
     side.set_view(View::default()).unwrap();
     side.frame(hour).unwrap();
     assert!(fills(&side).product().is_none(), "at the default mode it holds no picture");
@@ -212,8 +193,6 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
     assert_eq!(fills(&side).published(), Published::Current, "drawing nothing, it holds no hour back");
     assert!(fills(&side).lines().is_empty());
 
-    // A table the recording holds nothing of refuses the layer by name. A table the store never
-    // wrote is still in every block's page, whole and empty: it is taken out of them.
     let gate = Arc::new(Gate::default());
     gate.open();
     let units = crate::layers::rebuilt::tests::without(record(), TableId::Factions);

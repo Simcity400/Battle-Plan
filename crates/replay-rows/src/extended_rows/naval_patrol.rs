@@ -1,16 +1,10 @@
-//! Independently delta-encoded detection words of regional mission-ledger members.
 use super::*;
 
-/// One distinct full task-force identity demanded by the complete regional
-/// mission ledgers. Ledger order and repeats remain in NavalMissionLedgers.
-/// A known zero target demands neither progress nor chance. Optional leaves
-/// preserve acquisition failures independently of existing mission rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalPatrolMissionInputRow {
     pub task_force: u64,
     pub target: Option<u64>,
-    /// Zero is an unresolved reference; one is a live native reference.
     pub target_live: Option<u32>,
     pub progress: Option<i64>,
     pub chance: Option<i64>,
@@ -23,7 +17,6 @@ pub struct NavalPatrolMissionInputRow {
     pub leader: u64,
     pub headquarters_known: bool,
     pub headquarters: std::sync::Arc<Vec<u64>>,
-    /// Reached only for a registered raider with a live convoy target.
     pub surface_visibility: Option<i64>,
     pub submarine_visibility: Option<i64>,
     pub formation_class: Option<i32>,

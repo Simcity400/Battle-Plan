@@ -151,8 +151,6 @@ fn participation_oracle_compares_every_saved_component_membership_and_binary_omi
         report
     };
     assert!(check(&frame).difference_lines().is_empty());
-    // Retained side members need not own a reciprocal occurrence. The active
-    // pivot's complete roster still demands both delivery directions.
     frame.tables[TableId::WarOwnedRelations.index()] =
         TableView::Complete(TableRows::WarOwnedRelations(vec![
             WarOwnedRelationRow {
@@ -509,7 +507,6 @@ fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_rever
         "{:?}",
         report.difference_lines()
     );
-    // A redeclaration has the same endpoints but a different first goal.
     assert_eq!(report.limitations[ENDED_WAR_LIMITATION].len(), 2);
     frame.tables[TableId::WarOverviewCountries.index()] =
         TableView::Complete(TableRows::WarOverviewCountries(vec![])).into();

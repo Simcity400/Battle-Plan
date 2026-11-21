@@ -8,11 +8,6 @@ pub(super) struct Candidate<'a> {
     pub seen: &'a mut [u64],
 }
 
-/// Add only the current-subject candidate domain to the original owned pass.
-/// A suffix failure invalidates the owner coverage certificate, independently
-/// of original RelationLinks/CountryWars availability. No native pointer is
-/// retained beyond this immediate borrow. The separate bitmap retires with
-/// this owner and preserves first-attempt subject failures on duplicates.
 pub(super) fn candidate(
     memory: &impl Memory,
     base: usize,
@@ -44,8 +39,6 @@ pub(super) fn candidate(
     } else {
         return Err("transport subject owned relation excludes its owner");
     };
-    // Actual-zero/forward-zero cells have their established independent
-    // holders. Self disclosure returns before the subject predicates.
     if other == 0 || other == country.canonical_slot {
         return Ok(None);
     }
@@ -95,9 +88,6 @@ pub(super) fn candidate(
     Ok(Some((other, status, target)))
 }
 
-/// First-party then second-party subject predicates use the original
-/// authenticated status. Raw/alias equality can return before the second
-/// endpoint is demanded. Dates and retirement never replace the current pointer.
 pub(super) fn capture(
     memory: &impl Memory,
     base: usize,
@@ -108,8 +98,6 @@ pub(super) fn capture(
     capture_with(memory, base, status, None, target, canonical)
 }
 
-/// [`capture`], taking the status's subject pointer from `held` when the
-/// candidates' gather already read it (the relaxed read order).
 pub(super) fn capture_with(
     memory: &impl Memory,
     base: usize,
@@ -199,7 +187,7 @@ mod tests {
         let mut bytes = fixture();
         bytes[0x310..0x314].copy_from_slice(&7_u32.to_le_bytes());
         bytes[0x314..0x318].copy_from_slice(&11_u32.to_le_bytes());
-        bytes[0x349] = 1; // Retirement is irrelevant to the subject endpoint predicates.
+        bytes[0x349] = 1;
         assert_eq!(
             capture(
                 &SliceMemory {

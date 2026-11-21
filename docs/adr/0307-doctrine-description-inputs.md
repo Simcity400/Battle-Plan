@@ -1,0 +1,7 @@
+# Resolve doctrine rewards at the requested hour
+
+Doctrine products read the chosen country's folder and track rows, followed by their lexical tokens. Folder settings use the folder token's spelling to keep their choice stable over time. Content supplies names, sprites and thresholds. Track numbers come from `DoctrineTracks` and are live fixed5 cells keyed by folder and track ordinals. Keep rewards in authored order. When content specifies no mastery threshold, use its default reward define, parsed once per resolved content. Report content failures with their counts and reasons.
+
+Describe a hovered reward for the tracked country at the requested hour. Authored effects and generated prose can reach any operand scope, including through scripted effects and localization, so load the description operand tables whole. Use the localized reward description when the benefit has no authored prose. Preserve missing names, thresholds and descriptions as missing. Tests exercise exactly the request's selected operands so a fully populated frame cannot conceal a missing dependency. An earlier or otherwise unlinked holder's doctrine slot cannot supply the selected country's status.
+
+[Doctrine mastery](../../crates/dashboard/src/products/doctrine_mastery.rs) · [Reward descriptions](../../crates/dashboard/src/products/doctrine_mastery/rewards.rs) · [Doctrine product and tests](../../crates/dashboard/src/products/doctrines.rs)

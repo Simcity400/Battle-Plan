@@ -1,6 +1,3 @@
-//! Independent one-byte wing preference certificate. Existing worker visits
-//! read only new/invalidated bindings; game-thread observers retire prepared
-//! entries and never allocate or walk the wing population.
 use collector_hooks::hook::Hook;
 use engine_native::{Memory, cair_wing as wing, cpdx_array::Array};
 use std::{
@@ -155,7 +152,6 @@ impl Drop for Scope {
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
     }
 }
-/// The existing air-base patch owner forwards publication and split outer return.
 #[inline]
 pub(crate) fn base_site(site: usize, args: &[usize]) -> Option<Scope> {
     if !matches!(site, 4 | 6 | 7) || !AVAILABLE.load(Ordering::Acquire) {

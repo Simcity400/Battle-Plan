@@ -1,5 +1,3 @@
-//! Off-hour storage hints over the same native execution graph. Nothing here
-//! supplies recorded values or retries an hourly acquisition.
 use super::*;
 
 fn rows(outcome: Outcome) -> Result<usize, &'static str> {
@@ -12,10 +10,6 @@ fn rows(outcome: Outcome) -> Result<usize, &'static str> {
     }
 }
 
-/// Reference-registry buckets and group/order rosters supply every registered
-/// root and ordinary/virtual successor. Preparation and assigned-unit selection
-/// retain their original reads and faults to establish unique scalar and
-/// modifier-array demand, without a per-country estimate.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Demand {
     pub capacity: Capacity,

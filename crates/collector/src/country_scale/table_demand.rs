@@ -1,5 +1,3 @@
-//! Live storage hints for complete first samples, independently of countries.
-//! A failed census preserves previous storage; hints never supply recorded data.
 use crate::{extended, map_capture::MapCapacities};
 pub(crate) use collector_extended_support::demand::rows;
 use engine_native::Memory;
@@ -20,8 +18,6 @@ pub(crate) fn presize_periodic(
     extended: &mut extended::Capacities,
     capacity_census: bool,
 ) -> Result<(), &'static str> {
-    // The dictionary is independent of the campaign root, including a failed
-    // or racing world hint, and keeps its floor when either fails.
     let dictionary = if capacity_census {
         extended.lexical.presize(memory, base, 0)
     } else {
@@ -37,8 +33,6 @@ pub(crate) fn presize_periodic(
             failure.get_or_insert(reason);
         }
     };
-    // These empty-output walks supply only worker-grown rows. No observer
-    // preparation depends on their census, including the physical navy pass.
     if capacity_census {
         accept(
             rows(engine_native::cair_wing::count(memory, base, state))
@@ -52,10 +46,6 @@ pub(crate) fn presize_periodic(
             accept(rows(outcome).map(|count| map.raise_naval(index, count)));
         }
     }
-    // These mixed passes also prepare template/deployment, embedded variable/
-    // flag, fleet-region, army-stat, HQ-template, combat-log prune and market
-    // observers. Keep them prompt; all other rows/arenas grow from
-    // current-boundary inputs.
     macro_rules! accept_hint {
         ($index:literal, $result:expr $(,)?) => {
             if capacity_census || matches!($index, 9 | 10 | 13 | 16 | 32 | 33 | 40) {
@@ -63,7 +53,6 @@ pub(crate) fn presize_periodic(
             }
         };
     }
-    // The supply census uses every non-sentinel supply slot.
     accept_hint!(
         3,
         rows(engine_railways::sprovince_supply_data::count(memory, base, state))
@@ -227,8 +216,6 @@ mod tests {
         assert_eq!(super::super::observe(&memory, 0), Some(5001));
         let mut sizing = super::super::Sizing::for_slots(5001);
         assert!(sizing.extended.economy.rows[2] < 20000);
-        // Other deliberately absent native roots have named failures; the
-        // independently valid map populations must still prepare full rows.
         assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
         assert!(sizing.extended.economy.rows[2] >= 20000);
         let mut order = extended::province_unit_order::Captured::with_capacities(

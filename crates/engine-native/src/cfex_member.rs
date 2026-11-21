@@ -1,6 +1,3 @@
-//! CFEXMember naval combat slot and convoy-terminal operands.
-//! Sunk-ship and convoy event hooks are excluded. The copied battle-slot
-//! information survives ship loss and remains separate from live ship fields.
 
 use engine_sites::Rva;
 use crate::capture_text::Value;
@@ -12,33 +9,19 @@ use crate::{
     read,
 };
 
-/// CFEXMember vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a9_a258);
-/// Packed ship u64 handle; zero is valid only for convoy members.
 pub const SHIP_HANDLE: usize = 0x08;
-/// CFEXMember convoy handle u64.
 pub const CONVOY_HANDLE: usize = 0x10;
-/// CFEXMember owner country id u32.
 pub const OWNER: usize = 0x20;
-/// Cached build cost IC i64.
 pub const BUILD_COST_IC: usize = 0x30;
-/// Cached strength ratio i64 fixed5.
 pub const CACHED_STRENGTH: usize = 0x38;
-/// Signed arrival hours.
 pub const ARRIVAL_HOURS: usize = 0xe4;
-/// Received critical count i32.
 pub const RECEIVED_CRITICALS: usize = 0x124;
-/// Carrier-plane evacuation state i32.
 pub const EVACUATION_STATE: usize = 0x128;
-/// Detection state i32.
 pub const DETECTION_STATE: usize = 0x12c;
-/// Escape progress i64 fixed5.
 pub const ESCAPE_PROGRESS: usize = 0x130;
-/// Six received-damage i64 lanes.
 pub const RECEIVED_DAMAGE: usize = 0x198;
 
-/// Caller-owned typed arenas; spans in DetailsRow index these arrays. Ship
-/// destinations grow on the acquisition worker from the original native counts.
 pub struct DetailBuffers<'a> {
     pub damage: &'a mut Vec<crate::cfex_damage_entry::Row>,
     pub air_hits: &'a mut Vec<crate::naval_combat_air_hit::Row>,
@@ -59,26 +42,19 @@ pub struct DetailBuffers<'a> {
     pub weapon_terms: &'a mut Vec<crate::naval_ship_modifier_inputs::ModifierTerm>,
     pub weapon_lengths: [usize; 2],
     pub weapon_required: [usize; 2],
-    /// The capture's doctrine selector answers for the weapon contexts.
     pub doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
-    /// The capture's modifier definition metadata for the weapon contexts.
     pub term_metadata: crate::naval_ship_modifier_inputs::TermMetadata,
-    /// The capture's task-force doctrine and leader sources for the weapon
-    /// contexts; `None` walks and searches for every ship.
     pub source_memo: Option<crate::naval_ship_modifier_inputs::SourceMemo>,
     pub commander_inputs: crate::walk::Buffer<'a, crate::naval_commander_inputs::Row>,
     pub commander_inputs_len: usize,
     pub commander_inputs_required: usize,
     pub commander_timed_traits: &'a mut Vec<crate::cunit_leader::TimedTrait>,
     pub commander_timed_traits_len: usize,
-    /// Each side's task-force handles (the combatant's unit vector).
     pub side_units: crate::walk::Buffer<'a, u64>,
     pub side_units_len: usize,
     pub side_units_required: usize,
-    /// Side country tags, grown at admission on the acquisition worker.
     pub summary_countries: &'a mut Vec<u32>,
     pub summary_countries_len: usize,
-    /// Signed custom-sea values for regions of the live combat walk.
     pub custom_sea: crate::walk::Buffer<'a, i16>,
     pub custom_sea_len: usize,
     pub custom_sea_required: usize,
@@ -95,11 +71,6 @@ pub struct DetailBuffers<'a> {
 
 pub const DETAIL_ARENA_CAPACITY: &str = "naval detail nested arena capacity exceeded";
 
-/// The member fields [`details`] reads at fixed offsets, in its order: the
-/// damage, two air-hit and naval-hit array headers, then the scalars (convoy
-/// handle, subunit index, formation type, build cost, cached strength,
-/// pride and convoy bytes, variant, arrival hours, received criticals,
-/// evacuation and detection states, escape progress).
 const MEMBER_FIELDS: [(usize, usize); 17] = [
     (DAMAGE_ENTRIES, 16),
     (0x150, 16),
@@ -119,12 +90,6 @@ const MEMBER_FIELDS: [(usize, usize); 17] = [
     (DETECTION_STATE, 4),
     (ESCAPE_PROGRESS, 8),
 ];
-/// Every fixed member field [`details`] reads, ascending: the identity
-/// (`cnaval_combatant::member`: vtable, ship handle, owner, state, group,
-/// battle slot), [`MEMBER_FIELDS`], the four text headers (name, type, sprite,
-/// attribution) and the last-target record (`clast_target_info::read`). A
-/// member's are gathered in one prefetched guarded call and served to those
-/// readers; a field the gather could not copy is read alone, as before.
 const MEMBER_RECORD: [(usize, usize); 31] = [
     (0, 8),
     (SHIP_HANDLE, 8),
@@ -159,11 +124,8 @@ const MEMBER_RECORD: [(usize, usize); 31] = [
     (0x180, 16),
 ];
 
-/// Past the furthest [`MEMBER_FIELDS`] byte.
 const MEMBER_FIELDS_END: usize = 0x190;
 
-/// Field `index` of [`MEMBER_FIELDS`] of the member at `pointer`, from its
-/// gathered `fields` or, without them, read singly.
 fn member_field<T: Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -178,10 +140,8 @@ fn member_field<T: Raw>(
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
-    /// Same-pass group pointer for the convoy source join; never replayed.
     pub native_group: usize,
     pub member: cnaval_combatant::Row,
-    /// Ordered group source: 0 the active member vector, 1 the retained one.
     pub member_source: u8,
     pub group_index: u32,
     pub member_index: u32,
@@ -192,7 +152,6 @@ pub struct DetailsRow {
     pub cached_strength_ratio: i64,
     pub pride: u8,
     pub is_convoy: u8,
-    // Stored std::strings retain their exact copied lengths.
     pub name: crate::capture_text::Owned,
     pub type_name: crate::capture_text::Owned,
     pub sprite: crate::capture_text::Owned,
@@ -203,24 +162,18 @@ pub struct DetailsRow {
     pub evacuation_state: i32,
     pub detection_state: i32,
     pub escape_progress: i64,
-    /// State 8 only: the live ship's or live convoy variant's speed provides the stored
-    /// effective-speed operand for on-demand escape calculation.
     pub escape_speed_base: i64,
     pub last_target: crate::clast_target_info::Row,
     pub received_damage: [i64; 6],
-    /// Live ship can have disappeared while its copied battle slot survives.
     pub live_ship: u8,
     pub live_convoy: u8,
     pub strength: i64,
     pub organisation: i64,
-    /// Raw CShip organisation operands, before the window's organisation modifier composition.
     pub base_organisation: i64,
     pub maximum_hit_points: i64,
     pub formation_flags: u64,
     pub weapon_context: crate::naval_ship_modifier_inputs::ContextRow,
-    /// Start/count pairs in the corresponding caller arena.
     pub damage_entries: [usize; 2],
-    /// Distinct air-hit arrays, retained in native order.
     pub air_hits: [[usize; 2]; 2],
     pub naval_hits: [usize; 2],
 }
@@ -234,14 +187,6 @@ impl DetailsRow {
     }
 }
 
-/// Every fixed field of a live combat ship that [`details`] and its weapon
-/// context (`naval_ship_modifier_inputs::read`) read, each span enclosing
-/// their exact reads: identity and handle, the equipment pool's vtable and
-/// array header, the class, the detection and weapon bases, the escape speed,
-/// the weather factor, the base organisation with the maximum hit points,
-/// the fifth weapon base, the subunit, the formation flags, the strength with
-/// the organisation, the task force with the carrier air base, the modifier
-/// accumulator's header, the medal store and the critical array's header.
 const COMBAT_SHIP_FIELDS: [(usize, usize); 18] = [
     (0, 16),
     (cship::EQUIPMENT_POOL, 8),
@@ -266,15 +211,9 @@ const COMBAT_SHIP_FIELDS: [(usize, usize); 18] = [
     (0x918, 16),
 ];
 
-/// Combat members read, live ships whose weapon context was attempted, and
-/// the QPC ticks of the whole member reads and of those weapon contexts,
-/// cumulative (diagnostics only: no row depends on them).
 pub static MEMBER_PHASES: [std::sync::atomic::AtomicU64; 4] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 4];
 
-/// Read a copied battle slot using its authenticated group and stable native key.
-/// Storage grows only on the acquisition worker. Every full handle and byte
-/// survives; no engine function is called and no observation is retried.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn details(
     memory: &impl Memory,
@@ -310,9 +249,6 @@ fn details_timed(
     buffers: &mut DetailBuffers<'_>,
 ) -> Result<DetailsRow, &'static str> {
     use cnaval_combatant::field;
-    // The member's own fixed fields in one guarded call, served to its
-    // identity, scalar, text and last-target readers below; the nested
-    // arrays, received damage, the live ship and the convoy read the source.
     let record = cship::GatheredObject::gather(memory, pointer, MEMBER_RECORD);
     if !record.complete() {
         crate::batch_fallback::record(crate::batch_fallback::Batch::NavalMemberRecords);
@@ -320,15 +256,10 @@ fn details_timed(
     let source = memory;
     let memory = &record.memory(source);
     let member = cnaval_combatant::member(memory, base, pointer, group, combat, side)?;
-    // The nested headers and scalars below in one guarded call, each
-    // consulted where it is read; a member whose fields would overflow reads
-    // them singly.
     let fields = pointer
         .checked_add(MEMBER_FIELDS_END)
         .map(|_| FieldBatch::gather(memory, MEMBER_FIELDS.map(|(at, len)| (pointer + at, len))));
     let mut row_counts = [0usize; 3];
-    // Each array uses its stored count. Header validation checks capacity
-    // and extent; guarded entry reads validate payloads.
     let mut arrays = [Array { data: 0, count: 0 }; 4];
     for (index, (header, (stride, lane))) in arrays
         .iter_mut()
@@ -436,8 +367,6 @@ fn details_timed(
         Some(&crate::naval_combat_hit::RECORD),
     )?;
     if let Some(ship) = creference_registry::resolve(memory, base, member.ship)? {
-        // The live ship's fixed fields, read below and by its weapon context,
-        // in one guarded call and served to them.
         let fields = crate::cship::GatheredObject::gather(memory, ship, COMBAT_SHIP_FIELDS);
         let memory = &fields.memory(memory);
         if Some(field::<u64>(memory, ship, 0)?)
@@ -456,7 +385,6 @@ fn details_timed(
         row.maximum_hit_points = field(memory, ship, 0x308)?;
         row.formation_flags = field(memory, ship, cship::FORMATION_FLAGS)?;
         let side = field::<u64>(memory, group, crate::cfex_group::SIDE)? as usize;
-        // Every attempted weapon context is timed, a refused one too.
         let started = crate::clock::qpc();
         let context =
             crate::naval_ship_modifier_inputs::read(memory, base, game_state, ship, side, buffers);
@@ -487,19 +415,10 @@ pub enum EntryOutput<'a, T> {
     Slice(&'a mut [T]),
 }
 
-/// Owned storage reserves the validated header count once; rows are appended
-/// only after each entry's guarded reads complete.
-/// Entries of a nested array read in one run: up to this many elements per
-/// guarded call, and their pointed objects' fields per record copy.
 const ENTRY_RUN: usize = 64;
-/// The widest element (a damage entry) and the widest object record (a
-/// naval hit's) a run holds.
 const ENTRY_STRIDE: usize = 0x20;
 const ENTRY_RECORD: usize = 64;
 
-/// One run of a nested array's elements, copied in one guarded call and
-/// served to the entries' decoders; every other read, and every read when
-/// the copy failed, goes to the source.
 pub struct EntryRun<'a, M> {
     source: &'a M,
     start: usize,
@@ -536,9 +455,6 @@ impl<M: Memory> Memory for EntryRun<'_, M> {
     }
 }
 
-/// One pointed object's fields from its run's record copy, when that copy
-/// completed the object's record; otherwise nothing, and its decoder reads the
-/// source, as it read every entry before.
 pub struct EntryRecord<'a> {
     pointer: usize,
     fields: &'a [crate::memory::RecordField],
@@ -567,19 +483,8 @@ impl cship::Served for EntryRecord<'_> {
     }
 }
 
-/// The memory an entry decoder reads: its object's record, then its run's
-/// elements, then the source.
 pub(crate) type EntryMemory<'a, M> = cship::GatheredMemory<'a, EntryRun<'a, M>, EntryRecord<'a>>;
 
-/// Appends an array's entries in order. `object` names the fields of the
-/// objects an array of pointers leads to (`None`: the elements are the
-/// entries). Up to [`ENTRY_RUN`] elements are copied in one guarded call, and
-/// their objects' fields in one record copy; each entry is then decoded, in
-/// order, from those bytes through its unchanged reader. A run whose element
-/// copy failed decodes each of its entries from the source, as before (each
-/// element and object read once, at most a run's worth); an object whose
-/// record the copy did not complete is read from the source too. So a lasting
-/// fault gives the per-entry result and a fault that clears refuses no more.
 pub fn append_entries<M: Memory, T>(
     memory: &M,
     array: Array,
@@ -621,7 +526,6 @@ pub fn append_entries<M: Memory, T>(
         let start = array
             .element(first, stride)
             .ok_or("naval detail nested element overflow")?;
-        // The run's elements in one guarded call.
         let copied = stride <= ENTRY_STRIDE && memory.copy(start, &mut elements[..run * stride]);
         let elements = EntryRun {
             source: memory,
@@ -632,7 +536,6 @@ pub fn append_entries<M: Memory, T>(
                 &[]
             },
         };
-        // The pointed objects' fields in one record copy, from copied pointers.
         let mut complete = 0;
         if copied
             && object.is_some()
@@ -687,15 +590,10 @@ pub fn append_entries<M: Memory, T>(
     Ok(span)
 }
 
-/// CFEXMember state u32.
 pub const STATE: usize = 0xe0;
-/// CFEXMember CFEXGroup pointer.
 pub const GROUP: usize = 0xe8;
-/// CFEXMember attribution std::string.
 pub const ATTRIBUTION_NAME: usize = 0xa8;
-/// Damage-entry array pointer with 0x20-byte entries.
 pub const DAMAGE_ENTRIES: usize = 0x108;
-/// CFEXMember battle-slot index u32.
 pub const BATTLE_SLOT: usize = 0x120;
 
 #[cfg(test)]

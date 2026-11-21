@@ -1,16 +1,3 @@
-//! Entry sites of the native operations that join and end wars, start and apply
-//! peace conferences, annex and release countries, and the callers that reach
-//! them and the sites other families own (the diplomatic action dispatch, civil
-//! war start and state owner assignment), each named by the route the replay
-//! records ([`Caller::route`] is a variant name of
-//! `replay_data::event_feed_rows::EventFeedRoute`).
-//!
-//! Every caller list is the complete set of direct calls to its target; a
-//! return address outside it is refused by name, never guessed. The diplomatic
-//! dispatch and civil war entries are the politics family's patches
-//! ([`crate::politics_sites`]), and state owner assignment is the territory
-//! family's (`territory_mutations`); they forward their callers here.
-//! Readers authenticate each object they read and copy only owned integers.
 
 #[cfg(test)]
 use super::pointer;
@@ -20,8 +7,6 @@ use crate::cdiplomacy_status;
 use crate::{Memory, ccountry, cgame_state, crelation, cstate, cwar_relation, peace_conference};
 use engine_sites::Rva;
 
-/// One call site reaching an observed operation: the native return address
-/// its CALL pushes, and the replay route that names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
     pub return_rva: Rva,
@@ -29,28 +14,19 @@ pub struct Caller {
 }
 
 const fn caller(call_rva: Rva, route: &'static str) -> Caller {
-    // Every listed CALL is the five-byte E8 rel32 form.
     Caller {
         return_rva: call_rva.after(5),
         route,
     }
 }
 
-/// A function entry the event feed detours. Each keeps its native arguments
-/// (at most eight: RCX, RDX, R8, R9 and four stack slots) and returns RAX
-/// unchanged from its original.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry {
     pub name: &'static str,
     pub rva: Rva,
-    /// Every caller, or empty when the entry names its route itself.
     pub callers: &'static [Caller],
 }
 
-/// Joins a war using diplomacy, ally and enemy pointers, a u32 reason and u8 expansion flag,
-/// returning the war. The joiner (the diplomacy status's country) joins the ally's war against the
-/// enemy with the reason, attacker side and enemies: every enemy of the ally's side when expanding,
-/// else the one named. Its five callers are below.
 pub const JOIN_WAR: Entry = Entry {
     name: "JoinWar",
     rva: Rva(0x00da_4e70),
@@ -64,9 +40,9 @@ pub const JOIN_WAR: Entry = Entry {
     ],
 };
 
-/// Ends a war using its pointer and a u8 truce flag: applies the truce to both
-/// statuses, clears the link and rebuilds both endpoints. The war is linked and
-/// readable at entry.
+
+
+
 pub const END_WAR: Entry = Entry {
     name: "EndWar",
     rva: Rva(0x00d7_e5c0),
@@ -80,9 +56,9 @@ pub const END_WAR: Entry = Entry {
     ],
 };
 
-/// Creates a conference from manager, loser and winner pointers, an i64 factor, two u32 arguments,
-/// a u8 argument and a message pointer, returning the conference. Construction stores the loser and
-/// then the winner; creation queues it and starts it through [`START_CONFERENCE`] before returning.
+
+
+
 pub const CREATE_CONFERENCE: Entry = Entry {
     name: "CreateConference",
     rva: Rva(0x00c1_2630),
@@ -95,28 +71,20 @@ pub const CREATE_CONFERENCE: Entry = Entry {
     ],
 };
 
-/// Starts the conference, called only by [`CREATE_CONFERENCE`]. It can end its
-/// wars and annex its losers at once.
+
+
 pub const START_CONFERENCE: Entry = Entry {
     name: "StartConference",
     rva: Rva(0x00eb_e3e0),
     callers: &[],
 };
 
-/// Applies a conference's outcome from its pointer and a u8 argument, ending
-/// its wars and annexing losers left without states. Reached from the
-/// conference queue, turn processing and a tail jump from conference
-/// processing, so it is one route.
 pub const APPLY_CONFERENCE: Entry = Entry {
     name: "ApplyConference",
     rva: Rva(0x00eb_0ce0),
     callers: &[],
 };
 
-/// Annexes a target using the taker pointer, u32 target, i64 output pointer, u8
-/// troop-transfer flag and another u8 argument. It moves the target's states
-/// and ends its wars before the `on_annex` dispatch observed by the event
-/// feed's [`super::ANNEX`] call.
 pub const ANNEX: Entry = Entry {
     name: "Annex",
     rva: Rva(0x0071_ba50),
@@ -134,8 +102,8 @@ pub const ANNEX: Entry = Entry {
     ],
 };
 
-/// Releases a nation using releaser and target pointers and two u8 arguments,
-/// moving each core state of the target through released-state transfer.
+
+
 pub const RELEASE: Entry = Entry {
     name: "Release",
     rva: Rva(0x0075_4b10),
@@ -148,8 +116,8 @@ pub const RELEASE: Entry = Entry {
     ],
 };
 
-/// The release command's release operation uses releaser and target pointers
-/// and a u8 argument, returns a u8 result and follows the same state walk.
+
+
 pub const RELEASE_COMMAND: Entry = Entry {
     name: "ReleaseCommand",
     rva: Rva(0x0075_4c30),
@@ -167,7 +135,6 @@ pub const ENTRIES: [Entry; 8] = [
     RELEASE_COMMAND,
 ];
 
-/// The callers of diplomatic action dispatch, which takes an action pointer.
 pub const DIPLOMACY_CALLERS: [Caller; 9] = [
     caller(Rva(0x0118_acb7), "DiplomaticCommand"),
     caller(Rva(0x0036_c949), "DeclareWarEffect"),
@@ -180,7 +147,6 @@ pub const DIPLOMACY_CALLERS: [Caller; 9] = [
     caller(Rva(0x0025_b8d3), "ConsoleDiplomacy"),
 ];
 
-/// The callers of civil-war start.
 pub const CIVIL_WAR_CALLERS: [Caller; 4] = [
     caller(Rva(0x0037_eb96), "StartCivilWarEffect"),
     caller(Rva(0x00b2_d936), "Coup"),
@@ -188,8 +154,6 @@ pub const CIVIL_WAR_CALLERS: [Caller; 4] = [
     caller(Rva(0x0025_a53b), "ConsoleCivilWarSecond"),
 ];
 
-/// The callers of state owner assignment, which takes a state pointer, u32
-/// owner and two u8 arguments.
 pub const STATE_OWNER_CALLERS: [Caller; 20] = [
     caller(Rva(0x0020_7cbc), "StateOwnerFix"),
     caller(Rva(0x0071_c8bd), "StateAnnex"),
@@ -213,8 +177,6 @@ pub const STATE_OWNER_CALLERS: [Caller; 20] = [
     caller(Rva(0x0163_d5ec), "StateHistory"),
 ];
 
-/// The route of a call returning to the live `return_address`, if `callers` lists it. Outside every
-/// located function a withheld caller cannot be ruled out, so the read scope is tainted.
 pub fn route(base: usize, callers: &[Caller], return_address: usize) -> Option<&'static str> {
     let Some(key) = engine_sites::reference(base, return_address) else {
         for caller in callers {
@@ -230,7 +192,6 @@ pub fn route(base: usize, callers: &[Caller], return_address: usize) -> Option<&
         .map(|caller| caller.route)
 }
 
-/// The current world's countries, read once per observation.
 pub struct World<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -239,7 +200,6 @@ pub struct World<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> World<'a, M> {
-    /// Acquisition-only authenticated world identity, never a replay key.
     pub fn state_pointer(&self) -> usize {
         self.state
     }
@@ -253,17 +213,14 @@ impl<'a, M: Memory> World<'a, M> {
         })
     }
 
-    /// `cgame_state::CURRENT_HOUR`, the hour every event feed operand carries.
     pub fn hour(&self) -> Result<i32, &'static str> {
         value(self.memory, self.state, cgame_state::CURRENT_HOUR)
     }
 
-    /// A raw country reference with its resolved full ID.
     pub fn country(&self, reference: u32) -> Result<CountryIdentity, &'static str> {
         Ok(identity(self.memory, self.base, &self.countries, reference)?.1)
     }
 
-    /// [`Self::country`] with the address of the native country object it resolved to.
     pub fn country_and_object(
         &self,
         reference: u32,
@@ -272,19 +229,14 @@ impl<'a, M: Memory> World<'a, M> {
         Ok((identity, country.pointer))
     }
 
-    /// The country a `u32` reference pointer names.
     pub fn country_at(&self, reference: usize) -> Result<CountryIdentity, &'static str> {
         self.country(value(self.memory, reference, 0)?)
     }
 
-    /// A `CCountry*`, which must be its reference's canonical object.
     pub fn country_object(&self, country: usize) -> Result<CountryIdentity, &'static str> {
         Ok(self.country_record(country)?.1)
     }
 
-    /// [`Self::country_object`] with the canonical census record it resolved
-    /// to, so a caller can key per-country state by its census slot without
-    /// another read.
     pub fn country_record(
         &self,
         country: usize,
@@ -298,7 +250,6 @@ impl<'a, M: Memory> World<'a, M> {
         Ok((resolved, identity))
     }
 
-    /// The owner of a `CDiplomacyStatus*`.
     #[cfg(test)]
     pub fn diplomacy_owner(&self, diplomacy: usize) -> Result<CountryIdentity, &'static str> {
         verify_vtable(
@@ -310,7 +261,6 @@ impl<'a, M: Memory> World<'a, M> {
         self.country_object(pointer(self.memory, diplomacy, cdiplomacy_status::COUNTRY)?)
     }
 
-    /// A linked war relation's first and second endpoints.
     pub fn war_endpoints(&self, war: usize) -> Result<[CountryIdentity; 2], &'static str> {
         verify_vtable(self.memory, self.base, war, cwar_relation::VTABLE_RVA)?;
         if value::<u32>(self.memory, war, crelation::TYPE_ID)? != cwar_relation::TYPE {
@@ -322,7 +272,6 @@ impl<'a, M: Memory> World<'a, M> {
         ])
     }
 
-    /// A conference's PeaceConferences reference (nonzero) and its main winner and loser.
     pub fn conference(
         &self,
         conference: usize,
@@ -344,12 +293,9 @@ impl<'a, M: Memory> World<'a, M> {
     }
 }
 
-/// Conference construction stores the creation's loser here.
 pub const MAIN_LOSER: usize = 0x34;
-/// Conference construction stores the creation's winner here.
 pub const MAIN_WINNER: usize = 0x38;
 
-/// A conference's PeaceConferences reference, without a country read.
 pub fn conference_reference(
     memory: &impl Memory,
     base: usize,
@@ -362,7 +308,6 @@ pub fn conference_reference(
     }
 }
 
-/// A state's id and owner reference.
 pub fn state_owner(
     memory: &impl Memory,
     base: usize,

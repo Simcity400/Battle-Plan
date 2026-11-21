@@ -190,7 +190,6 @@ test('manual project requests retain original roots and all their holders withou
 });
 
 test('the dashboard country chosen by slot asks by each tag it held, which its replies name, never a tag another country held', () => {
-  // Slot 1 is X through 109, then Y; from 120 X and Y are other countries'. A reply names its country by the tag asked.
   const scope = projectCountries({ kind: 'selected' }, [countryKey(1)], countryGroups(), 100, 150);
   assert.equal(scope.ready, true);
   assert.deepEqual([...scope.tags].sort(), ['X', 'Y'], 'asked by tag, never by the slot key a reply cannot name');
@@ -310,8 +309,6 @@ test('View is also a setting, and saved layouts drop the retired completed-proje
   assert.equal(definition.migrate(1, stored())?.title, 'Special projects');
 });
 
-/** Five projects at once: completed in the recording, already complete when first
- * recorded, two running at different progress, and one cancelled. */
 function projects(): SpecialProjectsReply {
   const data = fixture();
   data.iterationTexts = { 0: 'Mod iterations: 0', 1: 'Mod iterations: 1', 2: 'Mod iterations: 2', 3: 'Mod iterations: 3' };
@@ -369,12 +366,9 @@ test('History lanes run in start order, split at each progress step and fold pro
 
 test('Current renders again only when a section, order, name, scientist, state or date changes, never for progress alone', () => {
   const data = projects();
-  // beta's progress steps from 0 to 30 at 150 and its iterations at 173, behind gamma both times: nothing to render.
   assert.equal(currentKey(data, 149), currentKey(data, 150));
   assert.equal(currentKey(data, 172), currentKey(data, 173));
-  // done completes at 160: it leaves the running cards for the completed rows.
   assert.notEqual(currentKey(data, 159), currentKey(data, 160));
-  // A project overtaking another reorders the cards.
   const overtaking = projects();
   overtaking.projects[2].runs[2] = { ...overtaking.projects[2].runs[2], progress: 60 };
   assert.notEqual(currentKey(overtaking, 172), currentKey(overtaking, 173));

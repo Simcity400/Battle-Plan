@@ -1,7 +1,3 @@
-//! Division naming over ranges of the census. Each range reads its members into arenas of its
-//! own, so the final status ranges name their divisions in parallel; the stitch joins the ranges
-//! in census order, shifting their arena spans, and keeps the read names in the store as one pass
-//! over every division would.
 use super::*;
 use crate::army_stat_changes::Changes;
 use cname_group_member::{GroupKeys, INPUT_SPAN, Span};
@@ -9,18 +5,14 @@ use engine_allocation::SharedBox;
 
 type Store = super::super::attack_stats::ArmyStatStore;
 
-/// The hour's held-name and attack carry, after the hour's take: shared read-only by the ranges.
 #[derive(Default)]
 pub(crate) struct NamingCarry {
     carryable: bool,
     touched: Vec<usize>,
-    /// The name-group memo's table sizes.
     groups: [usize; 2],
-    /// The divisions named and the name and cached-name bytes last held, for each range's share.
     seeds: usize,
     bytes: [usize; 2],
     hour: i32,
-    /// The hour's certified held index per seed, for attack staging; `None` stages nothing.
     held_index: Option<Vec<Option<u32>>>,
 }
 
@@ -33,7 +25,6 @@ impl NamingCarry {
                 .map_or(0, |held| held.capacity() * size_of::<Option<u32>>())
     }
 
-    /// Stage the range's attack reads as the ordered settle did, from the prepared maxima.
     pub(super) fn stage_attack(
         &self,
         attack: &mut super::super::attack_stats::AttackPart,
@@ -69,13 +60,11 @@ pub(super) struct Carry<'a> {
     pub bytes: [usize; 2],
 }
 
-/// A name read after its member was registered: the store keeps it.
 struct Keep {
     index: usize,
     division: u64,
     member: usize,
     span: [u8; INPUT_SPAN],
-    /// In the range's cached-name arena.
     text: Span,
 }
 
@@ -87,9 +76,7 @@ pub(crate) struct NamingPart {
     cached: Arena<u8>,
     groups: GroupKeys,
     keeps: Vec<Keep>,
-    /// Held-name lookups, for the tests' count.
     lookups: usize,
-    /// Not captured this hour, or its rows or staging could not be allocated.
     failed: bool,
 }
 
@@ -130,7 +117,6 @@ impl NamingPart {
             + self.keeps.capacity() * size_of::<Keep>()
     }
 
-    /// Awaiting this hour's capture over `range`.
     pub(super) fn arm(&mut self, range: std::ops::Range<usize>) {
         self.range = range;
         self.failed = true;
@@ -140,30 +126,16 @@ impl NamingPart {
         self.failed = true;
     }
 
-    /// Lets go of the store's staging, as a fresh range holds none.
     #[cfg(test)]
     pub(super) fn forget_staging(&mut self) {
         self.keeps = Vec::new();
     }
 
-    /// The divisions this hour's capture named; None when it did not complete.
     #[cfg(test)]
     pub(super) fn named(&self) -> Option<usize> {
         (!self.failed).then_some(self.len)
     }
 
-    /// The name member pointer leads to the naming generator. Keep its language-neutral operands
-    /// and, independently, the exact cached name (`cname_group_member::CACHED_NAME`). One copy
-    /// of the member span serves both; the two arenas keep their refusals independent, and a
-    /// span that cannot be copied leaves the cache to its own reads.
-    ///
-    /// With the `army_stat` store, a member no hooked writer touched since the held read
-    /// (`engine_mutations::army_stat_mutations`: `cached-name refresh`, and the country-wide
-    /// refresh, which marks its country's roster members) is not read: its held span and cache
-    /// text stand in for the reads, and the inputs are derived from the span as from a read (the
-    /// template's group and a heap override are still read). The hour's take
-    /// ([`super::super::attack_stats`]) precedes the reads, and a member not carried is
-    /// registered with them.
     pub(super) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -188,15 +160,12 @@ impl NamingPart {
         self.groups.reset();
         let first = self.range.start.min(seeds.len());
         let seeds = &seeds[first..self.range.end.clamp(first, seeds.len())];
-        // Every division keeps at most one name, so the staging never grows past this.
         if !grow_vec(&mut self.rows, seeds.len())
             || engine_allocation::reserve(&mut self.keeps, seeds.len()).is_err()
         {
             self.failed = true;
             return;
         }
-        // A heap name is copied in one read only into room already there: each range starts
-        // with twice its share of the bytes last held, the whole of them for a single range.
         let share = |total: usize| {
             total
                 .saturating_mul(2)
@@ -221,7 +190,6 @@ impl NamingPart {
                     let Some(pointer) = pending.name_member.filter(|&at| at != 0) else {
                         continue;
                     };
-                    // Decide eligibility once; the store keeps the member span and text.
                     let held = match store {
                         Some(store) if carry.carryable => {
                             self.lookups += 1;
@@ -256,8 +224,6 @@ impl NamingPart {
                         Ok(pointer)
                     }
                 });
-            // The hour's take certifies a held member registered in the held capture's epoch
-            // and untouched since; any other member is registered with its read.
             let held = held_indices[local % 64]
                 .and_then(|at| store.map(|store| store.held_name_record(at)));
             let registered = match (held, pointer, store.is_some()) {
@@ -284,8 +250,6 @@ impl NamingPart {
             match result {
                 Ok(cname_group_member::Naming::Row(inputs)) => {
                     self.names.len += inputs.custom.1;
-                    // The reader shows the programmatic name override when
-                    // the resolved group is null.
                     row.inputs = Some(inputs);
                 }
                 Ok(cname_group_member::Naming::DoesNotFit) => {
@@ -350,7 +314,6 @@ impl NamingPart {
 }
 
 impl Captured {
-    /// After the hour's take: the carry the final status ranges name their divisions under.
     pub(super) fn arm_naming(
         &mut self,
         admitted: usize,
@@ -378,7 +341,6 @@ impl Captured {
         carry.bytes = bytes;
         carry.touched.clear();
         let touched = self.attack.touched_receivers();
-        // Without the touched list nothing may be carried: every member is read.
         carry.carryable = self.attack.carryable
             && engine_allocation::reserve(&mut carry.touched, touched.len()).is_ok();
         if carry.carryable {
@@ -388,7 +350,6 @@ impl Captured {
         let held_index = self.attack.held_index();
         let mut staged = carry.held_index.take().unwrap_or_default();
         staged.clear();
-        // Without the copy the ranges stage no attack read; the ordered pass reads them.
         carry.held_index = engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut staged, held_index.len())
         })
@@ -413,7 +374,6 @@ impl Captured {
         SharedBox::clone(self.naming_carry.as_ref().expect("naming armed"))
     }
 
-    /// The name and cached-name bytes this capture holds room for.
     fn naming_bytes(&self) -> [usize; 2] {
         [
             self.names.first.len().max(self.names.required),
@@ -421,7 +381,6 @@ impl Captured {
         ]
     }
 
-    /// One range over every seed, as a single pass names them.
     pub(super) fn capture_naming_holding(
         &mut self,
         memory: &impl Memory,
@@ -456,10 +415,6 @@ impl Captured {
         self.serial_naming = part;
     }
 
-    /// The ranges' naming of the first `len` divisions, joined in census order: the first
-    /// range's arenas are taken whole, each later range's appended with its spans shifted, and
-    /// the read names kept in the store in census order. Any range not named leaves the hour
-    /// without naming.
     pub(super) fn stitch_naming(
         &mut self,
         parts: &mut [NamingPart],
@@ -535,7 +490,6 @@ impl Captured {
             .filter(|row| row.held)
             .count() as u64;
         if let Some(store) = store {
-            // The first range's text is in this capture's arena now, at the same offsets.
             for keep in first.keeps.iter().take_while(|keep| keep.index < len) {
                 let text = &self.cached_names.first[keep.text.0..keep.text.0 + keep.text.1];
                 store.keep_name(keep.division, keep.member, &keep.span, text);

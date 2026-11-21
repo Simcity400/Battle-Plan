@@ -1,12 +1,3 @@
-//! A published recording compressed again at another zstd level ([`recompress_file`]): every
-//! compressed frame and extent it names decoded and compressed again, on every core, nothing
-//! decoded into rows and no writer run. The world log is walked in file order, item by item (a
-//! table's unit of a block, a block's head, a span's or a run's summary pieces); each frame and
-//! piece of an item is a task of its own, taken by the workers first in file order, and each item
-//! is written back in that order into a new file beside the recording, with the pages,
-//! directories and root that name them written anew. Every frame decodes to the bytes it did, so every digest of decoded
-//! content stays; what names compressed bytes (frame entries, extents, span rows' digests, block
-//! chains) is written anew. The new file replaces the recording only once whole and synced.
 
 use crate::{publication, rows::TABLE_COUNT};
 use engine_allocation::zstd::{self, Compressor, Decompressor, Holder};
@@ -33,18 +24,12 @@ mod tests;
 #[cfg(test)]
 use std::collections::BTreeSet;
 
-/// Why a recording was kept as it is.
 #[derive(Debug)]
 pub enum Kept {
-    /// Battle Plan Recorder is writing it, or it holds hours not saved or a session not finished.
     Recording,
-    /// Another program holds it open, so it cannot be replaced.
     OpenElsewhere,
-    /// It changed while it was compressed.
     Changed,
-    /// Another compress of it is running.
     Busy,
-    /// Stopped before the smaller file was whole.
     Stopped,
     Failed(String),
 }
@@ -68,16 +53,12 @@ impl From<io::Error> for Kept {
     }
 }
 
-/// What became of a recording compressed again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The smaller file replaced it: its length before and after.
     Replaced { before: u64, after: u64 },
-    /// Its root records that it is at the level already; it was left as it is.
     AlreadyAt(i32),
 }
 
-/// How far a recompress is: table units written of all, and stored bytes read and written.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
     pub units: u64,
@@ -86,25 +67,16 @@ pub struct Progress {
     pub written: u64,
 }
 
-/// The file a recompress of the recording at `path` writes before it replaces it: beside it, a
-/// name no listing takes for a recording.
 pub fn partial_path(path: &Path) -> PathBuf {
     publication::temporary_beside(path, "recompress")
 }
 
-/// The level the newest saved revision of the recording at `path` records it was written at; none
-/// when it records none or holds no saved revision.
 pub fn level_of(path: &Path) -> io::Result<Option<i32>> {
     let file = shared(path)?;
     let Some((root, _)) = container::locate(&file, Open::Saved)? else { return Ok(None) };
     Ok(container::read_root(&file, &root)?.level)
 }
 
-/// Compresses the recording at `path` again at `level`, beside it, and replaces it once whole:
-/// what became of it, or why it was kept as it is. `progress` is told after each table unit and
-/// stops the recompress by answering false. `below_normal` runs the process and its threads below
-/// normal priority. Whatever stops it, the recording is left as it was and the file written beside
-/// it goes.
 pub fn recompress_file(
     path: &Path,
     level: i32,
@@ -121,22 +93,17 @@ pub fn recompress_file(
         Err(kept) => Err(kept),
     };
     if !matches!(result, Ok(Outcome::Replaced { .. })) {
-        // Another compress's file is held without delete sharing, and stays.
         let _ = std::fs::remove_file(&partial);
     }
     result
 }
 
-/// What [`write_partial`] left beside the recording.
 #[derive(Debug)]
 pub enum Written {
-    /// Nothing: the recording is at the level already.
     Already(i32),
-    /// The whole smaller file, synced, for the recording as it was when read.
     Whole(Original),
 }
 
-/// A recording as read: its length and its last footer, which names its root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Original {
     length: u64,
@@ -154,8 +121,6 @@ impl Original {
     }
 }
 
-/// Writes the recording at `path` compressed again at `level` into `partial`, synced: the lowest
-/// layer of [`recompress_file`], which leaves `partial` as it stopped, as a killed process would.
 pub fn write_partial(path: &Path, partial: &Path, level: i32, below_normal: bool, progress: impl FnMut(&Progress) -> bool) -> Result<Written, Kept> {
     write_paced(path, partial, level, below_normal, progress, Pace::here())
 }
@@ -166,8 +131,6 @@ fn write_paced(path: &Path, partial: &Path, level: i32, below_normal: bool, mut 
     let original = Original::of(&file)?;
     let (extent, through) = container::locate(&file, Open::Newest)?.ok_or(Kept::Recording)?;
     let root = container::read_root(&file, &extent)?;
-    // A torn tail is a revision on its way; a root not saved, or naming resume state, a session
-    // that may yet write.
     if through != original.length || root.saved != Saved::Yes || root.state.is_some() {
         return Err(Kept::Recording);
     }
@@ -197,8 +160,6 @@ fn write_paced(path: &Path, partial: &Path, level: i32, below_normal: bool, mut 
     Ok(Written::Whole(original))
 }
 
-/// Replaces the recording at `path`, unchanged since it was read as `original`, with `partial`:
-/// never while anything holds it open, so no reader or writer is left on bytes that went.
 fn swap(path: &Path, partial: &Path, original: Original) -> Result<Outcome, Kept> {
     refuse_writer(path)?;
     if Original::of(&exclusive(path)?)? != original {
@@ -212,7 +173,6 @@ fn swap(path: &Path, partial: &Path, original: Original) -> Result<Outcome, Kept
     Ok(Outcome::Replaced { before: original.length, after })
 }
 
-/// Refuses a recording Battle Plan Recorder holds to write: its writer shares reading alone.
 fn refuse_writer(path: &Path) -> Result<(), Kept> {
     match OpenOptions::new()
         .read(true)
@@ -226,7 +186,6 @@ fn refuse_writer(path: &Path) -> Result<(), Kept> {
     }
 }
 
-/// The recording opened alone: refused while anything else holds it open.
 fn exclusive(path: &Path) -> Result<File, Kept> {
     OpenOptions::new()
         .read(true)
@@ -238,7 +197,6 @@ fn exclusive(path: &Path) -> Result<File, Kept> {
         })
 }
 
-/// The recording opened to read, leaving every other program its own handle.
 fn shared(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
@@ -246,35 +204,27 @@ fn shared(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// Lowers the process and the calling thread below normal priority, so the work never competes
-/// with the game or a recording.
 pub fn enter_below_normal() -> io::Result<()> {
     use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass};
-    // SAFETY: the pseudo handle of the calling process.
     if unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
         return Err(io::Error::last_os_error());
     }
     below_normal_thread()
 }
 
-/// Lowers the calling thread below normal priority.
 pub fn below_normal_thread() -> io::Result<()> {
     use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
-    // SAFETY: the pseudo handle of the calling thread.
     if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
 }
 
-/// The calling process's priority class and the calling thread's priority.
 pub fn priority() -> (u32, i32) {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread, GetPriorityClass, GetThreadPriority};
-    // SAFETY: the pseudo handles of the calling process and thread.
     unsafe { (GetPriorityClass(GetCurrentProcess()), GetThreadPriority(GetCurrentThread())) }
 }
 
-/// The new file, written straight through: its length is where the next extent lies.
 struct Tracked {
     file: BufWriter<File>,
     at: u64,
@@ -318,7 +268,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The recording read: its file through its newest revision.
 struct Source<'f> {
     file: &'f File,
     length: u64,
@@ -336,7 +285,6 @@ impl Source<'_> {
         ReadAt::read_at(self.file, offset, out)
     }
 
-    /// `extent`'s stored bytes, checked against its digest.
     fn stored(&self, extent: &Extent) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         self.read(extent.offset, extent.stored, &mut out)?;
@@ -346,12 +294,10 @@ impl Source<'_> {
         Ok(out)
     }
 
-    /// `extent`'s bytes, decoded from its one frame.
     fn raw(&self, extent: &Extent) -> io::Result<Vec<u8>> {
         container::decompress(&self.stored(extent)?, Some(extent.raw)).map_err(|error| extent.damaged(&error.to_string()))
     }
 
-    /// `frame`'s stored bytes into `out`, checked against its digest.
     fn frame(&self, frame: &FrameEntry, out: &mut Vec<u8>) -> io::Result<()> {
         self.read(frame.offset, u64::from(frame.stored), out)?;
         if envelope::digest(out) != frame.digest {
@@ -360,8 +306,6 @@ impl Source<'_> {
         Ok(())
     }
 
-    /// Every extent of `section`: its frozen ones read down through their index pages, then its
-    /// open ones.
     fn section(&self, section: &Section) -> io::Result<Vec<Extent>> {
         let mut out = Vec::new();
         for (level, held) in section.frozen.levels().iter().enumerate().rev() {
@@ -400,14 +344,8 @@ impl Source<'_> {
 
 static RECOMPRESS: Holder = Holder::new("zstd: recompress");
 
-/// When to hand out the next item, per worker, not a limit: raw bytes handed out and not yet
-/// compressed again, and compressed bytes not yet written. Several of the largest frames a unit
-/// cuts (a column's part or a restore chunk, about a MiB each, and their prefixes) per worker,
-/// so a frame compressing long never leaves the other workers without work behind it.
 const WINDOW_PER_WORKER: u64 = 8 << 20;
 
-/// How a recompress spreads its work: its workers, and the bytes in flight past which it hands
-/// out no further item until one is written.
 struct Pace {
     workers: usize,
     window: u64,
@@ -418,7 +356,6 @@ struct Pace {
 }
 
 impl Pace {
-    /// A worker per core.
     fn here() -> Self {
         let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         Self {
@@ -432,8 +369,6 @@ impl Pace {
     }
 }
 
-/// One worker's contexts: frames decoded, and compressed again as the recorder's unit compresses
-/// them at the level.
 struct Codec {
     compressor: Compressor,
     decompressor: Decompressor,
@@ -451,7 +386,6 @@ impl Codec {
         Ok(slot.as_mut().expect("made"))
     }
 
-    /// `stored` decoded against `prefix`, refused unless it is `raw` bytes.
     fn decode(&mut self, stored: &[u8], raw: usize, prefix: Option<&[u8]>) -> io::Result<Vec<u8>> {
         let mut out = engine_allocation::vec(raw)?;
         let decoded = match prefix {
@@ -465,7 +399,6 @@ impl Codec {
         Ok(out)
     }
 
-    /// `bytes` compressed against `prefix`, checked to decode to them again.
     fn compress(&mut self, bytes: &[u8], prefix: Option<&[u8]>) -> io::Result<Vec<u8>> {
         let mut frame = engine_allocation::vec(zstd::bound(bytes.len()))?;
         let compressed = match prefix {
@@ -480,14 +413,12 @@ impl Codec {
     }
 }
 
-/// A context compressing frames as the recorder's unit compresses them at `level`.
 fn frame_compressor(level: i32) -> io::Result<Compressor> {
     let mut compressor = Compressor::new(&RECOMPRESS, level)?;
     compressor.cap_window(level, unit::Settings::at(level).window_log)?;
     Ok(compressor)
 }
 
-/// Decoded bytes shared by the tasks that need them: a frame's, or one stream's inside them.
 #[derive(Clone)]
 struct Slice {
     bytes: Arc<Vec<u8>>,
@@ -501,11 +432,9 @@ impl Slice {
     }
 }
 
-/// The streams of one part as decoded: what the next part's chained frames are decoded against.
 #[derive(Default)]
 struct Decoded {
     frames: Vec<Arc<Vec<u8>>>,
-    /// Each stream: its id, its frame and where it lies in it.
     streams: Vec<(u32, usize, usize, usize)>,
 }
 
@@ -544,37 +473,21 @@ impl Decoded {
     }
 }
 
-/// One thing of the world log, in file order: what its tasks compress again, then what the writer
-/// does with what they gave.
 enum Item {
-    /// A table's unit of a block: its entry, which of its restores' chunk frames name a whole
-    /// restore's frame again, in order, and its summary piece.
     Unit { run: u32, entry: TableEntry, again: Vec<bool>, summary: Option<Extent> },
-    /// A block's clock and string chunks.
     Head { run: u32, head: BlockHead },
-    /// A block's end, as read: its page's extent when its span is open.
     Block { old: Box<Block>, page: Option<Extent> },
-    /// A span's end: its pages as read, the chain after its last block and each table's summary
-    /// pieces of the levels above a block's.
     Span { pages: SpanPages, chain: [u8; 32], pieces: Vec<Vec<(u8, Extent)>> },
-    /// A run's end: its directory as read.
     Run { index: u32, extent: Extent, directory: RunDirectory },
 }
 
-/// A worker's part of an item: a frame or a summary piece to compress again, or a unit's part
-/// frames to decode, which hands out a task for each of them.
 enum Task {
-    /// A unit's part frames, part by part: each chained one decoded against the part before.
     Parts(Vec<Vec<FrameEntry>>),
-    /// A part frame decoded, and the stream of the part before it was compressed against.
     Compress { bytes: Arc<Vec<u8>>, prefix: Option<Slice> },
-    /// A frame read and decoded against its prefix's frame, then compressed again.
     Frame { frame: FrameEntry, prefix: Option<FrameEntry> },
     Piece(Extent),
 }
 
-/// A task of item `seq`, giving its slot of what the item gets back. `weight` is the raw bytes it
-/// holds while in flight.
 struct Job {
     seq: u64,
     slot: u32,
@@ -590,7 +503,6 @@ impl Job {
     }
 }
 
-/// Jobs are taken first in file order, so the item the writer waits on is finished first.
 impl Ord for Job {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         other.key().cmp(&self.key())
@@ -611,10 +523,7 @@ impl PartialEq for Job {
 
 impl Eq for Job {}
 
-/// What a worker gave back.
 enum Message {
-    /// A task of item `seq` done: its slot (none for a unit's part frames decoded), its weight,
-    /// the stored bytes it read and what it compressed.
     Done {
         seq: u64,
         slot: Option<u32>,
@@ -627,7 +536,6 @@ enum Message {
     Failed(io::Error),
 }
 
-/// An item's tasks, as the writer hands them out.
 struct Plan {
     seq: u64,
     #[cfg(test)]
@@ -657,7 +565,6 @@ impl Plan {
                     plan.weight += parts.iter().flatten().map(|frame| u64::from(frame.raw)).sum::<u64>();
                     plan.push(0, Task::Parts(parts));
                     plan.slots = u32::try_from(frames).map_err(|_| invalid("A unit names more than 2^32 frames"))?;
-                    // Each frame's slot, and the decoding task's own word, which may come last.
                     plan.missing = frames + 1;
                 }
                 let mut named = again.iter();
@@ -706,7 +613,6 @@ impl Plan {
         });
     }
 
-    /// A task giving the next slot.
     fn job(&mut self, weight: u64, task: Task) {
         self.push(weight, task);
         self.slots += 1;
@@ -715,8 +621,6 @@ impl Plan {
     }
 }
 
-/// The tasks waiting for a worker and what workers gave back, shared by the writer and its
-/// workers.
 struct Queue {
     state: Mutex<State>,
     work: Condvar,
@@ -734,15 +638,12 @@ struct State {
     tasks: BinaryHeap<Job>,
     given: Vec<Message>,
     closed: bool,
-    /// Workers waiting for a task, and whether the writer waits for what they give.
     #[cfg(test)]
     idle: usize,
     #[cfg(test)]
     waiting: bool,
-    /// The item a held task belongs to, and every later unit a task of which was done since.
     #[cfg(test)]
     held: Option<(u64, BTreeSet<u64>)>,
-    /// The items the writer wrote.
     #[cfg(test)]
     applied: u64,
 }
@@ -770,7 +671,6 @@ impl Queue {
         }
     }
 
-    /// The first task in file order; none once closed.
     fn next(&self) -> Option<Job> {
         let mut state = self.lock();
         loop {
@@ -802,7 +702,6 @@ impl Queue {
         self.given.notify_all();
     }
 
-    /// What workers gave since asked last, waiting for something.
     fn take(&self) -> Vec<Message> {
         let mut state = self.lock();
         while state.given.is_empty() {
@@ -827,7 +726,6 @@ impl Queue {
     }
 }
 
-/// Closes its queue however the writer leaves, so the workers stop.
 struct Closing<'q>(&'q Queue);
 
 impl Drop for Closing<'_> {
@@ -836,7 +734,6 @@ impl Drop for Closing<'_> {
     }
 }
 
-/// A worker: tasks taken in file order until the queue closes.
 fn worker(source: &Source<'_>, queue: &Queue, level: i32, below_normal: bool) {
     if below_normal {
         let _ = below_normal_thread();
@@ -847,7 +744,6 @@ fn worker(source: &Source<'_>, queue: &Queue, level: i32, below_normal: bool) {
     }
 }
 
-/// `job` done.
 fn run(source: &Source<'_>, codec: &mut Codec, queue: &Queue, job: Job, level: i32) -> io::Result<Message> {
     let mut read = 0_u64;
     let out = match job.task {
@@ -935,20 +831,16 @@ fn run(source: &Source<'_>, codec: &mut Codec, queue: &Queue, job: Job, level: i
     })
 }
 
-/// The world log's items in file order, a block at a time.
 struct Walk<'s, 'f> {
     source: &'s Source<'f>,
     runs: Vec<(Extent, RunDirectory)>,
     run: usize,
     block: u32,
-    /// The closed span read: its index, its directory and each table's row.
     span: Option<(u32, SpanDirectory, Vec<SpanRow>)>,
-    /// Each table's chunk frames of its last whole restore, by offset.
     seen: Vec<HashSet<u64>>,
 }
 
 impl Walk<'_, '_> {
-    /// The items of the next block, and of the span and run it ends; none once every run is done.
     fn next(&mut self) -> io::Result<Vec<Item>> {
         let mut items = Vec::new();
         let Some((extent, directory)) = self.runs.get(self.run) else { return Ok(items) };
@@ -991,7 +883,6 @@ impl Walk<'_, '_> {
     }
 }
 
-/// Run `run`'s span `pages`: its directory and each table's row of its index.
 fn read_span(source: &Source<'_>, run: u32, pages: &SpanPages) -> io::Result<(u32, SpanDirectory, Vec<SpanRow>)> {
     let directory = SpanDirectory::read(&source.raw(&pages.directory)?, &pages.directory, TABLE_COUNT)?;
     if pages.index.stored != pages.index.raw {
@@ -1012,8 +903,6 @@ fn read_span(source: &Source<'_>, run: u32, pages: &SpanPages) -> io::Result<(u3
     Ok((directory.first_block / SPAN_BLOCKS, directory, rows))
 }
 
-/// Which of `entry`'s restore chunk frames name the table's last whole restore's frame again, in
-/// order; `seen` becomes a whole restore's frames as it passes one.
 fn classify(seen: &mut HashSet<u64>, entry: &TableEntry) -> Vec<bool> {
     let mut again = Vec::new();
     for restore in [&entry.first, &entry.restore].into_iter().flatten() {
@@ -1033,17 +922,13 @@ fn classify(seen: &mut HashSet<u64>, entry: &TableEntry) -> Vec<bool> {
     again
 }
 
-/// The run being written anew.
 #[derive(Default)]
 struct RunOut {
     chain: [u8; 32],
-    /// The chain as read, checked block by block.
     read_chain: [u8; 32],
     spans: Vec<SpanPages>,
     open: Vec<Extent>,
-    /// The open span's blocks, for its pages once it closes.
     blocks: Vec<Block>,
-    /// The block under way's entries and head.
     tables: Vec<Entry>,
     head: Option<BlockHead>,
 }
@@ -1052,14 +937,11 @@ fn tags(extent: &Extent) -> Tags {
     Tags { run: extent.run, stream: extent.stream, first: extent.first, hours: extent.hours }
 }
 
-/// The writer's side: what workers gave, put into the new file in file order, and the pages and
-/// directories naming it.
 struct Out<'w, W: Write + Seek> {
     writer: &'w mut ContainerWriter<W>,
     pages: Compressor,
     run: Option<RunOut>,
     runs: Vec<Extent>,
-    /// Each table's frames of its last whole restore as written: by their offset as read.
     wholes: Vec<HashMap<u64, FrameEntry>>,
 }
 
@@ -1068,7 +950,6 @@ impl<W: Write + Seek> Out<'_, W> {
         self.run.get_or_insert_with(RunOut::default)
     }
 
-    /// `stored`, frame `old` compressed again, written: its entry.
     fn frame(&mut self, run: u32, old: &FrameEntry, stored: &[u8]) -> io::Result<FrameEntry> {
         let extent = self.writer.put(Kind::Block, Tags { run, ..Tags::default() }, 0, stored)?;
         Ok(FrameEntry {
@@ -1086,15 +967,12 @@ impl<W: Write + Seek> Out<'_, W> {
         self.writer.put(Kind::Summary, tags(old), piece.len() as u64, piece)
     }
 
-    /// `raw` compressed as one frame, as the recorder writes its pages and directories.
     fn page(&mut self, kind: Kind, tags: Tags, raw: &[u8]) -> io::Result<Extent> {
         let mut stored = engine_allocation::vec(zstd::bound(raw.len()))?;
         self.pages.compress_append(raw, &mut stored).map_err(zstd::Error::invalid)?;
         self.writer.put(kind, tags, raw.len() as u64, &stored)
     }
 
-    /// `item` written, with what its tasks gave in `slots`: none for a restore chunk naming a
-    /// whole restore's frame again.
     fn apply(&mut self, item: Item, slots: Vec<Option<Vec<u8>>>) -> io::Result<()> {
         let mut slots = slots.into_iter();
         match item {
@@ -1246,13 +1124,10 @@ impl<W: Write + Seek> Out<'_, W> {
     }
 }
 
-/// Summary pieces compressed again, every one given.
 fn pieces_given(slots: impl Iterator<Item = Option<Vec<u8>>>) -> io::Result<Vec<Vec<u8>>> {
     slots.map(|slot| slot.ok_or_else(|| invalid("A summary piece came back short"))).collect()
 }
 
-/// An item handed out and not yet written: what its tasks gave, how many are still to give, and
-/// the stored bytes they read.
 struct Pending {
     item: Item,
     slots: Vec<Option<Vec<u8>>>,
@@ -1260,8 +1135,6 @@ struct Pending {
     read: u64,
 }
 
-/// The world log written anew in file order, its frames and pieces compressed again on every
-/// core: each a task of its own, taken first in file order.
 fn rewrite_world_log<W: Write + Seek>(
     source: &Source<'_>,
     root: &Root,
@@ -1304,7 +1177,6 @@ fn rewrite_world_log<W: Write + Seek>(
         }
         let mut pending = VecDeque::<Pending>::new();
         let mut applied = 0_u64;
-        // Raw bytes handed out and not yet compressed again, and compressed bytes not yet written.
         let (mut raw, mut held) = (0_u64, 0_u64);
         let mut queued = VecDeque::new();
         let mut walking = true;
@@ -1371,8 +1243,6 @@ fn rewrite_world_log<W: Write + Seek>(
     Ok(())
 }
 
-/// Every section but the world log written anew: a frame compressed again, bytes stored as they are
-/// copied, each in its place.
 fn rewrite_sections<W: Write + Seek>(source: &Source<'_>, root: &Root, writer: &mut ContainerWriter<W>, level: i32) -> Result<(), Kept> {
     for section in root.sections.iter().filter(|section| section.key != SectionKey::WORLD_LOG) {
         let extents = source.section(section)?;

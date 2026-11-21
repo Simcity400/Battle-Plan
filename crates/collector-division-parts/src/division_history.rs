@@ -1,4 +1,3 @@
-//! Writer-dirty division history, publishing only changed key ranges.
 use collector_observers::unit_history_changes as changes;
 use collector_projection::certified::{Snapshot, Store as Rows};
 use engine_allocation as allocation;
@@ -17,7 +16,6 @@ struct Held {
     store: usize,
     medals: Option<(u64, u64)>,
     counts: [usize; 2],
-    /// The latest career entry and its province count, which the game grows in place unobserved.
     latest: Option<(usize, u32)>,
     available: bool,
     edit_epoch: Option<u64>,
@@ -25,7 +23,6 @@ struct Held {
 #[derive(Default)]
 pub struct Store {
     held: Vec<Held>,
-    /// The stamp of `held`, which preparation ranges index once each.
     baseline: Option<u64>,
     next: Vec<Held>,
     order: Vec<(u64, usize)>,
@@ -80,8 +77,6 @@ fn remove(
         rows.remove_range(range)
     }
 }
-/// Whether no writer touched `held`'s history root or medal store since its certificates were
-/// taken, in the hour's `taken`: its certificates are then the current ones.
 fn quiet(held: &Held, seed: &DivisionSeed, taken: &crate::observations::Taken) -> bool {
     let Some(history) = held.history else {
         return false;
@@ -94,7 +89,6 @@ fn quiet(held: &Held, seed: &DivisionSeed, taken: &crate::observations::Taken) -
                 .medals
                 .is_some_and(|medals| taken.quiet(held.store, medals.0)))
 }
-/// Whether `held`'s latest career entry still holds the provinces it was read with.
 fn latest_unchanged(memory: &impl Memory, held: &Held) -> bool {
     !held.available
         || held.latest.is_none_or(|(address, provinces)| {
@@ -105,13 +99,11 @@ fn key(division: u64, list: u8, ordinal: u32) -> u128 {
     ((division as u128) << 34) | ((list as u128) << 32) | ordinal as u128
 }
 impl Store {
-    /// Starts the hour, taking the entry edits itself.
     pub fn begin(&mut self, count: usize) -> Result<(), &'static str> {
         let mut edits = crate::observations::Taken::default();
         edits.take(|visit| changes::take_edits(visit));
         self.begin_with(count, &edits)
     }
-    /// Starts the hour under the hour's take of the entry edits.
     pub fn begin_with(
         &mut self,
         count: usize,
@@ -150,8 +142,6 @@ impl Store {
         self.defer_edits = true;
         result
     }
-    /// The held entry of `seed` at census `index`: the same ordinal on an
-    /// unchanged roster, otherwise through the range's index of this baseline.
     fn prefetch_held(
         &self,
         index: usize,
@@ -182,8 +172,6 @@ impl Store {
         at.and_then(|at| self.held.get(at))
             .filter(|held| held.division == seed.division)
     }
-    /// `seed`'s held certificates, which a range would otherwise query, when the hour's take
-    /// saw no writer touch them since they were held.
     pub(super) fn prefetch_quiet(
         &self,
         index: usize,
@@ -266,8 +254,6 @@ impl Store {
     ) -> Result<(), &'static str> {
         self.observe_prepared(memory, base, seed, None, None)
     }
-    /// `taken`, the hour's take of the history certificates, carries a held division that no
-    /// writer touched without querying its certificates.
     pub(super) fn observe_prepared(
         &mut self,
         memory: &impl Memory,
@@ -344,7 +330,6 @@ impl Store {
         if let Some(held) = held.as_ref().filter(|held| {
             held.history == history
                 && held.medals == medals
-                // Entry edits are known only for entries registered in the take's epoch.
                 && (!held.available
                     || (held.edit_epoch.is_some() && held.edit_epoch == self.edit_epoch))
                 && !self.edits.iter().any(|address| {
@@ -438,15 +423,12 @@ impl Store {
                 }),
             )?;
             if prefix.is_some() {
-                // Only explicitly edited entry receivers are revisited. Alias
-                // occurrences retain their separate list keys.
                 for &address in &self.edits {
                     let Some(bindings) = self.bindings.get(&seed.division) else {
                         continue;
                     };
                     for (&(_, entry_key), _) in bindings.range((address, 0)..=(address, u128::MAX))
                     {
-                        // A list read from its start is read whole below.
                         let list = ((entry_key >> 32) & 3) as usize;
                         if starts[list - 1] == 0 {
                             continue;
@@ -472,7 +454,6 @@ impl Store {
             for awards in [false, true] {
                 let first = starts[usize::from(awards)];
                 roots.visit_range(memory, base, awards, first, |ordinal, address, entry| {
-                    // An uncertified individual entry cannot certify an immutable prefix.
                     if changes::edit_sequence(address).is_none() {
                         next.edit_epoch = None;
                     }
@@ -732,7 +713,6 @@ mod tests {
             history + native::HISTORY_ENTRIES + 12,
             2_i32.to_le_bytes(),
         );
-        // Both native occurrences refer to the same entry: ordinals must survive.
         put(bytes, entries, 0x7000_u64.to_le_bytes());
         put(bytes, entries + 8, 0x7000_u64.to_le_bytes());
     }
@@ -808,7 +788,6 @@ mod tests {
             }
             let quiet = store.finish().unwrap();
             assert!(Arc::ptr_eq(&first, &quiet));
-            // Each carried history reads only its latest career entry's province count.
             assert_eq!(world.reads.get(), 2);
             assert!(
                 store.order.is_empty(),
@@ -843,9 +822,6 @@ mod tests {
             assert_eq!(next[0].amount, 8);
             assert!(Arc::ptr_eq(&rows[1], &next[1]));
             assert!(Arc::ptr_eq(&rows[3], &next[3]));
-            // A new career occurrence rereads the latest held entry and no earlier one, even
-            // when the campaign already holds repeats of that entry: the first occurrence is
-            // moved to an unreadable copy here, so reading it would refuse the history.
             let appended = world.bytes[entry..entry + 0x148].to_vec();
             put(&mut world.bytes, 0x7200, &appended);
             put(&mut world.bytes, 0x7400, &appended);
@@ -881,7 +857,6 @@ mod tests {
             assert_eq!(appended_rows[0].available, 1);
             assert_eq!(appended_rows[3].ordinal, 2);
             assert!(Arc::ptr_eq(&rows[1], &appended_rows[1]));
-            // Refusal replaces only the affected root and is carried without rereading it.
             let history = 0x1000 + native::DIVISION_HISTORY;
             world.blocked.set(Some((history, history + 8)));
             drop(changes::notify(history));
@@ -909,15 +884,11 @@ mod tests {
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             assert!(Arc::ptr_eq(&refused, &store.finish().unwrap()));
-            // Only the available division checks its latest career entry.
             assert_eq!(world.reads.get(), 1);
             changes::patched(false);
             changes::forwarder(false);
         }
     }
-    /// The game adds the province of a second event of the latest entry's kind to that entry in
-    /// place, with no writer the hooks see: the next hour records the grown entry, alone and
-    /// beside an append, and rereads no earlier entry.
     #[test]
     fn a_latest_career_entry_grown_in_place_is_recorded_alone_and_beside_an_append() {
         let _serial = serial(&HISTORY_TEST);
@@ -1035,7 +1006,6 @@ mod tests {
             let (quiet, _) = hour(&mut store, &world);
             assert!(Arc::ptr_eq(&grown, &quiet));
             assert_eq!(world.reads.get(), 1);
-            // The entry grows again in the hour an observed append adds the next one.
             grow(&mut world, 3);
             put(&mut world.bytes, 0x6010, (appended as u64).to_le_bytes());
             put(
@@ -1058,8 +1028,6 @@ mod tests {
             changes::forwarder(false);
         }
     }
-    /// A division added ahead of the whole baseline shifts every census
-    /// ordinal; each lookup then uses one index of the baseline, not a scan.
     #[test]
     fn a_shifted_census_finds_each_held_history_through_one_index() {
         const COUNT: u64 = 30_000;
@@ -1091,7 +1059,6 @@ mod tests {
                 .is_none()
         );
         assert_eq!(order.rebuilds(), 1);
-        // An unchanged census needs no index.
         let mut unchanged = crate::division_experience::Order::default();
         for (index, held) in store.held.iter().enumerate() {
             let census = seed(held.army, held.division);
@@ -1102,7 +1069,6 @@ mod tests {
             );
         }
         assert_eq!(unchanged.rebuilds(), 0);
-        // A new baseline is indexed afresh.
         store.baseline = crate::division_experience::next_baseline();
         assert!(
             store
@@ -1156,7 +1122,6 @@ mod tests {
         let mut store = Store::default();
         store.begin(2).unwrap();
         observe(&mut store, &world);
-        // Division 1's medal store edits the shared entry while the hour's edit take is refused.
         put(&mut world.bytes, entry + 0x138, 200_000_i64.to_le_bytes());
         drop(changes::notify(0x4000));
         drop(changes::notify_edit(entry));

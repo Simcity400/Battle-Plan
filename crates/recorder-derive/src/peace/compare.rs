@@ -1,5 +1,3 @@
-//! What a peace changed between two complete reads: the state transfers the war rule admits,
-//! grouped by connected pairs, and beside them new subjects, government changes and releases.
 
 use super::{Government, Snapshot, Tag};
 use replay_data::rows::PeaceOutcomeRow;
@@ -12,12 +10,10 @@ pub(super) fn pair(a: Tag, b: Tag) -> (Tag, Tag) {
     if a < b { (a, b) } else { (b, a) }
 }
 
-/// Whether a war pair dated `start` and `end` is ongoing at `hour`.
 fn ongoing(start: i32, end: i32, hour: i32) -> bool {
     end <= start || hour < end
 }
 
-/// A state whose owner changed from tag `from` to tag `to`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Transfer {
     pub state: u32,
@@ -25,7 +21,6 @@ pub(super) struct Transfer {
     pub to: Tag,
 }
 
-/// One outcome row's facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Item {
     pub change: u8,
@@ -37,10 +32,6 @@ pub(super) struct Item {
 
 const NOBODY: (u32, u32) = (PeaceOutcomeRow::NONE, PeaceOutcomeRow::NONE);
 
-/// The transfers between `before` and `after` whose former and new owners had an ongoing war
-/// pair at `before` that records its end by `after`, or is gone from it: of `states`, or of every
-/// state `before` holds. Between consecutive reads (`recorded` false) the pair must end at the
-/// after read itself.
 pub(super) fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool, states: Option<&[u32]>) -> Vec<Transfer> {
     let mut unresolved_pairs = HashSet::new();
     let mut unresolved_countries = HashSet::new();
@@ -56,7 +47,6 @@ pub(super) fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool, sta
             (None, None) => unidentified = true,
         }
     }
-    // A tag change of a raw country must never read as a territorial deal.
     let changed_tags: HashSet<Tag> = if Arc::ptr_eq(&before.countries, &after.countries) {
         HashSet::new()
     } else {
@@ -97,7 +87,6 @@ pub(super) fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool, sta
                     continue;
                 }
             }
-            // Peace removes the relation; an unresolved or conflicting row is no evidence of it.
             None => {
                 if unidentified || unresolved_pairs.contains(&key) || unresolved_countries.contains(&from) || unresolved_countries.contains(&to) {
                     continue;
@@ -111,7 +100,6 @@ pub(super) fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool, sta
     found
 }
 
-/// `transfers` grouped by connected pairs, groups in the order of their least holder.
 pub(super) fn components(transfers: &[Transfer], after: &Snapshot) -> Vec<Vec<Transfer>> {
     let mut adjacency: HashMap<Tag, Vec<Tag>> = HashMap::new();
     for transfer in transfers {
@@ -146,7 +134,6 @@ pub(super) fn components(transfers: &[Transfer], after: &Snapshot) -> Vec<Vec<Tr
     groups
 }
 
-/// Existence by tag at `snapshot`: none when it is not known, or a raw country does not resolve.
 fn existence(snapshot: &Snapshot) -> Option<HashMap<Tag, bool>> {
     let exists = snapshot.exists.as_ref()?;
     let mut raws: Vec<(&u32, &bool)> = exists.iter().collect();
@@ -154,8 +141,6 @@ fn existence(snapshot: &Snapshot) -> Option<HashMap<Tag, bool>> {
     raws.into_iter().map(|(raw, &exists)| Some((*snapshot.countries.tags.get(raw)?, exists))).collect()
 }
 
-/// Every outcome of `transfers` between `before` and `after`: the transfers, then the countries
-/// released from a loser's states, new subjects of a winner, and government changes of a loser.
 pub(super) fn populate(before: &Snapshot, after: &Snapshot, transfers: &[Transfer], first_existing: &HashMap<Tag, i32>) -> Vec<Item> {
     let identity = |snapshot: &Snapshot, tag: Tag| snapshot.countries.identities.get(&tag).copied().unwrap_or(NOBODY);
     let vp = |state: u32| after.vps.as_ref().and_then(|vps| vps.get(&state)).copied();
@@ -227,8 +212,6 @@ pub(super) fn populate(before: &Snapshot, after: &Snapshot, transfers: &[Transfe
     items
 }
 
-/// Whether a loser's government changed: its ruling party, the party's token, or a recorded
-/// leader ideology.
 fn changed(old: &Government, new: &Government) -> bool {
     let party = matches!((old.ruling, new.ruling), (Some(a), Some(b)) if a != b);
     let ideology = matches!((&old.ideology, &new.ideology), (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() && a != b);

@@ -1,19 +1,3 @@
-//! `TerritoryRegionTotals`: what each holder has in each strategic region by two rules,
-//! controlled (credited to the controller) and owned (to the owner): provinces, their victory
-//! points and land area whole, and states as the exact sum of their parts in the region (a state's
-//! provinces there over its provinces, as Provinces' `state` column groups them). Raw owner and
-//! controller ids resolve through CountryLinks; zero is land no country holds
-//! ([`TerritoryRegionTotalRow::NO_COUNTRY`]). A province no single region claims is in
-//! [`TerritoryRegionTotalRow::NO_REGION`], and so is a state no province names.
-//!
-//! What is not known is not recorded, never zero: while some state's or province's owner no link
-//! resolves, every row's owned cells; likewise the controller for controlled. Area is not recorded
-//! while the province areas are not held, nor for a rule of a row credited a province it gives
-//! none; states while their exact sum's denominator passes 63 bits.
-//!
-//! State is the tables: each hour applies the places the hour changed; a fresh hour (new
-//! definitions among them), a resume, a change of links, or a province coming, going or changing
-//! state reads every row again.
 
 use crate::framework::{Columns, Definition, Hour, Output, Read, Rows, Uses, Value, Watch, Writer};
 use replay_columnar::{
@@ -52,10 +36,8 @@ const USES: &[Uses] = &[
 
 const NO_COUNTRY: u32 = TerritoryRegionTotalRow::NO_COUNTRY;
 const NO_REGION: u32 = TerritoryRegionTotalRow::NO_REGION;
-/// Controlled, then owned: the table's column order.
 const RULES: usize = 2;
 
-/// (holder, region).
 type Key = (u32, u32);
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -69,12 +51,10 @@ struct Province {
     controller: u32,
     points: i64,
     region: u32,
-    /// None where the recorded map gives it none.
     area: Option<i64>,
 }
 
 impl Province {
-    /// Its raw country under each rule.
     fn raws(&self) -> [u32; RULES] {
         [self.controller, self.owner]
     }
@@ -86,8 +66,6 @@ struct State {
     controller: u32,
 }
 
-/// One rule's holding in a region: provinces, their points, the area of those with one and how
-/// many have none, and the states' parts summed by denominator, ascending, none zero.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Holding {
     provinces: i64,
@@ -122,8 +100,6 @@ fn gcd(mut a: i128, mut b: i128) -> i128 {
     a.abs()
 }
 
-/// The exact sum of `parts` (denominator, numerator), reduced, its denominator positive; none
-/// where it does not fit 63 bits.
 fn states_sum(parts: &[(u32, i64)]) -> Option<(i64, i64)> {
     let (mut numerator, mut denominator) = (0_i128, 1_i128);
     for &(over, part) in parts {
@@ -150,19 +126,14 @@ pub struct TerritoryRegions {
     links: HashMap<u32, u32>,
     provinces: HashMap<u32, Province>,
     states: HashMap<u32, State>,
-    /// Each state's provinces by region, ascending, from Provinces' `state` column.
     rosters: HashMap<u32, Vec<(u32, u32)>>,
     holdings: HashMap<Key, [Holding; RULES]>,
-    /// Places whose country under each rule no link resolves.
     unresolved: [i64; RULES],
-    /// The keys the table holds.
     held: HashSet<Key>,
-    /// Why no province area is held, as the last rebuild found.
     unmapped: Option<String>,
 }
 
 impl TerritoryRegions {
-    /// The holder raw id `raw` names: [`NO_COUNTRY`] for zero; `Err` for one no link resolves.
     fn holder(&self, raw: u32) -> Result<u32, ()> {
         match raw {
             0 => Ok(NO_COUNTRY),
@@ -170,8 +141,6 @@ impl TerritoryRegions {
         }
     }
 
-    /// Credits `add` to each rule's holding of `raws`' holders in `region`, marking the keys it
-    /// moves; a raw id no link resolves counts the rule's place unresolved (`sign`).
     fn credit(&mut self, raws: [u32; RULES], region: u32, sign: i64, dirty: &mut HashSet<Key>, add: impl Fn(&mut Holding)) {
         for (rule, raw) in raws.into_iter().enumerate() {
             match self.holder(raw) {
@@ -195,8 +164,6 @@ impl TerritoryRegions {
         });
     }
 
-    /// Adds (`sign` 1) or removes (-1) state `id`'s parts, whole and in no region where no province
-    /// names it.
     fn count_state(&mut self, id: u32, state: State, sign: i64, dirty: &mut HashSet<Key>) {
         let parts = match self.rosters.get(&id) {
             Some(parts) => parts.clone(),
@@ -269,8 +236,6 @@ impl TerritoryRegions {
         self.held = derived.rows().filter_map(|slot| derived.key(slot)).map(|key| ((key >> 32) as u32, key as u32)).collect();
     }
 
-    /// Applies the places the hour changed; false, having changed nothing, where a province came,
-    /// went or changed state, which moves the rosters every state's parts are of.
     fn apply(&mut self, hour: &Hour<'_>, dirty: &mut HashSet<Key>) -> bool {
         if hour.deleted_keys(TableId::Provinces).next().is_some() {
             return false;
@@ -324,7 +289,6 @@ impl TerritoryRegions {
 }
 
 impl TerritoryRegions {
-    /// The cells of `key`'s row, controlled then owned.
     fn cells(&self, key: Key) -> Vec<Value> {
         let held = self.holdings.get(&key);
         let value = |known: bool, value: i64| if known { Value::I64(value) } else { Value::Unrecorded };
@@ -404,7 +368,6 @@ impl Writer for TerritoryRegions {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads every row again.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

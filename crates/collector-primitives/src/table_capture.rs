@@ -1,4 +1,3 @@
-//! Shared typed acquisition buffers. Growth runs off the game thread.
 
 use engine_native::walk::Outcome;
 use std::mem::size_of;
@@ -24,8 +23,6 @@ pub fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
 pub struct CaptureRows<R> {
     pub rows: Vec<R>,
     pub outcome: Outcome,
-    // Terminal publication failures must not erase pressure observed before
-    // the failure. Keep complete-row pressure and truncated demand distinct.
     failed_len: usize,
     failed_required: usize,
 }
@@ -46,7 +43,6 @@ impl<R: Default> CaptureRows<R> {
         self.failed_required = 0;
     }
 
-    /// Hide partial rows while preserving their off-thread growth demand.
     pub fn fail(&mut self, outcome: Outcome) {
         debug_assert!(matches!(outcome, Outcome::Unavailable { .. }));
         match self.outcome {
@@ -66,8 +62,6 @@ impl<R: Default> CaptureRows<R> {
     }
 
     pub fn grow(&mut self, capacity: &mut usize) {
-        // Worker acquisitions can already own rows beyond the previous floor.
-        // Publish that original demand to every recycled/idle frame as well.
         grow_capacity(capacity, self.failed_len);
         grow_capacity(capacity, self.outcome.len());
         if self.failed_len > 0 && self.failed_len >= capacity.saturating_sub(*capacity / 4) {
@@ -89,8 +83,6 @@ impl<R: Default> CaptureRows<R> {
     }
 }
 
-/// Pressure adds headroom off-thread, including when one observation jumps well
-/// beyond the previous capacity. Idle buffers receive the same logical length.
 pub fn grow_capacity(capacity: &mut usize, required: usize) {
     if required > *capacity {
         *capacity = capacity
@@ -106,8 +98,6 @@ pub fn grow_vec<T: Default>(rows: &mut Vec<T>, capacity: usize) -> bool {
     true
 }
 
-// Advisory off-thread demand cannot invoke the terminal allocation callback.
-// Reserve every vector before publishing any new logical length.
 #[macro_export]
 macro_rules! grow_hint {
     ($($rows:expr => $capacity:expr),+ $(,)?) => {{

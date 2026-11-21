@@ -1,158 +1,26 @@
-//! The runtime writers of every field the raid state tables record from
-//! a state, and of a country's building-resource overrides. Observing them
-//! tells the collector which states and countries to read within the hour;
-//! recording never calls them.
-//!
-//! StateResourceInputs, StateResources, StateDynamicModifiers and StateCores
-//! (cores, claims and strategic locations) record each state's additive gate
-//! (`cstate::RESOURCE_MODIFIER_GATE`); effective resource accumulator values
-//! (`cstate::BASE_MODIFIERS`, in modifier block `cstate::RESOURCE_MODIFIER`;
-//! global factor key 0x223 and each resource's state additive, state factor
-//! and modifier keys, `cstrategic_resource::STATE_ADDITIVE_KEY`,
-//! `STATE_FACTOR_KEY` and `MODIFIER_KEY`); the controller's accumulator in the
-//! country-specific hash (`cstate::COUNTRY_MODIFIERS`, key 0x292); resource
-//! pool (`cstate::RESOURCE_POOL`); dynamic modifier list
-//! (`cstate::DYNAMIC_MODIFIERS`); core list (`cstate::CORES`); claim list
-//! (`cstate::CLAIMS`); infrastructure level through the building status
-//! (`cstate::BUILDING_STATUS`); controller resource-origin presence; and a
-//! positive maximum province-node value on the controller's supply routes.
-//! CountryBuildingResources records country resources' building overrides
-//! (`ccountry_resources::BUILDING_RESOURCE_OVERRIDES`).
-//!
-//! Writer coverage:
-//! - Gate, resource accumulator and country hash: resource-gate refresh is
-//!   the sole runtime writer. It clears and rebuilds the accumulator from the
-//!   state's block list, including resistance and occupation blocks, and the
-//!   hash from a second state field. Derived-modifier recalculation calls it
-//!   unconditionally from state modifier effects, dynamic modifier effects,
-//!   state category effects, occupation laws and garrisons. Other callers are
-//!   controller and owner changes, controller recomputation from provinces,
-//!   daily state update, building-level refresh, core insertion and
-//!   construction. The two country-modifier lookup paths only read the hash.
-//!   State reset clears these fields only during load, game runtime reset or
-//!   four map-editor paths: an invalidating hour or nudge mode, forwarded by
-//!   the building family.
-//! - Dynamic modifier list: add and remove effects refresh the state through
-//!   the shared effect path. Daily state update refreshes after modifier
-//!   expiry erases an entry. Building modifier add and remove change the list
-//!   without refresh. Dynamic value recalculation changes entry values,
-//!   which no row records.
-//! - Resource pool: only the resource-add effect calls state resource addition,
-//!   which delegates to pool addition. The pool subtraction method removes
-//!   expired timed amounts, called only by daily state update with the state
-//!   pool as receiver.
-//! - Cores: insertion follows two effects, country save loading and four
-//!   other paths. Erasure follows two effects, released-state transfer,
-//!   removing all country cores and another country path. The shared array
-//!   erase reaches state cores only there; the claims eraser instead writes
-//!   the claim list.
-//! - Claims (`cstate::CLAIMS`): the state's claim insertion is the only appender of its
-//!   list. The two claim effects and country save loading call it, and so
-//!   does the country's own claim insertion, which first records the state
-//!   in the country's claimed-state list and then calls it for its tag
-//!   unless the state already lists it. The state's claim eraser is the only
-//!   remover, called by the two claim-removal effects and the country's own
-//!   claim eraser. Both take (state, &tag) and leave the list unchanged for a
-//!   nonpositive tag.
-//! - Strategic locations (`cstate::STRATEGIC_LOCATIONS` and each province's
-//!   `cprovince::STRATEGIC_LOCATIONS`): the state's and the province's
-//!   appenders are the only run-time writers. Each is called only by its
-//!   state-scoped effect and takes the state or province in RCX; neither
-//!   list is ever shortened. Loading reads both lists.
-//! - Infrastructure: [`crate::building_mutations`] owns and forwards the
-//!   building-status writers.
-//! - Resource origin: controller resources' origin list
-//!   (`ccountry_resources::RESOURCE_ORIGINS`) holds one origin per state,
-//!   named by the origin's `cresource_origin::STATE`. Only origin
-//!   construction creates it, with the state in R8. Trade-origin refresh in
-//!   the hourly trade task and three other resource paths call construction.
-//!   An origin leaves only through destruction, including its virtual
-//!   deleting wrapper; swap-removal changes no state's presence.
-//! - Supply-route presence is not observed. Hourly supply update rebuilds
-//!   node values, so this flag is read with the state and certifies nothing.
-//! - Country building overrides: addition follows the building-modifier
-//!   effect and loader. Clear follows a resource helper, destruction, reset
-//!   and subject-relation application through its resource helper.
-//!   Construction and member loading are load-only.
-//! - RaidAirSites records country air lists `cstrategic_air::FIRST_AIR_SITES`
-//!   (air bases and carriers) and `SECOND_AIR_SITES` (rocket sites and
-//!   missile ships), and each site's container capacity
-//!   (`ccountry_air_container::CAPACITY_RAW`; base containers
-//!   `cair_base::COUNTRY_CONTAINERS`, by canonical country slot). Their
-//!   appenders follow ship lifecycle and transfer, daily state repair, access
-//!   refresh, the building listener and controller changes. Air-base access
-//!   refresh also appends its own first list from the diplomatic access
-//!   wrapper; initial population and base-container repair run only at
-//!   initialization and load completion. Withdrawal erases the first list,
-//!   also from the daily pass when capacity is not positive; a separate
-//!   eraser handles the second. Host transfer erases the giving country's
-//!   list inline and uses appenders for the receiving country. The two clears
-//!   follow dynamic reuse and destruction cleanup; construction and
-//!   destruction bound list lifetime. Container creation sets default
-//!   capacity through appenders and those load paths. Otherwise only the
-//!   capacity setter writes it, from the daily pass and capacity
-//!   recalculation. Most daily writes keep the stored value, so the site
-//!   marks the country only on a difference. The third list has its own
-//!   append and withdrawal paths for gun emplacements, which no row records.
-//! - TradeRoutes: the state-to-state updater owns the land and general naval
-//!   builders. Supply clients instead use the port-to-port updater, which writes
-//!   kind, state and port endpoints and sea regions itself. Province control,
-//!   ports, access and supply changes reach these two updaters. Origin refresh
-//!   can also clear kind and sea-region count inline when its capital is missing;
-//!   otherwise it delegates to the state-to-state updater. Constructors and the
-//!   save reader bound route lifetime. Destruction removes a census reference;
-//!   exchange, lend-lease and market membership changes select their owners via
-//!   the freshly read route census, as do supply-client creation and removal.
-//!
-//! Every site takes at most four integer or pointer arguments and returns
-//! RAX unchanged from its original.
 
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
 
-/// How a site's arguments name what it writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
-    /// RCX is a state.
     State,
-    /// RCX is a state's resource pool, `state + RESOURCE_POOL`.
     StatePool,
-    /// R8 is the state the new resource origin names.
     OriginState,
-    /// RCX is a resource origin; its `cresource_origin::STATE` names the state.
     Origin,
-    /// RCX is a country's resources object; its `ccountry_resources::OWNER` raw link
-    /// names the country.
     CountryResources,
-    /// RCX is a country air object; its `cstrategic_air::COUNTRY` raw link names the
-    /// country.
     StrategicAir,
-    /// RDX points to the raw link of the country whose lists change: the
-    /// constructor's country and the transfer's giving one.
     CountryTag,
-    /// The lists of countries no argument names: initialization and load.
     EveryCountry,
-    /// Capacity assignment (base, capacity, tag): R8 points to the raw country
-    /// link whose container at RCX takes RDX.
     PoolCapacity,
-    /// RCX is a province; its `cprovince::STATE` names the state.
     Province,
-    /// RCX is a trade route; its sender link (`resource_map::ROUTE_LINKS[0]`) names the
-    /// country holding it.
     Route,
-    /// RCX is an origin; its client country names its own or rights-holder list owner.
     OriginRoute,
-    /// RDX points to the raw link of the country that sends every route being built: a
-    /// route's sender, or a new country resources object's country, whose delivery routes
-    /// it builds.
     RouteSender,
-    /// Every country's routes: the save loader.
     EveryRoute,
 }
 
-/// The raid state sites, site list sites, claim sites, strategic-location sites, then route sites.
 pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
-    // Refresh resource gates (state).
     (
         MutationSite {
             name: "refresh_resource_modifier_gates",
@@ -160,8 +28,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Building dynamic modifier addition (state, ...): select the dynamic modifier list,
-    // set R9D to -1 and tail-jump to the list writer.
     (
         MutationSite {
             name: "add_building_dynamic_modifier",
@@ -169,8 +35,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Building dynamic modifier removal (state, ...): select the dynamic modifier list
-    // and tail-jump to the list writer.
     (
         MutationSite {
             name: "remove_building_dynamic_modifier",
@@ -178,7 +42,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Resource addition (state, amount, days).
     (
         MutationSite {
             name: "add_resource",
@@ -186,7 +49,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Pool subtraction (state resource pool, amount) removes an expired timed amount.
     (
         MutationSite {
             name: "expire_timed_resource",
@@ -194,7 +56,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StatePool,
     ),
-    // State destruction (state).
     (
         MutationSite {
             name: "destroy_state",
@@ -202,7 +63,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Core insertion (state, tag): save RBX and reserve 0x30 stack bytes.
     (
         MutationSite {
             name: "add_core",
@@ -210,7 +70,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Core erasure (state, tag).
     (
         MutationSite {
             name: "remove_core",
@@ -218,7 +77,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Origin construction (origin, tag, state).
     (
         MutationSite {
             name: "construct_resource_origin",
@@ -226,7 +84,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::OriginState,
     ),
-    // Origin destruction (origin).
     (
         MutationSite {
             name: "destroy_resource_origin",
@@ -234,7 +91,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::Origin,
     ),
-    // Building-resource modifier addition (resources, building, resource, amount).
     (
         MutationSite {
             name: "add_building_resource_modifier",
@@ -242,7 +98,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::CountryResources,
     ),
-    // Clear country resource overrides (resources).
     (
         MutationSite {
             name: "clear_country_resources",
@@ -250,7 +105,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::CountryResources,
     ),
-    // Country air construction (air, tag, manager).
     (
         MutationSite {
             name: "construct_strategic_air",
@@ -258,7 +112,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::CountryTag,
     ),
-    // Ensure an air-base country container (air, base): the first site list.
     (
         MutationSite {
             name: "append_air_site",
@@ -266,7 +119,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Ensure a rocket-site country container (air, base): the second site list.
     (
         MutationSite {
             name: "append_missile_site",
@@ -274,7 +126,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Air-base access refresh (air, countries): its own first site list.
     (
         MutationSite {
             name: "refresh_air_base_access",
@@ -282,7 +133,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Initial site population (manager).
     (
         MutationSite {
             name: "populate_air_sites",
@@ -290,7 +140,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::EveryCountry,
     ),
-    // Base-container repair (base), at load completion.
     (
         MutationSite {
             name: "repair_air_base_containers",
@@ -298,7 +147,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::EveryCountry,
     ),
-    // Air-base withdrawal (air, base): the first site list.
     (
         MutationSite {
             name: "withdraw_air_site",
@@ -306,7 +154,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Rocket-site withdrawal (air, base): the second site list.
     (
         MutationSite {
             name: "withdraw_missile_site",
@@ -314,7 +161,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Host transfer (manager, from, to, base): the giving country.
     (
         MutationSite {
             name: "transfer_air_base",
@@ -322,7 +168,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::CountryTag,
     ),
-    // Clear air-base sites (air): the first site list.
     (
         MutationSite {
             name: "clear_air_sites",
@@ -330,7 +175,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Clear rocket sites (air): the second site list.
     (
         MutationSite {
             name: "clear_missile_sites",
@@ -338,7 +182,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Country air destruction (air).
     (
         MutationSite {
             name: "destroy_strategic_air",
@@ -346,7 +189,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::StrategicAir,
     ),
-    // Country-pool capacity assignment (base, capacity, tag).
     (
         MutationSite {
             name: "set_country_pool_capacity",
@@ -354,7 +196,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::PoolCapacity,
     ),
-    // Claim insertion (state, tag).
     (
         MutationSite {
             name: "add_claim",
@@ -362,7 +203,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Claim erasure (state, tag).
     (
         MutationSite {
             name: "remove_claim",
@@ -370,7 +210,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // State strategic-location append (state, location, anchor province).
     (
         MutationSite {
             name: "add_state_strategic_location",
@@ -378,7 +217,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::State,
     ),
-    // Province strategic-location append (province, location).
     (
         MutationSite {
             name: "add_province_strategic_location",
@@ -386,7 +224,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::Province,
     ),
-    // State-to-state route update (route, from, to, force).
     (
         MutationSite {
             name: "update_trade_route",
@@ -394,7 +231,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::Route,
     ),
-    // Route construction (route, &sender, &receiver): an empty route of no kind.
     (
         MutationSite {
             name: "construct_trade_route",
@@ -402,8 +238,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::RouteSender,
     ),
-    // Country resources construction (resources, &country): builds the country's delivery
-    // routes in place, one per importer slot.
     (
         MutationSite {
             name: "construct_country_resources",
@@ -411,7 +245,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::RouteSender,
     ),
-    // Route save loading (route, reader, token), once per saved field.
     (
         MutationSite {
             name: "load_trade_route",
@@ -419,7 +252,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::EveryRoute,
     ),
-    // Port-to-port supply route update (route, from province, to province).
     (
         MutationSite {
             name: "update_supply_trade_route",
@@ -427,7 +259,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
         },
         Receiver::Route,
     ),
-    // Origin refresh (origin, force): a missing capital clears kind inline.
     (
         MutationSite {
             name: "refresh_origin_trade_route",
@@ -437,16 +268,10 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     ),
 ];
 
-/// The [`MUTATIONS`] index of the first trade-route writer, after the claim writers.
 pub const FIRST_ROUTE_SITE: usize = 29;
-/// Origin refresh requires a before/after kind check around its original.
 pub const ORIGIN_ROUTE_SITE: usize = 34;
-/// An origin's client country owns its census rows, independently of its route's sender.
 pub const ORIGIN_OWNER: usize = 0x18;
 
-/// The origin refresh's only inline change visible to TradeRoutes is its kind.
-/// Its other inline store clears sea-region count at kind zero, which reads the
-/// land path. Every path rebuild delegates to the hooked route updater.
 pub fn origin_route_kind(memory: &impl crate::Memory, origin: usize) -> Option<u8> {
     crate::read(
         memory,
@@ -456,11 +281,6 @@ pub fn origin_route_kind(memory: &impl crate::Memory, origin: usize) -> Option<u
     )
 }
 
-/// The raw link of the country holding the route a route writer names: the route's sender
-/// for [`Receiver::Route`], the origin's client country for [`Receiver::OriginRoute`],
-/// or the link RDX points to for [`Receiver::RouteSender`]. The observer forwards
-/// an origin's nested route updates through its origin receiver too.
-/// `Ok(None)` for link zero, which no country holds; `Err` when it does not read.
 pub fn route_country(
     memory: &impl crate::Memory,
     receiver: Receiver,
@@ -478,10 +298,6 @@ pub fn route_country(
         .ok_or(Unreadable)
 }
 
-/// Daily base-capacity pass (air, pairs), calling the capacity setter once
-/// per base/country pair. Only strategic-air daily update calls it, in the
-/// serial country loop after parallel stages join. The capacity setter keeps
-/// its own patch for the other capacity-recalculation paths.
 pub const DAILY_CAPACITIES: MutationSite = MutationSite {
     name: "daily_refresh_base_capacities",
     rva: Rva(0xca_9400),
@@ -493,26 +309,6 @@ const CAPACITY_PAIR_VECTOR_STRIDE: usize = 0x18;
 const CAPACITY_PAIR_COUNT: usize = 0xc;
 const CAPACITY_PAIR_VALUE: usize = 8;
 
-/// Count the daily base-capacity pass's stores when each keeps the capacity
-/// [`pool_capacity`] reads and no base is withdrawn. Return `None` otherwise
-/// or when any required word does not read.
-///
-/// The pass walks the air object's base vector (`DAILY_BASES`), bounded by
-/// its count (`DAILY_BASE_COUNT`), and the corresponding vector from the
-/// pairs pointer. Each 0x18-byte vector has a data pointer and count
-/// (`CAPACITY_PAIR_COUNT`), with 16-byte entries holding a raw link and
-/// then the capacity (`CAPACITY_PAIR_VALUE`); the setter takes base,
-/// capacity and entry. The game rereads these controls each round; this
-/// reader takes them once, valid only when the pass changes none. Storing
-/// an existing capacity neither evicts (which needs new capacity below one
-/// and old above zero) nor writes anything else. After each base's stores,
-/// the pass withdraws this air object from a state base if its own
-/// container (at the canonical slot of the air object's
-/// `cstrategic_air::COUNTRY`) is missing or below one. Withdrawal removes
-/// the base from the base vector and destroys containers. Without
-/// withdrawal and with unchanged stores, no country table, link, container
-/// vector or capacity changes; these pre-pass reads therefore equal each
-/// setter call's reads.
 pub fn daily_unchanged(
     memory: &impl crate::Memory,
     module: usize,
@@ -529,7 +325,6 @@ pub fn daily_unchanged(
         game.checked_add(crate::cgame_state::COUNTRY_LINKS)?,
         4,
     )?;
-    // The capacity [`pool_capacity`] reads for raw link `raw` in `containers`.
     let held = |containers: Array, raw: u32| -> Option<i64> {
         let slot = if raw == 0 {
             0
@@ -582,14 +377,9 @@ pub fn daily_unchanged(
     Some(stores)
 }
 
-/// A state id or pointer that did not read, or read zero, which no state has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unreadable;
 
-/// The state `receiver` names, given a site's first and third arguments:
-/// its guarded id `cstate::ID`. `Ok(None)` for an origin without a state,
-/// which no row reads; `Err` when an id or pointer does not read, or reads
-/// zero, which no state has.
 pub fn state(
     memory: &impl crate::Memory,
     receiver: Receiver,
@@ -631,9 +421,6 @@ pub fn state(
     }
 }
 
-/// The raw country link a country's resources receiver names
-/// (`ccountry_resources::OWNER`);
-/// `None` when it does not read or reads zero.
 pub fn country(memory: &impl crate::Memory, resources: usize) -> Option<u32> {
     resources
         .checked_add(crate::ccountry_resources::OWNER)
@@ -641,24 +428,13 @@ pub fn country(memory: &impl crate::Memory, resources: usize) -> Option<u32> {
         .filter(|&raw| raw != 0)
 }
 
-/// The [`MUTATIONS`] index of the first site list writer.
 #[cfg(test)]
 pub const FIRST_SITE: usize = 12;
-/// The [`MUTATIONS`] index of the first claim writer, after the site list
-/// writers.
 #[cfg(test)]
 pub const FIRST_CLAIM_SITE: usize = 25;
-/// The [`MUTATIONS`] index of the first strategic-location writer, after the
-/// claim writers.
 #[cfg(test)]
 pub const FIRST_STRATEGIC_LOCATION_SITE: usize = 27;
 
-/// The raw country link a site list receiver names, given a site's first
-/// three arguments: a country air object's `cstrategic_air::COUNTRY` for
-/// [`Receiver::StrategicAir`], the link RDX points to for
-/// [`Receiver::CountryTag`] and the link R8 points to for
-/// [`Receiver::PoolCapacity`]. `Ok(None)` for link zero, which no country
-/// holds; `Err` when it does not read.
 pub fn site_country(
     memory: &impl crate::Memory,
     receiver: Receiver,
@@ -677,12 +453,6 @@ pub fn site_country(
         .ok_or(Unreadable)
 }
 
-/// The capacity overwritten by the country-pool setter: the base's container
-/// at `slot` in `cair_base::COUNTRY_CONTAINERS`, its
-/// `ccountry_air_container::CAPACITY_RAW`. The tag's raw link resolves through
-/// the game state link table (`cgame_state::COUNTRY_LINKS`) to its canonical
-/// slot; link zero uses slot zero.
-/// Return `None` without a container or when a required word does not read.
 pub fn pool_capacity(
     memory: &impl crate::Memory,
     module: usize,
@@ -728,8 +498,6 @@ mod tests {
     use super::*;
     use crate::memory::SliceMemory;
 
-    /// A daily pass over two bases (a host base, then a state base) with two
-    /// (country, capacity) pairs each, every capacity already stored.
     struct Daily(Vec<u8>);
     impl Daily {
         const AT: usize = 0x1000_0000;
@@ -815,10 +583,6 @@ mod tests {
         }
     }
 
-    /// A pass whose every store keeps its capacity and that withdraws no
-    /// base counts its stores; one changing store, a missing container, a
-    /// state base about to be withdrawn or a word that does not read
-    /// certifies nothing, so the setter's own path decides.
     #[test]
     fn a_daily_pass_is_certified_only_when_every_store_is_unchanged() {
         assert_eq!(Daily::new().unchanged(), Some(4));
@@ -828,11 +592,9 @@ mod tests {
         let mut missing = Daily::new();
         missing.word(Daily::base(0) + 0x100 + 2 * 8, 0);
         assert_eq!(missing.unchanged(), None);
-        // The state base's own container (raw 1) below one: withdrawn.
         let mut withdrawn = Daily::new();
         withdrawn.capacity(1, 1, 0);
         assert_eq!(withdrawn.unchanged(), None);
-        // A host base keeps this air whatever its own capacity.
         let mut host = Daily::new();
         host.capacity(0, 1, 0);
         assert_eq!(host.unchanged(), Some(4));
@@ -841,7 +603,6 @@ mod tests {
         assert_eq!(torn.unchanged(), None);
     }
 
-    /// One patch owner per native address and name.
     #[test]
     fn sites_are_distinct_and_named_once() {
         for (index, (site, _)) in MUTATIONS.iter().enumerate() {
@@ -852,8 +613,6 @@ mod tests {
         }
     }
 
-    /// A route writer names its sender, an origin its list owner, and constructors
-    /// the country link they receive; link zero names nothing.
     #[test]
     fn route_writers_name_the_country_holding_the_route() {
         let base = 0x1000;
@@ -916,10 +675,6 @@ mod tests {
         }
     }
 
-    /// A state site names its state through `cstate::ID`, the pool method
-    /// through the pool's offset in its state, the origin constructor through
-    /// `r8` and the destructor through `cresource_origin::STATE`; a country site
-    /// through `ccountry_resources::OWNER`.
     #[test]
     fn receivers_name_their_state_or_country() {
         let base = 0x1000;
@@ -959,7 +714,6 @@ mod tests {
             super::state(&memory, Receiver::Origin, at(origin), 0),
             Ok(Some(42))
         );
-        // An origin without a state names none; an unreadable one is an error.
         assert_eq!(
             super::state(&memory, Receiver::Origin, at(0x200), 0),
             Ok(None)
@@ -968,7 +722,6 @@ mod tests {
             super::state(&memory, Receiver::Origin, 0x10, 0),
             Err(Unreadable)
         );
-        // A zero id names no state.
         assert_eq!(
             super::state(&memory, Receiver::State, at(0x600), 0),
             Err(Unreadable)
@@ -977,9 +730,6 @@ mod tests {
         assert_eq!(super::country(&memory, at(0x600)), None);
     }
 
-    /// A site list writer names its country through the strategic air object's
-    /// `cstrategic_air::COUNTRY`, or the link RDX or R8 points to; link zero names
-    /// none. The site list writers follow the state and override sites.
     #[test]
     fn site_list_receivers_name_their_country() {
         let base = 0x1000;
@@ -1018,14 +768,11 @@ mod tests {
                         | Receiver::PoolCapacity
                 ))
         );
-        // The claim writers name their state, as the core writers do.
         assert!(
             MUTATIONS[FIRST_CLAIM_SITE..FIRST_STRATEGIC_LOCATION_SITE]
                 .iter()
                 .all(|(_, receiver)| *receiver == Receiver::State)
         );
-        // The strategic-location writers name the state, directly or
-        // through the province.
         assert_eq!(
             MUTATIONS[FIRST_STRATEGIC_LOCATION_SITE..FIRST_ROUTE_SITE]
                 .iter()
@@ -1035,9 +782,6 @@ mod tests {
         );
     }
 
-    /// The capacity the setter overwrites: the container at the tag's
-    /// canonical slot, through the game state's link table; none without a
-    /// container or a readable tag.
     #[test]
     fn the_pool_capacity_is_the_tag_slots_container_word() {
         let module = 0x1000;
@@ -1051,12 +795,9 @@ mod tests {
             header[12..].copy_from_slice(&count.to_le_bytes());
             header
         };
-        // The singleton names the game state at 0x100; its links map raw 7
-        // to slot 2.
         put(0, &((base + 0x100) as u64).to_le_bytes());
         put(0x100 + crate::cgame_state::COUNTRY_LINKS, &array(0x800, 8));
         put(0x800 + 7 * 4, &2_u32.to_le_bytes());
-        // The base's containers: slot 2 holds one with capacity 50000.
         put(
             0x1000 + crate::cair_base::COUNTRY_CONTAINERS,
             &array(0x1100, 4),
@@ -1066,7 +807,6 @@ mod tests {
             0x1200 + crate::ccountry_air_container::CAPACITY_RAW,
             &50_000_i64.to_le_bytes(),
         );
-        // Tags: raw 7, raw 3 (slot 0, no container), and an unreadable one.
         put(0x1800, &7_u32.to_le_bytes());
         put(0x1804, &3_u32.to_le_bytes());
         let memory = SliceMemory {

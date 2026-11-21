@@ -1,28 +1,3 @@
-//! Supply-train consists from the authored train graphics database.
-//!
-//! Load every file in [`DATABASE_DIRECTORY`] with filter `txt` and no
-//! recursion (see [`ResolvedLayers::directory_files`]), parsing in directory
-//! order with one wagon-name map shared by the whole scan. Per top-level key:
-//!
-//! - `wagon_data` reads `entity`, `scale` (default 1), `rotation` in degrees
-//!   (default 0), `length` (default 2) and `shift`. Resolve the entity as it
-//!   is read; a block without a registered entity is discarded. The name map
-//!   uses entity names, with later blocks replacing earlier references.
-//! - `default` fills the default table.
-//! - a three-character country tag fills that country's table.
-//! - otherwise try the graphical-culture registry, as written and then with
-//!   `_gfx` appended; report other keys as unexpected.
-//!
-//! A table maps an equipment token to its consist ([`token_key`]). Repeated
-//! names in any file or ASCII case reuse the entry: `wagon_0`, `wagon_1`,
-//! `wagon_2` and `wagon_last` replace their slot, and `wagons` appends to the
-//! random list. Wagon names resolve through the map at that point; an unknown
-//! name is an error and changes nothing.
-//!
-//! Lookup tries the creator's original-or-own country tag, then its resolved
-//! graphical culture, both only for a valid tag, then the default table.
-//! Within each table try the equipment type before its archetype, accepting
-//! only an entry that sets `wagon_0`.
 
 use crate::{ResolvedLayers, crt, parser};
 use std::{
@@ -30,32 +5,24 @@ use std::{
     io,
 };
 
-/// The directory scanned for train graphics definitions.
 pub const DATABASE_DIRECTORY: &str = "gfx/train_gfx_database";
-/// The authored graphical-culture registry file.
 pub const CULTURE_FILE: &str = "common/graphicalculturetype.txt";
-/// The null graphical culture registers before authored names at index 0.
-/// It is a registered object, distinct from an unknown name's null pointer.
 pub const NULL_CULTURE_NAME: &str = "noCultureType";
-/// The suffix tried when a key is not a culture as written.
 pub const CULTURE_SUFFIX: &str = "_gfx";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// One `wagon_data` block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wagon {
     pub entity: String,
     pub scale: f32,
-    /// Radians converted from the file's authored degrees.
     pub rotation: f32,
     pub shift: [f32; 3],
     pub length: f32,
 }
 
-/// One table entry. Wagons are indices into [`Database::wagons`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Consist {
     pub wagon_0: Option<usize>,
@@ -66,7 +33,6 @@ pub struct Consist {
 }
 
 impl Consist {
-    /// Train selection appends `wagon_0`, `wagon_1`, `wagon_2` when set.
     pub fn fixed(&self) -> impl Iterator<Item = usize> + '_ {
         [self.wagon_0, self.wagon_1, self.wagon_2]
             .into_iter()
@@ -74,40 +40,27 @@ impl Consist {
     }
 }
 
-/// Equipment token identity ([`token_key`]) to its consist.
 pub type Table = BTreeMap<String, Consist>;
 
-/// An equipment table entry is identified by its lexer token; lookup uses
-/// the equipment type's and archetype's tokens. Both hashing and comparison
-/// fold only ASCII A-Z, so keys equal under that fold share one entry.
 pub fn token_key(key: &str) -> String {
     key.to_ascii_lowercase()
 }
 
-/// The merged database of every file in scan order.
 #[derive(Clone, Debug, Default)]
 pub struct Database {
     pub wagons: Vec<Wagon>,
     pub default: Table,
-    /// Country tag to table.
     pub countries: BTreeMap<String, Table>,
-    /// Registry culture name to table.
     pub cultures: BTreeMap<String, Table>,
-    /// What the engine would log and skip, one line each.
     pub diagnostics: Vec<String>,
 }
 
-/// What classifies a database key and admits a wagon.
 pub struct Registries<'a> {
-    /// Whether `common/country_tags` declares the tag.
     pub is_tag: &'a dyn Fn(&str) -> bool,
-    /// The graphical-culture registry.
     pub cultures: &'a BTreeSet<String>,
-    /// Whether the entity registry holds the entity.
     pub has_entity: &'a dyn Fn(&str) -> bool,
 }
 
-/// Where a table lookup comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     Country,
@@ -116,7 +69,6 @@ pub enum Level {
 }
 
 impl Database {
-    /// Reads every database file of the stack in the engine's order.
     pub fn read(layers: &ResolvedLayers, registries: &Registries<'_>) -> io::Result<Self> {
         let mut database = Self::default();
         let mut names = BTreeMap::new();
@@ -127,7 +79,6 @@ impl Database {
         Ok(database)
     }
 
-    /// Adds one file. `names` is the scan's shared wagon-name map.
     pub fn add(
         &mut self,
         bytes: &[u8],
@@ -243,7 +194,6 @@ impl Database {
         for field in items {
             let name = field.key.as_deref().unwrap_or_default();
             let float = |value: &parser::Value| {
-                // Read float fields with the C-runtime prefix scanner.
                 value
                     .scalar_str()
                     .and_then(|text| crt::scan_f32(text.as_bytes()))
@@ -298,8 +248,6 @@ impl Database {
         self.wagons.push(wagon);
     }
 
-    /// `tag` is the creator's original-or-own tag when valid, and `culture`
-    /// is the creator's resolved culture.
     pub fn lookup(
         &self,
         tag: Option<&str>,
@@ -325,12 +273,10 @@ impl Database {
     }
 }
 
-/// The graphical-culture registry: its null object and authored bare names.
 pub fn cultures(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
     parse_cultures(&layers.read(CULTURE_FILE)?)
 }
 
-/// See [`cultures`]. A keyed entry is not a form this reader supports.
 pub fn parse_cultures(bytes: &[u8]) -> io::Result<BTreeSet<String>> {
     let document = parser::parse(bytes).map_err(|e| invalid(format!("{CULTURE_FILE}: {e}")))?;
     let mut cultures = BTreeSet::from([NULL_CULTURE_NAME.to_owned()]);
@@ -426,13 +372,11 @@ mod tests {
             ],
             &["early", "late"],
         );
-        // `gone` is dropped; the second `early` replaces the name for later use.
         assert_eq!(database.wagons.len(), 3);
         let consist = &database.default["t"];
         assert_eq!(database.wagons[consist.wagon_0.unwrap()].length, 4.0);
         assert_eq!(consist.wagons, [2, 1, 2]);
         assert_eq!(consist.wagon_last, Some(1));
-        // The first reference to `late`, before it was defined, was an error.
         assert!(
             database
                 .diagnostics
@@ -455,7 +399,6 @@ mod tests {
                 .lookup(tag, culture, kind, "train_equipment")
                 .map(|(level, consist)| (level, consist.wagon_0))
         };
-        // The country's archetype entry wins over the culture's type entry.
         assert_eq!(
             lookup(
                 Some("GER"),
@@ -464,7 +407,6 @@ mod tests {
             ),
             Some((Level::Country, Some(0)))
         );
-        // An entry without wagon_0 falls through to the archetype.
         assert_eq!(
             lookup(Some("GER"), None, "train_equipment_2"),
             Some((Level::Country, Some(0)))
@@ -477,7 +419,6 @@ mod tests {
             ),
             Some((Level::Culture, Some(1)))
         );
-        // Without a valid tag only the default table is read.
         assert_eq!(
             lookup(None, Some("western_european_gfx"), "train_equipment_1"),
             Some((Level::Default, Some(2)))
@@ -495,11 +436,9 @@ mod tests {
             ],
             &["a", "b"],
         );
-        // Keys equal under the fold are one entry, extended in scan order.
         assert_eq!(database.default.len(), 2);
         let consist = &database.default[&token_key("train_equipment_1")];
         assert_eq!((consist.wagon_0, consist.wagon_1), (Some(0), Some(1)));
-        // The declared names find the differently cased entries.
         assert_eq!(
             database
                 .lookup(None, None, "train_equipment_1", "train_equipment")

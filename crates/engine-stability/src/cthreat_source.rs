@@ -1,65 +1,35 @@
-//! CThreatSource objects reached through CWorldThreat's pointer array.
-//!
-//! Each source stores two raw country references, a date, a reason and three
-//! signed fixed-point values with denominator 100,000. Negative contributions
-//! are ordinary state and are never clamped here.
 
 use crate::{Memory, msvc_string, read, read_slice, walk::Buffer};
 use engine_sites::Rva;
 
-/// CThreatSource primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_2ff8);
-/// CThreatSource raw country reference.
 pub const COUNTRY: usize = 0x08;
-/// CThreatSource second raw country reference.
 pub const SECOND_COUNTRY: usize = 0x0c;
-/// CThreatSource current contribution i64.
 pub const CURRENT: usize = 0x10;
-/// CThreatSource final contribution i64.
 pub const FINAL: usize = 0x18;
-/// CThreatSource daily change i64.
 pub const DAILY: usize = 0x20;
-/// CThreatSource raw date hour i32.
 pub const DATE: usize = 0x30;
-/// CThreatSource reason std::string.
 pub const REASON: usize = 0x40;
-/// CThreatSource allocation size.
 pub const SIZE: usize = 0x60;
-/// CThreatSource native fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// CThreatSource daily ramp/decay update.
 pub const DAILY_UPDATE_RVA: Rva = Rva(0x00f8_3c00);
-/// Matching-source update; replaces final, current and daily contribution.
 pub const UPDATE_RVA: Rva = Rva(0x00f8_40a0);
 
-/// Bytes copied in one guarded batch: every recorded scalar lies in the first 0x34 bytes.
 const HEAD: usize = 0x34;
 
-/// One native contribution in stored order. `reason` indexes the caller's arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Stored vector position; compaction can change the order.
     pub ordinal: u32,
-    /// Raw country reference; resolve through CountryLinks, never normalized here.
     pub country: u32,
-    /// Second raw country reference; its engine role is not established.
     pub second_country: u32,
     pub current_raw: i64,
     pub final_raw: i64,
     pub daily_raw: i64,
-    /// Native engine date hour; no calendar conversion happens on the game thread.
     pub date: i32,
     pub reason_start: usize,
     pub reason_len: usize,
 }
 
-/// Copies one source's recorded fields in a single guarded batch, then its
-/// literal reason bytes. Zero and negative values are state, not absence.
-///
-/// A reason that does not fit the caller's remaining arena yields `None`: the
-/// row is omitted and counted, exactly as a full row buffer omits one. The
-/// returned `wanted` is the reason's full length either way, so the spool thread
-/// can grow the arena without a second engine read.
 pub(crate) fn count_row(
     memory: &impl Memory,
     base: usize,
@@ -89,8 +59,6 @@ pub(crate) fn read_row_buffer(
         .checked_add(REASON)
         .ok_or("threat source reason address overflow")?;
     let (source, reason_len) = literal(memory, reason)?;
-    // Serialization preserves the complete stored reason string.
-    // Preserve the original descriptor and terminator observation while sizing.
     let end = used
         .checked_add(reason_len)
         .ok_or("threat source reason arena extent overflow")?;
@@ -118,7 +86,6 @@ pub(crate) fn read_row_buffer(
     ))
 }
 
-/// Resolves an MSVC std::string's byte span without copying or converting it.
 fn literal(memory: &impl Memory, string: usize) -> Result<(usize, usize), &'static str> {
     let at = |offset: usize| {
         string
@@ -220,7 +187,6 @@ mod tests {
         );
         assert_eq!(used, 9);
         assert_eq!(&arena[4..9], b"Peace");
-        // An empty literal reason is valid and consumes no arena bytes.
         let bytes = fixture(b"\0");
         let (row, used, wanted) = read_row(
             &SliceMemory {

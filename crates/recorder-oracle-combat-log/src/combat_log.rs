@@ -1,24 +1,3 @@
-//! CombatLogEquipment against the save's `combat_log` blocks, which
-//! the game state save writer writes from the same combat-log managers
-//! the reader walks: each month entry's pool, reason and date, per country
-//! and orders group, keyed by (country tag, group id, kind, month, variant).
-//!
-//! The table is sliced by country, so only the countries read at the compared
-//! hour (SliceReads) are compared. A full hour reads every retained month; at
-//! any other hour a country is read through each array's last two entries
-//! (or whole, when its last complete read is older), so those saved entries
-//! are required and older saved entries are compared where recorded. A
-//! recorded group log the save no longer holds is accepted as a deleted
-//! log only if its group is absent from every saved theatre's definitions.
-//! Missing theatre data cannot confirm deletion; a still-existing group or
-//! unread theatre census is a difference. Deleted logs' final rows (kept
-//! by the prune detour) are listed, not compared. The pool writer omits zero amounts
-//! unless `allow_zero_entries`, so a recorded zero with no saved amount is not
-//! a difference.
-//!
-//! LendLeaseEquipment against each giver's saved `lend_lease` exchanges
-//! (`total_delivered`, `equipment_sunk`), keyed by (giver tag, exchange id,
-//! kind, variant), with the receiver.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -36,18 +15,14 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid, required_country_tag};
 
-/// The orders group and variant reference types (the reader checks the same).
 const GROUP_TYPE: u32 = engine_native::corders_group::REFERENCE_TYPE;
 const VARIANT_TYPE: u32 = engine_native::cequipment_variant::REFERENCE_TYPE;
 
 type Key<'a> = (&'a [u8], u32, u8, u16, u32);
 
-/// (giver tag, exchange id, kind, variant id).
 type LendKey<'a> = (&'a [u8], u32, u8, u32);
-/// Recorded receiver tag and amount of a lend-lease row.
 type LendRows<'a> = BTreeMap<LendKey<'a>, (&'a [u8], i64)>;
 
-/// A saved amount with its entry's date.
 struct Saved {
     date: i32,
     amount_raw: i64,
@@ -63,7 +38,6 @@ pub fn compare(
     let reads = complete::<tables::SliceReads>(frame)?;
     let mut actual: BTreeMap<Key<'_>, (i32, i64)> = BTreeMap::new();
     let mut read: BTreeSet<&[u8]> = BTreeSet::new();
-    // SliceReads also dates a read that found no rows for its country.
     for slice in reads.iter().filter(|slice| {
         slice.table == TableId::CombatLogEquipment.index() as u32
             && slice.sample_hour == frame.hour
@@ -86,17 +60,11 @@ pub fn compare(
             return Err(invalid("duplicate resolved combat log row"));
         }
     }
-    // Every saved entry of a compared country, and whether the read must hold
-    // it: at a full hour every entry; otherwise each array's last two, which
-    // any read holds (a country read whole also holds the older ones, which
-    // are then compared too).
     let mut expected: BTreeMap<Key<'_>, (Saved, bool)> = BTreeMap::new();
     let mut saved_groups: BTreeSet<(&[u8], u32)> = BTreeSet::new();
-    // Entries whose pool may omit a zero amount, keyed without the variant.
     let mut omits_zero: BTreeMap<(&[u8], u32, u8, u16), i32> = BTreeMap::new();
     for country in &saved.combat_log.countries {
         let tag = country.tag.as_slice();
-        // At a sliced hour only the countries read now describe the save.
         let compared = full || read.contains(tag);
         for group in &country.groups {
             if group.group as u32 != GROUP_TYPE {
@@ -169,7 +137,6 @@ pub fn compare(
     }
     let mut zeros = 0;
     let mut deleted = BTreeSet::new();
-    // References are global, including a group now assigned to another country.
     let existing_groups: BTreeSet<_> = saved
         .naval_history
         .theatre_countries
@@ -237,8 +204,6 @@ pub fn compare(
     Ok(())
 }
 
-/// The save has no proven field for the local playing country or the prune
-/// observation.
 pub fn state(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     let rows = complete::<tables::CombatLogState>(frame)?;
     if rows.len() != 1 || rows[0].prune_observed > 1 {
@@ -252,12 +217,6 @@ pub fn state(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     Ok(())
 }
 
-/// Division totals are saved by the army save writer. That writer does
-/// not persist the parent reference: the formation save writer writes
-/// member.unit references instead (save::naval_history::OrdersGroup.members).
-/// The theatre save writer emits its army/army-group rosters. Regular
-/// member rosters supply the inferred split. Only a proved unsaved slot-zero regular
-/// group's reciprocal members qualify the inferred split; totals stay exact.
 pub fn division_census(
     frame: &DecodedFrame,
     saved: &Save,
@@ -296,8 +255,6 @@ pub fn division_census(
                     && emission.identity.tag.as_slice() == tag
             })
         }) {
-            // This object has no canonical DivisionCensus row. Its saved
-            // operands stay in the full save and receive a named refusal.
             report.failed_comparisons.insert(
                 format!(
                     "reserved country {} DivisionCensus",
@@ -320,9 +277,6 @@ pub fn division_census(
                 u64::from(grouped) + u64::from(ungrouped),
             );
         }
-        // These exact members are grouped in the reciprocal current tables,
-        // but their omitted definition would otherwise infer saved ungrouped.
-        // Compare every remaining member instead of waiving the country's split.
         match recorded_grouped.checked_sub(qualified) {
             Some(remaining) if remaining == grouped => {}
             Some(remaining) => report.difference(format!("{label}.grouped"), remaining, grouped),
@@ -360,7 +314,6 @@ pub fn division_census(
     Ok(())
 }
 
-/// Grouped, inferred ungrouped, and the exact qualified subset of ungrouped.
 type SavedDivisionCounts<'a> = BTreeMap<&'a [u8], (u32, u32, u32)>;
 
 fn saved_division_counts<'a>(
@@ -374,8 +327,6 @@ fn saved_division_counts<'a>(
         .flat_map(|countries| countries.values())
         .flat_map(|country| &country.land)
         .flat_map(|theatre| &theatre.definitions)
-        // The army group save writer delegates to the game's member
-        // writer too; parent membership must not duplicate a child army's.
         .filter(|group| !group.is_army_group);
     let mut members = BTreeSet::new();
     for group in definitions {
@@ -410,7 +361,6 @@ fn saved_division_counts<'a>(
     Ok(expected)
 }
 
-/// LendLeaseEquipment against each giver's saved exchanges.
 pub fn lend_lease(
     frame: &DecodedFrame,
     saved: &Save,
@@ -429,7 +379,6 @@ pub fn lend_lease(
     let mut count = 0;
     let mut zeros = 0;
     let mut omits_zero: BTreeSet<(&[u8], u32, u8)> = BTreeSet::new();
-    // Each exchange saves its receiver whatever its pools omit.
     let mut receivers: BTreeMap<(&[u8], u32), &[u8]> = BTreeMap::new();
     for (tag, country) in report.canonical_countries(&saved.economy.countries) {
         for exchange in country.lend_lease.iter().flatten() {

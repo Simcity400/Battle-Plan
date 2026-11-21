@@ -36,10 +36,6 @@ import type { SubjectLevel, SubjectReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 
-/** Every overlord and its subjects over time: each
- * overlord heads a band as thick as its number of subjects, and each subject has a
- * bar from when it became one to when it stopped, coloured by its level. Levels and
- * their names come from the campaign's content; colours follow their order. */
 export default function SubjectsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';
@@ -53,7 +49,6 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
   const root = useRef<HTMLDivElement>(null);
-  // The native catalogue identifies both relation endpoints and dated aliases.
   const groups = useCountryGroups(runtime, track, active);
   const axisOffset = track?.axisOffset ?? 0;
   const changes = useMemo(() => data ? changeHours(data, groups.data?.identityChanges) : [], [data, groups.data]);
@@ -73,7 +68,6 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const known = data;
   const views = useMemo(() => known && identities ? overlordViews(known, new Lineage(identityChanges ?? []), identities) : [], [known, identityChanges, identities]);
   const levels = useMemo(() => new Map<string, SubjectLevel>((data?.levels ?? []).map(level => [level.token, level])), [data]);
-  // The categorical palette in the content's level order; levels past it share one colour.
   const other = mix(tokens.surface, tokens.text, 0.35);
   const colours = useMemo(() => levelColours(data?.levels ?? [], tokens.categories, other), [data, tokens.categories, other]);
   const dashboardTag = track ? defaultCountryKey(track) : null;
@@ -87,10 +81,8 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
   const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames, segmentAt, undefined,
     { clock, on: followsClock, hour: (clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null });
-  // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const hover = useHoverLabels(runtime.client, track, active, country);
   const unobserved = views[0]?.unknown ?? known?.unobserved;
-  // An overlord's band is neutral: its subjects carry the colours.
   const bandColor = mix(tokens.text, tokens.surface, 0.45);
   const { lanes, info } = useMemo(() => subjectLanes(views, levels, colours, at, {
     order: options.order as OverlordOrder, subjects: options.subjects as SubjectOrder, ended: options.ended === 'shown', countries: filter.tags, countryIds: filter.countryIds, bandColor,
@@ -125,7 +117,6 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <>{groupFailure}<WidgetState kind="unavailable" message="Countries in these relations could not be identified." /></>;
   if (!lanes.length) return <>{groupFailure}<WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.'} /></>;
 
-  // The levels shown, in the content's order, each named once; past the palette they share "Other".
   const shownLevels = new Set(lanes.flatMap(lane => lane.depth ? info.get(lane.id)?.subject?.runs.flatMap(run => run.steps.map(step => step.level)) ?? [] : []));
   const legendLevels = data.levels.filter(level => shownLevels.has(level.token));
   const own = legendLevels.filter(level => colours.get(level.token) !== other);
@@ -157,7 +148,6 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     }
     const view = about.subject;
     const run = runNear(view, hour);
-    // Named by the tags their countries had at the hour, whatever the nearest run says.
     const subjectTag = subjectTagAt(about.overlord, view, hour);
     const overlordTag = overlordTagAt(about.overlord, hour);
     hover.ask(hour, [subjectTag, overlordTag].filter((tag): tag is string => tag !== null));
@@ -165,12 +155,10 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     const overlordLabel = overlordTag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(overlordTag);
     const holding = run.firstHour <= hour && hour <= run.lastHour;
     const level = holding ? levelAt(run, hour) ?? null : null;
-    // Ended as its relation says: runs of one relation joined across unrecorded hours.
     const stretch = stretchAt(view.stretches, hour) ?? { firstHour: run.firstHour, lastHour: run.lastHour };
     const state = runState([stretch], at, unobserved);
     const rows: TooltipRow[] = [
       { label: 'Overlord', value: overlordLabel.name, countryFlag: overlordLabel },
-      // An unrecorded hour is unknown, not an hour it was no subject.
       { label: 'Level', value: holding ? levelName(levels, level) : unknown ? 'Not recorded' : 'Not a subject then',
         swatch: level != null ? colours.get(level) : undefined, tone: holding && level != null ? undefined : 'muted' },
       { label: 'Subject since', value: day(run.startHour) },
@@ -179,8 +167,6 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     ];
     return { title: subjectLabel.name, countryFlag: subjectLabel, subtitle: `Subject · ${day(hour)}`, rows };
   };
-  // What the timeline shows at the moment shown, for keyboard and screen-reader users:
-  // each overlord and the subjects listed after it, in one pass.
   const groupsSaid: { overlord: string; subjects: string[] }[] = [];
   for (const lane of lanes) {
     const said = `${lane.identity?.label}, ${lane.label}`;
@@ -189,7 +175,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   }
   const description = `${dayLabel(at)}: ${groupsSaid.map(group => group.subjects.length ? `${group.overlord}: ${group.subjects.join('; ')}` : group.overlord).join('. ')}.`;
   return <div className="subjects-widget">{groupFailure}
-    {/* Shown for one level too: its colour is what the bars mean. */}
+    { }
     {options.legend === true && <Legend label="Subject levels" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Overlords and subjects" extent={extent} playhead={playhead} liveHead={liveHead} labelHour={liveHead ? undefined : at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={options.names === true}
       description={description} unobserved={unobserved} bandMax={bandMax} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}

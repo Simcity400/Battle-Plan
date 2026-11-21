@@ -6,7 +6,6 @@ fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
-/// Slot 7 links raw 11 and 9001; slot 8 links raw 12.
 fn frame() -> DecodedFrame {
     let mut frame = DecodedFrame { branch: 1, hour: 10, tables: std::array::from_fn(|_| replay_frame::frame::not_selected()), metrics: Metrics::default() };
     set::<tables::CountryLinks>(&mut frame, [(11, 7), (12, 8), (9001, 7)].map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot }).to_vec());
@@ -62,9 +61,6 @@ fn a_ships_override_names_it_only_when_set_on_it_or_its_design_names_no_group() 
     assert_eq!(policy_key(false, 2), "NAVY_REPAIR_POLICY_2");
 }
 
-/// Refit progress the recording withheld at the hour answers as refits not recorded, by the
-/// table's reason in words a user reads (never the table's identifier), never as a refusal of the
-/// widget's reply.
 #[test]
 fn refits_whose_progress_is_unavailable_are_missing_by_name_not_refused() {
     assert!(refits_unrecorded(&frame()).is_none());

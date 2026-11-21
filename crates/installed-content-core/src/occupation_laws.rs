@@ -1,4 +1,3 @@
-//! Occupation-law names and sprite/frame pairs from the recorded content stack.
 use crate::{
     ResolvedLayers,
     fields::invalid,
@@ -15,22 +14,15 @@ pub struct Law {
     pub token: String,
     pub sprite: String,
     pub frame: i32,
-    /// Visibility and availability triggers are stored separately.
     pub visible: Vec<crate::parser::Item>,
     pub available: Vec<crate::parser::Item>,
-    /// The description key; empty when the law declares none.
     pub tooltip: String,
     pub state_modifier: Vec<crate::parser::Item>,
-    /// `None` when the law declares no suppressed modifier, which the game then leaves out.
     pub suppressed_state_modifier: Option<Vec<crate::parser::Item>>,
 }
 
-/// Default occupation-law sprite name.
 const DEFAULT_SPRITE: &str = "GFX_occupation_policy_icon_strip";
 
-/// The sprite/frame pair reads one token, not an icon object. Digits
-/// change only the frame; `sprite:frame` changes both, and a sprite alone
-/// retains the frame. A frame token must contain only digits.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<Law>> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -147,8 +139,6 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<Law>> {
 #[derive(Default)]
 pub struct Laws {
     pub definitions: BTreeMap<String, Law>,
-    /// An unread tail can replace any earlier law. Refuse lookups rather
-    /// than presenting an earlier definition as the final one.
     pub warnings: Vec<String>,
 }
 
@@ -167,8 +157,6 @@ impl Laws {
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<Laws> {
     let mut laws = Laws::default();
-    // Direct files in file order; the last declaration replaces the previous
-    // object of the same token.
     let names = layers.key_names()?;
     for path in script_files::paths(layers, "common/occupation_laws/", Some(".txt"))? {
         match parse(&path.read(layers)?, &names) {
@@ -252,8 +240,6 @@ mod tests {
         assert!(error.contains("modded") && error.contains("line 1"));
     }
 
-    /// Read-only syntax reach audit. Set BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_WORKSHOP_DIR;
-    /// every installed folder is inspected, without an assumed mod count.
     #[test]
     #[ignore = "requires the installed vanilla and Workshop corpus"]
     fn installed_corpus() {

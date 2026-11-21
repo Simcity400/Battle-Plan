@@ -1,4 +1,3 @@
-//! The queue of saved recordings the headless preparer works through, and its status.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,13 +7,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// The dashboard executable, beside the recorder, which prepares in its headless role.
 pub const DASHBOARD: &str = "replay-desktop.exe";
 
-/// The dashboard executable's first argument for that role.
 pub const ROLE: &str = "--prepare";
 
-/// `%LOCALAPPDATA%\HOI4Replay\preparation`.
 pub fn folder() -> io::Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("LOCALAPPDATA")
@@ -24,7 +20,6 @@ pub fn folder() -> io::Result<PathBuf> {
     .join("preparation"))
 }
 
-/// The name every request file of the recording at canonical `path` starts with.
 fn prefix(path: &Path) -> io::Result<String> {
     let text = path
         .to_str()
@@ -32,7 +27,6 @@ fn prefix(path: &Path) -> io::Result<String> {
     Ok(format!("{:016x}-", fnv(text.to_lowercase().as_bytes())))
 }
 
-/// Queues the recording at `path`; returns its canonical path.
 pub fn request(path: &Path) -> io::Result<PathBuf> {
     let path = fs::canonicalize(path)?;
     let text = path
@@ -40,7 +34,6 @@ pub fn request(path: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| crate::invalid("The recording's path is not Unicode"))?;
     let folder = folder()?;
     fs::create_dir_all(&folder)?;
-    // One file per ask: answering an earlier ask never removes a later one.
     let name = folder.join(format!(
         "{}{:x}-{}.request",
         prefix(&path)?,
@@ -55,14 +48,12 @@ pub fn request(path: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// A recording asked for, and the request files read for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub recording: PathBuf,
     pub files: Vec<PathBuf>,
 }
 
-/// The recordings asked for, the most recently modified first, then those that cannot be read.
 pub fn requests() -> io::Result<Vec<Request>> {
     let folder = folder()?;
     let entries = match fs::read_dir(&folder) {
@@ -79,7 +70,6 @@ pub fn requests() -> io::Result<Vec<Request>> {
         {
             continue;
         }
-        // Clear takes asks back while the queue is read.
         let recording = match fs::read_to_string(&file) {
             Ok(recording) => recording,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -115,7 +105,6 @@ pub fn requests() -> io::Result<Vec<Request>> {
     Ok(found.into_iter().map(|(_, request)| request).collect())
 }
 
-/// The request files of the recording at canonical `path`.
 fn asks(path: &Path) -> io::Result<Vec<PathBuf>> {
     let prefix = prefix(path)?;
     let entries = match fs::read_dir(folder()?) {
@@ -134,12 +123,10 @@ fn asks(path: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(asks)
 }
 
-/// Whether the recording at canonical `path` is still asked for.
 pub fn pending(path: &Path) -> io::Result<bool> {
     Ok(!asks(path)?.is_empty())
 }
 
-/// Takes back every ask of the recording at `path`, as clearing it in the app does.
 pub fn forget_recording(path: &Path) -> io::Result<()> {
     let path = match fs::canonicalize(path) {
         Ok(path) => path,
@@ -152,7 +139,6 @@ pub fn forget_recording(path: &Path) -> io::Result<()> {
     })
 }
 
-/// Takes back the asks `request` read.
 pub fn forget(request: &Request) -> io::Result<()> {
     for file in &request.files {
         match fs::remove_file(file) {
@@ -163,7 +149,6 @@ pub fn forget(request: &Request) -> io::Result<()> {
     Ok(())
 }
 
-/// The preparer's single-instance lock: None while another preparer holds it.
 pub fn runner() -> io::Result<Option<fs::File>> {
     let folder = folder()?;
     fs::create_dir_all(&folder)?;
@@ -186,13 +171,9 @@ pub enum Activity {
     Preparing,
     WaitingForGame,
     WaitingForSpace,
-    /// With `error` naming the parts that could not be prepared, when any.
     Ready,
-    /// The desktop app took the recording over; it shows the outcome.
     InApp,
-    /// The user cleared it in the desktop app.
     Cleared,
-    /// Background preparation was turned off before it was prepared.
     Off,
     Failed,
 }
@@ -202,34 +183,26 @@ pub enum Activity {
 pub struct Entry {
     pub recording: PathBuf,
     pub activity: Activity,
-    /// 0 to 1, while preparing.
     pub progress: Option<f64>,
     pub error: Option<String>,
-    /// Milliseconds since the Unix epoch.
     pub at: u64,
 }
 
-/// The status file's format; a file of another is another build's.
 const VERSION: u32 = 3;
 
-/// What preparers reported, and why the latest, process `pid`, stopped when it failed.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    /// First, so a file of another format is recognised before the rest is read.
     pub version: u32,
     pub running: bool,
     pub pid: u32,
-    /// The process's creation time, so a reused `pid` is not taken for it.
     pub started: u64,
     pub entries: Vec<Entry>,
     pub error: Option<String>,
-    /// Milliseconds since the Unix epoch.
     pub at: u64,
 }
 
 impl Status {
-    /// Empty when none was written, or when another build's format wrote it.
     pub fn read() -> io::Result<Self> {
         #[derive(Deserialize)]
         struct Format {
@@ -256,7 +229,6 @@ impl Status {
         serde_json::from_slice(&bytes).map_err(|error| damaged(&path, error))
     }
 
-    /// Only by the preparer holding [`runner`].
     pub fn write(&mut self) -> io::Result<()> {
         self.version = VERSION;
         self.at = now_ms();
@@ -267,7 +239,6 @@ impl Status {
         fs::rename(&staged, folder.join("status.json"))
     }
 
-    /// Records what is happening to `recording`, as its latest entry.
     pub fn set(
         &mut self,
         recording: &Path,
@@ -299,7 +270,6 @@ pub fn now_ms() -> u64 {
         .map_or(0, |since| since.as_millis() as u64)
 }
 
-/// FNV-1a: request names stay the same across builds.
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)

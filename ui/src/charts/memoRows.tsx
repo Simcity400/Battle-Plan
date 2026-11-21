@@ -32,7 +32,6 @@ const MemoRow = memo(function MemoRow({ id, render, events }: {
 export function useMemoRows() {
   const events = useRef<ReadonlyMap<string, RowEvents>>(new Map());
   const next = new Map<string, RowEvents>();
-  // Nested controls may focus in a layout effect before the parent commits its effects.
   useInsertionEffect(() => { events.current = next; });
   return (id: string, revision: RowRevision, render: (handlers: RowEvents) => ReactNode, handlers: RowEvents = {}) => {
     next.set(id, handlers);

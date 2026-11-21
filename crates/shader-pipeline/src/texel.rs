@@ -1,9 +1,6 @@
-//! Reads of a texture whose result depends on its size in texels, from the compiled program.
 use naga::Expression as E;
 use std::collections::BTreeSet;
 
-/// A read that answers differently once the texture is smaller: plain sampling at normalised
-/// coordinates is the one read that does not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TexelRead {
     Offset,
@@ -23,9 +20,6 @@ impl TexelRead {
     }
 }
 
-/// How a stage reads the texture at `binding`, named `texture`, by texel, worded to follow its
-/// shader's name; `None` when it only samples it at normalised coordinates. A stage that cannot
-/// be read is said so, and counts as reading by texel.
 pub fn by_texel(wgsl: &str, binding: u32, texture: &str) -> Option<String> {
     match texel_reads(wgsl, binding) {
         Ok(reads) if reads.is_empty() => None,
@@ -37,8 +31,6 @@ pub fn by_texel(wgsl: &str, binding: u32, texture: &str) -> Option<String> {
     }
 }
 
-/// Every [`TexelRead`] of the pixel or vertex texture at `binding` in a stage's WGSL. An image
-/// the walk cannot follow to its declaration counts against every texture.
 pub fn texel_reads(wgsl: &str, binding: u32) -> Result<BTreeSet<TexelRead>, String> {
     let module =
         naga::front::wgsl::parse_str(wgsl).map_err(|why| format!("compiled stage: {why}"))?;

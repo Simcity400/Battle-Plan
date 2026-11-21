@@ -213,7 +213,6 @@ fn explicit_between_read_sources_and_skipped_creation_pass() {
         frame(102, &[], &[(21, 100), (22, 101)], vec![]),
     ];
     assert!(checked(&frames).differences.is_empty());
-    // A skipped native creation requires no fabricated result or event.
     assert_eq!(
         checked(&[frame(100, &[], &[], vec![]), frame(101, &[], &[], vec![])]).compared_tables["NavalResultSources"],
         0
@@ -529,10 +528,6 @@ fn lost_intervals_and_prerequisite_reads_are_differences() {
     );
 }
 
-/// A reattached collector's first interval is partial. With the recorded
-/// event loss between its previous read and this one it is a named
-/// limitation; with no loss, or a loss between other reads, it remains a
-/// difference.
 #[test]
 fn a_reattach_first_interval_needs_its_recorded_event_loss() {
     let mut reattached = frame(101, &[], &[], vec![]);
@@ -605,8 +600,6 @@ fn final_retained_date_matches_the_last_ordered_native_emission() {
 
     let matched = frame(101, &[], &[(21, 100)], vec![earlier.clone()]);
     assert!(checked(&[before.clone(), matched]).differences.is_empty());
-    // Row order does not change the native event-id sequence. The last
-    // emission determines the retained date; the earlier merge may differ.
     let latest = frame(101, &[], &[(21, 101)], vec![merged_event(2, 21), earlier]);
     assert!(checked(&[before, latest]).differences.is_empty());
 }

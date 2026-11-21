@@ -1,16 +1,12 @@
-//! Immutable port strike-status operands for loading and hover calculations.
 use crate::map::counter_inputs::SCALE;
 use std::io;
 
 #[derive(Clone, Debug)]
 pub struct ScoreDefines {
     pub screening_ratio: Result<i64, String>,
-    /// Heavy/heavy, heavy/light, light/heavy, light/light, torpedo/heavy, torpedo/light.
     pub efficiency: [i64; 6],
 }
 
-/// Independently fallible groups: exact intel does not consume fuzzy-range or
-/// likelihood defines, and early status arms consume none of these values.
 #[derive(Clone, Debug)]
 pub struct Defines {
     pub score: Result<ScoreDefines, String>,
@@ -34,7 +30,6 @@ impl Defines {
                 *out = d.fixed5("NNavy", key)?;
             }
             Ok::<_, io::Error>(ScoreDefines {
-                // This registry value clamps; the six weights do not.
                 screening_ratio: d
                     .fixed5("NNavy", "SCREEN_RATIO_FOR_FULL_SCREENING_FOR_CAPITALS")
                     .map(|value| value.max(1_000))
@@ -45,7 +40,6 @@ impl Defines {
         .map_err(|e| e.to_string());
         Self {
             score,
-            // Integer content values clamp to 0..100.
             estimate_width: [
                 "INTEL_LEVEL_LOW_STRENGTH_ESTIMATE_HALF_RANGE_PERCENTAGE",
                 "INTEL_LEVEL_MEDIUM_STRENGTH_ESTIMATE_HALF_RANGE_PERCENTAGE",
@@ -55,8 +49,6 @@ impl Defines {
                     .map(|v| v.clamp(0, 100))
                     .map_err(|e| e.to_string())
             }),
-            // Fixed-point content values clamp each
-            // independently; do not sort thresholds authored out of order.
             likelihood: [
                 "NAVAL_STRIKE_FORCE_ATTACK_LIKELYHOOD_THR_VERY_LIKELY",
                 "NAVAL_STRIKE_FORCE_ATTACK_LIKELYHOOD_THR_LIKELY",

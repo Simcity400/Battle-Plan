@@ -220,7 +220,6 @@ fn hookless_tail_needs_no_country_links_and_outcomes_keep_native_presence_gates(
                 &mut refused,
             )
             .unwrap();
-            // Own win/enemy lose enable Win; own lose/enemy win enable Lose.
             assert_eq!(body.contains("Win"), win == (side == 0));
             assert_eq!(body.contains("Lose"), win != (side == 0));
             assert!(refused.is_empty());
@@ -377,7 +376,6 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         assert!(text.refused.is_empty());
         assert_eq!(calls.get(), 5);
         event.options.push(Vec::new());
-        // Native accepts the sole title before its trigger and skips effect bodies.
         let text = event_description(
             &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
         );

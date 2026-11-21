@@ -1,4 +1,3 @@
-//! Native characters readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, allocation, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_leader,

@@ -1,4 +1,3 @@
-/** A synthetic widget header in the production icon menus and styles. */
 import { useContext } from 'react';
 import { createRoot } from 'react-dom/client';
 import { rasteriseIconImage } from './iconImage';
@@ -43,7 +42,6 @@ export const fixture = {
     item!.click(); await settle();
   },
   async focusElsewhere() { document.getElementById('elsewhere')!.focus(); await settle(); },
-  /** Draws a small PNG (made on a canvas) and an SVG with no file type, as an upload would; true when each became an icon. */
   async rasteriseUploads() {
     const canvas = document.createElement('canvas'); canvas.width = 20; canvas.height = 10;
     const paint = canvas.getContext('2d')!; paint.fillStyle = '#c33'; paint.fillRect(0, 0, 20, 10);

@@ -1,29 +1,15 @@
-//! Inline project-history context. Optional values are serialized only when
-//! their presence byte is set. Absent payload words may remain indeterminate and
-//! must never be read as zero.
 
 use engine_sites::Rva;
-/// Project-context primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_f360);
-/// Context signed i32 province.
 pub const PROVINCE: usize = 0x08;
-/// Context signed i32 progress.
 pub const PROGRESS: usize = 0x0c;
-/// Context character full reference, u32 type and ID.
 pub const CHARACTER_REFERENCE: usize = 0x10;
-/// Optional u32 country reference, read only when present.
 pub const COUNTRY_REFERENCE: usize = 0x18;
-/// Country-presence u8 flag.
 pub const COUNTRY_PRESENT: usize = 0x1c;
-/// Optional u32 scientist reference.
 pub const SCIENTIST_REFERENCE: usize = 0x20;
-/// Scientist-presence u8 flag.
 pub const SCIENTIST_PRESENT: usize = 0x24;
-/// Optional u32 state reference.
 pub const STATE_REFERENCE: usize = 0x28;
-/// State-presence u8 flag.
 pub const STATE_PRESENT: usize = 0x2c;
-/// Context constructor clearing presence bytes without initializing absent payloads.
 pub const CONSTRUCT_RVA: Rva = Rva(0x01ac_ae90);
 
 use crate::{Memory, read};
@@ -31,7 +17,6 @@ use crate::{Memory, read};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub province: i32,
-    /// Native bits, with no scaling or rounding.
     pub progress: i32,
     pub character_reference: u64,
     pub country_present: u8,
@@ -42,8 +27,6 @@ pub struct Row {
     pub state_reference: Option<u32>,
 }
 
-/// Reads no optional payload unless the corresponding native presence byte is
-/// nonzero, matching the serializer. Absent storage may be indeterminate.
 pub fn read_row(memory: &impl Memory, base: usize, address: usize) -> Result<Row, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("project context vtable overflow")?;
     if read::<u64>(memory, address) != Some(expected as u64) {

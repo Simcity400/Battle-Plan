@@ -1,4 +1,3 @@
-//! Hosts the map in this process ([`viewer::host`]) and hands it the frontend's commands.
 
 mod gamepad;
 mod lifecycle;
@@ -22,24 +21,16 @@ pub struct HostStatus {
     pub visible: bool,
     pub viewer: ViewerState,
     pub error: Option<String>,
-    /// The full map's camera mode, as its viewer last reported it.
     pub camera_mode: dashboard::protocol::CameraMode,
-    /// Whether flying and walking draw the map's interface, as its viewer last reported it.
     pub camera_overlays: bool,
-    /// The aircraft the running viewer was told to fly, as it last reported it;
-    /// a viewer that starts has none until the frontend chooses again.
     pub fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
 }
 
 #[derive(Default)]
 struct Inner {
     map: Option<viewer::host::Map>,
-    /// A map is being started ([`NativeHost::ensure_started`]).
     starting: bool,
-    /// A map was asked for while a launch was finishing: that launch launches again unless its
-    /// map runs.
     relaunch: bool,
-    /// What waits for the map to end ([`NativeHost::shutdown`]).
     ended_waiters: Vec<Box<dyn FnOnce() + Send>>,
     generation: u64,
     status: HostStatus,
@@ -52,39 +43,24 @@ struct Inner {
     active_dashboard: bool,
     shutting_down: bool,
     last_diagnostic: Option<String>,
-    /// The last diagnostics choice sent with [`NativeHost::set_diagnostics`],
-    /// which a viewer started afterwards takes over its launch-time read.
     diagnostics: Option<bool>,
-    /// The last folders sent with [`NativeHost::set_folders`], which a viewer
-    /// started afterwards takes over its launch-time read.
     folders: Option<dashboard::Config>,
-    /// The last display choice (VSync, map scale, frame rate limit) of each kind sent with
-    /// [`NativeHost::set_display`], numbered as `display_sent` counted it.
     display: Vec<(u64, dashboard::protocol::MapAction)>,
-    /// How many display choices were sent. A starting viewer takes over its launch-time read
-    /// only those sent after its launch began; the read already has the earlier ones.
     display_sent: u64,
-    /// A pop-out window's own viewer: parented to that window, and reporting as the pop-out.
     popout: Option<PopOutWindow>,
-    /// The last mute choice sent with [`NativeHost::set_muted`].
     muted: Option<bool>,
-    /// Exports asked of the map ([`NativeHost::export`]) and not yet answered.
     exports: Vec<Export>,
-    /// The number the last export request was given.
     export_requests: u64,
 }
 
-/// An export the map was asked for: answered once, by the map of `generation` or by its end.
 struct Export {
     request: u64,
     generation: u64,
     answer: tokio::sync::oneshot::Sender<Result<String, String>>,
 }
 
-/// Tells the pop-out's owner that its viewer's status changed.
 pub type StatusChanged = Arc<dyn Fn() + Send + Sync>;
 
-/// The pop-out window a viewer is parented to: its handle, and who publishes its status.
 #[derive(Clone)]
 struct PopOutWindow {
     parent: usize,
@@ -92,15 +68,12 @@ struct PopOutWindow {
 }
 
 impl Inner {
-    /// The map of `generation` ended export `request`: saved, or refused with why.
     fn export_ended(&mut self, generation: u64, request: u64, answer: Result<String, String>) {
         if let Some(at) = self.exports.iter().position(|export| export.request == request && export.generation == generation) {
             let _ = self.exports.remove(at).answer.send(answer);
         }
     }
 
-    /// Refuses every export not yet answered, with `why`, and takes back those not yet sent, so a
-    /// later map never runs a request whose asker was refused.
     fn refuse_exports(&mut self, why: &str) {
         self.pending.actions.retain(|action| !matches!(action, dashboard::protocol::MapAction::Export { .. }));
         for export in self.exports.drain(..) {
@@ -108,7 +81,6 @@ impl Inner {
         }
     }
 
-    /// Hands the map what waits for it; nothing while none runs.
     fn flush(&mut self) {
         let Some(map) = self.map.as_ref() else {
             return;
@@ -118,14 +90,12 @@ impl Inner {
             return;
         }
         for command in self.pending.take_commands(visible) {
-            // A map that has gone says how it ended; what it was not sent is restored for the next.
             if !map.send(command) {
                 break;
             }
         }
     }
 
-    /// [`NativeHost::export`] under its lock.
     fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
         if self.map.is_none() || !self.status.ready || self.shutting_down {
             return Err("The native map is not ready".into());
@@ -142,8 +112,6 @@ impl Inner {
         Ok(answered)
     }
 
-    /// Tells the frontend the main viewer's status. A pop-out viewer's status is published only
-    /// by the pop-out's owner, which is told it changed and reads it then.
     fn publish(&self, app: &tauri::AppHandle) {
         use tauri::Emitter;
         match &self.popout {
@@ -155,7 +123,6 @@ impl Inner {
     }
 }
 
-/// Whether two display choices are the same kind.
 fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::MapAction) -> bool {
     use dashboard::protocol::MapAction;
     matches!(
@@ -166,8 +133,6 @@ fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::Map
     )
 }
 
-/// The display choices a starting viewer takes: those read at launch, each replaced by the
-/// choice of the same kind sent after `since`, the count when its launch began.
 fn launch_display(
     read: impl IntoIterator<Item = dashboard::protocol::MapAction>,
     sent: &[(u64, dashboard::protocol::MapAction)],
@@ -190,13 +155,10 @@ pub struct NativeHost {
 }
 
 impl NativeHost {
-    /// Hands the map what waits for it.
     fn flush(&self) {
         self.shared.lock().unwrap_or_else(|e| e.into_inner()).flush();
     }
 
-    /// A host for the viewer inside a pop-out window, which shows the campaign map only. Its
-    /// status changes go to `changed` instead of the frontend.
     pub fn popout(parent: usize, changed: StatusChanged) -> Self {
         let host = Self::default();
         {
@@ -207,8 +169,6 @@ impl NativeHost {
         host
     }
 
-    /// Select the geometry owner before the frontend mounts/unmounts that view.
-    /// Late cleanup from the other owner cannot hide the newly selected surface.
     pub fn select_view(&self, dashboard: bool) -> Result<(), String> {
         let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
         if inner.shutting_down {
@@ -234,8 +194,6 @@ impl NativeHost {
         Ok(())
     }
 
-    /// One replacement snapshot for every native map, including hidden bodies.
-    /// One map and its window serve them all, however many there are.
     pub fn set_dashboard_views(
         &self,
         window: &WebviewWindow,
@@ -278,9 +236,6 @@ impl NativeHost {
             .clone()
     }
 
-    /// Asks the running map to export its picture to `path` (a dashboard view's with `view_id`).
-    /// The answer comes once the map saved it or refused it, or its map ended first. The request
-    /// is numbered, registered and sent under one lock, to the map running now.
     pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.ask_export(path, view_id)
@@ -306,8 +261,6 @@ impl NativeHost {
             dashboard::protocol::MapAction::CameraMode { .. }
                 | dashboard::protocol::MapAction::FlyAircraft { .. }
         ) {
-            // Only the latest camera mode and aircraft matter, so quick changes never fill the
-            // queue.
             let kind = std::mem::discriminant(&action);
             inner
                 .pending
@@ -324,10 +277,6 @@ impl NativeHost {
         Ok(())
     }
 
-    /// Sends the diagnostics choice to a running viewer, including one still
-    /// starting, and keeps it for a viewer `ensure_started` starts later.
-    /// The caller holds the saved choice's lock, so changes arrive in the
-    /// order they were saved.
     pub fn set_diagnostics(&self, enabled: bool) {
         use dashboard::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -347,10 +296,6 @@ impl NativeHost {
         self.flush();
     }
 
-    /// Queues a display choice (VSync, map scale or frame rate limit) for a running viewer, replacing any of the
-    /// same kind still queued, and keeps it for a viewer still starting, which takes it over its
-    /// launch-time read. A viewer whose launch begins later reads the current settings instead:
-    /// callers send under the video settings' lock and release it only once those hold the choice.
     pub fn set_display(&self, action: dashboard::protocol::MapAction) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.display_sent += 1;
@@ -371,8 +316,6 @@ impl NativeHost {
         self.flush();
     }
 
-    /// The recordings this host shows or is opening: the one the viewer reports, the one
-    /// requested and not yet reported, and the target of a pending seek.
     pub fn recordings(&self) -> Vec<String> {
         let inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         [
@@ -385,21 +328,14 @@ impl NativeHost {
         .collect()
     }
 
-    /// Tells a running viewer that map preferences were saved, once however many
-    /// saves are queued. A viewer `ensure_started` starts later reads them itself.
     pub fn map_settings_saved(&self) {
         self.queue_once(dashboard::protocol::MapAction::MapSettingsSaved);
     }
 
-    /// Asks the running viewer to read its maps' visual mods again
-    /// ([`dashboard::protocol::MapAction::RefreshVisualMods`]), queued once like a settings save.
     pub fn refresh_visual_mods(&self) {
         self.queue_once(dashboard::protocol::MapAction::RefreshVisualMods);
     }
 
-    /// Queues `action` for the running or starting viewer unless one of its kind already waits;
-    /// nothing when no viewer runs or it is shutting down. A starting viewer may read its settings
-    /// before it is installed, so the notice is kept for it.
     fn queue_once(&self, action: dashboard::protocol::MapAction) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if (inner.map.is_none() && !inner.starting) || inner.shutting_down {
@@ -418,8 +354,6 @@ impl NativeHost {
         self.flush();
     }
 
-    /// Sends the mute choice to a running viewer and keeps it for a viewer
-    /// started later, as [`NativeHost::set_diagnostics`] does.
     pub fn set_muted(&self, muted: bool) {
         use dashboard::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -436,8 +370,6 @@ impl NativeHost {
         self.flush();
     }
 
-    /// Sends newly saved content folders to a running viewer, replacing any
-    /// still queued, and keeps them for a viewer `ensure_started` starts later.
     pub fn set_folders(&self, config: &dashboard::Config) {
         use dashboard::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -481,9 +413,6 @@ impl NativeHost {
         Ok(self.status())
     }
 
-    /// Moves and sizes the viewer's child window without starting a viewer: a running one
-    /// takes the bounds at once, and the next one started takes them at launch. Only an explicit
-    /// start or restart launches a viewer.
     pub fn set_bounds(&self, bounds: ViewBounds) -> Result<(), String> {
         let bounds = bounds.validate().map_err(str::to_owned)?;
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
@@ -496,8 +425,6 @@ impl NativeHost {
         Ok(())
     }
 
-    /// Opens a recording the user chose. It carries no revision: the map reads one when it opens
-    /// the file, and reports it.
     pub fn open(&self, path: String) -> Result<(), String> {
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         inner.dashboard_views = None;

@@ -1,8 +1,3 @@
-//! The journal's hours into the store: a manifest's statuses, samples and strings, then each
-//! section's runs applied by slot as the collector certified them ([`crate::section`]). Nothing
-//! is compared. A log table's section is its inserts appended and its deletes forgotten; one that
-//! writes a row given in an earlier hour, or gives a key again, costs that table from that hour
-//! ([`Journal::section`]).
 
 use super::{Edits, Given, SLOTS, Store, TableState, label};
 use crate::{
@@ -14,7 +9,6 @@ use crate::{
 };
 use std::io;
 
-/// The words a refusal names a table and a column of it in.
 #[derive(Clone, Copy)]
 pub struct Names {
     pub table: fn(usize) -> String,
@@ -27,15 +21,10 @@ impl Default for Names {
     }
 }
 
-/// A log table's run through the journal: each journal slot's row, the keys given, and, once a
-/// row changed after it was given, the refusal it is unavailable by. A state table refused holds
-/// its refusal alone.
 #[derive(Clone, Debug, Default)]
 struct Log {
-    /// Each journal slot's row: its ordinal and key.
     rows: Vec<Option<(u64, u128)>>,
     given: Given,
-    /// The reason's string id and text.
     refused: Option<(u32, Box<[u8]>)>,
 }
 
@@ -45,8 +34,6 @@ impl Log {
     }
 }
 
-/// A cell of a log's inserted row, held until its section is read whole: a scalar, or a span of
-/// the item buffers.
 #[derive(Clone, Copy)]
 enum Held {
     Unrecorded,
@@ -56,7 +43,6 @@ enum Held {
     Bytes(usize, usize),
 }
 
-/// A section's inserted log rows, row by row, each its columns' cells.
 #[derive(Default)]
 struct HeldRows {
     cells: Vec<Held>,
@@ -118,19 +104,15 @@ impl HeldRows {
     }
 }
 
-/// Where a log's section first changes a row it was given before: the slot and the column; or
-/// that a section's rows pass the format's slot width ([`SLOTS`]).
 enum Refused {
     Written { slot: u32, column: usize },
     GivenAgain { key: u128 },
     Width,
 }
 
-/// The adapter's buffers, kept between sections.
 #[derive(Default)]
 pub struct Journal {
     scratch: Scratch,
-    /// A list column's cells, decoded a piece of rows at a time ([`each_list`]).
     lists: ListPieces,
     read: Vec<u32>,
     changed: Vec<u32>,
@@ -144,39 +126,24 @@ pub struct Journal {
     edits: Vec<u32>,
     triples: Vec<(u32, u32, u32)>,
     items: Vec<u8>,
-    /// Whether each table holds a section this hour.
     sectioned: Vec<bool>,
-    /// Per table packed since the run began, each journal slot's store slot ([`NONE`] for none):
-    /// the journal names the collector's slots, and packing renumbered the store's.
     maps: Vec<Option<Vec<u32>>>,
     mapped: Vec<u32>,
     mapped_inserted: Vec<u32>,
-    /// Tables the recorder writes itself (derived tables): the journal names their statuses as not
-    /// recorded and holds no section of them.
     left: Vec<bool>,
-    /// Whether the hour read each table.
     reads: Vec<bool>,
-    /// Per log table, its run through the journal; per state table refused, its refusal.
     logs: Vec<Option<Box<Log>>>,
     held: HeldRows,
-    /// Refusals named this run: their strings' ids count down from the last, apart from the
-    /// journal's appends and the derived writers' strings, which count up.
     reasons: u32,
     names: Names,
 }
 
 const NONE: u32 = u32::MAX;
 
-/// The most items of a list column decoded at once: a section's column is applied a piece of
-/// rows at a time, so the adapter's buffers are bounded by this, not by the hour.
 const LIST_PIECE: usize = 1 << 18;
 
-/// The most values of a numeric column decoded at once.
 const NUMBER_PIECE: usize = 1 << 16;
 
-/// `count` values of numeric column kind `kind`, read as [`section::read_values`] reads them,
-/// handed to `each` a piece at a time where the kind's values lie one after another (all but the
-/// optional kinds, whose presence words come first): the same values, in the same order.
 fn each_number(reader: &mut Reader<'_>, scratch: &mut Scratch, kind: Kind, count: usize, mut each: impl FnMut(usize, Cell<'_>) -> io::Result<()>) -> io::Result<()> {
     let pieces = !matches!(kind, Kind::OptionalI32 | Kind::OptionalU32 | Kind::OptionalI64 | Kind::OptionalU64);
     let step = if pieces { NUMBER_PIECE } else { count.max(1) };
@@ -200,7 +167,6 @@ fn is_list(kind: Kind) -> bool {
     matches!(kind, Kind::U32List | Kind::U64List | Kind::Opaque)
 }
 
-/// Buffers a list column's pieces decode into.
 #[derive(Default)]
 struct ListPieces {
     ends: Vec<u32>,
@@ -209,9 +175,6 @@ struct ListPieces {
     bytes: Vec<u8>,
 }
 
-/// `count` cells of list column kind `kind`, read as [`section::read_values`] reads them (every
-/// cell's length, then every item) but applied a piece of rows at a time: each piece's items, at
-/// most [`LIST_PIECE`] unless one cell holds more, decoded and handed to `each` before the next.
 fn each_list(reader: &mut Reader<'_>, held: &mut ListPieces, kind: Kind, count: usize, mut each: impl FnMut(usize, Cell<'_>) -> io::Result<()>) -> io::Result<()> {
     {
         let _label = label("adapter: values");
@@ -250,7 +213,6 @@ fn each_list(reader: &mut Reader<'_>, held: &mut ListPieces, kind: Kind, count: 
     Ok(())
 }
 
-/// The store slot of journal slot `slot` under `map`.
 fn to_store(map: Option<&Vec<u32>>, slot: u32) -> io::Result<u32> {
     match map {
         None => Ok(slot),
@@ -269,7 +231,6 @@ fn map_all(map: Option<&Vec<u32>>, slots: &[u32], out: &mut Vec<u32>, sorted: bo
     Ok(())
 }
 
-/// Calls `each` with every one of the `count` cells `values` holds, in order.
 pub fn each_cell(values: Values<'_>, count: usize, mut each: impl FnMut(usize, Cell<'_>) -> io::Result<()>) -> io::Result<()> {
     macro_rules! plain {
         ($values:expr, $cell:ident) => {
@@ -332,7 +293,6 @@ pub fn each_cell(values: Values<'_>, count: usize, mut each: impl FnMut(usize, C
     Ok(())
 }
 
-/// The bits of an ADD's difference, sign-extended when signed.
 fn difference_of(cell: Cell<'_>) -> io::Result<u64> {
     Ok(match cell {
         Cell::U8(value) => value.into(),
@@ -347,14 +307,11 @@ fn difference_of(cell: Cell<'_>) -> io::Result<u64> {
     })
 }
 
-/// Whether ascending `slots` all lie in ascending `of`.
 fn within(slots: &[u32], of: &[u32]) -> bool {
     section::within(slots, of)
 }
 
 impl Journal {
-    /// An adapter leaving `tables`, which the recorder writes itself, to their writers, naming
-    /// tables and columns in its refusals by `names`.
     pub fn leaving(tables: &[usize], names: Names) -> Self {
         let mut adapter = Self { names, ..Self::default() };
         for &table in tables {
@@ -370,8 +327,6 @@ impl Journal {
         self.left.get(table).copied().unwrap_or(false)
     }
 
-    /// What taking a run up again needs of the adapter: each packed table's journal slots' store
-    /// slots, and each log's rows by journal slot, keys given and refusal.
     pub fn save(&self) -> Vec<u8> {
         use crate::unit::put_varint;
         let mut out = Vec::new();
@@ -416,7 +371,6 @@ impl Journal {
         out
     }
 
-    /// Takes a run up from [`Self::save`]'s bytes.
     pub fn load(&mut self, bytes: &[u8]) -> io::Result<()> {
         use crate::unit::get_varint;
         let wide = |at: &mut usize| -> io::Result<u128> {
@@ -477,7 +431,6 @@ impl Journal {
         Ok(())
     }
 
-    /// The hour's start: its strings, and each table's status and sample hour.
     pub fn begin_hour(&mut self, store: &mut Store, manifest: &Manifest<'_>) -> io::Result<()> {
         let tables = store.tables().len();
         if manifest.statuses.len() != tables || manifest.read.len() != tables.div_ceil(64) {
@@ -529,8 +482,6 @@ impl Journal {
         Ok(())
     }
 
-    /// The hour's end: [`Self::applied`], the store's end of the hour into `sink`, then
-    /// [`Self::moved`].
     pub fn end_hour(&mut self, store: &mut Store, sink: &mut dyn crate::unit::PartSink) -> io::Result<()> {
         self.applied(store);
         store.end_hour(sink)?;
@@ -538,8 +489,6 @@ impl Journal {
         Ok(())
     }
 
-    /// The hour's sections are applied: tables keeping their last complete read take it from the
-    /// hour, and the store settles them.
     pub fn applied(&mut self, store: &mut Store) {
         for (table, &sectioned) in self.sectioned.iter().enumerate() {
             store.after(table, sectioned);
@@ -547,15 +496,12 @@ impl Journal {
         store.settle();
     }
 
-    /// Lets go of the room its buffers kept for the largest section so far, with the store's
-    /// ([`Store::shed`]): after a run's first hour and at each block's end.
     pub fn shed(&mut self, store: &mut Store) {
         let Self { maps, left, sectioned, reads, logs, reasons, names, .. } = std::mem::take(self);
         *self = Self { maps, left, sectioned, reads, logs, reasons, names, ..Self::default() };
         store.shed();
     }
 
-    /// After the store's end of the hour: each table it packed renumbers the journal's slots.
     pub fn moved(&mut self, store: &mut Store) {
         for (table, moved) in store.take_moves() {
             if self.maps.len() <= table {
@@ -569,7 +515,6 @@ impl Journal {
         }
     }
 
-    /// Table `entry.table`'s section of the hour.
     pub fn section(&mut self, store: &mut Store, entry: &Section, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() as u64 != entry.bytes {
             return Err(invalid("Section length differs from its manifest's"));
@@ -624,7 +569,6 @@ impl Journal {
             let _label = label("adapter: rows");
             self.mapped_inserted.reserve(self.inserted.len());
         }
-        // Keys are each the difference from the one before: read one at a time as rows go in.
         let mut key = 0_u128;
         for &slot in &self.inserted {
             reader.keys(1, &mut self.keys)?;
@@ -766,8 +710,6 @@ impl Journal {
 }
 
 impl Journal {
-    /// Whether state `table`'s section just read leaves it holding a row past [`SLOTS`]: an insert
-    /// at a journal slot past them, or, where packing renumbered its slots, more rows than they hold.
     fn passes_slots(&self, store: &Store, table: usize) -> bool {
         if self.maps[table].is_none() {
             return self.inserted.iter().any(|&slot| slot >= SLOTS);
@@ -779,10 +721,6 @@ impl Journal {
         }
     }
 
-    /// Log `table`'s section: its deletes forgotten and its inserts appended, by ordinal. It is
-    /// read whole before the store is told anything, so one that writes a row given in an earlier
-    /// hour or gives a key again changes nothing of it: the table is unavailable by name from this
-    /// hour, and the hour's other tables land.
     fn log_section(&mut self, store: &mut Store, table: usize, bytes: &[u8]) -> io::Result<()> {
         if self.logs.len() <= table {
             self.logs.resize_with(table + 1, || None);
@@ -797,8 +735,6 @@ impl Journal {
         applied
     }
 
-    /// Reads log `table`'s section into the adapter's buffers: where it first writes a row given
-    /// before, or gives a key again; none when it only appends and forgets.
     fn read_log(&mut self, store: &Store, table: usize, log: &Log, bytes: &[u8]) -> io::Result<Option<Refused>> {
         if log.refused.is_some() {
             return Ok(None);
@@ -833,8 +769,6 @@ impl Journal {
         let rows = self.inserted.len();
         self.held.clear();
         self.held.cells.resize(rows * columns, Held::Unrecorded);
-        // A section holds inserted rows' values only when it inserts: a column's empty read would
-        // still take its alignment.
         for (column, &kind) in kinds.iter().enumerate().filter(|_| rows > 0) {
             let held = &mut self.held;
             let put = |at: usize, cell: Cell<'_>| {
@@ -848,8 +782,6 @@ impl Journal {
                 each_number(&mut reader, &mut self.scratch, kind, rows, put)?;
             }
         }
-        // A run on a row held before the hour writes it again. A fill or an unrecorded cell of a
-        // row inserted this hour is folded in: an inserted row's cells are its hour's last.
         for _ in 0..reader.count()? {
             let column = reader.count()?;
             let kind = *kinds.get(column).ok_or_else(|| invalid("Run names a column past the schema"))?;
@@ -923,14 +855,11 @@ impl Journal {
                 }
             }
         }
-        // A touch says the hour looked at a row: a log's row holds nothing it changes.
         reader.slots(&mut self.slots)?;
         reader.finish()?;
         Ok(refused)
     }
 
-    /// The section [`Self::read_log`] read, into the store: its deletes forgotten, then its
-    /// inserts appended with their cells, each journal slot taking its row's ordinal.
     fn apply_log(&mut self, store: &mut Store, table: usize, log: &mut Log) -> io::Result<()> {
         if log.refused.is_some() {
             return Ok(());
@@ -955,8 +884,6 @@ impl Journal {
         Ok(())
     }
 
-    /// Log `table` unavailable from this hour, by what its section did; nothing of the section
-    /// lands.
     fn refuse(&mut self, store: &mut Store, table: usize, log: &mut Log, refused: Refused) -> io::Result<()> {
         let name = (self.names.table)(table);
         let text = match refused {

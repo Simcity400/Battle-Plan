@@ -35,13 +35,11 @@ test('browser bridge commands include the native envelope and newline in their b
 });
 
 test('a browser map-settings flip reaches the native bridge with its setting', () => {
-  // The body browserClient.flipMapSetting posts, through the bridge's command and its line framing.
   const flip = { type: 'mapSettings', sourceId: 's', revision: 'r', settings: null, flip: 'dayNight', target: { scope: 'widget', id: 'w' } };
   const line = JSON.parse(bridgeCommand({ ...mapSettingsCommand(flip), id: 'request-1' }));
   assert.deepEqual(line, {
     type: 'mapSettings', id: 'request-1', sourceId: 's', revision: 'r', settings: null, flip: 'dayNight', target: { scope: 'widget', id: 'w' },
   });
-  // A save carries its settings and no flip; an older body without either reads.
   const save = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r', settings: { graphics: {} }, flip: null });
   assert.deepEqual([save.settings, save.flip, save.target], [{ graphics: {} }, null, { scope: 'campaign' }]);
   const read = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r' });
@@ -64,7 +62,6 @@ test('a page that has gone has every source it holds released, and its imports g
   pages.open('library.battleplan', 'page-1')('lease-2');
   pages.released('lease-1');
   assert.deepEqual([released, removed], [[], []], 'the page that imported it can still open it again');
-  // Opened and answered, but the page reloads before it learns the source; another open is still under way.
   pages.open('first.battleplan', 'page-1')('lease-3');
   const late = pages.open('library.battleplan', 'page-1');
   pages.left('page-1');
@@ -76,14 +73,12 @@ test('a page that has gone has every source it holds released, and its imports g
   pages.released('lease-2'); pages.released('unknown-lease'); pages.left('page-1');
   assert.equal(released.length, 3, 'nothing is released twice');
 
-  // An open reserves the import before it is checked, so its page leaving meanwhile cannot remove it.
   pages.imported('second.battleplan', 'page-2');
   const checking = pages.open('second.battleplan', 'page-2');
   pages.left('page-2');
   assert.equal(pages.isImport('second.battleplan'), true);
   checking();
   assert.deepEqual(removed, ['first.battleplan', 'second.battleplan'], 'a refused open holds nothing once it ends');
-  // Another page's source holds an import its own page let go of.
   pages.imported('third.battleplan', 'page-3');
   pages.open('third.battleplan', 'page-4')('lease-5');
   pages.left('page-3');

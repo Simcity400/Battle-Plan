@@ -1,15 +1,3 @@
-//! Map events: the simulation edges behind the game's floating map text and
-//! the critical shore bombardment explosion and scripted-map refresh calls,
-//! recorded as one hourly interval.
-//!
-//! [`MapEventsRow`] is a singleton (key 0) holding the events the collector
-//! published since the previous interval, in their one global sequence, and
-//! each family's coverage of the interval. A family that is complete with no
-//! events certifies that none happened; an incomplete one is unknown, though
-//! the events it does list happened. Each event is captured where the game
-//! decides it, before the game's own local-viewpoint filter, so a replay can
-//! show what any country would have seen. Scripted refreshes instead observe
-//! the successful call after its selected-mode and script-limit gates.
 use crate::{
     codec::{Decoder, invalid_static as invalid},
     value::{Value, value_struct},
@@ -20,7 +8,6 @@ use std::io;
 #[cfg(test)]
 mod scripted_tests;
 
-/// The event families, in the order of [`MapEventsRow::health`] and their payload tags.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -74,26 +61,16 @@ impl MapEventFamily {
     }
 }
 
-/// Why a family's interval is not complete. Each is a bit of [`MapEventFaults`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MapEventFault {
-    /// The family's hook is not installed.
     Unavailable = 0,
-    /// The family was not enabled for the whole interval.
     Disabled = 1,
-    /// Observation began inside the interval: attach, a world reset or a load.
     ObservationStart = 2,
-    /// An event's native operands could not be read.
     Read = 3,
-    /// An event did not fit its publication lane.
     Capacity = 4,
-    /// A native exception unwound through the family's callback.
     Unwind = 5,
-    /// An earlier interval's events were lost before they were written.
     OutputLost = 6,
-    /// An event was still being published when the interval closed; it is
-    /// listed by a later interval.
     InFlight = 7,
 }
 
@@ -123,7 +100,6 @@ impl MapEventFault {
     }
 }
 
-/// A closed set of [`MapEventFault`] bits; unknown bits are malformed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventFaults(u16);
@@ -180,8 +156,6 @@ impl Value for MapEventFaults {
     }
 }
 
-/// One family's coverage of the interval. `missed` counts events the family
-/// refused (unreadable or without room) since its epoch began.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventFamilyHealth {
@@ -236,8 +210,6 @@ impl Value for MapEventFamilyHealth {
     }
 }
 
-/// One entry of a unit's intel array: a country's canonical ordinal and its
-/// signed level, in native order with repetitions kept.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventIntelEntry {
@@ -249,10 +221,6 @@ value_struct!(MapEventIntelEntry {
     level: i8
 });
 
-/// A revealed fake division or an overrun railway gun: the unit's raw owner
-/// reference, the province the text stands on, the province the game reads
-/// a viewer's visibility at, the unit's intel array and whether fog of war
-/// was on.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventUnitIntel {
@@ -270,8 +238,6 @@ value_struct!(MapEventUnitIntel {
     intel: Vec<MapEventIntelEntry>,
 });
 
-/// A critical shore bombardment hit: the bombarded province. The game shows
-/// its text and its explosion entity to every viewer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventCriticalBombardment {
@@ -279,8 +245,6 @@ pub struct MapEventCriticalBombardment {
 }
 value_struct!(MapEventCriticalBombardment { province: u32 });
 
-/// A captured general: the general's country and the captor, as raw
-/// references, and the province the text stands on.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventGeneralCapture {
@@ -294,8 +258,6 @@ value_struct!(MapEventGeneralCapture {
     province: u32
 });
 
-/// A completed paradrop: the landing province, the dropping country's raw
-/// reference, whether the landing took losses and whether fog of war was on.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventParadrop {
@@ -311,9 +273,6 @@ value_struct!(MapEventParadrop {
     fog: bool
 });
 
-/// An executed resistance activity: the state's best victory-point province,
-/// its controller and its owner's overlord as raw references, and the
-/// activity's authored map text key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventResistance {
@@ -329,7 +288,6 @@ value_struct!(MapEventResistance {
     key: Vec<u8>,
 });
 
-/// The reason a building notification gives, which selects its text.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -376,10 +334,6 @@ impl Value for MapEventBuildingReason {
     }
 }
 
-/// One building level whose health a notification lowered: the building
-/// type's lexical token, the province the text stands on, that province's
-/// controller as a raw reference and the notification's reason. A
-/// notification that lowers several levels is one event a level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventBuildingDamage {
@@ -405,7 +359,6 @@ pub enum MapEventPayload {
     ParadropLanding(MapEventParadrop),
     ResistanceActivity(MapEventResistance),
     BuildingDamage(MapEventBuildingDamage),
-    /// Zero-based scripted mode declaration ordinal, after its effect passed every native gate.
     ScriptedMapRefresh(u32),
 }
 
@@ -513,8 +466,6 @@ impl Value for MapEventPayload {
     }
 }
 
-/// One event: its place in the global sequence, the game hour it happened
-/// at and what happened.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEvent {
@@ -528,14 +479,6 @@ value_struct!(MapEvent {
     payload: MapEventPayload
 });
 
-/// The interval since the previous row. `epoch` changes when observation
-/// starts again (attach, world reset, load). The interval covers the game
-/// from the read of `from_hour` to the read of `to_hour`, so its events are
-/// stamped `from_hour` through `to_hour`, and the sequences from
-/// `first_sequence` up to `next_sequence`. A row whose `first_sequence` is
-/// the previous row's `next_sequence` in the same epoch continues it; any
-/// other row starts with unknown coverage. Events are in sequence order;
-/// one an earlier interval left in flight can precede `first_sequence`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MapEventsRow {
@@ -573,7 +516,6 @@ impl MapEventsRow {
         self.health[family.index()]
     }
 
-    /// Whether this row continues `previous` without a gap in sequence or epoch.
     pub fn continues(&self, previous: &Self) -> bool {
         self.epoch == previous.epoch
             && self.first_sequence == previous.next_sequence

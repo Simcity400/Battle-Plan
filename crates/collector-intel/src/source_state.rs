@@ -1,5 +1,3 @@
-//! Worker-owned source state. Observed setters and arithmetic writers update
-//! retained values; only independent replacement/merge results need native reads.
 
 use engine_allocation as allocation;
 use engine_intelligence::intel_sources as native;
@@ -182,9 +180,6 @@ impl Owner {
         let pool = event.pool as usize;
         Ok(match event.kind {
             RESET => {
-                // Reset/construction can reuse the embedded reference address
-                // or replace its token manager. Acquire only these held words
-                // after the cut; earlier reference events precede final state.
                 self.references_dirty = true;
                 self.lifetime = 0;
                 self.allied.count = 0;
@@ -217,8 +212,6 @@ impl Owner {
                     .statics
                     .get_mut(pool)
                     .ok_or("observed intel static pool outside retained extent")?;
-                // Loading and pruning rebuild the native ID lookup in ordinal
-                // order; repeated loaded IDs select their final occurrence.
                 let source = pool
                     .sources
                     .iter_mut()
@@ -286,8 +279,6 @@ impl Owner {
                     .dynamics
                     .get_mut(pool)
                     .ok_or("observed intel aggregation pool outside retained extent")?;
-                // Without pending inputs, merging the empty source is an exact
-                // identity on the retained accumulator list.
                 if state.values.is_empty() {
                     false
                 } else {
@@ -311,9 +302,6 @@ impl Owner {
                 let changed = self.allied.count != 0 || !self.allied.entries.is_empty();
                 self.allied.count = 0;
                 self.allied.entries.clear();
-                // This writer runs for every daily receiver, even when it no
-                // longer belongs to any sharing group. It supersedes an earlier
-                // replacement without acquiring that now-cleared native vector.
                 self.dirty[0] = false;
                 changed
             }
@@ -346,9 +334,6 @@ impl Owner {
         })
     }
 
-    /// Only independently replaced vectors or actually affected accumulator
-    /// pools are acquired. Pending additions, decay and static setters carry
-    /// under their observed arithmetic; unrelated native payloads are untouched.
     pub fn acquire(&mut self, memory: &impl Memory) -> Result<bool, &'static str> {
         let mut changed = false;
         if self.references_dirty {
@@ -652,7 +637,7 @@ mod tests {
             root,
             country,
         };
-        owner.references[2].address = 1; // destroyed manager's old held address
+        owner.references[2].address = 1;
         owner
             .apply(Event {
                 kind: RESET,
@@ -700,7 +685,6 @@ mod tests {
         owner.apply(event(DYNAMIC_CLEAR, 0, 0, [0; 4])).unwrap();
         assert!(!owner.acquire(&NoRead).unwrap());
         assert!(owner.dynamics[0].accumulators.is_empty());
-        // Empty aggregation needs no native result read, including after clear.
         assert!(!owner.apply(event(DYNAMIC_AGGREGATE, 0, 0, [0; 4])).unwrap());
         assert!(!owner.acquire(&NoRead).unwrap());
         owner.contributions[1] = vec![vec![Lanes {

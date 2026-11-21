@@ -1,6 +1,5 @@
 import './drill.css';
 
-/** Compact playback control shared by breakdowns and pinned views. */
 export default function FollowControl({ following, onFollow, onPause }: {
   following: boolean; onFollow: () => void; onPause?: () => void;
 }) {

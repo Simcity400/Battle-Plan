@@ -1,23 +1,15 @@
-//! What each part of the map did this frame for the view it was given: the flight record.
-//! The playback-cost harness writes it as each frame's `view` object, `{section: {name: n}}`, so a
-//! scripted flight shows what entering, leaving and drawing cost, part by part. A part adds its
-//! own section, by a name of its own: [`add`] sums a count over the frame, [`set`] gives a level.
-//! Off (the window), both return at once; the harness turns it on.
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// One frame's record: each section and its counts, in the order first given.
 pub type Sections = Vec<(&'static str, Vec<(&'static str, u64)>)>;
 
 static ON: AtomicBool = AtomicBool::new(false);
 static RECORD: Mutex<Sections> = Mutex::new(Vec::new());
 
-/// Starts keeping the record.
 pub fn enable() {
     ON.store(true, Ordering::Release);
 }
 
-/// Whether the record is kept: a part with a count that costs something to make asks first.
 pub fn on() -> bool {
     ON.load(Ordering::Acquire)
 }
@@ -42,14 +34,12 @@ fn with(section: &'static str, name: &'static str, apply: impl FnOnce(&mut u64))
     }
 }
 
-/// Adds `n` to `section`'s count `name` for this frame.
 pub fn add(section: &'static str, name: &'static str, n: u64) {
     if on() {
         with(section, name, |value| *value += n);
     }
 }
 
-/// [`add`] for a name made at run time (a reason, an entity): each distinct name is kept once.
 pub fn add_named(section: &'static str, name: &str, n: u64) {
     if !on() {
         return;
@@ -69,14 +59,12 @@ pub fn add_named(section: &'static str, name: &str, n: u64) {
     with(section, name, |value| *value += n);
 }
 
-/// Gives `section`'s level `name` for this frame; the last one given stands.
 pub fn set(section: &'static str, name: &'static str, n: u64) {
     if on() {
         with(section, name, |value| *value = n);
     }
 }
 
-/// The frame's record, which starts again empty.
 pub fn take() -> Sections {
     std::mem::take(&mut *RECORD.lock().unwrap_or_else(|error| error.into_inner()))
 }

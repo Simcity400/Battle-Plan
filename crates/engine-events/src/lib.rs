@@ -1,4 +1,3 @@
-//! Native events readers and their operands, layouts and synthetic tests.
 
 use engine_deployment::{carmy_upgrades_requests, cupgrade_delivery, manpower_value_entry};
 #[cfg(test)]

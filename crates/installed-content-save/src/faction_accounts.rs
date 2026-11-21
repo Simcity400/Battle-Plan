@@ -1,4 +1,3 @@
-//! Sparse faction-system accounting, retaining native array sizes and indices.
 use crate::{Decimal, block, field, integer, invalid, required_bytes, scalar};
 use installed_content_core::parser::{Item, Value};
 use std::{collections::BTreeMap, io};

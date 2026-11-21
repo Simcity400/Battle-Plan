@@ -1,9 +1,5 @@
-//! `--lean`: a paced, windowed run timed as the app runs. The harness keeps no record of its own
-//! while it plays — no view record, no CPU accounting, no frame records, no drain — only when each
-//! frame started, and it reports the intervals between them.
 use super::*;
 
-/// What the lean loop needs from the run, as `measure` set it up.
 pub(super) struct Run<'a> {
     pub ctx: &'a egui::Context,
     pub viewer: &'a mut Viewer,
@@ -20,8 +16,6 @@ pub(super) struct Run<'a> {
     pub hours: u32,
 }
 
-/// One frame as the loop saw it: when it started, the frame thread's CPU then, its flight leg
-/// and the hour it drew.
 #[derive(Clone, Copy)]
 struct Started {
     us: f64,
@@ -30,10 +24,8 @@ struct Started {
     drawn: Option<i32>,
 }
 
-/// How long after the first drawn frame the intervals are counted from.
 const SETTLE_US: f64 = 2e6;
 
-/// The flight legs counted: the low, steady ones; the climb and the high hold are another view.
 const STEADY_LEGS: [&str; 3] = ["tilted", "pan", "turn"];
 
 pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
@@ -45,8 +37,6 @@ pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
     if let Some(side) = &viewer.playhead_map {
         side.anchor(start, !schedule.paused, speed, false);
     }
-    // Paced as a map's own thread paces itself: on the frame limit's grid when one is in force,
-    // waiting blocked as the driver waits, and at once otherwise.
     let mut limited = viewer_foundation::map::frame_limit::Grid::default();
     let mut drawn_before = None::<i32>;
     let t0 = Instant::now();
@@ -67,7 +57,6 @@ pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
         if (schedule.paused && index >= u64::from(hours)) || (!schedule.paused && head >= f64::from(end)) {
             break;
         }
-        // The camera flies on the wall clock, as the app's camera moves.
         let flying = schedule.flight.map(|flight| flight.at(start_us / 1e6, map_width));
         if let Some((_, placement)) = flying {
             viewer.capture.as_mut().unwrap().pinned = Some((pixels, Some(placement)));
@@ -104,9 +93,6 @@ pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
     Ok(report)
 }
 
-/// The intervals between consecutive frame starts, each the frame that began it and charged to that
-/// frame's leg, from [`SETTLE_US`] after the first drawn frame, on the steady legs when the camera
-/// flies, and on each leg: the median, p90 and p99 interval and the frame rate each stands for.
 fn summary(frames: &[Started], flying: bool) -> Value {
     let first = frames.iter().find(|frame| frame.drawn.is_some()).map(|frame| frame.us);
     let settled: Vec<(Option<&str>, f64, f64)> = frames
@@ -132,10 +118,7 @@ fn summary(frames: &[Started], flying: bool) -> Value {
         "lean": true,
         "frames": frames.len(),
         "legs": legs,
-        // The frame thread's own CPU over the same intervals, which other processes on the
-        // machine do not lengthen.
         "frame_thread_cpu": thread,
-        // Every frame's start and the hour it drew, written after the run.
         "frames_us": frames.iter().map(|frame| frame.us.round()).collect::<Vec<_>>(),
         "drawn_hours": frames.iter().map(|frame| frame.drawn).collect::<Vec<_>>(),
         "scope": "Intervals between consecutive frame starts, each the frame that began it, counted from 2 s after the first drawn frame and, when the camera flies, on the tilted, pan and turn legs that frame stood on (each leg also apart, in legs). The camera flies on the wall clock. p90 and p99 are the interval's percentiles, so their fps is the rate the slower frames reach. Frames are paced as a map paces itself: on the frame limit's grid, waiting blocked, or at once without a limit. The run keeps no view record, CPU accounting or frame records, and no frame drains the GPU: the drains before the first frame and after the last stand outside every interval. A frame that draws no map once one was drawn, or that is not presented, ends the run.",
@@ -146,7 +129,6 @@ fn summary(frames: &[Started], flying: bool) -> Value {
     report
 }
 
-/// How many intervals there are and their median, p90 and p99, each with the rate it stands for.
 fn figures(mut intervals: Vec<f64>) -> Value {
     intervals.sort_by(f64::total_cmp);
     let figure = |quantile: f64| match intervals.len().checked_sub(1) {
@@ -159,8 +141,6 @@ fn figures(mut intervals: Vec<f64>) -> Value {
     json!({"intervals_counted": intervals.len(), "median": figure(0.5), "p90": figure(0.9), "p99": figure(0.99)})
 }
 
-/// The frame's egui output drawn into the window and presented through its swap chain, as a map's
-/// window presents: the seconds spent waiting for a swap chain image.
 pub(super) fn present(
     surface: &mut crate::renderer_host::WindowSurface,
     window: &crate::host::Window,
@@ -197,15 +177,12 @@ mod tests {
     #[test]
     fn intervals_count_from_two_seconds_after_the_first_drawn_frame_on_the_steady_legs() {
         let mut frames = vec![frame(0.0, "tilted", false), frame(100.0, "tilted", true)];
-        // Before the settle: 50 ms intervals, which are not counted.
         frames.extend((1..=40).map(|at| frame(100.0 + 50.0 * f64::from(at), "tilted", true)));
-        // Settled: 4 ms on the pan, then 10 ms on the climb, which is not counted.
         let settled = frames.last().unwrap().us / 1e3;
         frames.extend((1..=100).map(|at| frame(settled + 4.0 * f64::from(at), "pan", true)));
         let climbing = frames.last().unwrap().us / 1e3;
         frames.extend((1..=10).map(|at| frame(climbing + 10.0 * f64::from(at), "climb", true)));
         let report = summary(&frames, true);
-        // The last pan frame's 10 ms is the pan's: it began there.
         assert_eq!(report["intervals_counted"], 101);
         assert!((report["median"]["fps"].as_f64().unwrap() - 250.0).abs() < 1e-6);
         assert!((report["p99"]["interval_ms"].as_f64().unwrap() - 4.0).abs() < 1e-9);
@@ -220,7 +197,6 @@ mod tests {
     fn a_slow_last_frame_of_a_leg_counts_on_that_leg() {
         let mut frames = vec![frame(0.0, "tilted", true)];
         frames.extend((1..=20).map(|at| frame(SETTLE_US / 1e3 + 4.0 * f64::from(at), "turn", true)));
-        // The turn's last frame takes 30 ms; the climb begins after it.
         let last = frames.last().unwrap().us / 1e3;
         frames.extend([frame(last + 30.0, "climb", true), frame(last + 34.0, "climb", true)]);
         let report = summary(&frames, true);

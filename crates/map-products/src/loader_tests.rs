@@ -97,7 +97,6 @@ fn bitmap(bits: u16) -> Vec<u8> {
     bytes
 }
 
-// Frozen product-facing bootstrap projection from 34271c1457, with no new loader calls.
 fn previous_inputs(
     layers: &ResolvedLayers,
     user: &Path,
@@ -531,9 +530,6 @@ fn invalid_payload_witnesses_differ_while_original_errors_and_stamps_match() {
     }
 }
 
-/// The content's sound definitions. Unreadable definitions leave the maps
-/// silent with a warning; unreadable `NSound` defines leave the height and
-/// voice categories at full volume, named in the warnings.
 fn previous_audio_source(
     layers: &installed_content_core::ResolvedLayers,
     defines: &installed_content_core::defines::Defines,
@@ -599,7 +595,6 @@ fn previous_audio_source(
             Default::default()
         }
     };
-    // The user's enabled stations; without the playlist file every station plays.
     let stations = installed_content_sound::music::enabled_stations(user)
         .map_err(|error| {
             warnings.push(format!(

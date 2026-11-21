@@ -12,7 +12,6 @@ const SIDES = [side('f:7', '7', 'ENG'), side('c:GER', null, 'GER')];
 const looks: AirLooks = { name: item => item.key, color: item => `colour ${item.key}`, viewpoint: { name: 'ENG', tag: 'ENG', color: 'colour ENG' }, enemy: 'enemy',
   scale: 100_000, badBelow: 40_000, goodAbove: 60_000, mode: 'sides' };
 
-/** Four days from hour 24: two read, one not recorded, one read with the comparison's sides left out. */
 function reply(): AirTimelineReply {
   const shares = { kind: 'sides' as const, parts: [{ side: 0, tag: 'ENG', friendly: '300' }, { side: 1, tag: 'GER', friendly: '100' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false };
   return { firstHour: 24, lastHour: 119, dayHours: 24, days: [47, 71, null, 119], excluded: [0, 0, 0, 2], sides: SIDES, viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000,

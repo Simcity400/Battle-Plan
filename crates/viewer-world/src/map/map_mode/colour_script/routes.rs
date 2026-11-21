@@ -370,7 +370,6 @@ impl Routes {
     }
 }
 
-// An inclusive native-width interval is a disjoint union of aligned binary prefixes.
 fn prefixes(
     (mut first, last): (u128, u128),
     mut visit: impl FnMut(u16, u128) -> std::io::Result<()>,

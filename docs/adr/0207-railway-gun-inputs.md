@@ -1,0 +1,9 @@
+# 0207. Publish railway gun movement from a complete hourly census
+
+Railway guns can move, fight and lose strength in each hour. Acquire every country's roster hourly and publish the simulation operands. The viewer owns presentation. Grow rows, names, route cells and tooltip storage from observed live demand. Keep optional tooltip refusals local. A duplicate handle across rosters indicates a torn census and withholds the complete table. A capture's independent first-combat memo borrows no observations from the division movement job and forgets its answers before the next read.
+
+Every positive logical owner needs transport speed in each strategic region touched by its guns and their ordinary and alternate routes. Collect unique province regions, then batch the request once per owner. Each region shares its identity and weather inputs across owners, and each owner shares its own and enemies' fleet terms across regions. Retain sorted demand scratch across hours to avoid temporary allocations while the hourly original is parked. A failed census or malformed route refuses dependent transport by name. An unreadable province is skipped and counted, leaving that leg unavailable to the viewer without refusing other regions. A failed region query withholds only its row.
+
+Region pointers expire with the acquisition. FIFO settlement reduces already-owned operands and refusal counts. An interrupted sibling can discard a cut before its ordinary turn, and same-pause supply consumers still use the acquired native row prefix. Per-hour combat operands require the active capture hour. Supply amounts use the replay display step, rounding halfway values away from zero and retaining one step for a nonzero amount smaller than half a step.
+
+[Railway gun capture and tests](../../crates/collector-railway-guns/src/railway_guns.rs)

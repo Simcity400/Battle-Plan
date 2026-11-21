@@ -1,6 +1,3 @@
-//! In-app updates for Battle Plan and Battle Plan Recorder. Both apps carry one version and one
-//! installer replaces both, so either app checks the channel's feed, downloads the signed
-//! installer and starts it once neither app is busy.
 mod channel;
 pub mod commands;
 mod control;
@@ -17,17 +14,13 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Where the release pipeline publishes, as `https://github.com/<owner>/<repo>/releases`; absent
-/// in builds made elsewhere.
 const RELEASES: Option<&str> = option_env!("battle-plan_RELEASES");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const STATE_EVENT: &str = "app-update-state";
 const FIRST_CHECK: Duration = Duration::from_secs(15);
 const CHECK_EVERY: Duration = Duration::from_secs(4 * 60);
-/// How often a downloaded update asks again whether the apps may be replaced.
 const BLOCKED_EVERY: Duration = Duration::from_secs(5);
 
-/// Which app this is: each answers on its own pipe and restarts itself after the installer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Dashboard,
@@ -49,8 +42,6 @@ impl Role {
         }
     }
 
-    /// Passive update; `/R` reopens Battle Plan, `/HOI4RECORDER` the recorder. A name starting
-    /// `/R` would also match the installer's `/R`.
     fn installer_arguments(self) -> &'static str {
         match self {
             Self::Dashboard => "/P /UPDATE /R",
@@ -59,22 +50,15 @@ impl Role {
     }
 }
 
-/// Starts the verified installer; why it could not, otherwise.
 pub type Launch = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
-/// What only the app itself knows about being replaced.
 pub trait Host: Send + Sync + 'static {
-    /// Why the apps cannot be replaced now, if they cannot.
     fn install_blocked(&self) -> Option<String>;
-    /// Run `launch` once this app may be replaced, then close; why not, otherwise.
     fn install(&self, launch: Launch) -> Result<(), String>;
-    /// The installer asks this app to close; why it will not, otherwise.
     fn close_for_update(&self) -> Result<(), String>;
-    /// Close, now that the installer has the answer.
     fn closed_for_update(&self) {}
 }
 
-/// The running build, from its version and whether the release pipeline made it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Build {
@@ -109,7 +93,6 @@ impl Build {
         }
     }
 
-    /// A channel nobody chose follows the build.
     fn channel(self) -> Channel {
         if self == Self::Nightly {
             Channel::Nightly
@@ -140,7 +123,6 @@ pub enum Action {
     Install,
 }
 
-/// What both apps' update controls show.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateState {
@@ -151,39 +133,27 @@ pub struct UpdateState {
     pub current_version: &'static str,
     pub available_version: Option<String>,
     pub downloaded_version: Option<String>,
-    /// The offered release's publication time, as the feed gives it.
     pub released_at: Option<String>,
-    /// The offered release's notes, one change per line.
     pub notes: Vec<String>,
     pub download_percent: Option<f64>,
-    /// Milliseconds since 1970 of the last finished check.
     pub checked_at: Option<u64>,
-    /// Why the last action failed, or why updates are off.
     pub message: Option<String>,
     pub error_context: Option<Action>,
-    /// Why the downloaded update cannot be installed now.
     pub install_blocked: Option<String>,
 }
 
 struct Inner {
     state: UpdateState,
-    /// The release the state offers.
     update: Option<feed::Release>,
-    /// Its installer, verified against the release's signature.
     package: Option<Arc<Vec<u8>>>,
-    /// A check, download or install runs.
     busy: bool,
-    /// The running action is a check, which a download or install waits out.
     checking: bool,
 }
 
-/// One app's updater, managed as Tauri state.
 pub struct Updates {
     role: Role,
     host: Arc<dyn Host>,
-    /// Why setup could not ask this app to close: its control pipe failed.
     control_error: Option<String>,
-    /// A check is due now: the channel changed in the other app.
     check_now: std::sync::atomic::AtomicBool,
     client: Option<reqwest::Client>,
     current: semver::Version,
@@ -198,7 +168,6 @@ fn now_ms() -> Option<u64> {
         .map(|elapsed| elapsed.as_millis() as u64)
 }
 
-/// Lines of the release notes the pipeline wrote, without list markers.
 fn notes(body: Option<&str>) -> Vec<String> {
     body.unwrap_or_default()
         .lines()
@@ -216,10 +185,8 @@ fn feed(channel: Channel) -> Result<String, String> {
     ))
 }
 
-/// The mutex setup holds while it replaces or removes the apps (`installer-hooks.nsh`).
 const SETUP_GUARD: &str = "Local\\HOI4Replay.Setup";
 
-/// Whether setup is replacing or removing the apps now.
 pub fn setup_running() -> bool {
     use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::OpenMutexW};
     const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -232,8 +199,6 @@ pub fn setup_running() -> bool {
     true
 }
 
-/// While setup runs, `app` says so and does not start: its files are being replaced. The notice
-/// is shown by Windows PowerShell, so this process exits at once and holds no installed file.
 pub fn refused_during_setup(app: &str) -> bool {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use std::os::windows::process::CommandExt;
@@ -265,7 +230,6 @@ pub fn refused_during_setup(app: &str) -> bool {
     true
 }
 
-/// Manage this app's updater, answer on its pipe and check the feed in the background.
 pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result<()> {
     let build = Build::current();
     let saved = channel::load();
@@ -360,7 +324,6 @@ impl Updates {
         }
     }
 
-    /// Change the state under the lock, then show it.
     fn change<T>(&self, app: &AppHandle, change: impl FnOnce(&mut Inner) -> T) -> T {
         let (result, state) = {
             let mut inner = self.lock();
@@ -371,8 +334,6 @@ impl Updates {
         result
     }
 
-    /// Start an action once any running check has finished; why it cannot start, otherwise.
-    /// It blocks, so it runs only on threads made for blocking.
     fn start<T>(
         &self,
         app: &AppHandle,
@@ -388,7 +349,6 @@ impl Updates {
                     .unwrap_or_else(PoisonError::into_inner);
             }
             Self::available(&inner)?;
-            // A refusal may have changed the state too.
             let found = start(&mut inner);
             if found.is_ok() {
                 inner.busy = true;
@@ -400,7 +360,6 @@ impl Updates {
         found
     }
 
-    /// Why no action can start now.
     fn available(inner: &Inner) -> Result<(), String> {
         if !inner.state.enabled {
             return Err(inner.state.message.clone().unwrap_or_default());
@@ -429,8 +388,6 @@ impl Updates {
         self.lock().state.clone()
     }
 
-    /// Check soon after start, then every few minutes; while an update waits, keep asking whether
-    /// the apps may be replaced.
     fn poll(self: Arc<Self>, app: &AppHandle) {
         let mut next_check = Instant::now() + FIRST_CHECK;
         loop {
@@ -440,7 +397,6 @@ impl Updates {
                 .swap(false, std::sync::atomic::Ordering::AcqRel);
             if now >= next_check || asked {
                 next_check = now + CHECK_EVERY;
-                // Refused only while another action runs; a failure is in the state.
                 let _ = tauri::async_runtime::block_on(self.check(app));
             }
             let waiting = self.lock().package.is_some();
@@ -480,7 +436,6 @@ impl Updates {
     }
 
     pub async fn check(&self, app: &AppHandle) -> Result<UpdateState, String> {
-        // The other app may have changed the channel since.
         let saved = channel::load();
         let channel = self.start(app, true, |inner| {
             let channel = match &saved {
@@ -491,8 +446,6 @@ impl Updates {
                 inner.state.channel = channel;
                 Self::forget_offer(inner);
             }
-            // An offered update, and why its last action failed, stay shown while the feed is
-            // read again.
             if inner.update.is_none() {
                 inner.state.status = Status::Checking;
                 inner.state.error_context = None;
@@ -541,7 +494,6 @@ impl Updates {
                     inner.state.message = None;
                 }
                 Err(error) => {
-                    // An update found earlier is still offered; the failed check is said beside it.
                     if inner.update.is_none() {
                         inner.state.status = Status::Error;
                     }
@@ -556,16 +508,12 @@ impl Updates {
         }
     }
 
-    /// Why the apps may not be replaced now: this app's pipe failed, or its host says why.
     fn blocked(&self) -> Option<String> {
         self.control_error
             .clone()
             .or_else(|| self.host.install_blocked())
     }
 
-    /// The channel saved for both apps, which the other app may have changed since this one last
-    /// read it: an offer from the channel left behind is dropped and the new one checked now.
-    /// Called under the action lock, once no check runs, so no offer can arrive after it.
     fn reconcile_channel(&self, inner: &mut Inner) -> Result<(), String> {
         let channel = channel::load()?.unwrap_or(inner.state.build.channel());
         if channel == inner.state.channel {
@@ -576,7 +524,6 @@ impl Updates {
         inner.state.status = Status::Idle;
         inner.state.error_context = None;
         inner.state.message = None;
-        // Under the lock, so the poller sees it before it waits.
         self.check_now
             .store(true, std::sync::atomic::Ordering::Release);
         self.wake.notify_all();
@@ -622,7 +569,6 @@ impl Updates {
                 };
                 let percent = (received as f64 * 100.0 / total as f64).min(100.0);
                 let shown = updates.lock().state.download_percent;
-                // A whole percent at a time is enough for the ring.
                 if shown.is_none_or(|shown| percent.floor() > shown.floor()) {
                     updates.change(&app, |inner| inner.state.download_percent = Some(percent));
                 }
@@ -656,7 +602,6 @@ impl Updates {
         }
     }
 
-    /// Start the installer once neither app is busy; this app then closes.
     pub fn install(&self, app: &AppHandle) -> Result<(), String> {
         let (package, version) = self.start(app, false, |inner| {
             self.reconcile_channel(inner)?;
@@ -678,7 +623,6 @@ impl Updates {
         let arguments = self.role.installer_arguments();
         let launch: Launch = Box::new(move || install::launch(&version, &package, arguments));
         let result = self.host.install(launch);
-        // Once the installer starts this app is closing, so it stays busy.
         if let Err(error) = &result {
             self.finish(app, |inner| {
                 inner.state.status = Status::Error;

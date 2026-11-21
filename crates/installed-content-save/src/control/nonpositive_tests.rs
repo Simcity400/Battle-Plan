@@ -24,7 +24,6 @@ fn omission_is_a_separate_current_emission_and_strict_control_still_refuses() {
             .to_string()
             .contains("lacks its owner")
     );
-    // Province control preserves the owner's nonpositive emission class.
     let mut membership = membership;
     membership
         .provinces

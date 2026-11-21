@@ -1,13 +1,3 @@
-//! The attack slot of the selected-army body, after the retreat and withdrawal statuses. Selected
-//! divisions standing in one province give one representative per standard-template wrapper (the
-//! standard-template getter). With an empty retained route each representative words
-//! `UNIT_MOVEMENT_BLOCKED_BY_STRAIT` when its strait to the hovered province is blocked (adjacency
-//! lookup); with a route each lists attack modifiers against the route's last move (from its
-//! second-to-last province, or the shared province for a one-province route), under
-//! `LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS` when the list is not empty. The list is derived from the
-//! recorded inputs and the recorded content ([`replay_derive::attack_derive`]); an entry whose operand is
-//! missing is refused by name and the others stay. Selection, hovered target and the single
-//! retained route are viewer-local.
 use viewer_foundation::modifier_names::modifier_name_key;
 use viewer_foundation::tooltip_text::localise as tooltip_text_localise;
 #[cfg(test)]
@@ -46,15 +36,10 @@ fn division(frame: &DecodedFrame, handle: u64) -> Fact<&rows::DivisionRow> {
     keyed::<tables::Divisions>(frame, handle, |row| row.id, "Divisions")
 }
 
-/// The representative identity: `Divisions.template` is the authenticated handle of the division's
-/// standard template (engine `carmy::STANDARD_TEMPLATE`) whose wrapper the standard-template getter
-/// returns, zero for its null wrapper, so equal handles are equal wrappers.
 fn template(frame: &DecodedFrame, handle: u64) -> Fact<u64> {
     Ok(division(frame, handle)?.template)
 }
 
-/// The selected units' shared province (their location): `None` when two known locations differ,
-/// which skips the slot even with another location missing.
 fn same_current(locations: &[Fact<u32>]) -> Fact<Option<u32>> {
     let mut first = None;
     let mut missing = None;
@@ -98,9 +83,6 @@ fn first_template(
     Ok(Some(template))
 }
 
-/// The attack-list move: the route's last province, from the one
-/// before it, or from the shared province when the route has one; `None` for
-/// an empty route, which reaches the strait notice instead.
 fn retained_edge(current: u32, route: &[u32]) -> Option<(u32, u32)> {
     let target = *route.last()?;
     let source = if route.len() > 1 {
@@ -129,8 +111,6 @@ fn blocked(
     Ok(queries.selected_strait(through, owner)? == StraitFleet::Visible)
 }
 
-/// The recorded content the attack list's rows refer to, and the frame's
-/// direct-war cells (which older recordings' packets answer for).
 struct Content<'a> {
     context: &'a Context<'a>,
 }
@@ -148,7 +128,6 @@ impl attack_derive::Context for Content<'_> {
             .terrain(province)
             .ok_or_else(|| format!("province {province} has no content terrain"))?
             .index;
-        // The database's null terrain is index zero; categories follow it.
         let terrains = self.context.content.movement_terrain.clone()?;
         let category = usize::try_from(index)
             .ok()
@@ -174,7 +153,6 @@ impl attack_derive::Context for Content<'_> {
     }
 
     fn region(&self, province: u32) -> Fact<Option<u32>> {
-        // A province the content gives no strategic region has none.
         Ok(self.context.reads.selected_region(province).ok())
     }
 
@@ -231,16 +209,11 @@ fn fallback_key(bytes: &[u8]) -> Fact<&str> {
         .map_err(|_| "template fallback localisation key is not UTF-8".to_owned())
 }
 
-/// Dashboard preserves the original-byte empty gate before this callback.
-/// The display-name formatter qualifies even an originally nonempty key whose C string is empty.
 fn localise_template_fallback(
     localisation: &installed_content_localisation::localisation::Localisation,
     tag: &[u8],
     bytes: &[u8],
 ) -> Fact<String> {
-    // The display-name formatter concatenates FULL raw bytes, then passes the candidate as a C
-    // string. UTF-8 admission follows that first-NUL cut, independently of the
-    // bare fallback. A defined empty qualified value remains authoritative.
     let length = tag
         .len()
         .checked_add(1)
@@ -260,8 +233,6 @@ fn localise_template_fallback(
     tooltip_text_localise(localisation, key, &[])
 }
 
-/// The country tag used to qualify a fallback localisation key: the
-/// tag of the country a positive raw reference resolves to.
 fn country_tag(frame: &DecodedFrame, raw: i32) -> Fact<&[u8]> {
     if raw <= 0 {
         return Err("template country is not positive; its tag is not recorded".into());
@@ -282,8 +253,6 @@ fn country_tag(frame: &DecodedFrame, raw: i32) -> Fact<&[u8]> {
     Ok(&country.tag)
 }
 
-/// `LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS` with the representative's template
-/// display name.
 fn heading(context: &Context<'_>, template: u64) -> Fact<String> {
     let name = template_display_name(&context.content.localisation, context.frame, template)?;
     localise(
@@ -293,7 +262,6 @@ fn heading(context: &Context<'_>, template: u64) -> Fact<String> {
     )
 }
 
-/// A division template's display name at the frame's hour.
 pub fn template_display_name(
     localisation: &installed_content_localisation::localisation::Localisation,
     frame: &DecodedFrame,
@@ -305,7 +273,6 @@ pub fn template_display_name(
         |r| r.template,
         "DivisionTemplateIcons",
     )?;
-    // Only SameAs needs the complete dictionary. Changed is self-contained.
     let display = icon
         .display_name
         .require("DivisionTemplateIcons.display_name")?
@@ -332,8 +299,6 @@ pub fn template_display_name(
     })
 }
 
-/// The attack-modifier line: the kind's name, ": " and the first value as a
-/// percentage with two decimals, green when positive and red otherwise.
 fn modifier_text(name: &str, value: i64) -> String {
     let percent = installed_content_core::fixed5::fixed5_percent(value, 2, true);
     if value > 0 {
@@ -349,7 +314,6 @@ fn row_text(context: &Context<'_>, row: Row) -> Fact<String> {
     Ok(modifier_text(&name, row.value))
 }
 
-/// What the slot reads, so its order and gates are testable alone.
 struct Slot<'s> {
     location: &'s dyn Fn(u64) -> Fact<u32>,
     template: &'s dyn Fn(u64) -> Fact<u64>,
@@ -360,10 +324,6 @@ struct Slot<'s> {
     row: &'s dyn Fn(Row) -> Fact<String>,
 }
 
-/// The selected-army attack slot over its readers: each member's location and
-/// template identity, then per representative either its blocked strait
-/// from the shared province (an empty route) or its attack list against the
-/// route's last move.
 fn attack_slot(out: &mut Tooltip, members: &[u64], route: &Fact<Vec<u32>>, slot: Slot<'_>) {
     let locations: Vec<_> = members
         .iter()
@@ -396,7 +356,6 @@ fn attack_slot(out: &mut Tooltip, members: &[u64], route: &Fact<Vec<u32>>, slot:
                     continue;
                 }
             };
-        // A retained route with no province reaches the notice; a route reaches the attack list.
         let Some((source, target)) = retained_edge(current, route) else {
             match (slot.blocked)(handle, current) {
                 Ok(true) => match (slot.notice)() {
@@ -417,8 +376,6 @@ fn attack_slot(out: &mut Tooltip, members: &[u64], route: &Fact<Vec<u32>>, slot:
                 continue;
             }
         };
-        // The heading follows a nonempty list; a refused entry leaves the
-        // native list count unknown.
         if !preview.rows.is_empty() {
             line(out, "attack heading", 1, (slot.heading)(template));
         } else if !preview.refusals.is_empty() {
@@ -437,8 +394,6 @@ fn attack_slot(out: &mut Tooltip, members: &[u64], route: &Fact<Vec<u32>>, slot:
     }
 }
 
-/// One borrowed SelectionTravel.route for ALL representatives. A duration
-/// fallback never replaces this route.
 pub(super) fn append(
     out: &mut Tooltip,
     context: &Context<'_>,

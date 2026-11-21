@@ -1,10 +1,4 @@
-//! Lookups into one hour's keyed replay tables without building an index.
 
-/// A replay table's rows in their key order, searched by key. Frame decoding
-/// admits only unique ascending keys; a slice that is not strictly ascending
-/// is refused whole, so a duplicate key can never pick one of two rows.
-/// Checking the order costs one pass, once per binding that shares the
-/// lookup; each search is logarithmic and allocates nothing.
 pub(super) struct Keyed<'a, T> {
     rows: &'a [T],
     key: fn(&T) -> u64,

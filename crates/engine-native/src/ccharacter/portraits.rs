@@ -6,7 +6,6 @@ pub struct PortraitRow {
     pub portraits: [usize; 2],
 }
 
-/// Roster slice and optional reuse inputs; defaults to the full unobserved roster.
 pub struct PortraitWalk<'a> {
     pub part: usize,
     pub parts: usize,
@@ -28,15 +27,6 @@ impl Default for PortraitWalk<'_> {
     }
 }
 
-/// Hourly manager census, including characters whose runtime map is empty. Character serialization
-/// reaches the embedded portrait holder. Its entry array starts the record, followed by its count;
-/// entries span 0x38 bytes. Share `part` of `parts` of the roster, contiguous in roster order. Rows
-/// are sorted within the share; the caller merges shares by character. Entries may be reused only
-/// under a complete mutation observation. Roster, identity, country and array validation still run
-/// in their original order. An optional complete authenticated occurrence census from this same
-/// callback supplies roster identities for reuse. Portrait headers and changed descriptors are
-/// still acquired here. An absent or differently scoped census takes the ordinary independent
-/// native path.
 pub fn walk_portraits(
     memory: &impl Memory,
     base: usize,
@@ -97,22 +87,15 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
         } else {
             None
         };
-        // The native roster length bounds this walk; rows or entries that do
-        // not fit the caller's buffers are counted for growth, not refused.
         let count = identities.map_or_else(|| roster.unwrap().count() as usize, <[_]>::len);
         let mut len = 0;
         let mut missing = 0;
         let first = (count * part / parts) as u32;
         let last = (count * (part + 1) / parts) as u32;
-        // The complete roster and dynamic portrait-entry counts size storage.
-        // Grow once from each original control.
         output.ensure((last - first) as usize)?;
         let mut hinted = first;
         for index in first..last {
             if let Some(identities) = identities {
-                // Every pointer was authenticated by the current owned census.
-                // A small lead overlaps independent header misses without
-                // following any unvalidated native descriptor pointer.
                 while hinted < last.min(index + 16) {
                     if let Some(address) = identities[hinted as usize]
                         .pointer
@@ -131,12 +114,10 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                 let (pointer, _, _) = roster.unwrap().pointer(memory, index)?;
                 (pointer, identity_header(memory, base, pointer)?)
             };
-            // Only for lookups: each read below refuses an overflowing address in its own order.
             let array = pointer.wrapping_add(PORTRAIT_DATA);
             let start = used;
             let required_before = required;
             let slot = (index - first) as usize;
-            // Entries placed and their count, or None when they do not fit the buffers.
             let live = (|| {
                 let header = if identities.is_some() {
                     let address = pointer
@@ -185,15 +166,10 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                         used += 1;
                         continue;
                     }
-                    // Only admitted entries enter this rolling four-entry window.
-                    // Hints acquire no values; keep the descriptor and scalar
-                    // string protocol in their original order.
                     while hinted < a.count.min(n + 4) {
                         if let Some(entry) =
                             a.element(hinted, crate::character_portrait_entry::STRIDE)
                         {
-                            // These three fields cover the same cache lines as
-                            // their 48-byte envelope; hint each envelope only once.
                             const HINT_BYTES: usize =
                                 crate::character_portrait_entry::IDENTITY + msvc_string::STRIDE;
                             if crate::memory::is_canonical_range(entry, HINT_BYTES) {
@@ -214,7 +190,6 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                 }
                 if let Some((cache, changes)) = observation.as_mut() {
                     let after = changes.revision(array);
-                    // Never certify entries observed across an overlapping writer.
                     cache.remember(
                         slot,
                         crate::portrait_cache::Key {
@@ -229,7 +204,6 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                 Ok(Some(a.count as usize))
             })();
             let placed = crate::portrait_cache::settled(array, live, |image| {
-                // A writer changed this holder during the capture: its entries as they were.
                 used = start;
                 required = required_before;
                 let count = crate::cpdx_array::Array::from_header(
@@ -253,7 +227,6 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                     used += 1;
                 }
                 if let Some((cache, _)) = observation.as_mut() {
-                    // Never reused: the holder changed after this was read.
                     cache.remember(
                         slot,
                         crate::portrait_cache::Key {
@@ -296,7 +269,6 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
     if let Some((cache, _)) = observation.as_mut() {
         match result {
             Ok(Outcome::Rows { len }) => cache.finish(len),
-            // A failed/short walk may have overwritten a later cached arena range.
             _ => cache.invalidate(),
         }
     }

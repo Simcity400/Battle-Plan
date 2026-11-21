@@ -44,7 +44,6 @@ impl Image {
         self.u32(at + 8, count);
         self.u32(at + 12, count);
     }
-    /// A sorted accumulator of `(key, raw)` entries.
     fn accumulator(&mut self, at: usize, data: usize, entries: &[(u32, i64)]) {
         self.array(at, data, entries.len() as u32);
         for (index, &(key, raw)) in entries.iter().enumerate() {
@@ -74,9 +73,6 @@ const STATE: usize = 0xb000;
 const DEFINITIONS: usize = 0x10_0000;
 const HANDLE: u64 = (7 << 32) | 53;
 
-/// Country id 2 (slot 1) invades province 5, in a state controlled by
-/// country 3 (slot 2). The group has a leader whose HQ provider is
-/// assigned this order, the group's only primary order.
 fn fixture() -> Image {
     let mut m = Image::default();
     m.array(GS + cgame_state::COUNTRIES, COUNTRIES, 3);
@@ -106,7 +102,6 @@ fn fixture() -> Image {
         0x4c00,
         &[(0x1a, 30_000), (0x1ce, 40_000)],
     );
-    // Province 5 of 8, in a state controlled by country 3.
     m.array(GS + cgame_state::PROVINCES, PROVINCE_TABLE, 8);
     m.u64(PROVINCE_TABLE + 5 * 8, PROVINCE as u64);
     m.u64(PROVINCE, cprovince::VTABLE_RVA.0 as u64);
@@ -114,7 +109,6 @@ fn fixture() -> Image {
     m.u64(PROVINCE + cprovince::STATE, STATE as u64);
     m.u64(STATE, cstate::VTABLE_RVA.0 as u64);
     m.u32(STATE + cstate::CONTROLLER, 3);
-    // The group, its leader and its HQ provider.
     m.u64(GROUP + corders_group::HANDLE, HANDLE);
     m.u32(GROUP + corders_group::COUNTRY, 2);
     m.u64(GROUP + corders_group::LEADER, LEADER as u64);
@@ -124,7 +118,6 @@ fn fixture() -> Image {
     m.u64(0x6400, ORDER as u64);
     m.accumulator(LEADER + LEADER_ACCUMULATOR, 0x8800, &[(0x1a, 50_000)]);
     m.u64(MEMBER + corders_group_member::GROUP, GROUP as u64);
-    // The order.
     m.u32(ORDER + corder_instance::TYPE, 3);
     m.u64(ORDER + corder_instance::OWNER, GROUP as u64);
     m.u32(ORDER + corder_instance::ID, 9);
@@ -135,7 +128,6 @@ fn fixture() -> Image {
     m.array(ORDER + corder_instance::ASSIGNED_MEMBER_DATA, 0x7500, 2);
     m.u64(0x7500, 0x9999);
     m.u64(0x7508, MEMBER as u64);
-    // Modifier metadata: the three keys enabled, unclamped.
     m.u64(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
     for key in [0x1a_usize, 0x184, 0x1ce] {
         let row = DEFINITIONS + key * modifier_definition::STRIDE;
@@ -185,8 +177,6 @@ fn an_invasion_records_every_term_of_the_getter() {
 #[test]
 fn the_root_order_falls_back_to_the_parent_groups_orders() {
     let mut memory = fixture();
-    // The provider's own group has another order not assigned it; the
-    // parent's order is this one.
     memory.u64(0x6400, OTHER as u64);
     memory.array(OTHER + corder_instance::ASSIGNED_MEMBER_DATA, 0x7900, 0);
     memory.u64(GROUP + corders_group::PARENT, PARENT as u64);
@@ -194,7 +184,6 @@ fn the_root_order_falls_back_to_the_parent_groups_orders() {
     memory.u64(0x6c00, ORDER as u64);
     let row = run(&memory, ORDER).unwrap().unwrap();
     assert_eq!((row.leader_term, row.leader_applies), (Some(50_000), 1));
-    // Without the parent, no order is the provider's root.
     memory.u64(GROUP + corders_group::PARENT, 0);
     let row = run(&memory, ORDER).unwrap().unwrap();
     assert_eq!((row.leader_term, row.leader_applies), (Some(50_000), 0));
@@ -231,7 +220,6 @@ fn an_empty_path_targets_zero_and_reads_slot_zero() {
         (row.target, row.relation_term, row.relation_bonus),
         (0, None, None)
     );
-    // A row at slot zero still gives the bonus, never the relation term.
     memory.u64(MATRIX, RELATION as u64);
     let row = run(&memory, ORDER).unwrap().unwrap();
     assert_eq!(
@@ -251,7 +239,6 @@ fn a_state_less_province_targets_zero() {
 #[test]
 fn the_same_country_takes_the_bonus_without_the_relation_term() {
     let mut memory = fixture();
-    // Country 3 is an alias of country 2's slot.
     memory.u32(LINKS + 12, 1);
     memory.u64(MATRIX + 8, RELATION as u64);
     let row = run(&memory, ORDER).unwrap().unwrap();
@@ -259,7 +246,6 @@ fn the_same_country_takes_the_bonus_without_the_relation_term() {
         (row.target, row.relation_term, row.relation_bonus),
         (3, None, Some(40_000))
     );
-    // No relation row: neither.
     memory.u64(MATRIX + 8, 0);
     let row = run(&memory, ORDER).unwrap().unwrap();
     assert_eq!((row.relation_term, row.relation_bonus), (None, None));
@@ -294,8 +280,6 @@ fn visit(pointer: usize) -> corder_instance::Visit {
     visit
 }
 
-/// The first assigned member's unit belongs to country 2, whose slot-0
-/// status and its co-belligerent status toward country 3 (slot 2) exist.
 const UNIT: usize = 0x9999 - cunit::SCHEDULED_MEMBER;
 const ZERO: usize = 0x4400;
 
@@ -341,8 +325,6 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
         }
     );
     assert_eq!((rows[0].instance, rows[0].unit_owner), (9, 2));
-    // The owner's relation bytes are CountryCounterInputs': an unreadable
-    // slot-0 status does not reach this walk.
     let mut unreadable = route_fixture();
     unreadable.u32(OTHER + corder_instance::TYPE, 1);
     unreadable.u64(MATRIX, 0);
@@ -350,7 +332,6 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
         walked(&unreadable, GS, &mut rows, source).outcome,
         Outcome::Rows { len: 1 }
     );
-    // Without an invasion no country is read.
     memory.u32(ORDER + corder_instance::TYPE, 2);
     assert_eq!(
         walked(&memory, 0x50_0000, &mut rows, source).outcome,
@@ -370,9 +351,6 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
     }
 }
 
-/// The walk acquires its rows in census order, not in the census table's:
-/// with the table holding the second invasion first, the first still
-/// comes first.
 #[test]
 fn invasion_rows_are_acquired_in_census_order() {
     let mut memory = route_fixture();
@@ -464,7 +442,6 @@ fn the_route_unit_falls_back_to_the_group_then_the_request_countrys_roster() {
         route_unit(&memory, &countries, ORDER, GROUP),
         Ok(MEMBER - cunit::SCHEDULED_MEMBER)
     );
-    // No member: the owner's roster slot 0, or no unit for an empty roster.
     memory.array(GROUP + corders_group::MEMBER_DATA, 0x6600, 0);
     memory.u64(GROUP + corders_group::THEATRE, 0x6a00);
     memory.u32(0x6a00 + ctheatre::VOLUNTEERS_THEATRE, 0);
@@ -474,7 +451,6 @@ fn the_route_unit_falls_back_to_the_group_then_the_request_countrys_roster() {
     country_memo.reset(0, GS);
     let countries = country_memo.view(&memory, 0, GS);
     assert_eq!(route_unit(&memory, &countries, ORDER, GROUP), Ok(0x5500));
-    // A positive volunteers theatre country takes precedence over the owner.
     memory.u32(0x6a00 + ctheatre::VOLUNTEERS_THEATRE, 2);
     memory.u32(0x6a00 + ctheatre::OWNER, 99);
     country_memo.reset(0, GS);
@@ -505,9 +481,6 @@ fn raw_zero_preparation_and_logical_route_owner_need_no_positive_context() {
     memory.u32(UNIT + cunit::LOGICAL_OWNER, 0);
     memory.u32(RELATION + crelation_status::TARGET_COUNTRY, 0);
     memory.u32(0x4f00, 0);
-    // Neither positive header can be acquired. All reached country raw IDs
-    // and directed candidates are zero, so only the supplied reserved result
-    // is needed; existing province/relation/route operands remain binding.
     for header in [cgame_state::COUNTRIES, cgame_state::COUNTRY_LINKS] {
         for byte in 0..16 {
             memory.0.remove(&(GS + header + byte));
@@ -540,8 +513,6 @@ fn raw_zero_preparation_and_logical_route_owner_need_no_positive_context() {
 fn native_country_id_zero_preserves_positive_alias_zero_relation_gate() {
     let mut memory = fixture();
     reserved(&mut memory);
-    // Target raw3 is signed positive, unlike the resolved native id0, while
-    // its native link selects slot0. same_country must NOT suppress this term.
     memory.u32(LINKS + 3 * 4, 0);
     let row = run(&memory, ORDER).unwrap().unwrap();
     assert_eq!(row.target, 3);
@@ -581,8 +552,6 @@ fn theatre_fallback_uses_native_zero_and_readable_alias_zero() {
         Ok(UNIT)
     );
     assert_eq!(country_memo.link_required(), 0);
-    // Signed-positive volunteers selects raw2 instead of the bad owner, and
-    // its readable mapping0 consumes the same physical source.
     memory.u32(0x6a00 + ctheatre::VOLUNTEERS_THEATRE, 2);
     memory.u32(0x6a00 + ctheatre::OWNER, 99);
     memory.u32(LINKS + 2 * 4, 0);

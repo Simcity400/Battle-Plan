@@ -2,7 +2,6 @@ import { contrast, isDark, mixOklab, normalizeColor, oklchHex, oklchToRgb, parse
 
 export type ThemeMode = 'dark' | 'light';
 
-/** Every colour a theme can set. CSS reads them as `--kebab-case` variables. */
 export const THEME_ROLES = {
   canvas: { label: 'Canvas', group: 'Foundation', help: 'The backdrop behind every panel.' },
   chrome: { label: 'Sidebar and top bar', group: 'Foundation', help: 'Navigation and playback chrome.' },
@@ -30,7 +29,6 @@ export interface ThemeDefinition {
   id: string;
   name: string;
   builtIn?: boolean;
-  /** At least one variant; a missing variant falls back to the default theme for that mode. */
   variants: Partial<Record<ThemeMode, ThemeColors>>;
 }
 
@@ -38,11 +36,9 @@ export interface ThemeSeeds { canvas: string; accent: string; glow?: string }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-/** Builds a complete, readable palette from a canvas and an accent (and optionally a glow). */
 export function deriveColors(seeds: ThemeSeeds): ThemeColors {
   const canvasRgb = parseColor(seeds.canvas) ?? { r: 11, g: 16, b: 23 };
   const accentRgb = parseColor(seeds.accent) ?? { r: 95, g: 179, b: 255 };
-  // The ramp follows the canvas actually chosen, not the slot it is saved in.
   const dark = isDark(canvasRgb);
   const canvas = rgbToOklch(canvasRgb), accent = rgbToOklch(accentRgb);
   const hue = canvas.c > 0.012 ? canvas.h : accent.h;
@@ -75,7 +71,6 @@ export function deriveColors(seeds: ThemeSeeds): ThemeColors {
   };
 }
 
-/** Applies user-supplied roles over a derived palette; invalid values are ignored. */
 export function completeColors(partial: Partial<Record<string, unknown>>, fallback: ThemeSeeds): ThemeColors {
   const seeds = {
     canvas: normalizeColor(partial.canvas) ?? fallback.canvas,
@@ -94,7 +89,6 @@ export function colorsMode(colors: Pick<ThemeColors, 'canvas'>): ThemeMode {
   return isDark(parseColor(colors.canvas) ?? { r: 0, g: 0, b: 0 }) ? 'dark' : 'light';
 }
 
-/** A short list of contrast problems the editor can surface. */
 export function contrastWarnings(colors: ThemeColors): string[] {
   const rgb = (role: ThemeRole) => parseColor(colors[role])!;
   const checks: [ThemeRole, ThemeRole, number, string][] = [
@@ -113,7 +107,6 @@ const theme = (id: string, name: string, dark: ThemeSeeds, light: ThemeSeeds, ov
 
 export const DEFAULT_THEME_ID = 'carbon';
 
-/** Neutral greys with one blue accent, after T3 Code's default palette. */
 const carbon: ThemeDefinition = {
   id: 'carbon', name: 'Carbon', builtIn: true,
   variants: {
@@ -144,13 +137,10 @@ export function findTheme(id: string, custom: readonly ThemeDefinition[]): Theme
   return BUILT_IN_THEMES.find(item => item.id === id) ?? custom.find(item => item.id === id);
 }
 
-/** The colours shown for `mode`, falling back to the default theme's variant. */
 export function themeColors(theme: ThemeDefinition | undefined, mode: ThemeMode): ThemeColors {
   return theme?.variants[mode] ?? BUILT_IN_THEMES[0].variants[mode]!;
 }
 
-/** Text and secondary text fade toward the canvas and borders toward transparent below 100%.
- * At 100% the theme is unchanged. Surfaces keep their colours; derived roles follow. */
 export function contrastColors(colors: ThemeColors, percent: number): ThemeColors {
   if (percent >= 100) return colors;
   const amount = Math.max(0, percent) / 100;

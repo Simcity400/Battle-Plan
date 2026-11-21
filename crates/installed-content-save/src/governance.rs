@@ -1,4 +1,3 @@
-//! Literal governance state and the omissions established by the native writers.
 
 use std::{collections::BTreeMap, io};
 
@@ -15,18 +14,12 @@ pub struct Pack {
     pub countries: BTreeMap<Vec<u8>, Country>,
     pub tech_sharing: Vec<TechSharing>,
     pub power_balances: Option<Vec<PowerBalance>>,
-    /// `doctrine={ countries={ ... } }` in doctrine-array order; `None` when
-    /// the save has no doctrine block.
     pub doctrine: Option<Vec<DoctrineStatus>>,
 }
 
-/// One saved country doctrine status.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DoctrineStatus {
-    /// The writer omits a non-positive country reference.
     pub country: Option<Vec<u8>>,
-    /// Enabled tactics as database IDs in vector order.
-    /// The writer omits an empty vector.
     pub enable_tactic: Vec<i32>,
     pub folders: Vec<DoctrineFolder>,
     pub cost_reductions: Vec<Option<DoctrineCostReduction>>,
@@ -50,14 +43,9 @@ pub struct Country {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Politics {
     pub parties: BTreeMap<Vec<u8>, Decimal>,
-    /// Each party's country leaders in native vector order, keyed like
-    /// `parties`. The party writer emits `country_leader` only for a
-    /// nonzero leader count, so omission is an empty list.
     pub leaders: BTreeMap<Vec<u8>, Vec<PartyLeader>>,
-    /// Each party's naming, keyed like `parties`.
     pub names: BTreeMap<Vec<u8>, PartyName>,
     pub ideas: Vec<Vec<u8>>,
-    /// The politics writer emits repeated timed-idea entries in roster order.
     pub timed_ideas: Vec<TimedIdea>,
     pub ruling_party: Option<Vec<u8>>,
     pub last_election: Option<SavedDate>,
@@ -65,30 +53,21 @@ pub struct Politics {
     pub elections_allowed: Option<bool>,
 }
 
-/// One saved timed idea: its literal token and stored signed days.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimedIdea {
     pub token: Vec<u8>,
     pub days: i32,
 }
 
-/// A party's saved naming: `default`, then, only when it is false,
-/// `name` and `long_name`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartyName {
-    /// `None` when the save omits `default`.
     pub default: Option<bool>,
-    /// The stored name and long-name keys; present exactly when `default` is false.
     pub keys: Option<(Vec<u8>, Vec<u8>)>,
 }
 
-/// One anonymous `country_leader` entry from a country-leader role.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartyLeader {
-    /// The role's ideology token.
     pub ideology: Vec<u8>,
-    /// The parent character's reference words: id and type.
-    /// A null parent is written as the zeroed invalid reference, `{0, 0}`.
     pub character: (u32, u32),
 }
 
@@ -97,7 +76,6 @@ pub struct Focus {
     pub current: Option<Vec<u8>>,
     pub continuous: Option<Vec<u8>>,
     pub progress: Option<Decimal>,
-    /// The focus writer emits false only for a zero stored byte.
     pub paused: Option<bool>,
     pub completed: Vec<CompletedFocus>,
 }
@@ -105,15 +83,12 @@ pub struct Focus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletedFocus {
     pub token: Vec<u8>,
-    /// Joint focuses retain their separately serialized originator.
     pub originator: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Research {
-    /// The technology writer filters instances independently, retaining saved order and repeated keys.
     pub technologies: Vec<(Vec<u8>, Technology)>,
-    /// Saved array order and repeated idle/technology keys remain intact.
     pub slots: Vec<ResearchSlot>,
     pub next_bonus_id: Option<i32>,
     pub grants: Vec<ResearchGrant>,
@@ -151,13 +126,10 @@ pub struct ResearchSlot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decisions {
     pub taken: Vec<Vec<u8>>,
-    /// Source positions: re-enable, remove, timed, targeted, targeted-timed.
     pub containers: [Vec<Decision>; 5],
-    /// Saved decision status entries, written in order as repeated `random_item`.
     pub random_items: Vec<DecisionRandomItem>,
 }
 
-/// The random-item writer always emits the definition token, signed count and signed target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionRandomItem {
     pub token: Vec<u8>,
@@ -177,7 +149,6 @@ pub struct Decision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Country(Vec<u8>),
-    /// Native signed numeric target spelling; its bits remain a full u32.
     Numeric(u32),
 }
 
@@ -207,7 +178,6 @@ pub struct PowerBalance {
     pub trending: Vec<u8>,
     pub countries: Vec<Vec<u8>>,
     pub overrides: Vec<PowerBalanceOverride>,
-    /// The power-balance writer emits each modifier source's name, in order.
     pub modifiers: Vec<Vec<u8>>,
 }
 
@@ -262,7 +232,6 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
     let mut parties = BTreeMap::new();
     let mut leaders = BTreeMap::new();
     let mut names = BTreeMap::new();
-    // The politics writer omits parties/ideas exactly for empty arrays.
     for party in optional_block(items, b"parties")?.unwrap_or_default() {
         let token = party
             .key
@@ -283,7 +252,6 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
         ideas: list(items, b"ideas")?,
         timed_ideas: items
             .iter()
-            // Repeated timed_idea blocks retain their roster order.
             .filter(|item| item.keyword_is("timed_idea"))
             .map(|item| {
                 let fields = block(&item.value)?;
@@ -325,9 +293,6 @@ fn party_name(items: &[Item]) -> io::Result<PartyName> {
     Ok(PartyName { default, keys })
 }
 
-/// A party's `country_leader` block: one anonymous `{ ideology character }`
-/// entry per element of the leader vector, in order. The writer emits the key
-/// once, and only for a nonempty vector.
 fn party_leaders(items: &[Item]) -> io::Result<Vec<PartyLeader>> {
     let Some(entries) = optional_block(items, b"country_leader")? else {
         return Ok(Vec::new());
@@ -457,8 +422,6 @@ fn parse_research(items: &[Item]) -> io::Result<Research> {
 
 pub fn parse_decisions(items: &[Item]) -> io::Result<Decisions> {
     let mut containers: [Vec<Decision>; 5] = Default::default();
-    // The decision writer saves the five source vectors in this order;
-    // the two targeted containers have distinct saved labels.
     for (kind, key) in [
         b"decision_to_re_enable".as_slice(),
         b"decision_to_remove",
@@ -600,7 +563,7 @@ fn parse_power_balance(items: &[Item]) -> io::Result<PowerBalance> {
         overrides,
         modifiers: items
             .iter()
-            .filter(|item| item.key.as_deref() == Some(b"modifier")) // token 0x2965
+            .filter(|item| item.key.as_deref() == Some(b"modifier"))
             .map(|item| scalar(&item.value).map(<[u8]>::to_vec))
             .collect::<io::Result<_>>()?,
     })
@@ -686,8 +649,6 @@ pub(super) fn parse_with_countries(
     })
 }
 
-/// The doctrine writer emits every status row, omitting the
-/// whole `countries` block only for an empty doctrine array.
 fn parse_doctrine(items: &[Item]) -> io::Result<Vec<DoctrineStatus>> {
     optional_block(items, b"countries")?
         .unwrap_or_default()
@@ -939,7 +900,6 @@ mod tests {
 
     #[test]
     fn party_names_follow_the_writer_default_rule() {
-        // The writer's layout: a renamed party writes both keys, even an empty one.
         let pack = parse_text(
             b"countries={AAA={politics={parties={
             communism={default=no name=\"AAA_x_party\" long_name=\"\" popularity=100}
@@ -979,7 +939,6 @@ mod tests {
 
     #[test]
     fn party_leaders_keep_saved_order_and_the_null_character_reference() {
-        // The writer's own layout, including its unkeyed entry blocks.
         let pack = parse_text(
             b"countries={AAA={politics={parties={
             fascism={default=yes popularity=40 country_leader={

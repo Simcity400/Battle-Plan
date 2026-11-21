@@ -1,4 +1,3 @@
-//! The recorder's part in updates: never replaced while it is attached to the game or saving.
 use crate::worker::{Leave, Recorder};
 use std::sync::Arc;
 

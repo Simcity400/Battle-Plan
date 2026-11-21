@@ -11,8 +11,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// The inputs at one hour: countries (id, slot, tag index), links (id, slot), members (country,
-/// faction), accounts (account, country); FactionMembers complete or not.
 struct World {
     countries: Vec<(u32, u32, usize)>,
     links: Vec<(u32, u32)>,
@@ -35,7 +33,6 @@ fn world(hour: i32) -> World {
     }
 }
 
-/// Makes `table` hold exactly `rows`.
 fn sync<R: RowCodec>(store: &mut Store, table: TableId, rows: &[R]) {
     let keep: Vec<u128> = rows.iter().map(RowCodec::key).collect();
     for (key, _) in testing::rows(store, table) {
@@ -70,7 +67,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, world: &World) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// The table's rows: account, faction, slot, id and member.
 fn owners(store: &Store) -> Vec<(u32, u64, u32, u32, u8)> {
     let view = store.view(TableId::FactionAccountOwners.index());
     let mut rows: Vec<_> = view

@@ -1,22 +1,3 @@
-//! Offline proof that playback's derivations reproduce what a recording holds,
-//! province by province and hour by hour, with the recording's own content
-//! stack: the day/night clocks of `WeatherProvinces` ([`replay_data::day_night`]),
-//! its temperatures ([`replay_data::temperature`], [`temperature`]) and the
-//! selected army's attack operands against the native ones a recording made
-//! with the collector's `attack_witness` diagnostic holds ([`attack`]), and the
-//! power-balance description trees against their native witnesses
-//! ([`replay_derive::power_balance_derive`], [`power_balance`]). A recording from a
-//! `naval_tree_oracle` collector also checks the naval hover trees' join and
-//! carry against their fresh native samples ([`naval_trees`]). Every division
-//! that keeps its edge across two consecutive hours also compares playback's
-//! movement speed with the game's own, the next hour's progress numerator step
-//! ([`movement`]); these cross-hour categories are diagnostic because operands
-//! change inside the hourly update. Every recorded value is compared; every mismatch
-//! is counted and the first ones are listed with their province or record and hour.
-//!
-//! `--census` counts, for every table, how many rows and which fields each
-//! hour's delta changes. Differences and incomplete comparisons outside the
-//! diagnostic cross-hour progress comparison fail the command.
 
 use std::{
     collections::BTreeMap,
@@ -43,7 +24,6 @@ mod temperature;
 
 pub const USAGE: &str = "recorder derived <campaign.battleplan> [--game-dir <directory>] [--user-dir <directory>] [--census]";
 
-/// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
 
 pub fn command(args: Vec<OsString>) -> Result<(), String> {
@@ -72,20 +52,14 @@ fn arguments(args: Vec<OsString>) -> Result<Arguments, String> {
     Ok((path.ok_or(USAGE)?, game_dir, user_dir, census))
 }
 
-/// The recording's content facts the derivations read.
 struct Content {
     defines: day_night::Defines,
-    /// Day/night geometry constants by province id.
     clocks: BTreeMap<u32, ProvinceClock>,
-    /// What the hourly temperature pass reads.
     temperature: Result<replay_data::temperature::Content, String>,
-    /// Each terrain category's own adjuster attack, in database order.
     terrains: Result<Vec<i64>, String>,
-    /// The verified stack, for lazily read databases (static modifiers).
     layers: installed_content_core::ResolvedLayers,
 }
 
-/// The content stack every session recorded, each session verified to have loaded it.
 fn recorded_stack(sessions: &[SessionStart]) -> io::Result<&Identity> {
     let first = sessions
         .first()
@@ -131,8 +105,6 @@ fn content(
         .join("HOI4Replay")
         .join("recorder"),
     };
-    // The movement speed's modifier keys are checked against the installation's
-    // executable metadata, as the save comparison checks them.
     engine_executable::executable_tables::initialize(&options.game_dir)?;
     let resolved = installed_content_core::resolve(identity, &options)?.exact()?;
     let defines = installed_content_core::defines::read(&resolved.layers)?;
@@ -176,21 +148,15 @@ fn content(
 
 #[derive(Default)]
 struct ClockStats {
-    /// Rows holding a recorded clock.
     rows: u64,
-    /// Rows recording only that the native writer updated them.
     recorded_updated: u64,
-    /// Updated rows whose derivation cannot run on this content.
     updated_underivable: u64,
-    /// Rows the native writer updated this hour: slot > 0 and both gates proved clear.
     updated: u64,
     hour_equal: u64,
     night_equal: u64,
     mismatches: u64,
     listed: Vec<String>,
-    /// Slot 0 pairs, which no update writes.
     slot_zero: BTreeMap<(i32, i64), u64>,
-    /// Rows whose hour does not prove both gates clear, by recorded flags.
     held: BTreeMap<String, u64>,
     held_equal: u64,
     held_unproven: u64,
@@ -200,7 +166,6 @@ struct ClockStats {
     unavailable_hours: u64,
 }
 
-/// Rows and fields each table's deltas change.
 struct Census {
     hours: u64,
     rows: Vec<u64>,
@@ -257,7 +222,6 @@ impl Census {
     }
 }
 
-/// The weather simulation's gates as the frame recorded them.
 fn gates(frame: &DecodedFrame) -> Result<[u8; 2], String> {
     match &*frame.tables[TableId::SimulationFeatures.index()] {
         TableView::Complete(rows) => match rows
@@ -274,7 +238,6 @@ fn gates(frame: &DecodedFrame) -> Result<[u8; 2], String> {
     }
 }
 
-/// The clock the native writer left in `province` at this frame, when it ran.
 fn derived_clock(
     content: &Content,
     operands: Option<&HourOperands>,
@@ -362,7 +325,6 @@ fn run(
     user_dir: Option<PathBuf>,
     census: bool,
 ) -> io::Result<()> {
-    // Blocks are read as they are checked, never the whole recording at once.
     let replay = Replay::open_path(path)?;
     println!(
         "recording: format {}, {} blocks",
@@ -534,7 +496,6 @@ mod tests {
             capture_mode: CaptureMode::Full,
             identity,
         };
-        // The campaign continued with another recorder and collector build.
         let mut rebuilt = verified();
         rebuilt.recorder_version = "next recorder".into();
         rebuilt.collector_hash = [99; 32];

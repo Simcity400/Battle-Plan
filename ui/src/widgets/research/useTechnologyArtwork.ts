@@ -10,7 +10,6 @@ import type { Artwork, TechnologyArtworkParams, TechnologyArtworkReply } from '.
 
 type ImageFact = Artwork & { warnings: string[] };
 
-/** JSON keeps quoted tokens lossless; repeated definitions have distinct template indices. */
 function artworkTag(token: string, recorded: readonly (number | null)[] | undefined): string {
   const uses = [...new Set(recorded ?? [])].sort((a, b) => (a ?? 0) - (b ?? 0));
   return JSON.stringify(uses.some(index => index != null) ? [token, uses] : [token]);
@@ -44,7 +43,6 @@ const SPEC: FactSpec<ImageFact> = {
   },
 };
 
-/** Findings belong to the recorded definitions, not merely their shared technology token. */
 export function useTechnologyArtwork(client: DashboardClient, track: BoundTrack | undefined, tokens: readonly string[], active: boolean,
   recorded?: ReadonlyMap<string, readonly (number | null)[]>) {
   const wanted = useMemo(() => tokens.map(token => ({ tag: artworkTag(token, recorded?.get(token)), hour: 0 })), [tokens, recorded]);

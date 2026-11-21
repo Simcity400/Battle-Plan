@@ -1,14 +1,3 @@
-//! The resources mode's state icons: per state its icon's rows (text and flags) and the window's
-//! flag, as today's hour builds them ([`viewer_world::map::resource_icons::hour_icons`]), kept from
-//! change sets. The window lays them out for its camera ([`viewer_world::map::resource_icons::lay_out`]).
-//! It declares nothing outside the resources mode.
-//!
-//! A state is marked when a row keyed by it changes (its controller, origins, rights, temporary
-//! resources, inputs, stored and template resources, buildings). What every state reads (the
-//! country links, the resource database and the spellings of the content's names, the oil factors,
-//! the building overrides) is folded again when its table changes, and every state is marked when
-//! the fold differs. A table today's hour needs whole that is not complete refuses every icon by
-//! name, as today.
 
 pub mod proof;
 #[cfg(test)]
@@ -35,8 +24,6 @@ use viewer_foundation::resource_origins::{
 };
 use viewer_world::map::resource_icons::{HourIcons, Laid, laid_icon};
 
-/// The tables today's hour reads whole, in the order it reads them; the first not complete
-/// refuses every icon.
 const WHOLE: [TableId; 13] = [
     TableId::CountryLinks,
     TableId::LexicalTokens,
@@ -53,7 +40,6 @@ const WHOLE: [TableId; 13] = [
     TableId::StateBaseResources,
 ];
 
-/// The tables keyed by state in their key's high half, whose changes mark that state.
 const BY_STATE: [TableId; 7] = [
     TableId::ResourceOrigins,
     TableId::ResourceRights,
@@ -94,7 +80,6 @@ struct Columns {
 }
 
 impl Columns {
-    /// The columns of `table` it reads: a write to another layer's column marks nothing.
     fn of(&self, table: TableId) -> Vec<usize> {
         let numbers: Vec<(TableId, usize)> = vec![
             (self.link_slot.table, self.link_slot.column),
@@ -130,29 +115,21 @@ impl Columns {
     }
 }
 
-/// What every state reads, folded from whole tables.
 #[derive(PartialEq)]
 struct Shared {
     definitions: Result<(Vec<Definition>, Option<usize>), String>,
-    /// Each building type's grants by its token, or why the content's names cannot be spelled.
     grants: Result<BTreeMap<u32, Result<Vec<(u32, i64)>, String>>, String>,
-    /// By canonical slot: the oil factor, the last of the country's raw references by key.
     oil_factors: HashMap<u32, i64>,
-    /// By canonical slot: the building overrides (ordinal, building, count, resource, amount),
-    /// by ordinal.
     overrides: HashMap<u32, Vec<(u32, u32, u32, u32, i64)>>,
 }
 
 impl Shared {
-    /// Nothing folded yet: unequal to any fold, so the first marks every state.
     fn unread() -> Self {
         Self { definitions: Err(String::new()), grants: Err(String::new()), oil_factors: HashMap::new(), overrides: HashMap::new() }
     }
 }
 
-/// What the layer reads of the recording's content: the resource origins' and the localisation.
 pub trait Source: Send + Sync {
-    /// None when the content's resource icons failed to load: nothing is drawn, as today.
     fn origins(&self) -> Option<&resource_origins::Content>;
     fn localisation(&self) -> &installed_content_localisation::localisation::Localisation;
 }
@@ -171,37 +148,24 @@ pub struct ResourceIcons {
     content: Arc<dyn Source>,
     columns: Option<Columns>,
     shared: Shared,
-    /// The content's building and resource names, lowercase, and their folds by the spellings
-    /// the recording holds; with each spelling's tokens and literals, for a fold made again.
     folds: Folds,
     spelling: HashMap<Vec<u8>, BTreeMap<u32, Vec<u8>>>,
-    /// LexicalTokens slot to a folded name it spells, for a row deleted.
     spelled_at: HashMap<u32, Vec<u8>>,
-    /// Per state, its rows' (key, slot) in key order: origins and buildings.
     origins: HashMap<u32, Vec<(u128, u32)>>,
     buildings: HashMap<u32, Vec<(u128, u32)>>,
-    /// Slot to key, for a row deleted from the two above.
     origin_keys: HashMap<u32, u128>,
     building_keys: HashMap<u32, u128>,
     whole: Result<(), String>,
     icons: BTreeMap<u32, Result<Option<Laid>, String>>,
-    /// Building types whose rows change no icon: their grants name no resource and they are not
-    /// the infrastructure, whose damage the icon reads.
     quiet: std::collections::HashSet<u32>,
-    /// Per state, the numbers its laid icon was written from: unchanged numbers keep the text.
     numbers: HashMap<u32, resource_origins::StateIcon>,
-    /// The country links changed: every state's slots are read again.
     relink: bool,
-    /// Per table read, its status as last seen.
     statuses: HashMap<TableId, Option<Status>>,
     states: Dirty,
-    /// Tables whose whole fold is due: links, definitions and spellings, oil factors, overrides.
     refold: bool,
-    /// Why it declares nothing at the last view: it holds, marks and carries nothing then.
     hidden: Option<&'static str>,
     frame: u64,
     marked: u64,
-    /// Moves when what [`Self::icons`] answers may have changed: the window lays them out again.
     version: u64,
 }
 
@@ -209,8 +173,6 @@ const NAME: &str = "resource_icons";
 const NOT_DRAWN: &str = "no resource icon is drawn at this view";
 const NO_ORIGINS: &str = "the content's resource origins are not loaded";
 
-/// A version no layer's product has had in this process, so a reader made again never repeats one
-/// the window laid out.
 pub(super) fn next_version() -> u64 {
     static VERSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     VERSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
@@ -244,17 +206,14 @@ impl ResourceIcons {
         }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         Self { columns: self.columns, hidden: self.hidden, ..Self::new(Arc::clone(&self.content)) }
     }
 
-    /// Why the layer declares nothing at the view; none when it draws.
     pub fn hidden(&self) -> Option<&'static str> {
         self.hidden
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it; its view and counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.content));
         let kept = std::mem::replace(self, empty);
@@ -269,7 +228,6 @@ impl ResourceIcons {
         self.version
     }
 
-    /// Every state's icon, or why none is drawn: what today's hour gives the window's layout.
     pub fn icons(&self) -> HourIcons {
         if let Some(why) = self.hidden {
             return Err(why.to_owned());
@@ -277,7 +235,6 @@ impl ResourceIcons {
         self.whole.clone().map(|()| self.icons.clone())
     }
 
-    /// Whether a row of `table` keyed `key` changes no icon.
     fn is_quiet(&self, table: TableId, key: u128) -> bool {
         table == TableId::StateBuildings && self.quiet.contains(&(key as u32))
     }
@@ -295,7 +252,6 @@ impl ResourceIcons {
         }
     }
 
-    /// The content's names to spell, lowercase.
     fn names(&self) -> Vec<Vec<u8>> {
         let Some(origins) = self.content.origins() else { return Vec::new() };
         let mut names: Vec<Vec<u8>> = origins.buildings.types.iter().flat_map(|(name, building)| std::iter::once(name.as_str()).chain(building.local_resources.iter().map(|(resource, _)| resource.as_str()))).map(|name| name.as_bytes().to_ascii_lowercase()).collect();
@@ -304,7 +260,6 @@ impl ResourceIcons {
         names
     }
 
-    /// The spellings of the content's names, read whole (at a reset, off the frame).
     fn spell_all(&mut self, mirrors: &Mirrors) {
         let columns = self.columns.expect("declared");
         self.spelling = self.names().into_iter().map(|name| (name, BTreeMap::new())).collect();
@@ -326,7 +281,6 @@ impl ResourceIcons {
         }
     }
 
-    /// The whole folds every state reads; every state is marked when they differ.
     fn fold_shared(&mut self, mirrors: &Mirrors) {
         let Some(columns) = self.columns else { return };
         let content = Arc::clone(&self.content);
@@ -379,7 +333,6 @@ impl ResourceIcons {
         if countries.is_empty() {
             return;
         }
-        // Only the states those countries control read what changed.
         let Some(states) = mirrors.get(TableId::States) else { return };
         let touched: Vec<u32> = states.rows().filter(|&slot| states.number(columns.controller, slot).value().and_then(|raw| slot_of(mirrors, columns, raw)).is_some_and(|slot| countries.contains(&slot))).filter_map(|slot| states.key(slot)).map(|key| key as u32).collect();
         for state in touched {
@@ -387,7 +340,6 @@ impl ResourceIcons {
         }
     }
 
-    /// The first table today's hour needs whole that is not complete, by today's words.
     fn whole_of(&self, mirrors: &Mirrors) -> Result<(), String> {
         for table in WHOLE {
             complete(mirrors, table)?;
@@ -414,7 +366,6 @@ impl ResourceIcons {
 
     fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
-        // Hidden, its tables may still be mirrored for another layer: none of them is read.
         if self.hidden.is_some() {
             return;
         }
@@ -468,8 +419,6 @@ impl ResourceIcons {
     }
 }
 
-/// The layer while the window draws its icons: declared, composed, not refused, and shown by its
-/// view.
 pub fn drawn(side: &MapSide) -> Option<&ResourceIcons> {
     if !side.draws(NAME) {
         return None;
@@ -478,7 +427,6 @@ pub fn drawn(side: &MapSide) -> Option<&ResourceIcons> {
     layer.hidden.is_none().then_some(layer)
 }
 
-/// The rows of `mirror` in key order: (key, slot).
 fn by_key(mirror: &Mirror) -> Vec<(u128, u32)> {
     let mut rows: Vec<(u128, u32)> = mirror.rows().filter_map(|slot| Some((mirror.key(slot)?, slot))).collect();
     rows.sort_unstable();
@@ -490,7 +438,6 @@ fn slot_of(mirrors: &Mirrors, columns: Columns, raw: u32) -> Option<u32> {
     mirror.number(columns.link_slot, mirror.slot(u128::from(raw))?).value()
 }
 
-/// A spelling's fold, its tokens taken in ascending order as today's hour reads them.
 fn fold_of(spelling: &HashMap<Vec<u8>, BTreeMap<u32, Vec<u8>>>, name: &[u8]) -> Option<Result<u32, String>> {
     let mut folds = Folds::new();
     for (&token, literal) in spelling.get(name)? {
@@ -499,7 +446,6 @@ fn fold_of(spelling: &HashMap<Vec<u8>, BTreeMap<u32, Vec<u8>>>, name: &[u8]) -> 
     folds.into_values().next()
 }
 
-/// Whether `table` is complete at the head, in the words today's frame refuses it with.
 pub(super) fn complete(mirrors: &Mirrors, table: TableId) -> Result<(), String> {
     let mirror = mirrors.get(table);
     let hour = mirror.and_then(Mirror::head).map_or_else(|| "?".to_owned(), |hour| hour.to_string());
@@ -514,13 +460,11 @@ pub(super) fn complete(mirrors: &Mirrors, table: TableId) -> Result<(), String> 
     }
 }
 
-/// The state at the head as today's resource origins read it, by key from the mirrors.
 struct At<'a> {
     layer: &'a ResourceIcons,
     mirrors: &'a Mirrors,
     columns: Columns,
     content: &'a resource_origins::Content,
-    /// The state's buildings (type token, healthy level), read once for every resource.
     buildings: std::cell::OnceCell<Vec<(u32, i16)>>,
 }
 
@@ -574,7 +518,6 @@ impl Values for At<'_> {
                 efficiency: mirror.number(c.origin_efficiency, row).value().unwrap_or(0),
                 route_factor: mirror.number(c.origin_route, row).value().unwrap_or(0),
                 local_resources_factor: mirror.number(c.origin_local, row).value().unwrap_or(0),
-                // The icon reads neither the route's colour nor its convoys (the hover does).
                 bad: false,
                 convoys_assigned: 0,
                 convoys_required: 0,

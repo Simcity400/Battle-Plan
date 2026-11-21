@@ -1,10 +1,3 @@
-//! Pooled map-table reads. The spool grows reusable storage; the worker-only
-//! Orders job can also grow payloads from its original native observations.
-//!
-//! Combat, ship and order censuses run inside their worker jobs; the ship
-//! census runs inside the ShipModels job and the order census inside the Orders
-//! job. Dependent Air/Naval consumers run only when their own raw payload did
-//! not stage; the Players/HumanControllers pair keeps its worker split.
 
 use crate::raw::RawLog;
 use crate::sampling::qpc;
@@ -25,10 +18,6 @@ fn ship_name_result<T>(result: Result<Option<T>, &'static str>) -> Option<T> {
     result.ok().flatten()
 }
 
-/// Inline source consumers own their state and validation. Return raw QPC ticks
-/// attributed to extension tables so the map buckets do not charge them twice.
-/// The begin/finish pair runs even for an empty or failed source census; every
-/// dependent table must preserve that outcome instead of accepting its prefix.
 pub trait MapSources {
     fn begin_land(&mut self) -> u64 {
         0
@@ -47,7 +36,6 @@ struct NoSources;
 #[cfg(test)]
 impl MapSources for NoSources {}
 
-/// The hour installed neither the owned wing payload nor its failure.
 const AIR_NOT_ACQUIRED: Outcome = Outcome::Unavailable {
     reason: "air wing payload not acquired this hour",
 };
@@ -91,7 +79,6 @@ impl Default for MapCapacities {
 }
 
 impl MapCapacities {
-    /// Attach/input cadence only; mutable headers remain hints for the worker.
     pub(crate) fn presize_combats(
         &mut self,
         memory: &impl Memory,
@@ -143,15 +130,11 @@ impl MapCapacities {
         crate::country_scale::raise(&mut self.air_wing_names, bytes);
     }
 
-    /// HumanControllers has one row per authenticated canonical country
-    /// (`chuman::walk_controllers`); the other map tables follow activity.
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows[1], crate::country_scale::rows(slots, 1));
     }
 }
 
-/// Fleets, task forces and ships. Walked inside the ShipModels job, whose
-/// details the ships seed, so the game thread never runs the census.
 pub struct ShipCensus {
     pub management: collector_naval_management::forces::Captured,
     management_owned: Option<collector_naval_management::forces::Owned>,
@@ -161,7 +144,6 @@ pub struct ShipCensus {
     pub ship_overrides: Vec<u8>,
     pub task_forces: CaptureRows<ctask_force::Row>,
     pub ships: CaptureRows<cship::Row>,
-    /// Fleet, task force and ship walk ticks.
     pub ticks: [u64; 3],
 }
 
@@ -179,7 +161,6 @@ impl ShipCensus {
             ticks: [0; 3],
         }
     }
-    /// Placeholder while the job owns the buffers.
     pub fn vacant() -> Self {
         Self::new(&[0; 3])
     }
@@ -320,8 +301,6 @@ const NOT_WALKED: Outcome = Outcome::Unavailable {
     reason: "army order census not acquired",
 };
 
-/// The army order census and its graph scratch. Walked inside the Orders job;
-/// the plans and the naval order sources read the roots and visits it leaves.
 pub struct Orders {
     pub rows: CaptureRows<corder_instance::Row>,
     pub geometry: Vec<u32>,
@@ -331,30 +310,16 @@ pub struct Orders {
     groups_required: usize,
     visits: Vec<corder_instance::Visit>,
     visits_required: usize,
-    /// The successor ids this census resolved, for the plans of the same job.
     successors: corder_instance::SuccessorLists,
     pub root_outcome: Outcome,
-    /// [`Self::walk_roots`] filled `groups` and `root_outcome` in this pass,
-    /// for this pass's [`Self::walk`] only (the single census the tests and
-    /// benches walk; the hourly job walks parts).
     #[cfg_attr(not(test), allow(dead_code))]
     roots_walked: bool,
     pub ticks: u64,
-    /// This pass's census and plan-walk parts ([`crate::orders_parts`]),
-    /// reused across hours: part 0 is the Orders job's, the rest the
-    /// OrdersPart jobs' while they hold them.
     parts: [Option<Box<crate::orders_parts::Part>>; crate::orders_parts::MAX_PARTS],
-    /// This pass's part count, set by [`Self::prepare_parts`].
     part_count: usize,
-    /// This pass's split, which the callback carries from the last stitched
-    /// hour ([`Self::begin_parts`]).
     split: crate::orders_parts::Split,
-    /// The session's QPC frequency, for sizing the next split.
     frequency: u64,
-    /// The next hour's split, planned when this pass's parts are stitched
-    /// ([`Self::plan_split`]); one part until then.
     next_split: crate::orders_parts::Split,
-    /// A failed or refused job failed this pass's census ([`Self::fail`]).
     failed: bool,
 }
 
@@ -391,7 +356,6 @@ impl Orders {
     pub(crate) fn for_test(capacity: &MapCapacities) -> Self {
         Self::new(capacity)
     }
-    /// Placeholder while the job owns the buffers.
     pub fn vacant() -> Self {
         Self::new(&MapCapacities {
             rows: [0; MAP_TABLES],
@@ -425,8 +389,6 @@ impl Orders {
             + self.successors.allocated_bytes()
             + self.parts_allocated_bytes()
     }
-    /// The parts' storage, their boxes included: the root census job
-    /// prepares it ([`Self::prepare_parts`]).
     pub(crate) fn parts_allocated_bytes(&self) -> usize {
         self.parts
             .iter()
@@ -450,9 +412,6 @@ impl Orders {
         self.root_outcome = Outcome::Unavailable { reason };
         self.roots_walked = true;
     }
-    /// The orders-group registry census of this pass, taken once by the
-    /// callback before the jobs that read it are queued: the Orders job's
-    /// [`Self::walk`] and the Naval job's order-of-battle copy.
     pub(crate) fn walk_roots(&mut self, memory: &impl Memory, base: usize) {
         let _reads = crate::read_accounting::table(TableId::ArmyOrders);
         let begin = qpc();
@@ -460,18 +419,11 @@ impl Orders {
         self.roots_walked = true;
         self.ticks = elapsed(begin);
     }
-    /// The single census over all groups, as one job walks it; the hourly
-    /// job walks it in parts ([`Self::prepare_parts`]).
     #[cfg(test)]
     pub fn walk(&mut self, memory: &impl Memory, base: usize) {
         let mut reads = crate::read_accounting::table(TableId::ArmyOrders);
         self.rows.outcome = NOT_WALKED;
         let begin = qpc();
-        // Reuse within the pass: `walk_roots` filled the groups from this
-        // memory in this same callback, which holds the game thread until
-        // every job has finished, so walking the registry again gives the
-        // same roots and outcome. The flag is cleared here and by `reset`,
-        // so a census from another pass is never reused.
         let walk = if std::mem::take(&mut self.roots_walked) {
             corder_instance::walk_listing_successors_of(
                 memory,
@@ -502,15 +454,11 @@ impl Orders {
         self.groups_required = walk.required_groups;
         self.visits_required = walk.minimum_visits.max(walk.visited.saturating_mul(2));
         self.ticks += elapsed(begin);
-        // The census gathered the plans' order records while it held each
-        // order: that is ArmyOrderPlans work, charged there, not here. The
-        // plans add these ticks when they visit this census.
         let (plan_reads, plan_ticks) = self.successors.plan_gathers();
         self.ticks = self.ticks.saturating_sub(plan_ticks);
         reads.select(TableId::ArmyOrderPlans);
         plan_reads.add_current();
     }
-    /// Terminal worker/admission failure; retain allocations and growth demand.
     pub(crate) fn fail(&mut self, reason: &'static str) {
         let outcome = Outcome::Unavailable { reason };
         self.rows.outcome = outcome;
@@ -520,16 +468,11 @@ impl Orders {
         self.ticks = 0;
         self.failed = true;
     }
-    /// Before the root census job: this pass's `split`, the one the last
-    /// stitched hour planned, and the session's QPC `frequency`.
     pub(crate) fn begin_parts(&mut self, split: crate::orders_parts::Split, frequency: u64) {
         self.split = split;
         self.frequency = frequency;
         self.next_split = crate::orders_parts::Split::default();
     }
-    /// After the root census, on its worker: this pass's parts, each with
-    /// the roots and its range of them under this pass's split. A part that
-    /// cannot be prepared fails the census.
     pub(crate) fn prepare_parts(&mut self) {
         let count = self.split.parts();
         let ranges = self.split.ranges(self.roots());
@@ -560,28 +503,21 @@ impl Orders {
             }
         }
     }
-    /// The next hour's split: the one this pass's stitch planned, or one
-    /// part when it planned none.
     pub(crate) fn next_split(&self) -> crate::orders_parts::Split {
         self.next_split
     }
-    /// This pass's part count; zero when its parts could not be prepared.
     pub(crate) fn part_count(&self) -> usize {
         self.part_count
     }
-    /// A failed or refused job failed this pass's census.
     pub(crate) fn failed(&self) -> bool {
         self.failed
     }
-    /// Loan part `index` to its OrdersPart job.
     pub(crate) fn take_part(&mut self, index: usize) -> Option<Box<crate::orders_parts::Part>> {
         self.parts.get_mut(index)?.take()
     }
-    /// Its OrdersPart job's part, back.
     pub(crate) fn return_part(&mut self, index: usize, part: Box<crate::orders_parts::Part>) {
         self.parts[index] = Some(part);
     }
-    /// The Orders job: part 0's census and plan walk.
     pub(crate) fn walk_first_part(&mut self, memory: &impl Memory, base: usize) {
         if self.part_count == 0 {
             return;
@@ -590,19 +526,12 @@ impl Orders {
             part.run(memory, base);
         }
     }
-    /// The OrdersStitch job: this pass's parts' census, stitched into the
-    /// census one walk over all groups takes, which then holds the rows,
-    /// geometry, visits and census order. Returns the parts' plan-walk
-    /// ticks; a census already failed (a failed or refused job) stays so.
     pub(crate) fn stitch(&mut self) -> u64 {
         if self.failed {
             return 0;
         }
         let count = self.part_count;
         if count == 0 {
-            // No part was prepared: the root census job failed first
-            // (`fail_roots`), and the census refuses those roots as the
-            // single census does.
             match corder_instance::refuse_census(self.root_outcome, &mut self.successors) {
                 Some(walk) => self.install_census(walk),
                 None => self.fail("army order parts unavailable"),
@@ -615,8 +544,6 @@ impl Orders {
             census_ticks += part.census_ticks;
             plan_ticks += part.plan_ticks;
         }
-        // The views in a fixed array, without allocating: the slots past
-        // this pass's count repeat its first part and are not passed.
         let views = self
             .parts
             .each_ref()
@@ -637,8 +564,6 @@ impl Orders {
         self.ticks += census_ticks;
         plan_ticks
     }
-    /// The stitched or refused census's outcome and demand, as
-    /// [`Self::walk`] records the single census's.
     fn install_census(&mut self, walk: corder_instance::Walk) {
         self.roots_walked = false;
         self.rows.outcome = walk.outcome;
@@ -648,9 +573,6 @@ impl Orders {
         self.groups_required = walk.required_groups;
         self.visits_required = walk.minimum_visits.max(walk.visited.saturating_mul(2));
     }
-    /// This pass's parts' plan walks, for the plans' stitch: the first
-    /// [`Self::part_count`] of a fixed array, without allocating (the slots
-    /// past it repeat the first part).
     pub(crate) fn plan_parts(
         &self,
     ) -> Option<[corder_instance::PlanPart<'_>; crate::orders_parts::MAX_PARTS]> {
@@ -661,8 +583,6 @@ impl Orders {
         let first = views[0].filter(|_| views[..self.part_count].iter().all(Option::is_some))?;
         Some(views.map(|view| view.unwrap_or(first)))
     }
-    /// After this pass's stitch: the next hour's split, from the parts'
-    /// measured census and plan-walk time and the stitched census.
     pub(crate) fn plan_split(&mut self) {
         let ticks = self.parts[..self.part_count]
             .iter()
@@ -679,14 +599,12 @@ impl Orders {
             _ => crate::orders_parts::Split::default(),
         };
     }
-    /// The authenticated group roots of the last walk.
     pub fn roots(&self) -> &[corders_group::Root] {
         &self.groups[..self.root_outcome.len().min(self.groups.len())]
     }
     pub fn visits(&self) -> &[corder_instance::Visit] {
         &self.visits
     }
-    /// The successor lists of the last walk; valid only within its job.
     pub fn successor_lists(&self) -> &corder_instance::SuccessorLists {
         &self.successors
     }
@@ -705,23 +623,13 @@ pub struct MapCaptured {
     air_wing_names_required: usize,
     pub(crate) air_wing_name_failures: usize,
     pub orders: Orders,
-    /// Raw-copy split gate for the hourly players pair (Players,
-    /// HumanControllers). Set by the game thread every hour with a valid raw
-    /// payload; `sample` then skips both typed walks and the decode worker
-    /// fills these rows before the ready handoff. Preserved across `reset`
-    /// via explicit clearing (set per hour, cleared by the worker).
     pub(crate) players_raw_mode: bool,
-    /// Current callback's shared complete wing source already installed this
-    /// independently bounded map projection; never a cross-hour cache.
     owned_air_captured: bool,
-    /// An accepted wing acquisition failed this callback. Retain its terminal
-    /// outcome until reset so neither the map nor its visitors retry the source.
     air_capture_failure: Option<&'static str>,
     pub player_names: Vec<u8>,
     pub player_names_len: usize,
     player_names_required: usize,
     pub land_participants: Vec<u64>,
-    /// Each participant's unit class, beside `land_participants`.
     pub land_classes: Vec<u32>,
     pub land_participants_len: usize,
     land_participants_required: usize,
@@ -738,8 +646,6 @@ impl MapCaptured {
         let begin = qpc();
         let len = job.map_outcome.len();
         if len > self.air_wings.rows.len() {
-            // The allocating wing worker already owns complete storage.
-            // Park the old frame allocation in its job for off-thread reuse.
             std::mem::swap(&mut self.air_wings.rows, &mut job.map_rows);
         } else {
             self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
@@ -768,8 +674,6 @@ impl MapCaptured {
         qpc().saturating_sub(begin).max(0) as u64
     }
 
-    /// Call before `sample` after an accepted wing acquisition fails. The
-    /// terminal gate survives sampling and clears only at the next frame reset.
     pub(crate) fn fail_air_capture(&mut self, reason: &'static str) {
         self.air_capture_failure = Some(reason);
         self.owned_air_captured = false;
@@ -822,7 +726,6 @@ impl MapCaptured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        // The containing Captured accounts for this struct's inline bytes.
         self.players.allocated_bytes()
             + self.human_controllers.allocated_bytes()
             + self.land_combats.allocated_bytes()
@@ -876,7 +779,6 @@ impl MapCaptured {
         ]
     }
 
-    /// Exclusive frame ownership is required, including for scratch buffers.
     pub fn grow(&mut self, capacities: &mut MapCapacities) {
         self.players.grow(&mut capacities.rows[0]);
         self.human_controllers.grow(&mut capacities.rows[1]);
@@ -910,11 +812,6 @@ impl MapCaptured {
         grow_vec(&mut self.naval_groups, capacities.naval_groups);
     }
 
-    /// Returns caller-clock ticks for the ten tables.
-    /// Numeric values and variable rows remain native; conversion happens in map_spool.
-    /// The fleet, task force and ship census. It reads live and seeds the ship
-    /// models job, so it runs first in the block and the job starts at once;
-    /// `sample` then reuses its outcome and ticks.
     pub fn sample(
         &mut self,
         memory: &impl Memory,
@@ -923,11 +820,6 @@ impl MapCaptured {
         sources: &mut impl MapSources,
     ) -> [u64; MAP_TABLES] {
         let mut ticks = self.combat_ticks.unwrap_or([0; MAP_TABLES]);
-        // Raw-copy split (hourly players pair): every hour the game thread
-        // stages raw bytes via `copy_players_refresh` and the decode worker
-        // fills both rows before the ready handoff. Skip both typed walks
-        // here; copy costs install from the report in the tick. The ship and
-        // order censuses run in their pool jobs, so their ticks stay zero here.
         if !self.players_raw_mode {
             let mut reads = crate::read_accounting::table(TableId::Players);
             let begin = qpc();
@@ -1006,27 +898,10 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-// ===========================================================================
-// Hourly players raw-copy split (Players, HumanControllers).
-//
-// The acquisition worker copies raw bytes: live roster header with per-player
-// identity/flag/string spans plus heap name bytes, and the human-status
-// array with an authenticated country census plus per-canonical count bytes.
-// No row is decoded on the game thread. The single FIFO decode worker replays
-// the growing `chuman` readers against the recorded spans, so rows,
-// ordinals, arenas and
-// failure reasons are identical by construction (see `crate::raw`).
-//
-// The mirror retains original field/gate order and stops each independent
-// source at its first failure. Worker growth never restarts native reads.
-// ===========================================================================
 
-/// Fault-attribution bits, one per players table in family order.
 const P_PLAYERS: u32 = 0x01;
 const P_CONTROLLERS: u32 = 0x02;
 
-/// One hour of raw players payload. Worker growth extends each original
-/// span before acquisition; decode grows rows and text before publication.
 #[derive(Debug, Default)]
 pub(crate) struct PlayersJob {
     pub log: RawLog<2>,
@@ -1041,7 +916,6 @@ impl PlayersJob {
         }
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -1051,7 +925,6 @@ impl PlayersJob {
         self.log.grow_for_next()
     }
 
-    /// Retain acquired demand for reusable storage off the game thread.
     pub fn grow(&mut self) {
         self.log.grow();
     }
@@ -1059,12 +932,10 @@ impl PlayersJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct PlayersCopyReport {
-    /// False only when worker-owned staging cannot finish; no native retry.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 2],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlayersCopyContext {
     pub base: usize,
@@ -1075,8 +946,6 @@ fn ppool_u64(log: &RawLog<2>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. Bulk spans serve enclosed sub-reads (e.g., 4-byte
-/// keys inside roster elements) via `Recorded` containment.
 fn pspan(
     log: &mut RawLog<2>,
     memory: &impl engine_native::Memory,
@@ -1087,7 +956,6 @@ fn pspan(
     log.take_bulk(memory, addr?, len, mask)
 }
 
-/// Original player fields and string gates, without retrying a failed span.
 fn copy_player(
     log: &mut RawLog<2>,
     memory: &impl engine_native::Memory,
@@ -1108,7 +976,6 @@ fn copy_player(
     let Some(strings_address) = pointer.checked_add(chuman::FIRST_STRING) else {
         return false;
     };
-    // Fields::read acquires these five fields before validating their values.
     let Some(identity) = pspan(log, memory, Some(pointer), 8, P_PLAYERS) else {
         return false;
     };
@@ -1164,8 +1031,6 @@ fn copy_player(
         }
         payloads[index] = Some((source, len));
     }
-    // Player descriptors use exact stored string payload lengths. Both
-    // original descriptor terminator gates precede either payload copy.
     for (source, len) in payloads.into_iter().flatten() {
         if pspan(log, memory, Some(source), len, P_PLAYERS).is_none() {
             return false;
@@ -1174,8 +1039,6 @@ fn copy_player(
     true
 }
 
-/// Independent original passes: live roster, then the controller census.
-/// A failed source preserves the other table's healthy acquisition.
 fn copy_players_pass(
     log: &mut RawLog<2>,
     memory: &impl engine_native::Memory,
@@ -1196,7 +1059,6 @@ fn copy_player_roster(
 ) {
     use engine_native::{cgame_state, chuman, cpdx_array::Array};
     log.has_bulk = true;
-    // Live roster.
     let roster_start = match pspan(
         log,
         memory,
@@ -1250,22 +1112,17 @@ fn copy_controller_pass(
             true
         }
     }
-    // The fixed walk still visits every country and count with no row storage.
-    // Reuse its first-failure and reserved-alias gates without another mirror.
     let _ = chuman::count_controllers(&ControllerCopy {
             memory,
             log: RefCell::new(log),
         }, base, game_state);
 }
 
-/// Copy one hourly players payload and record copy-only costs. Worker storage
-/// grows before each original span; failures are never retried live.
 pub(crate) fn copy_players_refresh(
     memory: &impl engine_native::Memory,
     ctx: PlayersCopyContext,
     job: &mut PlayersJob,
 ) -> PlayersCopyReport {
-    // The shared raw payload is acquired once; its controller projection is owned work.
     let _reads = crate::read_accounting::table(TableId::Players);
     let started = qpc();
     job.clear();
@@ -1278,8 +1135,6 @@ pub(crate) fn copy_players_refresh(
 }
 
 impl MapCaptured {
-    /// Apply a failed worker capture after `sample` has skipped the players
-    /// walks with `players_raw_mode` set, preventing a retry on the callback.
     pub(crate) fn fail_players_capture(&mut self, reason: &'static str) {
         self.players.outcome = Outcome::Unavailable { reason };
         self.human_controllers.outcome = Outcome::Unavailable { reason };
@@ -1287,10 +1142,6 @@ impl MapCaptured {
         self.players_raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw hourly payload into the pooled
-    /// typed rows. Outcomes and arena bytes match the typed walks exactly
-    /// because the identical walks run against the recorded spans. Clears
-    /// `players_raw_mode` so the next capture starts clean.
     pub(crate) fn decode_players_payload(
         &mut self,
         base: usize,
@@ -1328,8 +1179,6 @@ impl MapCaptured {
     }
 }
 
-/// Hourly players split harness: one country with one inline player and one
-/// controller count, plus empty and fault-injection coverage.
 #[cfg(test)]
 mod players_sizing_tests;
 
@@ -1372,7 +1221,6 @@ mod players_split_tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = engine_allocation::owned_vec(engine_allocation::default_vec(0x20000));
-        // Country census: 1 canonical country (slot1, id1).
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRY_PTR, 2);
         put(&mut bytes, COUNTRY_PTR + 8, &(COUNTRY as u64).to_le_bytes());
         array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 2);
@@ -1385,7 +1233,6 @@ mod players_split_tests {
         put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         array(&mut bytes, GS + cgame_state::HUMAN_STATUS, COUNTS, 2);
         put(&mut bytes, COUNTS + 1, &[7]);
-        // One player with inline names.
         array(&mut bytes, GS + cgame_state::PLAYER_RECORDS, ROSTER, 1);
         put(
             &mut bytes,
@@ -1456,8 +1303,6 @@ mod players_split_tests {
 
     #[test]
     fn players_cold_and_reusable_storage_match_direct() {
-        // Original headers grow both direct and owned decoding before output,
-        // independently of each reusable row buffer's prior length.
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,
@@ -1496,7 +1341,6 @@ mod players_split_tests {
                 "player rows"
             );
         }
-        // Exact-fit arm pins Rows on both tables.
         let mut caps = capacities();
         caps.rows[0] = 1;
         caps.rows[1] = 1;
@@ -1507,10 +1351,6 @@ mod players_split_tests {
 
     #[test]
     fn players_bulk_string_pair_serves_enclosed_sub_reads() {
-        // S3 containment: the 64 B player string pair is a bulk span, so the
-        // walk's enclosed 32 B halves and unaligned sub-reads inside it are
-        // served from the same recorded bytes. Proves bulk containment plus
-        // bulk-wins-for-sub-ranges; straddling reads fail.
         use engine_native::Memory;
         let bytes = fixture();
         let memory = SliceMemory {
@@ -1535,19 +1375,16 @@ mod players_split_tests {
             .iter()
             .find(|span| span.ok && span.bulk && span.len == 64)
             .expect("bulk string pair");
-        // Enclosed aligned 32 B half.
         let mut half = [0u8; 32];
         assert!(recorded.copy(pair.addr, &mut half));
         let mut expected = [0u8; 32];
         assert!(memory.copy(pair.addr, &mut expected));
         assert_eq!(half, expected);
-        // Deliberately unaligned enclosed sub-range.
         let mut unaligned = [0u8; 7];
         assert!(recorded.copy(pair.addr + 3, &mut unaligned));
         let mut expected7 = [0u8; 7];
         assert!(memory.copy(pair.addr + 3, &mut expected7));
         assert_eq!(unaligned, expected7);
-        // Straddling the pair edge fails.
         let mut straddle = [0u8; 32];
         assert!(!recorded.copy(pair.addr + 48, &mut straddle));
     }
@@ -1663,7 +1500,6 @@ mod tests {
         captured.sample(&memory, 0, 0x1000, &mut sources);
         assert_eq!(sources.begins, 1);
         assert!(matches!(sources.finished[..], [Outcome::Unavailable { .. }]));
-        // Without the worker's payload or its failure the table names its absence.
         assert_eq!(captured.air_wings.outcome, AIR_NOT_ACQUIRED);
         let ordinary_reads = memory.0.get();
         let ordinary_outcomes = captured.outcomes();
@@ -1680,7 +1516,6 @@ mod tests {
                 assert_eq!(outcome, ordinary_outcomes[index]);
             }
         }
-        // The failure belongs to this callback and clears at the next reset.
         captured.reset();
         captured.sample(&memory, 0, 0x1000, &mut Sources::default());
         assert_eq!(captured.air_wings.outcome, AIR_NOT_ACQUIRED);
@@ -1808,9 +1643,6 @@ mod tests {
         assert!(capacity <= 129 * 3);
     }
 
-    /// The census over the callback's registry census of the pass is the
-    /// census that walks the registry itself, complete and with too little
-    /// root scratch, and the walked roots serve one census only.
     #[test]
     fn orders_census_over_walked_roots_matches_its_own_registry_walk() {
         use crate::extended::bench_world::{self, Shape};
@@ -1863,9 +1695,6 @@ mod tests {
         assert!(!orders.roots_walked);
     }
 
-    /// The census gathers the plans' order records, and those requests are
-    /// ArmyOrderPlans work: ArmyOrders is charged exactly the requests of a
-    /// census that gathers nothing, and ArmyOrderPlans the gathers' own.
     #[test]
     fn census_plan_gathers_are_charged_to_the_plans() {
         use crate::extended::bench_world::{self, Shape};
@@ -1906,10 +1735,6 @@ mod tests {
         assert!(gathers.record_calls != 0 && gathers.spans >= u64::from(world.orders) * 7);
     }
 
-    /// Each hour's order census split is the one the last stitched hour
-    /// planned, whichever pooled frame either hour uses: a frame that served
-    /// an earlier hour starts from the latest plan, not its own. The parts it
-    /// prepares count their boxes.
     #[test]
     fn the_next_hour_takes_the_split_the_last_stitched_hour_planned() {
         use crate::extended::bench_world::{self, Shape};
@@ -1923,8 +1748,6 @@ mod tests {
         );
         let memory = world.slice();
         let frequency = 10_000_000;
-        // One hour on `orders`, from the callback's `split`, whose parts
-        // measured `millis` of work; returns the split it planned.
         let hour = |orders: &mut Orders, split: Split, millis: u64| {
             orders.reset();
             orders.begin_parts(split, frequency);
@@ -1952,19 +1775,14 @@ mod tests {
         ];
         let split = hour(&mut frames[0], Split::default(), 3);
         assert_eq!(split.parts(), MAX_PARTS);
-        // The next hour, on the other frame, takes it.
         let next = hour(&mut frames[1], split, 0);
         assert_eq!(frames[1].part_count(), MAX_PARTS);
         assert!(frames[1].parts_allocated_bytes() >= MAX_PARTS * size_of::<Part>());
         assert_eq!(next.parts(), 1);
-        // The first frame again: the latest plan, not the one it made.
         hour(&mut frames[0], next, 0);
         assert_eq!(frames[0].part_count(), 1);
     }
 
-    /// A pass whose root census job failed before it prepared any part
-    /// refuses its census with the roots' reason, as the single census does,
-    /// rather than failing as a job.
     #[test]
     fn failed_roots_without_parts_refuse_the_census_as_the_single_census_does() {
         struct NoMemory;
@@ -2034,8 +1852,6 @@ mod tests {
         assert_eq!(captured.orders.groups.len(), initial_group_capacity * 2);
         assert_eq!(captured.orders.visits.len(), 4096);
         assert_eq!(captured.naval_groups.len(), 256);
-        // Slowly increasing native counts reuse headroom instead of making
-        // every newly created group or order unavailable for another hour.
         let grown = capacity;
         captured.orders.groups_required = initial_group_capacity + 47;
         captured.orders.visits_required = 3500;

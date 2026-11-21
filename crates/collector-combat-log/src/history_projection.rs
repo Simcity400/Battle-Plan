@@ -1,4 +1,3 @@
-//! Conversion-only held rows. No live memory access or acquisition joins.
 use crate::history_capture::{N, Views};
 use crate::history_reducer::{Group, Store};
 use engine_land_inputs::{combat_log_events as event, combat_log_history as native};
@@ -62,7 +61,6 @@ impl Held {
         self.edits += 1;
     }
     fn remove(&mut self, index: usize, first: u128, last: u128) {
-        // Range demand is the removed/rekeyed collection only, never a table walk.
         while let Some((&key, _)) = self.rows[index].range(first..=last).next() {
             self.rows[index].remove(&key);
             self.edits += 1;
@@ -178,7 +176,6 @@ impl Held {
             _ => unreachable!("certified collection kind"),
         }
     }
-    /// Only an affected collection can have ordinals rekeyed by a prefix prune.
     pub fn apply(&mut self, store: &mut Store, fact: event::Fact) -> Result<(), &'static str> {
         if fact.kind == event::RESET {
             *self = Self::new();
@@ -317,7 +314,6 @@ impl Held {
             }
         }
     }
-    /// Serialization materialisation is conversion work, never acquisition.
     pub fn snapshot(&mut self) -> Views {
         for index in 0..N {
             if self.dirty[index] {

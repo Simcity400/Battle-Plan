@@ -28,7 +28,6 @@ impl Default for CursorOptions {
     }
 }
 
-/// Retained addresses keep slots; on Delta::scope_switch, cached owners must be checked again.
 pub struct Values<S: ValueStore> {
     state: S,
     slots: Arc<Slots>,
@@ -47,7 +46,6 @@ impl<S: ValueStore> Values<S> {
             other => other,
         }
     }
-    /// Vacant slots return None; a scope switch may bind a departed slot to a new address.
     pub fn at(&self, slot: usize) -> Option<(&Address, RecordRef<'_>)> {
         let slot = self.slots.internal(slot)?;
         Some((
@@ -82,7 +80,6 @@ pub enum DeltaStatus {
     Preparing,
     CatchingUp,
 }
-/// full_refresh invalidates all slots; scope_switch requires rechecking cached slot owners.
 pub struct Delta {
     pub from: Hour,
     pub to: Hour,
@@ -217,7 +214,6 @@ impl Slots {
     }
 }
 impl Delta {
-    // full_refresh invalidates all slots; other deltas lend changed slots through Values::at.
     pub fn changes(&self) -> &[usize] {
         &self.changes
     }
@@ -1103,7 +1099,6 @@ impl<S: LogSource> Cursor<S> {
                         .unwrap();
                     self.values.accepted = coverage.accepted_through(hour);
                     self.values.hour = hour;
-                    // The committed point's coverage is a single run, already reserved by the worker.
                     self.values.coverage.clear();
                     self.values.coverage.push(
                         crate::reference::clip(
@@ -1469,7 +1464,6 @@ fn add_cycles(counter: &AtomicU64, start: Option<u64>) {
 fn oom() -> io::Error {
     io::Error::new(io::ErrorKind::OutOfMemory, "read-ahead shortened")
 }
-// Prepare the following window's slots before births enter the resident window.
 fn slot_scope(span: Hours, reverse: bool) -> Hours {
     let growth = (i64::from(span.last) - i64::from(span.first)).min(i64::from(Hour::MAX)) as Hour;
     if reverse {
@@ -1824,7 +1818,6 @@ fn fill<S: LogSource>(
         ready: pending,
     };
     let cycles = thread_cycles();
-    // Reclaim cannot release pages while the fill's working tree still holds them.
     let _filling = request.filling.lock().unwrap();
     let (mut pages, old_span) = {
         let read = request.published.read();
@@ -1833,7 +1826,6 @@ fn fill<S: LogSource>(
             None => (crate::window::Tree::default(), None),
         }
     };
-    // Played pages leave before admission of any page ahead.
     pages.retain(desired, &request.memory.soft())?;
     let existing = old_span.filter(|span| span.contains(hour));
     if existing.is_none() {
@@ -1992,7 +1984,6 @@ fn fill<S: LogSource>(
                 first: prior.first.min(chunk.first),
                 last: prior.last.max(chunk.last),
             });
-            // An incomplete hour split is never advertised as a served hour.
             let mut span = next_served;
             if !reverse && last < plan.len() && plan[last].hours.first <= span.last {
                 span.last = span
@@ -2298,7 +2289,6 @@ impl<S: LogSource> crate::budget::Reclaim for Pool<S> {
             };
             if let Ok(previous) = request.published.publish(next) {
                 drop(previous);
-                // The shared ledger only approximates this trim's release, so it gates the counter, never admission.
                 if budget.used() < used {
                     request.counters.shortened.fetch_add(1, Ordering::Relaxed);
                 }
@@ -2429,12 +2419,10 @@ mod slot_tests {
         let pages = read.get().unwrap().pages.len();
         let shortened = cursor.stats().shortened_windows;
         let used = memory.used();
-        // The trim publishes, so admission may retry, but the pinned snapshot keeps its bytes.
         assert!(crate::budget::Reclaim::reclaim_one(&*cursor.pool, &memory));
         assert!(memory.used() >= used);
         assert_eq!(cursor.stats().shortened_windows, shortened);
         assert_eq!(read.get().unwrap().pages.len(), pages);
-        // While the pin remains, a further publication is rejected, so retries stop.
         assert!(!crate::budget::Reclaim::reclaim_one(&*cursor.pool, &memory));
         assert!(memory.used() >= used);
         assert_eq!(cursor.stats().shortened_windows, shortened);

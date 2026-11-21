@@ -1,4 +1,3 @@
-//! A drain's decoded design states, and the hour's change history they and its rows form.
 use super::*;
 pub(super) mod speculative;
 use std::sync::Arc;
@@ -129,7 +128,6 @@ impl Shared {
         engine_allocation::reserve(&mut self.entries, additional)
             .map_err(|_| "variant shared snapshot allocation failed")
     }
-    /// A decoded design at `index` of the hour's history; held state shares its interned value.
     pub fn push(
         &mut self,
         index: usize,

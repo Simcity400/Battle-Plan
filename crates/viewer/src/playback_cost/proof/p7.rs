@@ -1,4 +1,3 @@
-//! The proof tool's lines for the rails, buildings, names and trains layers.
 
 use super::Compared;
 use crate::{
@@ -28,8 +27,6 @@ pub(super) fn rails_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("edges", edges as u64), ("supply provinces", supply as u64), ("harbours", ports as u64)]
 }
 
-/// The layer's graph, strips and bridges against today's rail product at the document's hour:
-/// its graph, and its mesh as the strips laid end to end in province order.
 pub(super) fn rails_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = rails(layer);
     if !layer.shown() {
@@ -115,8 +112,6 @@ pub(super) fn names_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     marked
 }
 
-/// The layer's placed names against today's at the document's hour, default map mode: each name in
-/// order, and the warnings.
 pub(super) fn names_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = names(layer);
     let mut compared = Compared::default();
@@ -163,7 +158,6 @@ pub(super) fn names_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crat
     Ok(Compared { entries: (layer.areas().len() + 1) as u64, differing, first, notes: Value::Null })
 }
 
-/// The viewing slot of today's vision at the document's hour: the input the labels take in act 1.
 fn viewing(document: &Document) -> Option<u32> {
     document.hour().ok()?.vision(&viewer_foundation::map::perspective::Choice::default()).ok().map(|vision| vision.ours())
 }
@@ -181,8 +175,6 @@ pub(super) fn labels_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("provinces", provinces as u64), ("states renamed", states as u64), ("war recounts", wars as u64)]
 }
 
-/// The layer's labels against today's per-hour labels product for the same viewing slot. A viewing
-/// slot today's vision moved from the layer's input is counted, not compared.
 pub(super) fn labels_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = labels(layer);
     let mut compared = Compared::default();
@@ -277,8 +269,6 @@ pub(super) fn trains_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     ]
 }
 
-/// The layer's plan against today's train plan for the same viewing slot at the document's hour:
-/// routes, weights, departures, consists and refusals, and the presentation (none after a reset).
 pub(super) fn trains_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = trains(layer);
     let mut compared = Compared::default();
@@ -308,8 +298,6 @@ pub(super) fn trains_today(layer: &dyn Layer, document: &Document) -> io::Result
                 note(&mut compared, first.clone());
             }
             compared.notes = json!({"routes": routes, "weighted_nodes": nodes, "variants": variants});
-            // A difference names its routes and the layer's state: a plan of an earlier hour taken,
-            // or the worker's own plan of this hour short.
             if differs.is_some() {
                 let ours: std::collections::BTreeSet<&[u32]> = layer.plan().route_paths().collect();
                 let theirs: std::collections::BTreeSet<&[u32]> = today.route_paths().collect();
@@ -331,9 +319,6 @@ pub(super) fn trains_fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crat
     let (differing, first) = layer.differ(&fresh);
     let mut notes = Value::Null;
     if differing > 0 {
-        // The weighted nodes the two plans disagree on, each with the mirrors' row at this hour and
-        // the hour the worker last copied it: stale (copied before a change here), ahead (copied
-        // after this hour), or equal weights and other walks.
         let ours: std::collections::BTreeMap<u128, crate::layers::trains::ShownNode> = layer.shown_nodes().iter().map(|node| (node.key, *node)).collect();
         let theirs: std::collections::BTreeMap<u128, i64> = fresh.shown_nodes().iter().map(|node| (node.key, node.weight)).collect();
         let keys: std::collections::BTreeSet<u128> = ours.keys().chain(theirs.keys()).copied().collect();

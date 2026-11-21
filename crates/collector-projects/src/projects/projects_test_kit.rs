@@ -69,7 +69,6 @@ fn country(bytes: &mut [u8], slot: u32, id: u32, object: usize, status: usize) {
         ((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(bytes, object + ccountry::ID, id.to_le_bytes());
-    // Each country owns a state, so its projects advance daily.
     put(
         bytes,
         object + ccountry::OWNED_STATE_COUNT,
@@ -117,7 +116,6 @@ fn empty_status(bytes: &mut [u8], status: usize, id: u32, pool: usize) {
     );
     array(bytes, pool + nproject_cproject_pool::PROJECTS, 0, 0);
     array(bytes, status + nproject_cprogram_status::PROGRAMS, 0, 0);
-    // Empty breakthrough tree, inline in the status object.
     let tree = status + nproject_cprogram_status::BREAKTHROUGH;
     put(
         bytes,
@@ -143,8 +141,6 @@ fn empty_status(bytes: &mut [u8], status: usize, id: u32, pool: usize) {
 
 pub fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0xB000];
-    // The game-state object lives at the image base here, so census
-    // headers sit at the raw engine offsets.
     array(&mut bytes, cgame_state::COUNTRIES, CTAB, 3);
     array(&mut bytes, cgame_state::COUNTRY_LINKS, LTAB, 3);
     country(&mut bytes, 1, 1, C1, S1);
@@ -167,7 +163,6 @@ pub fn fixture() -> Vec<u8> {
     );
     array(&mut bytes, S1 + nproject_cprogram_status::PROGRAMS, PARR, 1);
     pointer(&mut bytes, PARR, PROG1);
-    // Program with a heap building string and an active project.
     put(
         &mut bytes,
         PROG1,
@@ -225,7 +220,6 @@ pub fn fixture() -> Vec<u8> {
         HEAP,
         b"program-building-01",
     );
-    // Project with a valid state machine and one history entry.
     put(
         &mut bytes,
         PROJ1,
@@ -259,7 +253,6 @@ pub fn fixture() -> Vec<u8> {
     );
     array(&mut bytes, PROJ1 + nproject_cproject::HISTORY, HIST1, 1);
     bytes[PROJ1 + nproject_cproject::STARTED] = 1;
-    // State machine with the current simple state first.
     put(
         &mut bytes,
         MACH1,
@@ -296,7 +289,6 @@ pub fn fixture() -> Vec<u8> {
             (index as u32 + 10).to_le_bytes(),
         );
     }
-    // History entry with country and state references present.
     put(
         &mut bytes,
         HIST1,
@@ -350,7 +342,6 @@ pub fn fixture() -> Vec<u8> {
         context + nproject_sproject_context::STATE_REFERENCE,
         9_u32.to_le_bytes(),
     );
-    // Single-node breakthrough tree, inline in the status object.
     put(
         &mut bytes,
         S1 + nproject_cprogram_status::BREAKTHROUGH,
@@ -388,8 +379,6 @@ pub fn fixture() -> Vec<u8> {
     bytes
 }
 
-/// Slot zero holds the reserved country object (id zero) and a fourth slot holds it again, as
-/// the game's country table may.
 pub fn add_reserved_alias(bytes: &mut [u8]) {
     const RESERVED: usize = 0x3200;
     array(bytes, cgame_state::COUNTRIES, CTAB, 4);
@@ -403,8 +392,6 @@ pub fn add_reserved_alias(bytes: &mut [u8]) {
     put(bytes, RESERVED + ccountry::ID, 0_u32.to_le_bytes());
 }
 
-/// Reference typed walks with identical pooled buffers, outcomes and
-/// arenas installed exactly like `decode_projects_payload` installs them.
 pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let first = nproject_cprogram::walk(
@@ -446,8 +433,6 @@ pub fn job() -> ProjectsJob {
     job
 }
 
-/// Capture one current payload, then decode into fresh pooled buffers. The
-/// payload holds ProjectPrograms and ProjectBreakthroughs only.
 pub fn split(
     memory: &impl engine_native::Memory,
     capacities: &Capacities,

@@ -1,11 +1,3 @@
-//! `TagHolders`, the one identity table: each tag some country holds, and its holder, the first
-//! country by ascending raw id whose link resolves to its own canonical slot; a tag whose
-//! countries no link resolves is unresolved. The key is the whole fact (tag number, epoch,
-//! holder), so a row lives exactly one holder's stretch: inserted when it starts, deleted when
-//! the holder changes or the tag is no longer held, and the table's lifetimes are the history,
-//! read without a walk while the table holds only the open rows. `TagNames` keeps each number's
-//! tag. While Countries or CountryLinks is not complete an UNKNOWN row lives and no holder row
-//! does. Recomputed only at hours either changes in the columns the rule reads.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -20,7 +12,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Countries' and CountryLinks' columns the rule reads.
 const COUNTRY_SLOT: usize = 0;
 const COUNTRY_TAG: usize = 1;
 const LINK_SLOT: usize = 0;
@@ -41,16 +32,12 @@ const READS: &[Read] = &[
 ];
 
 
-/// One tag's holder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Holder {
-    /// The tag's dictionary id, as its holder's (or first country's) row names it.
     tag: u32,
-    /// Its slot and raw id; none while no link resolves.
     found: Option<(u32, u32)>,
 }
 
-/// An open row: its epoch, holder and first hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Open {
     epoch: u32,
@@ -60,18 +47,11 @@ struct Open {
 
 #[derive(Default)]
 pub struct TagHolders {
-    /// Each tag's number, by its bytes, in the order the run met them.
     numbers: HashMap<Box<[u8]>, u32>,
-    /// The open rows, by tag number.
     held: HashMap<u32, Open>,
-    /// The open UNKNOWN row: its epoch, reason id and first hour.
     unknown: Option<(u32, u32, i32)>,
-    /// Rows written so far in the run.
     epochs: u32,
-    /// Numbers given this hour, with their tag's dictionary id, for `TagNames`.
     named: Vec<(u32, u32)>,
-    /// The tables were complete at the hour before: an hour after one that was not reads them
-    /// whole.
     whole: bool,
 }
 
@@ -89,7 +69,6 @@ fn u32_cell(table: &TableView<'_>, column: usize, slot: u32) -> Option<u32> {
 }
 
 impl TagHolders {
-    /// Every tag's holder by the rule, from `countries` and `links` as they stand.
     fn holders(&mut self, hour: &Hour<'_>, countries: &TableView<'_>, links: &TableView<'_>) -> io::Result<HashMap<u32, Holder>> {
         let mut by_id: Vec<(u32, u32, u32)> = Vec::with_capacity(countries.live().count());
         for slot in countries.rows() {
@@ -198,7 +177,6 @@ impl Writer for TagHolders {
             let open = self.held.remove(&number).expect("held");
             Self::close(number, open, out);
         }
-        // Epochs are given in tag order, so a run and its resume number rows alike.
         let mut holders: Vec<(u32, Holder)> = holders.into_iter().collect();
         holders.sort_unstable_by_key(|&(number, _)| number);
         for (number, holder) in holders {

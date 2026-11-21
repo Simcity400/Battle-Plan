@@ -1,21 +1,16 @@
-//! Numeric scripted-localisation expressions.
 
 use super::*;
 
 mod admission;
 
-/// `value` as `[?expression]` shows it: in the format after its `|`, if any.
 pub(super) fn format_variable(expression: &str, value: i64) -> String {
     let format = expression
         .split_once('|')
         .map(|(_, format)| format.as_bytes());
-    // Numeric output is appended directly, without another scripted-text
-    // recursion step. Colour controls and surrounding newlines survive.
     installed_content_localisation::localisation::format_scripted_variable(value, format)
 }
 
 impl<'a> ScriptedText<'a> {
-    /// The value `[?expression]` reads, or why it reads none.
     pub(super) fn numeric_value(
         &self,
         expression: &str,
@@ -25,8 +20,6 @@ impl<'a> ScriptedText<'a> {
         let operand = expression
             .split_once('|')
             .map_or(expression, |(operand, _)| operand);
-        // Localisation stores authored `@` as its flag control; evaluation
-        // replaces the first such byte before the scoped-variable reader.
         let normalized;
         let operand = if operand.contains('\u{12}') {
             normalized = operand.replacen('\u{12}', "@", 1);
@@ -35,8 +28,6 @@ impl<'a> ScriptedText<'a> {
             operand
         };
         let within = |why| format!("[?{expression}]: {why}");
-        // Evaluation first intercepts flag-age operands.
-        // They are not ordinary variables even when the store has that key.
         if operand.ends_with(":days") || operand.ends_with(":days_left") {
             return Err(within(
                 "flag-age variable localisation is not reproduced".into(),

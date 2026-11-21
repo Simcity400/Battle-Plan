@@ -12,8 +12,6 @@ import { useProduct } from '../../dashboard/products';
 import { chosenMembers, manpowerLine } from './manpowerLine';
 import type { FactionManpowerReply } from '../../generated/dashboard';
 
-/** One member's recorded manpower contribution to its faction's pool over the campaign: the holder `tag` named at
- * `picked`, the hour it was clicked. The playhead moves with the clock, never by a render. */
 export default function ManpowerHistory({ runtime, track, faction, tag, picked, name, colour, following, active }: {
   runtime: WidgetRuntime; track: BoundTrack; faction: string; tag: string; picked: number; name: string; colour: string; following: boolean; active: boolean;
 }) {

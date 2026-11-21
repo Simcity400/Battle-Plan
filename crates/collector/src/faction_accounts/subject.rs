@@ -1,4 +1,3 @@
-//! Two point-key country accumulator carries, independent of dirty-stream consumers.
 use super::Account;
 use crate::country_input_changes as changes;
 use engine_allocation as allocation;
@@ -34,7 +33,6 @@ fn signature(value: &Result<Operands, &'static str>) -> Signature {
         .ok()
         .map(|v| (v.flags, v.selector, v.eligibility_flags))
 }
-/// Native membership and accounts join through country links, not raw references.
 fn demanded_account(demanded: &[u32], account: &Account) -> bool {
     demanded.binary_search(&account.account).is_ok()
 }
@@ -154,15 +152,12 @@ impl Store {
             }
         }
         std::mem::swap(&mut self.demanded, &mut self.next_demanded);
-        // Demand must grow the registry even before it can issue certificates.
         changes::accumulator_demand(members.len());
         self.held.retain(|held| {
             self.demanded
                 .binary_search(&held.country.canonical_slot)
                 .is_ok()
         });
-        // Only current demanded canonical slots are inspected; unrelated account
-        // storage is never walked when a foreign country's registry changes.
         for at in 0..self.demanded.len() {
             let Some(account) = accounts.get_mut(self.demanded[at] as usize) else {
                 self.ready = false;
@@ -262,8 +257,6 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(store.raw(&NoReads, member, &sequence), first);
         });
-        // Both keys share the recalculation/reset revision, not another
-        // consumer's drained marks. A writer revokes both carries.
         let mut changed = bytes.clone();
         changed[0x6008..0x6010].copy_from_slice(&(-25_000i64).to_le_bytes());
         let changed = engine_native::memory::SliceMemory {

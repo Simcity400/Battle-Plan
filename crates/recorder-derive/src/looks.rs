@@ -1,14 +1,3 @@
-//! `LookSpans` and `LookFacts`: what each tag shows, as rows whose keys hold the fact, so the
-//! tables' lifetimes are the run's history ([`replay_data::rows::LookSpanRow`]). A tag's look is
-//! its holder (from `TagHolders`), the holder's recorded map colour, the naming operands of its
-//! slot and of every overlord its name reaches with which of slot zero's names its reserved row
-//! has built, and its flag inputs ([`Look`]): everything a reader builds its name and chooses its
-//! flag from, in the reader's language and mod stack. Each distinct look is a `LookFacts` row,
-//! never deleted, holding it encoded; a tag's span names its fact.
-//!
-//! While Countries, CountryLinks, CountryAppearance or ReservedCountryNaming is not complete no
-//! look is known: no tag's span lives, and an UNKNOWN span ([`TagHolderRow::UNKNOWN`]) does. Read again only at hours a column the looks read changes;
-//! otherwise the hour costs nothing.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
 use installed_content_country_names::country_names::CountryNames;
@@ -27,9 +16,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The tables a look is known only while complete.
 const WHOLE: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::ReservedCountryNaming];
-/// Every table a look reads.
 const TABLES: [TableId; 8] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -78,9 +65,7 @@ pub use replay_looks::{FlagInputs, Look};
 #[derive(Default)]
 pub struct Looks {
     rebuild: bool,
-    /// Each live span by tag number: its fact and epoch.
     open: HashMap<u32, (u32, u32)>,
-    /// Each fact's number, by its encoding.
     facts: HashMap<Vec<u8>, u32>,
     epochs: u32,
 }
@@ -97,7 +82,6 @@ fn span_key(number: u32, fact: u32, epoch: u32) -> u128 {
 }
 
 impl Looks {
-    /// Each holder row's tag number, slot and raw id, as `TagHolders` holds them this hour.
     fn holders(hour: &Hour<'_>) -> io::Result<Vec<(u32, u32, u32)>> {
         let rows = hour.table(TableId::TagHolders);
         let mut out = Vec::new();
@@ -111,7 +95,6 @@ impl Looks {
         Ok(out)
     }
 
-    /// Every held tag's look this hour.
     fn looks(&mut self, hour: &Hour<'_>) -> io::Result<BTreeMap<u32, Look>> {
         let frame = replay_frame::frame::stored_frame(
             TABLES.iter().map(|&table| (table, hour.table(table))),
@@ -122,7 +105,6 @@ impl Looks {
         let (operands, built) = CountryNames::recorded_operands(&frame);
         let mut out = BTreeMap::new();
         for (number, slot, id) in Self::holders(hour)? {
-            // The operands of the slot and of every overlord its name reaches, each once.
             let mut chain = Vec::new();
             let mut next = Some(slot);
             let mut reaches = Vec::new();
@@ -217,7 +199,6 @@ impl Writer for Looks {
                 out.delete(TableId::LookSpans, span_key(number, fact, epoch));
             }
         }
-        // Epochs are given in tag order, so a run and its resume number rows alike.
         let mut now: Vec<(u32, u32)> = now.into_iter().collect();
         now.sort_unstable();
         for (number, fact) in now {

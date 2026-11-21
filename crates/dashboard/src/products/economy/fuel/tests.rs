@@ -144,7 +144,6 @@ fn a_reads_hour_is_its_sample_hour_else_the_hour_its_applied_day_ends_and_never_
     assert_eq!(read_hour(&fuel(48, applied(Vec::new())), Some(50)), Some(50));
     assert_eq!(read_hour(&fuel(48, applied(Vec::new())), None), Some(48));
     assert_eq!(read_hour(&fuel(48, Recorded::NotRecorded), None), None);
-    // A refused applied day and a pack read with its row tell no hour.
     let refused = Recorded::Value(FuelAwardDay { continuity_start_hour: Some(0), reason: b"lacks 24 updates".to_vec(), ..Default::default() });
     let held = CountryFuelRow { demand: Recorded::Value(FuelDemandRead { hour: FuelDemandHour::Host, ..Default::default() }), ..fuel(41, refused) };
     assert_eq!(read_hour(&held, None), None);
@@ -178,7 +177,6 @@ fn the_read_in_force_where_a_window_cuts_a_stretch_is_dated_by_its_read_keeps_it
 #[test]
 fn a_history_covers_its_window_saying_where_no_read_holds_and_cuts_a_consumers_last_read_at_the_window() {
     let key = Key::Unit(0, 0, 41, 3, 1, None);
-    // The recording holds hours 30 through 100 of the window 0..=119.
     let reads = [read(30, 53, demand(30, vec![division(41, Some(1_000))])), read(54, 100, demand(54, vec![division(41, Some(2_000))]))];
     let runs = demand_runs(&reads, std::slice::from_ref(&key), 0, 119).remove(0);
     assert_eq!(runs.iter().map(|run| (run.first_hour, run.last_hour, run.amount_raw.as_deref(), run.reason.is_some())).collect::<Vec<_>>(),

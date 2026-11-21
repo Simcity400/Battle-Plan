@@ -94,7 +94,6 @@ pub(super) fn two_advisor_fixture(same_character: bool) -> Vec<u8> {
         let table = role + cadvisor::TOOLTIP_KEYS + 8;
         pointer(&mut bytes, table, data + 16);
         put(&mut bytes, table + 8, 1_u32.to_le_bytes());
-        // A one-bucket occupied set with an exact empty or one-byte key.
         bytes[data + 20] = 1;
         literal(&mut bytes, data + 24, key);
     }
@@ -150,8 +149,6 @@ fn advisor_short_arena_grows_to_every_role_name_numeric_cache_and_tooltip() {
                 &whole.advisors.bytes.first[..whole.advisors.bytes.len]
             );
         }
-        // The off-thread walk uses the complete owned payload, with the same
-        // offsets and row-local suffix failures as the direct parser.
         let capacities = Capacities {
             rows: [64; N],
             bytes: [8192; N],
@@ -162,9 +159,6 @@ fn advisor_short_arena_grows_to_every_role_name_numeric_cache_and_tooltip() {
     }
 }
 
-/// A prepared program observes the old prefix before a changed key header
-/// requires a larger suffix: the log grows in the pass, and no completed
-/// prefix read is taken again.
 #[test]
 fn a_changed_advisor_suffix_grows_in_the_pass_without_repeating_its_prefix() {
     let _globals = crate::extended::characters::test_globals();
@@ -329,8 +323,6 @@ fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
         );
         assert!(report.raw_ok);
         assert_advisors_match(&job, &characters_test_kit::memory(&bytes));
-        // Recycle returns loaned span geometry to the prepared program. The
-        // final payload must remain loaned until its owned-only decode below.
         if round == 0 {
             job.prepare_read_plans();
         }
@@ -409,8 +401,6 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
         job.prepare_read_plans();
         job.clear();
     }
-    // The advisor belongs to an unrecruited character. Both country and
-    // heap string values must remain fresh without rebuilding its geometry.
     put(
         &mut bytes,
         CHARACTERS[0] + ccharacter::COUNTRY,
@@ -444,8 +434,6 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
     assert_advisors_match(&job, &characters_test_kit::memory(&bytes));
     job.prepare_read_plans();
     job.clear();
-    // An in-place historical string-header change leaves the generated
-    // roster's program valid; reuse never substitutes yesterday's string.
     literal(
         &mut bytes,
         characters_test_kit::ADV_ROLE + cadvisor::IDEA_TOKEN,
@@ -471,7 +459,6 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
     assert_advisors_match(&job, &characters_test_kit::memory(&bytes));
     job.prepare_read_plans();
     job.clear();
-    // Relocation, emptying and A -> B -> A do not reuse obsolete pointers.
     for (data, count) in [(0x8900, 1), (0x8900, 0), (0x8800, 2)] {
         array(
             &mut bytes,
@@ -691,8 +678,6 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
             } else {
                 missing_mask.map(|active| !active)
             };
-            // An exhausted staging pool falls back only for its part.
-            // A failed native program must instead remain terminal.
             merged.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
             let mut expected = kit::direct(&memory, &capacities);
             if failed {
@@ -756,7 +741,6 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
             .unwrap(),
         rows
     );
-    // A roster reorder must rebuild occurrence order, even with the same IDs.
     pointer(&mut changed, ROSTER, CHARACTERS[1]);
     pointer(&mut changed, ROSTER + 8, CHARACTERS[0]);
     copy_characters(&kit::memory(&changed), ctx, &mut job, Roles::Independent);
@@ -765,7 +749,6 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         reordered.rows(ctx.base, ctx.game_state).unwrap()[0],
         rows[1]
     );
-    // A leaked lease cannot cause a new raw plan to certify the older census.
     copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(job.portrait_census().is_none());
     job.log.prepare_read_plan();
@@ -773,9 +756,6 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
     copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(job.log.planned_capture_succeeded());
     assert!(job.portrait_census().is_none());
-    // Non-hourly passes can update the census while the old hourly plan
-    // remains prepared. Exact equality preserves it; A -> B -> A must
-    // rebuild, never loan B after A's prepared controls succeed.
     let mut job = make();
     let daily = CharactersCopyContext {
         active: [true, true, false, true, false, true],
@@ -834,7 +814,6 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
     job.portrait_census = Some(engine_allocation::shared(
         ccharacter_manager::PortraitCensus::try_new(2).unwrap(),
     ).unwrap());
-    // A short census grows to the whole native roster in the pass.
     copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(!job.portrait_census.as_ref().unwrap().needs_growth());
     assert_eq!(
@@ -918,8 +897,6 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
             copy_characters(&kit::memory(&baseline), ctx, &mut planned, Roles::Independent);
             planned.log.prepare_read_plan();
             let mut changed = fresh.clone();
-            // An in-place name update must be observed even with the same
-            // header length, capacity and allocation address.
             if rename {
                 changed[CHARACTERS[0] + ccharacter::NAME] ^= 1;
             }
@@ -1008,11 +985,6 @@ fn template_cache_keeps_the_first_duplicate_occurrence() {
     assert!(cache.known(rows[8].id, rows[8].id as usize + 1).is_none());
 }
 
-/// A character's template identity is read once per template pointer:
-/// the next hours read none of it, also through the prepared program; a
-/// reload that gives the same character id a new template pointer reads
-/// that template, and a full hour reads every template again. Every hour,
-/// and every failed template read, decodes to the live walk's rows.
 #[test]
 fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
     let _globals = crate::extended::characters::test_globals();
@@ -1077,7 +1049,6 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         3,
         0,
     );
-    // An instance the loader never read: empty file, line -1.
     template(&mut world, TEMPLATES[1], 502, None, -1, 1);
     pointer(
         &mut world,
@@ -1113,8 +1084,6 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         );
         captured
     };
-    // One hour of the part-zero job as the pool runs it: copy, decode,
-    // remember, then recycle (prepare the program and clear).
     let hour = |job: &mut CharactersJob, world: &[u8], force_full: bool, fault| {
         let source = Trace {
             bytes: world,
@@ -1171,7 +1140,6 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         rows.iter()
             .any(|row| row.template_present == 0 && row.template_tag == 0)
     );
-    // The live census sizes a complete first hour from minimal buffers.
     let demand = ccharacter::demand(&kit::memory(&world), kit::BASE, kit::GAME_STATE).unwrap();
     let mut sized = Capacities {
         rows: [1; N],
@@ -1194,8 +1162,6 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         (rows.len(), demand.bytes)
     );
 
-    // The next hours read no template: first rediscovery with the
-    // identities held, then the prepared program keyed by them.
     for planned_hour in [false, true] {
         let (captured, calls, planned) = hour(&mut job, &world, false, None);
         kit::assert_matches_direct(&captured, &direct(&world));
@@ -1208,9 +1174,6 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         assert_eq!(planned, planned_hour);
     }
 
-    // A reload that reuses character 0's id with a new template pointer
-    // reads that template, under the prepared program too; the other
-    // character's unchanged pointer still reads nothing.
     let mut reloaded = world.clone();
     template(
         &mut reloaded,
@@ -1232,12 +1195,10 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
     kit::assert_matches_direct(&captured, &direct(&reloaded));
     assert!(!reads(&calls, TEMPLATES[2]));
 
-    // A full hour reads every template again, even at a held pointer.
     let (captured, calls, _) = hour(&mut job, &reloaded, true, None);
     kit::assert_matches_direct(&captured, &direct(&reloaded));
     assert!(reads(&calls, TEMPLATES[2]) && reads(&calls, TEMPLATES[1]));
 
-    // A failed template read fails the table as the live walk does.
     let mut fresh = CharactersJob::new_part(0);
     let (_, calls, _) = hour(&mut fresh, &world, false, None);
     let mut faults = 0;
@@ -1275,11 +1236,9 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
             ),
             "fault {fault:?}"
         );
-        // Nothing from a failed read is remembered.
         assert!(job.templates.entries.is_empty());
         faults += 1;
     }
-    // Both headers and generated bytes, the heap file's terminator and bytes.
     assert_eq!(faults, 6);
 }
 
@@ -1428,8 +1387,6 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
                 prepared.log.prepare_read_plan();
             }
         }
-        // A recycled job rebuilds its bindings after the pool's capacities
-        // change, and the growing copy records every trait whatever the pool.
         for limit in [0, 1, 2] {
             let mut prepared = job();
             copy_characters(
@@ -1676,9 +1633,6 @@ impl Memory for FaultMemory<'_> {
         };
         if address < self.fault.end && end > self.fault.start {
             self.failures.set(self.failures.get() + 1);
-            // Native guarded copies may modify a prefix before failing.
-            // Tests must reject the whole failed span even if its unused
-            // suffix happens to contain the native default value zero.
             let prefix = self.fault.start.saturating_sub(address).min(output.len());
             if prefix != 0 {
                 self.memory.copy(address, &mut output[..prefix]);
@@ -1965,8 +1919,6 @@ fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
     const CTAB: usize = 0x10000;
     const LTAB: usize = 0x20000;
     const COUNTRY0: usize = 0x30000;
-    // Country objects overlap: only the vtable, the id and the ability header (0x28 bytes into a
-    // 0x50 stride) are populated.
     const STRIDE: usize = 0x50;
     const RECORDS: usize = 0x100000;
     const DEFINITION: usize = 0x180000;
@@ -2047,10 +1999,6 @@ fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
     crate::table_capture::grow_capacity(&mut byte_capacity, first.required_bytes);
     let mut rows = vec![active_ability_record::Row::default(); row_capacity];
     let mut arena = vec![0; byte_capacity];
-    // The walk over raw memory, without the Ordinary job's cached roster
-    // view: a fixed number of guarded calls per live country and per
-    // ability record, whatever the viewer's country. The hourly pack's cost
-    // on the roster view is pinned in `active_abilities`.
     engine_native::read_counts::ReadCounts::take_current();
     let second = walk_abilities(
         &engine_native::read_counts::CountedMemory::new(memory),
@@ -2089,11 +2037,6 @@ fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
     assert_eq!(empty.outcome, Outcome::Rows { len: 0 });
     let calls =
         |counts: engine_native::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
-    // Over raw memory: two registry reads, seven per country
-    // (authentication and the array header), three per record without
-    // caster or region; a caster and a region add their own identity reads.
-    // On the roster view the census answers the authentication, leaving
-    // one call per country.
     let countries = u64::from(COUNTRIES);
     assert_eq!(calls(countries_only), 2 + 7 * countries);
     assert_eq!(calls(with_records) - calls(countries_only), 3 * countries);
@@ -2200,8 +2143,6 @@ fn ability_conversion_retains_presence_native_widths_and_literal_bytes() {
 fn conversion_rejects_bad_ranges_and_duplicate_keys() {
     let _globals = crate::extended::characters::test_globals();
     let mut captured = Captured::with_capacities(&small_capacities());
-    // These walkers retain native traversal order. Their complete results
-    // still cannot publish duplicate row keys through off-thread conversion.
     captured.characters.rows.rows[0].id = u32::MAX;
     captured.characters.rows.rows[1] = captured.characters.rows.rows[0];
     captured.characters.rows.outcome = Outcome::Rows { len: 2 };
@@ -2218,14 +2159,6 @@ fn conversion_rejects_bad_ranges_and_duplicate_keys() {
     }
 }
 
-// Deterministic read-cost proxy over one synthetic roster. Its proportions
-// approach the measured capture's 0.154 country-leader roles, 0.728 advisor
-// roles and 0.098 unit leaders per character: 32 characters carry 5, 22 and
-// 3 of them, that is 0.156, 0.688 and 0.094, with two traits per leader
-// and fifteen native trait-training entries, and
-// heap literals throughout. The
-// counts asserted below are guarded entries into the copy shim, the spans
-// inside them, and the bytes those spans move.
 const COST_CHARACTERS: usize = 32;
 const COST_LEADER_STEP: usize = 7;
 const COST_ADVISORS_PER: usize = 2;
@@ -2256,8 +2189,6 @@ struct CostHeap {
 }
 
 impl CostHeap {
-    /// Writes a heap MSVC string header, so every literal in this fixture
-    /// takes the separate terminator and body read path.
     fn write(&mut self, bytes: &mut [u8], header: usize) {
         let body = self.next;
         self.next += 32;
@@ -2277,7 +2208,6 @@ impl CostHeap {
     }
 }
 
-/// A head sentinel plus a right-leaning chain of `count` content nodes.
 fn cost_tree(bytes: &mut [u8], field: usize, head: usize, node: usize, stride: usize, count: u32) {
     pointer(bytes, field, head);
     put(bytes, field + 8, u64::from(count).to_le_bytes());
@@ -2314,8 +2244,6 @@ fn cost_tree(bytes: &mut [u8], field: usize, head: usize, node: usize, stride: u
 
 pub(crate) fn cost_fixture() -> Vec<u8> {
     use engine_native::{character_advisor_node, character_leader_node};
-    // Include the appended leader-ideology and advisor tooltip-key fields without crossing another
-    // synthetic object's allocation.
     let mut bytes = vec![0; 0x32000];
     let mut heap = CostHeap { next: COST_HEAP };
     pointer(&mut bytes, cgame_state::CHARACTER_MANAGER, COST_MANAGER);
@@ -2656,9 +2584,6 @@ fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap
             unit.into_iter().zip([8, 4, 8, 8]).collect(),
         ]
     );
-    // All six groups already used one guard each. Hints preserve every observation and byte,
-    // including the ordinary view and heap groups. The view carries the template pointer and
-    // gender.
     assert_eq!(
         (source.guards.get(), source.spans.get(), source.bytes.get()),
         (6, 24, 346 + 12 + 4)
@@ -2697,16 +2622,6 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
             && row.tooltip_len == 0
             && row.tooltip_failure.is_none()
     }));
-    // The shared walk's read cost, pinned. Making the view's copied-span lookup cheaper removed
-    // decoding work, not reads, so every one of these three totals must stay exactly where it was.
-    // Each of the three unit leaders adds one guarded read of its owner and visibility inputs
-    // (three spans, 13 bytes: none is an army leader). Each of the 32 views' name token spans also
-    // carries the template pointer (12 bytes, no read); none of these characters has a template.
-    // Gender adds one four-byte span per view in the same scatter, and each unit leader's state
-    // scatter its four-byte exile country. Each advisor adds its fresh 16-byte modifier-cache
-    // header; all are empty. The five country leaders each read an eight-byte null current-ideology
-    // pointer, and the 22 advisors each read an empty 17-byte tooltip header. These fixture
-    // leaders have no military role, so residual XP and training are outside their demand.
     assert_eq!(
         (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
         (
@@ -2749,7 +2664,6 @@ fn split_capacities() -> Capacities {
 fn a_manager_character_with_no_country_and_no_name_is_recorded_in_its_roster_position() {
     let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
-    // The advisor-holding character no country lists, as a new total-conversion game holds it.
     let mut bytes = kit::mapped_fixture();
     put(
         &mut bytes,
@@ -2785,7 +2699,6 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
     use super::characters_test_kit as kit;
     use engine_native::cname_group_member as naming;
     let mut bytes = kit::mapped_fixture();
-    // The third fixture leader overlaps unit one's expanded operative tail.
     put(
         &mut bytes,
         0x2300 + ccharacter::UNIT_LEADER,
@@ -2861,7 +2774,6 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
         assert_eq!(name.custom.as_slice(), custom.as_slice());
         assert_eq!(name.order, index as i32 - 1);
     }
-    // A pool too small for the codenames grows in the pass and keeps them whole.
     let mut small = capacities;
     small.bytes[3] = 24;
     let (mut split, _, _) = kit::split(&kit::memory(&bytes), &small);
@@ -3155,8 +3067,6 @@ fn split_copy_matches_direct_walk_with_skills_kinds_and_heap_names() {
     let (split, report, _) = kit::split(&memory, &capacities);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Spot-checks: leader ideology, heap advisor key, skill, army and
-    // navy components, and the third character's heap name.
     assert_eq!(split.leaders.rows.outcome, Outcome::Rows { len: 1 });
     assert_eq!(split.leaders.rows.rows[0].ideology, 7);
     assert_eq!(split.advisors.rows.outcome, Outcome::Rows { len: 1 });
@@ -3261,8 +3171,6 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
         job.prepare_read_plans();
         job.clear();
     }
-    // Changing the selecting category invalidates the old branch. No formation
-    // word is acquired for unsigned categories outside the two army categories.
     put(
         &mut bytes,
         UNITS[1] + cunit_leader::CATEGORY,
@@ -3308,12 +3216,6 @@ fn split_keeps_character_and_unit_leader_registry_ids_distinct() {
 #[test]
 fn characters_truncation_matrix_keeps_advisors_complete() {
     let _globals = crate::extended::characters::test_globals();
-    // Every table grows from its pool in the pass, so each pool size
-    // matches a typed walk with advisors sized to the whole payload.
-    // Cost fixture holds 32 characters, 5 leaders, 22 advisors, 3 units
-    // and 6 traits. u32 unread saturation is not
-    // reachable synthetically and is covered by the walk's own
-    // saturating arithmetic.
     use super::characters_test_kit as kit;
     let bytes = cost_fixture();
     let memory = kit::memory(&bytes);
@@ -3337,7 +3239,6 @@ fn characters_truncation_matrix_keeps_advisors_complete() {
         assert!(report.raw_ok, "rows={rows:?}");
         kit::assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows on every table.
     let capacities = Capacities {
         rows: [32, 5, 22, 3, 6, 0],
         bytes: [131_072; N],
@@ -3414,7 +3315,6 @@ impl FixedFieldMemory {
     fn observe(&self, address: usize, output: &mut [u8]) -> bool {
         let call = self.calls.borrow().len();
         self.calls.borrow_mut().push((address, output.len()));
-        // Repeated exact keys deliberately observe different bytes.
         for (index, byte) in output.iter_mut().enumerate() {
             *byte = (call * 31 + index + address) as u8;
         }
@@ -3468,8 +3368,6 @@ fn scalar_fixed_fields<const M: usize, const CONTINUE: bool>(
 ) -> [Option<usize>; M] {
     let mut starts = [None; M];
     for index in 0..M {
-        // Independent reference to the old unconditional scalar calls
-        // and their caller-controlled prefix breaks.
         starts[index] = addresses[index]
             .and_then(|address| job.log.take(memory, address, lengths[index], mask));
         if starts[index].is_none() {
@@ -3497,8 +3395,6 @@ fn heap_literal_gather_keeps_scalar_observations_faults_and_growth() {
                     let mut scalar = make_job();
                     let actual_memory = FixedFieldMemory::new(failed);
                     let scalar_memory = FixedFieldMemory::new(failed);
-                    // Repeated exact keys deliberately produce different
-                    // bytes. Each occurrence and failure must still survive.
                     for _ in 0..2 {
                         let result = copy_heap_literal_bytes(
                             &mut actual,
@@ -3598,8 +3494,6 @@ fn assert_fixed_fields_match_scalar<const M: usize, const CONTINUE: bool>(
     assert_eq!(scalar_memory.prefetched.get(), 0);
     assert_eq!(actual.log.spans.capacity(), expected.log.spans.capacity());
     assert_eq!(actual.log.bytes.capacity(), expected.log.bytes.capacity());
-    // Also compare authoritative repeated-key replay, including sticky
-    // terminal successes/faults, with independent reader cursors.
     {
         let reader = crate::raw::Recorded::build(&actual.log).unwrap();
         let independent = crate::raw::Recorded::build(&actual.log).unwrap();
@@ -3619,8 +3513,6 @@ fn assert_fixed_fields_match_scalar<const M: usize, const CONTINUE: bool>(
             }
         }
     }
-    // Private exhaustion targets must produce identical off-thread
-    // growth, not merely the same public overflow flag.
     actual.log.grow();
     expected.log.grow();
     assert_eq!(actual.log.spans.capacity(), expected.log.spans.capacity());
@@ -3819,8 +3711,6 @@ fn advisor_gathers_preserve_every_partial_fault_and_exact_prefix() {
             kit::assert_matches_direct(&split, &direct);
             assert!(report.raw_ok);
             assert_eq!(job.log.fault, [false, false, true, false, false, false]);
-            // One failure in the direct walk and one in the current raw pass.
-            // No failed field is retried and no later field is copied.
             assert_eq!(memory.failures.get(), 2, "field={failed} byte={byte}");
             let observed: Vec<_> = job
                 .log
@@ -3837,9 +3727,6 @@ fn advisor_gathers_preserve_every_partial_fault_and_exact_prefix() {
             assert_eq!(observed, expected, "field={failed} byte={byte}");
         }
     }
-    // Unreadable or overflowing terminators fail before output capacity;
-    // huge unobserved payload lengths must not replace that native error
-    // with an allocation failure.
     for len in [1_u64 << 30, u64::MAX] {
         let mut invalid = bytes.clone();
         put(&mut invalid, key + 16, len.to_le_bytes());
@@ -3892,9 +3779,6 @@ fn advisor_gather_address_overflow_keeps_the_scalar_prefix_without_a_fault_read(
 fn split_copy_matches_direct_walk_on_fault_matrix() {
     let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
-    // (fault offset from the image base, expected primary fault masks in
-    // family order). Outcomes including reason strings must match the
-    // typed walk exactly; masks describe source-read failures.
     for (offset, fault_mask) in [
         (
             cgame_state::CHARACTER_MANAGER,
@@ -3937,9 +3821,7 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
             [false, false, false, false, true, false],
         ),
         (DEFINITION, [false, false, false, false, true, true]),
-        // The first unit has no military role, so its training is not demanded.
         (EXPERIENCE_ARRAY, [false, false, false, false, false, false]),
-        // Training faults on the army leader preserve scalar and assigned-trait rows.
         (
             EXPERIENCE_ARRAY + 16,
             [false, false, false, false, false, true],
@@ -4012,7 +3894,6 @@ fn failed_character_refresh_preserves_capacity() {
     assert_eq!(captured.allocated_bytes(), bytes);
 }
 
-// Frozen serial family schedule. Engine field/body parsers are unchanged.
 fn serial_family_reference(
     memory: &impl Memory,
     base: usize,
@@ -4119,9 +4000,6 @@ fn serial_family_reference(
                         && relocate(&mut row.training_factors.0, offset)
                 },
             );
-            // Reuse the authenticated scalar header on the normal path. The
-            // trait vector retains independent availability when scalar capacity
-            // or a skill/text fault requires reading only the parent's identity.
             let identity = if traits.active() {
                 Some(if units.len > previous_len {
                     Ok(units.rows[previous_len].native.id)
@@ -4281,8 +4159,6 @@ fn character_family_matches_raw_and_typed_at_every_hour() {
             decoded.decode_characters_payload(IMAGE, &job, &mut [0; N]);
             characters_test_kit::assert_matches_direct(&decoded, &typed);
             assert_eq!(decoded.character_activity(), active);
-            // Roster, roles and assigned traits remain hourly; training alone
-            // follows the owner-approved daily progress slot.
             assert_eq!(&active[..5], &[true; 5]);
             assert_eq!(
                 active[5],
@@ -4313,9 +4189,6 @@ fn wave_split_once(memory: &impl Memory, capacities: &Capacities) -> Captured {
 
 fn assert_wave_rows(left: &Captured, right: &Captured) {
     characters_test_kit::assert_matches_direct(left, right);
-    // Preserve predecessor rows physically written before a later global
-    // error, even though that unavailable outcome exposes no row prefix.
-    // Pools grow by their own steps, so only the written rows must agree.
     fn written<R: PartialEq + Default + std::fmt::Debug>(name: &str, left: &[R], right: &[R]) {
         let len = left.len().min(right.len());
         assert_eq!(left[..len], right[..len], "{name} rows");
@@ -4382,7 +4255,6 @@ fn character_page_wave_matches_serial_static_rows_capacity_and_every_view_fault(
             }
         }
     }
-    // Include a complete 32-entry page with nonempty independent domains.
     check_wave_static(
         &cost_fixture(),
         None,
@@ -4441,7 +4313,6 @@ fn character_page_wave_defers_global_errors_and_never_revives_failed_domains() {
     for later in [1, 2] {
         for null in [false, true] {
             let mut bytes = characters_test_kit::mapped_fixture();
-            // A's body fails before the later global failure is delivered.
             put(
                 &mut bytes,
                 CHARACTERS[0] + ccharacter::NAME + 24,
@@ -4466,8 +4337,6 @@ fn character_page_wave_defers_global_errors_and_never_revives_failed_domains() {
     let bytes = characters_test_kit::mapped_fixture();
     let trace = WaveMemory::new(&bytes, None);
     let _ = characters_test_kit::direct(&trace, &full);
-    // Earlier child failures are allowed to leave later staged Views
-    // untouched in storage, but may not alter later active-domain results.
     for &(address, width) in trace.reads.borrow().iter() {
         if address >= ADDRESS + 0x2400 {
             for fault in [address, address + width - 1] {
@@ -4486,8 +4355,6 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
     };
     let mut bytes = fixture();
     let alias = ADDRESS + CHARACTERS[1] + ccharacter::NAME;
-    // A's heap payload is B's complete names View key. The trailing
-    // terminator is B's zero/unrecruited country low byte.
     pointer(
         &mut bytes,
         CHARACTERS[0] + ccharacter::NAME,
@@ -4522,10 +4389,6 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
     assert_eq!(direct.characters.bytes.first[rows[0].name_start], b'C');
     assert_eq!(direct.characters.bytes.first[rows[1].name_start], b'B');
 
-    // This mutation deliberately distinguishes schedules: old serial
-    // observes A's aliased payload before B's View, hence B then C.
-    // Equality is required between the new native/raw wave, not between
-    // different instants of an arbitrarily changing source.
     let mut serial_memory = WaveMemory::new(&bytes, None);
     serial_memory.changing = Some((alias, 64));
     let serial = serial_family_capture(&serial_memory, &full);
@@ -4549,8 +4412,6 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
         assert_eq!((native.sequence.get(), raw.sequence.get()), (2, 2));
     }
 
-    // A duplicate roster occurrence is a fresh View, not a deduplicated
-    // object. Keep cross-roster occurrences independent as well.
     let mut bytes = fixture();
     pointer(&mut bytes, ROSTER + 8, CHARACTERS[0]);
     array(
@@ -4571,7 +4432,6 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
     assert_eq!(direct.characters.rows.rows[2].roster, 1);
     assert_eq!(direct.characters.rows.rows[2].ordinal, 0);
 
-    // Recycled raw storage and rebuilt pages expose current bytes only.
     let mut job = small_wave_job();
     let mut decoded = Captured::with_capacities(&full);
     for value in [b'x', b'y', b'z'] {

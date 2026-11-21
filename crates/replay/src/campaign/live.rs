@@ -1,22 +1,3 @@
-//! Writes a campaign's recording while it is recorded: one capture's records ([`Source`]), in
-//! order, into the campaign's own file. Each hour is applied to the recorder's store a section at
-//! a time ([`replay_columnar::store`]), its derived tables written by their writers
-//! ([`recorder_derive`]) and its summaries built, and the store's encoder writes the hour's
-//! changes into the file as its parts close ([`replay_columnar::unit`]); each block's end writes
-//! its page ([`crate::columnar_file`]); each segment's end commits one revision holding its
-//! blocks, the records that came with them and the capture's cursor, after which the source lets
-//! go of the segment. Nothing is written anywhere else first, and nothing is copied afterwards.
-//!
-//! A branch is decided before anything of it is written ([`Host::admit`]): its records are
-//! kept in memory until then, and the first hour of a branch that waits is not taken, so its
-//! hours stay with their source. A recording is created at its first hour written, which is its
-//! run's first restore.
-//!
-//! A revision is committed with the writer's resume state in its state slot: the run under way
-//! (its cursor, the encoder's, the journal adapter's and the writers' state, the summaries'
-//! ladders; no table) and the records it still keeps to itself. A writer taking the recording up
-//! after a crash rebuilds the run's tables from the file, restores the rest and reads on from its
-//! cursor's segment, so no hour is left out and none is written twice.
 
 use super::records::{CaptureStop, Cursor, Records, RecoveryNote};
 use crate::{
@@ -55,7 +36,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The one session a capture's start record (`Record::Begin`'s `capture`) begins with.
 pub fn capture_session(capture: &[u8]) -> io::Result<SessionStart> {
     let capture = Capture::read(capture)?;
     if capture.format != FormatVersion::CURRENT.version() {
@@ -75,171 +55,121 @@ pub fn capture_session(capture: &[u8]) -> io::Result<SessionStart> {
     Ok(session)
 }
 
-/// Labels this thread's allocations as the writer's part `name` until the scope drops, for a
-/// build counting memory (`memory-labels`); nothing otherwise.
 fn label(name: &str) -> engine_allocation::labels::Scope {
     use engine_allocation::labels;
     labels::enter(labels::owner(name), labels::Kind::Operator)
 }
 
-/// Whether a branch's hours and records are written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admit {
     Write,
-    /// Never: they are passed over.
     Skip,
-    /// Not decided yet: its records are kept aside and its first hour is not taken.
     Wait,
 }
 
-/// A branch the writer asks about before it writes anything of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Asked {
     pub branch: BranchId,
-    /// The load its first hour or command phase names; none while neither names one.
     pub load: Option<i64>,
-    /// When that hour or phase was read, by its session's performance counter.
     pub qpc: Option<u64>,
-    /// Asked at an hour of the branch: whatever names its load before that hour has been read.
     pub hour: bool,
-    /// The capture ended: nothing more names a load, and a branch left waiting now is left out.
     pub last: bool,
 }
 
-/// An hour as the writer applied it: the store after it.
 pub struct Applied<'a> {
     pub store: &'a Store,
     pub branch: BranchId,
     pub hour: Hour,
 }
 
-/// One revision the writer committed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Committed {
     pub revision: Revision,
     pub saved: bool,
-    /// Hours it added.
     pub hours: u64,
-    /// The capture ended with it.
     pub finished: bool,
 }
 
-/// A game facts pack at its place in a file: `length` bytes from `offset`.
 pub struct FactsFile {
     pub file: File,
     pub offset: u64,
     pub length: u64,
 }
 
-/// A session's game facts pack as its host gives it.
 enum GivenFacts {
     Held(Vec<u8>),
     Placed(FactsFile),
 }
 
-/// The game facts pack of `identity` that `host` gives, from a file where it can.
 fn given_facts(host: &mut dyn Host, identity: &Identity) -> Option<GivenFacts> {
     host.facts_file(identity).map(GivenFacts::Placed).or_else(|| host.facts(identity).map(GivenFacts::Held))
 }
 
-/// Whoever runs the writer: what it decides and what it is told.
 pub trait Host {
-    /// Whether `asked`'s branch is written. Asked before the branch's first write and again
-    /// while the answer is [`Admit::Wait`].
     fn admit(&mut self, asked: &Asked) -> Admit;
 
-    /// Whether the revision about to be committed is saved.
     fn saves(&mut self) -> bool;
 
-    /// The game facts pack of content `identity`, for a recording that carries none yet.
     fn facts(&mut self, identity: &Identity) -> Option<Vec<u8>> {
         let _ = identity;
         None
     }
 
-    /// [`Self::facts`] where a file holds them, read from it a piece at a time and never whole;
-    /// asked first.
     fn facts_file(&mut self, identity: &Identity) -> Option<FactsFile> {
         let _ = identity;
         None
     }
 
-    /// An hour of a written branch was applied.
     fn hour(&mut self, hour: &Applied<'_>) {
         let _ = hour;
     }
 
-    /// A run of a branch that is not written ended after `hours` hours.
     fn skipped(&mut self, asked: &Asked, hours: u64) {
         let _ = (asked, hours);
     }
 
-    /// A revision was committed.
     fn committed(&mut self, committed: &Committed) {
         let _ = committed;
     }
 }
 
-/// Another owner's part of each revision the writer commits: a section of its own, written
-/// from the same hours, with its own entry in the resume state.
 pub trait Part: Send {
-    /// Declares its section in `container`, and takes up from `state`, its entry of the resume
-    /// state the recording was taken up with; none in a new recording or when it kept none.
     fn open(
         &mut self,
         container: &mut ContainerWriter<File>,
         state: Option<&StateEntry>,
     ) -> io::Result<()>;
 
-    /// An hour of a written branch was applied.
     fn hour(&mut self, hour: &Applied<'_>) -> io::Result<()>;
 
-    /// Puts and names its extents of the revision about to be committed; its resume state for
-    /// that revision's slot.
     fn revise(&mut self, container: &mut ContainerWriter<File>) -> io::Result<Option<StateEntry>>;
 }
 
-/// What became of a record given to the writer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Taken {
-    /// Taken: its reader moves past it.
     Moved,
-    /// Taken, and every segment before it is settled: a committed revision holds what the
-    /// recording keeps of them, so their source lets go of them.
     Settled,
-    /// Not taken: the hour's branch waits to be decided.
     Waits(Asked),
-    /// Taken: the capture ended, and the recording holds all it keeps of it.
     Finished,
 }
 
-/// What one call to [`LiveWriter::advance`] got to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Progress {
-    /// It took every record made so far.
     Waiting,
-    /// It stopped when asked, with records left.
     Paused,
-    /// The next hour's branch waits to be decided.
     Undecided(Asked),
-    /// The capture ended.
     Finished,
 }
 
-/// The schema version of the world log's resume state ([`LiveWriter::world_log_state`]).
 const WORLD_LOG_STATE: u32 = 7;
-/// The schema version of the records' resume state ([`LiveWriter::records_state`]).
 const RECORDS_STATE: u32 = 1;
 
-/// What the writer knows of one branch of its capture.
 #[derive(Default)]
 struct Branch {
     load: Option<i64>,
-    /// A command phase named it before its first simulation update: its load is 0.
     bootstrap: bool,
     qpc: Option<u64>,
     admit: Option<bool>,
-    /// Its records, until it is decided.
     held: Vec<spool::Record>,
 }
 
@@ -249,21 +179,16 @@ impl Branch {
     }
 }
 
-/// The run the capture's records are at.
 #[derive(Clone, Copy)]
 struct Run {
     branch: BranchId,
     epoch: u8,
     first_hour: Hour,
-    /// Hours of it taken.
     hours: u32,
-    /// Its branch is not written.
     skipped: bool,
-    /// The file holds its start.
     started: bool,
 }
 
-/// What the recording holds of the records a capture may give again.
 #[derive(Default)]
 struct Known {
     sessions: Vec<SessionStart>,
@@ -274,30 +199,21 @@ struct Known {
     facts: bool,
 }
 
-/// The block under way: its first hour and hours so far, its clock, and the strings its hours
-/// appended (`count | per string: length | bytes`) from the first one's id.
 struct OpenBlock {
     hours: u32,
     clock: Clock,
     count: u64,
-    /// The block's appends, after [`COUNT_ROOM`] bytes its count is written into at the end.
     strings: Vec<u8>,
     first_string: u32,
 }
 
-/// Room for a varint of a block's string count ahead of its strings, so the frame is written
-/// from the buffer the hours filled.
 const COUNT_ROOM: usize = 10;
 
-/// A summarized table's pieces of the levels above a block's not folded yet, by level from 1: those
-/// of the span or era under way, as the file holds them. Its level-0 pieces are the open span's
-/// blocks', read back from the file when the span closes.
 #[derive(Default)]
 struct Ladder {
     upper: Vec<Vec<PieceAt>>,
 }
 
-/// A summary piece the file holds: where, and its digest.
 #[derive(Clone, Copy)]
 struct PieceAt {
     offset: u64,
@@ -305,17 +221,13 @@ struct PieceAt {
     digest: [u8; 16],
 }
 
-/// The summarized tables' builders of the block under way and the run's ladders.
 pub(crate) struct Summaries {
     registry: Vec<(usize, Shape)>,
-    /// Each summarized table's memory label.
     owners: Vec<engine_allocation::labels::Owner>,
     builders: Vec<summary::Builder>,
     ladders: Vec<Ladder>,
     level: i32,
     ns: u64,
-    /// In a build counting memory: each builder's most bytes read in the block under way (once a
-    /// day), and in the block before.
     peaks: Vec<usize>,
     last_peaks: Vec<usize>,
 }
@@ -336,8 +248,6 @@ impl Summaries {
         Ok(Self { last_peaks: peaks.clone(), peaks, registry, owners, builders: Vec::new(), ladders, level, ns: 0 })
     }
 
-    /// Charges what the thread allocates to the `at`th summarized table's label until the scope
-    /// drops.
     fn label(&self, at: usize) -> engine_allocation::labels::Scope {
         engine_allocation::labels::enter(self.owners[at], engine_allocation::labels::Kind::Operator)
     }
@@ -347,7 +257,6 @@ impl Summaries {
         self.ladders = self.registry.iter().map(|_| Ladder::default()).collect();
     }
 
-    /// The block at `hour` opens: each builder from its table as the hour before left it.
     pub(crate) fn open(&mut self, store: &mut Store, hour: i32) {
         let clock = Instant::now();
         for &(table, _) in &self.registry {
@@ -383,9 +292,6 @@ impl Summaries {
         }
     }
 
-    /// By summarized table: its ladder's bytes (where the file holds its pieces), its builder's
-    /// bytes now, and in a build counting memory the most its builder held in the block before
-    /// (read once a day and as the block ends, before it finishes).
     pub(crate) fn table_bytes(&self) -> Vec<(usize, usize, usize, usize)> {
         self.registry
             .iter()
@@ -397,9 +303,6 @@ impl Summaries {
             .collect()
     }
 
-    /// The block ending at `last_hour`, the run's `block`th from `first_hour`, finished: each
-    /// table's level-0 piece, and when the block closes its span the pieces of the levels above
-    /// it closes, as (table, level, piece), folded with the pieces `file` wrote before.
     #[allow(clippy::type_complexity, reason = "the block's pieces and the higher levels it closes, returned together")]
     pub(crate) fn finish<W: io::Write + Seek + io::Read>(&mut self, last_hour: i32, block: u32, first_hour: i32, file: &mut FileWriter<W>) -> io::Result<(Vec<(u32, Vec<u8>)>, Vec<(u32, u8, Vec<u8>)>)> {
         let clock = Instant::now();
@@ -419,7 +322,6 @@ impl Summaries {
                 pieces.extend(piece.map(|piece| (table, piece)));
                 continue;
             }
-            // Level `level + 1` closes when the run's blocks fill a whole number of its pieces.
             let mut held = file.span_summaries(table)?;
             held.extend(piece.iter().cloned());
             pieces.extend(piece.map(|piece| (table, piece)));
@@ -450,8 +352,6 @@ impl Summaries {
         Ok((pieces, above))
     }
 
-    /// The pieces of the levels above a block's the file wrote at a block's end, (table, level,
-    /// where): of each table the highest, which the levels below it were folded into.
     pub(crate) fn written(&mut self, span: &[(u32, u8, envelope::Extent)]) {
         for (at, ladder) in self.ladders.iter_mut().enumerate() {
             let table = self.registry[at].0 as u32;
@@ -464,9 +364,6 @@ impl Summaries {
         }
     }
 
-    /// The pieces of the level above a block's covering the last span of a run of `hours` hours
-    /// from `first_hour`, ended, when that span is not whole: folded from its blocks' pieces
-    /// `file` wrote.
     pub(crate) fn tail<W: io::Write + Seek + io::Read>(&mut self, first_hour: i32, hours: u32, file: &mut FileWriter<W>) -> io::Result<Vec<(u32, Vec<u8>)>> {
         let clock = Instant::now();
         let blocks = hours.div_ceil(UNIT_ORDINALS);
@@ -534,7 +431,6 @@ impl Summaries {
         reader.finish()
     }
 
-    /// What its builders, and its ladders, hold, in bytes.
     fn held_bytes(&self) -> (usize, usize) {
         let builders = self.builders.iter().map(summary::Builder::held_bytes).sum();
         let ladders = self.ladders.iter().map(|ladder| ladder.upper.iter().map(|level| level.capacity() * size_of::<PieceAt>()).sum::<usize>()).sum();
@@ -542,8 +438,6 @@ impl Summaries {
     }
 }
 
-/// Table `table` as the last of `pages` left it, read from the file: a log's count and live set,
-/// a state table's rows. Its class in the file must be this build's.
 fn rebuilt(source: &dyn reader::Extents, pages: &[unit::BlockPage], kinds: &[Column], table: usize, run_first: i32) -> io::Result<TableState> {
     let log = reader::class_of(pages, table)?;
     if log != crate::rows::logs()[table] {
@@ -557,8 +451,6 @@ fn rebuilt(source: &dyn reader::Extents, pages: &[unit::BlockPage], kinds: &[Col
     }
 }
 
-/// Refuses an hour that changed a complete Campaign table to hold anything but `campaign`: so a
-/// reader of a recording's tables never checks it.
 fn check_campaign(store: &Store, campaign: &[u8]) -> io::Result<()> {
     let table = crate::rows::TableId::Campaign.index();
     let log = &store.log().tables[table];
@@ -578,8 +470,6 @@ fn check_campaign(store: &Store, campaign: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// How a recording's one writer opens it: readers go on and it can be renamed, and nothing
-/// else can open it to write, so no other revision is added under the writer.
 fn held() -> fs::OpenOptions {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
@@ -591,7 +481,6 @@ fn held() -> fs::OpenOptions {
     options
 }
 
-/// A read handle on a recording its writer holds open.
 fn reading(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
@@ -601,26 +490,18 @@ fn reading(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// Every string chunk of the run under way: its first string id and its frame, as written.
 type Frames = Arc<Mutex<Vec<(u32, FrameEntry)>>>;
 
-/// Where the writer's own thread spent its time, by stage.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Spent {
-    /// The journal's records and sections read.
     pub journal: std::time::Duration,
-    /// Sections applied to the store, events appended to pending.
     pub store: std::time::Duration,
     pub writers: std::time::Duration,
     pub summaries: std::time::Duration,
-    /// The store's hour ends: parts closed, restores made, frames handed to the file, waits for
-    /// the compression thread.
     pub ending: std::time::Duration,
-    /// Blocks' pages, clocks and strings written.
     pub blocks: std::time::Duration,
 }
 
-/// Writes one capture's records into its campaign's recording.
 pub struct LiveWriter {
     path: PathBuf,
     state_path: PathBuf,
@@ -629,18 +510,12 @@ pub struct LiveWriter {
     capture: u32,
     known: Known,
     file: Option<FileWriter<File>>,
-    /// The identity and session its capture began with.
     begun: Option<(envelope::Identity, SessionStart)>,
     run: Option<Run>,
-    /// The branch the records being given belong to.
     context: Option<BranchId>,
     branches: BTreeMap<BranchId, Branch>,
-    /// The records the next revision adds: every one given since the last, in the order they
-    /// were given, each hour's clock witness among them.
     pending: Records,
-    /// Segments of the capture taken whole.
     segments: u32,
-    /// Hours written since the last revision.
     hours: u64,
     finished: bool,
     parts: Vec<Box<dyn Part>>,
@@ -654,19 +529,12 @@ pub struct LiveWriter {
     block: Option<OpenBlock>,
     frames: Frames,
     spent: Spent,
-    /// What its file writer wrote, kept once the recording is finished.
     finished_written: Option<crate::columnar_file::Written>,
-    /// The session's game facts pack is in the file, for the next revision to name.
     facts_put: bool,
-    /// The writers were handed the definitions of the recording's or the session's facts.
     defined: bool,
 }
 
 impl LiveWriter {
-    /// The writer of capture `capture` made in `source` into the recording at `path`, which it
-    /// takes up after its newest revision when it exists and creates at its first hour when it
-    /// does not. Its resume state is kept at `state_path`. `parts` are the other owners of each
-    /// revision. Its source reads on from [`Self::segments`].
     pub fn open(
         path: &Path,
         state_path: &Path,
@@ -678,7 +546,6 @@ impl LiveWriter {
         Self::open_with(path, state_path, source, capture, settings, parts, recorder_derive::writers())
     }
 
-    /// [`Self::open`] with `writers` as the derived tables' writers.
     pub(crate) fn open_with(
         path: &Path,
         state_path: &Path,
@@ -736,81 +603,64 @@ impl LiveWriter {
         Ok(writer)
     }
 
-    /// The segments of its capture the recording holds: where its source reads on.
     pub fn segments(&self) -> u32 {
         self.segments
     }
 
-    /// Whether its capture ended and the recording holds all it keeps of it.
     pub fn finished(&self) -> bool {
         self.finished
     }
 
-    /// Where the recording is, or will be created.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The recording was moved to `path`.
     pub fn moved(&mut self, path: &Path) {
         self.path = path.to_path_buf();
     }
 
-    /// Whether the recording exists yet.
     pub fn created(&self) -> bool {
         self.file.is_some() || self.finished && self.path.exists()
     }
 
-    /// The newest saved revision of the recording it writes; none while it holds none or does
-    /// not exist.
     pub fn saved(&self) -> Option<Revision> {
         self.file.as_ref().and_then(FileWriter::saved)
     }
 
-    /// The thread time its derived-table writers and its summaries took so far.
     pub fn derive_ns(&self) -> (u64, u64) {
         (self.writer_ns, self.summaries.ns)
     }
 
-    /// Each writer's name and time so far.
     pub fn writer_spent(&self) -> Vec<(&'static str, u64)> {
         self.writers.spent()
     }
 
-    /// The store after the last hour applied.
     pub fn store(&self) -> &Store {
         &self.store
     }
 
-    /// Times where the store's encoder spends its work ([`Encoder::time`]).
     pub fn time(&mut self, timed: bool) {
         if let Some(encoder) = self.store.encoder_mut() {
             encoder.time(timed);
         }
     }
 
-    /// Where its own thread spent its time so far.
     pub fn spent(&self) -> Spent {
         self.spent
     }
 
-    /// The stored bytes its file writer wrote so far; none before the file exists.
     pub fn written(&self) -> Option<crate::columnar_file::Written> {
         self.file.as_ref().map(FileWriter::written).or(self.finished_written)
     }
 
-    /// By summarized table: its ladder's bytes, its builder's bytes now and its builder's most in
-    /// the block before ([`Summaries::table_bytes`]).
     pub fn summary_bytes(&self) -> Vec<(usize, usize, usize, usize)> {
         self.summaries.table_bytes()
     }
 
-    /// Each derived-table writer's resume state, in bytes.
     pub fn writer_blobs(&self) -> io::Result<Vec<(&'static str, usize)>> {
         self.writers.blob_sizes()
     }
 
-    /// What it holds besides the store and the encoder, by part, in bytes.
     pub fn held_parts(&self) -> Vec<(String, u64)> {
         let (store, _) = self.store.bytes();
         let mut out = vec![
@@ -827,14 +677,10 @@ impl LiveWriter {
         out
     }
 
-    /// How its capture's session records; none before the capture began.
     pub fn capture_mode(&self) -> Option<CaptureMode> {
         self.begun.as_ref().map(|(_, session)| session.capture_mode)
     }
 
-    /// Takes the recording up after its newest revision: what follows it is cut, the records it
-    /// holds are noted, and when its resume state is this capture's, the run under way and the
-    /// records kept aside are restored.
     fn take_up(&mut self) -> io::Result<()> {
         let file = held().open(&self.path)?;
         let (root_extent, length) = container::locate(&file, Open::Newest)?
@@ -862,8 +708,6 @@ impl LiveWriter {
             stops: records.stops.iter().map(|stop| (stop.spool.clone(), stop.capture)).collect(),
             facts: !log.facts_extents().is_empty(),
         };
-        // The resume state is taken up only by the capture it was written for: any other
-        // leaves the run that was under way where its last block ended.
         let mut entries = Vec::new();
         if let (Some(slot), Some(cursor)) = (root.state, cursor.as_ref().filter(|cursor| !cursor.finished))
             && self.state_path.exists()
@@ -897,8 +741,6 @@ impl LiveWriter {
                 self.source
             )));
         }
-        // The writers take their definitions up from the recording's own facts, never the game's,
-        // read a piece at a time from the file.
         if let Some(extent) = log.facts_extents().last() {
             if !self.writers.wanted().is_empty() {
                 let _label = label("definitions");
@@ -923,7 +765,6 @@ impl LiveWriter {
             .rev()
             .find(|run| run.hours > 0)
             .map(|run| (run.branch, run.first_hour + (run.hours - 1) as i32));
-        // A branch the file holds a run of was admitted; the resume state keeps only the others.
         for run in log.directories()? {
             self.branches.entry(run.branch).or_default().admit = Some(true);
         }
@@ -946,8 +787,6 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// The run under way as its resume state `bytes` hold it ([`Self::world_log_state`]): its
-    /// tables rebuilt from `log`, the encoder, adapter, writers and summaries taken up.
     fn restore_run(&mut self, log: &Recording, bytes: &[u8]) -> io::Result<Option<OpenRun>> {
         let mut reader = Reader::new(bytes);
         let index = reader.varint_u32()?;
@@ -1006,10 +845,6 @@ impl LiveWriter {
         Ok(Some(OpenRun { run: index, directory: run, blocks }))
     }
 
-    /// The world log's resume state after the last block written: the run under way, the next
-    /// string id, the encoder's, the adapter's and the writers' state, and the summaries'
-    /// ladders. No table: they are rebuilt from the file. None without a run under way in the
-    /// file.
     fn world_log_state(&self) -> io::Result<Option<StateEntry>> {
         let Some(run) = self.file.as_ref().and_then(FileWriter::open_run) else { return Ok(None) };
         if self.block.is_some() {
@@ -1035,9 +870,6 @@ impl LiveWriter {
         }))
     }
 
-    /// The records' resume state: the capture it is, the branch its records are at, a run
-    /// being passed over, and each branch not written yet with what is known of it and the
-    /// records kept aside for it.
     fn records_state(&self) -> io::Result<StateEntry> {
         let mut out = Bytes::new();
         out.varint(self.source.len() as u64)?;
@@ -1142,9 +974,6 @@ impl LiveWriter {
         reader.finish()
     }
 
-    /// Takes each record `source` has made, in order, until it has made no more, `stop` asks, a
-    /// branch waits to be decided or the capture ends. The source lets go of each segment once
-    /// a committed revision holds what the recording keeps of it.
     pub fn advance(&mut self, source: &mut dyn Source, host: &mut dyn Host, stop: &dyn Fn() -> bool) -> io::Result<Progress> {
         loop {
             if self.finished {
@@ -1176,7 +1005,6 @@ impl LiveWriter {
         }
     }
 
-    /// One record of the capture, from whoever makes them.
     pub fn take(&mut self, record: Record<'_>, host: &mut dyn Host) -> io::Result<Taken> {
         if self.finished {
             return Err(invalid("A capture's records end with its finish"));
@@ -1211,7 +1039,6 @@ impl LiveWriter {
             }
             Record::Hour { witness, manifest, sections } => self.hour(witness, manifest, sections, host),
             Record::Next => {
-                // A segment ends at a block's end or its run's: a short block is the run's last.
                 if self.block.is_some() {
                     self.end_run(host)?;
                 }
@@ -1226,8 +1053,6 @@ impl LiveWriter {
         }
     }
 
-    /// The capture begins: `identity` is the recording's, or the recording is `identity`'s, and
-    /// `session` is one it holds or a new one of its content and capture mode.
     fn begin(&mut self, identity: envelope::Identity, session: SessionStart) -> io::Result<()> {
         if let Some(file) = &mut self.file {
             let held = file.container().identity();
@@ -1252,7 +1077,6 @@ impl LiveWriter {
         self.begun.as_ref().map(|(_, session)| session).ok_or_else(|| invalid("A capture's records precede its start"))
     }
 
-    /// What the host is asked of `branch`.
     fn asked(&self, branch: BranchId, hour: bool, last: bool) -> Asked {
         let known = self.branches.get(&branch);
         Asked {
@@ -1264,8 +1088,6 @@ impl LiveWriter {
         }
     }
 
-    /// Whether `branch` is written: as decided before, because the recording names it already,
-    /// or as the host says now. A decision keeps or drops the records kept aside for it.
     fn decide(&mut self, branch: BranchId, host: &mut dyn Host, hour: bool, last: bool) -> io::Result<Admit> {
         let decided = match self.branches.get(&branch).and_then(|known| known.admit) {
             Some(admit) => return Ok(if admit { Admit::Write } else { Admit::Skip }),
@@ -1289,8 +1111,6 @@ impl LiveWriter {
         Ok(decided)
     }
 
-    /// One record the capture gives beside its hours: kept, dropped or kept aside as the
-    /// branch it belongs to is decided.
     fn given(&mut self, record: spool::Record, host: &mut dyn Host) -> io::Result<()> {
         let branch = match &record {
             spool::Record::SessionStart(_) => return Ok(()),
@@ -1328,7 +1148,6 @@ impl LiveWriter {
         }
     }
 
-    /// The capture's session, added to the recording's with the first record kept of it.
     fn keep_session(&mut self) -> io::Result<()> {
         let session = self.session()?;
         if self.known.sessions.iter().any(|held| held.id == session.id) {
@@ -1357,8 +1176,6 @@ impl LiveWriter {
         }
     }
 
-    /// Adds `record` to the next revision's records, once: a capture opened after a failure
-    /// gives its session's branch starts, gaps and event losses again.
     fn keep(&mut self, record: spool::Record) -> io::Result<()> {
         self.keep_session()?;
         match record {
@@ -1398,8 +1215,6 @@ impl LiveWriter {
         }
     }
 
-    /// The run's next hour: applied, and written with its block once that fills. An hour of a
-    /// branch that waits is not taken; one of a branch not written is passed over.
     fn hour(&mut self, witness: Option<Witness>, manifest: &[u8], mut sections: Sections<'_>, host: &mut dyn Host) -> io::Result<Taken> {
         let run = self.run.ok_or_else(|| invalid("An hour needs a run under way"))?;
         if let Some(witness) = witness {
@@ -1479,9 +1294,6 @@ impl LiveWriter {
         Ok(Taken::Moved)
     }
 
-    /// An hour applied to the store ends: the derived tables' writers, the campaign check, the
-    /// summaries and the clock; the store's hour end into the file; the host and the parts told;
-    /// the block's end when it fills.
     fn finish_hour(&mut self, branch: BranchId, hour: Hour, first: bool, clock: ClockHour, witness: Option<Witness>, host: &mut dyn Host) -> io::Result<()> {
         if !self.defined && !self.known.facts {
             self.take_facts(host)?;
@@ -1537,8 +1349,6 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// The run under way's first hour is taken: the file holds its start, and the store, the
-    /// writers and the summaries start from empty tables.
     fn start_run(&mut self) -> io::Result<()> {
         let run = self.run.ok_or_else(|| invalid("A run needs its start"))?;
         self.keep_session()?;
@@ -1565,8 +1375,6 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// The recording's file, created now when the capture's first hour or its last records
-    /// need it.
     fn file(&mut self) -> io::Result<&mut FileWriter<File>> {
         if self.file.is_none() {
             let (identity, _) = self.begun.as_ref().ok_or_else(|| invalid("A capture's records precede its start"))?;
@@ -1586,8 +1394,6 @@ impl LiveWriter {
         Ok(self.file.as_mut().expect("created"))
     }
 
-    /// The block under way ends: its summaries, clock and strings, and its page, into the file;
-    /// then the store lets go of what no live cell names.
     fn end_block(&mut self) -> io::Result<()> {
         let block = self.block.take().ok_or_else(|| invalid("No block is under way"))?;
         let run = self.run.ok_or_else(|| invalid("A block needs a run under way"))?;
@@ -1625,8 +1431,6 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// Ends the run under way: its last block, short, when one is under way, then its
-    /// directory. A run passed over is reported.
     fn end_run(&mut self, host: &mut dyn Host) -> io::Result<()> {
         let Some(run) = self.run else {
             return Ok(());
@@ -1634,7 +1438,6 @@ impl LiveWriter {
         if run.skipped {
             host.skipped(&self.asked(run.branch, false, false), u64::from(run.hours));
         } else if run.started && run.hours == 0 {
-            // A run given up before its first hour ended wrote nothing.
             self.block = None;
             self.file.as_mut().ok_or_else(|| invalid("A run needs its file"))?.finish_run()?;
         } else if run.started {
@@ -1644,8 +1447,6 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// The run under way, which wrote an hour, ends: its last block, short, when one is under way,
-    /// its summaries' tail and its directory.
     fn finish_written_run(&mut self) -> io::Result<()> {
         let run = self.run.ok_or_else(|| invalid("No run is under way"))?;
         let file = self.file.as_mut().ok_or_else(|| invalid("A run needs its file"))?;
@@ -1662,11 +1463,8 @@ impl LiveWriter {
         file.finish_run()
     }
 
-    /// A segment ended, or with `finish` the capture: commits a revision holding everything
-    /// taken so far when the recording exists or the capture ends with something kept.
     fn settle(&mut self, host: &mut dyn Host, finish: Option<Option<Stop>>) -> io::Result<Taken> {
         if finish.is_some() {
-            // Nothing more names a load: every branch still waiting is decided now.
             let waiting: Vec<BranchId> = self
                 .branches
                 .iter()
@@ -1679,8 +1477,6 @@ impl LiveWriter {
         }
         let held = self.branches.values().any(|known| !known.held.is_empty());
         if self.file.is_none() && (self.pending.is_empty() || finish.is_none()) {
-            // No recording yet: its first hour creates it. Segments nothing is kept of go;
-            // those with records kept or kept aside stay with their source.
             return Ok(match (&finish, self.pending.is_empty() && !held) {
                 (Some(_), _) => {
                     self.finished = true;
@@ -1697,10 +1493,6 @@ impl LiveWriter {
         })
     }
 
-    /// Commits the next revision: the blocks written since the last, the records kept since,
-    /// the capture's cursor, the session's game facts when the recording carries none, and
-    /// each part's extents, with the resume state of them all; with `finish`, the capture's
-    /// last, which names no resume state.
     fn commit(&mut self, host: &mut dyn Host, finish: Option<&Option<Stop>>) -> io::Result<Revision> {
         self.keep_session()?;
         let (_, session) = self.begun.clone().expect("a session was kept");
@@ -1772,9 +1564,6 @@ impl LiveWriter {
         Ok(revision)
     }
 
-    /// Asks the host for the session's game facts, before an hour's writers run, while no
-    /// definitions were handed: once they come, the writers are handed theirs from that hour on.
-    /// A host is not asked when no writer declares any.
     fn take_facts(&mut self, host: &mut dyn Host) -> io::Result<()> {
         if self.writers.wanted().is_empty() {
             self.defined = true;
@@ -1787,12 +1576,7 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// Puts the session's game facts pack into the file for the next revision to name, and hands
-    /// the writers their definitions read from it when none were handed yet: the pack is let go
-    /// of here, never held until a commit.
-    /// A pack a host gives at its place in a file is read and copied a piece at a time.
     fn put_facts(&mut self, pack: GivenFacts, identity: &Identity) -> io::Result<()> {
-        // Stored as it is: a pack is compressed within, and read at its offsets.
         let extent = match pack {
             GivenFacts::Held(pack) => {
                 let pack = Arc::new(pack);
@@ -1822,23 +1606,17 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// Whether the recording it writes carries game facts.
     pub fn carries_facts(&self) -> bool {
         self.known.facts
     }
 
-    /// Ends the capture after what its source holds, its producer having stopped without
-    /// finishing it: the recording says its hours stop after its last, for `reason`, and where
-    /// its source's records ended short of its bytes. The source lets go of the capture.
     pub fn finish_stopped(&mut self, source: &mut dyn Source, host: &mut dyn Host, reason: &str) -> io::Result<()> {
         if self.finished {
             return Ok(());
         }
         let damage = source.damage()?;
-        // What the open segment applied stands: its blocks are written whole, its last short.
         self.end_run(host)?;
         if self.begun.is_none() {
-            // Nothing of it was ever read: there is no capture to end.
             self.finished = true;
             return Ok(());
         }
@@ -1862,8 +1640,6 @@ impl LiveWriter {
         source.finish()
     }
 
-    /// Adds `note` to the records the next committed revision holds, once; a recording not
-    /// created yet holds it from its first revision.
     pub fn note(&mut self, note: RecoveryNote) -> io::Result<()> {
         if note.reason.trim().is_empty() {
             return Err(invalid("empty recovery reason"));
@@ -1872,8 +1648,6 @@ impl LiveWriter {
         Ok(())
     }
 
-    /// Commits a revision that saves everything the recording holds; none when it holds no
-    /// revision that is not saved, or does not exist.
     pub fn save(&mut self) -> io::Result<Option<Revision>> {
         let Some(file) = &mut self.file else {
             return Ok(None);

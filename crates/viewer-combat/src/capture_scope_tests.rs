@@ -1,4 +1,3 @@
-//! A Map recording holds every table its battle windows read.
 
 use super::*;
 use installed_content_core::{ResolvedLayers, flags::FlagSet, map::MapData};
@@ -9,7 +8,6 @@ use viewer_foundation::map::test_support::{
 };
 use viewer_foundation::map::{lazy_icons::flag_set, memo::Keyed, perspective::Vision};
 
-/// Bars and division names are withheld without DivisionStatus; fog is off without its inputs.
 const PRESENTED_ABSENT: [TableId; 4] = [
     TableId::DivisionStatus,
     TableId::DivisionPanelStats,
@@ -73,7 +71,6 @@ fn map_battle_windows_read_only_recorded_tables() {
         replay_data::rows::sample_extended_table(table, 0)
     });
     put_sample_campaign(&mut frame);
-    // A land combat with committed divisions on each side, so its entries and their hovers bind.
     let mut details = frame
         .complete::<tables::LandCombatDetails>()
         .unwrap()

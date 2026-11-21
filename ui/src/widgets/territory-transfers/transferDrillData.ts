@@ -13,13 +13,10 @@ export function transferTime(widget: WidgetSpec, track: BoundTrack, tracks: Boun
   return { moment: Math.floor(window?.lastHour ?? -Infinity), from };
 }
 
-/** A held main view opens at its drawn moment; only Follow inherits the clock. */
 export function transferDrillOpen(hour: number, following: boolean, playhead: number | null, playing: boolean): DrillAction {
   return { type: 'open', breakdown: 'parts', hour, playhead: following ? playhead : null, playing: following && playing };
 }
 
-/** A pinned breakdown: one country's transfers (its native holder key), or the
- * giver → taker links an earlier version pinned. Both bind campaign and branch. */
 export interface TransferSelection { ids: string[]; fromOffset: number | null; country: string | null }
 export const transferSelectionToken = (campaign: string, branch: string, ids: readonly string[], fromOffset: number | null = null, country: string | null = null) =>
   setToken(campaignToken(campaign, JSON.stringify(country == null ? [branch, ids, fromOffset] : [branch, ids, fromOffset, country])));
@@ -35,7 +32,6 @@ export function transferSelection(token: string, campaign: string, branch: strin
   } catch { return null; }
 }
 
-/** The product's link ID names its giver and taker native holders. */
 const LINK = /^\d+:source:(\d+):(\d+)target:(\d+):(\d+)$/;
 export function linkEnds(id: string): [string, string] | null {
   const match = LINK.exec(id);
@@ -44,8 +40,6 @@ export function linkEnds(id: string): [string, string] | null {
   return [countryIdentityKey({ slot, countryId }), countryIdentityKey({ slot: toSlot, countryId: toCountryId })];
 }
 
-/** The selection's transfers and how many of its saved links this scope lacks.
- * An empty selection is the whole scope. */
 export function selectedTransfers(list: readonly TransferOccurrence[], selection: TransferSelection): { shown: readonly TransferOccurrence[]; missing: number } {
   if (selection.country != null) return { shown: list.filter(occurrence => occurrence.to.key === selection.country || occurrence.from?.key === selection.country), missing: 0 };
   if (!selection.ids.length) return { shown: list, missing: 0 };

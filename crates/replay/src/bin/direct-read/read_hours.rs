@@ -1,34 +1,22 @@
-//! `read-hours`: per table, the hours the recording dates a read of it (its sample hour is the
-//! hour), the hours its read flag is set, the hours its cells changed, its first and last read
-//! hour, and whether it holds rows or changes but no read hour at all. One walk of the recording's
-//! cells, hour after hour; no row is built.
-
 use crate::{Options, open, table_named};
 use replay::columnar_frames::{Frames, Recording};
 use replay_data::rows::TableId;
 use serde_json::{Value, json};
 use std::io;
 
-/// What the recording says of one table's reads over every run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Listed {
-    /// Hours sampled at themselves: the hours a reader dates a read of the table.
     pub read: u64,
-    /// Hours whose read flag is set.
     pub flagged: u64,
-    /// Hours that inserted, deleted or wrote a cell of it; a run's first hour when it holds rows.
     pub changed: u64,
     pub first_read: Option<i32>,
     pub last_read: Option<i32>,
-    /// It held a row at some hour.
     pub rows: bool,
-    /// Hours its bytes could not be read, and the first reason.
     pub lost: u64,
     pub reason: Option<String>,
 }
 
 impl Listed {
-    /// Rows or changes recorded, and no hour a reader dates a read of them.
     pub fn never_read(&self) -> bool {
         (self.rows || self.changed > 0) && self.read == 0
     }
@@ -49,7 +37,6 @@ impl Listed {
     }
 }
 
-/// Each of `tables` as [`Listed`], in their order, from one walk of every run.
 pub fn list(recording: &Recording, tables: &[TableId]) -> io::Result<Vec<Listed>> {
     let mut listed = vec![Listed::default(); tables.len()];
     let mut frames = Frames::new(recording, tables)?;
@@ -89,7 +76,6 @@ pub fn list(recording: &Recording, tables: &[TableId]) -> io::Result<Vec<Listed>
     Ok(listed)
 }
 
-/// Prints one line a table of every table or those `--tables` names, and returns the total.
 pub fn read_hours(path: &str, options: &Options) -> io::Result<Value> {
     let tables = match options.get("tables") {
         Some(names) => names.split(',').map(table_named).collect::<io::Result<Vec<_>>>()?,
@@ -120,8 +106,6 @@ mod tests {
     use replay_data::rows::{CountryFuelRow, CountryRow, TABLE_COUNT, TableRows};
     use replay_frame::frame::{FrameInput, Metrics, TableInput, TableView};
 
-    /// Three hours of Countries, read and timed each hour, and CountryFuel read at hours 0 and 2
-    /// and skipped at 1, timed as `fuel_ns` says.
     fn recording(fuel_ns: [u64; 3]) -> Recording {
         let file = fixtures::recorded(b"read-hours", 3, |ordinal| {
             let mut tables: [TableInput; TABLE_COUNT] = std::array::from_fn(|_| TableInput::Sampled(TableView::Unavailable { reason: "table was not acquired".into() }));

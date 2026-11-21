@@ -1,5 +1,3 @@
-//! Baseline retained membership once per observed world/observation segment.
-//! Subsequent updates come only from native registry writers.
 use super::*;
 use engine_events::{event_feed_sites::provenance::World, script_event_registry as native};
 use replay_data::event_feed_rows::EventFeedScriptChange as Change;
@@ -108,18 +106,13 @@ impl Store {
         if self.registry_baseline == Some(generation) {
             return Ok(());
         }
-        // A native writer in flight or crossing the sample leaves the
-        // baseline unattempted for the next boundary; no refusal.
         let Some(cut) = super::Cut::take() else {
             return self.registry_crossed();
         };
-        // A decline recorded in this interval crosses it too.
         if !Self::sample_holds(cut) {
             return self.registry_crossed();
         }
         match self.registry_sample(memory, base, generation, hour, cut) {
-            // A writer can make any read of a crossed sample fail; only an
-            // unbroken cut makes the error a refusal.
             Err(_) if !cut.holds() => self.registry_crossed(),
             result => result,
         }
@@ -132,8 +125,6 @@ impl Store {
         hour: i32,
         cut: super::Cut,
     ) -> Result<(), &'static str> {
-        // One attempt per native observation segment. Faults remain named
-        // refusals; this is never an hourly retry/poll of the queues.
         self.registry_baseline = Some(generation);
         self.registry_complete = false;
         let rejected = self.counts.rejected;
@@ -200,8 +191,6 @@ impl Store {
         }
         Ok(())
     }
-    /// A crossed registry sample certifies nothing and is retried at the
-    /// next boundary.
     fn registry_crossed(&mut self) -> Result<(), &'static str> {
         super::crossed_sample(super::REGISTRY_SAMPLE);
         self.registry_baseline = None;

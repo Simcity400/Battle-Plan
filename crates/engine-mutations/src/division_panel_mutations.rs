@@ -1,7 +1,3 @@
-//! Writers of demanded division equipment-pool membership.
-//! The design family forwards variant rebuild and assignment writers. Pool addition,
-//! setting, scaling, clearing and assignment cover membership; subtraction
-//! delegates to addition. Construction and loading revoke all certificates.
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
 pub const MUTATIONS: [MutationSite; 6] = [

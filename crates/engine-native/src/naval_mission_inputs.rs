@@ -1,12 +1,3 @@
-//! Operands of naval mission map counts, convoy efficiencies and mission ledgers.
-//!
-//! The viewing navy's region ledger is visited in stored order. The last counted
-//! registration containing fleet pride chooses its marker kind; only each fleet's
-//! first escort registration contributes escort efficiency. Raiding and escort
-//! efficiency are recomputed on icon refresh and never stored. Recording retains
-//! task-force stats, weather, leaders, headquarters, mission range and convoys,
-//! owner modifiers, navy ledgers and escort presence. Accumulator entries remain
-//! raw; modifier-definition operands supply effective-value metadata.
 
 use crate::{
     Memory, ccharacter, cfleet, cnaval_mission, cnavy_leader,
@@ -24,7 +15,6 @@ pub use convoy_targets::{
     ConvoyDesign, ConvoyDesigns, SourceSpeed, TargetOperands, read_source_speed,
 };
 
-/// Combined-modifier keys used by range and efficiency calculations.
 pub const TASK_FORCE_KEYS: [u32; 9] = [
     keys::NAVAL_COORDINATION,
     keys::NAVAL_SPEED_FACTOR,
@@ -36,8 +26,6 @@ pub const TASK_FORCE_KEYS: [u32; 9] = [
     keys::NIGHT_SPOTTING_CHANCE,
     keys::NAVY_VISIBILITY,
 ];
-/// Task-force keys plus mission-owner escort efficiency, weather reduction
-/// and underway range, projected from the same complete accumulator copy.
 pub const COUNTRY_KEYS: [u32; 12] = [
     keys::NAVAL_COORDINATION,
     keys::NAVAL_SPEED_FACTOR,
@@ -53,101 +41,66 @@ pub const COUNTRY_KEYS: [u32; 12] = [
     keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
 ];
 
-/// Mission kinds supplying convoy-raiding and convoy-escort efficiency operands.
 pub const RAIDING: u32 = 3;
 pub const ESCORT: u32 = 4;
 pub const MISSION_KINDS: [u32; 4] = [2, RAIDING, ESCORT, 9];
 
-/// Stored range, underway, fuel and requested-convoy operands. Underway is
-/// always serialized; zero fuel and requested counts are omitted.
 pub const UNDERWAY: usize = 0x468;
-/// Convoy subscriber supplied and requested signed counts.
 pub const REPLENISHMENT: usize = 0x478;
 pub const FUEL: usize = 0x4f8;
-/// Stored stat block reset and merged by ability refresh.
 pub const STAT_RANGE: usize = 0x1b0;
-/// Stored navy supply-hub province IDs in state/building order, retaining repeats.
 pub const HUBS: usize = 0x170;
 
-/// Task-force own modifier accumulator, reached only while it has a location.
 pub const LOCAL_MODIFIERS: usize = 0x668;
-/// Stored raiding factor scaling the raiders.
 pub const STAT_RAIDING: usize = 0x1f8;
 
-/// Fleet leader reference.
 #[cfg(any(test, feature = "test-support"))]
 pub const FLEET_LEADER: usize = cfleet::LEADER;
-/// Navy-leader modifier accumulator rebuilt from its loaded modifier block.
 pub const LEADER_MODIFIERS: usize = 0x418;
 
-/// Headquarters commander object whose reference selects a character.
 pub const HEADQUARTERS_COMMANDER: usize = 0x40;
 pub const COMMANDER_CHARACTER: usize = 0x08;
-/// Character unit-leader selection: cached pointer, otherwise reference resolution.
 pub const CHARACTER_UNIT_LEADER: usize = 0xa8;
 pub const CHARACTER_UNIT_LEADER_REFERENCE: usize = 0xc8;
-/// Unit-leader kind; headquarters sums include only kind two.
 pub const UNIT_LEADER_KIND: usize = 0xe7c;
-/// Four ordered skill objects whose accumulators supply headquarters modifiers.
 pub const UNIT_LEADER_SOURCES: [usize; 4] = [0xf70, 0xf80, 0xfa0, 0xf90];
 pub const SOURCE_MODIFIERS: usize = 0xe0;
 
-/// Mission owner initialized from the task-force roster owner.
 pub const MISSION_OWNER: usize = 0x10;
-/// Mission convoys in the area of operation, serialized when positive.
 pub const MISSION_CONVOYS: usize = 0x40;
-/// Mission region range copied from fleet region groups: fleet pointer and
-/// first/end group indices. The embedded task-force mission uses the same range.
 pub const MISSION_RANGE_FLEET: usize = 0xf0;
 pub const MISSION_RANGE: usize = 0xf8;
 
-/// Region runtime slot to convoy-escort count-ring map. Region runtime slot
-/// and ID are initialized together and have equal values.
 pub const PRESENCE: usize = 0x148;
 const PRESENCE_ENTRIES: usize = PRESENCE + 0x08;
 const PRESENCE_MASK: usize = PRESENCE + 0x14;
 const PRESENCE_PROBE: usize = PRESENCE + 0x18;
 const PRESENCE_STRIDE: usize = 0x28;
-/// Presence-map key hash multiplier, applied twice.
 const PRESENCE_HASH: u32 = 0x045d_9f3b;
-/// Maximum reached presence-ring window.
 pub const PRESENCE_WINDOW: usize = 0x2d0;
 
-/// One strike/invasion or convoy task force's operands.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Operands {
-    /// Acquisition-only original stat selector, never serialized.
     pub stat_block: usize,
-    /// Acquisition-only original location selector, never serialized.
     pub location: usize,
     pub id: u64,
-    /// The task force's mission kind (`ctask_force::MISSION`), one of [`MISSION_KINDS`].
     pub kind: u32,
-    /// [`MISSION_OWNER`], a raw country reference.
     pub mission_owner: u32,
-    /// Location strategic-region ID, zero without a location; selects region weather.
     pub region: u32,
     pub raiding_factor: i64,
     pub range_base: i64,
     pub fuel: [i64; 2],
     pub underway: u8,
     pub replenishment: [i32; 2],
-    /// Positive expeditionary owner selects the range country; otherwise use roster owner.
     pub expeditionary_owner: i32,
-    /// [`TASK_FORCE_KEYS`] in the local accumulator; absent without a location.
     pub local: [Value; 9],
-    /// Fleet leader reference, zero for none or no fleet.
     pub leader: u64,
-    /// Attached headquarters entries; each entry's commander character (zero without one) is
-    /// written to the caller's slice when they all fit.
     pub headquarters: usize,
-    /// The mission's region range: fleet handle (zero when unset), first and end index.
     pub range_fleet: u64,
     pub range: [i32; 2],
     pub convoys: i32,
 }
 
-/// Independently observed kind-three regional convoy-grid operands.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RaidingGrid {
     pub active: u8,
@@ -159,18 +112,13 @@ pub struct RaidingGrid {
     pub source_speed: SourceSpeed,
 }
 
-/// Stored convoy spotting amount, independently of requested mission convoys.
 const RAID_SPOTTING: usize = 0x80;
-/// Stored raiding targets and retained detection region.
 const RAID_TARGETS: usize = 0x90;
 const RAID_REGION: usize = 0xe8;
 
-/// Built-in serializer keys for retained raiding spotting and its region.
 pub const RAID_SPOTTING_SAVE_TOKEN: u32 = 0x3bb0;
 pub const RAID_REGION_SAVE_TOKEN: u32 = 0x3c83;
 
-/// Read the raider's independently optional grid packet during its existing
-/// authenticated census visit. Inactive missions demand no target or spotting read.
 pub fn read_raiding_grid(
     memory: &impl Memory,
     base: usize,
@@ -223,8 +171,6 @@ pub fn read_raiding_grid(
     })
 }
 
-/// One region's convoy-escort presence: ring entries at least zero and above zero within
-/// [`PRESENCE_WINDOW`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Presence {
     pub positive: i32,
@@ -278,7 +224,6 @@ fn i32_at(bytes: &[u8], at: usize) -> i32 {
 
 const MISSION: usize = ctask_force::NAVAL_MISSION;
 
-/// One guarded gather of a mission task force's fixed-offset operands.
 const TASK_FIELDS: [RecordField; 12] = {
     const fn field(source_offset: usize, destination_offset: usize, len: usize) -> RecordField {
         RecordField {
@@ -305,8 +250,6 @@ const TASK_FIELDS: [RecordField; 12] = {
 const TASK_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&TASK_FIELDS, 128).expect("task force operand layout");
 
-/// Reads and authenticates the embedded mission of a task force found by [`walk`]. Its headquarters' commander characters go to `headquarters` only when all
-/// of them fit; the row's count gives the demand either way.
 #[cfg(test)]
 pub fn read_task_force(
     memory: &impl Memory,
@@ -317,8 +260,6 @@ pub fn read_task_force(
     read_task_force_observed(memory, base, visit, headquarters, &mut None)
 }
 
-/// Shares the original first mission-header gather, including its failure.
-/// Transport consumes this observation rather than probing it a second time.
 #[cfg(test)]
 pub fn read_task_force_observed(
     memory: &impl Memory,
@@ -361,8 +302,6 @@ pub fn read_task_force_transport_observed_buffer(
     )
 }
 
-/// Original fixed-gather selectors, including failed leaves. These loans stay
-/// within the same frozen acquisition and never authorize a later native read.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OriginalSelectors {
     pub stats: Option<Result<usize, &'static str>>,
@@ -471,7 +410,6 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     }
     let attached = Array::from_header(bytes[40..56].try_into().expect("header"), 8)
         .ok_or("task-force headquarters invalid")?;
-    // Reserve from the original header for every attached headquarters entry.
     row.headquarters = attached.count as usize;
     headquarters.ensure(row.headquarters)?;
     if let Some(out) = headquarters.get_mut(..row.headquarters) {
@@ -489,7 +427,6 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
                     HEADQUARTERS_COMMANDER,
                     "headquarters commander unreadable",
                 )?;
-                // A missing commander contributes nothing to the maximum.
                 out[index as usize] = if commander == 0 {
                     0
                 } else {
@@ -525,9 +462,6 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     Ok(row)
 }
 
-/// Nonempty region ledgers, including registrations beyond the mission's
-/// accessible list. That list may be narrower and cannot supply this census.
-/// Read headers in fixed-size batches without a population cap.
 pub fn ledger_regions(
     memory: &impl Memory,
     navy: usize,
@@ -542,7 +476,6 @@ pub fn ledger_regions(
     ledger_regions_in(memory, outer, visit)
 }
 
-/// Original already-observed physical-navy outer header, never read again.
 pub fn ledger_regions_in(
     memory: &impl Memory,
     outer: Array,
@@ -572,8 +505,6 @@ pub fn ledger_regions_in(
     Ok(())
 }
 
-/// A navy's ledger for one region ([`cstrategic_navy::REGION_MISSIONS`]): its mission pointers
-/// in stored order, written to `out` when they all fit. Returns how many there are.
 pub fn ledger(
     memory: &impl Memory,
     missions: Array,
@@ -620,8 +551,6 @@ pub fn navy_hubs_buffer(
     Ok(count)
 }
 
-/// A fleet leader's navy-leader object, authenticated; `None` when the
-/// reference resolves to nothing, which adds nothing.
 pub fn fleet_leader(
     memory: &impl Memory,
     base: usize,
@@ -641,7 +570,6 @@ pub fn fleet_leader(
     Ok(Some(pointer))
 }
 
-/// A fleet leader's [`TASK_FORCE_KEYS`]; unresolved leaders add nothing.
 pub fn leader_modifiers(
     memory: &impl Memory,
     base: usize,
@@ -661,10 +589,6 @@ pub fn leader_modifiers(
     Ok(())
 }
 
-/// The objects naval HQ support reads for one headquarters commander: its
-/// kind-2 unit leader and the four skill objects (`UNIT_LEADER_SOURCES`), in
-/// its order. `None` for an unresolved character/unit leader or another leader
-/// kind, which adds nothing.
 pub fn headquarters_sources(
     memory: &impl Memory,
     base: usize,
@@ -725,9 +649,6 @@ pub fn headquarters_sources(
     Ok(Some((leader, sources)))
 }
 
-/// Naval HQ support for one headquarters commander: the four accumulators of a
-/// kind-2 unit leader, in its order. An unresolved character/unit leader or
-/// another leader kind adds nothing.
 pub fn headquarters_modifiers(
     memory: &impl Memory,
     base: usize,
@@ -749,12 +670,10 @@ pub fn headquarters_modifiers(
     Ok(())
 }
 
-/// A navy's convoy-escort presence map ([`PRESENCE`]), its header read once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresenceMap {
     entries: usize,
     mask: u32,
-    /// Entry past the last probe slot, representing a lookup miss.
     end: u32,
 }
 
@@ -799,14 +718,11 @@ impl PresenceMap {
         read(memory, address).ok_or("presence entry unreadable")
     }
 
-    /// Presence counts for one region slot; `None` when the map holds no ring.
     pub fn presence(
         &self,
         memory: &impl Memory,
         slot: u32,
     ) -> Result<Option<Presence>, &'static str> {
-        // Hash twice and probe while entry distance is at least the probe count.
-        // The entry past the last probe slot marks the end.
         let hashed = (slot >> 16 ^ slot).wrapping_mul(PRESENCE_HASH);
         let hashed = (hashed >> 16 ^ hashed).wrapping_mul(PRESENCE_HASH);
         let mut index = (hashed >> 16 ^ hashed) & self.mask;
@@ -842,8 +758,6 @@ impl PresenceMap {
         if capacity <= 0 || !(0..capacity).contains(&head) {
             return Err("presence ring index invalid");
         }
-        // The native walk advances modulo the capacity until it meets the tail or has read the
-        // window; a tail outside the ring is never met.
         let steps = if (0..capacity).contains(&tail) {
             (tail - head).rem_euclid(capacity) as usize
         } else {
@@ -851,7 +765,6 @@ impl PresenceMap {
         }
         .min(PRESENCE_WINDOW);
         let mut values = [0; PRESENCE_WINDOW * 4];
-        // One pass covers the whole ring; a longer walk revisits it in the same order.
         let read = steps.min(capacity as usize);
         let first = read.min((capacity - head) as usize);
         for (start, count, offset) in [(head as usize, first, 0), (0, read - first, first)] {
@@ -885,9 +798,6 @@ impl PresenceMap {
     }
 }
 
-/// [`TASK_FORCE_KEYS`] from region weather. An ID outside the region array
-/// has no weather object, leaving every key absent. Weather updates rebuild
-/// the stored region accumulator.
 pub fn region_weather<M: Memory>(
     memory: &M,
     weather: &cweather_manager::Reader<'_, M>,

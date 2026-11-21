@@ -109,7 +109,6 @@ test('loaded and archive rows offer their own actions through right-click and ke
   view.menu().find((item: MenuItem) => item.label === 'Unload').run(); assert.equal(view.chosen(), 1);
   view.menu().find((item: MenuItem) => item.label === 'Rename').run(); view.render();
   assert.equal(view.input().props.defaultValue, 'Loaded');
-  // Without a host that renames files, there is nothing to rename.
   view.input().props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); view.render();
   delete view.props.client.renameRecording; view.render();
   assert.deepEqual(view.menu().map((item: MenuItem) => item.label), ['Change flag', 'Unload']);
@@ -126,12 +125,10 @@ test('inline rename renames the file once on Enter or blur, and what is kept by 
   assert.deepEqual(view.renames, [['C:/recordings/Loaded.battleplan', 'Barbarossa']]);
   assert.deepEqual(view.updates, [['C:/recordings/Loaded.battleplan', 'C:/recordings/Barbarossa.battleplan']]);
   assert.equal(view.refreshed(), 1, 'the library lists the file by its new name');
-  // The dashboard owns its campaigns' paths; the menu only reports the rename.
   assert.deepEqual(view.props.campaigns, campaigns); assert.deepEqual(view.source, source);
   assert.deepEqual([...view.storage.keys()], ['hoi4-replay.sidebar.archive-open'], 'no name is kept apart from the file');
   const cancelled = view.edit(); cancelled.props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
   cancelled.props.onBlur({ currentTarget: { value: 'Should not commit' } }); await settle(); view.render();
-  // A blank name, or the name it has, renames nothing.
   for (const draft of ['  ', 'Loaded']) { view.edit(); await view.blur(draft); }
   assert.equal(view.renames.length, 1);
   view.fail(); view.edit(); await view.blur('Blocked');
@@ -182,11 +179,9 @@ test('a manually picked recording follows its file when renamed', async () => fi
 test('a picked recording follows a rename the dashboard followed, and only that', async () => fixture(async view => {
   view.find((node: Element) => node.props['aria-label'] === 'Open a recording').props.onClick(); await settle(); view.render();
   const picked = 'C:/elsewhere/Picked.battleplan', saved = 'C:/elsewhere/Germany 1936–1937.battleplan';
-  // Its slot reused by another recording is no rename of it.
   view.props.campaigns = [{ ...view.props.campaigns[0], path: 'C:/elsewhere/Other.battleplan' }];
   view.render();
   assert.ok(view.nodes().some((node: Element) => node.props['data-tooltip'] === 'Picked.battleplan'));
-  // Battle Plan Recorder renamed its file as it saved, and the dashboard followed.
   view.props.relocations = [[picked, saved, 'picked recording']];
   view.render(); view.render();
   assert.ok(!view.nodes().some((node: Element) => node.props['data-tooltip'] === 'Picked.battleplan'));

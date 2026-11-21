@@ -120,7 +120,7 @@ test('each hourly land state has its legend entry, shared status colour and Part
     assert.equal(entries[0].label, labels[index]);
     assert.equal(entries[0].color, colours[index]);
     assert.deepEqual(coverageAt(data, 105), coverage);
-    assert.equal(treeAt(data, 105).exact, 450001n); // Coverage never discards captured losses.
+    assert.equal(treeAt(data, 105).exact, 450001n);
     if (index === 0) assert.equal(landNote(data, 100, 105), undefined);
     else assert.match(lossesFootnote(data, live(105)), /Incomplete/i);
   }
@@ -210,7 +210,7 @@ test('lend-lease incomplete subtotals retain exact amounts and named notes throu
   const folded = foldTree(groupTree(lossItems(data, live(105)), ROOT), 1);
   assert.match(folded.children.find(node => node.other)!.notes.join(' '), /Incomplete total/i);
   data.causes[0].leaves = [];
-  assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, true); // An ended exchange can hide losses with no known sunk leaf.
+  assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, true);
 });
 
 test('recovered and lend-lease sent are left out of totals, hierarchy, counts and tooltips', () => {

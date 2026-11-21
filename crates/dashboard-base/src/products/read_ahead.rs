@@ -1,4 +1,3 @@
-//! The content many pages' first replies wait for, read ahead once a source opens.
 use job_priority::SpawnCarried as _;
 use super::{ContentOptions, politics_content};
 use crate::{
@@ -7,14 +6,9 @@ use crate::{
 };
 use std::sync::{Arc, PoisonError, Weak, atomic::Ordering};
 
-/// Whether a source's page content read-ahead has been started: one per source, however often
-/// it opens.
 #[derive(Default)]
 struct ReadAhead(bool);
 
-/// Reads ahead, on a thread of its own, the content pages' first replies wait for ([`read`]), on
-/// half the processors ([`job_priority::confined`]): the page shown answers on the others, and a
-/// product asking for what it reads waits for the same read, held at that product's priority.
 pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
     {
         let state = source.state::<ReadAhead>();
@@ -29,14 +23,6 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
         .spawn_carried(move || job_priority::confined(|| read(&source, options)));
 }
 
-/// Reads the native GUI registry every country flag's shield is drawn with ([`warm_guis`]), then
-/// the politics content (the event feed, politics and special projects), then the effect description
-/// content (doctrine mastery, special projects and politics), each through the cache its products
-/// read, then the rest the catalogue reads lazily ([`Catalogue::read_readers`]), over the
-/// catalogue already bound for `options`: a product asking meanwhile waits for the same read, and a cache a request
-/// kept for another catalogue is left as it is.
-/// It holds the source only while a step runs, and no step starts once the source is dropped or
-/// `options`' binding is retired or replaced. A failure is left for the products to report.
 fn read(source: &Weak<Source>, mut options: ContentOptions) {
     let retired = |options: &ContentOptions| options.presentation.cancel().load(Ordering::Acquire);
     if retired(&options) {
@@ -72,8 +58,6 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
     }
 }
 
-/// Reads `catalogue`'s native GUI registry in the mode a flag's shield reads it: strictly while
-/// visual mods are shown, as every artwork transaction under them reads.
 pub(crate) fn warm_guis(catalogue: &Catalogue) {
     if catalogue.content.layers.presentation().shows_visual_mods() {
         installed_content_core::content::strict(|| drop(catalogue.guis()));
@@ -87,13 +71,10 @@ mod tests {
     use super::*;
     use crate::{presentation::Presentation, source::Work};
 
-    /// A source bound to a content folder, admitted for work ahead of a request as an open
-    /// admits it, its content resolved as the open resolves it.
     fn opened() -> (Arc<Source>, ContentOptions, catalogue::tests::Folder) {
         opened_with(&[])
     }
 
-    /// [`opened`] over `files` besides its own.
     fn opened_with(
         files: &[(&str, &str)],
     ) -> (Arc<Source>, ContentOptions, catalogue::tests::Folder) {
@@ -129,7 +110,6 @@ mod tests {
             .unwrap()
             .unwrap();
         let warmed = politics_content::held(&source, &catalogue).expect("read ahead");
-        // The product's own read takes what was read ahead.
         let read = politics_content::politics_content(&source, &options).unwrap();
         assert!(Arc::ptr_eq(&warmed, &read));
         assert_eq!(politics_content::content_loads(&source), 1);

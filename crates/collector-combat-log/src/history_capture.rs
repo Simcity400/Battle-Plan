@@ -1,4 +1,3 @@
-//! Incremental writer acquisition, with exact retained-state recovery after loss.
 use crate::{history_events, history_projection::Held, history_reducer::Store};
 use engine_land_inputs::{combat_log_events as event, combat_log_history as native};
 use engine_native::{Memory, walk::Outcome};
@@ -306,7 +305,6 @@ impl State {
             self.refuse(reason);
         } else if self.full {
             history_events::prepare_seed(self.batch.facts.len());
-            // A recovery replaces even entries left by a failed drain.
             if history_events::drain(&mut self.drained).is_err() {
                 REBASE_REQUIRED.store(true, Ordering::Release);
             }
@@ -385,7 +383,6 @@ impl State {
                     Ok(slot) => slot.count = Some(count),
                     Err(reason) if !full => return Err(reason),
                     Err(_) => {
-                        // The complete owned baseline is exact even if its incremental cache cannot grow.
                         tracked = false;
                         break;
                     }
@@ -497,8 +494,6 @@ impl Captured {
         self.converted = OnceLock::new();
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        // This is an owned event batch, not an eagerly projected row census.
-        // Complete row cardinalities are known only after conversion.
         if let Some(lengths) = self.converted.get() {
             return std::array::from_fn(|i| Outcome::Rows { len: lengths[i] });
         }

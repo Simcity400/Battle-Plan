@@ -1,5 +1,3 @@
-//! The province order cursor's recorded facts. Each input recordings do not carry yet is one
-//! accessor refused by name, so only the cases that read it are withheld.
 
 use super::*;
 use crate::unit_handle::Unit;
@@ -17,8 +15,6 @@ const THEATRE_AREAS_NOT_RECORDED: &str =
     "order cursor: land theatres' controller areas are not recorded";
 const TRUCE_NOT_RECORDED: &str = "order cursor: truces are not recorded";
 
-/// The order cursor over `target` for the first selected unit, as the `viewer` slot sees it, from
-/// the hour's rows.
 pub fn order_cursor(
     frame: &DecodedFrame,
     reads: ReadOperands<'_>,
@@ -33,8 +29,6 @@ pub fn order_cursor(
     Moves::for_common(&world, reads, &cells, &common)?.order_cursor(first, target, viewer, shift)
 }
 
-/// The adjacency rule's relation for the `country` slot from the hour's rows, with the branch that
-/// decided it, under the same directed war and disclosure predicates as the order cursor's.
 pub fn rule_relation(
     frame: &DecodedFrame,
     reads: ReadOperands<'_>,
@@ -100,7 +94,6 @@ impl Moves<'_, '_> {
     }
 }
 
-/// Whether a unit's recorded order list holds any order.
 fn queued(count: &replay_data::rows::Recorded<Option<i32>>) -> Fact<bool> {
     match count {
         replay_data::rows::Recorded::Value(Some(count)) => Ok(*count != 0),
@@ -153,14 +146,10 @@ impl CursorFacts for Facts<'_, '_, '_> {
         Ok(route.last().copied())
     }
 
-    /// Wired to `LandTheatres.areas` once recordings carry it: whether a land theatre whose
-    /// owner is the country lists the label.
     fn theatre_holds_area(&self, _: u32, _: u32) -> Fact<bool> {
         Err(THEATRE_AREAS_NOT_RECORDED.into())
     }
 
-    /// Wired to `RelationLinks.truce_end` once recordings carry it: a nonzero end after the
-    /// frame's date.
     fn truce(&self, _: Country, _: Country) -> Fact<bool> {
         Err(TRUCE_NOT_RECORDED.into())
     }

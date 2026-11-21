@@ -35,7 +35,6 @@ fn occupation_map_fixture() -> OccupationMapFixture {
                 b"core_r".to_vec(),
             ],
             compliance: vec![b"state_c".to_vec(), b"core_c".to_vec()],
-            // The retained group key differs from the state's occupied-country link.
             core_country: Some(3),
             stored_target: None,
         })),
@@ -371,7 +370,6 @@ fn occupation_map_empty_group_retains_its_saved_key_and_absence_stays_separate()
     )
     .unwrap();
     assert!(report.differences.is_empty());
-    // The retained key, rather than the embedded occupied-country link, must join.
     let Recorded::Value(Some(map)) = &mut row.map else {
         unreachable!()
     };
@@ -556,7 +554,6 @@ fn occupation_resistance_hover_compares_additions_and_exile_without_certifying_r
     let Recorded::Value(sources) = &mut missing_total.modifier_sources else {
         unreachable!()
     };
-    // Even without an error string, an absent root is not a zero or a certified tree.
     sources
         .iter_mut()
         .find(|source| source.section == 2)
@@ -594,9 +591,6 @@ fn history_fixture(input: &[u8]) -> installed_content_states::states::StateDefin
         .remove(0)
 }
 
-/// The save's country-side `cores`, inverted, against the recorded state
-/// lists: order and alias spelling do not matter; membership does, and
-/// only states read at the frame's hour are compared.
 #[test]
 fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
     let country = |tag: &[u8], id| CountryRow {
@@ -642,7 +636,6 @@ fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
         report
     };
     let countries = saved(&[(b"GER", &[1, 2]), (b"FRA", &[1])]);
-    // State 1 lists FRA then GER through an alias; state 3 has none.
     let report = run(
         &[row(1, &[7, 9]), row(2, &[5]), row(3, &[])],
         &countries,
@@ -650,17 +643,12 @@ fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StateCores"], 3);
-    // A missing core differs; a state not read this hour is not compared.
     let report = run(&[row(1, &[5]), row(2, &[])], &countries, &[1]);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    // A saved core of a read state with no row is a difference too.
     let report = run(&[row(1, &[5, 7])], &countries, &[1, 2]);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }
 
-/// The save's country-side `claims`, inverted, against each read state's
-/// recorded claims, as cores compare; the old rows held no claims, so a
-/// saved claim against them differs.
 #[test]
 fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
     use replay_data::{rows::Recorded, rows::StateCoreRow};
@@ -704,15 +692,10 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
     let report = run(&[row(1, vec![5, 7].into()), row(2, vec![].into())]);
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert!(report.differences.iter().all(|d| d.contains("claims")));
-    // An older row without claims compares nothing for them.
     let report = run(&[row(1, Recorded::NotRecorded), row(2, Recorded::NotRecorded)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
-/// The recorded strategic locations against the save, in stored order with
-/// tokens spelled through the dictionary: the state's pairs against its
-/// `strategic_region_data`, its provinces' entries against each province's
-/// `strategic_province_location`. A reordered or missing entry differs.
 #[test]
 fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
     use replay_data::{rows::Recorded, rows::StateCoreRow};
@@ -782,10 +765,8 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
     };
     let pair = |token: u64, province: u64| token << 32 | province;
     assert!(run(row(vec![pair(701, 31), pair(702, 32)], vec![pair(31, 702)])).is_empty());
-    // Order matters, and a province's list must be captured.
     let differences = run(row(vec![pair(702, 32), pair(701, 31)], Vec::new()));
     assert_eq!(differences.len(), 2, "{differences:?}");
-    // An unspelled token refuses the comparison.
     let mut report = Report::default();
     assert!(
         state_strategic_locations(
@@ -1039,15 +1020,12 @@ fn state_resource_block_gate_keeps_negative_siblings_but_omits_negative_only_poo
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }
 
-/// A pool whose resource token has no recorded spelling is a lexical limitation: its
-/// state's saved pools are counted, never reported missing by name.
 #[test]
 fn an_unnamed_state_resource_is_counted_not_reported_missing() {
     use replay_data::rows::StateResourceRow;
     let saved = saved_pack(
         b"countries={} provinces={} states={2={resources={ore=8 coolant=-2}} 3={resources={coolant=5}}}",
     );
-    // Token 7 has no recorded spelling.
     let names = BTreeMap::from([(8, b"coolant".as_slice())]);
     let pool = |state, resource, pool| StateResourceRow {
         state,
@@ -1073,7 +1051,6 @@ fn an_unnamed_state_resource_is_counted_not_reported_missing() {
             .keys()
             .any(|reason| reason.contains("its pool cannot be matched by name"))
     );
-    // A pool the hour lacks still fails: by count at the unnamed state, by name elsewhere.
     let report = run(&[pool(2, 7, 800_000)]);
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert!(
@@ -1125,7 +1102,6 @@ fn state_pools_and_modifiers_compare_names_order_and_scopes() {
     )
     .unwrap();
     assert_eq!(report.differences.len(), 1);
-    // A state read at an earlier hour is reported, not compared.
     let mut report = Report::default();
     state_pools(
         &[pool(7, 800_001)],
@@ -1172,13 +1148,9 @@ fn state_pools_and_modifiers_compare_names_order_and_scopes() {
         &mut report,
     )
     .unwrap();
-    // The swapped name and the missing second entry.
     assert_eq!(report.differences.len(), 3);
 }
 
-/// Origin presence comes from the controller's saved `origin` states and
-/// the infrastructure level from the saved state building the engine's
-/// fixed token names; a state without an origin has no level to compare.
 #[test]
 fn resource_inputs_compare_origins_and_infrastructure_levels() {
     let saved = saved_pack(
@@ -1222,12 +1194,10 @@ fn resource_inputs_compare_origins_and_infrastructure_levels() {
         &|_| true,
     );
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-    // States read at an earlier hour are named, not compared.
     let earlier = [input(2, 0, None), input(3, 0, None), input(4, 1, None)];
     let report = run(&earlier, &|state| state != 2);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StateResourceInputs"], 2);
-    // A state read at this hour without its row is missing, not skipped.
     let report = run(&exact[..2], &|_| true);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("StateResourceInputs.4"));
@@ -1277,9 +1247,6 @@ fn resource_inputs_compare_null_controller_without_a_country_join() {
     );
 }
 
-/// Overrides compare entry by entry and element by element in native
-/// order, the saved element key through the recorded resource database;
-/// a controller without rows compares as empty only in its own slice.
 #[test]
 fn building_overrides_compare_entries_elements_and_empty_controllers() {
     let saved = saved_pack(
@@ -1351,7 +1318,6 @@ fn building_overrides_compare_entries_elements_and_empty_controllers() {
         row(1, 0, 40, 2, 70, -50_000),
         row(2, 1, 41, 0, 0, 0),
     ];
-    // ITA was read at hour 5; GER, without rows, at hour 0.
     let reads = [read(5, hour), read(24, 0)];
     let report = run(&exact, &reads, hour);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1364,13 +1330,9 @@ fn building_overrides_compare_entries_elements_and_empty_controllers() {
     );
     let changed = [row(0, 0, 40, 2, 70, 300_000), row(1, 0, 40, 2, 70, -50_001)];
     let report = run(&changed, &reads, hour);
-    // The resource, the amount and the missing empty entry.
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-    // At hour 0 GER's read found no rows against one saved entry.
     let report = run(&[], &[read(5, hour), read(24, 0)], 0);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    // A controller with neither rows nor a recorded read is named, not
-    // compared, whatever its slice.
     let report = run(&[], &[read(5, hour)], 0);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(
@@ -1379,7 +1341,6 @@ fn building_overrides_compare_entries_elements_and_empty_controllers() {
             .keys()
             .any(|reason| reason.contains("no SliceReads hour"))
     );
-    // Rows without a read hour, and rows that skip an entry, are refused.
     assert!(attempt(&exact, &[], hour).is_err());
     assert!(attempt(&[row(0, 1, 40, 0, 0, 0)], &reads, hour).is_err());
 }
@@ -1848,7 +1809,6 @@ fn resolved_province_buildings_compare_signed_zero_values_and_named_membership()
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["ProvinceBuildings"], 2);
 
-    // A positive saved level must be in the active vector.
     let mut report = Report::default();
     buildings(
         &[replay_data::rows::BuildingRow {
@@ -1951,7 +1911,6 @@ fn naval_bases_sum_the_contents_port_buildings() {
     )
     .unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    // An unreadable country list is named on its own base, never waived.
     row.level = 5;
     row.countries_unreadable = true;
     let mut report = Report::default();
@@ -2013,8 +1972,6 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
     let bases = parse_country_occurrences(&installed_content_core::parser::parse(
         b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
     ).unwrap().items).unwrap();
-    // Raw aliases cannot be projected through the canonical CountryLinks:
-    // The game reads their own tag-table slots; slot zero uses the database.
     let tags = [
         b"A\0tail".to_vec(),
         b"B".to_vec(),
@@ -2975,9 +2932,6 @@ fn occupation_map_separates_raw_occupied_spelling_from_resolved_controller_holde
     );
 }
 
-/// The resources map tables against the saved origins: each origin's stored efficiency and
-/// production-line colour, its rights by resource name and holder, the origin routes of
-/// countries read at this hour, and an import's line colour against its saved exchange.
 #[test]
 fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save() {
     use replay_data::{
@@ -3042,7 +2996,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         owner: 5,
         sample_hour: 10,
     }];
-    // AFG imports from GER.
     let import = ConvoyClientRow {
         handle: 0x33,
         category: engine_resources::resource_map::IMPORT,
@@ -3101,7 +3054,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         )]),
         ..Default::default()
     };
-    // GER lends to AFG.
     let lend = ConvoyClientRow {
         owner_ordinal: Some(0),
         other_ordinal: Some(0),
@@ -3181,8 +3133,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     assert_eq!(report.compared_tables["ResourceRights"], 1);
     assert_eq!(report.compared_tables["TradeRoutes"], 1);
     assert_eq!(report.compared_tables["ConvoyClients"], 2);
-    // The efficiency factors and the requirement before the dominance reduction compare
-    // with the client's saved efficiency, efficiency_due_to_lost_convoys and request.
     let mut reduced = origin.clone();
     reduced.convoys_base = 2.into();
     let mut slower = import.clone();
@@ -3227,7 +3177,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         "{:?}",
         report.differences
     );
-    // An older recording holds none of them: each is a named limitation, never a match.
     let mut older_origin = origin.clone();
     older_origin.convoys_base = replay_data::rows::Recorded::NotRecorded;
     let older_clients: Vec<_> = [import.clone(), lend.clone()]
@@ -3265,8 +3214,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
             report.limitations
         );
     }
-    // A save without `request` cannot certify the recorded requirement: its writer writes it for
-    // every client, so an omission is a named limitation, never a match or a difference.
     let omitted = saved_pack(
         br#"countries={GER={resources={
             origin={country="GER" efficiency=1 efficiency_due_to_lost_convoys=0.7 state=119 efficiency=0.7
@@ -3317,7 +3264,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         "{:?}",
         report.limitations
     );
-    // An origin list that is neither own nor rights is refused, not indexed.
     let mut stray = origin.clone();
     stray.list = 2;
     let error = resource_map(
@@ -3374,7 +3320,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
             .iter()
             .any(|difference| difference.contains("owner_ordinal"))
     );
-    // A changed stored product, a wrong line colour, a different path and a bad import.
     let mut changed = origin.clone();
     changed.efficiency = 69_999;
     changed.bad = false;
@@ -3384,7 +3329,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     slow.bad = true;
     let report = run(&[changed], std::slice::from_ref(&moved), &[slow], 10);
     assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
-    // Dropping every route or every client must still fail from independently saved membership.
     let report = run(
         std::slice::from_ref(&origin),
         &[],
@@ -3425,8 +3369,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         10,
     );
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-    // An import or lend-lease attributed to another valid country fails against the
-    // saved exporter, giver and receiver.
     let mut swapped_import = import.clone();
     (swapped_import.owner, swapped_import.other) = (5, 9);
     let mut redirected_lend = lend.clone();
@@ -3462,7 +3404,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         "{:?}",
         report.differences
     );
-    // A route read at an earlier hour fails rather than passing a stale comparison.
     let report = run(&[origin], &[moved], &[import], 11);
     assert!(
         report
@@ -3471,7 +3412,6 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
             .any(|d| d.contains("TradeRoutes.GER"))
     );
     assert_eq!(report.compared_tables["TradeRoutes"], 0);
-    // A regional efficiency that differs from the full saved default fails.
     let regional = [RegionalConvoyEfficiencyRow {
         country: 5,
         region: 43,
@@ -3554,7 +3494,6 @@ fn resource_right_order_is_runtime_only_but_membership_and_unique_positions_are_
         .unwrap();
         report
     };
-    // Text sorts oil before steel; the live vector can retain steel before oil.
     assert!(run(&rights).differences.is_empty());
     let mut duplicate = rights.clone();
     duplicate[1].ordinal = 0;

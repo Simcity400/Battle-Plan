@@ -94,7 +94,6 @@ fn movement() -> MovementContent {
 }
 
 fn anchor(province: u32, slot: u32) -> Option<[f32; 3]> {
-    // Authored slot positions deliberately differ from province identifiers.
     match (province, slot) {
         (5, 0) => Some([20.0, 0.0, 20.0]),
         (6, 0) => Some([30.0, 0.0, 20.0]),
@@ -105,8 +104,6 @@ fn anchor(province: u32, slot: u32) -> Option<[f32; 3]> {
 
 #[test]
 fn carrier_takeoff_uses_the_joined_task_forces_settled_route_point() {
-    // Native route slots, interpolation and stack law:
-    // a moving carrier's source is one unit along its task-force route spline.
     let (frame, registry, base) = fixture();
     let motions = TaskForceMotions::read(&frame).unwrap();
     let movement = movement();
@@ -194,7 +191,6 @@ fn carrier_origins_require_complete_rosters_and_resolved_host_joins() {
         let sources = CarrierSources::read(&missing, &registry, &origin).unwrap();
         assert_eq!(sources.start(&base), Err(reason));
     }
-    // Even a present host row does not authenticate an incomplete census.
     for (table, reason) in [
         (TableId::Ships, "the ship census is incomplete"),
         (TableId::TaskForces, "the task-force census is incomplete"),

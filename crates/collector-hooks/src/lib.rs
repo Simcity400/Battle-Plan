@@ -1,4 +1,3 @@
-//! Windows x64 patch publication, thread suspension and synchronization, Tap bridges and publication measurements. These ordinary Rust library modules are linked into the collector DLL. They preserve native registers, flags, unwind registration and continuation, and retain executable storage whenever restoration or quiescence cannot be proved.
 
 use collector_primitives::clock;
 use collector_status::status;

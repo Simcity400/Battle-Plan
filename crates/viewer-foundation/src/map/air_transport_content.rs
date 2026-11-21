@@ -1,9 +1,6 @@
-//! Borrowed static inputs for native air transport admission.
 use installed_content_core::province_geometry::ProvinceGeometry;
 use std::collections::BTreeMap;
 
-/// The static content reached by long paradrop transport labels. Borrowed
-/// from the ordinary assets; no second content parse or per-order copy.
 #[derive(Clone, Copy)]
 pub struct AirTransportContent<'a> {
     pub geometry: &'a ProvinceGeometry,
@@ -17,7 +14,6 @@ pub struct AirTransportContent<'a> {
 }
 
 impl AirTransportContent<'_> {
-    /// The destination's nullable strategic region.
     pub fn target_region(&self, province: u32) -> Option<&[u32]> {
         self.region_by_province
             .get(&province)
@@ -25,8 +21,6 @@ impl AirTransportContent<'_> {
             .map(Vec::as_slice)
     }
 
-    /// Only the authored `air_transport` bit is needed. Null subtype index zero
-    /// has no transport bit; uncertain content remains a refusal.
     pub fn transport_pool(&self, index: u32) -> Result<bool, String> {
         if index == 0 {
             return Ok(false);

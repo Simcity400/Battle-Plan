@@ -214,7 +214,6 @@ impl Fixture for EquipmentDestructionRow {
             country: (key >> 72) as u32,
             cause: EquipmentDestructionCause::try_from((key >> 64) as u8).unwrap(),
             variant: key as u64,
-            // Alternate signs, never zero: native gains are negative removals.
             amount_raw: if tick.is_multiple_of(2) { 1 } else { -1 }
                 * (tick as i64).saturating_add(1),
             ..Default::default()
@@ -305,7 +304,6 @@ macro_rules! unsigned_samples {
 }
 signed_samples!(i8, i16, i32, i64);
 unsigned_samples!(u8, u16, u32, u64);
-/// Current fixtures encode; only historical decoding produces a stamp.
 impl Sample for PacketHour {
     fn sample(_tick: usize) -> Self {
         Self::Host
@@ -350,14 +348,10 @@ trait Fixture: RowCodec + Debug {
     fn smallest_key() -> u128 {
         0
     }
-    /// The largest valid key; below the key width when an enumerated key
-    /// field leaves bit patterns unused.
     fn largest_key() -> u128 {
         maximum_key::<Self>()
     }
 }
-/// Fixture rows hold their stepped fields at their display steps
-/// ([`crate::display`]), as capture stores them, so they round-trip.
 macro_rules! fixture {
     ($ty:ident, |$key:ident| { $($key_field:ident: $key_value:expr),* $(,)? },
      { $($field:ident: $field_ty:ty),+ $(,)? }) => {
@@ -389,7 +383,6 @@ impl<T> Sample for RetiredNested<T> {
         Self::default()
     }
 }
-/// Current writers hold no older value.
 impl<T> Sample for RetiredKept<T> {
     fn sample(_tick: usize) -> Self {
         Self::default()
@@ -409,7 +402,6 @@ sample_struct!(AirNormalizationEntry { present: bool, raw: Option<i64> });
 sample_struct!(AirMissionNormalization { night_stat: Option<i64>, modifiers: [Option<AirNormalizationEntry>; 2] });
 sample_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
     refresh_identity: u64, edges: Vec<u8> });
-/// Current writers leave most rows without a witnessed packet.
 impl<T: Sample> Sample for Witnessed<T> {
     fn sample(tick: usize) -> Self {
         Self((tick % 3 == 1).then(|| T::sample(tick)))
@@ -470,8 +462,6 @@ fn unit_combat_references_fixture(
     tick: usize,
     count: u32,
 ) -> Recorded<Option<UnitCombatReferences>> {
-    // Retain the old count extrema without allocating an enormous vector.
-    // Refusal is independent of a known empty or complete short reference list.
     Recorded::Value(if tick.is_multiple_of(4) || count > 2 {
         None
     } else {
@@ -522,8 +512,6 @@ impl Sample for DirectedWars {
 }
 impl Sample for TemplateNameValue {
     fn sample(tick: usize) -> Self {
-        // A different period from Option sampling keeps the equality
-        // certificate reachable inside a present display-name packet.
         match tick % 5 {
             0 => Self::SameAsDivisionTemplates,
             1 => Self::Changed {
@@ -595,7 +583,6 @@ impl Sample for NuclearStrikePart {
 }
 impl Sample for NuclearUnitDamage {
     fn sample(tick: usize) -> Self {
-        // A railway gun has no organisation on either side.
         let organisation = Option::<i64>::sample(tick);
         Self {
             handle: u64::sample(tick),
@@ -634,7 +621,6 @@ impl Fixture for PeaceSettlementRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let conference = Option::<u64>::sample(tick);
         let hour = Option::<i32>::sample(tick);
-        // A missing identity/hour is a failed manifest, never an empty deal.
         let failure = if conference.is_none() || hour.is_none() {
             Some(b"synthetic guarded fault".to_vec())
         } else {
@@ -851,7 +837,6 @@ impl Fixture for CountryStabilityInputRow {
             )
         };
         let parts: [(Option<i64>, u32); 10] = std::array::from_fn(totals);
-        // Only the first eight keys have totals here.
         let mut row = Self {
             country: key as u32,
             recruitment_ratio: Recorded::Value(Some(tick as i64)),
@@ -917,7 +902,6 @@ impl Fixture for CountryStabilityLineRow {
             secondary: i64::sample(tick + 1),
             value: i64::sample(tick + 2),
             text: if kind == Self::UNPAIRED {
-                // Nonempty: the unpaired kind falls on ticks divisible by 9.
                 Vec::<u8>::sample(tick + 1)
             } else {
                 Vec::new()
@@ -1036,7 +1020,6 @@ impl Fixture for AvailableEquipmentVariantRow {
             variant: u64::sample(tick),
         }
     }
-    /// Roster kind 3 is refused: the largest key has kind 2.
     fn largest_key() -> u128 {
         (u128::from(u32::MAX) << 34) | (2 << 32) | u128::from(u32::MAX)
     }
@@ -1098,7 +1081,6 @@ impl Sample for FuelDemandPart {
         part_of_kind((tick % usize::from(FuelDemandPart::KINDS)) as u8, tick)
     }
 }
-/// A sampled part of list `kind`.
 fn part_of_kind(kind: u8, tick: usize) -> FuelDemandPart {
     let unit = || FuelDemandUnit {
         reference: u64::sample(tick),
@@ -1208,7 +1190,6 @@ impl Fixture for MapEventsRow {
 impl Fixture for FuelDemandPartRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let kind = ((key >> 80) & 7) as u8;
-        // The part carries the key's identity, as a split pack's does.
         let mut part = part_of_kind(kind, tick);
         let ident = (key >> 16) as u64;
         match &mut part {
@@ -1232,7 +1213,6 @@ impl Fixture for FuelDemandPartRow {
             part,
         }
     }
-    /// The last list's (contexts') largest identity, a region.
     fn largest_key() -> u128 {
         (u32::MAX as u128) << 83
             | ((FuelDemandPart::KINDS - 1) as u128) << 80
@@ -1719,7 +1699,6 @@ impl Fixture for CharacterRoleTraitRow {
             },
         }
     }
-    /// A scientist row (the last kind) keeps role 0.
     fn largest_key() -> u128 {
         (u128::from(u32::MAX) << 40) | (u128::from(Self::SCIENTIST) << 32)
     }
@@ -1796,7 +1775,6 @@ fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, 
 fixture!(BattleSoundRow, |key| {ordinal: key as u32}, {center_x: u32, center_z: u32, radius: u32, provinces: Vec<u32>, sounding: bool, object: u64});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
 fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>, air_detection: Recorded<Option<Option<i64>>>, map_modifiers_known: Recorded<bool>, naval_detection: Recorded<Option<i64>>, air_attack: Recorded<Option<i64>>, air_defence: Recorded<Option<i64>>, air_efficiency: Recorded<Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>>, custom_sea: Recorded<Option<Vec<i16>>>});
-/// Slot 0 is never updated, so its fixtures always hold their clock.
 impl Fixture for WeatherProvinceRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let id = key as u32;
@@ -1824,7 +1802,6 @@ impl Fixture for WeatherProvinceRow {
         }
     }
 }
-/// Current rows hold a record's words at the frame's anchor.
 impl Sample for ProvinceTemperature {
     fn sample(tick: usize) -> Self {
         Self::anchored(crate::temperature::State {
@@ -1852,13 +1829,11 @@ fixture!(DecisionRandomItemRow, |key| {country: (key >> 32) as u32, ordinal: key
 fixture!(CapturedOperativeReferenceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {operative: u64, owner: Option<u32>});
 sample_struct!(TransportTaskForceStats { detection_138: Option<i64>, visibility_148: Option<i64>, visibility_150: Option<i64>, carrier_detection_160: Option<i64> });
 sample_struct!(TransportRadarCounts { signed_count: i32, counts: Option<Vec<i32>> });
-/// The retired split rows recorded no sample.
 impl Sample for SpottingSample {
     fn sample(_tick: usize) -> Self {
         Self::Derived
     }
 }
-/// Current rows record whether the clock was updated or what it held.
 impl Sample for DayNightClock {
     fn sample(tick: usize) -> Self {
         if tick.is_multiple_of(3) {
@@ -2252,7 +2227,6 @@ sample_struct!(TrainAllocation {
     variant: u64,
     count: i32
 });
-/// Empty, short and multi-byte-gap arrays with runs of varied length.
 impl Sample for SparseBytes {
     fn sample(tick: usize) -> Self {
         let dense: Vec<u8> = (0..(tick % 3) * 150)
@@ -2268,7 +2242,6 @@ impl Sample for SparseBytes {
     }
 }
 fixture!(SupplyNodeRow, |key| {country: (key >> 32) as u32, index: key as u32}, {province: u32, kind: u32, flag: u8, available: i64, consumed: i64, parent: i32, route_from: u16, route_to: u16, break_after: u8, path: Vec<u32>});
-// Combat fixture start
 sample_struct!(CombatModifierValue {
     id: u32,
     value_a: i64,
@@ -2432,7 +2405,6 @@ impl Fixture for LandCombatDivisionRow {
             direction_group: i32::sample(tick),
             exile: Option::<LandCombatExileInputs>::sample(tick),
             categories: u64::sample(tick),
-            // Within the reserve speed-share bounds, which the codec enforces.
             reinforcement_speed: Option::<i64>::sample(tick)
                 .map(|share| share.clamp(0, LandCombatDivisionRow::SPEED_SHARE_MAXIMUM)),
             own: Option::<LandCombatMemberValues>::sample(tick),
@@ -2457,7 +2429,6 @@ impl Fixture for LandCombatDivisionModifierRow {
 }
 impl Fixture for LandCombatSideRow {
     fn fixture(key: u128, tick: usize) -> Self {
-        // Secondary sets hold distinct positive tags only.
         let positive = |offset: usize| {
             (0..(tick + offset) % 3)
                 .map(|index| (tick + offset + index) as u32 + 1)
@@ -2490,7 +2461,6 @@ impl Fixture for NavalCombatDetailsRow {
 }
 fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32 }, { ship: u64, owner: u32, state: u32, member_source: u8, group_index: u32, member_index: u32, convoy: u64, subunit_index: i32, formation_type: i32, build_cost_ic: i64, cached_strength_ratio: i64, pride: u8, is_convoy: u8, name: Vec<u8>, type_name: Vec<u8>, sprite: Vec<u8>, sunk_by: Vec<u8>, variant: u64, arrival_hours: i32, received_criticals: i32, evacuation_state: i32, detection_state: i32, escape_progress: i64, escape_speed_base: i64, last_target: NavalCombatLastTarget, received_damage: [i64; 6], live_ship: u8, live_convoy: u8, strength: i64, organisation: i64, base_organisation: i64, maximum_hit_points: i64, formation_flags: u64, weapon_context: NavalShipWeaponContext, damage_entries: Vec<NavalCombatDamage>, air_hits: [Vec<NavalCombatAirHit>;2], naval_hits: Vec<NavalCombatHit> });
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
-// Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes, allocated_trucks: Recorded<Option<i32>>, required_trucks_raw: Recorded<Option<i64>>, required_trains: Recorded<Option<i32>>});
 fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>, original_tag: Recorded<Option<Vec<u8>>>, original_tag_reference: Recorded<Option<i32>>, transport_convoys: Recorded<Retired>});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
@@ -2668,7 +2638,6 @@ impl Fixture for ModifierDefinitionRow {
             category_mask: u32::sample(tick + 5),
             feature_selector: u32::sample(tick + 6),
             precision: i32::sample(tick + 7),
-            // The codec admits only the two callback states.
             eligibility: (tick % 2) as u8,
         }
     }
@@ -2941,7 +2910,6 @@ impl Fixture for NavalMissionCommanderRow {
             range_factor: Option::sample(tick + 3),
         }
     }
-    /// Sources above 4 are refused: the largest key has source 4.
     fn largest_key() -> u128 {
         (u128::from(u32::MAX) << 72) | (u128::from(u64::MAX) << 8) | 4
     }
@@ -3153,7 +3121,6 @@ fixture!(DivisionStatusRow, |key| {division: key as u64}, {entrenchment: i64, en
 fixture!(DivisionModelInputRow, |key| {division: key as u64}, {model_number: Option<i32>, camouflage: Option<DivisionCamouflage>, exercising: Option<u8>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
-        // Leg vectors must stay aligned, so they cannot be sampled apart.
         let legs = |offset: usize| {
             (0..tick % 3)
                 .map(|i| i64::sample(tick + offset + i))
@@ -3167,7 +3134,6 @@ impl Fixture for DivisionEtaInputsRow {
             speed_org: Option::<i64>::sample(tick),
             speed_fuel: Option::<i64>::sample(tick + 1),
             current_speed: i64::sample(tick + 1),
-            // Distinct positive indices, one past a byte.
             terrain_speed: (0..tick % 3)
                 .map(|i| TerrainSpeed {
                     terrain: [1, 256, 1581][i],
@@ -4386,7 +4352,6 @@ fn check_table<T: Fixture>(table: TableId) {
             let mut input = Decoder::new(&bytes);
             assert_eq!(decode_row::<T>(0, &mut input).unwrap(), next, "{table:?}");
             input.finish().unwrap();
-            // Repeated fixture values need the same truncation checks only once.
             if checked_encodings.insert(bytes.clone()) {
                 for prefix in 0..bytes.len() {
                     assert!(
@@ -4481,9 +4446,6 @@ fn game_score_tables_round_trip_optional_values_ordered_witnesses_and_deltas() {
     check_table::<GameScoreMultiplierRow>(TableId::GameScoreMultipliers);
 }
 
-/// Character input rows refuse an unknown role kind, a scientist role
-/// key, an empty trait list, a zero reference and leader operands on an
-/// unresolved reference, in a snapshot and after a delta.
 #[test]
 fn character_input_rows_refuse_contradictions() {
     let role = CharacterRoleTraitRow {
@@ -4530,7 +4492,6 @@ fn character_input_rows_refuse_contradictions() {
         },
     ] {
         assert!(encode_row(&bad, 0, &mut Vec::new()).is_err(), "{bad:?}");
-        // A snapshot decoded from these bytes fails validation.
         let mut bytes = Vec::new();
         bad.encode_fields(&mut bytes).unwrap();
         let decoded =
@@ -4568,8 +4529,6 @@ fn character_input_rows_refuse_contradictions() {
                 .is_err()
         );
     }
-    // A valid delta (an owner of 9) applied to an unresolved baseline
-    // gives an unresolved row with an owner, which validation refuses.
     let unresolved = CharacterOperativeRow {
         character: 1,
         reference: 5,
@@ -4592,7 +4551,6 @@ fn character_input_rows_refuse_contradictions() {
             .validate_keys()
             .is_err()
     );
-    // And a delta onto a contradictory baseline is refused at once.
     let bad = CharacterOperativeRow {
         reference: 0,
         ..operative.clone()
@@ -4762,7 +4720,6 @@ fn output_purpose_appends_after_spending_and_unrecorded_reads_unknown() {
     let old = ProductionLineOutputRow::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
     assert_eq!((old.units, old.spent_raw), (3, Recorded::Value(Some(-5))));
-    // A recording without the purpose never reads as new production.
     assert_eq!(old.purpose(), OutputPurpose::Unknown);
     for purpose in [
         OutputPurpose::Unknown,
@@ -4778,7 +4735,6 @@ fn output_purpose_appends_after_spending_and_unrecorded_reads_unknown() {
         round_trip(&row);
         assert_eq!(row.purpose(), purpose);
     }
-    // A defaulted row is unclassified, not new.
     assert_eq!(
         ProductionLineOutputRow::default().purpose(),
         OutputPurpose::Unknown
@@ -4968,7 +4924,6 @@ fn oracle_witness_suffixes_preserve_the_readable_historical_prefixes() {
     assert_eq!(historical.country_tags, Recorded::NotRecorded);
 }
 
-/// The whole native list is recorded, far past the former 16-entry cap.
 #[test]
 fn naval_base_country_lists_keep_every_entry_in_native_order() {
     let previous = NavalBaseRow {
@@ -4992,8 +4947,6 @@ fn naval_base_country_lists_keep_every_entry_in_native_order() {
     assert_eq!(decoded.apply(Some(previous)).unwrap(), next);
 }
 
-/// Zero bytes are omitted, in-array gaps read as zero and out-of-array
-/// indices as absent; one native array has exactly one encoding.
 #[test]
 fn sparse_bytes_keep_native_length_nonzero_runs_and_refuse_noncanonical_forms() {
     use crate::value::Value;
@@ -5023,7 +4976,6 @@ fn sparse_bytes_keep_native_length_nonzero_runs_and_refuse_noncanonical_forms() 
     let mut input = Decoder::new(&bytes);
     assert_eq!(SparseBytes::decode(&mut input).unwrap(), sparse);
     input.finish().unwrap();
-    // An all-nonzero array costs only its header and one run.
     let full = SparseBytes::from_dense(&[9; 300]).unwrap();
     let mut bytes = Vec::new();
     full.encode(&mut bytes).unwrap();
@@ -5044,28 +4996,24 @@ fn sparse_bytes_keep_native_length_nonzero_runs_and_refuse_noncanonical_forms() 
         assert!(value.encode(&mut Vec::new()).is_err(), "{value:?}");
     }
     for wire in [
-        // A second run with no gap would touch the first.
         [
             &10_u32.to_le_bytes()[..],
             &2_u32.to_le_bytes(),
             &[0, 1, 5, 0, 1, 6],
         ]
         .concat(),
-        // A zero byte inside a run.
         [
             &10_u32.to_le_bytes()[..],
             &1_u32.to_le_bytes(),
             &[0, 2, 5, 0],
         ]
         .concat(),
-        // A run ending past the array.
         [
             &2_u32.to_le_bytes()[..],
             &1_u32.to_le_bytes(),
             &[1, 2, 5, 6],
         ]
         .concat(),
-        // An overlong gap.
         [
             &10_u32.to_le_bytes()[..],
             &1_u32.to_le_bytes(),
@@ -5077,10 +5025,6 @@ fn sparse_bytes_keep_native_length_nonzero_runs_and_refuse_noncanonical_forms() 
     }
 }
 
-/// Every owner over every slot: one nonzero record each plus the zero last
-/// record, and one owner with a ten-record array. The
-/// counts come back from the rows alone; an in-range index without a row
-/// is a zero record and an index past the count is no record at all.
 #[test]
 fn sparse_country_intel_keeps_counts_and_zero_gaps() {
     const SLOTS: u32 = 20;
@@ -5121,7 +5065,6 @@ fn sparse_country_intel_keeps_counts_and_zero_gaps() {
         .collect();
     input.finish().unwrap();
     assert_eq!(decoded, rows);
-    // Dense rows would be one per owner and slot; this is two rows per owner.
     assert!(bytes.len() < 80 * SLOTS as usize, "{} bytes", bytes.len());
 
     let counts = CountryIntelRow::native_counts(&decoded);
@@ -5134,10 +5077,8 @@ fn sparse_country_intel_keeps_counts_and_zero_gaps() {
             .iter()
             .find(|row| row.owner_country == owner && row.target_index == index)
     };
-    // In range with no row: four exact zeros.
     assert!(record(1, 2).is_none() && 2 < counts[&1]);
     assert_eq!(record(1, 1).unwrap().army, -1);
-    // Past the count: not in the native array, which the count alone decides.
     assert!(record(7, 20).is_none() && 20 >= counts[&7]);
 }
 
@@ -5219,10 +5160,10 @@ fn party_leader_role_keys_round_trip_and_delta() {
 fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
     let previous = CountryAppearanceRow {
         country: u32::MAX,
-        red: 0x8000_0000,   // Negative zero.
-        green: 0x7fc1_2345, // NaN payload.
-        blue: 0x7f80_0000,  // Infinity.
-        alpha: 0xff80_0000, // Negative infinity.
+        red: 0x8000_0000,
+        green: 0x7fc1_2345,
+        blue: 0x7f80_0000,
+        alpha: 0xff80_0000,
         cosmetic_tag: b"BRM_british".to_vec(),
         name_tag: b"GER".to_vec(),
         leader_ideology: b"nazism".to_vec(),
@@ -5233,9 +5174,9 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         old_adjective: Some(Vec::new()),
         old_definite_name: None,
         ui_red: 0x3f80_0000,
-        ui_green: 0x0000_0001, // Denormal.
-        ui_blue: 0x7fc0_0001,  // NaN payload.
-        ui_alpha: 0xbf80_0000, // Negative one.
+        ui_green: 0x0000_0001,
+        ui_blue: 0x7fc0_0001,
+        ui_alpha: 0xbf80_0000,
         graphical_culture_2d: b"western_european_2d".to_vec(),
         subjects: Recorded::Value(vec![7, -1]),
         original_tag: Recorded::Value(Some(b"GER".to_vec())),
@@ -5255,7 +5196,6 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
     let delta = next.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 4);
     assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
-    // A leader change and a missing leader character stay distinct from zero.
     for leader_character in [Some(0), None] {
         let next = CountryAppearanceRow {
             leader_character,
@@ -5271,7 +5211,6 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         assert_eq!(delta.mask, 1 << 9);
         assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
     }
-    // An empty old name, a missing one and a rename stay distinct.
     for old_name in [Some(Vec::new()), None, Some(b"Reich".to_vec())] {
         let next = CountryAppearanceRow {
             old_name,
@@ -5287,7 +5226,6 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         assert_eq!(delta.mask, 1 << 10);
         assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
     }
-    // A cosmetic change rewrites the UI colour: its own column, not the primary's.
     let recoloured = CountryAppearanceRow {
         ui_green: 0x3f00_0000,
         ..previous.clone()
@@ -5295,7 +5233,6 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
     let delta = recoloured.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 14);
     assert_eq!(delta.apply(Some(previous.clone())).unwrap(), recoloured);
-    // Main's fields keep their bits; the 2D culture follows as 17.
     let next = CountryAppearanceRow {
         graphical_culture_2d: Vec::new(),
         ..previous.clone()
@@ -5433,7 +5370,6 @@ fn current_ship_suffixes_keep_independent_missing_scalars_and_signed_bits() {
         };
         round_trip(&next);
         let delta = next.delta(Some(&baseline)).unwrap().unwrap();
-        // The retired strike tombstone never changes.
         assert_eq!(delta.mask, 1 << 8);
         let mut bytes = Vec::new();
         encode_delta(TableId::ShipModels, &delta, 0, &mut bytes).unwrap();
@@ -5491,7 +5427,6 @@ fn combat_window_operands_round_trip() {
         decode_row::<LandCombatDivisionRow>(0, &mut Decoder::new(&bytes)).unwrap(),
         division
     );
-    // The scales are a field each; the division values are one copy, stored only unjoined.
     assert_eq!(TableId::LandCombatDivisions.full_mask(), (1 << 15) - 1);
     assert_eq!(TableId::LandCombatDivisions.mask_width(), 2);
 }
@@ -5544,9 +5479,7 @@ fn operations_record_native_definition_and_independent_progress_fields() {
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();
     assert_eq!(bytes.len(), 84);
-    // Flags, an empty description and an empty phase list.
     assert_eq!(&bytes[49..59], &[0; 10]);
-    // Three empty structured lists, each a byte length and a zero count.
     for list in bytes[59..83].chunks(8) {
         assert_eq!(list, &[4, 0, 0, 0, 0, 0, 0, 0]);
     }
@@ -5844,7 +5777,6 @@ fn structured_fields_reject_hostile_inner_counts_tags_and_suffixes() {
     reject::<Vec<AirHistoryEntry>>(&u32::MAX.to_le_bytes());
     reject::<Vec<AirDamageEntry>>(&u32::MAX.to_le_bytes());
     reject::<std::sync::Arc<Vec<AirCombatRecord>>>(&u32::MAX.to_le_bytes());
-    // A shared record vector is written exactly as the vector it holds.
     let records = vec![AirCombatRecord {
         wing_id: 3,
         first_damage: vec![AirCombatDamage { cause: 1, amount: -2 }],
@@ -5918,8 +5850,6 @@ fn ace_presentation_suffix_keeps_previous_roster_bytes_and_explicit_absence() {
     );
 }
 
-/// Deployed cache operands keep their own mask and prepared contract while status
-/// reserves room for the independent movement-speed operands.
 #[test]
 fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() {
     let row = DivisionStatusRow {
@@ -5935,7 +5865,6 @@ fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() 
     changed.officer_experience = Some(-17).into();
     assert_eq!(changed.delta(Some(&row)).unwrap().unwrap().mask, 1 << 34);
     round_trip(&changed);
-    // Reserve the movement lane's three independent status operands as well.
     assert!(TableId::DivisionStatus.field_count() + 3 <= u64::BITS as usize);
     let mut row = DivisionPanelStatsRow {
         division: 7,
@@ -5947,7 +5876,6 @@ fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() 
     row.suppression = Recorded::Value(Some(i64::MIN + 22));
     round_trip(&row);
     assert_eq!(TableId::DivisionPanelStats.field_count(), 25);
-    // The panel's own words, then the suppression witness; anti-air lives in movement_stats.
     assert_eq!(row.word(0x3d), Some(Recorded::Value(Some(i64::MIN))));
     assert_eq!(row.word(0x3e), Some(Recorded::Value(Some(i64::MIN + 21))));
     assert_eq!(row.word(0xc), Some(Recorded::Value(Some(i64::MIN + 22))));
@@ -5971,11 +5899,6 @@ fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() 
     assert_eq!(restored, [row]);
 }
 
-/// The side hover inputs are appended after the retired side parts: older
-/// recordings lack them by name, and the current format stores the prevented
-/// damage and both progress ratios at their printed precision, keeping the
-/// no-progress word and the exact anti-air, offence and defence. The CAS
-/// operands come from them, or from an older recording's side parts.
 #[test]
 fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them() {
     let side = LandCombatSideInputs {
@@ -6012,8 +5935,6 @@ fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them()
     assert_eq!(stepped.learning_traits.as_ref().unwrap()[0].progress, 5_000);
     assert_eq!(empty.skill_progress, LandCombatSideInputs::NO_PROGRESS);
     round_trip(&row);
-    // A part whose optional read failed stays unknown, apart from known
-    // zeros and empties, and keeps its sentinel through the step.
     let mut unread = row.clone();
     if let Recorded::Value([side, _]) = &mut unread.side_inputs {
         side.skill_progress = LandCombatSideInputs::UNREAD_PROGRESS;
@@ -6027,7 +5948,6 @@ fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them()
     assert_eq!(side.skill_progress, LandCombatSideInputs::UNREAD_PROGRESS);
     assert_ne!(unread, row);
     round_trip(&unread);
-    // A drift below the printed precision is no change.
     let mut drifted = row.clone();
     if let Recorded::Value([side, _]) = &mut drifted.side_inputs {
         side.prevented_damage[0] += 99_999;
@@ -6037,9 +5957,6 @@ fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them()
     assert_eq!(drifted, row);
     assert_eq!(row.cas_inputs(0), Some((123_456_789, [1_200_000, 0])));
     assert_eq!(row.cas_inputs(1), Some((0, [0, 0])));
-    // A current writer always records the side inputs, its defaults
-    // included; only a row holding neither them nor older side parts has no
-    // CAS operands.
     assert_eq!(
         LandCombatDetailsRow::default().cas_inputs(0),
         Some((0, [0, 0]))
@@ -6054,8 +5971,6 @@ fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them()
         crate::format::FormatVersion::read(crate::rows::compatibility::POLITICAL_FORMAT).unwrap();
     assert!(previous.table_refusal(table).is_none());
     assert_eq!(previous.fields(table), 10);
-    // The historical writer stands in for format 101's side layout, which
-    // still held the parts retired since, the CAS operands exact.
     let mut older = row.clone();
     older.sides[1].anti_air_attack = RetiredKept::older_value(-5);
     older.sides[1].prevented_damage = RetiredKept::older_value([1_234_567, 1]);
@@ -6137,7 +6052,6 @@ fn land_combat_members_store_their_division_values_once() {
         (values.fuel_inputs, values.air_attack, values.strength_combat_factor),
         ([500, 2_000], 3_000, 90_000)
     );
-    // A member's own copy stands alone; without a division row an unjoined member has no values.
     let own = LandCombatMemberValues {
         armour: 1,
         ..values.clone()
@@ -6596,8 +6510,6 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<CountryIntelRow>(TableId::CountryIntel);
 }
 
-/// The movement operand tables keep a refusal, an absent entry and a zero
-/// entry (or a refused and a false access) apart.
 #[test]
 fn movement_operand_rows_keep_refusal_absence_and_zero_distinct() {
     let mut encodings = std::collections::BTreeSet::new();
@@ -6676,8 +6588,6 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         ..old.clone()
     };
     selected_route_suffix(TableId::DivisionStatus, 26, &old, &next);
-    // The combat movement base: a naval or out-of-combat division's absent operand
-    // and a land combat's word differ from each other and from the refusal.
     for combat_movement in [Some(None), Some(Some(i64::MIN)), None] {
         let next = DivisionStatusRow {
             combat_movement: Recorded::Value(combat_movement),
@@ -6750,8 +6660,6 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         .unwrap()
         .value = TemplateNameValue::SameAsDivisionTemplates;
     selected_route_suffix(TableId::DivisionTemplateIcons, 14, &old, &next);
-    // Each grid keeps its own entries: moving one entry between grids is a
-    // change of the grids field alone.
     let mut next = old.clone();
     let grids = next
         .grids
@@ -6772,7 +6680,6 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
     other_grids.regimental_support.push(moved);
     selected_route_suffix(TableId::DivisionTemplateIcons, 15, &old, &next);
     selected_route_suffix(TableId::DivisionTemplateIcons, 15, &next, &other);
-    // Speed keys keep native order and repeats; an empty list is not the refusal.
     for speed_keys in [Some(vec![u32::MAX, 7, 7]), Some(Vec::new()), None] {
         let next = DivisionTemplateIconRow {
             speed_keys: Recorded::Value(speed_keys),
@@ -6875,8 +6782,6 @@ fn division_movement_style_numeric_schema_round_trips_extremes_and_refusals() {
     input.finish().unwrap();
     assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
 
-    // Historical absence remains distinct from a current field-local refusal;
-    // the current writer must not turn absent historical fields into None.
     let legacy = DivisionMovementRow {
         withdrawal: Recorded::NotRecorded,
         movement_priority: Recorded::NotRecorded,
@@ -7170,9 +7075,6 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
         ..base.clone()
     };
     let baseline_bytes = round_trip(&baseline);
-    // Withdrawal, order transport and the absent own base speed each add an
-    // opaque length and absence tag; native optional i32 priority adds one tag;
-    // the fuel word adds a present optional i64. Strategic action is unchanged.
     assert_eq!(baseline_bytes, 69 + 5 + 5 + 5 + 1 + 9);
     assert!(baseline.delta(Some(&baseline)).unwrap().is_none());
     for (tick, expected) in [
@@ -7768,7 +7670,6 @@ fn country_air_combat_columns_delta_separately_and_reuse_existing_home_terms() {
     row.air_combat_modifiers_known = false.into();
     assert_eq!(row.delta(Some(&old)).unwrap().unwrap().mask, 1_u64 << 33);
     assert!(row.air_combat_modifier(keys::AIR_ATTACK_FACTOR).is_err());
-    // The existing home packet remains independently known.
     assert_eq!(
         row.air_combat_modifier(keys::AIR_HOME_DEFENCE_FACTOR),
         Ok(Some(-123))
@@ -7877,9 +7778,6 @@ fn map_operand_suffixes_distinguish_unrecorded_from_current_named_refusals() {
         ),
     ] {
         let table = current.table();
-        // Cold and post-gap rows use recorded false certificates and nullable
-        // operands. Neither is an unrecorded field, so spool validation admits
-        // the row while consumers name the independent read refusal.
         assert_eq!(current.iter().next().unwrap().not_recorded_fields(), 0);
         current.encode_rows(&mut Vec::new()).unwrap();
         let bytes = current.fixture_prefix(prefix);
@@ -8006,7 +7904,6 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
             assert!(decoded.encode_fields(&mut Vec::new()).is_err());
         }
     }
-    // DivisionStatus was relaid since: those recordings refuse it by name.
     for version in [91, 97, 99, 102, 103] {
         let format = crate::format::FormatVersion::read(version).unwrap();
         assert_eq!(
@@ -8031,7 +7928,6 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
     );
 }
 
-/// A recording older than an appended operand reads it as not recorded, in snapshots and deltas.
 #[test]
 fn appended_operands_read_as_not_recorded_in_older_recordings() {
     fn older<T: RowCodec + Fields + Debug + PartialEq>(table: TableId, row: T, version: u16) -> T {
@@ -8309,7 +8205,6 @@ impl Sample for AirHistoryWindow {
     }
 }
 
-/// One complete preorder tree, as every tree codec requires: a root with `tick % 3` leaves.
 impl Sample for std::sync::Arc<Vec<ModifierBreakdownNode>> {
     fn sample(tick: usize) -> Self {
         let leaves = tick % 3;

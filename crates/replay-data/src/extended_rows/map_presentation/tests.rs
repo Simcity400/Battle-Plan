@@ -24,7 +24,7 @@ fn weather_suspension_none_is_distinct_from_zero_and_opaque_tags_are_strict() {
         SimulationFeatureRow::decode_fields(0, &mut Decoder::new(&bytes)).unwrap(),
         after
     );
-    let tag = bytes.len() - 4; // instant_decisions follows the opaque weather field.
+    let tag = bytes.len() - 4;
     bytes[tag] = 2;
     assert!(SimulationFeatureRow::decode_fields(0, &mut Decoder::new(&bytes)).is_err());
     bytes[tag] = 1;
@@ -41,8 +41,6 @@ fn task_force_supply_suffix_keeps_signed_inputs_and_independent_origin_refusal()
         supply: None.into(),
         ..Default::default()
     };
-    // Amounts as capture stores them, at the footer's display step; the
-    // sentinel words stay exact.
     let pack = UnitSupplyInputs {
         asked: i64::MIN,
         received: i64::MAX,

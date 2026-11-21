@@ -2,8 +2,6 @@ use super::*;
 use engine_allocation as allocation;
 
 impl Capacities {
-    /// Attach/cadence floors from native populations. These count-only walks
-    /// supply no sampled values; acquisitions retain their original headers.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -43,112 +41,40 @@ fn reserve_to<T>(rows: &mut Vec<T>, len: usize) -> std::io::Result<()> {
     allocation::reserve(rows, additional)
 }
 
-// ===========================================================================
-// Hourly shared bases/registrations/aces split (AirBases,
-// AirBaseRegistrations, AirAces).
-//
-// Acquisition workers copy raw bytes: one authenticated country census,
-// the strategic-air manager with its four base vectors, per-base identity
-// and host/state/province fields, per-base country containers with pool and
-// wing vectors, and per-country ace rosters with ace objects and name bytes.
-// Shared spans (country census, manager, vectors, base identities) are taken
-// ONCE with the combined mask and serve every dependent replay: Recorded
-// spans are address-keyed with last-value repeat, so one census walk feeds
-// the bases, registrations and aces decodes with no duplicated copy of the
-// walk. The game thread parses only copied identity/field inputs for the fixed
-// optional carrier observer; replay projections remain off-thread. The FIFO decode worker
-// replays `cair_base::walk`, `cair_base::walk_registrations` and `cace::walk`
-// against the recorded spans, so rows, ordinals, skips, truncation counts
-// and failure reasons are identical by construction (see `crate::raw` for
-// the mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on pool overflow: validation, precedence and error
-// scope are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless. Takes follow walk order and
-// the pass stops at the first take failure the typed walk would also stop
-// at; container resolve link reads are deduplicated per pass through a
-// small seen list (the typed walk caches them in its Resolver), which is
-// deterministic across passes and byte-identical within a pass.
-// ===========================================================================
 
-/// Shared hourly payload slots in calibration/report order: [bases,
-/// registrations, aces]. The registrations rows live in the fog pack; the
-/// decode worker fills them from this same log (see
-/// `crate::extended::fog::Captured::decode_registrations_payload`).
 pub(crate) const AIR_BASES_N: usize = 3;
 const BASES_MASK: u32 = 0x01;
 pub(super) const AIR_REGISTRATIONS_MASK: u32 = 0x02;
 const AIR_ACES_MASK: u32 = 0x04;
-/// Country census spans gate every slot: all three typed walks authenticate
-/// through the same country reader.
 const AIR_BASES_CENSUS_MASK: u32 = 0x07;
-/// Manager, vectors and base identities gate bases and registrations: the
-/// aces walk never reads them.
 const BASE_VECTORS_MASK: u32 = 0x03;
 
-/// Batch chunking for the registration pool/wing pointer blocks. Must match
-/// the engine walk's batching exactly: the typed walk issues one
-/// `read_slice` per chunk, and the replay serves exact (address, length)
-/// spans only.
 const REG_MIRROR_BATCH: usize = 64;
 
-/// One hour of raw shared bases payload: the country census, the manager and
-/// base vectors, per-base fields, containers with pools and wings, and ace
-/// rosters with objects and names. Flat pools recycle capacities and the
-/// steady state reuses storage; worker growth follows original native headers
-/// before publication, and decode grows from that owned payload.
 #[derive(Debug, Default)]
 pub(crate) struct AirBasesJob {
     pub log: RawLog<AIR_BASES_N>,
     pub(crate) carrier: carrier::Job,
     pub(crate) state_fuel: super::state_fuel_inputs::Packet,
     pub game_state: usize,
-    /// Complete registration-row and wing-handle demand from the original
-    /// subtree acquisition. Shared census faults can coexist with these counts;
-    /// the worker rejects faulted hints and the owned walk validates all fields.
     pub(crate) registration_demand: Option<[usize; 2]>,
     pub(super) aces_active: bool,
-    /// Canonical (pointer, slot) countries parsed from the census takes.
     pub(super) census: Vec<(usize, u32)>,
-    /// The callback's authenticated roster when the census took it instead
-    /// of its spans; the decode replays resolve countries through it.
     pub(crate) roster: ccountry::RosterSnapshot,
-    /// Link raws already taken this pass with their first successfully
-    /// staged slot values. Failed resolutions are not cached.
     pub(super) seen_links: Vec<(u32, u32)>,
-    /// Direct-map hints into `seen_links`, reset each pass. Collisions use
-    /// the authoritative list, never a second observation of live memory.
-    /// Once grown to the live link count every resolvable raw has its own cell.
     pub(super) seen_link_index: Vec<usize>,
-    /// Live census demand observed this pass: canonical country slots (the
-    /// country count less the sentinel) and country links. Growth sizes
-    /// `census` and `seen_links` to these in one step, even when the pass also
-    /// recorded a source fault, so a large census cannot keep overflowing.
     pub(super) required_census: usize,
     pub(super) required_links: usize,
     pub(super) capacity_charge: crate::raw_memory::Charge,
-    /// How this pass finds each base's occupied container slots: set by the
-    /// production copy from [`crate::air_base_changes`], otherwise as the
-    /// caller left it. Kept across [`Self::clear`].
     pub(crate) slot_run: crate::air_base_changes::SlotRun,
     pub(crate) slot_report: crate::air_base_changes::SlotReport,
-    /// How this pass carries its state bases' registration subtrees: set by
-    /// the production copy from [`crate::air_base_carry_changes`], otherwise
-    /// as the caller left it. Kept across [`Self::clear`].
     pub(crate) carry: CarryRun,
-    /// Held subtrees, lent by the sampling thread for the pass.
     pub(crate) registration_store: Option<Box<super::RegistrationStore>>,
-    /// What one base's fresh read reached.
     pub(super) reached: Reached,
-    /// Each state base whose subtree in the log is a held segment, with the
-    /// segment's id ([`super::RegistrationStore`]), in walk order.
     pub(crate) segments: Vec<HeldSegment>,
-    /// Where this pass's registration time went, for the status.
     pub(crate) registration_work: crate::air_base_carry_changes::Work,
 }
 
-/// A state base whose subtree in the hour's log is held segment `id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HeldSegment {
     pub handle: u64,
@@ -156,7 +82,6 @@ pub(crate) struct HeldSegment {
     pub id: u64,
 }
 
-/// How one pass carries state bases' registration subtrees.
 #[derive(Clone, Copy)]
 pub(crate) struct CarryRun {
     pub(crate) changes: &'static dyn crate::air_base_carry_changes::Changes,
@@ -176,9 +101,6 @@ impl std::fmt::Debug for CarryRun {
     }
 }
 
-/// What one base's fresh read reached: each nonzero container country with
-/// the slot its link named, each container, pool and wing; `lost` when one
-/// could not be kept.
 #[derive(Debug, Default)]
 pub(super) struct Reached {
     links: Vec<(u32, u32)>,
@@ -266,7 +188,6 @@ impl AirBasesJob {
             || self.carrier.grow_for_next()
     }
 
-    /// Off-thread only. Census storage follows its own observed live demand.
     pub fn grow(&mut self) {
         engine_allocation::advisory(|| self.grow_hints());
     }
@@ -277,7 +198,6 @@ impl AirBasesJob {
                 let _ = allocation::reserve_exact(rows, required - rows.len());
             }
         }
-        // Optional carrier pressure never doubles the predecessor's census.
         if self.log.grow_for_next()
             || self.required_census > self.census.capacity()
             || self.required_links > self.seen_links.capacity()
@@ -299,9 +219,6 @@ impl AirBasesJob {
         self.update_capacity_charge();
     }
 
-    /// Off the game thread: one census row and one link hint per observed
-    /// country slot, plus independently observed carrier arena floors, so a
-    /// mid-game attachment does not need an earlier callback for storage.
     pub fn presize_countries(&mut self) {
         crate::country_scale::reserve_census(&mut self.census);
         if crate::country_scale::reserve_census(&mut self.seen_links) {
@@ -332,9 +249,6 @@ impl AirBasesJob {
     }
 }
 
-/// Context of one current worker invocation. Sampling already forces a full
-/// refresh on a campaign/load signal, clock discontinuity or refresh request; the
-/// worker additionally requires adjacent sequence/hour and the same Shared.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AirBasesMemoContext {
     pub owner: usize,
@@ -349,8 +263,6 @@ pub(super) struct AirBasesMemoKey {
     pub(super) owner: usize,
     pub(super) base: usize,
     pub(super) game_state: usize,
-    // Logical slice lengths control admission and therefore observations.
-    // Exact equality is deliberately more conservative than "large enough".
     pub(super) capacities: [usize; 5],
     pub(super) carrier_capacities: [usize; 10],
     pub(super) carrier_seed: Result<(), &'static str>,
@@ -368,18 +280,8 @@ pub(crate) struct AirBasesMemoReport {
     pub install_ticks: u64,
 }
 
-// A separate tracker explicitly includes native memo outputs, which are outside
-// raw_memory's generic payload/index scope. No per-frame/pool memo allocation.
 static AIR_BASES_MEMO_MEMORY: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
 
-/// Exactly one previous complete family result, owned independently of every
-/// pooled job/frame. Every capture still acquires current bytes before the game resumes.
-/// Equality never serves old observations to a Memory implementation: it only
-/// reuses the deterministic native result of an identical complete invocation.
-///
-/// Full ordered Span equality (not table partitions) retains exact-key cursor,
-/// last-repeat and exact-before-bulk semantics even under arbitrary aliases.
-/// Rust field equality avoids comparing Span padding; only used bytes matter.
 #[derive(Debug)]
 pub(crate) struct AirBasesMemo {
     pub(super) key: Option<AirBasesMemoKey>,
@@ -393,11 +295,7 @@ pub(crate) struct AirBasesMemo {
     pub(super) required_names: usize,
     pub(super) registrations: super::fog::RegistrationsMemo,
     pub(super) carrier: carrier::Memo,
-    /// State bases' rows walked from held segments, for later hours that
-    /// report the same segments; valid independently of the memo's key.
     pub(super) decoded: super::DecodedRegistrations,
-    /// The roster the census took instead of its spans, with its headers and
-    /// reserved country; `None` when it took the spans.
     pub(super) roster: Vec<Option<ccountry::Country>>,
     pub(super) roster_context: Option<([Array; 2], Option<ccountry::ReservedCountryObservation>)>,
     pub(super) capacity_charge: crate::raw_memory::Charge,
@@ -430,8 +328,6 @@ impl AirBasesMemo {
         }
     }
 
-    /// Drop validity, not reusable storage. A missed refresh/typed fallback,
-    /// fault or incomplete decode may never carry an older entry forward.
     pub(crate) fn invalidate(&mut self) {
         self.key = None;
         self.previous = None;
@@ -454,7 +350,6 @@ impl AirBasesMemo {
         }
     }
 
-    /// The roster `job`'s census took for `base` is the held one.
     fn roster_equal(&self, job: &AirBasesJob, base: usize) -> bool {
         let reserved = job.roster.reserved_observation(base, job.game_state);
         match (job.roster.roster(base, job.game_state), self.roster_context) {
@@ -468,7 +363,6 @@ impl AirBasesMemo {
         }
     }
 
-    /// Holds the roster `job`'s census took for `base`; false when it cannot.
     fn save_roster(&mut self, job: &AirBasesJob, base: usize) -> bool {
         self.roster.clear();
         self.roster_context = None;
@@ -487,9 +381,6 @@ impl AirBasesMemo {
     }
 
     pub(super) fn input_equal(&self, log: &RawLog<AIR_BASES_N>) -> bool {
-        // A stored witness contains only successes. Equality of every Span's
-        // ok field also rejects a failed current observation, without a second
-        // explicit span scan after the decode entry's eligibility preflight.
         let aces_active = self.key.is_none_or(|key| key.aces_active);
         !log.overflowed
             && !log
@@ -510,14 +401,10 @@ impl AirBasesMemo {
         ctx: AirBasesMemoContext,
         decode_ticks: &mut [u64; AIR_BASES_N],
     ) -> AirBasesMemoReport {
-        // Storage must be final before comparing or installing the capacity
-        // fingerprint: another pooled frame may still have the old limits.
         let prepared = fog.prepare_decode(job, &mut air.carrier);
         self.decode_prepared(air, fog, job, ctx, decode_ticks, prepared)
     }
 
-    /// A refused `prepared` refuses AirBases and AirBaseRegistrations by name
-    /// for this hour; the aces decode is independent and stands.
     #[allow(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
     pub(super) fn decode_prepared(
         &mut self,
@@ -610,8 +497,6 @@ impl AirBasesMemo {
         }
 
         self.key = None;
-        // Preserve both original Recorded lifetimes: bases+aces share cursors;
-        // registrations starts a separate reader over the same current log.
         air.decode_air_bases_payload(ctx.base, job, decode_ticks);
         let before = self.decoded.counts();
         let reuse = self.decoded.begin(&job.segments);
@@ -633,7 +518,6 @@ impl AirBasesMemo {
             after.reused - before.reused,
             after.walked - before.walked,
         );
-        // Range validation is memo work too, even when it rejects an install.
         let install_started = qpc();
         if report.eligible && air.bases_memo_complete() && fog.registrations_memo_complete() {
             if reserve_to(&mut self.spans, job.log.spans.len()).is_err()
@@ -749,9 +633,6 @@ fn carrier_capacities(
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AirBasesCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed
-    /// walks (identical rows through the existing paths) and enqueues no
-    /// payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; AIR_BASES_N],
 }
@@ -772,7 +653,6 @@ pub(super) fn bases_pool_u32(log: &RawLog<AIR_BASES_N>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
-/// The one identity read both base walks share.
 fn base_identity(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -792,8 +672,6 @@ fn base_identity(
     }
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 pub(super) fn bspan(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -804,8 +682,6 @@ pub(super) fn bspan(
     log.take(memory, addr?, len, mask)
 }
 
-/// Mirror of one link-table read with local bounds checks. Returns `None`
-/// exactly when the typed resolve fails; the replay derives its own reason.
 fn bases_link(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -826,22 +702,6 @@ fn bases_link(
     Some(slot)
 }
 
-/// Authenticated country census shared by the bases, registrations and aces
-/// walks. Records the exact read set of `ccountry::Reader::new` plus one full
-/// `read_at` per slot and the slot-zero authentication `Reader::at` makes for a
-/// slot holding the reserved object, taking every discoverable span: validation mismatches
-/// never stop the census because each replay derives its own verdict from the
-/// same spans (a mismatch fatal to one walk may be unread by another).
-/// Returns the parsed link array with its country count for the resolve
-/// mirror, or `None` only when the headers themselves are undiscoverable.
-/// `required` receives the live [canonical slot, link] demand as soon as both
-/// headers parse, so an overflowing census still sizes its growth exactly.
-///
-/// The callback authenticated the complete census this hour before any job
-/// ran and holds the game until every job finished, so when `memory` holds
-/// that roster and `roster` has room for it, the census takes nothing: the
-/// roster is its census and the decode replays resolve through the same
-/// snapshot.
 #[allow(clippy::too_many_arguments)]
 fn copy_air_bases_census(
     log: &mut RawLog<AIR_BASES_N>,
@@ -943,7 +803,6 @@ fn copy_air_bases_census(
         let id = bases_pool_u32(log, id_start);
         if id == 0 {
             bases_link(log, memory, &links, countries.count, slot, mask);
-            // `Reader::at` authenticates slot zero once to skip a slot holding that object.
             if !reserved {
                 reserved = true;
                 stage_reserved_country(log, memory, &countries, vtable, mask);
@@ -984,7 +843,6 @@ fn copy_air_bases_census(
     Some((links, countries.count))
 }
 
-/// The reserved slot-zero object's pointer, vtable and id, as `Reader::at` reads them.
 fn stage_reserved_country(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -1009,9 +867,6 @@ fn stage_reserved_country(
     }
 }
 
-/// Deduplicated resolve-link take returning the first successfully staged
-/// slot value for a raw in this pass. Index collisions still consult that
-/// authoritative observation; failed resolutions remain uncached.
 pub(super) fn resolve_link(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -1028,9 +883,6 @@ pub(super) fn resolve_link(
     {
         return Some(slot);
     }
-    // Each insertion fills its bucket until the next pass clears both stores.
-    // An empty bucket proves absence; collisions and invalid hints still need
-    // the authoritative list, as does the unindexed path.
     if bucket.is_none_or(|bucket| index[bucket] != usize::MAX)
         && let Some(position) = seen.iter().position(|(key, _)| *key == raw)
     {
@@ -1065,10 +917,6 @@ pub(super) fn resolve_link(
     Some(slot)
 }
 
-/// Read one native word back out of a recorded pointer-block take (`chunk`
-/// words staged at pool offset `start`). The typed walk reads each block
-/// with one `read_slice`; the mirror takes the same span and parses the
-/// staged bytes locally, never re-reading live memory and never allocating.
 fn block_word(log: &RawLog<AIR_BASES_N>, start: usize, index: usize) -> Option<usize> {
     let at = start.checked_add(index.checked_mul(8)?)?;
     let bytes = log.bytes.get(at..at.checked_add(8)?)?;
@@ -1083,9 +931,6 @@ fn copy_air_base_row(
     state_slot: Option<u32>,
     handle: u64,
 ) -> Option<cair_base::Row> {
-    // The 16-byte identity is taken once per base by the shared vector loop
-    // (both walks read it); only the bases-private host/state/province
-    // fields are taken here.
     let host = bspan(
         log,
         memory,
@@ -1165,10 +1010,6 @@ fn copy_air_base_row(
     })
 }
 
-/// Mirror of one country's ace roster and objects. Takes every
-/// discoverable span; validation mismatches stop only this country's takes
-/// (the typed walk fails there). Returns false exactly when the typed walk
-/// fails at or before this country.
 fn copy_air_aces_country(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -1203,10 +1044,6 @@ fn copy_air_aces_country(
     true
 }
 
-/// Mirror of one ace object with its three name strings. The seven scattered
-/// fields are taken as seven exact spans in walk order; heap names take the
-/// terminator byte plus the content bytes, inline names take nothing further.
-/// Returns false exactly when the typed row read fails for this ace.
 fn copy_air_ace(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -1228,8 +1065,6 @@ fn copy_air_ace(
         Some(pointer) => pointer,
         None => return false,
     };
-    // Seven scattered fields in walk order: identity, mask, owner/wing,
-    // the 96-byte three-string header block, alive, kill type, handled.
     let identity = bspan(log, memory, Some(pointer), 16, AIR_ACES_MASK);
     let mask = bspan(
         log,
@@ -1311,7 +1146,6 @@ fn copy_air_ace(
             return false;
         }
     }
-    // Independent appended presentation; failure keeps the established prefix.
     let portrait = bspan(
         log,
         memory,
@@ -1368,8 +1202,6 @@ fn copy_air_ace(
     !log.overflowed
 }
 
-// Stages exactly the shared portrait reader's dependent descriptors. Owned
-// decode uses the same reader, so stale pools and failures remain native.
 struct AcePresentationMemory<'a, M> {
     memory: &'a M,
     log: std::cell::RefCell<&'a mut RawLog<AIR_BASES_N>>,
@@ -1391,9 +1223,6 @@ impl<M: Memory> Memory for AcePresentationMemory<'_, M> {
     }
 }
 
-/// Mirror of one ace name string: header validation is a local parse, heap
-/// names take the terminator byte plus the content bytes. Returns false
-/// exactly when the typed name read fails.
 fn copy_ace_name(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -1437,7 +1266,6 @@ fn copy_ace_name(
     if source.checked_add(len).is_none() {
         return false;
     }
-    // Terminator first, then content: the walk's read order.
     if bspan(log, memory, source.checked_add(len), 1, AIR_ACES_MASK).is_none() {
         return false;
     }
@@ -1450,8 +1278,6 @@ fn copy_ace_name(
     true
 }
 
-/// One listed container the dense plan proved: its slot, its pointer and the
-/// log starts of its identity and span, which the slot loop reuses.
 #[derive(Clone, Copy, Default)]
 struct Planned {
     slot: u32,
@@ -1460,16 +1286,11 @@ struct Planned {
     span: usize,
 }
 
-/// Where one slot chunk's words come from: a planned base's listed
-/// containers in it (a span of its plan), or the log start and completed
-/// element count of the whole chunk's take.
 enum ChunkWords {
     Planned(std::ops::Range<usize>),
     Taken { start: usize, copied: usize },
 }
 
-/// One pass's slot settings and outcomes for the registration mirror
-/// ([`crate::air_base_changes`]).
 struct SlotPass<'a> {
     run: crate::air_base_changes::SlotRun,
     report: &'a mut crate::air_base_changes::SlotReport,
@@ -1481,10 +1302,6 @@ struct DenseSnapshot {
     block: Option<usize>,
 }
 
-/// Mirror of [`cair_base::dense_plan`]: the same takes, and the same verdict
-/// from their bytes, so the replay reaches the decision this pass took. The
-/// link read is the deduplicated [`resolve_link`] take of the same entry.
-// Pass the existing borrowed plan, snapshot and scratch storage without repacking it.
 #[allow(clippy::too_many_arguments)]
 fn copy_dense_plan(
     log: &mut RawLog<AIR_BASES_N>,
@@ -1595,9 +1412,6 @@ fn copy_dense_plan(
     Ok(len)
 }
 
-/// Only the dense pointer header/vector are additional operands. Container
-/// countries and indexed witnesses are already taken by the original walk.
-/// Mask zero makes a failed optional snapshot field-local.
 fn snapshot_state_countries(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl Memory,
@@ -1632,8 +1446,6 @@ fn snapshot_state_countries(
     }
 }
 
-/// One pass's carry of state bases' registration subtrees
-/// ([`super::RegistrationStore`]).
 struct CarryPass<'a> {
     run: CarryRun,
     store: Option<&'a mut super::RegistrationStore>,
@@ -1643,8 +1455,6 @@ struct CarryPass<'a> {
 }
 
 impl CarryPass<'_> {
-    /// The base's subtree in the log is held segment `id`. Advisory: an
-    /// unreported base is walked by the decoder.
     fn segment(&mut self, handle: u64, pointer: usize, id: u64) {
         if allocation::advisory(|| allocation::reserve(self.segments, 1)).is_ok() {
             self.segments.push(HeldSegment {
@@ -1655,9 +1465,6 @@ impl CarryPass<'_> {
         }
     }
 
-    /// The handle, certificate and row of the state base at `pointer`, found
-    /// at `slot`, with its held identity and row spliced into the log, when
-    /// they carry ([`super::census_store`]).
     fn carry_row(
         &mut self,
         log: &mut RawLog<AIR_BASES_N>,
@@ -1674,8 +1481,6 @@ impl CarryPass<'_> {
         log.splice(held.spans, held.bytes).then_some(carried)
     }
 
-    /// Holds the identity and row of the state base at `pointer`, found at
-    /// `slot`, which the log took from span and byte `from`.
     #[allow(clippy::too_many_arguments)]
     fn hold_row(
         &mut self,
@@ -1700,12 +1505,8 @@ impl CarryPass<'_> {
     }
 }
 
-/// One guarded copy's element limit for a slot array.
 const SLOT_BATCH: usize = 64;
 
-/// The words of slot array `slots`, each logged as its own span as one read
-/// per word would log it, in guarded chunks. Returns the words copied before
-/// the first failure.
 fn take_slots(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
@@ -1730,11 +1531,6 @@ fn take_slots(
     copied
 }
 
-/// One base's registration subtree for the log: a state base's held segment when its certificate
-/// (taken before this base's reads) and slot mode are the held read's and its links still resolve
-/// as then, otherwise read afresh and held. A host base and every base without a store is read. A
-/// read is held only when every pool it listed names the base by its base handle, the handle that
-/// pool's writers notify. Returns false exactly when the typed walk fails for this base.
 #[allow(clippy::too_many_arguments)]
 fn registrations(
     log: &mut RawLog<AIR_BASES_N>,
@@ -1825,8 +1621,6 @@ fn registrations(
             == Some(handle)
     });
     let certificate = certificate.filter(|_| pools_name_base);
-    // Only a base that can hold its segment may demand a missing summary
-    // snapshot. A broken certificate/backlink never becomes periodic polling.
     if certificate.is_some() {
         snapshot_state_countries(log, memory, pointer, &mut dense_snapshot);
     }
@@ -1847,7 +1641,6 @@ fn registrations(
             wings: &carry.reached.wings,
         };
         store.hold(handle, pointer, certificate, planned, &fresh);
-        // Only the segment this read was just held as names its bytes.
         if let Some(segment) = store.segment(handle) {
             carry.segment(handle, pointer, segment);
         }
@@ -1856,13 +1649,6 @@ fn registrations(
     true
 }
 
-/// Mirror of one base's `registration` subtree: containers, pools and wings
-/// with the engine's 64-row batch chunking. Stops at the first typed abort
-/// point, mirroring the walk's fail-fast; null containers are measured
-/// absence. A base whose dense list proves its occupied slots takes none of
-/// its slot vector beyond the plan's slot words, as the replay's walk then
-/// lays its chunks out from the plan ([`copy_dense_plan`]). Returns false
-/// exactly when the typed walk fails for this base.
 #[allow(clippy::too_many_arguments)]
 fn copy_air_base_registrations(
     log: &mut RawLog<AIR_BASES_N>,
@@ -1949,8 +1735,6 @@ fn copy_air_base_registrations(
     let mut next_planned = 0;
     for chunk_first in (0..containers.count).step_by(REG_MIRROR_BATCH) {
         let count = ((containers.count - chunk_first) as usize).min(REG_MIRROR_BATCH);
-        // A planned base's chunk holds exactly its listed containers; any
-        // other base's is taken whole.
         let container_chunk = match planned {
             Some(len) => {
                 let end = chunk_first + count as u32;
@@ -1962,7 +1746,6 @@ fn copy_air_base_registrations(
                     next_planned += 1;
                 }
                 if first == next_planned {
-                    // A chunk naming no listed container is null throughout.
                     continue;
                 }
                 ChunkWords::Planned(first..next_planned)
@@ -1971,9 +1754,6 @@ fn copy_air_base_registrations(
                 let Some(address) = containers.element(chunk_first, 8) else {
                     return false;
                 };
-                // Retain the completed pointer prefix even when a later
-                // element faults: earlier containers still need validation
-                // in source order.
                 match log.take_array_chunk(memory, address, 8, count, AIR_REGISTRATIONS_MASK) {
                     Some((start, copied)) => ChunkWords::Taken { start, copied },
                     None => return false,
@@ -1982,7 +1762,6 @@ fn copy_air_base_registrations(
         };
         for offset in 0..count {
             let slot = chunk_first + offset as u32;
-            // A listed container's identity and span were taken by the plan.
             let (container, listed) = match &container_chunk {
                 ChunkWords::Planned(listed) => {
                     match plan[listed.clone()].iter().find(|entry| entry.slot == slot) {
@@ -1992,9 +1771,6 @@ fn copy_air_base_registrations(
                 }
                 ChunkWords::Taken { start, copied } => {
                     if offset >= *copied {
-                        // The first failed pointer is already recorded
-                        // exactly. Earlier complete slots retain their native
-                        // validation/row order.
                         return false;
                     }
                     match usize::try_from(bases_pool_u64(log, start + offset * 8))
@@ -2031,15 +1807,9 @@ fn copy_air_base_registrations(
             };
             let country = bases_pool_u32(log, span);
             reached.container(container);
-            // The fuel scalars the walk passes the observer from this same span.
             let mut words = [0u8; cair_base::CONTAINER_SPAN];
             words.copy_from_slice(&log.bytes[span..span + cair_base::CONTAINER_SPAN]);
             let (_, fuel) = cair_base::container_span_words(&words);
-            // Slot/country agreement mirrors the walk's resolver path exactly:
-            // the reserved slot accepts only zero or unlinked ids (a readable
-            // zero entry is absence; unreadable entries stay faults), any other
-            // slot requires its resolved canonical slot. Link reads are
-            // deduplicated per pass like the walk's Resolver cache.
             if slot == 0 {
                 if country != 0 {
                     match resolve_link(log, memory, links, seen, seen_index, countries, country) {
@@ -2105,13 +1875,9 @@ fn copy_air_base_registrations(
                         Some(pointer) => pointer,
                         None => return false,
                     };
-                    // A null pool pointer inside a counted vector refuses the
-                    // table, exactly like the typed walk.
                     if pointer == 0 {
                         return false;
                     }
-                    // `copy_records` POOL_FIELDS: vtable word plus wing-vector
-                    // header as two exact spans, in field order.
                     let pool_vtable =
                         match bspan(log, memory, Some(pointer), 8, AIR_REGISTRATIONS_MASK) {
                             Some(start) => start,
@@ -2176,9 +1942,6 @@ fn copy_air_base_registrations(
                         let mut fields = [(0usize, 0usize); REG_MIRROR_BATCH];
                         let mut complete_wings = 0;
                         for (wing_index, &wing) in wing_pointers[..wing_chunk].iter().enumerate() {
-                            // `copy_records` WING_FIELDS: identity32, then the exact pool backlink.
-                            // The complete chunk's copied prefix precedes any row's semantic
-                            // validation.
                             let identity =
                                 match bspan(log, memory, Some(wing), 32, AIR_REGISTRATIONS_MASK) {
                                     Some(start) => start,
@@ -2201,10 +1964,6 @@ fn copy_air_base_registrations(
                         if log.overflowed {
                             return false;
                         }
-                        // copy_records validates its completely copied prefix
-                        // before reporting a later field failure. Feed that same
-                        // authenticated prefix; the incomplete pool is still
-                        // discarded by the original registration failure.
                         for (wing_index, &(identity, backlink)) in
                             fields[..complete_wings].iter().enumerate()
                         {
@@ -2247,13 +2006,6 @@ fn copy_air_base_registrations(
     true
 }
 
-/// One structural copy pass: shared census, manager with base vectors,
-/// per-base fields and registrations, then ace rosters. Phases are
-/// independent: a validation or take failure stops only the takes belonging
-/// to walks that would stop there (tracked with alive flags), so every
-/// replay derives its own verdict from the recorded spans. The aces phase
-/// runs last on the shared census takes. The job is cleared on entry so
-/// pooled refreshes never accumulate spans across hours.
 #[cfg(test)]
 pub(super) fn copy_air_bases_pass(
     job: &mut AirBasesJob,
@@ -2302,10 +2054,6 @@ fn copy_air_bases_pass_with_context(
     let (links, countries) = match census {
         Some(census) => census,
         None => {
-            // Census headers undiscoverable: the manager/base phases are
-            // independent and continue (their replays fail at the same
-            // headers); resolve and roster takes are skipped (their replays
-            // fail at the headers too).
             copy_air_bases_vectors(job, memory, base, None, ticks);
             return;
         }
@@ -2314,9 +2062,6 @@ fn copy_air_bases_pass_with_context(
     if job.log.overflowed || !aces_active {
         return;
     }
-    // Aces phase: independent of the base phases, served by the shared
-    // census takes plus roster/object/name takes below. Index iteration
-    // avoids cloning the census on the game thread.
     let _reads = read_accounting::table(TableId::AirAces);
     let aces_started = qpc();
     let mut ace_index = 0;
@@ -2333,10 +2078,6 @@ fn copy_air_bases_pass_with_context(
     ticks[2] += elapsed(aces_started);
 }
 
-/// Manager, vectors and per-base takes with per-walk alive flags. Shared
-/// spans (manager, headers, element pointers, identities) stop both walks on
-/// failure; private spans stop only their own walk while the other continues,
-/// mirroring each typed walk's fail-fast scope.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn copy_air_bases_vectors(
     job: &mut AirBasesJob,
@@ -2374,7 +2115,6 @@ fn copy_air_bases_vectors(
         segments,
         work: registration_work,
     };
-    // A pass that stops before its end holds nothing.
     let mut complete = false;
     if let Some(store) = carry.store.as_deref_mut() {
         store.begin();
@@ -2435,7 +2175,6 @@ fn copy_air_bases_vectors(
                 (Some(start), Some(expected)) => bases_pool_u64(&*log, start) == expected as u64,
                 _ => false,
             };
-            // Four base vectors in walk order, with the walk's indexed flags.
             let mut headers = [(0usize, 0u32, true); 4];
             let mut headers_ok = manager_ok;
             for (slot, (offset, indexed)) in [
@@ -2479,7 +2218,6 @@ fn copy_air_bases_vectors(
             let mut bases_ticks = 0u64;
             let mut reg_ticks = 0u64;
             let changes = carry.run.changes;
-            // Taken before the slot words it certifies.
             let membership = carry
                 .store
                 .is_some()
@@ -2492,19 +2230,12 @@ fn copy_air_bases_vectors(
                 if !bases_alive && !reg_alive {
                     break;
                 }
-                // Re-parse the recorded header (already validated above when
-                // headers_ok; re-parse identically when headers failed so the
-                // failure scope stays per-walk below).
                 let mut raw = [0u8; 16];
                 raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
                 let Some(slots) = Array::from_header(raw, 8) else {
-                    // Both typed walks fail on this header; later vectors are unread
-                    // by either replay.
                     break;
                 };
                 let _ = count;
-                // An array's words are held or read whole before its bases; the
-                // replay's reads of distinct words do not depend on that order.
                 let (first_span, start) = (log.spans.len(), log.bytes.len());
                 let held = match carry.store.as_deref_mut() {
                     Some(store) if indexed => store.census.slots(array, slots, membership),
@@ -2575,20 +2306,14 @@ fn copy_air_bases_vectors(
                                 (handle, Some(certificate))
                             }
                             None => {
-                                // Shared identity take (both walks read it); a failure or a
-                                // failed identity stops both walks, mirroring both typed
-                                // walks. Bases-private fields follow on the bases path only.
                                 let (identity_ok, handle) =
                                     base_identity(&mut *log, memory, base, pointer);
                                 if !identity_ok {
                                     bases_alive = false;
                                     reg_alive = false;
                                     bases_ticks += elapsed(begin);
-                                    // Both typed walks fail at this base; later bases are
-                                    // unread by either replay.
                                     break;
                                 }
-                                // Taken before the reads it certifies.
                                 let certificate = (indexed && carry.store.is_some())
                                     .then(|| changes.sequence(handle))
                                     .flatten();
@@ -2656,8 +2381,6 @@ fn copy_air_bases_vectors(
                             reg_ticks += elapsed(begin);
                         }
                     } else if reg_alive {
-                        // The bases walk already stopped: the registrations walk
-                        // still needs the shared identity take plus its own takes.
                         let _reads = read_accounting::table(TableId::AirBaseRegistrations);
                         let begin = qpc();
                         let (identity_ok, handle) = base_identity(&mut *log, memory, base, pointer);
@@ -2706,7 +2429,6 @@ fn copy_air_bases_vectors(
                     }
                 }
                 if copied != slots.count as usize {
-                    // The first unread word stops both walks there.
                     bases_alive = false;
                     reg_alive = false;
                 }
@@ -2747,14 +2469,12 @@ fn copy_air_bases_vectors(
     *staged_demand = demand;
 }
 
-/// Acquire the shared bases, registrations and aces into one owned payload.
 pub(crate) fn copy_air_bases_refresh(
     memory: &impl Memory,
     ctx: AirBasesCopyContext,
     job: &mut AirBasesJob,
 ) -> AirBasesCopyReport {
     let mut ticks = [0u64; AIR_BASES_N];
-    // Tests keep the slot settings they chose; production reads the hour's.
     #[cfg(not(test))]
     {
         job.slot_run = crate::air_base_changes::SlotRun::current();
@@ -2790,8 +2510,6 @@ pub(crate) fn copy_air_bases_refresh(
 }
 
 impl Captured {
-    /// Install an accepted worker failure after the ordinary capture was gated.
-    /// Registrations are failed separately by their fog owner; no live retry runs.
     pub(crate) fn fail_air_bases_capture(&mut self, reason: &'static str) {
         self.bases.outcome = Outcome::Unavailable { reason };
         self.carrier.reset();
@@ -2800,11 +2518,6 @@ impl Captured {
         self.bases_raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw shared bases payload: replays
-    /// the bases and aces walks against the recorded spans into the pooled
-    /// buffers (the fog registrations half runs from the same log through
-    /// `super::fog::Captured::decode_registrations_payload`). Installs
-    /// identical rows, truncation counts and failure reasons.
     pub(crate) fn decode_air_bases_payload(
         &mut self,
         base: usize,
@@ -2830,7 +2543,6 @@ impl Captured {
             return;
         }
         let started = qpc();
-        // The census took the callback's roster when it had one.
         let recorded = crate::extended::roster_replay::RosterReplay::new(
             &recorded,
             &job.roster,

@@ -1,5 +1,3 @@
-//! Receiver marks have independent storage; preparing it never changes the
-//! writer-domain tokens that bracket the Slow worker's native reads.
 use super::{Domain, WatchRegistry};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -35,8 +33,6 @@ fn registry(domain: Domain) -> Option<&'static WatchRegistry> {
     Some(&MARKS[index])
 }
 
-/// Hook path: no native read, allocation or store lock. Returns whether this
-/// domain has a coalesced refresh; Status also retains occurrence reanchoring.
 pub fn mark(domain: Domain, pointer: usize) -> bool {
     let Some(marks) = registry(domain) else {
         return false;
@@ -49,8 +45,6 @@ pub fn mark(domain: Domain, pointer: usize) -> bool {
     true
 }
 
-/// Slow worker, at a baseline or after structural refreshes, while the writer
-/// tokens bracket preparation. Only the complete owned census supplies keys.
 pub fn prepare(
     domain: Domain,
     count: usize,
@@ -66,7 +60,6 @@ pub fn prepare(
             return Err("doctrine refresh receiver registration unavailable");
         }
     }
-    // Empty inventories still require prepared, enabled marking storage.
     marks
         .take(|_| {})
         .ok_or("doctrine refresh preparation overlapped a writer")?;
@@ -93,8 +86,8 @@ pub(super) fn invalidate() {
     }
 }
 
-/// # Safety
-/// The enclosing doctrine observer and acquisition worker are quiescent.
+#[doc = " # Safety"]
+#[doc = " The enclosing doctrine observer and acquisition worker are quiescent."]
 pub(super) unsafe fn release() {
     for marks in &MARKS {
         unsafe { marks.release() };
@@ -158,7 +151,6 @@ mod tests {
         let _guard = LOCK.lock().unwrap();
         super::super::enabled(true);
         let _ = take_lost();
-        // Keep the offered census empty to force exhaustion of finite storage.
         assert_eq!(
             prepare(Domain::Progress, 0, 1usize..),
             Err("doctrine refresh receiver registration unavailable")

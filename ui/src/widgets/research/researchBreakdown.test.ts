@@ -34,7 +34,6 @@ function fixture(): ResearchSlotHistory {
   };
 }
 
-/** Daily progress earned at the state's own rate: consistent evidence for a time split. */
 function recordedAt(slot: ResearchSlotHistory, only: ResearchSlotState, days: number, base: bigint): ResearchSlotHistory {
   let done = 0n;
   const progress = [];
@@ -110,7 +109,6 @@ test('unknown starts and changing costs do not claim a full duration saving', ()
 test('time split: base, penalty and bonuses add up to the time actually taken', () => {
   const slot = fixture();
   const split = researchTimeSplit(researchJourney([slot], slot, assignment), false)!;
-  // 60 days at 1.5x earn 90 days of work, saving 30 of the 180-day base time.
   assert.deepEqual({ ...split, modifiers: undefined }, { base: 18000000n, penalty: 0n, bonus: 3000000n, juggle: 0n, earlier: 0n, remaining: 0n,
     paused: 0n, taken: 15000000n, modifiers: undefined, other: 0n, floored: false });
   assert.deepEqual(split.modifiers.map(m => [m.label, m.days]), [['Research speed', 3000000n]]);
@@ -126,7 +124,6 @@ test('time split names every modifier source; a component keeps what its sources
   boosted.details!.modifiers!.totalBonusRaw = '20000';
   slot.states = [boosted];
   const split = researchTimeSplit(researchJourney([slot], slot, assignment), false)!;
-  // Each modifier saves its own value for each of the 150 days it applied.
   assert.deepEqual(split.modifiers.map(m => [m.label, m.days]), [
     ['German Engineering', 3000000n], ['Other research speed', 1500000n], ['Category bonus', -1500000n],
   ]);
@@ -136,9 +133,7 @@ test('time split names every modifier source; a component keeps what its sources
 
 test('the minimum research speed is its own part of the time, not blamed on a modifier', () => {
   const slowed = state(0, 150, '-950000');
-  // 150 days at the clamped 0.1x complete a 15-day technology.
   const slot = recordedAt(fixture(), slowed, 150, 1500000n);
-  // At -95% the formula would give 0.05x; the game clamps to 0.1x, which recovers time no modifier explains.
   const split = researchTimeSplit(researchJourney([slot], slot, assignment), false)!;
   assert.equal(split.floored, true);
   assert.ok(split.other > 0n);

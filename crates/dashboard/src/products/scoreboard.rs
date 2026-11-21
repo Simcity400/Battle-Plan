@@ -1,9 +1,3 @@
-//! The scoreboard: countries side by side across declared measures, at one hour. Each column is
-//! a declared series' measure; there is no overall score. `scoreboard-columns` names the columns
-//! (labels from the recording's localisation where the game has one) and the series each reads, so
-//! the widget follows exactly those at the head; `scoreboard` answers one hour (a pin, a hover, a
-//! pause): the chosen countries or the greatest by one column, with every column's value
-//! ([`dashboard_query::series::board`]). Unknown is a named reason, never zero, and never ranks.
 
 use dashboard_base::products::Country;
 use super::{BranchParams, LoadContext, Product};
@@ -45,18 +39,13 @@ pub enum ScoreboardColumnKey {
     Nukes,
 }
 
-/// A column as the registry defines it: the declared measure it reads, and what marks a value a
-/// partial subtotal.
 struct Def {
     key: ScoreboardColumnKey,
-    /// Its heading where the game has none, or none is recorded.
     label: &'static str,
-    /// The localisation key of the game's own heading.
     localised: Option<&'static str>,
     unit: &'static str,
     measure: Option<(&'static str, &'static str)>,
     partial: Option<(&'static str, &'static str)>,
-    /// Why it shows no value, when it is not a measure.
     reason: Option<&'static str>,
     note: Option<&'static str>,
 }
@@ -69,7 +58,6 @@ const fn def(key: ScoreboardColumnKey, label: &'static str, unit: &'static str, 
     Def { key, label, localised: None, unit, measure: Some(measure), partial: None, reason: None, note: None }
 }
 
-/// Every column, in the order the settings list them.
 static DEFS: [Def; 16] = {
     use ScoreboardColumnKey::*;
     [
@@ -110,7 +98,6 @@ const DEFAULT_COLUMNS: [ScoreboardColumnKey; 7] = {
 };
 const DEFAULT_SORT: ScoreboardColumnKey = ScoreboardColumnKey::Factories;
 
-/// The localisation keys of the game's own column headings.
 pub(crate) fn localised_keys() -> impl Iterator<Item = &'static str> {
     DEFS.iter().filter_map(|def| def.localised)
 }
@@ -119,7 +106,6 @@ fn def_of(key: ScoreboardColumnKey) -> &'static Def {
     DEFS.iter().find(|def| def.key == key).expect("every column is defined")
 }
 
-/// A declared measure as a request names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -128,7 +114,6 @@ pub struct ScoreboardFamily {
     pub measure: String,
 }
 
-/// The declared measure `(kind, measure)` names, or why it cannot be read.
 fn declared(measure: (&str, &str)) -> Result<(&'static dashboard_declare::Series, &'static dashboard_declare::Measure), String> {
     let series = dashboard_declare::series(measure.0).ok_or_else(|| format!("The series {} is not declared", measure.0))?;
     if series.parts.is_some() || series.key == dashboard_declare::Key::Singleton {
@@ -149,16 +134,16 @@ pub struct ScoreboardColumn {
     pub key: ScoreboardColumnKey,
     pub label: String,
     pub unit: String,
-    /// Fixed-point decimals of its raw values.
+    #[doc = " Fixed-point decimals of its raw values."]
     pub decimals: u8,
     pub available: bool,
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub note: Option<String>,
-    /// The declared measure its values are, followed at the head.
+    #[doc = " The declared measure its values are, followed at the head."]
     pub family: Option<ScoreboardFamily>,
-    /// The declared measure whose nonzero value marks its value a partial subtotal.
+    #[doc = " The declared measure whose nonzero value marks its value a partial subtotal."]
     pub partial: Option<ScoreboardFamily>,
 }
 
@@ -173,7 +158,6 @@ pub struct ScoreboardColumnsReply {
     pub warnings: Vec<String>,
 }
 
-/// The column registry, its headings in the recording's language where `label` finds one.
 fn registry(label: impl Fn(&str) -> Option<String>) -> Vec<ScoreboardColumn> {
     DEFS.iter()
         .map(|def| {
@@ -252,9 +236,9 @@ impl Product for ScoreboardColumns {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScoreboardTop {
     pub count: u32,
-    /// The column it ranks by.
+    #[doc = " The column it ranks by."]
     pub sort: ScoreboardColumnKey,
-    /// The greatest first; else the least, least first.
+    #[doc = " The greatest first; else the least, least first."]
     pub descending: bool,
 }
 
@@ -265,7 +249,7 @@ pub struct ScoreboardParams {
     pub branch_id: String,
     pub hour: i32,
     pub columns: Vec<ScoreboardColumnKey>,
-    /// The countries shown, in order; ignored with `top`.
+    #[doc = " The countries shown, in order; ignored with `top`."]
     #[serde(default)]
     pub countries: Vec<Country>,
     #[serde(default)]
@@ -278,9 +262,9 @@ pub struct ScoreboardParams {
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardCell {
     pub value_raw: Option<String>,
-    /// Why there is no value: never zero.
+    #[doc = " Why there is no value: never zero."]
     pub missing: Option<String>,
-    /// A subtotal of what was recorded (shown with †).
+    #[doc = " A subtotal of what was recorded (shown with †)."]
     pub partial: bool,
 }
 
@@ -288,11 +272,11 @@ pub struct ScoreboardCell {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardRow {
-    /// The country asked, or a ranked country's tag.
+    #[doc = " The country asked, or a ranked country's tag."]
     pub country: Country,
-    /// The tag it goes by at the hour.
+    #[doc = " The tag it goes by at the hour."]
     pub tag: String,
-    /// One a column asked, in its order.
+    #[doc = " One a column asked, in its order."]
     pub cells: Vec<ScoreboardCell>,
 }
 
@@ -302,9 +286,9 @@ pub struct ScoreboardRow {
 pub struct ScoreboardReply {
     pub branch_id: String,
     pub hour: i32,
-    /// Why the hour holds no rows.
+    #[doc = " Why the hour holds no rows."]
     pub missing: Option<String>,
-    /// A top's countries greatest first; chosen countries in their order, each held at the hour.
+    #[doc = " A top's countries greatest first; chosen countries in their order, each held at the hour."]
     pub rows: Vec<ScoreboardRow>,
     pub warnings: Vec<String>,
 }
@@ -353,8 +337,6 @@ impl Product for Scoreboard {
     }
 }
 
-/// `params` answered over `query`: the board of the measures asked, and the rank column's when a
-/// top ranks by one not shown.
 pub(crate) fn answer(query: &Query<'_>, params: &ScoreboardParams) -> io::Result<ScoreboardReply> {
     let mut keys: Vec<ScoreboardColumnKey> = Vec::new();
     let mut columns = Vec::new();
@@ -413,7 +395,6 @@ fn line_of<'q, 'a>(query: &'q Query<'a>, measure: (&str, &str)) -> io::Result<Op
     }
 }
 
-/// The chosen countries held at `hour`, for columns none of which is a measure.
 fn unmeasured(query: &Query<'_>, countries: &[Country], hour: i32) -> board::Board {
     if query.timeline.at(hour).is_none() {
         return board::Board { rows: Vec::new(), missing: Some(query.timeline.reason(hour)) };
@@ -426,7 +407,6 @@ fn unmeasured(query: &Query<'_>, countries: &[Country], hour: i32) -> board::Boa
     board::Board { rows, missing: None }
 }
 
-/// Why a column is not read.
 fn unavailable(key: ScoreboardColumnKey) -> String {
     let def = def_of(key);
     match def.measure.map(declared) {

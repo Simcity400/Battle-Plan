@@ -1,4 +1,3 @@
-//! Executor integration retains the exact per-frame native read accounting.
 
 use crate::read_accounting::{
     fixtures::{copies, read},
@@ -26,9 +25,7 @@ fn executor_completion_preserves_exact_counts_on_workers_callers_and_panics() {
             let frame = Capture::new();
             read(2);
             let mut request = Some((3, fail));
-            // SAFETY: the runner owns synthetic memory; every job is collected.
             let ticket = unsafe { pool.submit(&mut request) }.unwrap();
-            // A worker already inside the runner cannot be replaced by helping.
             let worker_thread =
                 (workers != 0).then(|| entered_rx.recv_timeout(crate::TEST_HANG_GUARD).unwrap());
             let completed = pool.finish(ticket).unwrap();
@@ -66,8 +63,6 @@ fn executor_completion_preserves_exact_counts_on_workers_callers_and_panics() {
             calibration.worker_executed,
             if workers == 0 { 0 } else { 2 }
         );
-        // Publication makes completion counters visible, but the worker
-        // can be descheduled before retiring its active claim.
         pool.settle();
         assert_eq!(pool.calibration().active, 0);
     }

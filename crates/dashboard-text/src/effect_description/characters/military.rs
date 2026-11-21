@@ -4,8 +4,6 @@ use replay_data::rows::CountryCharacterRow;
 #[cfg(test)]
 mod tests;
 
-// Select the description key from the leader category.
-// Description text comes from the recorded content stack.
 fn creation_key(category: i32) -> Option<&'static [u8]> {
     match category {
         0 => Some(b"EFFECT_CREATE_FM_LEADER"),
@@ -17,8 +15,6 @@ fn creation_key(category: i32) -> Option<&'static [u8]> {
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // Both country rosters are ordered by the character's name token.
-    // Equal tokens use the first entry.
     fn military_roster_character(
         &self,
         roster: Rowset<'f, CountryCharacterRow>,
@@ -58,9 +54,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(selected.and_then(|(_, character)| character))
     }
 
-    // Resolve the named character, then fall back to the current character.
-    // Only NAME is described: skill, traits and legacy_id belong to execution.
-    // Expand the description without appending LF.
     pub(in crate::effect_description) fn char_add_military_role(
         &self,
         item: &Item,
@@ -80,9 +73,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // A nonempty authored name is literal. An empty name selects by id
-    // (default 0), compared to the character's name token,
-    // then by the exact stored token matching the country tag plus an underscore.
     pub(in crate::effect_description) fn char_create_legacy_military(
         &self,
         item: &Item,
@@ -142,9 +132,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Read the operative name and localise it without a scope before
-    // substituting NAME. Expand the containing description afterward;
-    // no explicit LF is appended.
     pub(in crate::effect_description) fn char_create_operative(
         &self,
         item: &Item,
@@ -162,9 +149,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Search the active roster before the retired roster.
-    // A token-bearing character without a leader discards the whole description.
-    // Use plain localisation with a terminal LF.
     pub(in crate::effect_description) fn char_show_unit_leaders(
         &self,
         item: &Item,
@@ -217,8 +201,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Only corps-commander promotion and field-marshal demotion produce text.
-    // No NAME argument or expansion; each successful line appends LF.
     pub(in crate::effect_description) fn char_change_rank(
         &self,
         scopes: Scopes,
@@ -242,9 +224,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Accept exact yes or a positive integer. A positive runtime character ID
-    // is resolved in the character manager; otherwise use the scope ability caster.
-    // The leader name stays plain. Operatives additionally need their codename.
     pub(in crate::effect_description) fn char_remove_unit_leader(
         &self,
         item: &Item,
@@ -283,7 +262,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     ],
                     scopes,
                     false,
-                ); // No scope expansion or LF.
+                );
             }
             _ => return Ok(String::new()),
         };
@@ -291,16 +270,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_native_text(key, &[("NAME", Argument::Text(&name))], scopes, false)
     }
 
-    // Categories 0/1/2 select fm_leader/cc_leader/navy_leader for TITLE.
-    // Category 3 uses operative_skill_<stored skill level>, else OPERATIVE.
-    // NAME is the character name; expand without appending LF.
     pub(in crate::effect_description) fn char_remove_military_role(
         &self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // A character scope accepts exact yes only; outside it,
-        // scalar and character-key forms both assign the selector.
         let operand = if matches!(
             scopes.this,
             Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
@@ -354,8 +328,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the named character, then the current character for NAME.
-    // The describer draws no random trait and reads no unit.
     pub(in crate::effect_description) fn char_random_trait_from_unit(
         &self,
         item: &Item,
@@ -374,10 +346,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Army resolution only gates existence: no commander record, current XP
-    // or name is read. Evaluate the amount, then localise
-    // ADD_DIVISIONAL_COMMANDER_XP with fixed5 VAL.
-    // Neither scope expansion nor a terminal LF is added.
     pub(in crate::effect_description) fn char_divisional_xp(
         &self,
         item: &Item,
@@ -389,7 +357,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        // A null Army is empty; missing Divisions cannot prove null.
         self.context
             .world()?
             .unit(reference)
@@ -403,8 +370,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the Army name for UNIT; key/subject/allow are execution-only.
-    // No expansion or appended LF.
     pub(in crate::effect_description) fn char_history_entry(
         &self,
         scopes: Scopes,
@@ -428,8 +393,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Use the raid's assigned Army first, then its air wing for NAME.
-    // Use plain localisation with a final LF.
     pub(in crate::effect_description) fn char_raid_history_entry(
         &self,
         scopes: Scopes,
@@ -446,9 +409,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             && match world.tables().complete::<tables::Divisions>(0) {
                 Ok(rows) => rows.contains(u128::from(raid.unit)),
                 Err(why) => {
-                    // The legacy active-raid witness proves Army resolution
-                    // failed before choosing this exact wing. An unknown
-                    // census alone cannot establish the native fallback.
                     world
                         .raid_wing_name(raid.air_wing)
                         .map_err(|_| why.to_string())?;
@@ -470,8 +430,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the Army name for DIV. A null Army returns empty
-    // without reading naming operands.
     pub(in crate::effect_description) fn char_unit_medal(
         &self,
         scopes: Scopes,
@@ -482,7 +440,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        // Missing Divisions cannot prove that Army resolution is null.
         self.context
             .world()?
             .unit(reference)

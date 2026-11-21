@@ -11,7 +11,6 @@ export function focusRequest(sourceId: string, revision: string, params: Country
   return { sourceId, revision, product: PRODUCT, params };
 }
 
-/** Binary search over disjoint, ordered spans. */
 function spanAt<T extends { firstHour: number; lastHour: number }>(spans: readonly T[], hour: number): number {
   let low = 0, high = spans.length;
   while (low < high) {
@@ -22,7 +21,6 @@ function spanAt<T extends { firstHour: number; lastHour: number }>(spans: readon
   return spans[low - 1] && hour <= spans[low - 1].lastHour ? low - 1 : -1;
 }
 
-/** Exact lookup over disjoint recorded segments; never carry a value over a gap. */
 export function focusSegmentAt(history: FocusHistory, hour: number): FocusSegment | null {
   const index = spanAt(history.segments, hour);
   return index < 0 ? null : history.segments[index];
@@ -32,14 +30,11 @@ export function focusAt(history: FocusHistory, hour: number): FocusOrder | null 
   return focusSegmentAt(history, hour)?.order ?? null;
 }
 
-/** The missing span holding `hour`, with why the focus was not known there. */
 export function focusMissingAt(reply: Pick<FocusReply, 'missing'>, hour: number): FocusMissing | null {
   const index = spanAt(reply.missing, hour);
   return index < 0 ? null : reply.missing[index];
 }
 
-/** What a view shows at `hour`, as a key that changes only where the shown order does: its segment, else
- * the missing span naming why, so a widget following the head renders only there. */
 export function focusShownAt(reply: FocusReply, hour: number | null): string {
   if (hour === null) return 'out';
   const segment = spanAt(reply.history.segments, hour);
@@ -48,14 +43,8 @@ export function focusShownAt(reply: FocusReply, hour: number | null): string {
   return missing >= 0 ? `m${missing}` : 'none';
 }
 
-/** The hours a segment's focuses are read at: each completion's (`completed`, by ordinal) and the active focus's
- * (`active`). */
 export interface SegmentHours { completed: readonly number[]; active: number }
 
-/** For each segment, the hours its focuses' dated art and text are read at, so they move only where the focus does:
- * a completion at the hour that dated it, else the first hour of the unbroken run of segments listing it undated; the
- * active focus at the first hour of the unbroken run of segments working on it. A new segment (another focus
- * completed, a pause) asks nothing again for what it shares with the one before. */
 export function focusReadHours(history: FocusHistory): SegmentHours[] {
   const out: SegmentHours[] = [];
   history.segments.forEach((segment, index) => {
@@ -73,9 +62,6 @@ export function focusReadHours(history: FocusHistory): SegmentHours[] {
   return out;
 }
 
-/** The national focuses' dated art a view asks for, most wanted first, at the hours `hours` gives them
- * (`focusReadHours`), so the asks change only where a focus does. Following, the newest completions and the active
- * focus come first; pinned, the active focus then the list; over the campaign, the list then the unfinished focus. */
 export function focusArtAsks(order: FocusOrder | null, hours: SegmentHours | undefined, live: boolean, moment: boolean): NameAt[] {
   if (!order || hours === undefined) return [];
   const rows = order.completed.map((entry, ordinal) => ({ tag: entry.token, hour: hours.completed[ordinal] }));
@@ -88,8 +74,6 @@ export function focusArtAsks(order: FocusOrder | null, hours: SegmentHours | und
   return rows.filter(row => Number.isInteger(row.hour));
 }
 
-/** `asks` followed by the art `asksOf` the segments after `segment` that begin before `until` and `asks` does not hold,
- * in their order: what the head reaches next is asked before it gets there, never when it is shown. */
 export function focusAsksAhead(asks: readonly NameAt[], segments: readonly FocusSegment[], hours: readonly SegmentHours[], segment: number, until: number,
   asksOf: (order: FocusOrder, hours: SegmentHours) => NameAt[]): NameAt[] {
   if (segment < 0 || segment + 1 >= segments.length || segments[segment + 1].firstHour >= until) return [...asks];
@@ -103,15 +87,11 @@ export function focusAsksAhead(asks: readonly NameAt[], segments: readonly Focus
   return out;
 }
 
-/** The hour before which the segments after the one shown are asked ahead, following at `hoursPerSecond`: at least
- * `AHEAD_SECONDS` of playback past the next segment's start, moving a whole stretch of two of those at a time, so the
- * reads of every focus the head reaches in a stretch are asked, and land, together. */
 export function focusAheadUntil(nextHour: number, hoursPerSecond: number, aheadSeconds: number): number {
   const stretch = 2 * Math.max(1, Math.ceil(hoursPerSecond * aheadSeconds));
   return (Math.floor(nextHour / stretch) + 1) * stretch + stretch / 2;
 }
 
-/** The active continuous focus's art, asked at the first hour of the run working on it. */
 export function continuousArtAsks(order: FocusOrder | null, hours: SegmentHours | undefined): NameAt[] {
   const current = activeFocus(order);
   return current?.database === 'continuous' && hours !== undefined ? [{ tag: current.token, hour: hours.active }] : [];
@@ -119,8 +99,6 @@ export function continuousArtAsks(order: FocusOrder | null, hours: SegmentHours 
 
 export const focusDays = (value: number) => `${enTwoDecimals.format(value)} ${value === 1 ? 'day' : 'days'}`;
 
-/** The progress line's texts at a moment: the day reached and days left toward an active national focus of a
- * known duration, or the days banked while none is selected; nulls where they are not known. */
 export interface FocusProgressView {
   days: string | null;
   left: { value: string; unit: string; estimated: boolean } | null;
@@ -144,8 +122,6 @@ export function focusProgressView(state: FocusProgressState | null, baseDuration
   };
 }
 
-/** The focus a country is working on: its current national focus, else its continuous focus,
- * with the database its id is looked up in. One id can name a different focus in each. */
 export function activeFocus(order: { current: string | null; continuous: string | null } | null | undefined): { database: FocusDatabase; token: string } | null {
   if (order?.current != null) return { database: 'national', token: order.current };
   if (order?.continuous != null) return { database: 'continuous', token: order.continuous };
@@ -153,13 +129,10 @@ export function activeFocus(order: { current: string | null; continuous: string 
 }
 
 export interface FocusProgressState {
-  /** Fixed5 days of recorded work toward the current focus. */
   progress: bigint;
-  /** Fixed5 days gained at the last daily update, when the hour before it was recorded for the same focus. */
   dailyGain: bigint | null;
 }
 
-/** The recorded progress at `hour`, and the last day's gain when it is known without bridging a gap. */
 export function focusProgressAt(history: FocusHistory, hour: number): FocusProgressState | null {
   const index = spanAt(history.progress, hour);
   if (index < 0) return null;
@@ -173,16 +146,12 @@ export function focusProgressAt(history: FocusHistory, hour: number): FocusProgr
 }
 
 export interface FocusCompletion {
-  /** 0–1 of the focus's base duration, for the progress line. */
   fraction: number;
-  /** Whole days of work recorded. */
   elapsedDays: number;
   totalDays: number;
-  /** Days until completion at the last recorded daily rate; null when that rate is unknown. */
   daysLeft: number | null;
 }
 
-/** Progress toward a focus of `baseDurationDays`, from exact fixed5 operands. */
 export function focusCompletion(state: FocusProgressState, baseDurationDays: number): FocusCompletion | null {
   if (!Number.isFinite(baseDurationDays) || baseDurationDays <= 0) return null;
   const total = BigInt(Math.round(baseDurationDays * 100_000));
@@ -196,8 +165,6 @@ export function focusCompletion(state: FocusProgressState, baseDurationDays: num
   };
 }
 
-/** Shape checks on the product payload; identity is checked by the transport. Any
- * number of completed focuses is valid: a modded tree may have more than any base one. */
 export function validateFocusReply(input: unknown): FocusReply {
   const reply = input as FocusReply;
   let last = -Infinity;
@@ -223,7 +190,6 @@ export function validateFocusReply(input: unknown): FocusReply {
       lastProgress = run.lastHour;
       return ok;
     })
-    // Authored duration metadata has no token count cap.
     && reply.artwork.every(artworkEntry)
     && (reply.staticText === undefined || Array.isArray(reply.staticText) && reply.staticText.every(item => artworkEntry(item) && item.icon === null))
     && Array.isArray(reply.continuousStaticText) && reply.continuousStaticText.every(item => artworkEntry(item) && item.icon === null);
@@ -232,7 +198,6 @@ export function validateFocusReply(input: unknown): FocusReply {
   return reply;
 }
 
-/** Authenticate the supplying read and preserve native per-item refusals. */
 export function validateFocusArtworkReply(value: unknown, params: FocusArtworkParams): FocusArtworkReply {
   const reply = value as FocusArtworkReply;
   if (!reply || reply.branchId !== params.branchId || reply.hour !== params.hour || typeof reply.tag !== 'string' || (typeof params.country === 'string' && reply.tag !== params.country) || reply.database !== params.database

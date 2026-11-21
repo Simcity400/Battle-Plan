@@ -6,7 +6,6 @@ import '@fontsource-variable/roboto';
 import '@fontsource-variable/roboto-condensed';
 import '@fontsource-variable/source-serif-4';
 import '@fontsource-variable/cascadia-code';
-// The design system loads first so component stylesheets can refine it.
 import './styles.css';
 import App from './shell/App';
 import Tooltip from './components/Tooltip';

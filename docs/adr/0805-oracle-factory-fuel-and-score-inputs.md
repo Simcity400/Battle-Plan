@@ -1,0 +1,9 @@
+# 0805. Compare saved inputs to derived production and score values
+
+The save omits factory totals, which are recalculated on load. The factory oracle compares captured military, naval, and civilian building levels with the levels reconstructed from saved controlled-state and offsite buildings. The relevant content flags determine the group. Where the save omits state control, the captured positive controller supplies that input. Buildings with a null controller are not assigned to a saved country. A pending production refresh makes that country’s stored levels inapplicable to the save. Ambiguous building flags limit the comparison for countries using that type, independently of their siblings.
+
+The saved supplying-read cache witnesses fuel demand. Its roster order is significant. A host-hour pack requires a current fuel row, and a pack with an explicit hour must match the oracle hour. Fleet text distinguishes omission from an emitted empty name. Unit and formation names gate serialization on stored length and emit the first-NUL prefix. Owner words retain separate roster, expeditionary, and logical references. A signed-positive wing owner override wins over the saved pool owner.
+
+The score oracle compares saved score operands. Runtime headers, air-site access, and selected cache values have no save witness. The reserved object is omitted from the saved census. The naval header score adds counts with signed wrapping. When a province omits the controller, the shared saved-control join defaults to the state owner, even if the controller of the state differs.
+
+[Factory comparison](../../crates/recorder-oracle-factories/src/factories.rs) · [Supplying-read fuel comparison](../../crates/recorder-oracle-fuel-demand/src/fuel_demand.rs) · [Score comparison](../../crates/recorder-oracle-game-score/src/game_score.rs)

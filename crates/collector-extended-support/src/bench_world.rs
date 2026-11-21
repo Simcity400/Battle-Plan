@@ -1,19 +1,3 @@
-//! Synthetic many-country worlds for the ignored L3b capture-cost benches.
-//!
-//! Scale per country, chosen as a busy late-game average rather than a
-//! vanilla count: one land theatre, two orders groups in its roster, two
-//! orders per group. A faction per 25 countries has three theatres of six
-//! regions, eight countries and two hidden tags. With `named`, each group's
-//! first order is a move with the six name strings (five inline keys and a
-//! 20-byte heap unique text) that succeeds into the second, and each group
-//! has a 24-byte heap name; otherwise both orders are unlinked lines and the
-//! group name is empty. With `theatre_links`, each group points at its
-//! theatre, so the order of battle stages that theatre's roster.
-//!
-//! The world is laid out at its own buffer's address, module image first, so
-//! every stored pointer is a real host address: the benches read it through
-//! `SliceMemory` and through the production `CountedMemory<LiveMemory>`, whose
-//! guarded copies cost what they cost in the game.
 use crate::read_accounting::TableCounts;
 use engine_land_inputs::cfaction_theater_manager as faction_theatres;
 use engine_native::{
@@ -24,13 +8,10 @@ use engine_native::{
 use engine_sites::Rva;
 use replay_data::rows::TableId;
 
-/// The game state's offset from the module base.
 const GAME_STATE: usize = 0x10000;
-/// Above every module RVA the readers touch.
 const HEAP: usize = 0x0350_0000;
 
 pub struct World {
-    /// Never grows after the build: `base` is its first byte's address.
     pub bytes: Vec<u8>,
     pub base: usize,
     pub game_state: usize,
@@ -47,7 +28,6 @@ pub struct Shape {
 
 pub struct Heap {
     pub bytes: Vec<u8>,
-    /// The address of offset zero, the module base.
     pub origin: usize,
 }
 
@@ -57,7 +37,6 @@ impl Heap {
         self.bytes.resize(at + size, 0);
         at
     }
-    /// The address of `offset`; offset zero stays a null pointer.
     pub fn ptr(&self, offset: usize) -> u64 {
         if offset == 0 {
             0
@@ -130,8 +109,6 @@ pub fn build(countries: u32, shape: Shape) -> World {
 }
 
 pub fn build_groups(countries: u32, groups: usize, shape: Shape) -> World {
-    // The layout does not depend on the origin: size it once, then lay it out
-    // in a buffer that never reallocates.
     let len = build_in(countries, groups, shape, Vec::new()).bytes.len();
     let world = build_in(countries, groups, shape, Vec::with_capacity(len));
     assert_eq!(world.bytes.len(), len);
@@ -221,7 +198,6 @@ fn build_in(countries: u32, groups: usize, shape: Shape, mut bytes: Vec<u8>) -> 
         }
         heap.pointers(theatre + ctheatre::ORDERS_GROUP_DATA, &roster);
     }
-    // The type-53 registry: every group in its own bucket.
     let capacity = (roots.len() * 2).next_power_of_two().max(8);
     let exponent = capacity.trailing_zeros();
     let distance = exponent + 2;
@@ -248,7 +224,6 @@ fn build_in(countries: u32, groups: usize, shape: Shape, mut bytes: Vec<u8>) -> 
         buckets + (capacity + distance as usize) * bucket::STRIDE + bucket::DISTANCE,
         &[bucket::TERMINAL_DISTANCE],
     );
-    // Factions and their theatres.
     let factions = (countries / 25).max(1);
     let system = heap.alloc(0x40);
     heap.u64(GAME_STATE + cgame_state::FACTION_SYSTEM, heap.ptr(system));
@@ -289,8 +264,6 @@ fn build_in(countries: u32, groups: usize, shape: Shape, mut bytes: Vec<u8>) -> 
     }
 }
 
-/// Median and 95th percentile of `runs` timed calls after three warm-ups, in
-/// microseconds.
 pub fn time(runs: usize, mut call: impl FnMut()) -> (f64, f64) {
     for _ in 0..3 {
         call();
@@ -307,7 +280,6 @@ pub fn time(runs: usize, mut call: impl FnMut()) -> (f64, f64) {
 }
 
 impl World {
-    /// The world as plain owned bytes.
     pub fn slice(&self) -> SliceMemory<'_> {
         SliceMemory {
             base: self.base,
@@ -315,16 +287,10 @@ impl World {
         }
     }
 
-    /// The world through the Orders worker's source: guarded copies behind the
-    /// read counter.
     pub fn live(&self) -> CountedMemory<LiveMemory> {
-        // SAFETY: the world's bytes are owned, immutable and alive for every
-        // read the bench makes through this handle.
         CountedMemory::new(unsafe { LiveMemory::new() })
     }
 
-    /// The source requests of one `work` call per table, made through the
-    /// counted slice. Counts do not depend on load or on the source kind.
     pub fn counted<R>(
         &self,
         work: impl FnOnce(&CountedMemory<SliceMemory<'_>>) -> R,
@@ -336,7 +302,6 @@ impl World {
     }
 }
 
-/// The sum of `tables`' source requests.
 pub fn total(counts: &TableCounts, tables: &[TableId]) -> ReadCounts {
     let mut sum = ReadCounts::ZERO;
     for table in tables {
@@ -345,7 +310,6 @@ pub fn total(counts: &TableCounts, tables: &[TableId]) -> ReadCounts {
     sum
 }
 
-/// One table's source requests as a bench field.
 pub fn work(counts: ReadCounts) -> String {
     format!(
         "calls {} (copy {} records {} scattered {} plans {}) spans {} bytes {}",

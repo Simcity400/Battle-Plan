@@ -19,7 +19,6 @@ fn a_tag_that_changes_holder_starts_a_new_run_and_segment() {
 
 #[test]
 fn the_same_holder_across_a_load_into_a_recorded_hour_is_one_run() {
-    // Two stretches of runs, the second beginning the hour after the first ends.
     let runs = merged(vec![run(200, 299, GER), run(100, 199, GER)]);
     assert_eq!(runs, vec![run(100, 299, GER)]);
 }
@@ -38,7 +37,6 @@ fn hours_without_a_holder_break_the_run_and_unresolved_is_never_a_holder() {
 
 #[test]
 fn a_slot_follows_its_country_through_a_tag_change_while_the_tag_goes_to_another() {
-    // Slot 5 is GER, then takes DEU; from the switch GER is held by slot 9.
     const OTHER: Holder = Holder::Found { slot: 9, id: 9 };
     let holders = Holders::new(
         [("GER".to_owned(), vec![run(100, 109, GER), run(110, 119, OTHER)]), ("DEU".to_owned(), vec![run(110, 119, GER)])].into(),
@@ -50,7 +48,6 @@ fn a_slot_follows_its_country_through_a_tag_change_while_the_tag_goes_to_another
     assert_eq!(holders.at(&Country::from("GER"), 115).map(|run| run.holder), Some(OTHER));
     assert_eq!((holders.tag_at(&country, 105), holders.tag_at(&country, 115)), (Some("GER"), Some("DEU")));
     assert_eq!(holders.within(&country, 100, 119), vec![run(100, 119, GER)], "one holder through the switch is one run");
-    // Two of the slot's holders overlapping: the lowest raw id holds it while both do.
     let overlapping = Holders::new(
         [("AAA".to_owned(), vec![run(100, 119, GER_AFTER)]), ("BBB".to_owned(), vec![run(105, 109, GER)])].into(),
         Vec::new(),

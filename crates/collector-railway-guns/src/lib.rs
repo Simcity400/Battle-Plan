@@ -1,4 +1,3 @@
-//! Railway gun capture: hourly railway gun counter inputs, route cells, stored names and ETA operands, with the name sizing hints the sizing polls raise. The host owns dispatch, loans and table assembly.
 
 use collector_division_parts::supply_inputs;
 use collector_division_parts::unit_combat_references;

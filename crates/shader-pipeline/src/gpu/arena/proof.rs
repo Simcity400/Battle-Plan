@@ -1,10 +1,6 @@
-//! Read-only, identity-normalized oracle for whole-Scene byte/offset comparisons.
 use super::*;
 
 impl Arena {
-    /// Captures initialized source bytes and allocator/dedup state without flushing or
-    /// altering refusals. GPU destinations are normalized by actual handle equality;
-    /// caller writes aliasing an Arena chunk retain that chunk's identity.
     pub fn proof_bytes_for_tests(&self) -> Vec<u8> {
         fn word(out: &mut Vec<u8>, value: u64) {
             out.extend_from_slice(&value.to_le_bytes());

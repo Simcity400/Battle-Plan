@@ -1,43 +1,3 @@
-//! Hourly ship model operands, sharing the authenticated Ships census.
-//!
-//! The census runs in its own job. The details, mostly the recomputed maximum
-//! organisation (the game never stores it), then run
-//! in up to [`MAX_PARTS`] parts on separate workers, each over a contiguous
-//! range of the census in native order. The family's capture keeps the first
-//! range and lends one part capture per further range; outcomes and rows join
-//! in census order, so the first failure keeps its position. Each range reads
-//! through [`cship::ShipFields`]: a ship's fixed fields, and its task force's,
-//! location's and the game singleton's when they change, in one guarded call
-//! per object ahead of the readers.
-//!
-//! Each capture range also holds its ships' own objects ([`cship::HeldShip`])
-//! and experience and medal-store modifier arrays ([`ShipStore`]) with their
-//! certificates ([`crate::ship_model_changes`]), in one store per range that
-//! the family's captures share across the frame pool ([`SHARED`]). A later
-//! hour serves a ship whose handle, task force and certificate are those of
-//! its held read from them, reading only its task force's gather and the
-//! shared sources no certificate holds; the readers and their arithmetic are
-//! the same, so the row is the one a fresh read makes.
-//!
-//! A task force's terms (country, pride ship, doctrine, terrain and location
-//! weather, fleet leader with its tree certificate, HQ support) are read once
-//! for its first ship in the range ([`cship::OrganisationMemo::task_terms`]),
-//! each held one served while its certificate holds; a later ship of it whose
-//! own inputs are certified, whose held row was made with equal terms, whose
-//! held variants no design writer touched and which has no carrier base
-//! takes its held row without running the readers. Compact records follow
-//! census order, with a pointer index for reordered entries; a carried row
-//! touches no cold ship object or model text. Shared terms get one identity
-//! per task force, and a held variant is gathered again only after a design
-//! writer or while the design domain is unobserved. Changed terms combine the
-//! certified own organisation packet with current shared terms through the
-//! reader arithmetic.
-//!
-//! A range whose every ship took its held row whole, at the roster position
-//! that row was published with, one ship per held row, published exactly the
-//! previous capture's rows: it keeps their generation, and a family whose
-//! ranges all did witnesses them ([`Witness`]), so the spool republishes the
-//! table without converting it.
 use crate::{
     clock::qpc,
     projection::{Projection, Witness, held_input, project_table},
@@ -55,21 +15,13 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-/// Detail parts at most; each runs on its own worker.
 pub const MAX_PARTS: usize = 4;
-/// Ships per detail part before another part is worth its dispatch.
 const SHIPS_PER_PART: usize = 512;
 
-/// Detail parts for a census of `ships`, sized from the live count. Every
-/// part requires a worker; rejected admission retains its named failure.
 pub fn parts_for(ships: usize) -> usize {
     ships.div_ceil(SHIPS_PER_PART).clamp(1, MAX_PARTS)
 }
 
-/// Rows of a part capture for a family of `rows`: the widest range any
-/// census within the family's live demand can assign to that part.
-/// Parts of up to `SHIPS_PER_PART` ships come from censuses of fewer than
-/// `MAX_PARTS` parts; wider ranges come from `MAX_PARTS` equal ranges.
 fn part_rows(rows: usize) -> usize {
     rows.min(SHIPS_PER_PART).max(rows.div_ceil(MAX_PARTS))
 }
@@ -79,8 +31,6 @@ fn grow_snapshot_capacity(capacity: &mut SnapshotCapacity, required: SnapshotCap
     grow_capacity(&mut capacity.entries, required.entries);
 }
 
-/// Only raw modifier arrays are shared; metadata and source graph checks still
-/// use the original reader. No observation-recording capability is forwarded.
 struct ModifierMemory<'a, M> {
     inner: &'a M,
     arena: &'a RefCell<SnapshotArena>,
@@ -193,7 +143,6 @@ pub fn optional_data() -> impl serde::Serialize {
     })
 }
 
-/// Exact map-census inputs for one owned ShipModels detail capture.
 #[derive(Clone, Copy)]
 pub struct CaptureContext {
     pub base: usize,
@@ -205,7 +154,6 @@ impl CaptureContext {
     }
 }
 
-/// Detail-acquisition ticks. Interrupted work has no completed timing sample.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CaptureReport {
     pub ticks: [u64; N],
@@ -225,9 +173,6 @@ pub struct Capacities {
 
 collector_primitives::capacity_max!(Capacities { rows, modifiers { nodes, entries } });
 
-/// One ship's held read: its census handle and task force, its certificate
-/// and own objects, and its two modifier arrays with their addresses
-/// (address zero: none), owned so that carrying the read moves them.
 #[derive(Clone)]
 struct Held {
     pointer: usize,
@@ -237,21 +182,14 @@ struct Held {
     slots: Slots,
     fields: cship::HeldShip,
     accumulators: [(usize, Vec<[u8; 16]>); 2],
-    /// The row the read made, with the task-force terms it combined.
     row: Option<(cship::ModelRow, Terms)>,
     organisation: Option<cship::OrganisationOperands>,
     terms_identity: u64,
-    /// Which capture wrote that row ([`Captured::rows_serial`]) and where:
-    /// its rows buffer keeps its contents until that buffer's next capture.
     at: (u64, usize),
 }
 
-/// A task force's terms in one capture and its fleet leader's tree
-/// certificate (the commander-class rows' source).
 type Terms = (cship::TaskTerms, Option<(u64, u64)>);
 
-// The hull variant's raw tuple and the definition database ordinal are
-// independent observations; a field-local fault must recover.
 fn model_carry_complete(row: &cship::ModelRow) -> bool {
     row.subunit_index.is_some()
         && if row.variant == 0 {
@@ -268,8 +206,6 @@ fn model_carry_complete(row: &cship::ModelRow) -> bool {
         }
 }
 
-/// The census and certificate inputs of a carried row. The reader's objects,
-/// arrays and finished row stay in its cold box until a reader needs them.
 #[derive(Clone, Copy)]
 struct Hot {
     pointer: usize,
@@ -283,15 +219,12 @@ struct Hot {
     terms_identity: u64,
     modifier_guard: u16,
     criticals: bool,
-    /// The roster position its latest published row had.
     roster_ordinal: u32,
     at: (u64, usize),
 }
 
 struct Variant {
     fields: cship::HeldVariant,
-    /// The design domain's certificate, taken by a capture no design writer
-    /// interrupted ([`ShipStore::certify_variants`]).
     certificate: Option<(u64, u64)>,
     unchanged: Option<bool>,
     next: Option<usize>,
@@ -300,7 +233,6 @@ struct Variant {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Default, Debug)]
 struct CarryCost {
-    // Logical record accesses and explicit row clones, not hardware cache traffic.
     searches: usize,
     cold_ship_bytes: usize,
     cold_organisation_bytes: usize,
@@ -328,11 +260,6 @@ fn carry_cost(update: impl FnOnce(&mut CarryCost)) {
     });
 }
 
-/// A capture range's held reads from its latest complete hour, in census
-/// order with a sorted index by ship pointer; `next` collects the hour's own.
-/// Each read (kilobytes) is boxed and moves as its box: taken out of `held`
-/// and pushed to `next`, and a ship read afresh reuses its held read's box.
-/// A family that does not complete holds nothing in any range.
 #[derive(Default)]
 struct ShipStore {
     held: Vec<Option<Box<Held>>>,
@@ -346,17 +273,12 @@ struct ShipStore {
     next_variants: Vec<Variant>,
     next_variant_index: Vec<(usize, usize)>,
     quiet: Option<(u64, u64)>,
-    /// The naval-power certificate the held rows' packets were read under,
-    /// whichever capture buffer read them.
     naval_power: Option<(u64, u64, u64)>,
     generation: u64,
-    /// Names the rows the latest capture published, while every one is held
-    /// ([`crate::projection::generation`]).
     rows: Option<u64>,
 }
 
 impl ShipStore {
-    /// Census-order hit first; the index still serves a moved census entry.
     fn take(&mut self, pointer: usize, position: usize) -> Option<(Hot, Box<Held>)> {
         let at = if self
             .hot
@@ -409,8 +331,6 @@ impl ShipStore {
         Some(index)
     }
 
-    /// Whether no design writer touched held variant `old` since its
-    /// certificate was taken; nothing is read.
     fn certified(&mut self, changes: &dyn Changes, old: usize, counts: &mut Counts) -> bool {
         let variant = &self.variants[old];
         if variant.unchanged == Some(true) {
@@ -426,7 +346,6 @@ impl ShipStore {
         certified
     }
 
-    /// Every held variant of `hot` is certified unchanged.
     fn variants_certified(
         &mut self,
         changes: &dyn Changes,
@@ -438,8 +357,6 @@ impl ShipStore {
             .all(|&old| old == usize::MAX || self.certified(changes, old, counts))
     }
 
-    /// The hour's held variants take their design certificates, valid only
-    /// when no design writer ran since `quiet`, taken before the first read.
     fn certify_variants(&mut self, changes: &dyn Changes, quiet: Option<(u64, u64)>) {
         for variant in &mut self.next_variants {
             variant.certificate = variant
@@ -455,9 +372,6 @@ impl ShipStore {
         }
     }
 
-    /// One comparison per distinct held observation this hour, reading only
-    /// a variant a design writer touched; ships share indices only when both
-    /// its pointer and every gathered byte agree.
     fn variants_unchanged(
         &mut self,
         memory: &impl Memory,
@@ -504,8 +418,6 @@ impl ShipStore {
     }
 
     fn hot(&mut self, held: &Held) -> Option<Hot> {
-        // Omitted own fields can hide a medal/carrier receiver or its
-        // accumulator address; only a complete observation can be held.
         if !held.fields.revalidation_complete() {
             return None;
         }
@@ -561,8 +473,6 @@ impl ShipStore {
             .map(|at| &self.tasks[at])
     }
 
-    /// Keep a task force's terms for the next hour, sharing an equal modifier
-    /// array. A failed optional allocation leaves nothing held.
     fn keep_task(&mut self, mut held: HeldTask, modifiers: Option<&[[u8; 16]]>) -> bool {
         if reserve(&mut self.next_tasks, 1).is_err() {
             return false;
@@ -584,8 +494,6 @@ impl ShipStore {
         true
     }
 
-    /// Keep `held` for the next hour with copies of its arrays (into its own
-    /// storage); `false` (and nothing kept) when storage cannot grow.
     fn keep(&mut self, mut held: Box<Held>, arrays: [&[[u8; 16]]; 2]) -> bool {
         for ((_, entries), array) in held.accumulators.iter_mut().zip(arrays) {
             entries.clear();
@@ -597,7 +505,6 @@ impl ShipStore {
         self.keep_held(held)
     }
 
-    /// Keep a carried ship's held read, arrays included, for the next hour.
     fn keep_held(&mut self, held: Box<Held>) -> bool {
         let Some(hot) = self.hot(&held) else {
             return false;
@@ -614,7 +521,6 @@ impl ShipStore {
         true
     }
 
-    /// The range completed: hold what it read and carried.
     fn hold(&mut self) -> bool {
         let same_order = self.hot.len() == self.next_hot.len()
             && self
@@ -650,7 +556,6 @@ impl ShipStore {
         true
     }
 
-    /// Nothing the range read certifies a carry.
     fn forget(&mut self) {
         self.held.clear();
         self.hot.clear();
@@ -700,34 +605,22 @@ impl ShipStore {
     }
 }
 
-/// One task force's held terms: its handle and roster owner, the country that owner resolved to,
-/// its doctrine contribution with the certificate (doctrine tree writer, country tree) it was read
-/// under, its mine exposure with the immutable modifier array the hourly
-/// task-force modifier rebuild built from it, its location's weather terms with their
-/// certificate (region writer, country tree) and the province's applied night factor, its
-/// location's province definition and terrain, and its fleet's leader terms.
 #[derive(Clone)]
 struct HeldTask {
     pointer: usize,
     handle: u64,
     roster_owner: u32,
     country: usize,
-    /// The country's modifier-tree terms with its naval tree certificate, which the tree's writers
-    /// move.
     country_terms: Option<((u64, u64), [i64; 4])>,
     doctrine: Option<HeldDoctrine>,
     mine_exposure: u64,
     modifiers: Option<Arc<Vec<[u8; 16]>>>,
     weather: Option<HeldWeather>,
-    /// Location, province definition and terrain, fixed for a province
-    /// within the observation epoch they were read in.
     location: Option<(u64, usize, usize, usize)>,
     fleet: Option<HeldFleet>,
     terms: Option<(Terms, u64)>,
 }
 
-/// A held fleet term: the fleet, its leader and the leader's tree terms,
-/// with the fleet's leader-binding and the leader's tree certificates.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct HeldFleet {
     fleet: usize,
@@ -738,8 +631,6 @@ struct HeldFleet {
 
 type FleetCertificate = ((u64, u64), Option<(u64, u64)>);
 
-/// A fleet's certificate: its leader binding's sequence, taken before the
-/// read, and its leader's tree certificate.
 fn fleet_certificate(
     changes: &dyn Changes,
     sequence: Option<(u64, u64)>,
@@ -752,27 +643,17 @@ fn fleet_certificate(
     Some((sequence?, tree))
 }
 
-/// A held doctrine contribution: the two certificates it was read under and
-/// its four terms.
 type HeldDoctrine = ([(u64, u64); 2], [i64; 4]);
-/// Held location weather: the read terms, the two certificates it was read
-/// under and the province night factor it was read with.
 type HeldWeather = (cship::OrganisationWeather, [(u64, u64); 2], u64);
 
-/// The task force a range is reading: its fields, its doctrine tree's
-/// sequence taken before its first ship's read and its held terms.
 struct TaskState {
     fields: cship::TaskForceFields,
     sequence: Option<(u64, u64)>,
-    /// The fleet's leader-binding sequence, taken before its first read.
     fleet_sequence: Option<(u64, u64)>,
     held: Option<HeldTask>,
-    /// The held weather terms' province night factor, as read this hour.
     night_factor: Option<u64>,
 }
 
-/// A task force's doctrine certificate: its doctrine tree's sequence and its
-/// country's modifier tree's.
 fn doctrine_certificate(
     changes: &dyn Changes,
     sequence: Option<(u64, u64)>,
@@ -781,8 +662,6 @@ fn doctrine_certificate(
     Some([sequence?, changes.tree_sequence(country)?])
 }
 
-/// A location's weather certificate: its weather region's writer's sequence
-/// and its country's modifier tree's (the weather penalty).
 fn weather_certificate(
     changes: &dyn Changes,
     weather: &cship::OrganisationWeather,
@@ -794,8 +673,6 @@ fn weather_certificate(
     ])
 }
 
-/// A ship's certificate receivers: itself, its medal store and its carrier
-/// air base.
 fn receivers(pointer: usize, fields: &cship::HeldShip) -> [usize; 3] {
     [pointer, fields.medal_store(), fields.carrier_air_base()]
 }
@@ -819,38 +696,22 @@ pub struct Captured {
     terminal_failure: Option<&'static str>,
     doctrine: cship::OrganisationMemo,
     model: cship::ModelMemo,
-    /// Seeds this capture details: its census range when split, else all.
     detail_len: usize,
-    /// Parts this hour's details were split into (1: unsplit).
     split: usize,
-    /// Rows of this capture's own range when split.
     part_len: usize,
-    /// A split range this part capture could not hold (a broken sizing
-    /// invariant); the range is published unavailable, never partial.
     oversized: bool,
-    /// Part captures for the further ranges; empty in a part itself.
     extra: Vec<Captured>,
-    /// This range's held reads; kept across hours, unlike everything else.
-    /// Under the hooks' domain they live in [`SHARED`] between captures.
     store: ShipStore,
     air_capacity: crate::air_capacity::Store,
     naval_power: cship::NavalPowerCache,
-    /// The census range this capture details: 0 for the family's, else its
-    /// part's ([`SHARED`] slot).
     range: usize,
-    /// The latest capture took and returned the shared held reads.
     shared: bool,
-    /// The capture whose rows this buffer holds, and the one before it.
     rows_serial: u64,
     previous_serial: u64,
-    /// Rows this capture carried whole at the roster position their held
-    /// row was published with.
     unchanged_rows: usize,
-    /// The held-rows generation this range's complete capture published.
     witness: Option<u64>,
 }
 
-/// One census range's held reads between captures.
 #[derive(Default)]
 struct Shared {
     store: ShipStore,
@@ -859,13 +720,10 @@ struct Shared {
 
 type SharedSlots = [std::sync::Mutex<Option<Shared>>; MAX_PARTS];
 
-/// The latest complete hour's held reads by census range, for the family's
-/// capture in whichever pooled frame details the next hour.
 #[cfg(not(test))]
 static SHARED: SharedSlots = [const { std::sync::Mutex::new(None) }; MAX_PARTS];
 #[cfg(test)]
 thread_local! {
-    // Each test thread is its own process-wide family.
     static SHARED: SharedSlots = const { [const { std::sync::Mutex::new(None) }; MAX_PARTS] };
 }
 
@@ -883,18 +741,15 @@ fn shared_slot<R>(range: usize, visit: impl FnOnce(&mut Option<Shared>) -> R) ->
     SHARED.with(with)
 }
 
-/// Capture serials, unique across every buffer.
 static SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Captured {
-    /// Allocation-free placeholder while acquisition owns the original buffers.
     pub fn vacant() -> Self {
         Self::part(&Capacities {
             rows: 0,
             modifiers: SnapshotCapacity::default(),
         })
     }
-    /// The family's capture with its part captures, each sized for its share.
     pub fn with_capacities(capacity: &Capacities) -> Self {
         let share = Capacities {
             rows: part_rows(capacity.rows),
@@ -1023,8 +878,6 @@ impl Captured {
         {
             return;
         }
-        // Parts follow the family's rows and their own snapshot demand, so
-        // every range of the next split fits (`part_rows`).
         let rows = part_rows(capacity.rows);
         for part in &mut self.extra {
             let mut own = Capacities {
@@ -1034,7 +887,6 @@ impl Captured {
             part.grow(&mut own);
         }
     }
-    /// Start the current map-owned ship census without reading model state.
     pub fn begin_sources(&mut self) {
         if self.pending_owned {
             self.forget_stores();
@@ -1054,8 +906,6 @@ impl Captured {
         self.missing = 0;
         self.parent = super::MISSING;
     }
-    /// Retain the map's native source order, every original census occurrence
-    /// included; only acquisition follows seed pointers. No native read is restarted.
     pub fn visit_source(&mut self, pointer: usize, source: &cship::Row) {
         if self.terminal_failure.is_some() {
             return;
@@ -1108,7 +958,6 @@ impl Captured {
         self.detail_len = self.seed_len;
     }
 
-    /// Ships in this hour's census.
     pub fn census_len(&self) -> usize {
         self.seed_len
     }
@@ -1121,11 +970,6 @@ impl Captured {
         CaptureContext::new(base)
     }
 
-    /// Split this hour's details into `parts` contiguous census ranges. This
-    /// capture keeps the first; each further range is copied into its part
-    /// capture. Parts are sized so every range fits (`part_rows`); a range
-    /// that does not is a broken invariant and publishes the family
-    /// unavailable, never a partial census. Allocation-free. Returns the parts.
     pub fn split_details(&mut self, parts: usize) -> usize {
         let parts = parts.clamp(1, 1 + self.extra.len());
         let ships = self.seed_len;
@@ -1151,27 +995,20 @@ impl Captured {
         parts
     }
 
-    /// Lend part capture `index` (range `index + 1`) to its detail job.
     pub fn take_part(&mut self, index: usize) -> Captured {
         std::mem::replace(&mut self.extra[index], Captured::vacant())
     }
 
-    /// Return a part capture after its job.
     pub fn restore_part(&mut self, index: usize, part: Captured) {
         self.extra[index] = part;
     }
 
-    /// Join the parts' outcomes in census order after every part returned.
-    /// The first failure keeps its census position; an interrupted part is
-    /// terminal for the family, as an interrupted unsplit job is.
     pub fn finish_split(&mut self) {
         if self.split > 1 && self.terminal_failure.is_none() {
             let parts = &self.extra[..self.split - 1];
             if let Some(reason) = parts.iter().find_map(|part| part.terminal_failure) {
                 self.terminal_failure = Some(reason);
             } else {
-                // Each range publishes Rows or Unavailable; the census's own overflow
-                // and truncation are the family's, applied once below.
                 let failure = std::iter::once(self.rows.outcome)
                     .chain(parts.iter().map(|part| part.rows.outcome))
                     .find_map(|outcome| match outcome {
@@ -1204,18 +1041,8 @@ impl Captured {
         self.modifiers.get_mut().clear();
         self.optional_refusals = [0; OPTIONAL_REFUSAL_REASONS.len()];
         self.doctrine = cship::OrganisationMemo::default();
-        // Keep the worker's memo storage; every observation and pointer key
-        // of the previous capture is forgotten.
         self.model.reset();
     }
-    /// Before the first ship of a task force in the range: finish the
-    /// previous task force, then serve this one's held terms that still hold:
-    /// its modifier array while its mine exposure is the held one, its
-    /// doctrine contribution while its doctrine tree writer and its country's
-    /// tree certificate held still, its location's province definition and
-    /// terrain while it is at the held location, and its fleet's leader terms
-    /// while the fleet and its leader-binding and leader tree certificates
-    /// are the held ones.
     fn begin_task(
         &mut self,
         memory: &impl Memory,
@@ -1227,14 +1054,10 @@ impl Captured {
             self.store.task(task.pointer).cloned().filter(|held| {
                 held.handle == task.handle && held.roster_owner == task.roster_owner
             });
-        // The doctrine tree's and leader binding's certificates precede the
-        // reads they certify.
         let sequence = carrying.changes.sequence(task.pointer);
         let fleet_sequence = (task.fleet != 0)
             .then(|| carrying.changes.sequence(task.fleet))
             .flatten();
-        // The applied night factor of the held location, which the reader's
-        // province terms follow.
         let night_factor = held
             .as_ref()
             .and_then(|held| held.weather)
@@ -1250,7 +1073,6 @@ impl Captured {
             if let Some((certificate, terms)) = held.country_terms
                 && carrying.changes.tree_sequence(held.country) == Some(certificate)
             {
-                // Served while no tree writer touched the country.
                 self.doctrine.hold_country(held.country, terms);
                 carrying.counts.task_terms_carried += 1;
             }
@@ -1261,7 +1083,6 @@ impl Captured {
                 self.doctrine.hold_doctrine(task.pointer, contribution);
                 carrying.counts.task_terms_carried += 1;
             }
-            // The location terms include the task force's modifier array.
             if let Some((weather, certificate, factor)) = held.weather
                 && held.mine_exposure == task.mine_exposure
                 && night_factor == Some(factor)
@@ -1297,8 +1118,6 @@ impl Captured {
         });
     }
 
-    /// After a task force's last ship in the range: keep its terms for the
-    /// next hour.
     fn finish_task(&mut self, memory: &impl Memory, carrying: &mut Carrying<'_>) {
         let Some(state) = carrying.task.take() else {
             return;
@@ -1310,7 +1129,6 @@ impl Captured {
         let doctrine = self.doctrine.doctrine(task.pointer);
         let modifiers = self.modifiers.borrow();
         let observed = modifiers.observed(task.modifiers).or_else(|| {
-            // A current failed observation wins over a carried array too.
             if modifiers.existing_at(task.modifiers, 1).is_some() {
                 return None;
             }
@@ -1391,8 +1209,6 @@ impl Captured {
         carrying.terms = terms;
     }
 
-    /// A certified ship's task-force terms, read without touching its cold
-    /// objects. The terms identity is compared once for this task force.
     fn read_terms(
         &mut self,
         memory: &impl Memory,
@@ -1432,9 +1248,6 @@ impl Captured {
         carrying.counts.terms_ticks += qpc().saturating_sub(started).max(0) as u64;
     }
 
-    /// Carry a row using only its compact record. Changed shared terms use
-    /// the certified own organisation operands and the shared arithmetic;
-    /// critical pointees and class contributions remain current-hour reads.
     #[allow(clippy::too_many_arguments)]
     fn carry_hot(
         &mut self,
@@ -1584,9 +1397,6 @@ impl Captured {
         true
     }
 
-    /// Read one ship, serving its own objects and modifier arrays from its
-    /// held read when its handle, task force and certificate are that read's,
-    /// and keep the hour's read for the next.
     fn visit_detail(
         &mut self,
         memory: &impl Memory,
@@ -1606,7 +1416,6 @@ impl Captured {
             .then(|| self.store.take(pointer, self.len))
             .flatten()
             .filter(|(hot, _)| hot.ship == row.id && hot.task_force == row.task_force);
-        // The certificate precedes every read of this hour.
         let observation = taken.as_ref().and_then(|(hot, _)| {
             if carrying
                 .quiet
@@ -1647,12 +1456,6 @@ impl Captured {
             Some(held) if certificate.is_some() => (None, Some(held)),
             _ => (None, None),
         };
-        // A held read whose certificate moved (a hooked writer ran) is
-        // compared with this hour's bytes of the ship's own objects and
-        // modifier arrays, each read as the readers would read it: all equal,
-        // the readers' inputs are the held read's, and it carries again under
-        // the new certificate; with only the arrays changed, the model part
-        // below still stands.
         let mut visited = false;
         if let Some(mut moved) = stale.take() {
             fields.visit(memory, pointer);
@@ -1682,9 +1485,6 @@ impl Captured {
                 })
                 && read.same_model(&moved.fields, row.class_id)
             {
-                // A changed organisation input does not invalidate equal model
-                // inputs. Only the model may carry: organisation and arrays are
-                // read afresh, and variants still compare below.
                 stale = Some(moved);
             }
         }
@@ -1707,9 +1507,6 @@ impl Captured {
                 return;
             }
         }
-        // A task force's first ship in the range with a carryable row: read
-        // the task force's terms without the ship, as its read would keep
-        // them, so that its row can carry too.
         if carrying.store
             && let Some(held) = carry.as_ref()
             && held.row.is_some()
@@ -1741,12 +1538,6 @@ impl Captured {
             carrying.counts.terms_reads += 1;
             carrying.counts.terms_ticks += qpc().saturating_sub(started).max(0) as u64;
         }
-        // The finished row, while the ship's own inputs are certified (or
-        // read equal), it has no carrier base, the task force's terms this
-        // hour (read for an earlier ship of it) are its row's and its
-        // variants' gathered bytes held: only the variants are gathered.
-        // Held variants are gathered only when a design writer touched one
-        // or the design domain is unobserved.
         let certified = carry
             .as_ref()
             .is_some_and(|held| held.fields.variants_complete())
@@ -1792,12 +1583,6 @@ impl Captured {
                 },
                 None => false,
             };
-        // The held row's model part (everything the model reader and its
-        // suffixes made) stands while the ship's own inputs are certified (or
-        // read equal), its variants' gathered bytes held and it has no
-        // carrier base: those readers read nothing else but the session's
-        // fixed content.
-        // Why a carryable row did not carry (status only).
         if !row_carry
             && let Some(held) = carry.as_ref()
             && held.fields.carrier_air_base() == 0
@@ -1857,8 +1642,6 @@ impl Captured {
                     .get(len)
                     .is_some_and(|kept| kept.ship == held.ship)
             {
-                // This buffer still holds the row from the hour it held this
-                // read: only the roster position is written.
                 self.record_kept(row.roster_ordinal);
             } else {
                 #[cfg(any(test, feature = "test-support"))]
@@ -1882,8 +1665,6 @@ impl Captured {
             }
             return;
         }
-        // A fresh read's certificate precedes the read it certifies (a moved
-        // read's was taken before its comparison).
         let ship = match &stale {
             Some(held) => certificate.map(|certificate| (certificate[0], held.slots[0])),
             None => (carry.is_none() && carrying.store)
@@ -1913,7 +1694,6 @@ impl Captured {
             return;
         }
         let read = fields.held();
-        // This task force's terms, once one of its ships was read.
         if let Some(task) = fields.task_force()
             && carrying.terms.map(|(pointer, _)| pointer) != Some(task.pointer)
         {
@@ -1946,7 +1726,6 @@ impl Captured {
         }
         carrying.counts.read += 1;
         carrying.counts.models_carried += u64::from(stale_model);
-        // The arrays this read observed, an absent medal store's empty.
         let modifiers = self.modifiers.borrow();
         let arrays = read.accumulators().map(|address| {
             if address == 0 {
@@ -1971,7 +1750,6 @@ impl Captured {
         let at = (self.rows_serial, self.len - 1);
         let kept = observation.is_some_and(|(certificate, slots)| {
             let [experience_at, medals_at] = read.accumulators();
-            // A spare box keeps its arrays' storage.
             let boxed = match stale {
                 Some(mut spare) => {
                     spare.pointer = pointer;
@@ -2009,11 +1787,7 @@ impl Captured {
         }
     }
 
-    /// Read one ship's row; `held` serves its own objects and modifier
-    /// arrays (`visited`: its fields are already in `fields`), and `kept`
-    /// is a held row's model part, so that only the maximum organisation is
-    /// computed.
-    #[allow(clippy::too_many_arguments)] // The capture context, the held store and its certificates.
+    #[allow(clippy::too_many_arguments)]
     fn read_detail(
         &mut self,
         memory: &impl Memory,
@@ -2027,11 +1801,6 @@ impl Captured {
         carrying: &mut Carrying<'_>,
     ) {
         self.record(|this| {
-            // The ship's fixed fields, and its task force's, location's and
-            // the game singleton's when they change, each in one guarded
-            // call ahead of the readers, which consult them in their own
-            // order (`cship::ShipFields`). A carried ship's own objects and
-            // modifier arrays are served from its held read instead.
             match held {
                 Some(held) => {
                     if !visited {
@@ -2056,8 +1825,6 @@ impl Captured {
             let gathered = fields.memory(memory);
             let suffix_memory = &gathered;
             let (mut row, selected) = {
-                // Ship modifier follows the complete current ship accumulators;
-                // the original native observations have no aggregate read cap.
                 let memory = ModifierMemory {
                     inner: &gathered,
                     arena: &this.modifiers,
@@ -2117,8 +1884,6 @@ impl Captured {
             Ok(row)
         });
     }
-    /// Fixed current-source operands are independent of the core model attempt.
-    /// The ship's selected hull may change; read its current terms.
     fn capture_model_suffixes(
         &mut self,
         memory: &impl Memory,
@@ -2165,8 +1930,6 @@ impl Captured {
             packet
         });
     }
-    /// Record a carried row this buffer already holds at the next position,
-    /// as [`Self::record`] would record it, writing only its roster position.
     fn record_kept(&mut self, roster_ordinal: u32) {
         if self.failure.is_some() {
             return;
@@ -2179,7 +1942,6 @@ impl Captured {
         self.len += 1;
     }
 
-    /// Record one detail read in census order; the first failure stops the range.
     fn record(&mut self, read: impl FnOnce(&mut Self) -> Result<cship::ModelRow, &'static str>) {
         if self.failure.is_some() {
             return;
@@ -2225,15 +1987,12 @@ impl Captured {
             seed.pointer = 0;
         }
     }
-    /// Retain growth demand and expire callback-scoped snapshots without reads.
     fn release_sources(&mut self) {
         let arena = self.modifiers.get_mut();
         let required = arena.required_capacity();
         self.required_modifiers.nodes = self.required_modifiers.nodes.max(required.nodes);
         self.required_modifiers.entries = self.required_modifiers.entries.max(required.entries);
         arena.clear();
-        // Drain the local attempts once, including terminal release paths.
-        // No per-ship atomics and no false refusal for absent native modifiers.
         for (counter, refused) in OPTIONAL_REFUSALS
             .iter()
             .zip(std::mem::take(&mut self.optional_refusals))
@@ -2244,7 +2003,6 @@ impl Captured {
         }
         self.release_seed_pointers();
     }
-    /// Consume the already-owned map seeds once; preserve native detail/error order.
     pub fn capture_owned(
         &mut self,
         memory: &impl Memory,
@@ -2257,9 +2015,6 @@ impl Captured {
         self.capture_carrying(memory, context, &ship_model_changes::Observer)
     }
 
-    /// Native demand and certificate checks finish here and a complete range
-    /// holds its reads at once; the frame retains its scratch until FIFO
-    /// settlement.
     pub fn capture_deferred(
         &mut self,
         memory: &impl Memory,
@@ -2275,7 +2030,6 @@ impl Captured {
         report
     }
 
-    /// `modifiers`, `model`, `store`, `air_capacity` and `extra` settlement storage.
     pub fn owned_tail_allocated_bytes(&self) -> usize {
         self.modifiers.borrow().allocated_bytes()
             + self.model.allocated_bytes()
@@ -2288,7 +2042,6 @@ impl Captured {
                 .sum::<usize>()
     }
 
-    /// Only owned store indexes, memo storage and seed identity tokens remain.
     pub fn settle_owned(&mut self) {
         if self.pending_owned {
             self.release_sources();
@@ -2303,7 +2056,6 @@ impl Captured {
         }
     }
 
-    /// [`Self::capture_owned`] observing `changes`.
     fn capture_carrying(
         &mut self,
         memory: &impl Memory,
@@ -2326,19 +2078,15 @@ impl Captured {
         }
         self.store.naval_power = power_certificate;
         self.witness = None;
-        // The previous capture's rows, each held: their generation and count.
         let held_rows = self
             .store
             .rows
             .map(|generation| (generation, self.store.hot.len()));
         self.air_capacity.begin(self.detail_len);
-        // One range's gathered objects; nothing outlives this capture.
         let mut fields = cship::ShipFields::new(context.base);
         if power_certificate.is_some() {
             fields.enable_naval_power();
         }
-        // Taken before the first registration/read, so an unchanged token
-        // proves every previously held receiver's certificate without probing.
         let quiet = changes.quiet();
         let variant_quiet = changes.variant_quiet();
         let carrying = RefCell::new(Carrying {
@@ -2367,7 +2115,6 @@ impl Captured {
         let report = self.capture_with(
             |this, seed| {
                 let carrying = &mut carrying.borrow_mut();
-                // Every PATH_SAMPLE-th row is timed by the path it took.
                 let sampled = this.len.is_multiple_of(ship_model_changes::PATH_SAMPLE);
                 let before = [
                     carrying.counts.rows_carried,
@@ -2405,7 +2152,6 @@ impl Captured {
                     }
                 }
             },
-            // The range's last task force, while its observations last.
             |this| {
                 if this.failure.is_none() {
                     this.finish_task(memory, &mut carrying.borrow_mut());
@@ -2430,8 +2176,6 @@ impl Captured {
             if self.store.hold() {
                 self.store.quiet = quiet;
             }
-            // Every row carried whole at its published roster position, one
-            // per held row: the previous capture's rows again.
             self.store.rows = (self.store.held.len() == self.len).then(|| match held_rows {
                 Some((generation, held)) if held == self.len && self.unchanged_rows == self.len => {
                     generation
@@ -2450,13 +2194,9 @@ impl Captured {
             self.forget_stores();
         }
         if carrying.store {
-            // Every census ship's receivers: itself, its medal store, its
-            // carrier base, its task force and that task force's fleet. The
-            // family capture's census is the whole one.
             carrying.counts.receivers = self.seed_len.saturating_mul(5).saturating_add(carriers);
             ship_model_changes::record(&carrying.counts, complete);
             if complete {
-                // Ships of a task force are consecutive in the census.
                 let seeds = &self.seeds[..self.seed_len.min(self.seeds.len())];
                 let task_forces = seeds
                     .iter()
@@ -2471,10 +2211,6 @@ impl Captured {
         report
     }
 
-    /// Capture this range's details in census order, reading each ship with
-    /// `visit` and then running `finish` before the range's observations
-    /// expire, and publish its outcome (the unsplit table, or one range of a
-    /// split for `finish_split`).
     fn capture_with(
         &mut self,
         mut visit: impl FnMut(&mut Self, Seed),
@@ -2495,7 +2231,6 @@ impl Captured {
         if self.split <= 1 {
             self.finish_details(self.parent);
         } else {
-            // One range of a split census; `finish_split` joins the parts.
             self.part_len = self.len;
             self.rows.outcome = match self.failure {
                 Some(reason) => Outcome::Unavailable { reason },
@@ -2512,7 +2247,6 @@ impl Captured {
             ticks: [qpc().saturating_sub(started).max(0) as u64],
         }
     }
-    /// Accepted panic or stop is terminal; preserve observed demand without retrying.
     pub fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
         self.terminal_failure = Some(reason);
         self.forget_stores();
@@ -2544,8 +2278,6 @@ impl Captured {
         )]
     }
 
-    /// The census split and each range's held-rows generation, when the
-    /// family completed and every range published exactly its held rows.
     fn held_witness(&self) -> Option<Witness> {
         if !matches!(self.outcomes()[0], Outcome::Rows { .. }) {
             return None;
@@ -2560,8 +2292,6 @@ impl Captured {
     }
 
     fn project(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
-        // A split census's rows live in its parts; join them in census order
-        // here, on the spool thread.
         let joined;
         let rows = if self.split > 1 && self.terminal_failure.is_none() {
             let parts = &self.extra[..self.split - 1];
@@ -2642,8 +2372,6 @@ impl Captured {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Benchmarks: compare with the readers run for every ship whose row is
-    /// not carried whole.
     pub static MODEL_CARRY_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -2654,8 +2382,6 @@ fn model_carry_enabled() -> bool {
     true
 }
 
-/// A task force's terms with its fleet leader's tree certificate, `None`
-/// when the leader cannot be observed.
 fn task_terms(
     changes: &dyn Changes,
     task: usize,
@@ -2668,16 +2394,12 @@ fn task_terms(
     Some((task, (terms, leader)))
 }
 
-/// A range's carry state: whether it holds reads at all, the observation
-/// domain, its counts and the task force it is reading.
 struct Carrying<'a> {
     store: bool,
     changes: &'a dyn Changes,
     counts: Counts,
     task: Option<TaskState>,
     task_modifiers: Option<(usize, Arc<Vec<[u8; 16]>>)>,
-    /// The terms of the task force the range is reading, once one of its
-    /// ships was read.
     terms: Option<(usize, Terms)>,
     terms_identity: u64,
     quiet: Option<(u64, u64)>,
@@ -2702,7 +2424,6 @@ mod tests;
 #[cfg(test)]
 mod acquisition_tests;
 
-/// Complete equipment-reload and world certificate; no native reads.
 fn naval_power_certificate() -> Option<(u64, u64, u64)> {
     use collector_model_inputs::local_subunit_changes::Changes;
     let world = collector_lifetime::world_lifetime::token()?;

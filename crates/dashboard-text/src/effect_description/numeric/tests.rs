@@ -211,8 +211,6 @@ fn intel_uses_owned_state_existence_and_domain_order() {
     *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
         reason: "synthetic gap".into(),
     };
-    // Country-tag resolution consults the original-tag
-    // bucket before the intel description can reject a nonowning target.
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
             ReservedCountryNamingRow {

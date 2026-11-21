@@ -1,4 +1,3 @@
-//! Hourly companion columns of Divisions, acquired on its Presentation worker.
 use crate::{
     clock::qpc,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
@@ -74,8 +73,6 @@ impl Captured {
     ) -> u64 {
         let _reads = crate::read_accounting::table(replay_data::rows::TableId::DivisionLandInputs);
         let start = qpc();
-        // Presentation is worker-only; scratch follows this original admitted
-        // census before the reader visits the retained contributor headers.
         let prepared = (|| {
             for buffer in [&mut self.pointers, &mut self.ordinals] {
                 engine_native::walk::Buffer::Growing(buffer).ensure(source.len())?;
@@ -148,7 +145,6 @@ impl Captured {
             },
             |r| DivisionLandInputsRow {
                 division: r.division,
-                // DivisionStatus records the division's supply ratio and grace.
                 received_supply: RetiredI64::default(),
                 maximum_grace: RetiredI64::default(),
                 remaining_grace: RetiredI64::default(),

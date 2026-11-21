@@ -1,4 +1,3 @@
-//! Active-ability icon tooltips, independent of the counter body.
 
 use super::*;
 use replay_data::{rows::ActiveAbilityRow, rows::UnitLeaderRow};
@@ -141,7 +140,6 @@ fn scoped_description(
         "common/abilities",
         effects.view(None),
     );
-    // Reset country scope, then bind the unit leader without resetting it again.
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::CountryUnitLeader {
         country: owner,
         leader: reference,
@@ -185,8 +183,6 @@ fn formation_count(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<i32,
                 .frame
                 .complete::<tables::ArmyGroupMembers>()
                 .map_err(|error| error.to_string())?;
-            // Native recursion retains occurrences, including repeats. A
-            // repeated branch must not be globally deduplicated.
             let first = children.partition_point(|row| row.group < reference);
             let end = children.partition_point(|row| row.group <= reference);
             stack.extend(
@@ -203,8 +199,6 @@ fn formation_count(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<i32,
             let first = members.partition_point(|row| row.group < reference);
             let end = members.partition_point(|row| row.group <= reference);
             for row in &members[first..end] {
-                // A complete current `OrdersGroupMembers` capture authenticates its division hosts.
-                // Missing `Divisions` cannot mean another class.
                 let division = context.division(row.unit)?;
                 let templates = context
                     .frame
@@ -231,8 +225,6 @@ fn formation_count(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<i32,
 }
 
 fn communications(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<String, String> {
-    // Resolve the scope's character reference before selecting communications operands. Late
-    // join instead uses the original commander pointer.
     let Some(leader) = communication_leader(context, leader)? else {
         return Ok(String::new());
     };
@@ -266,8 +258,6 @@ fn communications(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<Strin
             .map_err(Clone::clone)?;
         return communication_text(context.loc, multiplier, true);
     }
-    // The native getter reads the HQ member's root only. Enforce complete
-    // memberships before the existing ordered index answers it.
     context
         .frame
         .complete::<tables::ArmyOrders>()
@@ -358,8 +348,6 @@ fn first_commander<'a>(
     if group == 0 {
         return Ok(None);
     }
-    // Read the first division's orders-group leader. The icon roster came from
-    // the last fully visible member; the tooltip uses the original first division.
     let reference = context.orders_group(group)?.leader;
     if reference == 0 {
         return Ok(None);
@@ -392,8 +380,6 @@ fn active_row<'a>(
 }
 
 fn late_join_multiplier(activation_count: i32, current_count: i32) -> i64 {
-    // signed i32 activation count, native wrapping numerator,
-    // a denominator floored to one, and only an upper clamp to ONE.
     (i64::from(activation_count).wrapping_mul(10_000_000_000)
         / (i64::from(current_count.max(1)) * ONE))
         .min(ONE)
@@ -412,8 +398,6 @@ fn late_join(
         .complete::<tables::ActiveAbilities>()
         .map_err(|error| error.to_string())?;
     for row in rows {
-        // The game scans this country vector in its recorded order. It
-        // tests pointer identity and caster, without testing the phase byte.
         if row.caster == Some(reference)
             && row.token == token
             && context.slot(row.country)? == owner
@@ -430,7 +414,6 @@ fn late_join(
 }
 
 fn communication_value(distance: i32, scaling: &[i64]) -> Result<i64, String> {
-    // Choose the final array entry for either out-of-range arm.
     let last = scaling
         .last()
         .copied()
@@ -492,7 +475,6 @@ fn finish(
         },
         Err(why) => refuse(out, "ability late join", why),
     }
-    // The painter supplies the divider newline after the assembled ability header.
     if !out.body.is_empty() && out.title.ends_with('\n') {
         out.title.pop();
     }

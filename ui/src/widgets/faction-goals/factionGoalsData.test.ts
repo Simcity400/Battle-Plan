@@ -9,7 +9,6 @@ const definition = (token: string, extra: Partial<FactionGoalDefinition> = {}): 
   category: 'mod_term', categoryName: 'A mod term', bands: [], reason: null, ...extra });
 const ARTWORK = 'Faction goal artwork GFX_mod; group: sprite is absent';
 
-/** A modded faction at one hour: two goals held (one cancelling), one completed, one cancelled whose name is unknown. */
 const reply = (): FactionDetailReply => validateFactionDetails({
   branchId: '1', faction: '9', logo: null,
   definitions: [definition('mod_a'), definition('mod_b', { reason: ARTWORK, category: 'other_term', categoryName: null }),
@@ -26,10 +25,8 @@ test('the hour\'s goals are rows by their lists, progress read from each held go
     ['completed:0', 'Mod mod_a', 'Completed', 'completed', true], ['cancelled:0', 'Goal name unavailable', 'Cancelled', 'cancelled', true]]);
   const values = valuesOf(new Map([[goalProgressKey(0), 25_000], [goalProgressKey(1), FIXED5_MAX]]), 'Not read yet');
   assert.equal(progressText(rowProgress(values, rows[0]), 1), '25.0%');
-  // Only the game's saturated cache marks a goal without a progress measure; a history entry holds no progress.
   assert.equal(progressText(rowProgress(values, rows[1]), 1), 'No progress measure');
   assert.equal(progressText(rowProgress(values, rows[2]), 1), 'Not recorded');
-  // The table's painted column: a share of the goal, the unmeasured one missing for its reason, never a full bar.
   const table = goalTableValues(values);
   assert.equal(table.get(goalProgressKey(0)), 0.25);
   assert.equal(table.get(goalProgressKey(1)), undefined);
@@ -48,7 +45,6 @@ test('what cannot be shown is said: reply warnings, artwork refusals, unnamed go
 });
 
 test('a saved faction outside its own life is absent at that hour, never a failed read', async () => {
-  // Run 14 at 31 May 1938: the African Union, founded in the 1940s, showed "Couldn't load" with the product's refusal.
   const { createServer } = await import('vite');
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
   try {

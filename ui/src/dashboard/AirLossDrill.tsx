@@ -26,13 +26,10 @@ import { usePlaybackMotion } from './playback';
 import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, airLossParts, ledgerCountryAt, ledgerLabel, ledgerScale, ledgerShare, ledgerSegmentAt, militaryAirTooltip } from './militaryAirLedger';
 import type { LedgerIndex } from './militaryAirLedger';
 
-/** A holder's aircraft losses by cause at `hour`, and their history. With `headAt` (following the playhead) the parts,
- * the total and the history's head are read at the head each frame: it renders only when its caller's structure does. */
 export default function AirLossDrill({ index, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, active, afterPlayhead, onPick, pickOwner, headAt }: {
   index: LedgerIndex; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
   dealt: boolean; active: boolean; afterPlayhead: boolean; onPick: (hour: number) => void; pickOwner: unknown;
-  /** The track hour at a clock position while following the playhead; null outside the recording. */
   headAt?: ((position: number) => number | null) | null;
 }) {
   const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -48,8 +45,6 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
   const shown = useMemo(() => selectedId == null ? model : model.filter(part => part.id === selectedId), [model, selectedId]);
   const stack = useMemo(() => buildStack(shown.map(part => part.runs.map(run => ({ ...run, value: Math.max(0, run.value) })))), [shown]);
   const live = useMemo(() => headAt ? liveAt(runtime.clock, position => headAt(position) ?? hour, at => at) : null,
-    // The head's hour is read each frame; `hour` is only where it starts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [headAt, runtime.clock]);
   const reach = useRef(() => hour);
   reach.current = () => live?.hour() ?? hour;
@@ -76,7 +71,6 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
   const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour} live={liveDate}
     reason={!headerSelection || !headerRow ? 'Selected country unavailable.' : null} />, countrySlot);
   const historyOwner = useMemo(() => ({ selectionOwner, selectedId }), [selectionOwner, selectedId]);
-  // The parts and their total at an hour: what a render shows, and what the head paints.
   const partsAt = (at: number) => {
     const held = at >= from && at <= end ? ledgerCountryAt(index, tag, from, at, identity) : null;
     const values = held ? airLossParts(held, from, at) : null, total = held ? dealt ? held.dealt : held.taken : null;

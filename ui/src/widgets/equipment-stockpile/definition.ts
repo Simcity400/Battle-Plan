@@ -13,7 +13,6 @@ export const OPTIONS: readonly OptionField[] = [
   breakdownOption([BREAKDOWN], 'Equipment stockpile'), DRILL_OPTION,
   { key: 'partGroup', section: 'options', label: 'Breakdown equipment', kind: 'content-choice', default: '',
     automatic: 'Choose an equipment row', visibleWhen: options => options.show === BREAKDOWN.id },
-  // The table keeps the saved value `bars`, so older layouts open on it.
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Table' }, { value: 'time', label: 'Over time' }] },
   { key: 'count', section: 'options', label: 'Count', kind: 'choice', default: 'units',

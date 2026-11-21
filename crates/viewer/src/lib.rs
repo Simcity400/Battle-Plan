@@ -1,5 +1,3 @@
-//! The map: the desktop app hosts it in its own process ([`host`]); the `viewer` binary is the
-//! development harness and tooling around the same code.
 use std::time::Instant;
 use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::camera::Placement;
@@ -64,13 +62,11 @@ use viewer_playback::worker_pool;
 
 use dashboard::Config;
 
-/// Tests run on the allocator the map ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 use {viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight};
-// names
 use replay_data::{BranchId, Hour};
 use std::{
     collections::BTreeSet,
@@ -85,8 +81,6 @@ use {
     viewer_world::map::scene::Request,
 };
 
-/// The harness and tooling the viewer runs. Interactive maps belong to the desktop app, which
-/// hosts the map in its own process.
 const USAGE: &str = "viewer is the development harness and tooling around Battle Plan's map; the desktop
 app (replay-desktop.exe) shows maps itself. It runs:
 viewer --playback-cost <replay> --from-hour H --hours N --speed max --out <directory>
@@ -175,8 +169,6 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
 Compare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
-/// `--free-camera`'s value: the eye's world `x,y,z`, then yaw and pitch in degrees, and optionally
-/// roll and the vertical field of view in degrees and the near and far planes.
 fn parse_free_camera(value: &str) -> io::Result<Placement> {
     const USAGE: &str = "free camera requires x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]";
     let values = value
@@ -207,8 +199,6 @@ fn parse_free_camera(value: &str) -> io::Result<Placement> {
     })
 }
 
-/// `--fly`'s value: the aircraft's world `x,y,z`, then its heading and pitch in degrees, and
-/// optionally its bank.
 fn parse_fly(value: &str) -> io::Result<app::fly::Scripted> {
     const USAGE: &str = "fly requires x,y,z,yaw,pitch[,roll]";
     let values = value
@@ -231,7 +221,6 @@ fn parse_fly(value: &str) -> io::Result<app::fly::Scripted> {
     })
 }
 
-/// `--fly-steer`'s value: turn, climb and throttle, each within -1..=1.
 fn parse_fly_steer(value: &str) -> io::Result<[f32; 3]> {
     const USAGE: &str = "fly steer requires turn,climb,throttle, each from -1 to 1";
     let values = value
@@ -277,15 +266,6 @@ fn parse_placement(value: &str) -> io::Result<Placement> {
     })
 }
 
-// counters: a frame between two recorded hours
-/// `--hour`'s value: a recorded engine hour, optionally with a fraction of an
-/// hour past it.
-///
-/// `--hour 60832633` is the recorded hour and renders it exactly.
-/// `--hour 60832633.5` is half an hour later, a frame the recording does not
-/// hold: the hour's own tables are drawn and moving division counters stay at
-/// their settled route points. The fraction is parsed off the text rather than
-/// through `f64` so a large engine hour cannot lose its last digits on the way.
 fn parse_hour(value: &str) -> io::Result<(Hour, Option<f32>)> {
     let Some((whole, rest)) = value.split_once('.') else {
         return Ok((
@@ -300,10 +280,6 @@ fn parse_hour(value: &str) -> io::Result<(Hour, Option<f32>)> {
     Ok((hour, Some(parse_fraction(&format!("0.{rest}"))?)))
 }
 
-/// A fraction of an hour past the recorded one, which has to stay inside it.
-///
-/// One whole hour is the next recorded hour, which is its own render: allowing
-/// it here would draw hour `h`'s tables where hour `h + 1`'s belong.
 fn parse_fraction(value: &str) -> io::Result<f32> {
     let fraction: f32 = value
         .parse()
@@ -323,90 +299,32 @@ struct Options {
     air_range: usize,
     air_channels: u32,
     replay: Option<PathBuf>,
-    /// Where a rendered frame is written: `--dump`'s and `--window-dump`'s output.
     out: Option<PathBuf>,
-    /// `--dump`: render one frame without opening a window.
     headless_dump: bool,
     playback_cost_end: Option<Hour>,
     visual_mods: Vec<installed_content_core::content::visual::Choice>,
-    // capture
-    /// `--window-dump`: open the window and render one frame through the
-    /// windowed path at `size` and `camera` into `dump`, then close.
-    ///
-    /// The window and `--dump` are only comparable if the frame comes out of the
-    /// window's own path, so this drives [`app::Viewer`] rather than
-    /// [`render::dump_png`]; the readback is the dump's own.
     window_dump: bool,
-    /// `--window-dump --fly`: the flying mode's scripted flight, with `--fly-view` and
-    /// `--fly-steer` applied.
     fly: Option<app::fly::Scripted>,
-    /// `--fly-view` and `--fly-steer` as given, applied to `fly` once every argument is read.
     fly_view: Option<controls::flight::View>,
     fly_steer: Option<[f32; 3]>,
     animation_time: f32,
     animation_step: f32,
     window_frames: u32,
-    /// `--dump --presentation-time <seconds>`: the engine's global presentation
-    /// clock, `vGlobalTime`, which a dump otherwise renders at zero.
-    ///
-    /// It is not a recorded quantity and cannot become one — the clock runs
-    /// while the game is paused, so no value sampled at an hour equals the clock
-    /// at a screenshot taken later. What it is for is proving that the port's
-    /// pattern is the game's *at the same clock*: fit it against a reference
-    /// frame, then score that frame with it. Every consumer of `vGlobalTime`
-    /// reads it, which is the fog-of-war noise and the entity animation, and so
-    /// does the map-icon windows' GUI clock (`Time`). Its real-time epoch
-    /// is not recorded either.
     presentation_time: f32,
-    /// `--dump --settle <seconds>`: frames played on the presentation clock
-    /// before the dump, one second apart, so entity events such as a damaged
-    /// building's fire and smoke and weather particles are under way as in a
-    /// running viewer. The dump then renders at `presentation_time + settle`.
     settle: f32,
-    /// `--dump --map-time <seconds>`: the map scene's own clock, which
-    /// shows is a different one — `vGlobalTime` 547.981 and `FoWTime` 547.978
-    /// against the border pass's `vTime_Transparency.x` 206.792, the river's
-    /// `vTimeDirectionSeasonLerp.x` 206.822 and the water's 206.826. It drives
-    /// the border selection pulse, the river flow and the waves.
     map_time: f32,
     hour: Option<Hour>,
-    // counters: a frame between two recorded hours
-    /// How far past `hour` the frame is, in hours, in `[0, 1)`.
-    ///
-    /// `--hour 60832633.5` and `--hour-fraction 0.5` are two spellings of the
-    /// same number, and it is [`document::Document::hour_fraction`]: the
-    /// recorded hour is the whole frame's state; moving division counters stay
-    /// at their settled route points. Zero renders the recorded hour exactly.
     hour_fraction: f32,
     branch: Option<BranchId>,
     allow_unverified: bool,
-    // counters
-    /// `--perspective` and `--fog`: the game's two map controls. `recorded`
-    /// (the default) views the map as the recording client's viewpoint at that hour and a tag as
-    /// that country; `--fog off` is the game's `fow` console switch. See
-    /// `viewer_foundation::map::perspective`.
     perspective: Choice,
-    /// `--map-mode <token>`: the map mode a window opens in and a dump renders, a picker
-    /// mode's token (`default`, `states`, `factions`, ...) or `scripted:<name>`.
     map_mode: viewer_world::map::map_mode::MapMode,
-    /// Viewer-local allied-plan switch for dumps and windows; unset takes `settings.txt`'s.
     allied_plans: Option<bool>,
-    /// `--day-night`: the map's day/night lighting for dumps and windows, unset taking
-    /// `settings.txt`'s; the desktop app's maps take its graphics preferences.
     day_night: Option<bool>,
-    /// `--free-overlays`: whether a dump or window dump from a free camera draws the map's
-    /// interface standing in the world, as the fly and walk modes' overlay choice does. Off by
-    /// default, as those modes start.
     free_overlays: Option<bool>,
     camera: Option<Placement>,
-    /// A profiled window's synthetic framebuffer hover, never an OS input.
     profile_pointer: Option<[f32; 2]>,
-    /// `--window-dump --walk`: a walk placed on the map, drawn through the walking mode with
-    /// the keys `--walk-keys` holds ([`controls::walker::Start`]).
     walk: Option<controls::walker::Start>,
-    /// `--dump --building-camera <x,z,height>`, repeatable: cameras the map
-    /// visited before this frame, in order. Map buildings keep what those views
-    /// created, as a live session does.
     building_cameras: Vec<Placement>,
     size: [u32; 2],
     game_dir: Option<PathBuf>,
@@ -420,61 +338,25 @@ struct Options {
     dim: Option<f64>,
     excludes: Vec<compare::Rect>,
     exclude_game_ui: bool,
-    // colour
-    /// `--postfx off` renders without the engine's colour grading.
     postfx: bool,
-    /// `--dump --no-water` skips the water plane, which is what the game's
-    /// `debug_water` console toggle does; see `viewer_world::map::scene::Request::no_water`.
     no_water: bool,
-    /// `--dump --no-shadows` skips the cast-shadow chain, which is what the
-    /// game's `Draw.Shadows` console toggle does; see
-    /// `viewer_world::map::scene::Request::no_shadows`.
     no_shadows: bool,
-    // trees
-    /// `--dump --no-trees` skips the canopy, which is what the game's
-    /// `debug_trees` console toggle does; see `viewer_world::map::scene::Request::no_trees`.
     no_trees: bool,
-    /// Dump-only comma-separated pass omissions, for residual attribution.
     layers: Omissions,
-    /// Write the actual rendered counter quads, grouped into plates.
     counters_json: Option<PathBuf>,
-    /// Dump-only: print this province's hover text in the dump's map mode, its
-    /// control codepoints escaped, and its refusals. Also supplies the local picked
-    /// province for strategic-name admission; no pointer means the native whole layer.
     province_hover: Option<u32>,
-    /// Dump-only: open the target details window of the raid offer bubble at this province, as
-    /// its click opens it.
     raid_details: Option<u32>,
-    /// Dump-only: draw the find view with this query typed.
     find: Option<String>,
-    /// Dump-only: print the hover text of the intel entry under this interface point.
     intel_hover: Vec<[f32; 2]>,
-    /// `--ui-scale`: device pixels per interface pixel of the screen-space map
-    /// interface. A dump renders at the game's frame size, where the verified
-    /// comparison pipeline uses 1.0, so that is the default; the desktop app's
-    /// maps take its setting ([`viewer_foundation::map::ui_scale`]).
     ui_scale: Option<f32>,
-    /// `--counter-colors` and `--nato-counters`: the game's counter options
-    /// ([`viewer_counters::map::counters::CounterSettings`]) in place of `settings.txt`'s.
     counter_colors: Option<viewer_counters::map::counters::CounterColorMode>,
     nato_counters: Option<bool>,
-    /// `--diagnostics`: show the map's technical stats and data limitations
-    /// for this run without changing the desktop app's saved choice.
     diagnostics: bool,
-    // borders
-    /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
-    /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
-    /// a reference pair. Verification aid, `--dump` only; the window has no equivalent and draws
-    /// the recording.
     demilitarized: BTreeSet<u32>,
-    /// `--dump --debug-borders`: the game's own console toggle, which removes the gradient
-    /// political fill and the border strips and leaves bare terrain. Pairing a frame with and
-    /// without it permits direct fill comparison; `viewer_world::map::gradient` owns the fill law.
     debug_borders: bool,
 }
 
 impl Options {
-    /// The counter options: the command line's, else `game`, the user's `settings.txt`.
     pub(crate) fn counter_settings(
         &self,
         game: &installed_content_settings::settings::MapOptions,
@@ -492,11 +374,8 @@ impl Options {
     }
 
     fn parse_profiled(args: impl Iterator<Item = OsString>, profiling: bool) -> io::Result<Self> {
-        // Dumps default to 2048x1152; `--upscale 1.25` produces a 2560x1440 image
-        // for comparison with screenshots at that size.
         let mut options = Self {
             size: [2048, 1152],
-            // Apply post-processing unless `--postfx off` disables the chain.
             postfx: true,
             no_water: false,
             no_shadows: false,
@@ -504,7 +383,6 @@ impl Options {
             ..Default::default()
         };
         let mut args = args.peekable();
-        // `--walk`, `--walk-keys` and `--walk-flying` in any order, joined after the loop.
         let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.to_str() {
@@ -575,7 +453,6 @@ impl Options {
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?));
                     options.headless_dump = true;
                 }
-                // capture
                 Some("--window-dump") if options.replay.is_none() => {
                     options.replay =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?));
@@ -638,10 +515,8 @@ impl Options {
                             .map_err(|_| invalid("--province-hover needs a province id"))?,
                     );
                 }
-                // colour
                 Some("--no-water") => options.no_water = true,
                 Some("--no-shadows") => options.no_shadows = true,
-                // trees
                 Some("--no-trees") => options.no_trees = true,
                 Some("--layers") => {
                     let value = args
@@ -661,7 +536,6 @@ impl Options {
                         other => return Err(invalid(format!("`{other}` is not `on` or `off`"))),
                     };
                 }
-                // borders
                 Some("--demilitarized") => {
                     let value = args
                         .next()
@@ -881,7 +755,6 @@ impl Options {
                             })
                         }
                         "--fly-steer" => options.fly_steer = Some(parse_fly_steer(&value)?),
-                        // counters
                         "--perspective" => options.perspective.country = Country::parse(&value)?,
                         "--fog" => options.perspective.fog = Choice::parse_fog(&value)?,
                         "--map-mode" => {
@@ -1046,15 +919,11 @@ impl Options {
         if options.headless_dump && (options.out.is_none() || options.hour.is_none()) {
             return Err(invalid(USAGE));
         }
-        // counters: the fraction is measured from a named recorded hour, so it
-        // is meaningless without one.
         if options.hour_fraction != 0.0 && options.hour.is_none() {
             return Err(invalid(
                 "the hour fraction is how far past a recorded hour the frame is and needs --hour",
             ));
         }
-        // capture: `--window-dump` needs a destination because it closes the
-        // window as soon as it has written one.
         if options.window_dump && options.out.is_none() {
             return Err(invalid("--window-dump writes one frame and needs --out"));
         }
@@ -1065,7 +934,6 @@ impl Options {
         {
             return Err(invalid("animation sampling options require --window-dump"));
         }
-        // The flying mode's evidence comes from the window's own path.
         if options.fly.is_some() && !options.window_dump {
             return Err(invalid(
                 "--fly flies the window's flying mode and requires --window-dump",
@@ -1106,32 +974,23 @@ impl Options {
                  and is a --dump verification aid",
             ));
         }
-        // shadows: the same reasoning — the game has this switch too, and the
-        // pair it makes is how the cast-shadow chain is measured.
         if options.no_shadows && !options.headless_dump {
             return Err(invalid(
                 "--no-shadows skips the cast-shadow chain so its effect can be measured on its \
                  own and is a --dump verification aid",
             ));
         }
-        // trees: the same reasoning again — `debug_trees` is what showed that the game's dark
-        // forest masses live in the terrain atlas and not in the canopy, so the pair it makes is
-        // how the terrain albedo is measured per terrain type.
         if options.no_trees && !options.headless_dump {
             return Err(invalid(
                 "--no-trees skips the canopy so the bare terrain can be measured on its own and                  is a --dump verification aid",
             ));
         }
-        // borders: the override adds a save's flag to an hour whose recorded flags are short, so
-        // it is a verification aid for scoring one frame, not a viewer setting.
         if !options.demilitarized.is_empty() && !options.headless_dump {
             return Err(invalid(
                 "--demilitarized adds a save's demilitarized=yes states to the hour's recorded \
                  StateFlags and requires --dump",
             ));
         }
-        // borders: the same reasoning as above — this one reproduces a game console toggle so a
-        // layer can be scored on its own, and it is not a viewer setting either.
         if options.debug_borders && !options.headless_dump {
             return Err(invalid(
                 "--debug-borders reproduces the game console's debug_borders for scoring one \
@@ -1142,7 +1001,6 @@ impl Options {
     }
 }
 
-/// Multiplies every channel of an image, for a screenshot taken behind the game's menu overlay.
 fn dim(image: &compare::Image, factor: f64) -> io::Result<compare::Image> {
     let scaled = image
         .rgb()
@@ -1152,7 +1010,6 @@ fn dim(image: &compare::Image, factor: f64) -> io::Result<compare::Image> {
     compare::Image::from_rgb(image.width(), image.height(), scaled)
 }
 
-/// Parses the `<cols>x<rows>` form taken by `--regions`.
 fn parse_regions(value: &str) -> io::Result<(u32, u32)> {
     let malformed = || invalid(format!("`{value}` is not a <cols>x<rows> region grid"));
     let (columns, rows) = value.split_once(['x', 'X']).ok_or_else(malformed)?;
@@ -1166,18 +1023,12 @@ fn parse_regions(value: &str) -> io::Result<(u32, u32)> {
     Ok((columns, rows))
 }
 
-/// Scores one reference pair: prints the metrics and writes the optional difference image and JSON.
 fn run_compare(options: &Options, paths: &[PathBuf; 2]) -> io::Result<()> {
     let game = compare::read_png(&paths[0])?;
     let mut viewer = compare::read_png(&paths[1])?;
     if let Some(factor) = options.upscale {
         viewer = compare::upscale(&viewer, factor)?;
     }
-    // The game dims the whole frame, interface included, while its escape and save menus are open:
-    // every hour-independent interface pixel of `checkpoint2_save1_menu.png` is at exactly half the
-    // value of the same pixel in `array_loaded.png` (median of 501 483 samples, quartiles 0.490 and
-    // 0.500). A screenshot taken through that overlay can only be scored against a render put
-    // through the same factor.
     if let Some(factor) = options.dim {
         viewer = dim(&viewer, factor)?;
     }
@@ -1267,7 +1118,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    // Tooling reads the desktop app's saved folders as defaults for its own folder options.
     let (mut config, config_error) = match Config::load() {
         Ok(config) => (config, None),
         Err(error) => (Config::default(), Some(error.to_string())),
@@ -1282,7 +1132,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(error) = config_error {
             return Err(invalid(format!("Content preferences: {error}")).into());
         }
-        // The GUI textures load with the document, for the device the dump renders on.
         render::probe_dump_device()?;
         let graphics =
             engine_executable::executable_tables::or_installed(&config.game_dir, || {
@@ -1301,12 +1150,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             (!options.visual_mods.is_empty()).then_some(options.visual_mods.as_slice()),
             graphics.texture_quality,
         )?;
-        // The dump works on this recording alone, with its own executable tables.
         engine_executable::executable_tables::enter(document.content.tables);
-        // Each frame settles its own flag and portrait decodes, in request
-        // order, so a dump lays out the same cells on every run.
         document.icons.lazy.set_background(false);
-        // Every product reads rows at the head, and what a layer makes is the layer's.
         let dump_head = Some(dump_head::open(&document)?);
         if let Some(head) = &dump_head {
             let (branch, hour) = (document.playback.branch(), document.playback.hour());
@@ -1328,8 +1173,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 session.sample_boundary, session.id
             );
         }
-        // counters: a dump names its hour, so a viewing country that hour does not hold is an
-        // error here rather than the window's stated fallback to the recorded player.
         if let Resolution::Absent(tag) = document.vision(&options.perspective)?.resolution() {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1339,16 +1182,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ),
             )));
         }
-        // borders: the verification override, before the limitations are printed, so an hour
-        // rendered with it does not also claim the layer was not drawn.
         document.demilitarized_override = options.demilitarized.clone();
-        // An hour the collector had not finished filling still renders; what it
-        // could not draw is stated here, one line per degraded table, before
-        // anything that could fail on its own.
         for line in document.limitations(&options.perspective)?.lines() {
             eprintln!("Warning: {line}");
         }
-        // political fill
         let hour = document.hour()?;
         if !document.map_modes.knows(&options.map_mode) {
             return Err(Box::new(io::Error::new(
@@ -1359,7 +1196,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ),
             )));
         }
-        // A dump is a fresh open: a scripted mode's colour borders start empty.
         let mode = hour.map_mode_fill(&options.map_mode, &options.perspective, None, None)?;
         for line in &mode.warnings {
             eprintln!("Warning: {line}");
@@ -1377,9 +1213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         omitted.gradient |= options.debug_borders;
         omitted.trees |= options.no_trees;
         println!("Omitted dump layers: {omitted:?}");
-        // weather
         let snow_mud = std::sync::Arc::new(document.snow_mud()?);
-        // close zoom
         let (map_building_field, building_summary) =
             document.map_building_field(&options.perspective)?;
         let aircraft_plan = document.aircraft_plan(&options.perspective)?;
@@ -1395,7 +1229,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for line in train_plan.diagnostics(&document.trains) {
             println!("{line}");
         }
-        // orders: the recorded player's battle plan
         let show_allied = options
             .allied_plans
             .unwrap_or(document.game_options.allied_plans);
@@ -1404,7 +1237,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             document.order_field(&options.perspective)?
         };
-        // Printed before the dump's fallible steps so a failed dump keeps them.
         let mut warnings = document.warnings.clone();
         warnings.extend(layers.warnings().iter().cloned());
         document.uncovered_reads.append_to(&mut warnings);
@@ -1432,7 +1264,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|placement| place(*placement))
             .collect::<io::Result<Vec<_>>>()?;
-        // The convoys sail at the dump's presentation clock where the mode and camera show them.
         let trade_routes =
             viewer_world::map::map_mode::visibility::of(&options.map_mode).trade_routes;
         let (unit_model_field, unit_report) = document.unit_model_field_sailing(
@@ -1447,8 +1278,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             },
         )?;
-        // fog of war: the hour's `IntelMap` for the viewing country and the fog
-        // switch. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
         let visibility = viewer_world::map::map_mode::visibility::of(&options.map_mode);
         if visibility.fog_of_war {
@@ -1475,14 +1304,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>()
             .join("; ");
         let hour = document.playback.hour();
-        // names: a headless render has no frame history, so the fade jumps
-        // straight to its settled value.
         let fade = LayerFade::instant(camera);
         let placements = document.place_names(&options.map_mode)?;
         for warning in &placements.warnings {
             eprintln!("Warning: {warning}");
         }
-        // counters: bases, labels, counters and combats in priority order.
         let ui_scale = options.ui_scale.unwrap_or(1.0);
         let mut dump_overlay = document.dump_overlay(
             camera,
@@ -1505,7 +1331,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let selection = selector.resolve(document.frame()?)?;
             window.open(selection);
             window.configure_air(options.air_details, options.air_range, options.air_channels);
-            // A dump is a saved picture: the window stands where it settles.
             window.set_settled(true);
             let raids = Arc::clone(&document.icons.raids);
             window.set_rule_relations(Arc::new(move |frame, rule, country| {
@@ -1515,7 +1340,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             window.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
             let rosters = document.playback.roster_sampler();
             let mut gui_elapsed = 0.0_f64;
-            // Draw until every flag and portrait the window asked for is decoded.
             let drawn = loop {
                 let before = document.icons.lazy.version();
                 let frame = match document.playback.current() {
@@ -1550,14 +1374,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     break drawn;
                 }
             };
-            // The window's warnings say why an undecided flag showed nothing, so they print
-            // whether or not it drew.
             combat_warnings = window.warnings(&document.icons.combat.warnings);
             for warning in &combat_warnings {
                 eprintln!("Warning: {warning}");
             }
-            // A window named for the dump is drawn, or the dump is refused by name: never an image
-            // without it.
             let Some(drawn) = drawn else {
                 let why = window.not_shown().unwrap_or_else(|| "it drew nothing".into());
                 return Err(invalid(format!("the combat window {selection:?} named for the dump at hour {hour} is not drawn: {why}")).into());
@@ -1565,14 +1385,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(why) = drawn.missing() {
                 return Err(invalid(format!("the combat window {selection:?} named for the dump at hour {hour} is not drawn: {why}")).into());
             }
-            // A free camera draws the map's interface, the window with it, only when asked to.
             if camera.free().is_some() && !options.free_overlays.unwrap_or(false) {
                 return Err(invalid(format!("the combat window {selection:?} named for the dump at hour {hour} is not drawn: the map's interface is hidden for this free camera (--free-overlays off)")).into());
             }
             println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
             dump_overlay.extra.quads.extend(drawn.batch.quads);
         }
-        // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
         let rail_mesh = document.rail_mesh()?;
         let demilitarized = document.demilitarized_zone(&layers.regions)?;
         if !demilitarized.is_empty() {
@@ -1598,7 +1416,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let map_text = document
             .hour()?
             .map_text(&*document.vision(&options.perspective)?);
-        // A free camera draws the map's interface, country names included, only when asked to.
         let interface = camera.free().is_none() || options.free_overlays.unwrap_or(false);
         if interface {
             match app::picker::dump(&document, &options) {
@@ -1625,7 +1442,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let report = render::dump_png(
             &document.assets,
-            // political fill + borders
             render::MapLayers {
                 content: &document.content,
                 graphics,
@@ -1636,19 +1452,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 border_assets: &document.border_assets,
                 border_meshes: &document.border_meshes,
                 straits: &document.straits,
-                // borders
                 demilitarized: &demilitarized,
-                // rivers
                 river_assets: &document.river_assets,
                 river_mesh: &document.river_mesh,
-                // weather
                 snow_mud: &snow_mud,
-                // fog of war
                 intel_map: &intel_map,
-                // the map's table frame
                 frame_assets: &document.frame_assets,
                 nuclear_impacts: &nuclear_impacts,
-                // close zoom
                 sprawl: &document.sprawl,
                 map_buildings: &document.map_buildings,
                 map_building_field: &map_building_field,
@@ -1662,18 +1472,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 bridges: &document.bridges,
                 unit_models: &document.unit_models,
                 unit_model_field: &unit_model_field,
-                // orders: the recorded player's battle plan
                 order_assets: &document.orders,
                 order_field: &order_field,
                 weather_assets: document.weather_effects.clone(),
                 weather_field: document.hour()?.weather_field()?,
-                // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
                 tree_field: &document.tree_field,
                 visibility,
             },
-            // names
             &document.icons,
             options.settle,
             &mut dump_overlay,
@@ -1682,16 +1489,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 camera,
                 day_night: DayNight::at_hour(hour)
                     .with_cycle(options.day_night.unwrap_or(document.game_options.day_night)),
-                // `vGlobalTime`: zero unless `--presentation-time` names one, so
-                // a headless dump is deterministic either way.
                 animation_time: options.presentation_time,
                 map_time: options.map_time,
-                // colour
                 postfx: options.postfx,
                 no_water: options.no_water,
-                // shadows
                 no_shadows: options.no_shadows,
-                // trees
                 no_trees: options.no_trees,
                 overlay: Overlay {
                     names: (!omitted.labels).then_some(&placements),
@@ -1712,7 +1514,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             sight: document.assets.terrain_sight(),
                         }),
                 },
-                // trees
             },
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
@@ -1752,7 +1553,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             let [x, y] = point;
             match dump_overlay.hits.intel_at(|hit| {
-                // A dump lays its overlay out for the camera it draws, so no window is offset.
                 crate::app::map_hits::local(
                     None,
                     dump_overlay.looks(),
@@ -1867,8 +1667,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &counter_report.perspective,
                 ))
             } else {
-                // The hover's air statistics wait for the roster history worker, as the
-                // interactive hover does through its wake: ask again until nothing is pending.
                 let mut cache = viewer_counter_products::map::province_tooltips::Cache::default();
                 let selected = Arc::new(Vec::new());
                 let rosters = document.playback.roster_sampler();
@@ -1915,7 +1713,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .icons
                     .counters
                     .census(&label_batch, &document.icons.fonts, ui_scale);
-            // The same counted marker and open-window limitations the dump prints.
             census["combat_diagnostics"] = serde_json::json!(
                 counter_report
                     .combat_gap_lines()
@@ -1964,14 +1761,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.cpu_seconds * 1000.0,
             (report.render_seconds - report.cpu_seconds) * 1000.0
         );
-        // borders
         if !demilitarized.is_empty() {
             println!(
                 "Demilitarised-zone border: {} province boundaries highlighted",
                 report.demilitarized_edges
             );
         }
-        // political fill + borders
         let (filled, distinct) = layers.summary();
         println!(
             "Political layer: {filled} provinces filled in {distinct} country colors (controller); region tables derived in {:.2} ms",
@@ -1989,7 +1784,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.straits.len(),
             document.border_trace.as_secs_f64() * 1000.0
         );
-        // rivers
         println!(
             "Rivers: {} ribbons from {} sources and {} of {} junction markers, {} vertices and {} indices; {} too small, {} circular, {} unreachable pixels; built in {:.0} ms",
             document.river_mesh.ribbons,
@@ -2003,13 +1797,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.river_trace.unreachable,
             document.river_build.as_secs_f64() * 1000.0
         );
-        // the map's table frame
         println!(
             "Map frame: {} ambient actors, {} resolved meshes through the compiled content shader",
             document.frame_assets.field.instances.len(),
             document.frame_assets.library.meshes.len(),
         );
-        // shadows
         println!(
             "Shadows: cast-shadow chain {} at height {:.3} (cutoff {}), ShadowFadeFactor {:.4}",
             if report.shadows { "drawn" } else { "skipped" },
@@ -2017,11 +1809,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             camera.defines.shadows[0],
             shadow_fade_factor(&camera.defines, camera.height),
         );
-        // colour
         if let Some(grading) = &report.grading {
             println!("Grading: {grading}");
         }
-        // trees
         println!(
             "Trees: {} instances in {} buckets over {} kinds, {} canopy vertices;              fade {:.4} at height {:.3}; {} instances drawn in {} draw calls;              generated in {:.0} ms",
             document.tree_field.instances.len(),
@@ -2050,7 +1840,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tree.scale
             );
         }
-        // orders: the recorded player's battle plan
         println!(
             "Battle plan: {} recorded army orders over every country ({}), {} for this perspective, {} drawn ({}), {} with no arrow (garrison areas, invasions without a route, fronts with an empty or destroyed span), {} with fewer than two placeable controls; province centroids and border chains for {} provinces in {:.0} ms",
             order_field.report.recorded,
@@ -2110,7 +1899,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 order_field.vertices.len()
             );
         }
-        // raids: the viewing country's raid arrows, drawn with the plan
         let raid_arrows = &order_field.report.raid_arrows;
         println!(
             "Raid arrows: {} non-ended raids of the viewing country, {} drawn, {} hidden by the raid filter, {} with no path or controls",
@@ -2131,7 +1919,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 unit.scale
             );
         }
-        // close zoom
         let summary = document.sprawl.plan_summary;
         println!(
             "City sprawl: {} urban pixels, {} samples, {} houses over {} entities and {} meshes;              drawn at height {:.3}: {}; {} drawn; generated in {:.0} ms",
@@ -2177,8 +1964,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (name, count) in &building_summary.unresolved_by_type {
             println!("  no entity: {name} x{count}");
         }
-        // The refused tokens and the floating harbours by reason, as the window, a capture and
-        // map details list them.
         for line in building_summary.warnings() {
             println!("  {line}");
         }
@@ -2242,7 +2027,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             rail_mesh.bridges.len(),
             document.bridges.library.meshes.len()
         );
-        // weather
         println!(
             "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
             snow_mud.summary.line(),
@@ -2250,7 +2034,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             snow_mud.height,
             snow_mud.build.as_secs_f64() * 1000.0
         );
-        // names
         for line in document.icons.fonts.summary() {
             println!("Font: {line}");
         }
@@ -2301,7 +2084,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (reason, count) in &raid_report.reasons {
             println!("  raid icons: {reason} ({count})");
         }
-        // counters
         println!(
             "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases, {} rocket sites, {} gun emplacements ({} hidden by fog of war), {} radars, {} strategic locations, {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats ({} undecided), {} naval result icons ({} undecided); {} stacks with no anchor",
             counter_report.land_counters,
@@ -2343,7 +2125,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for line in counter_report.combat_gap_lines() {
             println!("{line}");
         }
-        // counters: naval mission icons
         println!(
             "Naval mission icons: {} entries drawn ({} children hidden until their inputs are recorded), {} with their button's authored sprite for an undefined kind sprite, {} icons without a region position, {} entries or parts not drawn",
             counter_report.naval_mission_entries,
@@ -2355,13 +2136,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.unanchored_naval_missions,
             counter_report.naval_mission_gaps.values().sum::<usize>(),
         );
-        // The refused tokens, the task forces and base icons not drawn, the undecided naval
-        // icons and the naval mission gaps, as the window lists them.
         for warning in counter_report.warnings() {
             println!("{warning}");
         }
-        // The recorded naval engaged bytes against the flag derived for the recording's
-        // player, over every recorded hour: the count offline runs read.
         let started = Instant::now();
         let check = engaged_index::check_recorded_bytes(document.playback.replay());
         let lines = check.lines();
@@ -2375,7 +2152,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "Naval engaged check folded the recording in {:.2} s.",
             started.elapsed().as_secs_f64()
         );
-        // counters: faction-theatre pins
         let pings = &counter_report.faction_ping_limits;
         println!(
             "Faction-theatre pins: {} drawn; {} theatres refused for a shared first region, {} without a region position, {} unresolved hidden-for links{}",
@@ -2389,7 +2165,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|reason| format!("; undecided: {reason}"))
                 .unwrap_or_default()
         );
-        // counters: railway guns and the ability grid, and what they could not draw
         println!(
             "Railway guns: {} plates drawn, {} guns not drawn (incomplete census or unrecorded definition name), {} moving guns standing because content cannot place their route; {} active abilities without a resolved sprite",
             counter_report.railway_guns,
@@ -2397,11 +2172,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.unplaced_railway_gun_routes,
             counter_report.unavailable_ability_icons,
         );
-        // counters: ETA derivation coverage for this hour
         if let Some(line) = counter_report.eta.line() {
             println!("{line}");
         }
-        // counters: the viewing country and the fog switch, and what they hid
         println!(
             "Counter perspective: viewing country {} ({}), fog of war {}; {} of {} counters carry the game's question mark, {} of {} combat icons do",
             document.viewing_tag(&counter_report.perspective)?,
@@ -2416,7 +2189,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.no_intel_combats,
             counter_report.land_combats + counter_report.naval_combats,
         );
-        // counters: the province term of the engine's land branch
         println!(
             "Province visibility: {} provinces revealed to this perspective{}",
             counter_report.perspective.revealed_provinces(),
@@ -2425,13 +2197,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 None => String::new(),
             }
         );
-        // counters: the combat icon's direction wedge follows the same intelligence gate
         println!(
             "Combat direction wedges: {} drawn of {} icons; the engine hides the wedge for a combat              the viewer has no intelligence on",
             (counter_report.land_combats).saturating_sub(counter_report.no_intel_combats),
             counter_report.land_combats,
         );
-        // counters
         if let Some(level) = counter_report.grouping {
             println!(
                 "Counter grouping: {level:?} level, {} groups",
@@ -2460,7 +2230,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             }
         );
-        // Lazy reads during the dump can add uncovered files; print the refreshed line.
         let mut content = Vec::new();
         document.uncovered_reads.append_to(&mut content);
         for warning in content.iter().filter(|line| !warnings.contains(line)) {
@@ -2472,21 +2241,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A background profiling window stays shown, behind the others, so it keeps painting.
 pub(crate) fn background_window(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| value == "1")
 }
 
 
-/// The `viewer` binary: the development harness and tooling.
 pub fn cli() -> std::process::ExitCode {
     engine_heap::return_freed_memory_promptly();
     viewer_foundation::parallel::name_shared_pool();
     viewer_foundation::frame_writer::initialize(Instant::now());
     let result = run();
     viewer_foundation::frame_writer::flush();
-    // Profiling lines are written by a thread of their own; every mode waits
-    // for them, a headless dump included.
     profile_flush();
     perf_log::finish();
     match result {
@@ -2573,7 +2338,6 @@ mod tests {
         assert!(parse(&["battle.battleplan", "--combat-at", "4294967296"]).is_err());
     }
 
-    /// The game's two map controls, and no third.
     #[test]
     fn a_free_camera_takes_an_eye_degrees_and_a_lens() {
         let options = parse(&[
@@ -2607,7 +2371,6 @@ mod tests {
         assert!((pose.roll - 6f32.to_radians()).abs() < 1e-6);
         assert!((pose.lens.fov_y - 60f32.to_radians()).abs() < 1e-6);
         assert_eq!((pose.lens.near, pose.lens.far), (0.5, 900.0));
-        // One camera only, a usable lens and five to nine numbers.
         for bad in [
             &[
                 "c.battleplan",
@@ -2654,7 +2417,6 @@ mod tests {
         assert!(parse(&["campaign.battleplan", "--fog"]).is_err());
     }
 
-    /// The counter options default to `settings.txt`'s and take the command line's overrides.
     #[test]
     fn counter_options_override_the_users_settings() {
         use viewer_counters::map::counters::{CounterColorMode, CounterSettings};
@@ -2766,7 +2528,6 @@ mod tests {
         }
     }
 
-    // counters: a frame between two recorded hours
     #[test]
     fn a_fractional_hour_names_a_frame_between_two_recorded_ones() {
         let dump = parse(&[
@@ -2781,7 +2542,6 @@ mod tests {
         assert_eq!(dump.hour, Some(60832633));
         assert!((dump.hour_fraction - 0.5).abs() < 1e-6);
 
-        // The two spellings are the same number.
         let split = parse(&[
             "--dump",
             "campaign.battleplan",
@@ -2798,7 +2558,6 @@ mod tests {
             (dump.hour, dump.hour_fraction)
         );
 
-        // A recorded hour renders exactly, which is a zero fraction.
         let whole = parse(&[
             "--dump",
             "campaign.battleplan",
@@ -2816,12 +2575,10 @@ mod tests {
         for bad in ["60832633.", "60832633.x", "60832633.5.5", "x.5"] {
             assert!(parse_hour(bad).is_err(), "`{bad}` should be refused");
         }
-        // One whole hour is the next recorded hour, which renders on its own.
         assert!(parse_fraction("1").is_err());
         assert!(parse_fraction("1.5").is_err());
         assert!(parse_fraction("-0.5").is_err());
         assert!((parse_fraction("0.75").unwrap() - 0.75).abs() < 1e-6);
-        // The fraction is measured from a named recorded hour.
         assert!(parse(&["campaign.battleplan", "--hour-fraction", "0.5"]).is_err());
         assert!(parse(&["--compare", "a.png", "b.png", "--hour-fraction", "0.5"]).is_err());
     }
@@ -2889,7 +2646,6 @@ mod tests {
         assert_eq!(dump.camera.unwrap().height, 300.0);
         assert_eq!(dump.size, [2048, 1152]);
 
-        // The desktop app forwards a recording and its options to the map.
         let hosted = parse(&["campaign.battleplan", "--branch", "2"]).unwrap();
         assert_eq!(hosted.replay, Some(PathBuf::from("campaign.battleplan")));
         assert!(hosted.out.is_none() && hosted.compare.is_none());
@@ -2899,7 +2655,6 @@ mod tests {
         assert!(parse(&["--dump", "campaign.battleplan", "--out", "f.png"]).is_err());
     }
 
-    // borders
     #[test]
     fn the_layer_toggle_is_a_dump_only_verification_aid() {
         let dump = parse(&[
@@ -2939,7 +2694,6 @@ mod tests {
         assert!(parse(&["--compare", "g.png", "v.png", "--layers", "trees"]).is_err());
     }
 
-    // trees
     #[test]
     fn the_canopy_toggle_is_a_dump_only_verification_aid() {
         let dump = parse(&[
@@ -2961,8 +2715,6 @@ mod tests {
         assert!(parse(&["c.battleplan", "--no-trees"]).is_err());
     }
 
-    /// The presentation clock is a dump option: the window runs its own, and a
-    /// dump renders zero unless a fitted time is named.
     #[test]
     fn the_presentation_clock_is_a_dump_option_and_defaults_to_zero() {
         let dump = |seconds: &str| {
@@ -2995,7 +2747,6 @@ mod tests {
         assert!(dump("-1").is_err());
         assert!(dump("nan").is_err());
         assert!(dump("inf").is_err());
-        // The map scene runs a second clock and takes its own option.
         let both = parse(&[
             "--dump",
             "campaign.battleplan",
@@ -3033,7 +2784,6 @@ mod tests {
         );
     }
 
-    // capture
     #[test]
     fn window_dump_takes_the_dump_options_and_drives_the_window() {
         let options = parse(&[
@@ -3061,9 +2811,7 @@ mod tests {
         assert!(!options.headless_dump);
         assert_eq!(options.size, [1279, 723]);
         assert!(!options.postfx);
-        // It writes one frame and closes, so it needs somewhere to write it.
         assert!(parse(&["--window-dump", "campaign.battleplan", "--hour", "1"]).is_err());
-        // Only one of the two paths can own the replay.
         assert!(
             parse(&[
                 "--dump",
@@ -3127,7 +2875,6 @@ mod tests {
         ] {
             assert!(dump(refused).is_err(), "{refused:?}");
         }
-        // It is a window dump's: the desktop app's maps walk from their Camera control.
         assert!(parse(&["campaign.battleplan", "--walk", "1,2,0"]).is_err());
     }
 
@@ -3166,7 +2913,6 @@ mod tests {
         );
         assert_eq!(fly.view, controls::flight::View::Nose);
         assert_eq!(fly.steer, [0.5, -1.0, 1.0]);
-        // The defaults: the chase view, nothing held, no bank.
         let plain = window(&["--fly", "1,2,3,4,5"]).unwrap().fly.unwrap();
         assert_eq!(plain.view, controls::flight::View::Chase);
         assert_eq!(plain.steer, [0.0; 3]);
@@ -3183,7 +2929,6 @@ mod tests {
         ] {
             assert!(window(refused).is_err(), "{refused:?}");
         }
-        // A flight needs the window's path.
         assert!(
             parse(&[
                 "--dump",

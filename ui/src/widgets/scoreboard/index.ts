@@ -13,7 +13,6 @@ function useColumns(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const registry = data?.columns ?? [];
   const options = resolveOptions(OPTIONS, widget.options);
   const shown = selectedColumns(registry, options.columns, data?.defaultColumns ?? []);
-  // An old campaign's unrecognised picks stay stored; it is clear why they cannot act.
   const unknown = contentSet(options.columns).filter(token => !registry.some(column => column.key === contentKey(token)));
   return {
     columns: [...registry.map(column => ({ value: setToken(column.key), label: column.label })),

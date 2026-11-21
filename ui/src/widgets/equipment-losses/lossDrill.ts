@@ -13,7 +13,6 @@ import type { LossWindow } from './lossesData';
 import type { DrillCountry } from '../country-measure/drillCountry';
 import { DETAIL } from './definition.ts';
 
-/** Content presentation never owns a pending pick or a retained numeric model. */
 export function lossNumbers(reply: LossesReply): LossesReply {
   return { ...reply, warnings: [], causes: reply.causes.map(cause => ({ ...cause,
     name: { key: null, template: null, text: null }, group: null })),
@@ -26,7 +25,6 @@ export interface LossRow {
   readHour: number | null; incomplete: boolean; note?: string;
 }
 
-/** Every native signed/zero amount is reachable, independent of positive geometry. */
 export function lossRows(reply: LossesReply, window: LossWindow, selected: ReadonlySet<string> | null = null): LossRow[] {
   const items = lossItems(reply, window);
   const byKey = new Map(items.flatMap(item => item.counted?.map(id => [id, item] as const) ?? []));
@@ -54,7 +52,6 @@ export function lossRows(reply: LossesReply, window: LossWindow, selected: Reado
   return rows;
 }
 
-/** Cause bars and history share one grouping; the table retains all native designs. */
 export function lossParts(rows: readonly LossRow[], scale: number): (DrillPart & { keys: string[]; incomplete: boolean })[] {
   const causes = new Map<string, { label: string; raw: bigint; measured: boolean; incomplete: boolean; keys: string[] }>();
   for (const row of rows) {
@@ -88,7 +85,6 @@ export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, ho
   delete options.lossSelection;
   delete options.lossCountry;
   if (country) options.lossCountry = JSON.stringify(country);
-  // Pinned by the tag the chosen country went by, which a stored selection keeps; the drill country names its slot.
   const pinnedTag = country?.tag ?? tag;
   if (keys) options.lossSelection = JSON.stringify({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: pinnedTag, keys });
   return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] },
@@ -97,12 +93,10 @@ export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, ho
     options };
 }
 
-/** The same native samples reach the painter as held steps, including clipped views. */
 export function lossSegments(model: StackModel, first: number, last: number, hoursPerPixel: number) {
   return shareSegments(model, first, last, hoursPerPixel);
 }
 
-/** Native supplying changes are swept once; union boundaries never rescan all leaf histories. */
 export function lossHistory(reply: LossesReply, first: number, last: number, from?: number | null,
   selected: ReadonlySet<string> | null = null, countries?: readonly Span[]): { model: StackModel; keys: string[]; labels: string[] } {
   const events = new Map<number, { deltas: Map<string, bigint>; unread: number }>();

@@ -1,5 +1,3 @@
-//! Exact wall-time distributions: every sample kept, nearest-rank percentiles
-//! computed on demand and cached until the next sample.
 
 use serde::Serialize;
 #[cfg(any(test, feature = "test-support"))]
@@ -44,7 +42,6 @@ fn exact_percentiles(samples: &mut [u64]) -> Percentiles {
             remaining = suffix;
             offset = rank + 1;
         }
-        // Small samples can put several requested percentiles at the same rank.
         *value = selected;
     }
     Percentiles {
@@ -71,7 +68,6 @@ impl Distribution {
     }
 
     pub fn try_percentiles(&self) -> io::Result<Percentiles> {
-        // Repeated status reads reuse exact results until another sample arrives.
         if let Some(cached) = self.cached.get() {
             return Ok(cached);
         }

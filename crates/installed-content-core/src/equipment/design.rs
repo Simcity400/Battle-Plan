@@ -1,11 +1,8 @@
-//! Equipment stat terms resolved from the recorded content stack.
 use super::{STAT_COUNT, stat_index};
 use crate::{fixed5::script_fixed5, parser::Item};
 
-/// Ordered resource tokens and their fixed-point amounts.
 pub type ResourcePool = Vec<(Vec<u8>, i64)>;
 
-/// Currency belongs to each upgrade definition, independently of its host type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UpgradeCurrency {
     #[default]
@@ -16,9 +13,7 @@ pub enum UpgradeCurrency {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpgradeDesign {
     pub currency: UpgradeCurrency,
-    /// Presence selects the linear partition, including an explicit zero.
     pub linear: Option<[i64; 2]>,
-    /// Sorted level thresholds; a repeated threshold replaces its whole pool.
     pub resource_thresholds: Vec<(u8, ResourcePool)>,
 }
 impl UpgradeDesign {
@@ -97,8 +92,6 @@ impl UpgradeXpRules {
                 .fixed5("NProduction", "LICENSE_EQUIPMENT_UPGRADE_XP_FACTOR")?,
         })
     }
-    /// Native unsigned-byte level traversal charges reductions too. Each normal
-    /// step wraps as a signed dword before becoming a fixed-point cost.
     pub fn change(
         &self,
         definition: &UpgradeDesign,
@@ -127,8 +120,6 @@ impl UpgradeXpRules {
         }
         cost
     }
-    /// Generic upgrades apply licensing to the combined factor before the final
-    /// multiplication. Module designs apply it to their slot sum instead.
     pub fn finish(
         &self,
         raw: i64,
@@ -148,8 +139,6 @@ impl UpgradeXpRules {
     }
 }
 
-/// Final module-design XP stages. A recorded zero template discount is required;
-/// an unavailable owner scope must be refused by the joining query.
 #[allow(clippy::too_many_arguments)]
 pub fn module_save_xp(
     upgrade_xp: i64,
@@ -178,7 +167,6 @@ pub fn module_save_xp(
     cost.wrapping_mul(100_000 - template_discount.clamp(0, 100_000)) / 100_000
 }
 
-/// Module operands shared by save-XP and industrial conversion queries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModuleDesign {
     pub category: Vec<u8>,
@@ -191,7 +179,6 @@ pub struct ModuleDesign {
     pub forbid_types: u64,
     pub forbid_exact_types: u64,
     pub forbid_exact_for_category: Vec<(Vec<u8>, u64)>,
-    /// Ordered slot/category additions used to build dependency edges.
     pub allowed_module_categories: Vec<(Vec<u8>, Vec<u8>)>,
     pub forbidden_categories: Vec<Vec<u8>>,
     pub mission_terms: Vec<(Vec<Vec<u8>>, StatGroup)>,
@@ -212,7 +199,6 @@ fn number(field: &Item) -> i64 {
     field.value.scalar().and_then(script_fixed5).unwrap_or(0)
 }
 
-/// Resource pool reads replace an existing token in place, including zero.
 fn read_resources(pool: &mut ResourcePool, fields: &[Item]) {
     for field in fields {
         let Some(name) = field.key.as_deref() else {
@@ -322,8 +308,6 @@ impl ModuleDesign {
         result
     }
 
-    /// First exact module match; otherwise the last matching category entry.
-    /// The requested source has already resolved through this content stack.
     pub fn conversion_from(
         &self,
         source_name: &[u8],
@@ -335,8 +319,6 @@ impl ModuleDesign {
             {
                 return Some(conversion);
             }
-            // Unspecified categories retain the same native unset identity;
-            // that equality participates in the category fallback too.
             if conversion.category == source.category {
                 category = Some(conversion);
             }
@@ -345,7 +327,6 @@ impl ModuleDesign {
     }
 }
 
-/// Authored XP defaults, never values baked in from one content installation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleXpRules {
     pub add: i64,
@@ -364,9 +345,6 @@ impl ModuleXpRules {
         })
     }
 
-    /// XP for one changed slot. The module modifier is the recorded effective
-    /// country operand for the added/replaced module (removed module for a
-    /// removal). Final design discounts and licensing apply to the slot sum.
     pub fn slot(
         &self,
         target: Option<(&[u8], &ModuleDesign)>,
@@ -411,8 +389,6 @@ pub struct StatValue {
     pub value: i64,
 }
 
-/// Ordered unique stat keys. Explicit average zeroes remain present because
-/// presence contributes a divisor, independently of their numeric value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatGroup {
     pub add: Vec<StatValue>,
@@ -446,7 +422,6 @@ impl StatGroup {
         let Some(index) = field.keyword().and_then(|key| stat_index(&key.folded())) else {
             return;
         };
-        // The native scalar reader starts at zero; a failed scan keeps zero.
         let value = field.value.scalar().and_then(script_fixed5).unwrap_or(0);
         if let Some(held) = target.iter_mut().find(|held| held.index == index) {
             held.value = held.value.wrapping_add(value);
@@ -456,7 +431,6 @@ impl StatGroup {
     }
 }
 
-/// One source's contribution before the final formatter's average and factor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatContribution {
     pub additive: i64,
@@ -465,8 +439,6 @@ pub struct StatContribution {
     pub multiplier: i64,
 }
 
-/// The native accumulator shape. Source attribution is retained by callers;
-/// this arithmetic serves every equipment family and every indexed mod stat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatComponents {
     pub values: [StatContribution; STAT_COUNT],
@@ -487,8 +459,6 @@ impl StatComponents {
             }),
         }
     }
-    /// Applied equipment and organisation snapshots already hold their final
-    /// words. They enter the accumulator without the module/upgrade scale step.
     pub fn applied(
         &mut self,
         additive: bool,
@@ -542,8 +512,6 @@ impl StatComponents {
         std::array::from_fn(|index| {
             let source = &self.values[index];
             let average = if source.average_count > 0 {
-                // The game keeps its reserved fixed-point words through the
-                // average's invalid-input branch rather than normalizing them.
                 if source.average_sum <= i64::MIN + 1 || source.average_sum == i64::MAX {
                     0xffff_ffff
                 } else {
@@ -626,8 +594,6 @@ mod tests {
         assert_eq!(rules.change(free, 0, 7, false), 0);
         assert_eq!(rules.change(free, 7, 0, true), 864_199);
         assert_eq!(rules.finish(123_459, -12_345, 2_345, 0, true), 137_176);
-        // Generic applies the factor before multiplying the cost; module XP
-        // applies licensing to slots first, then its minimum and template cut.
         assert_eq!(
             module_save_xp(0, 123_459, true, 123_457, -12_345, 2_345, 0, 12_345),
             120_241
@@ -691,8 +657,6 @@ mod tests {
         assert_eq!(values[77], 146_801);
         assert_eq!(values[72], -200_000);
         assert_eq!(stats.values[77].average_count, 2);
-        // Applied snapshots do not pass through a multiply/divide that can
-        // overflow even when the requested scale is one.
         let mut stats = StatComponents::default();
         stats.applied(false, 77, i64::MAX).unwrap();
         assert_eq!(stats.values[77].multiplier, i64::MAX);

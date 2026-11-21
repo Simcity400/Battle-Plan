@@ -1,4 +1,3 @@
-//! The public accepted-stream seam resolves storage-only aliases before typed endpoints.
 use replay::campaign::Replay;
 use replay_data::rows::{self, *};
 use replay_frame::frame::{
@@ -192,8 +191,6 @@ fn alias_frame(hour: i32) -> DecodedFrame {
     replay_frame::frame::retire_absent(frame)
 }
 
-/// The frame a reader reads back of `frame`: each derived table and its read time as the
-/// recorder's writers held them at its hour (`held`), every other table the frame's own.
 fn read_back(mut frame: DecodedFrame, held: &DecodedFrame) -> DecodedFrame {
     assert_eq!((frame.branch, frame.hour), (held.branch, held.hour));
     for (index, view) in held.tables.iter().enumerate() {

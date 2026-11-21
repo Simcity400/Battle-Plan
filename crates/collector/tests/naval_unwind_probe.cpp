@@ -1,4 +1,3 @@
-// Independently authored synthetic exception; no game code or data.
 #include <cstdint>
 
 struct Marker { std::uint32_t value; };

@@ -5,7 +5,6 @@ import { useProduct } from '../../dashboard/products';
 import FactoriesWidget from './FactoriesWidget';
 import { typeChoices, validateFactoryGroups } from './factoriesData';
 
-/** The factory types to choose from: the game's three groups, named by the recorded content's building types. */
 function useFactoryTypes(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups', params: { branchId: track.branch.id } } : null;

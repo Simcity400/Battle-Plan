@@ -1,9 +1,3 @@
-//! Followed queries on the stepper's hook. `follow` and `unfollow` may be called from any thread;
-//! they reach the hook at the next step boundary, and the union of every followed query's columns
-//! is declared to the playhead at once. In the hook a query is evaluated only when the step wrote
-//! one of its columns for one of its rows, inserted or deleted a row it reads, changed or reset its
-//! table, or passed an hour its tags' holders change; an answer equal to the last one sent is not
-//! queued; one dated message carries the step's changed answers.
 
 use crate::{
     answer::{self, Message, State, Table},
@@ -30,36 +24,28 @@ use std::{
     time::Instant,
 };
 
-/// Told what each step cost and the dated message it produced.
 pub type Sink = Box<dyn FnMut(&StepStats, Option<Message>) + Send>;
 
 type Declare = Box<dyn Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync>;
 
-/// One step in the hook.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StepStats {
-    /// The step's epoch: a seek starts a newer one, and the steps of the older are never taken.
     pub epoch: u64,
     pub first: Hour,
     pub last: Hour,
     pub reset: bool,
     pub gap: bool,
-    /// Queries the step touched, those evaluated, and those whose answer differs from the last sent.
     pub touched: u32,
     pub evaluated: u32,
     pub changed: u32,
-    /// Cells the evaluations read.
     pub cells: u32,
     pub rows_read: u64,
-    /// Answers and messages sent.
     pub sent: u32,
     pub messages: u32,
     pub bytes: u32,
-    /// The hook's whole time, the message made.
     pub ns: u64,
 }
 
-/// Counted since the hook started.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Counters {
     pub steps: u64,
@@ -73,15 +59,12 @@ pub struct Counters {
     pub most_ns: u64,
 }
 
-/// What follow holds, in bytes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Held {
     pub queries: usize,
     pub waiting: usize,
-    /// The last answer sent per query, and the answers queued and not sent.
     pub sent: usize,
     pub pending: usize,
-    /// The queries themselves (keys, tags) and the index from tables, columns and keys to them.
     pub queries_bytes: usize,
     pub index: usize,
     pub total: usize,
@@ -92,11 +75,9 @@ enum Op {
     Unfollow(u32),
 }
 
-/// What one followed query reads of its table.
 struct Reads {
     table: usize,
     columns: Vec<usize>,
-    /// The rows appended since the last push (a feed), or those the game lists now.
     appended: bool,
     listed: bool,
 }
@@ -106,7 +87,6 @@ struct Control {
     ops: Vec<Op>,
     followed: BTreeMap<u32, Reads>,
     declare: Option<Declare>,
-    /// The playhead's file: each table's class (a log or state), and a log's rows by ordinal.
     logs: Option<LogReads>,
     classes: BTreeMap<usize, bool>,
 }
@@ -126,7 +106,6 @@ fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
     held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The followed queries of one playhead.
 #[derive(Clone)]
 pub struct Follow {
     shared: Arc<Shared>,
@@ -150,13 +129,10 @@ impl Follow {
         }
     }
 
-    /// What its messages carry so the UI hands each to the stores following this playhead, and the
-    /// queue merges it with no other playhead's: unique in this process.
     pub fn route(&self) -> u32 {
         self.shared.route
     }
 
-    /// The stepper's hook, which tells `sink` after every step.
     pub fn hook(&self, sink: Sink) -> Hook {
         let mut engine = Engine::new(Arc::clone(&self.shared), sink);
         Box::new(move |step: &Step, lanes: &Lanes<'_>| {
@@ -181,9 +157,6 @@ impl Follow {
         redeclare(&mut control, false)
     }
 
-    /// How the union of the followed queries' columns reaches the playhead (its reader's
-    /// `redeclare`), called now and after every follow and unfollow; and the playhead's log reads,
-    /// which say which tables are logs and read a log's listed rows.
     pub fn bind(&self, declare: impl Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
         let mut control = lock(&self.shared.control);
         control.logs = Some(logs);
@@ -193,9 +166,6 @@ impl Follow {
         Ok(())
     }
 
-    /// Follows `query` as `id` (replacing what `id` followed); its first answer comes in the
-    /// message of the first step whose lanes hold its columns. Refused by name when the query asks
-    /// what its table does not hold.
     pub fn follow(&self, id: u32, query: Query) -> io::Result<()> {
         query.check()?;
         let mut control = lock(&self.shared.control);
@@ -204,7 +174,6 @@ impl Follow {
         redeclare(&mut control, true)
     }
 
-    /// Nothing more is sent for `id` from the next step boundary.
     pub fn unfollow(&self, id: u32) -> io::Result<()> {
         let mut control = lock(&self.shared.control);
         if control.followed.remove(&id).is_some() {
@@ -214,7 +183,6 @@ impl Follow {
         Ok(())
     }
 
-    /// The tables and columns the followed queries read.
     pub fn declared(&self) -> io::Result<Vec<Declared>> {
         union(&mut lock(&self.shared.control))
     }
@@ -241,9 +209,6 @@ fn redeclare(control: &mut Control, joining: bool) -> io::Result<()> {
     }
 }
 
-/// A feed's or a listed set's table is declared keyed. A feed of a table holding state is declared
-/// passing, so its rows born and gone inside a step come too; a log's lane gives every row it
-/// appends in its steps and refuses passing. Which tables are logs the playhead's file says.
 fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
     let mut tables: BTreeMap<usize, (BTreeSet<usize>, bool, bool)> = BTreeMap::new();
     for reads in control.followed.values().filter(|reads| reads.table != head::TABLE) {
@@ -271,10 +236,8 @@ fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    /// Its table's lane does not hold its columns yet.
     Waiting,
     Active,
-    /// Its table's columns are of kinds it cannot read; its answer says so, once.
     Refused,
 }
 
@@ -285,9 +248,7 @@ struct Followed {
     declared: Vec<usize>,
     phase: Phase,
     dirty: bool,
-    /// The keys it watches: its own, or its tags' holders at the head.
     keys: Vec<u128>,
-    /// A series: each tag's holder at the head, until the hour they next change.
     tags: Tags,
     until: Hour,
     sent: Vec<u8>,
@@ -296,26 +257,19 @@ struct Followed {
     has_pending: bool,
     pending_hour: Hour,
     queued: bool,
-    /// A live query: its rows, and those a step touched.
     live: LiveRows,
     ranking: evaluate::Ranking,
-    /// A log: the rows appended and not sent.
     log: Table,
-    /// A log's rows listed now, by ordinal: each one's key and cells once known (from the step
-    /// that appended it, or from the rows asked by ordinal when it was followed or sought).
     standing: BTreeMap<Ordinal, Option<Listed>>,
     asked: Option<Asked>,
-    /// Why its listed rows could not be read.
     unread: Option<String>,
 }
 
-/// A listed row's key and cells.
 type Listed = (u128, Box<[(i64, State)]>);
 
 impl Followed {
     fn bytes(&self) -> (usize, usize, usize) {
         let log = self.log.keys.capacity() * 16 + self.log.values.capacity() * 8 + self.log.states.capacity() + (self.log.reasons.capacity() + self.log.names.capacity()) * 4 + self.log.hours.capacity() * 4;
-        // A B-tree entry: its ordinal, its value, and about a node's share.
         let standing = self.standing.len() * (size_of::<Ordinal>() + size_of::<Option<Listed>>() + 16) + self.standing.values().flatten().map(|(_, cells)| cells.len() * size_of::<(i64, State)>()).sum::<usize>();
         let query = match &self.query {
             Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) = rows { keys.capacity() * 16 } else { 0 },
@@ -328,9 +282,7 @@ impl Followed {
 
 #[derive(Default)]
 struct Readers {
-    /// Queries of every row (all, top) reading the column.
     broad: Vec<usize>,
-    /// Queries of some keys reading the column.
     keyed: Vec<usize>,
 }
 
@@ -339,28 +291,20 @@ struct Watch {
     queries: Vec<usize>,
 }
 
-/// One table's followed queries and where their rows are.
 #[derive(Default)]
 struct Index {
     queries: Vec<usize>,
     readers: HashMap<usize, Readers>,
-    /// Queries of every row, told of every insert and delete.
     broad: Vec<usize>,
     series: Vec<usize>,
     logs: Vec<usize>,
-    /// Queries of a log's rows listed now.
     standing: Vec<usize>,
     watch: HashMap<u128, Watch>,
     at_slot: HashMap<u32, u128>,
-    /// The slots of watched keys.
     bits: Vec<u64>,
-    /// Watched keys whose slot is not looked up yet.
     unresolved: bool,
-    /// Every live row by key, while no row came or went.
     ordered: Option<Vec<(u128, u32)>>,
-    /// The earliest hour one of its series' holders changes.
     until: Hour,
-    /// Its table's status at the last step: a sample hour moving changes no answer.
     status: Option<Status>,
 }
 
@@ -407,7 +351,6 @@ impl Index {
         }
     }
 
-    /// Every watched key's slot, from the lane's live rows.
     fn resolve(&mut self, lane: &Lane) {
         if !self.unresolved {
             return;
@@ -429,7 +372,6 @@ impl Index {
         }
     }
 
-    /// The lane's rows are new (a reset, a renumber): every slot is looked up again.
     fn forget_slots(&mut self) {
         self.at_slot.clear();
         self.bits.clear();
@@ -474,7 +416,6 @@ impl Find for Index {
 
 const GAP: &str = "No game hours are recorded here";
 
-/// Steps between two sums of what follow holds, besides those whose queries changed.
 const HELD_EVERY: u64 = 64;
 
 struct Engine {
@@ -485,22 +426,18 @@ struct Engine {
     ids: HashMap<u32, usize>,
     tables: BTreeMap<usize, Index>,
     waiting: Vec<usize>,
-    /// Head values, asked every step.
     heads: Vec<usize>,
     marked: Vec<usize>,
     queue: Vec<usize>,
     scratch: Scratch,
     reasons: Reasons,
     listed: Table,
-    /// A live answer's rows changed, made again each time.
     delta: Table,
     body: Vec<u8>,
     message: Vec<u8>,
     counters: Counters,
 }
 
-/// A listed set starts again from its log's live set at the lane's head; the cells of the rows
-/// listed are asked by ordinal, read on a fetcher, and taken in a later step.
 fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
     followed.standing.clear();
     followed.asked = None;
@@ -518,7 +455,6 @@ fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
     }
 }
 
-/// `query` marked, every row of a live query touched (a reset, a renumber, a status change).
 fn mark_all(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize) {
     if let Some(followed) = &mut slab[query] {
         followed.live.touch_all();
@@ -526,7 +462,6 @@ fn mark_all(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize
     mark(slab, marked, query);
 }
 
-/// `query` marked for its row of `key`.
 fn mark_row(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize, key: u128) {
     if let Some(followed) = &mut slab[query]
         && followed.query.live()
@@ -546,8 +481,6 @@ fn mark(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize) {
     }
 }
 
-/// `body` (the newest answer of `followed`, at `hour`) queued unless it is the last one sent;
-/// whether it changed.
 fn offer(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, queue: &mut Vec<usize>) -> bool {
     if followed.has_sent && followed.sent == *body {
         followed.has_pending = false;
@@ -557,7 +490,6 @@ fn offer(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, 
     true
 }
 
-/// `body` queued as `followed`'s pending answer at `hour`.
 fn queue_body(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, queue: &mut Vec<usize>) {
     mem::swap(&mut followed.pending, body);
     followed.has_pending = true;
@@ -568,13 +500,10 @@ fn queue_body(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: H
     }
 }
 
-/// The cells a whole answer just written read: its rows times its columns, none when it is "not
-/// recorded".
 fn cells_of(table: &Table, body: &[u8]) -> u32 {
     if body.first() == Some(&answer::NOT_RECORDED) { 0 } else { (table.rows() * table.columns) as u32 }
 }
 
-/// The keys of a series' tags' holders.
 fn holder_keys(tags: &[TagRow]) -> Vec<u128> {
     let mut keys: Vec<u128> = tags.iter().filter_map(|tag| if let TagRow::Key(key) = tag { Some(*key) } else { None }).collect();
     keys.sort_unstable();
@@ -648,7 +577,6 @@ impl Engine {
         (self.sink)(&stats, message);
     }
 
-    /// Whether any query came or went.
     fn apply_ops(&mut self) -> bool {
         let ops = mem::take(&mut lock(&self.shared.control).ops);
         let changed = !ops.is_empty();
@@ -664,7 +592,6 @@ impl Engine {
         changed
     }
 
-    /// A reset replaces every queued answer and starts live rows with a whole picture.
     fn resend(&mut self, hour: Hour) {
         self.queue.clear();
         for (query, held) in self.slab.iter_mut().enumerate() {
@@ -754,7 +681,6 @@ impl Engine {
         }
     }
 
-    /// Waiting queries whose lanes now hold their columns join the index and are evaluated.
     fn activate(&mut self, lanes: &Lanes<'_>, stats: &mut StepStats) {
         let mut at = 0;
         while at < self.waiting.len() {
@@ -831,7 +757,6 @@ impl Engine {
         }
     }
 
-    /// Marks the queries one table's change set touches.
     fn touch(&mut self, changes: &Changes, lanes: &Lanes<'_>, seek: bool) {
         let table = changes.table();
         let Some(index) = self.tables.get_mut(&table) else { return };
@@ -843,8 +768,6 @@ impl Engine {
             for &query in &index.standing {
                 relist(&self.shared, slab[query].as_mut().expect("a followed list"), lane);
             }
-            // The lane may be at any hour now, before the holders cached: each series finds its
-            // tags' holders, watched keys and boundary again at the new head.
             for &query in &index.series {
                 slab[query].as_mut().expect("a followed series").until = Hour::MIN;
             }
@@ -999,7 +922,6 @@ impl Engine {
         }
     }
 
-    /// Listed sets whose asked rows came take their cells; a read that failed answers why.
     fn fill(&mut self) {
         for index in self.tables.values() {
             for &query in &index.standing {
@@ -1021,7 +943,6 @@ impl Engine {
         }
     }
 
-    /// Series whose tags' holders changed by their table's head watch the new holders' rows.
     fn follow_holders(&mut self, lanes: &Lanes<'_>) {
         for (&table, index) in &mut self.tables {
             let Some(head) = lanes.get(table).and_then(Lane::head) else { continue };
@@ -1117,7 +1038,6 @@ impl Engine {
         }
     }
 
-    /// In a gap no table holds rows: every query not recorded, a log nothing.
     fn answer_gap(&mut self, step: &Step, stats: &mut StepStats) {
         for (query, held) in self.slab.iter_mut().enumerate() {
             let Some(followed) = held else { continue };
@@ -1137,7 +1057,6 @@ impl Engine {
         }
     }
 
-    /// Every head value at the step's hour, offered as any answer: sent only when it differs.
     fn answer_heads(&mut self, step: &Step, stats: &mut StepStats) {
         for at in 0..self.heads.len() {
             let query = self.heads[at];

@@ -1,19 +1,14 @@
-//! The histogram of recorded hours' game-thread block, over the same hours as callback_work, and
-//! every hour whose block exceeds the budget, named by phase.
 
 use crate::sampling::HourPhases;
 
 const HISTOGRAM_FLOOR_MS: [u64; 12] = [0, 2, 4, 8, 16, 32, 50, 64, 100, 128, 256, 1000];
-/// The per-hour bound on the game-thread block.
 const BUDGET_NS: u64 = 50_000_000;
 const TOP_TABLES: usize = 4;
 
-/// Whether an hour blocked the game thread over budget.
 pub(crate) fn over_budget(callback_ns: u64, phases: &HourPhases) -> bool {
     callback_ns.saturating_add(phases.entry_ns) > BUDGET_NS
 }
 
-/// The hour's longest table reads, longest first.
 pub(crate) fn top_tables(
     table_ns: &[u64; replay_data::rows::TABLE_COUNT],
 ) -> [(replay_data::rows::TableId, u64); TOP_TABLES] {
@@ -31,31 +26,24 @@ pub(crate) fn top_tables(
 #[derive(Clone, Copy)]
 struct Slow {
     hour: i32,
-    /// Hours captured since attach before this one.
     seq: u64,
     held_ns: u64,
     phases: HourPhases,
     tables: [(replay_data::rows::TableId, u64); TOP_TABLES],
 }
 
-/// The spool's per-frame bound: past it the spool falls behind the game's hours.
 const SPOOL_BUDGET_NS: u64 = 100_000_000;
 
-/// A frame the spool took longer than its budget over, named by step.
 #[derive(Clone, Copy)]
 pub(crate) struct SpoolFrame {
-    /// None for the spool's work between frames (sizing pass, flush, status).
     pub hour: Option<i32>,
     pub wall_ns: u64,
-    /// The spool thread's cycles over the frame; far under the wall means it was blocked.
     pub cycles: Option<u64>,
     pub spool: [(&'static str, u64); 4],
     pub helper: [(&'static str, u64); 4],
-    /// The costliest of the hour's pack conversion; None for work between frames.
     pub conversion: Option<crate::pack_conversion::HourTop>,
 }
 
-/// The spool thread's clocks at the start of a frame.
 pub(crate) struct SpoolWatch {
     begin: i64,
     cycles: Option<u64>,
@@ -73,7 +61,6 @@ impl SpoolWatch {
         }
     }
 
-    /// The frame, when it took the spool over its budget.
     pub(crate) fn finish(self, hour: Option<i32>, ns: impl Fn(i64) -> u64) -> Option<SpoolFrame> {
         let wall_ns = ns(crate::clock::qpc() - self.begin);
         if wall_ns <= SPOOL_BUDGET_NS {
@@ -123,7 +110,6 @@ pub(crate) struct Recorder {
     histogram: [u64; HISTOGRAM_FLOOR_MS.len()],
     slow: Vec<Slow>,
     spool: Vec<SpoolFrame>,
-    /// Every hour's Variants drain summed: wall, designs read, unchanged, walked, source notes.
     variants: [u64; 5],
 }
 

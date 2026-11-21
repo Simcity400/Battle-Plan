@@ -14,7 +14,6 @@ export interface AirView {
   state: AirState; parts: readonly AirPart[]; total: number; unknown: readonly AirSide[]; noAirObject: readonly AirSide[]; excluded: number;
   reason?: string; wings: number | null; scale: number; badBelow: number; goodAbove: number; viewpoint: AirViewpoint;
 }
-/** How sides are named and coloured, and the map's thresholds. */
 export interface AirLooks {
   name(side: AirSide): string; color(side: AirSide): string; viewpoint: AirViewpoint; enemy: string;
   scale: number; badBelow: number; goodAbove: number; mode: 'sides' | 'viewpoint';
@@ -23,10 +22,8 @@ export interface AirRegionView { region: { id: number; name: string }; view: Air
 export const FILTERED_NOTE = 'No selected side has a score (others may)';
 
 export function airPercent(score: number, total: number): string { return total > 0 ? `${Math.round(score * 100 / total)}%` : '—'; }
-/** A raw score in units of `scale` (the reply's denominator), as the game shows it. */
 export const airScore = (score: number, scale: number): string => formatAmount(rescale(BigInt(Math.trunc(score)), scale, 2), 2);
 
-/** Factions by numeric id first, then the other sides in the reply's order. */
 export function sideOrder(sides: readonly AirSide[]): Map<string, number> {
   const factions = [...new Set(sides.flatMap(side => side.faction == null ? [] : [side.faction]))].sort((a, b) => {
     const first = BigInt(a), second = BigInt(b); return first < second ? -1 : first > second ? 1 : 0;
@@ -37,7 +34,6 @@ export function sideOrder(sides: readonly AirSide[]): Map<string, number> {
   return order;
 }
 
-/** A side's name: its factions' names joined, else its country's ("and allies" for a coalition). */
 export function airSideName(side: AirSide, country: (tag: string) => string, factions: (id: string) => string): string {
   if (side.factions.length) return side.factions.map(factions).join(' / ');
   const tag = side.tag ?? side.leader;
@@ -47,9 +43,6 @@ export function airSideName(side: AirSide, country: (tag: string) => string, fac
 
 const NOT_FOLLOWED = 'Not followed';
 
-/** A cell's view at the values `values` holds: shares of the sides' friendly scores, or the viewpoint's friendly
- * against enemy. A part whose value is missing makes the view unknown; a zero part is left out, as the game's
- * comparison shows no share for it. */
 export function cellView(cell: AirCell | null, sides: readonly AirSide[], values: LiveValues<number>, looks: AirLooks, order: ReadonlyMap<string, number>,
   wings: number | null, recorded = true): AirView {
   const base: AirView = { state: 'inactive', parts: [], total: 0, unknown: [], noAirObject: [], excluded: 0, wings, scale: looks.scale, badBelow: looks.badBelow,
@@ -92,7 +85,6 @@ export function cellView(cell: AirCell | null, sides: readonly AirSide[], values
     state: unknown.length || unread ? 'unknown' : total ? 'known' : looks.mode === 'viewpoint' && noAirObject.length ? 'no-air-object' : cell.filtered ? 'filtered' : 'inactive' };
 }
 
-/** Each region's view at the values held; regions chosen but not in the reply read as the fallback. */
 export function momentViews(reply: AirSuperiorityReply, values: LiveValues<number>, looks: AirLooks, choices?: readonly { id: number; name: string }[]): AirRegionView[] {
   const order = sideOrder(reply.sides);
   const wingsOf = (region: AirRegion) => region.wings === 'none' ? 0 : region.wings === 'unknown' ? null : values.get(liveKey(String(region.id), 'wings')) ?? null;
@@ -109,7 +101,6 @@ export function momentViews(reply: AirSuperiorityReply, values: LiveValues<numbe
 
 export const regionLabel = (region: Pick<AirRegion, 'id' | 'name'>) => region.name ?? `Region ${region.id}`;
 
-/** The rows a widget shows, in its order: by name, by activity, or most contested first (the smallest lead). */
 export function orderedRegions(rows: readonly AirRegionView[], order: 'name' | 'active' | 'contested'): AirRegionView[] {
   const lead = (view: AirView) => {
     if (view.state !== 'known' || view.total <= 0) return Infinity;
@@ -132,7 +123,6 @@ export function airState(view: AirView): string {
   if (view.state === 'inactive') return 'No air activity';
   const friendly = view.parts.find(part => part.id === 'friendly');
   if (friendly) {
-    // Signed multiplication wraps before division; thresholds are strict.
     if (friendly.score >= 9223372036854775807) return 'Air superiority';
     const denominator = BigInt.asIntN(64, BigInt(Math.trunc(view.total)));
     if (!denominator) return 'Air superiority';
@@ -177,7 +167,6 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
   return { ...content, ...countryNameDetails(...named) };
 }
 
-/** The compact hover keeps shares, missing-side counts and assigned wings. */
 export function airSummaryTooltip(full: TooltipContent, view: AirView): TooltipContent {
   const labels = new Set(view.parts.map(part => part.label));
   return { ...full, rows: full.rows.filter(row => row.label === 'Air wings assigned to the region' || labels.has(String(row.label)) || row.swatch != null
@@ -229,9 +218,5 @@ export function validateAirChoices(value: unknown): AirChoicesReply {
   return value as AirChoicesReply;
 }
 
-/** What a render of the moment shows: everything but the numbers, which are live cells. */
-/** What a list of regions renders for: which regions (and their names), the sides and the viewpoint, and why there is
- * no comparison; never a region's activity, wings or which sides hold a share there, which its painter reads from the
- * newest push. */
 export const momentRows = (reply: AirSuperiorityReply) => JSON.stringify([reply.regions.map(region => [region.id, region.name, region.nameMissing]),
   reply.sides, reply.viewpoint, reply.fallback.kind, reply.missing, reply.warnings, reply.scale, reply.badBelow, reply.goodAbove]);

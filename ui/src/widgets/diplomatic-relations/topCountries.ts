@@ -18,17 +18,12 @@ import { replyTopTags } from './relationsData.ts';
 const UNRANKED = { column: '', direction: 'descending' } as const;
 
 export interface TopCountries {
-  /** Greatest first; null until the ranking at the hour is read. */
   tags: readonly string[] | null;
-  /** Why no ranking can be had in this recording. */
   unavailable: string | null;
   error: Error | undefined;
   retry: () => void;
 }
 
-/** A top N: the countries highest on a Scoreboard measure at the hour shown, as the Scoreboard ranks them. Following,
- * the ranking is a followed `series-state` top and the tags are structure; pinned,
- * or where the service does not follow it, one `scoreboard` reply ranks the hour. */
 export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>, track: BoundTrack | undefined,
   top: number | null, measure: OptionValue, root: RefObject<Element | null>): TopCountries {
   const asked = top != null;
@@ -36,12 +31,12 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const columns = registry.data;
   const rank = asked && columns ? rankingColumn(columns.columns, UNRANKED, measure, columns.defaultSort) : undefined;
   const following = active && widget.time.mode === 'follow';
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const branchId = track?.branch.id;
   const family = rank?.family ?? null;
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && family
     ? { product: 'series-state', params: { branchId, family, top } } : null,
-  [following, branchId, top, family?.kind, family?.measure]); // eslint-disable-line react-hooks/exhaustive-deps
+  [following, branchId, top, family?.kind, family?.measure]);
   const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root);
   const entry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
@@ -66,6 +61,6 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const tags = useMemo(() => followed ? (followedText === '\u0001' ? null : followedText ? followedText.split('\u0000') : [])
     : replyData ? replyTopTags(replyData) : null, [followed, followedText, replyData]);
   const unavailable = asked && columns && !rank ? 'No measure to rank the top countries by is in this recording.' : null;
-  const retry = useCallback(() => { registry.retry(); reply.retry(); }, [registry.retry, reply.retry]); // eslint-disable-line react-hooks/exhaustive-deps
+  const retry = useCallback(() => { registry.retry(); reply.retry(); }, [registry.retry, reply.retry]);
   return { tags: asked ? tags : null, unavailable, error: asked ? registry.error ?? (followed ? undefined : reply.error) : undefined, retry };
 }

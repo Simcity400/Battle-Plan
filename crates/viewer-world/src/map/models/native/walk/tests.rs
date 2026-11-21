@@ -163,7 +163,6 @@ fn installed_routes_match_direct_mutation_and_demand_order_across_512_frames() {
             seen[4] |= row.hidden;
             seen[5] |= a.is_some();
         }
-        // Live transforms, flags and visibility do not require a routing rebuild.
         let storage = pass.native_walk.rows.as_ptr();
         if let Some(instance) = pass.field.instances.first_mut() {
             instance.position[1] =

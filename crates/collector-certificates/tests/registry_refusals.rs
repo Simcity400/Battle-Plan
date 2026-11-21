@@ -1,4 +1,3 @@
-//! Its own binary: the refusal total and peak load are process-wide.
 
 use collector_certificates::watch_registry::{WatchRegistry, status};
 

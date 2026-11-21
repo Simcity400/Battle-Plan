@@ -1,7 +1,3 @@
-//! `#[derive(Spooled)]`: a type's fields written and read in declaration order, an enum's
-//! variant first as its index ([`replay_spool`]). `#[spool(skip)]` on a field reads it back as
-//! its default and writes nothing of it; a field's or variant's `#[cfg]` applies to its code.
-
 use proc_macro::{Delimiter, Spacing, TokenStream, TokenTree};
 
 #[proc_macro_derive(Spooled, attributes(spool))]
@@ -17,16 +13,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
 const PATH: &str = "::replay_spool";
 
 struct Field {
-    /// Its name, or its index in a tuple.
     name: String,
     ty: String,
     skip: bool,
-    /// Its `#[cfg]` attributes, as written.
     cfg: String,
 }
 
 impl Field {
-    /// The binding a variant's field is matched into.
     fn bound(&self) -> String {
         format!("__{}", self.name.trim_start_matches("r#"))
     }
@@ -55,7 +48,6 @@ fn text(tokens: &[TokenTree]) -> String {
     tokens.iter().cloned().collect::<TokenStream>().to_string()
 }
 
-/// Splits `tokens` at commas outside angle brackets: a group is one token already.
 fn split(tokens: &[TokenTree]) -> Vec<Vec<TokenTree>> {
     let mut parts = vec![Vec::new()];
     let mut depth = 0_i32;
@@ -84,8 +76,6 @@ fn split(tokens: &[TokenTree]) -> Vec<Vec<TokenTree>> {
     parts
 }
 
-/// Skips the attributes at `tokens[*at..]`: whether one of them was `#[spool(skip)]`, and the
-/// `#[cfg]` ones, as written.
 fn attributes(tokens: &[TokenTree], at: &mut usize) -> Result<(bool, String), String> {
     let (mut skip, mut cfg) = (false, String::new());
     while *at + 1 < tokens.len() && is_punct(&tokens[*at], '#') {
@@ -110,7 +100,6 @@ fn attributes(tokens: &[TokenTree], at: &mut usize) -> Result<(bool, String), St
     Ok((skip, cfg))
 }
 
-/// Skips a visibility at `tokens[*at..]`.
 fn visibility(tokens: &[TokenTree], at: &mut usize) {
     if *at < tokens.len() && is_ident(&tokens[*at], "pub") {
         *at += 1;
@@ -153,9 +142,7 @@ fn fields(group: &proc_macro::Group) -> Result<Shape, String> {
 }
 
 struct Generics {
-    /// The parameters as the impl declares them, defaults dropped.
     declared: Vec<String>,
-    /// As the type names them.
     named: Vec<String>,
 }
 
@@ -168,7 +155,6 @@ fn generics(tokens: &[TokenTree]) -> Result<Generics, String> {
         let mut at = 0;
         attributes(&part, &mut at)?;
         let part = &part[at..];
-        // Up to a default, which an impl does not repeat.
         let mut end = part.len();
         let mut depth = 0_i32;
         for (index, token) in part.iter().enumerate() {
@@ -244,13 +230,11 @@ fn expand(input: TokenStream) -> Result<String, String> {
         parameters = generics(&tokens[start..at])?;
         at += 1;
     }
-    // The where clause and the body, in either order a struct allows.
     let mut predicates = Vec::new();
     let mut body = None;
     let mut clause: Option<Vec<TokenTree>> = None;
     while at < tokens.len() {
         let token = &tokens[at];
-        // Within a where clause only braces open the body: a tuple's parentheses come first.
         let opens = match token {
             TokenTree::Group(group) => match group.delimiter() {
                 Delimiter::Brace => true,
@@ -328,7 +312,6 @@ fn expand(input: TokenStream) -> Result<String, String> {
     } else {
         enum_code(&variants)
     };
-    // A generic type's fields bound what it needs of its parameters.
     if !parameters.named.is_empty() {
         for variant in &variants {
             let Shape::Fields(fields) = &variant.shape else {
@@ -363,7 +346,6 @@ fn expand(input: TokenStream) -> Result<String, String> {
     ))
 }
 
-/// A field read back, by name in braces (an index for a tuple's).
 fn read(field: &Field) -> String {
     let value = if field.skip {
         "::core::default::Default::default()".to_string()
@@ -373,7 +355,6 @@ fn read(field: &Field) -> String {
     format!("{}{}: {value},", field.cfg, field.name)
 }
 
-/// Writes `fields`, each reached by `at`.
 fn written(fields: &[Field], at: impl Fn(&Field) -> String) -> String {
     fields
         .iter()

@@ -20,7 +20,6 @@ export function useDesktopState(retry: number) {
     let eventVersion = 0;
     let unlisten: (() => void) | undefined;
 
-    // A failure stays shown while Retry map connects again.
     async function connect() {
       try {
         const stop = await onViewerState((next) => {
@@ -37,7 +36,6 @@ export function useDesktopState(retry: number) {
         const beforeRead = eventVersion;
         const snapshot = await getDesktopState();
         if (!active) return;
-        // An event delivered during the read is newer than its snapshot.
         if (beforeRead === eventVersion) setState(snapshot);
         setError(null);
       } catch (cause) {
@@ -74,7 +72,6 @@ function createMapViewQueue(report: (failure: MapViewFailure) => void) {
       while (pending) {
         const next = pending;
         pending = null;
-        // A rejected resize must not prevent hiding the child to expose Retry.
         const view = next.view.visible ? next.view : { visible: false, bounds: acceptedBounds };
         const key = JSON.stringify(view);
         if (!next.force && key === applied) continue;
@@ -95,7 +92,6 @@ function createMapViewQueue(report: (failure: MapViewFailure) => void) {
   return {
     send(view: MapView, retry: number, force = false) {
       latestRetry = retry;
-      // Only the most recent resize/tab intent waits behind an in-flight call.
       pending = { view, retry, force };
       void drain();
     },
@@ -109,8 +105,6 @@ export function useMapSurface(
   enabled = true,
 ): string | null {
   const [failure, setFailure] = useState<MapViewFailure | null>(null);
-  // Successful hide calls cannot clear the failure and reveal the child again.
-  // Only an explicit retry begins a new attempt; stale completions are ignored.
   const error = failure?.retry === retry ? failure.message : null;
   const surfaceVisible = visible && !error;
   const mounted = useRef(false);
@@ -143,7 +137,6 @@ export function useMapSurface(
 
     const schedule = () => {
       if (frame) return;
-      // Layout is read in the frame's measure phase, before anything in it writes.
       frame = engine.next('measure', () => {
         frame = null;
         measure();

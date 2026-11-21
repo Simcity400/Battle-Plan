@@ -11,7 +11,6 @@ const OTHER: u64 = 0x0000_0008_0000_0003;
 const INFANTRY: u32 = 7;
 const TEXTS: &[&[u8]] = &[b"", b"infantry_equipment"];
 
-/// Makes `table` hold exactly `rows` this hour, with `status`.
 fn fill<R: RowCodec>(store: &mut Store, hour: i32, table: TableId, rows: &[R], status: Status) {
     store.status(table.index(), status, true, Some(hour), true).unwrap();
     let keys: Vec<u128> = rows.iter().map(RowCodec::key).collect();
@@ -25,15 +24,12 @@ fn fill<R: RowCodec>(store: &mut Store, hour: i32, table: TableId, rows: &[R], s
     }
 }
 
-/// One hour of the inputs: the output rows and their table's status, the Rocket rows, and the
-/// links (raw id, slot) beside Countries 10 (slot 1) and 20 (slot 2).
 #[derive(Clone)]
 struct World {
     output: Vec<ProductionLineOutputRow>,
     status: Status,
     rocket: Vec<RocketProductionOutputRow>,
     links: Vec<(u32, u32)>,
-    /// Designs with a definition, and their archetype token.
     definitions: Vec<(u64, u32)>,
 }
 
@@ -89,10 +85,6 @@ fn run(hours: &[World], mut check: impl FnMut(i32, &Store)) {
     }
 }
 
-/// A total sums each row's latest count and applied IC, keeps an ended line's after its row is
-/// gone, and a row gone without its ended publication leaves the units a lower bound and the
-/// applied IC unknown; the producer's row sums its totals with and without refits, and a live
-/// producer with nothing made has a zero row.
 #[test]
 fn totals_keep_ended_lines_and_say_what_a_lost_row_leaves_unknown() {
     let mut hours = vec![World::default(); 5];
@@ -122,10 +114,6 @@ fn totals_keep_ended_lines_and_say_what_a_lost_row_leaves_unknown() {
     });
 }
 
-/// A row whose producer no link tells counts for nobody: once it delivers, every producer's
-/// units and applied IC are unknown from that hour, and a link telling its producer later
-/// counts none of it, as main's fold. One told while it has delivered nothing counts from zero.
-/// Unrecorded-purpose input is also kept as unproven magnitudes.
 #[test]
 fn a_producer_no_link_tells_makes_every_total_unknown_from_its_first_delivery() {
     let mut hours = vec![World::default(); 4];
@@ -161,9 +149,6 @@ fn a_producer_no_link_tells_makes_every_total_unknown_from_its_first_delivery() 
     });
 }
 
-/// A line counts for the first producer a link told, as main's fold: through a link moving its
-/// country to another slot, through an hour no link tells it while it holds output (no hour
-/// unknown for it), and when told by a link alone, before it delivers.
 #[test]
 fn a_line_counts_for_the_first_producer_it_was_told() {
     let mut hours = vec![World::default(); 3];
@@ -191,9 +176,6 @@ fn a_line_counts_for_the_first_producer_it_was_told() {
     });
 }
 
-/// An hour the output is not complete is not run, its tables unavailable with their rows kept;
-/// the hour it returns, every producer's output is unknown from then. A refused applied IC makes
-/// its total's unknown for good.
 #[test]
 fn an_hour_not_read_and_a_refused_spending_are_unknown_from_then_on() {
     let mut hours = vec![World::default(); 4];
@@ -222,8 +204,6 @@ fn an_hour_not_read_and_a_refused_spending_are_unknown_from_then_on() {
     });
 }
 
-/// Rows of another observation restart every total from the rows the table holds then, and the
-/// run's coverage row starts again with it.
 #[test]
 fn another_observation_restarts_every_total() {
     let mut hours = vec![World::default(); 3];
@@ -248,9 +228,6 @@ fn kind(store: &Store, country: u32, archetype: u32) -> Option<Vec<Option<i64>>>
     cells(store, TableId::ProductionTypeTotals, type_key(country, archetype))
 }
 
-/// A producer's output by its designs' recorded archetype, and every producer's together; a
-/// design with no definition read counts under no archetype until one is read at a change of its
-/// total, then its whole total moves; the type is spelled as LexicalTokens spells it.
 #[test]
 fn type_totals_follow_the_recorded_archetype_and_move_when_it_is_learnt() {
     let mut hours = vec![World::default(); 2];
@@ -301,9 +278,6 @@ fn rocket(country: u32, variant: u64, ticks: u64, deliveries: u64) -> RocketProd
     }
 }
 
-/// Rocket coverage: a row whose counters go back makes its producer's applied IC unknown from
-/// that hour; a tick of a producer that cannot be told makes everyone's unknown; a row gone
-/// makes its producer's units and applied IC unknown.
 #[test]
 fn rocket_rows_that_go_back_or_have_no_producer_are_unknown_from_then() {
     let mut hours = vec![World::default(); 4];
@@ -327,8 +301,6 @@ fn rocket_rows_that_go_back_or_have_no_producer_are_unknown_from_then() {
     });
 }
 
-/// A resume takes the writer up from its tables alone: every table, every hour after it, equals
-/// a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let mut hours = vec![World::default(); 6];
@@ -350,8 +322,6 @@ fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     }
     hours[4].output = vec![line(2, 99, OutputPurpose::Converted, 5, Some(40)), line(3, 20, OutputPurpose::Refit, 2, Some(90))];
     hours[5].output = vec![line(3, 20, OutputPurpose::Refit, 3, Some(110))];
-    // Line 4 is told to 10 and its country moves to slot 2; line 5 is told by a link alone at
-    // hour 3, its country moving at hour 4 before it delivers: both count for 10 throughout.
     for (at, world) in hours.iter_mut().enumerate() {
         world.links.push((97, if at < 2 { 1 } else { 2 }));
         if at >= 3 {

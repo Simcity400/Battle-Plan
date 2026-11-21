@@ -1,4 +1,3 @@
-//! One class-to-domain dispatch. Owners add only rows in their domain groups.
 use super::*;
 
 #[cfg(test)]
@@ -47,7 +46,6 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn leaf(&mut self, item: &Item, scopes: Scopes) -> Option<Result<String, String>> {
         let class = self.effect_class(item)?;
         Some(match class.vtable {
-            // scopes — I
             0x142A31830 => self
                 .context_header(item, scopes)
                 .map(|selected| selected.map(|(_, header)| header).unwrap_or_default()),
@@ -107,8 +105,6 @@ impl Renderer<'_, '_, '_> {
             0x1427c34f8 => lists::own(),
             0x1427c3408 => lists::own(),
 
-            // variables — I
-            // Empty descriptions never execute persistent or temporary setters.
             0x1427f3098
             | 0x1427FB900
             | 0x1427FB9D0
@@ -148,14 +144,12 @@ impl Renderer<'_, '_, '_> {
             0x1427edcb8 => self.save_event_target(item, scopes),
             0x1427edd88 => self.save_global_event_target(item, scopes),
 
-            // lists — I
             0x1428527b0  | 0x142A31D78  | 0x142A31E48 => lists::own(),
 
             0x142A31900  | 0x1427f3a70  | 0x1427F5440  | 0x142A321B0 => lists::own(),
             0x142A32320 => self.random_list(item, scopes),
             0x142A320B8 => self.override_own(item, scopes),
 
-            // modifiers — I
             0x1427E5750 => self.timed_idea(item, scopes),
 
             0x1427E4D08 => self.ideas_effect(item, scopes, false, false),
@@ -183,7 +177,6 @@ impl Renderer<'_, '_, '_> {
             | 0x1427CE540
             | 0x1428376F8 => Err("zero reach across the inventory effective stacks; native description is not ported".into()),
 
-            // numeric — I
             0x1427E5B28 => {
                 self.numeric_value(item, scopes, b"POLITICS_ADD_POLITICAL_POWER")
             }
@@ -242,7 +235,6 @@ impl Renderer<'_, '_, '_> {
             0x1427c4f70 => Err("zero reach across the inventory effective stacks; native description is not ported".into()),
             0x1427C3EF8 => Err("zero reach across the inventory effective stacks; native description is not ported".into()),
 
-            // characters — F
             0x1427EF900 => self.char_peace(item, scopes, false),
             0x1427efab0 => self.char_peace(item, scopes, true),
             0x1427BB9A8 => self.char_trait(item, scopes, false),
@@ -305,7 +297,6 @@ impl Renderer<'_, '_, '_> {
             0x14282B4D8 => self.char_random_trait_from_unit(item, scopes),
             0x1427C52F8 => self.char_mio_trait(item, scopes, false),
             0x1427C3A08 => self.char_mio_trait(item, scopes, true),
-            // politics — F
             0x142A32588 => empty::describe(),
             0x1427ED080 => self.politics_popularity(item, scopes),
             0x1427CC078 => self.politics_core(item, scopes, b"EFFECT_ADD_CORE_OF"),
@@ -365,7 +356,6 @@ impl Renderer<'_, '_, '_> {
             0x1427EF688 => self.politics_oob(item, scopes, b"EFFECT_SET_OOB"),
             0x1427EE8E0 => self.politics_rules(item, scopes, true),
 
-            // technology — F
             0x14284FAA0 => self.mastery(item, scopes),
             0x1427CF550 => self.technology_bonus(item, scopes),
             0x1427CFC80 => self.set_technology(item, scopes),
@@ -388,7 +378,6 @@ impl Renderer<'_, '_, '_> {
             0x142846D08 => self.faction_research_unlocked(item, scopes),
             0x1427CF708 => self.doctrine_reduction(item, scopes),
 
-            // events — F
             0x142A31FE8 => self.custom_tooltip(item, scopes),
             0x1427E9F80 => self.country_event(item, scopes),
             0x1427F1FF0 => self.removed_decision(item, scopes),
@@ -409,7 +398,6 @@ impl Renderer<'_, '_, '_> {
             0x1427F2548 => self.decision_cooldown(item, scopes),
             0x1427c54c8 => self.unlock_mio_policy(item, scopes),
 
-            // diplomacy — D2
             0x1427ECAC8 => self.war_or_annex(item, scopes, false),
             0x1427EA6A0 => self.war_or_annex(item, scopes, true),
             0x142846368 => self.faction(item, scopes),
@@ -459,7 +447,6 @@ impl Renderer<'_, '_, '_> {
             0x1427C7618 => self.purchase_contract(item, scopes),
             0x1427C7A70 => self.diplomacy_country(item, scopes, b"EFFECT_MARKET_GIVE_MARKET_ACCESS", true),
 
-            // states — D2
             0x1427E7128 => self.state_change(item, scopes, b"EFFECT_ADD_STATE_CLAIM"),
             0x1427E6D28 => self.state_change(item, scopes, b"EFFECT_TRANSFER_STATE"),
             0x1427F3E00 => self.start_border_war(item, scopes),
@@ -508,7 +495,6 @@ impl Renderer<'_, '_, '_> {
             0x1427BD530 => self.supply_units(item, scopes),
             0x1427CDD18 => self.state_country_to(item, scopes, b"EFFECT_TRANSFER_STATE_TO"),
 
-            // units — D2
             0x1427f4b88 => self.delete_template(item, scopes),
             0x1427EDAD0 => self.numeric_value(item, scopes, b"EFFECT_ADD_AIR_EXPERIENCE"),
             0x14283FDF8 => self.units_design_bonus(item, scopes),
@@ -543,7 +529,6 @@ impl Renderer<'_, '_, '_> {
             0x1427EAA08 => self.units_transfer(item, scopes, false),
             0x14284FCD0 => self.units_unlock(item, scopes),
 
-            // empty — D2
             0x1427f0140 => empty::describe(),
             0x1427E6688 => empty::describe(),
             0x1427BD1A0 => empty::describe(),

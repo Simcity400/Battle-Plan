@@ -97,7 +97,6 @@ fn frame(country_count: u32) -> DecodedFrame {
             })
             .collect(),
     ));
-    // Tag operands consult this exact count before original-tag substitution.
     put(TableRows::CountryCounterInputs(
         (1..=country_count)
             .map(|slot| CountryCounterInputRow {
@@ -143,7 +142,6 @@ fn frame(country_count: u32) -> DecodedFrame {
         seed: 37,
         ..Default::default()
     }]));
-    // Unknown target input must refuse; a complete empty registry is known-null.
     frame.tables[TableId::GlobalSavedEventTargets.index()] = TableView::Unavailable {
         reason: "fixture saved targets".into(),
     }
@@ -159,7 +157,6 @@ fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(&World<'_>) -> T) -> T {
     run(&world)
 }
 
-// Main's synchronous evaluator remains independent of Outcome and Memo.
 fn original(
     frame: &DecodedFrame,
     content: &viewer_audio::Content,
@@ -185,7 +182,6 @@ fn run(
     content: &Arc<viewer_audio::Content>,
     country: u32,
 ) -> (viewer_audio::Chances, usize) {
-    // Compute the unchanged synchronous path before every memo call, even on a cold miss.
     let expected = original(frame, content, country);
     let before = evaluations(memo);
     let actual = with_world(frame, |world| {
@@ -269,7 +265,6 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
         player.stop();
         reference_player.stop();
     }
-    // The shared reuse-check mode recomputes each confirmed song.
     let before = evaluations(&memo);
     with_world(&base, |world| {
         let checked = memo.chances(&base, &content, 1, world);
@@ -281,7 +276,6 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
     let mut evaluated = 0;
     for step in 0..192u32 {
         let mut next = base.clone();
-        // Includes forward skips, rewinds, date boundaries and branch changes.
         next.hour = [16, 17, 21, 10, 9, 60827943, 60827992][step as usize % 7];
         next.branch = if step.is_multiple_of(17) { 2 } else { 1 };
         let country = if step.is_multiple_of(13) { 2 } else { 1 };
@@ -326,7 +320,6 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
             }
             _ => {}
         }
-        // Unrelated table replacement must not be promoted to a semantic key.
         next.tables[TableId::Clock.index()] =
             TableView::Complete(TableRows::Clock(vec![ClockRow {
                 hour: next.hour,
@@ -342,12 +335,10 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
         evaluated += calls;
     }
     assert!(reused > 0 && evaluated > 0);
-    // A fresh immutable station/content context cannot borrow earlier songs.
     let mut changed = fixture_content();
     Arc::get_mut(&mut changed).unwrap().stations = Some(vec!["off".into()]);
     let (actual, evaluated) = run(&memo, &base, &changed, 1);
     assert_eq!(evaluated, 1);
-    // An invalid trigger key adds no child, as the game loads it, so t8's modifier holds.
     let mut expected = vec![None; 11];
     expected[8] = Some(297.0f64.to_bits());
     assert_eq!(bits(&actual), expected);
@@ -363,12 +354,10 @@ fn music_inputs_missing_country_counts_and_known_null_targets_match_original() {
         TableView::Complete(TableRows::GlobalSavedEventTargets(Vec::new())).into();
     let content = fixture_content();
     let reference = original(&frame, &content, 1);
-    // Missing owned-state counts refuse the tag operand: t4's chance is unknown.
     assert_eq!(reference.weights[4], None);
     assert!(reference.refusals.iter().any(|why| {
         why.starts_with("song t4:") && why.contains("the owned state count of country BBB is not recorded")
     }), "{:?}", reference.refusals);
-    // Known-absent saved target has no store, so its variable is zero: apply t5.
     assert_eq!(
         reference.weights[5].map(f64::to_bits),
         Some(8.0f64.to_bits())
@@ -427,7 +416,6 @@ fn music_inputs_unknown_keys_eviction_and_contended_memo_recompute_without_waiti
     run(&memo, &frame, &content, 2);
     let (_, evaluated) = run(&memo, &frame, &content, 1);
     assert_eq!(evaluated, 10, "evicted country recomputes");
-    // Same-thread lock ownership makes accidental blocking deterministic.
     let lock = memo.entries.lock().unwrap();
     let (actual, evaluated) = run(&memo, &frame, &content, 1);
     assert_eq!(evaluated, 10);
@@ -658,7 +646,6 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
         reference_answers.next().unwrap()
     });
     assert!(reference_answers.next().is_none());
-    // A refused song is not evaluated again without its modifiers.
     let expected_bodies = [
         "base=2 modifier={always=yes factor=3}",
         "base=0.12345",
@@ -731,9 +718,6 @@ fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
     }
 }
 
-/// Rows at the playback head keep a table's allocation while it is unchanged: the memo keeps
-/// only identities, reuses what an unchanged table decided, and reads again what a replaced one
-/// holds, always as the synchronous evaluator decides.
 #[test]
 fn map_products_music_by_identity_reads_again_only_what_a_replaced_table_holds() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();

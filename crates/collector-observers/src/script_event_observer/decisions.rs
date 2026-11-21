@@ -1,4 +1,3 @@
-//! Sparse retained-state writers and pass anchors. No quiet-member callback.
 use super::*;
 use super::{hook_failure, verify_hook};
 use engine_decisions::decision_runtime as runtime;
@@ -7,9 +6,9 @@ use replay_data::event_feed_rows::decisions::{self as rows, Operation};
 use std::cell::Cell;
 static ORIGINAL: [AtomicUsize; 27] = [const { AtomicUsize::new(0) }; 27];
 static CALL: [AtomicUsize; 17] = [const { AtomicUsize::new(0) }; 17];
-/// [`sites::ENTRIES`] from the first enclosing detour of a pre-store writer.
+#[doc = " [`sites::ENTRIES`] from the first enclosing detour of a pre-store writer."]
 const DETOURS: usize = 20;
-/// [`sites::CALLS`] of the duration adds and the replaced-event retirement.
+#[doc = " [`sites::CALLS`] of the duration adds and the replaced-event retirement."]
 const EXTEND_MISSION_TIMEOUT: usize = 14;
 const EXTEND_DECISION_REMOVAL: usize = 15;
 const REPLACE_EVENT_RETIREMENT: usize = 16;
@@ -129,9 +128,6 @@ fn observe_erase_range(
         && status.checked_add(runtime::HEADERS[rows::REENABLE as usize]) == Some(header)
         && last == array.count
         && first.checked_add(1) == Some(last);
-    // A last-member expiry retains its pointer in the removed tail and has
-    // no lifecycle retirement. Other expiries already retired their null tail.
-    // Only the native removed range, never the retained prefix/suffix.
     for ordinal in first..last {
         let at = array
             .element(ordinal, 8)
@@ -379,9 +375,6 @@ unsafe extern "system-unwind" fn hourly(a: usize, b: usize) -> usize {
 unsafe extern "system-unwind" fn refresh(a: usize, b: usize) -> usize {
     unsafe { update(a, b, 19) }
 }
-/// An enclosing detour: its original runs once under a writer flight, its
-/// latches stage inside, and the committed results publish after it
-/// returns, in native order. Full RAX is returned as the original left it.
 unsafe fn detour(a: usize, b: usize, c: usize, index: usize) -> usize {
     use super::staging::{Detour, Unit, Witness};
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
@@ -400,8 +393,6 @@ unsafe fn detour(a: usize, b: usize, c: usize, index: usize) -> usize {
         unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c) });
     if unit == Unit::CandidateFinalization {
-        // Every clear completed: the same ordered marker pair the clear
-        // published before.
         #[cfg(test)]
         super::staging::published(super::staging::Published::Candidates { status: a });
         feed::decisions::marker(a, Operation::Rebuild, 3, 0, 0);
@@ -434,8 +425,6 @@ detour_entry!(targeted_ignore_command, DETOURS + 3);
 detour_entry!(ignore_all_command, DETOURS + 4);
 detour_entry!(removal_request, DETOURS + 5);
 detour_entry!(candidate_finalization, DETOURS + 6);
-/// A selection's committed result: the stored days of its layout and the
-/// active state it stored before them.
 pub(super) fn selected_result(instance: usize, targeted: bool) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let at = if targeted {
@@ -458,8 +447,6 @@ pub(super) fn selected_result(instance: usize, targeted: bool) {
         feed::refuse(reason);
     }
 }
-/// A committed ignore store, suppressed when the flag staged before it was
-/// already the stored value.
 fn committed_ignore(instance: usize, was: bool) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     match field::<u8>(
@@ -479,8 +466,6 @@ fn committed_ignore(instance: usize, was: bool) {
         Err(reason) => feed::refuse(reason),
     }
 }
-/// A committed removal request, suppressed when it was already requested
-/// before the store.
 fn committed_removal(instance: usize, was: bool) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let stored = field::<u8>(&memory, instance, runtime::REMOVE_REQUESTED);
@@ -490,14 +475,10 @@ fn committed_removal(instance: usize, was: bool) {
     }
     match stored {
         Ok(1) => feed::decisions::flags_committed(instance, None, Some(was)),
-        // The continuation stored nothing.
         Ok(_) => {}
         Err(reason) => feed::refuse(reason),
     }
 }
-/// The replaced-event retirement CALL: on its fired-match branch the
-/// latch inside staged the old definition; the retirement publishes once
-/// the count decrement completed.
 unsafe fn retirement(a: usize, b: usize, c: usize) -> usize {
     use super::staging::{Detour, Unit, Witness};
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
@@ -562,9 +543,6 @@ unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
             9 | 10 => {
                 feed::decisions::write(a, None, Some(b as i32));
             }
-            // These helpers return before the caller's store: they only
-            // stage the selection and its pre-store flag for the enclosing
-            // command or effect.
             11 => {
                 if result as u8 != 0 {
                     let was =
@@ -590,7 +568,6 @@ unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
                     );
                 }
             }
-            // The duration adds completed: publish their stored days.
             EXTEND_MISSION_TIMEOUT | EXTEND_DECISION_REMOVAL => {
                 super::lifecycle::adjustments::extended(a, c, index == EXTEND_DECISION_REMOVAL);
             }
@@ -628,10 +605,6 @@ call_entry!(request_targeted, 13);
 call_entry!(extend_mission_timeout, EXTEND_MISSION_TIMEOUT);
 call_entry!(extend_decision_removal, EXTEND_DECISION_REMOVAL);
 call_entry!(replace_event_retirement, REPLACE_EVENT_RETIREMENT);
-// The duration adds' native callers hold the scope in a nonvolatile
-// register the two-argument add never reads. Each thunk copies it into R8,
-// unused by the add, and jumps: the wrapper sees the native return address
-// and forwards the real arguments unchanged.
 core::arch::global_asm!(
     ".text",
     ".globl event_feed_extend_mission_timeout",
@@ -687,8 +660,6 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
             }
         }
         14 => feed::decisions::retire(r.r8, true, true),
-        // The selected days store follows these taps: stage the exact
-        // instance for the enclosing selection, never its incidental RAX.
         15 => super::staging::stage(
             super::staging::Unit::TimedSelection,
             super::staging::Witness::Selected { instance: r.rdi },
@@ -697,8 +668,6 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
             super::staging::Unit::TargetedSelection,
             super::staging::Witness::Selected { instance: r.rsi },
         ),
-        // The ignore store follows this tap: stage the instance with its
-        // flag before the store for the enclosing command.
         17 => {
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
             match field::<u8>(&memory, r.rcx, engine_decisions::ctargeted_decision::IGNORE) {
@@ -799,8 +768,6 @@ pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'stati
         hooks.push(hook);
     }
     for (index, site) in sites::TAPS.into_iter().enumerate() {
-        // The politics owner installs the targeted selection tap; candidate
-        // finalization encloses the clears the old clear tap preceded.
         if site.rva == sites::TARGETED_SELECTION_RESULT.rva
             || site.rva == sites::CLEAR_CANDIDATES.rva
         {
@@ -816,13 +783,13 @@ pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'stati
     Ok((hooks, taps))
 }
 
-/// Adjacent CALLs own only their bytes before the next one.
+#[doc = " Adjacent CALLs own only their bytes before the next one."]
 pub(super) const REACTIVATE_DAYS_LEN: usize =
     sites::REACTIVATE_TARGETED_STATE.rva.0 - sites::REACTIVATE_TARGETED_DAYS.rva.0;
 pub(super) const REQUEST_TIMED_LEN: usize =
     sites::REQUEST_TARGETED.rva.0 - sites::REQUEST_TARGETED_TIMED.rva.0;
 
-/// A CALL site's address, its patch bytes and the span it owns.
+#[doc = " A CALL site's address, its patch bytes and the span it owns."]
 fn verify_call(base: usize, site: native::Site) -> Result<(usize, [u8; 16], usize), &'static str> {
     Ok(if site.rva == sites::REACTIVATE_TARGETED_DAYS.rva {
         let (at, original) = verify_hook::<REACTIVATE_DAYS_LEN>(base, site)?;
@@ -1001,7 +968,7 @@ mod tests {
             store.prepare_scripts(256, 0, 0).unwrap();
             store.prepare_decisions(5).unwrap();
             let mut state = DecisionState::default();
-            reduce(&mut store, &mut state); // Admit the observed generation.
+            reduce(&mut store, &mut state);
             store
                 .decision_baseline(
                     &memory,
@@ -1022,7 +989,6 @@ mod tests {
             REENABLE.set(STATUS);
             memory.d(Fixture::pointer(expired) + cooldown::DAYS, 0);
             if expired != 4 {
-                // The existing lifecycle witness precedes the swap and null tail.
                 store
                     .decision_retire(
                         &World::new(&memory, 0).unwrap(),
@@ -1060,7 +1026,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(retirements, usize::from(expired == 4));
-            assert_eq!(REENABLE.get(), STATUS); // Erasure must leave the pass open.
+            assert_eq!(REENABLE.get(), STATUS);
             assert_eq!(
                 reduce(&mut store, &mut state),
                 [
@@ -1104,7 +1070,6 @@ mod tests {
 
     const COUNTRY2: usize = 0x28000;
     const STATUS2: usize = 0x38000;
-    /// A second owner with an empty decision status.
     fn second_owner(memory: &mut Fixture) {
         memory.array(GAME + cgame_state::COUNTRIES, 0x1000, 3);
         memory.array(GAME + cgame_state::COUNTRY_LINKS, 0x2000, 3);
@@ -1170,7 +1135,7 @@ mod tests {
         store.prepare_scripts(1024, 0, 0).unwrap();
         store.prepare_decisions(8).unwrap();
         let mut state = replay_data::event_feed_rows::ScriptEventState::default();
-        publish(&mut store, &mut state, 7); // Admit the observed generation.
+        publish(&mut store, &mut state, 7);
         for (pointer, id) in [(COUNTRY, 1), (COUNTRY2, 2)] {
             store
                 .decision_baseline(
@@ -1191,9 +1156,6 @@ mod tests {
         assert!(state.decisions(first).is_ok());
         assert!(state.decisions(second).is_ok());
 
-        // A native status reset withdraws only the first owner. Its earlier
-        // members are no longer attributable; a member a writer stores
-        // afterwards is.
         let pointer = Fixture::pointer(2);
         marker(&mut store, &memory, Operation::Invalidate, 0);
         let world = World::new(&memory, 0).unwrap();
@@ -1224,7 +1186,7 @@ mod tests {
             )
             .unwrap();
         let id = store.decisions.uncertified(pointer).unwrap().id;
-        assert_ne!(id, 3); // A new label, not the reset member's.
+        assert_ne!(id, 3);
         let result = crate::test_support::with_allocations_denied(|| {
             store.decision_result(
                 &world,
@@ -1269,7 +1231,6 @@ mod tests {
             &row.script_tokens[start..start + marker.token_len as usize],
             REASON.as_bytes()
         );
-        // The occurrence keeps its source and supplied results.
         let occurrence = row.events[3];
         assert_eq!(occurrence.source, EventFeedSource::DecisionDurationChanged);
         assert_eq!(occurrence.script.unwrap().days, Some(30));
@@ -1277,7 +1238,6 @@ mod tests {
         assert!(state.decisions(first).is_err());
         assert!(state.decisions(second).is_ok());
 
-        // No trustworthy attribution: the caller refuses the interval.
         assert_eq!(
             store.decision_result(
                 &world,
@@ -1291,7 +1251,6 @@ mod tests {
             ),
             Ok(false)
         );
-        // A new baseline certifies the owner again: results carry deltas.
         store
             .decision_baseline(
                 &memory,
@@ -1336,7 +1295,7 @@ mod tests {
         store.prepare_scripts(1024, 0, 0).unwrap();
         store.prepare_decisions(8).unwrap();
         let mut state = replay_data::event_feed_rows::ScriptEventState::default();
-        publish(&mut store, &mut state, 7); // Admit the observed generation.
+        publish(&mut store, &mut state, 7);
         store
             .decision_baseline(
                 &memory,
@@ -1354,12 +1313,9 @@ mod tests {
         publish(&mut store, &mut state, 8);
         let pointer = Fixture::pointer(2);
         let retired = store.decisions.find(pointer).unwrap().id;
-        // Another writer's refusal revokes the owner without missing a
-        // writer: its members keep their exact attribution.
         store.reject("synthetic writer refusal");
         assert_eq!(store.decisions.uncertified(pointer).unwrap().id, retired);
         let world = World::new(&memory, 0).unwrap();
-        // The observed retirement removes the attribution, with no event.
         crate::test_support::with_allocations_denied(|| {
             store.decision_retire(&world, &memory, 0, 1, pointer, false, false)
         })
@@ -1378,7 +1334,6 @@ mod tests {
             ),
             Ok(false)
         );
-        // The owner reuses the address for a decision of its own.
         store
             .decision_selected(
                 &world,
@@ -1420,7 +1375,6 @@ mod tests {
                 Some((change.operation, script.instance))
             })
             .collect();
-        // No retirement event, and the result names the reused decision.
         assert_eq!(
             members,
             [
@@ -1440,11 +1394,8 @@ mod tests {
         store.prepare_scripts(1024, 0, 0).unwrap();
         store.prepare_decisions(8).unwrap();
         let mut state = replay_data::event_feed_rows::ScriptEventState::default();
-        publish(&mut store, &mut state, 7); // Admit the observed generation.
-        // The census worker admits the decision index to the generation at
-        // its first visit, as every census begin does; writers never reset it.
+        publish(&mut store, &mut state, 7);
         store.decisions.reset(1);
-        // Never baselined: writer stores still attribute the member exactly.
         let world = World::new(&memory, 0).unwrap();
         let pointer = Fixture::pointer(2);
         for container in [rows::REENABLE, rows::REMOVAL] {
@@ -1484,7 +1435,6 @@ mod tests {
         let Some(EventFeedScriptChange::Decision(change)) = occurrence.change else {
             panic!("expected a retained decision operation");
         };
-        // The result names the container the member is in now.
         assert_eq!(change.operation, Operation::Update);
         assert_eq!(change.container, rows::REMOVAL);
     }
@@ -1537,9 +1487,6 @@ mod tests {
         REENABLE.set(0);
     }
 
-    /// Detour tests drive each unit's real wrapper over a fake original
-    /// that runs the latch, then performs the native store, in process
-    /// memory: nothing native executes.
     mod detours {
         use super::super::*;
         use crate::event_feed_observer::{writer_cut, writer_cut_holds};
@@ -1549,8 +1496,6 @@ mod tests {
         };
         use std::cell::RefCell;
 
-        /// A fake native object, owned through a raw pointer like native
-        /// memory: the fake originals write it while the test holds it.
         struct Object(*mut [u8; 0x100]);
         impl Object {
             fn new() -> Self {
@@ -1574,7 +1519,6 @@ mod tests {
                 drop(unsafe { Box::from_raw(self.0) });
             }
         }
-        /// The store a fake original performs through the pointer it holds.
         unsafe fn store_i32(at: usize, value: i32) {
             unsafe { (at as *mut i32).write_unaligned(value) }
         }
@@ -1585,7 +1529,6 @@ mod tests {
             unsafe { std::mem::zeroed() }
         }
         std::thread_local! {
-            /// (instance, value) pairs a fake original stages and stores.
             static PLAN: RefCell<Vec<(usize, i32)>> = const { RefCell::new(Vec::new()) };
         }
         fn plan(steps: &[(usize, i32)]) {
@@ -1594,24 +1537,18 @@ mod tests {
         fn steps() -> Vec<(usize, i32)> {
             PLAN.with_borrow(Clone::clone)
         }
-        /// Inside the original the writer flight is open: a recovery sample
-        /// cannot begin, and one already begun is crossed.
         fn assert_inside(before: u64) {
             assert!(writer_cut().is_none());
             assert!(!writer_cut_holds(before));
         }
-        /// Afterwards the flight closed and nothing stays staged.
         fn assert_after() {
             assert!(writer_cut().is_some());
             assert_eq!(open_frames(), 0);
         }
         static CUT: AtomicUsize = AtomicUsize::new(0);
-        /// Each test holds one of these: a SHARED store (staging goes
-        /// through it now) and the family lock, restored on drop.
         fn env() -> crate::event_feed_observer::StagingTest {
             crate::event_feed_observer::staging_test(64)
         }
-        /// Clear the published log and snapshot the writer cut for a run.
         fn begin() {
             let _ = take_published();
             CUT.store(writer_cut().unwrap() as usize, Ordering::SeqCst);
@@ -1690,7 +1627,6 @@ mod tests {
                     registers.rbp = status;
                     registers.rsi = 0x7000;
                     registers.rdi = instance;
-                    // The tap precedes the reactivation's stores.
                     unsafe { super::super::super::tap(&registers, 5) };
                     unsafe {
                         store_i32(instance + ctimed_decision::DAYS, days);
@@ -1700,7 +1636,6 @@ mod tests {
                         );
                     }
                 }
-                // Full RAX is returned unchanged.
                 0x1234
             }
             let (first, second) = (timed(1), timed(2));
@@ -1725,7 +1660,6 @@ mod tests {
                     },
                 ]
             );
-            // A skip or append branch reaches no reactivation tap.
             plan(&[]);
             begin();
             unsafe { auto_activation(status.at(), 0, 0) };
@@ -1798,7 +1732,6 @@ mod tests {
                     },
                 ]
             );
-            // Only the changed flag publishes, never against the written byte.
             assert_eq!(
                 crate::event_feed_observer::decisions::committed_flags(Some((false, true)), None),
                 Some((Some(true), false))
@@ -1818,7 +1751,6 @@ mod tests {
             unsafe extern "system-unwind" fn command(status: usize, _: usize, _: usize) -> usize {
                 assert_inside(cut());
                 for (instance, _) in steps() {
-                    // The admission CALL returns before the caller's store.
                     if unsafe { ignore_selected(status, instance, 1) } as u8 != 0 {
                         unsafe { store_u8(instance + ctargeted_decision::IGNORE, 1) };
                     }
@@ -1876,7 +1808,6 @@ mod tests {
                         now: 1
                     }]
                 );
-                // An already requested removal publishes nothing.
                 assert_eq!(
                     crate::event_feed_observer::decisions::committed_flags(None, Some(was == 1))
                         .is_some(),
@@ -1914,7 +1845,6 @@ mod tests {
                     definition: definition.at()
                 }]
             );
-            // No fired match: no witness and no fact.
             plan(&[]);
             begin();
             unsafe { replace_event_retirement(world.at(), definition.at(), 0) };
@@ -1966,13 +1896,10 @@ mod tests {
             let detour = Detour::enter(Unit::TimedSelection);
             stage(Unit::TimedSelection, Witness::Selected { instance: 1 });
             assert_eq!(env.staged_live(), 1);
-            // A boundary on another thread resets the arena under it.
             env.prepare(2);
             assert_eq!(env.failure(), (Some(WITNESS_ABANDONED), rejected + 1));
             let mut published = 0;
             detour.publish(|_| published += 1);
-            // Nothing published, and the reset is refused by name in the
-            // publication's interval.
             assert_eq!(published, 0);
             assert_eq!(env.failure().1, rejected + 2);
             assert_eq!(open_frames(), 0);
@@ -1980,9 +1907,6 @@ mod tests {
 
         #[test]
         fn a_latch_of_the_wrong_unit_inside_a_detour_refuses_and_stages_nothing() {
-            // A timed-selection detour whose original fires a targeted-ignore
-            // latch: the mismatched kind refuses, so nothing is staged and
-            // publication is empty.
             unsafe extern "system-unwind" fn select(_: usize, _: usize, _: usize) -> usize {
                 let mut registers = registers();
                 registers.rcx = steps()[0].0;

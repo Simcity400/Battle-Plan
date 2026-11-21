@@ -4,7 +4,6 @@ import { resolveWidgetCampaign } from '../../dashboard/campaigns';
 import { WidgetSettings } from '../../dashboard/settings/WidgetSettings';
 import type { HeaderControlsProps } from '../../dashboard/definitions';
 
-/** The map's header pop-down: appearance, branch, export and the shared widget settings. */
 export default function MapWidgetControls({ widget, runtime, template, editing, onApply, onRemove, onReset, mapOptions, onMapOptions }: HeaderControlsProps) {
   const resolved = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const track = runtime.tracks.find(item => item.id === resolved.trackIds[0]);

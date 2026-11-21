@@ -1,4 +1,3 @@
-//! Off-hour header/name sizing only. No hint is a captured value or witness.
 use super::air::{array, pointer, slot};
 use super::*;
 use crate::{
@@ -13,7 +12,6 @@ fn add(rows: &mut [usize; 12], index: usize, count: usize) -> Result<(), &'stati
     Ok(())
 }
 fn name(memory: &impl Memory, address: usize, rows: &mut [usize; 12]) -> Result<(), &'static str> {
-    // Payload failure does not invalidate a readable length's capacity hint.
     if let Ok(name) = msvc_string::Descriptor::read(memory, address) {
         add(rows, 8, name.len)?;
     }
@@ -82,7 +80,6 @@ fn demand_inner(
                     for index in 0..wings.count {
                         let wing = pointer(memory, wings, index)?;
                         name(memory, at(wing, cair_wing::NAME)?, &mut rows)?;
-                        // Upper bound only: skipped wings may retain a region.
                         let region = field::<u64>(
                             memory,
                             wing,
@@ -98,7 +95,6 @@ fn demand_inner(
             }
         }
     }
-    // Whole-world fleets once; native roster multiplicity is not deduplicated.
     cfleet::visit_fuel_task_forces(memory, base, &countries, |visit| match visit {
         cfleet::Visit::Fleet { fleet, tasks, .. } => {
             add(&mut rows, 2, 1)?;
@@ -107,7 +103,6 @@ fn demand_inner(
         }
         cfleet::Visit::TaskForce(task, _) => name(memory, at(task.task, 0x258)?, &mut rows),
     })?;
-    // Sort once instead of a wing-by-region rewalk or per-country world scan.
     regions.sort_unstable();
     regions.dedup();
     rows[7] = regions.len();

@@ -1,5 +1,3 @@
-//! Independent saved network lists and subnetwork operands. Ordered
-//! occurrences, duplicates, empty lists and missing scalar fields stay distinct.
 use super::super::{Decimal, block, decimal, field, integer, invalid, required_bytes, scalar};
 use installed_content_core::parser::Item;
 use std::{collections::BTreeMap, io};
@@ -67,8 +65,6 @@ fn coverage(items: &[Item], key: &[u8]) -> io::Result<Option<[i32; 3]>> {
         })
         .transpose()
 }
-/// An occupied-country list: each element an anonymous block of the
-/// country's quoted tag and its operand block, `{ "TAG" { key=value ... } }`.
 fn records(items: &[Item], key: &[u8]) -> io::Result<Vec<Record>> {
     list(items, key)?
         .iter()

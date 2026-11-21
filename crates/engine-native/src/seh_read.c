@@ -5,18 +5,6 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 
-/* Only faults within this copy are handled; unrelated exceptions
-   continue through the game's handlers.
-   Windows reports a fault on a noncanonical x86-64 source
-   (bits 63:48 != bit 47, e.g. ASCII bytes such as "_factor" read as a
-   pointer) with ExceptionInformation[1] == -1. The guarded instruction only
-   touches the requested source range (the destination is valid pool memory),
-   so -1 during the copy must come from that source range and is handled
-   gracefully. Any other address still uses the exact range check, so a
-   canonical out-of-range fault elsewhere keeps returning
-   EXCEPTION_CONTINUE_SEARCH for real crash reporting. The Rust
-   is_canonical_range gate makes this -1 path unreachable in normal walks; it
-   remains as containment for any direct FFI caller bypassing that gate. */
 static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
                       size_t len, const unsigned char *dst) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
@@ -34,9 +22,6 @@ static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
     return 0;
 }
 
-/* Fixed-size memcpy remains valid for unaligned fields. The scalar FFI caller
-   already handles 4/8, while its direct callers can still copy those widths
-   through the ordinary memcpy fallback. */
 static __forceinline void copy_other_bytes(unsigned char *dst,
                                           const unsigned char *src, size_t len) {
     if (len == 16) {
@@ -52,8 +37,6 @@ static __forceinline void copy_other_bytes(unsigned char *dst,
     } else if (len == 24) {
         memcpy(dst, src, 24);
     } else if (len == 26) {
-        /* Character role-tree sentinels end at the nil byte, not at a
-           padded 32-byte boundary. Keep their exact extent inline. */
         memcpy(dst, src, 26);
     } else if (len == 64) {
         memcpy(dst, src, 64);
@@ -62,8 +45,6 @@ static __forceinline void copy_other_bytes(unsigned char *dst,
     }
 }
 
-/* Fixed-width Rust reads select these before crossing the FFI boundary, so
-   their guarded copy needs neither a dynamic length nor width dispatch. */
 int seh_guarded_copy4(unsigned char *dst, const unsigned char *src) {
     __try {
         memcpy(dst, src, 4);
@@ -74,10 +55,6 @@ int seh_guarded_copy4(unsigned char *dst, const unsigned char *src) {
     }
 }
 
-/* Scalar values need no caller-owned destination. Keep the original exact
-   source fault policy, without admitting a fictitious destination range.
-   uint32_t then uint64_t preserves every signed or unsigned four-byte pattern;
-   the high word distinguishes a successful zero from an unreadable source. */
 uint64_t seh_guarded_read4(const unsigned char *src) {
     __try {
         uint32_t value;
@@ -89,7 +66,6 @@ uint64_t seh_guarded_read4(const unsigned char *src) {
     }
 }
 
-/* Gathered spans still need the complete width selection. */
 static __forceinline void copy_bytes(unsigned char *dst,
                                     const unsigned char *src, size_t len) {
     if (len == 8) {
@@ -140,8 +116,6 @@ typedef struct {
     uint32_t len;
 } PlannedHint;
 
-/* Controls compare recorder-owned bytes. Common exact widths avoid a general
-   CRT memcmp call for every pointer and string header in a prepared pass. */
 static __forceinline int same_control(const unsigned char *a,
                                       const unsigned char *b, size_t len) {
     if (len == 8) return memcmp(a, b, 8) == 0;
@@ -153,8 +127,6 @@ static __forceinline int same_control(const unsigned char *a,
                memcmp(a + 16, b + 16, 8) == 0 && memcmp(a + 24, b + 24, 2) == 0;
     }
     if (len == 16 || len == 32 || len == 64) {
-        /* MSVC otherwise emits CRT calls for the common string headers.
-           These are exact, unaligned recorder-owned ranges, never live reads. */
         __m128i different = _mm_xor_si128(_mm_loadu_si128((const __m128i *)a),
                                          _mm_loadu_si128((const __m128i *)b));
         if (len >= 32) {
@@ -176,9 +148,6 @@ static __forceinline int same_control(const unsigned char *a,
     return memcmp(a, b, len) == 0;
 }
 
-/* Only an active source copy is recoverable here. Recorder-owned metadata and
-   comparisons are outside that interval; an unrelated exception must retain
-   the game's normal handling rather than become a fabricated read failure. */
 static int plan_copy_fault(EXCEPTION_POINTERS *ep, const PlannedRead *reads,
                            size_t read_count, unsigned char *destination,
                            size_t completed, int active_read) {
@@ -190,11 +159,6 @@ static int plan_copy_fault(EXCEPTION_POINTERS *ep, const PlannedRead *reads,
                       destination + read->destination_offset);
 }
 
-/* Immutable geometry and canonical nonempty sources are admitted in Rust.
-   Reads and controls retain their exact order. In particular, a changed parent
-   control stops before the next old child address is evaluated or prefetched.
-   Empty reads count as complete but touch no source. Return codes are 0 for a
-   complete plan, 1 for changed control, and 2 for an attempted read fault. */
 int seh_execute_read_plan(const PlannedRead *reads, size_t read_count,
                          const PlannedControl *controls, size_t control_count,
                          const PlannedHint *hints, size_t hint_count,
@@ -218,9 +182,6 @@ int seh_execute_read_plan(const PlannedRead *reads, size_t read_count,
                 }
                 ++control_index;
             }
-            /* The producer observed and controlled every selecting value
-               before issuing these hints. Failed/changed controls above must
-               stop before even hinting an old child address. */
             while (hint_index < hint_count && hints[hint_index].after_reads == index) {
                 const PlannedHint *hint = &hints[hint_index++];
                 if (hint->len != 0) {
@@ -264,9 +225,6 @@ typedef struct {
 size_t seh_guarded_copy_scattered(const CopySpan *spans, size_t count) {
     volatile size_t completed = 0;
     __try {
-        /* The normal loop index can stay in a register. Publish completion only
-           after each exact span; the exception filter needs that volatile
-           witness, not repeated volatile reloads for indexing and bounds. */
         for (size_t index = 0; index < count; ++index) {
             const CopySpan *span = &spans[index];
             if (span->len != 0) {
@@ -278,15 +236,10 @@ size_t seh_guarded_copy_scattered(const CopySpan *spans, size_t count) {
                         copy_fault(GetExceptionInformation(), spans[completed].src,
                                    spans[completed].len, spans[completed].dst)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-        /* The current span may be partial. No later span has been accessed. */
     }
     return completed;
 }
 
-/* Only endpoint cache hints for an admitted exact span. The Rust preflight
-   excludes invalid nonempty sources and the suffix after them. A hint observes
-   no bytes, including for NOACCESS and GUARD pages; readability is decided only
-   by the ordered guarded copy. Endpoint hints bound work even for a large span. */
 static __forceinline void hint_copy_span(const CopySpan *span) {
     if (span->len != 0) {
         uintptr_t first = (uintptr_t)span->src;
@@ -322,7 +275,6 @@ size_t seh_guarded_copy_scattered_prefetched(const CopySpan *spans, size_t count
                         copy_fault(GetExceptionInformation(), spans[completed].src,
                                    spans[completed].len, spans[completed].dst)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-        /* The failed span may be partial; later spans were only hinted. */
     }
     return completed;
 }
@@ -333,21 +285,12 @@ typedef struct {
     size_t len;
 } RecordField;
 
-/* A null pointer vector selects strided sources. Rust admits every evaluated
-   nonempty field before entry, including checked strided arithmetic. Do not
-   call this for an empty-only partial row: its hypothetical address can be
-   invalid even though every empty field in that prefix succeeds. */
 static __forceinline uintptr_t record_pointer(const uintptr_t *pointers,
                                                uintptr_t base, size_t stride,
                                                size_t row) {
     return pointers != NULL ? pointers[row] : base + row * stride;
 }
 
-/* Hints only the endpoint cache lines of already-validated exact fields.
-   PREFETCHT0 observes no value and does not replace any guarded load. Pointer
-   metadata is caller-owned; no source pointer is followed here. The caller
-   passes only fields inside the flattened validated prefix, including a
-   possible partial final row. Zero-width fields never evaluate their source. */
 static __forceinline void hint_record_fields(const uintptr_t *pointers,
                                              uintptr_t base, size_t stride,
                                              size_t row,
@@ -372,9 +315,6 @@ static __forceinline void hint_record_fields(const uintptr_t *pointers,
     }
 }
 
-/* The exact one-field pointer layout has the same endpoint hints without
-   reloading its invariant field metadata for each row. Unaligned pointers can
-   cross a cache line, so the second endpoint must still be considered. */
 static __forceinline void hint_pointer_record(uintptr_t pointer) {
     uintptr_t last = pointer + 7;
     _mm_prefetch((const char *)pointer, _MM_HINT_T0);
@@ -383,9 +323,6 @@ static __forceinline void hint_pointer_record(uintptr_t pointer) {
     }
 }
 
-/* Fixed packed widths with caller-selected, already-validated source offsets.
-   These hints retain the generic path's exact endpoints and row lead; only
-   invariant metadata/width interpretation moves outside the row loops. */
 static __forceinline void hint_packed_field(uintptr_t address, size_t len) {
     uintptr_t last = address + len - 1;
     _mm_prefetch((const char *)address, _MM_HINT_T0);
@@ -413,8 +350,6 @@ static __forceinline int is_packed_five_layout(const RecordField *fields) {
            fields[4].len == 8 && fields[4].destination_offset == 44;
 }
 
-/* The two-field body retains its six destination padding bytes and every
-   caller-supplied source offset. Only exact widths/positions select this path. */
 static __forceinline void hint_packed_two_record(uintptr_t pointer,
                                                size_t source0, size_t source1) {
     hint_packed_field(pointer + source0, 2);
@@ -452,13 +387,6 @@ static int record_copy_fault(EXCEPTION_POINTERS *ep, const uintptr_t *pointers,
                       destination + row * row_stride + field->destination_offset);
 }
 
-/* Rust validates immutable metadata, total field count, every destination
-   bound, and each nonempty source in the flattened validated_field_count
-   prefix before entry. field_count is nonzero, and the prefix fits the checked
-   row_count * field_count. Only that prefix may be evaluated here; it can end in
-   the middle of a row. Source validity means nonnull base, nonoverflowing
-   arithmetic, and a canonical range, not readability. An earlier unreadable
-   field still faults through the exact completed-field witness/filter. */
 size_t seh_guarded_copy_records(const uintptr_t *pointers,
                                uintptr_t source_base, size_t source_stride,
                                size_t validated_field_count,
@@ -466,10 +394,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                                size_t row_stride, unsigned char *destination) {
     volatile size_t completed = 0;
     __try {
-        /* Specialize only the fully matching layout. An empty prefix must not
-           inspect either metadata array. All source/destination validation
-           remains in Rust, and the shared exception filter uses the same
-           completed-field witness for both paths. */
         if (validated_field_count != 0 && field_count == 1 && row_stride == 8 &&
             fields[0].source_offset == 0 && fields[0].destination_offset == 0 &&
             fields[0].len == 8) {
@@ -483,8 +407,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                     hint_pointer_record(record_pointer(pointers, source_base, source_stride, hinted));
                     ++hinted;
                 }
-                /* One exact unaligned-safe observation per row; never widen,
-                   combine duplicates, or publish a partially copied field. */
                 memcpy(destination + index * 8,
                        (const unsigned char *)record_pointer(pointers, source_base, source_stride, index), 8);
                 completed = index + 1;
@@ -492,11 +414,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
         } else if (validated_field_count != 0 && field_count == 5 &&
                    row_stride == 52 && validated_field_count % 5 == 0 &&
                    is_packed_five_layout(fields)) {
-            /* A partial validated row uses the untouched generic path. A
-               complete prefix may still stop before a later invalid pointer;
-               no pointer/hint beyond these rows is evaluated. Source offsets
-               remain dynamic and may overlap or repeat, just as in generic
-               metadata; their immutability is part of the existing contract. */
             const size_t source0 = fields[0].source_offset;
             const size_t source1 = fields[1].source_offset;
             const size_t source2 = fields[2].source_offset;
@@ -518,9 +435,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                 }
                 uintptr_t pointer = record_pointer(pointers, source_base, source_stride, row);
                 unsigned char *target = destination + row * 52;
-                /* Preserve every exact observation and its completed-field
-                   witness before beginning the next field. No source gap is
-                   read and no failing field is published as complete. */
                 memcpy(target, (const unsigned char *)(pointer + source0), 12);
                 completed = ++index;
                 memcpy(target + 12, (const unsigned char *)(pointer + source1), 16);
@@ -535,9 +449,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
         } else if (validated_field_count != 0 && field_count == 2 &&
                    row_stride == 16 && validated_field_count % 2 == 0 &&
                    is_packed_two_layout(fields)) {
-            /* Keep partial validated rows on the generic path. Dynamic source
-               offsets, duplicate occurrences, exact field order and the same
-               sixteen-row endpoint hints match the other record paths. */
             const size_t source0 = fields[0].source_offset;
             const size_t source1 = fields[1].source_offset;
             const size_t rows = validated_field_count / 2;
@@ -562,10 +473,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                 completed = ++index;
             }
         } else {
-            /* Start sixteen rows ahead, then hint one further row per copied row.
-               Counters advance by the actual validated prefix length, not by a
-               rounded-up row count; neither the final pointer nor its field
-               metadata can be read beyond the supplied prefix. */
             size_t hinted_fields = 0;
             size_t hinted_rows = 0;
             while (hinted_rows < 16 && hinted_fields < validated_field_count) {
@@ -608,7 +515,6 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                                   fields, field_count, row_stride, destination,
                                   completed)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-        /* The current field may be partial. Later fields are untouched. */
     }
     return completed;
 }

@@ -1,4 +1,3 @@
-// Frozen serial reader from eafc953b4f. Test reference only.
 use super::*;
 
 pub fn walk_country_buffer(
@@ -114,7 +113,6 @@ pub fn walk_country_buffer(
                     row.progress_raw = instance.row.progress_raw;
                     row.ahead_reduction_raw = instance.row.ahead_reduction_years_raw;
                     row.cost_raw = template.research_cost_raw;
-                    // Adjacent fixed bonus and applied-ID array header, one guarded read.
                     let extra =
                         read::<[u8; 24]>(memory, at(technology, ctechnology::APPLIED_SPEED_BONUS)?)
                             .ok_or("research bonus operands unreadable")?;

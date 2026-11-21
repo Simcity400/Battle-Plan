@@ -1,5 +1,3 @@
-//! GPU objects a pass makes the same way on every view: pipelines, layouts and samplers. Each
-//! device keeps one of each while any view holds it, so another map view compiles nothing.
 
 use eframe::wgpu;
 use std::any::Any;
@@ -13,8 +11,6 @@ type Entry = (
 
 static SHARED: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
-/// The `T` made for `key` on `device` that a view still holds, else the one `make` builds.
-/// Held through `make`, so views built at once make it once.
 pub fn shared<K, T>(device: &wgpu::Device, key: K, make: impl FnOnce() -> T) -> Arc<T>
 where
     K: PartialEq + Send + 'static,

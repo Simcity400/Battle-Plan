@@ -17,7 +17,6 @@ impl Key for u64 {
     }
 }
 const RADIX: usize = 4;
-// At most three pending siblings for each two-bit key position.
 const MAX_STACK: usize = u64::BITS as usize / 2 * (RADIX - 1) + 1;
 
 struct Node<K, V> {
@@ -114,7 +113,6 @@ impl<K: Key, V: Clone + Eq> Values<K, V> {
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.iter().map(|(_, v)| v)
     }
-    // Legacy diagnostics only; display consumers use shared roots and changed keys.
     pub fn flat(&self) -> &BTreeMap<K, V> {
         self.flat
             .get_or_init(|| self.iter().map(|(k, v)| (*k, v.clone())).collect())

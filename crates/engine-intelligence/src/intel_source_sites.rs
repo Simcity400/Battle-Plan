@@ -1,4 +1,3 @@
-//! Writer boundaries for independent source state and carried derivations.
 
 use engine_sites::Rva;
 pub const CHEAT_POOL: u32 = 5;

@@ -1,4 +1,3 @@
-//! Projects and raids capture: special projects and their history, raids, raid paths, facilities and counter-operatives, raid target statuses and the raid intel carry. The host owns dispatch, loans and table assembly.
 
 use collector_certificates::slicing;
 use collector_extended_support::outcomes::RaidReadCounts;

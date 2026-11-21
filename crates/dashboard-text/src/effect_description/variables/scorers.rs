@@ -39,7 +39,6 @@ impl Renderer<'_, '_, '_> {
             .content
             .country_scorers
             .ok_or("country scorer content is unavailable")?;
-        // An invalid scorer leaves null: no destination write
 
         let Some(entries) = database.get(name)? else {
             return Ok(());
@@ -60,8 +59,6 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|why| why.to_string())?,
             )
         };
-        // One fresh scope is reused across targets, FROM a copy of the caller;
-        // clearing THIS retains its links and RNG words.
         let scope = evaluator
             .fresh_country_scope(None, Some(caller))
             .map_err(|why| why.to_string())?;
@@ -97,9 +94,6 @@ impl Renderer<'_, '_, '_> {
             evaluator.store_description_temp(destination, value);
             return Ok(());
         }
-        // Sorted builder writes both lengths only after all scores, then each
-        // indexed country/score; later entries replace a country's score
-        // Equal scores keep native hash bucket order.
         let values = scores.sorted();
         let count = (values.len() as i64).wrapping_mul(100_000);
         let num = installed_content_core::scoped_variable::ScopedVariable {
@@ -156,8 +150,6 @@ struct Score {
     value: i64,
 }
 
-/// The scorer's Robin Hood hash table determines ties before the stable
-/// descending sort.
 #[derive(Default)]
 struct ScoreMap {
     slots: Vec<Option<Score>>,
@@ -179,7 +171,6 @@ impl ScoreMap {
         });
     }
 
-    // linear probing extends past the mask, never wraps.
     fn insert_score(&mut self, mut new: Score) {
         if self.slots.is_empty() {
             self.grow();
@@ -217,8 +208,6 @@ impl ScoreMap {
             at += 1;
             new.distance += 1;
             if new.distance > self.max_probe {
-                // Native rollback preserves all occupants for rehash and then
-                // inserts the displaced original/new key.
                 std::mem::swap(self.slots[inserted_at].as_mut().unwrap(), &mut new);
                 self.grow();
                 self.insert_score(new);
@@ -227,8 +216,6 @@ impl ScoreMap {
         }
     }
 
-    // minimum eight buckets, doubling, max distance log2;
-    // rehash visits old physical slots in order with the same insertion helper.
     fn grow(&mut self) {
         let buckets = if self.slots.is_empty() {
             8

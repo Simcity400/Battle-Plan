@@ -228,7 +228,6 @@ impl Warnings {
         if self.index.contains(message) || self.refused.contains(message)? {
             return Ok(());
         }
-        // S3 will charge resident diagnostics to the shared memory owner once it exists.
         let stored = (|| {
             storage_attempt()?;
             engine_allocation::reserve(&mut self.values, 2)?;
@@ -299,7 +298,6 @@ pub fn with_storage_failure_after<T>(accepted: usize, run: impl FnOnce() -> T) -
     run()
 }
 
-// Overflow identities live on disk so counting distinct refusals does not grow the heap.
 struct Spill {
     file: Option<File>,
     root: u64,
@@ -325,7 +323,6 @@ impl Spill {
                 use windows_sys::Win32::Storage::FileSystem::{
                     DELETE, FILE_FLAG_DELETE_ON_CLOSE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
                 };
-                // Delete-on-close avoids allocating a Windows path during OOM cleanup.
                 options
                     .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
                     .custom_flags(FILE_FLAG_DELETE_ON_CLOSE);

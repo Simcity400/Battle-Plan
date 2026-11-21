@@ -1,11 +1,7 @@
-//! Which tables the recorder summarizes and how ([`replay_columnar::summary`]): exactly what the
-//! dashboard's declarations read ([`dashboard_declare::summaries`]). The schema digest does not
-//! cover this list: a reader takes what each block's index names.
 
 use replay_columnar::summary::Shape;
 use std::io;
 
-/// Every summarized table and its pieces' shape, ascending by table.
 pub fn registry() -> io::Result<Vec<(usize, Shape)>> {
     #[allow(unused_mut, reason = "only the crate's tests add to the declarations")]
     let mut registry = dashboard_declare::summaries()?;
@@ -14,12 +10,9 @@ pub fn registry() -> io::Result<Vec<(usize, Shape)>> {
     Ok(registry)
 }
 
-/// How many keys the crate's tests rank Countries' political power by.
 #[cfg(test)]
 pub(crate) const TEST_RANK: u8 = 4;
 
-/// The crate's tests rank Countries' political power: a ranked column of a recorded table, which
-/// a synthetic journal can hold (a derived table's rows are its writer's to write).
 #[cfg(test)]
 fn rank_in_tests(registry: &mut [(usize, Shape)]) -> io::Result<()> {
     use replay_columnar::summary::Source;

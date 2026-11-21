@@ -29,11 +29,9 @@ fn naval_disengage_requires_viewing_country_on_a_primary_side() {
         );
         assert!(!out.values[key].hidden);
     }
-    // Allied/shared vision does not admit a spectator's retreat button.
     bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 999));
     assert!(out.values[key].hidden);
     assert!(out.refused().is_empty());
-    // A proven defender match survives an unresolved attacker alias.
     detail.sides[0].summary.countries.push(78);
     bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 560));
     assert!(!out.values[key].hidden);
@@ -73,7 +71,6 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
             assert_eq!(out.values[key].enabled, Some(retreating == 0));
         }
     }
-    // the game returns the attacker if both primary lists match.
     detail.sides[0].summary.countries.push(56);
     detail.sides[0].retreating = 1;
     detail.sides[1].retreating = 0;
@@ -81,8 +78,6 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
         naval_disengage_state(&detail, &aliases, 560),
         Ok(Some(false))
     );
-    // A known defender match does not settle which retreat byte applies
-    // if an unresolved attacker alias could match and the states differ.
     detail.sides[0].summary.countries = vec![78];
     bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 560));
     assert!(out.values[key].hidden);
@@ -107,7 +102,6 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
     let pixels = raster.target(MONITOR.physical);
     let mut resources = fixture();
     let sprite = resources.sprites.get_mut("GFX_even").unwrap();
-    // Synthetic frame strip and land-control placement.
     sprite.texture = [174, 118];
     sprite.frames = 2;
     sprite.hit = native_gui::Hit::Through;
@@ -191,8 +185,6 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
             instantTextBoxType={name=name font=Main_14 maxWidth=74 maxHeight=16 fixedsize=yes}}
     }"#);
     let mut resources = fixture();
-    // Independently authored proportional font: a one-texel i and a one-row
-    // dot, unlike the broad monospace diagnostic that masked the raster bug.
     resources.font = monospace("Main_14", 5, 14);
     for (ch, width, height, advance, yoffset) in
         [('i', 1, 8, 2, 1), ('.', 2, 1, 3, 10), (' ', 0, 0, 3, 0)]
@@ -335,9 +327,6 @@ fn naval_progress_uses_defender_list_for_both_participant_perspectives() {
     );
 }
 
-/// The BM_ keys are the executable's: a missing one is refused, never
-/// shown as its own text, and the delayed key is named. Border factors
-/// wrap their entry in the stored colour byte.
 #[test]
 fn executable_modifier_keys_must_exist() {
     let loc: Localisation = [
@@ -351,7 +340,6 @@ fn executable_modifier_keys_must_exist() {
     .collect();
     let (main, delayed) = global_modifier_tooltip(&NoIcons, &loc, 5, None, None);
     assert_eq!(main, Ok(Some("Stacking".to_owned())));
-    // A missing top-level key shows its own bytes.
     assert_eq!(delayed, Some(Ok("BM_STACKING_DESC".to_owned())));
     let (main, _) = global_modifier_tooltip(&NoIcons, &loc, 7, None, None);
     assert_eq!(main, Ok(Some("BM_DECRYPTION".to_owned())));
@@ -407,12 +395,11 @@ fn committed_strength_and_side_attack_use_distinct_native_operands() {
     assert_eq!(active["soft_attack"].text.as_deref(), Some("330"));
     assert_eq!(active["hard_attack"].text.as_deref(), Some("66"));
     assert_eq!(active["defense"].text.as_deref(), Some("30"));
-    assert_eq!(fraction(50, 0), 0.5); // Native maximum-stat clamp is 100 raw.
+    assert_eq!(fraction(50, 0), 0.5);
 }
 
 #[test]
 fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
-    // The fractional stat product is truncated to 365.
     let row = LandCombatDivisionRow {
         side: 1,
         scales: [99_000, 99_000, 100_000, 100_000],
@@ -442,9 +429,6 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
     assert_eq!(active["defense"].text.as_deref(), Some("365"));
     assert_eq!(active["soft_attack"].text, None);
     assert_eq!(active["hard_attack"].text, None);
-    // The same entry bound again without its name or condition keeps
-    // neither earlier value: both are cleared and hidden, the bars'
-    // refusal counted once per bind.
     let mut stale = entry(&member(&row), None, true, None, None, active);
     for _ in 0..2 {
         condition_bars(
@@ -468,9 +452,6 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
     );
 }
 
-/// A division with its Divisions row but no DivisionStatus row keeps a
-/// condition; each bar is hidden only for its own missing maximum, and
-/// the refusal names the table's state.
 #[test]
 fn a_missing_panel_row_hides_each_bar_by_its_own_maximum() {
     use replay_data::rows::DivisionRow;
@@ -517,7 +498,6 @@ fn a_missing_panel_row_hides_each_bar_by_its_own_maximum() {
         &out,
         "has no organisation maximum for it (the table is truncated, 2 rows unread); its organisation bar is hidden."
     ));
-    // A known maximum binds its own bar although the other is missing.
     let mut values = Values::new();
     let strength_only = Condition {
         max_strength: Some(100_000),
@@ -590,16 +570,12 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("Guards")
     );
-    // A programmatic member with a group: the capture records no stored
-    // name, and the group's entry is shown.
     row.own.as_mut().unwrap().naming.programmatic = 1;
     row.own.as_mut().unwrap().naming.custom = b"Ignored programmatic text".to_vec();
     assert_eq!(
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("144ya Strelkovaya Diviziya")
     );
-    // With a null group the capture records the stored name, which
-    // the game shows.
     row.own.as_mut().unwrap().naming.group.clear();
     row.own.as_mut().unwrap().naming.custom = b"1-ya Strelkovaya".to_vec();
     assert_eq!(
@@ -621,7 +597,6 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("1-ya Strelkovaya")
     );
-    // Without one the game builds the legacy name.
     row.own.as_mut().unwrap().naming.custom.clear();
     assert_eq!(
         division_name(&member(&row), &names, &localisation, "english"),
@@ -695,8 +670,6 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
     );
 }
 
-/// Each cause is one warning naming every division it leaves unnamed,
-/// with its group and ordinal.
 #[test]
 fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -734,7 +707,6 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
             naming.custom = b"\xffGuards".to_vec()
         }),
         named(row(8, b"INF", 1, 1), |naming| naming.kind = 2),
-        // A player's name holding the stored flag control 0x12.
         named(row(10, b"INF", 1, 1), |naming| {
             naming.custom = b"\x12GER Guards".to_vec()
         }),
@@ -783,11 +755,8 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
 
 #[test]
 fn initiative_adds_the_reconnaissance_define_before_comparing_skills() {
-    // The defender has the higher initiative score.
     assert_eq!(initiative_side([4, 5], [0, 200_000], 5), Some(1));
-    // Reconnaissance can carry the lower skill past the higher one.
     assert_eq!(initiative_side([4, 5], [200_000, 0], 5), Some(0));
-    // A tie in the score shows neither glow; equal reconnaissance adds nothing.
     assert_eq!(initiative_side([3, 3], [100_000, 100_000], 5), None);
     assert_eq!(initiative_side([0, 0], [0, 1], 0), None);
 }
@@ -820,12 +789,10 @@ fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
     ];
     let mut divisions: BTreeMap<_, _> = rows.iter().map(|r| ((0, r.division), r)).collect();
     let mut movement = BTreeMap::new();
-    // Distinct attack directions show the icon.
     assert_eq!(
         several_directions(&combat, false, &divisions, &movement),
         Some(true)
     );
-    // A border war never has several directions.
     assert_eq!(
         several_directions(&combat, true, &divisions, &movement),
         Some(false)
@@ -876,7 +843,6 @@ fn a_missing_modifier_row_leaves_the_combat_class_undecided() {
     };
     assert_eq!(border_war(&[], 5), None);
     assert_eq!(border_war(&[row(4, 0, Some([0; 3]))], 5), None);
-    // Either side's row decides; a projected-out side does not matter.
     assert_eq!(border_war(&[row(5, 1, None)], 5), Some(false));
     assert_eq!(
         border_war(
@@ -931,7 +897,6 @@ fn a_division_listed_twice_on_a_side_keeps_its_first_modifier_row() {
             .get(&(side, division))
             .map(|row: &&LandCombatDivisionModifierRow| row.entries[0].id)
     };
-    // The modifier row without a member row names no division.
     assert_eq!(members.len(), 3);
     assert_eq!(ids(0, 70), Some(2));
     assert_eq!(ids(0, 71), Some(3));
@@ -1038,8 +1003,6 @@ fn snow(snow: i64) -> Option<TableView> {
     ])))
 }
 
-/// The window as an earlier binding left it: a first-member flag on each
-/// side and the summer terrain picture.
 fn stale() -> Bindings {
     let mut out = Bindings::default();
     for key in ["attacker_flag", "defender_flag"] {
@@ -1064,10 +1027,6 @@ fn refused(out: &Bindings, fragment: &str) -> bool {
         .any(|refusal| refusal.contains(fragment))
 }
 
-/// the game returns the side's country with or without a commander, and
-/// the game binds the flag from it: without a commander the recorded
-/// first primary country (or province controller) replaces the earlier
-/// first-member flag; a country without artwork hides the flag.
 #[test]
 fn a_side_without_a_commander_takes_its_recorded_country_flag() {
     let detail = LandCombatDetailsRow {
@@ -1101,8 +1060,6 @@ fn a_side_without_a_commander_takes_its_recorded_country_flag() {
         &out,
         "Land combat 62 defender flag is hidden: no combat flag resolves for country 9"
     ));
-    // Without LandCombatDetails the side country is unknown: neither the
-    // earlier flag nor a first-member guess is kept.
     let out = bind_pictures(&window_frame(None, snow(0)), &["GFX_terrain_plains"]);
     for key in ["attacker_flag", "defender_flag"] {
         assert!(out.values[key].hidden && out.values[key].flag.is_none());
@@ -1113,9 +1070,6 @@ fn a_side_without_a_commander_takes_its_recorded_country_flag() {
     ));
 }
 
-/// the game adds `_winter` for positive province snow. A missing winter
-/// sprite or a missing weather row hides the picture and names the gap,
-/// rather than keeping the earlier summer picture or assuming no snow.
 #[test]
 fn the_terrain_picture_is_decided_once_and_hidden_on_refusal() {
     let both = ["GFX_terrain_plains", "GFX_terrain_plains_winter"];
@@ -1130,14 +1084,12 @@ fn the_terrain_picture_is_decided_once_and_hidden_on_refusal() {
         picture(&out),
         (Some("GFX_terrain_plains_winter".into()), false)
     );
-    // Snow with no winter sprite: the summer picture bound earlier goes.
     let out = bind_pictures(&window_frame(None, snow(1)), &["GFX_terrain_plains"]);
     assert_eq!(picture(&out), (None, true));
     assert!(refused(
         &out,
         "Land combat 62 terrain picture is hidden: the content lacks sprite GFX_terrain_plains_winter."
     ));
-    // Missing weather is not zero snow, whatever the table's state.
     for (weather, state) in [
         (None, "the table is unavailable: not recorded"),
         (
@@ -1167,8 +1119,6 @@ fn the_terrain_picture_is_decided_once_and_hidden_on_refusal() {
     }
 }
 
-/// A value bound after a refusal shows the widget again; a repeated
-/// refusal is counted, not repeated.
 #[test]
 fn a_binding_after_a_refusal_shows_the_widget_again() {
     let mut out = Bindings::default();

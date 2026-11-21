@@ -24,7 +24,6 @@ impl From<data::Instance> for ModelInstance {
 }
 
 impl PreparedSlot {
-    /// The slot as the product carries it: types by name, meshes by asset key.
     fn wire(
         &self,
         key: &impl Fn(usize) -> io::Result<Arc<data::AssetKey>>,
@@ -269,7 +268,6 @@ impl PreparedBuildings {
             }
             let mut province = None;
             for (group, authored) in value.groups.iter().zip(groups) {
-                // Main visits each province's slots in authored file order, not slot-id order.
                 if province.is_some_and(|old| old >= group.province)
                     || group.slots.iter().any(|&slot| slot as usize >= next)
                     || group.province != authored.province
@@ -323,7 +321,6 @@ impl MapBuildingAssets {
         })
     }
 
-    /// One slot as the product carries it.
     pub fn display_slot(&self, slot: &PreparedSlot) -> io::Result<data::Slot> {
         let keys = self.keys();
         slot.wire(
@@ -332,9 +329,6 @@ impl MapBuildingAssets {
         )
     }
 
-    /// Every authored slot as the product names it, ordinary then floating, by id.
-    /// The province boxes and their slot ids as a product holds them: the content's own, made
-    /// once, so a cold install shares them with every product before it.
     fn display_groups(&self) -> Arc<Vec<data::Group>> {
         Arc::clone(self.display_groups.get_or_init(|| {
             Arc::new(
@@ -396,9 +390,6 @@ impl MapBuildingAssets {
         })
     }
 
-    /// A layer's slots (every slot by id, ordinary then floating) as today's chunk pages: the
-    /// chunks named in `changed` made again from `slots`, every other page shared with
-    /// `previous`. Without a `previous` of the same length, every page is made.
     pub fn slot_pages(&self, slots: &[PreparedSlot], changed: &[usize], previous: Option<&SlotPages>) -> io::Result<SlotPages> {
         let size = incremental::CHUNK_SIZE;
         let chunk = |index: usize| map_display_data::retained::Retained::new(Arc::<[PreparedSlot]>::from(&slots[index * size..((index + 1) * size).min(slots.len())]));
@@ -417,10 +408,6 @@ impl MapBuildingAssets {
         Ok(SlotPages(Chunked::from_directory(previous.0.directory().patched(&edits)?)?))
     }
 
-    /// The product the scene installs from a layer: its slots handed over as `pages`, which the
-    /// scene's install shares as today's display does (`with_producer`), so no slot goes to the
-    /// wire form and back. The authored slots and the province boxes are the content's own, shared
-    /// by every product.
     pub fn shared_product(&self, pages: &SlotPages, bank: [u8; 32], hour: WireHour) -> io::Result<data::Buildings> {
         if *self.display_binding.get_or_init(|| bank) != bank {
             return Err(invalid("building bank was replaced without rebinding its content"));
@@ -486,18 +473,15 @@ impl MapBuildingAssets {
     }
 }
 
-/// A layer's slots as today's chunk pages, which the scene's install shares.
 #[derive(Clone, Debug)]
 pub struct SlotPages(pub(super) Chunked<PreparedSlot>);
 
 impl SlotPages {
-    /// Bytes the pages hold (an entity's own bytes counted once a page).
     pub fn held(&self) -> usize {
         self.0.chunks.len() * 48
     }
 }
 
-/// What a layer's product carries besides its slots.
 pub struct WireHour {
     pub branch: u64,
     pub hour: i32,

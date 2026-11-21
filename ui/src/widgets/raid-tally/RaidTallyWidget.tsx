@@ -20,7 +20,6 @@ import { OPTIONS } from './definition';
 import { tallyEntries, tallyIdentities, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallySegmentAt, tallyTooltip, tallyValue } from './raidTallyData';
 import type { TallyMetric } from './raidTallyData';
 
-/** Each country's raid launches and wins, counted from the campaign's raids read once. */
 export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const metric = options.metric as TallyMetric;
@@ -81,7 +80,6 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (data.available === false) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid types available." detail={data.unavailable ?? undefined} /></>;
   if (resolved.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={resolved.reason} /></>;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  // A group with no member has no count to show: the moment says why.
   const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="target" /></>;
   if (resolved.top == null && !tally.series.some(item => item.runs.length)) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /></>;

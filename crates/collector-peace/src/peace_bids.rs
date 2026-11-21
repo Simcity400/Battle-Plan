@@ -1,4 +1,3 @@
-//! Resident history bids sampled before finalization for the fresh-save oracle.
 pub use super::tables::Capacities;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;

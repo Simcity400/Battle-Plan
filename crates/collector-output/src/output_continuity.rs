@@ -1,4 +1,3 @@
-//! Branch continuity and written-publication rules shared by output captures.
 use crate::{
     output_log::Drained,
     table_capture::{grow_capacity, grow_vec},
@@ -14,7 +13,6 @@ pub type OutputMap<L> = HashMap<u64, L>;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
-    /// Owned producer entries in a boundary handoff.
     pub entries: usize,
 }
 
@@ -88,7 +86,6 @@ impl<O: Observation, const N: usize> Captured<O, N> {
     }
 }
 
-/// Common branch accounting; the capture owns the meaning of each line total.
 #[derive(Debug)]
 pub struct Totals<L> {
     branch: Option<BranchId>,
@@ -96,11 +93,8 @@ pub struct Totals<L> {
     pub complete: bool,
     pub census: Baseline,
     pub lines: OutputMap<L>,
-    /// The last prepared publication; never reset, so stamps outlive branches.
     publications: u64,
-    /// The publication a frame written now would hold.
     held: Option<u64>,
-    /// Lines ended no later than this were in a written publication.
     written_through: u64,
     retired_through: u64,
 }
@@ -120,7 +114,6 @@ impl<L> Default for Totals<L> {
     }
 }
 
-/// What a written frame proves was published; dropping it retires nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Receipt(Option<u64>);
 
@@ -148,7 +141,6 @@ impl<L> Totals<L> {
         }
         progress
     }
-    /// Drop lines a written publication showed ended, before entries touch them.
     pub fn retire(&mut self, ended: impl Fn(&L) -> Option<u64>) {
         if self.written_through > self.retired_through {
             let through = self.written_through;
@@ -157,8 +149,6 @@ impl<L> Totals<L> {
             self.retired_through = through;
         }
     }
-    /// Seed the baseline once, from the first complete census; earlier drains
-    /// do not prove creation.
     pub fn prepare_publication(
         &mut self,
         hour: i32,
@@ -172,15 +162,12 @@ impl<L> Totals<L> {
         self.publications += 1;
         Ok(self.publications)
     }
-    /// Before this hour's publication: the one an off-slot skip carries.
     pub fn take_held(&mut self) -> Option<u64> {
         self.held.take()
     }
-    /// Once this hour's rows are complete.
     pub fn published(&mut self, publication: u64) {
         self.held = Some(publication);
     }
-    /// A skip carries the last on-slot table, so it holds what that one held.
     pub fn carry(&mut self, output: &TableView, carried: Option<u64>) {
         if let TableView::Unavailable { reason } = output
             && reason == replay_data::cadence::SKIPPED_REASON
@@ -188,11 +175,9 @@ impl<L> Totals<L> {
             self.held = carried;
         }
     }
-    /// Taken before the frame with `output` is queued, after its assembly.
     pub fn receipt(&self, output: &TableInput) -> Receipt {
         Receipt(self.held.filter(|_| holds_publication(output)))
     }
-    /// After the frame of `receipt` was actually written.
     pub fn written(&mut self, receipt: Receipt) {
         if let Receipt(Some(publication)) = receipt {
             self.written_through = self.written_through.max(publication);

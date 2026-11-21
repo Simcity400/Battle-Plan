@@ -4,7 +4,6 @@ use replay_data::rows::{
 };
 use std::collections::BTreeSet;
 
-/// The fields of each table the project outputs read.
 const SCIENTIST: u64 = mask::<ScientistRow>(&["country", "ordinal"]);
 const SKILL: u64 = mask::<ScientistSkillRow>(&["token", "level"]);
 const PROGRAM: u64 = mask::<RaidFacilityRow>(&["id", "province"]);
@@ -24,8 +23,6 @@ fn trailing(text: &mut String, count: usize) {
 }
 
 impl Renderer<'_, '_, '_> {
-    // Template output only;
-    // iteration_output belongs to execution. Native outer indent is 2 spaces.
     pub(in crate::effect_description::technology) fn complete_project_output(
         &mut self,
         item: &Item,
@@ -94,8 +91,6 @@ impl Renderer<'_, '_, '_> {
             self.char_native_text(b"SPECIAL_PROJECT_RESEARCH_OUTPUT", &[], scopes, false)?;
         trailing(&mut text, 1);
 
-        // country, scientist, facility state, with two trailing
-        // LFs per nonempty body. ROOT/PREV are THIS; FROM is the project.
         if !output.country_effects.is_empty() {
             let selected = self
                 .evaluator()?
@@ -116,7 +111,7 @@ impl Renderer<'_, '_, '_> {
                         .map_err(|why| why.to_string())?;
                     self.project_effect_output(&mut text, &output.scientist_effects, selected)?;
                 }
-                Ok(None) => {} // omits the body for a null scientist.
+                Ok(None) => {}
                 Err(why) => self.project_output_refusal(why),
             }
         }
@@ -131,8 +126,6 @@ impl Renderer<'_, '_, '_> {
                         .evaluator()?
                         .repoint_this(selected, Scope::State(state))
                         .map_err(|why| why.to_string())?;
-                    // stores the already-held province id in TLS,
-                    // then describes the body.
                     self.evaluator()?.store_description_temp(
                         b"facility_province_id".to_vec(),
                         i64::from(province) * 100_000,
@@ -143,7 +136,7 @@ impl Renderer<'_, '_, '_> {
                         selected,
                     )?;
                 }
-                Ok(None) => {} // omits a null province.
+                Ok(None) => {}
                 Err(why) => self.project_output_refusal(why),
             }
         }
@@ -224,8 +217,6 @@ impl Renderer<'_, '_, '_> {
         Ok(())
     }
 
-    // Resolve the scientist first; otherwise select the first
-    // scientist-roster entry with specialization level >=1.
     fn project_output_scientist(
         &self,
         item: &Item,
@@ -239,7 +230,6 @@ impl Renderer<'_, '_, '_> {
             .and_then(|field| field.value.scalar())
             && let Some(character) = self.effect_character_target(Some(operand), scopes)?
         {
-            // The shared family helper proves the same character gate.
             return Ok(self
                 .char_scientist(Scopes::of(Scope::Character(character.id)))?
                 .map(|row| row.id));
@@ -278,8 +268,6 @@ impl Renderer<'_, '_, '_> {
         Ok(selected.map(|row| row.character))
     }
 
-    // native program order, explicit state first, then matching
-    // specialization. RaidFacilities holds that exact hourly roster/order.
     fn project_output_program(
         &self,
         item: &Item,
@@ -379,7 +367,6 @@ impl Renderer<'_, '_, '_> {
         }
         let mut names = Vec::new();
         for list in lists {
-            // DLC-gated readers attach the final limit to the entire block.
             let fields = children(list);
             if let Some(limit) = fields.iter().rfind(|item| item.keyword_is("limit"))
                 && !self.project_output_condition(children(limit), Scopes::empty())?
@@ -426,8 +413,6 @@ impl Renderer<'_, '_, '_> {
                         name
                     }
                 };
-                // uses current viewing country,
-                // not the project's owner; neither name undergoes expansion.
                 names.push(self.technology_country_name(
                     name,
                     self.context.perspective,

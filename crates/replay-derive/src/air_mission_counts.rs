@@ -1,34 +1,23 @@
-//! Regional registration counts, independent of presentation and effective country.
-//! Registration order is significant: a negative total restarts before the next
-//! wrapping addition. A signed nonpositive mission mask admits no mission.
 
 use replay_data::rows::{AirMissionCountRow, AirRegionalMissionRow, AirWingRow};
 use std::collections::{BTreeMap, HashMap};
 
-/// The supported native mission-bit domain, including unnamed kinds.
 pub const MISSIONS: usize = AirMissionCountRow::MISSIONS;
 
-/// The regional map's per-mission GUI template. Its `button` names the mission
-/// strip sprite and draws mission bit `b` at the strip's one-based frame `b + 1`.
 pub const MISSION_ENTRY_TEMPLATE: &str = "air_mission_mapicon_entry";
 pub type Counts = [i32; MISSIONS];
 pub type RegionalWings<'a> = BTreeMap<u32, Vec<&'a AirWingRow>>;
 pub type RegionalCounts = BTreeMap<u32, Counts>;
 pub type OwnerRegions<'a> = BTreeMap<u32, (RegionalCounts, RegionalWings<'a>)>;
 
-/// Selected bits receive the wing's whole aircraft count, including zero.
 pub fn count(counts: &mut Counts, wing: &AirWingRow) {
     count_of(counts, wing.planes, wing.mission_mask);
 }
 
-/// [`count`] from a wing's aircraft count and mission mask.
 pub fn count_of(counts: &mut Counts, planes: i32, mission_mask: u32) {
     AirMissionCountRow::count(counts, mission_mask, planes);
 }
 
-/// One registration's part of [`regional_counts`], from values: the registered wing's owner
-/// and mission region when it has an AirWings row. `Ok(Some(region))` counts it in our
-/// region, `Ok(None)` is another owner's, and an error withholds the whole projection.
 pub fn registration(
     wing: u64,
     row: Option<(u32, Option<u32>)>,
@@ -47,9 +36,6 @@ pub fn registration(
         .ok_or_else(|| format!("registered wing {wing} has no mission region"))
 }
 
-/// Read all owners with one wing index and one stable registration sort.
-/// Occurrences remain in each region's roster; callers count unique handles
-/// separately, never by adding mission columns.
 pub fn owners<'a>(
     registrations: &[AirRegionalMissionRow],
     wings: &'a [AirWingRow],
@@ -75,8 +61,6 @@ pub fn owners<'a>(
     Ok(result)
 }
 
-/// The map's selected-owner projection. It preserves the original demand
-/// order: resolve every registration's owner, but ask for a region only for ours.
 pub fn regional_counts<'a>(
     registrations: &[AirRegionalMissionRow],
     wings: &'a [AirWingRow],

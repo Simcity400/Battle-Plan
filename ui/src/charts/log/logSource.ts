@@ -3,21 +3,13 @@ import type { FacetFilter, LogCell, MembershipRun, MissingSpan } from '../../gen
 import type { LogPage, LogRow } from './logData';
 import { AHEAD_SECONDS } from '../reveal.ts';
 
-/** A declared log's rows counted per bin over a span (`log-counts`, its lines summed): `counts[i]` rows in the hours
- * from `firstHour + i * binHours`, `total` in the whole span, `before` on the timeline before it (where the service's
- * ordinals of the span's rows start). `missing` holds the hours the log was not recorded whole, each with the
- * recording's reason, in hour order: no count there says no row happened, and `total` counts the recorded hours only. */
 export interface LogCounts { firstHour: number; binHours: number; counts: readonly number[]; total: number; before: number; missing: readonly MissingSpan[] }
 
-/** One row of a `log-page` reply: its key, the hour it is dated, and its typed cells by column name. `fields` is the row
- * as sent, for a family's own page whose rows say more than cells (the event feed's named rows); its mapper checks them. */
 export interface LogReplyRow { key: string; hour: number; cells: Readonly<Record<string, LogCell>>; fields: Readonly<Record<string, unknown>> }
-/** A page of a declared log: the rows from ordinal `firstOrdinal` (0 is the oldest row in the span), oldest first. */
 export interface LogReplyPage { firstOrdinal: number; total: number; rows: readonly LogReplyRow[] }
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
-/** A count the service writes as a decimal string. */
 const counted = (value: unknown): number | null => {
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
   const parsed = Number(value);
@@ -29,8 +21,6 @@ const cellOf = (value: unknown): value is LogCell => object(value) && (
   ((value.kind === 'number' || value.kind === 'text') && typeof value.value === 'string')
   || (value.kind === 'list' && typeof value.bytes === 'string') || value.kind === 'missing' || value.kind === 'notRecorded');
 
-/** A `log-counts` reply for the span `firstHour..=lastHour`, its groups' lines summed into one bin per `binHours`
- * from the bin holding `firstHour` through the bin holding `lastHour`. */
 export function validateLogCounts(value: unknown, firstHour: number, lastHour: number): LogCounts {
   const malformed = () => new Error('The log counts reply is malformed.');
   if (!object(value) || !Number.isSafeInteger(value.firstHour) || !count(value.binHours) || value.binHours === 0
@@ -56,13 +46,10 @@ export function validateLogCounts(value: unknown, firstHour: number, lastHour: n
   return { firstHour: start, binHours, counts, total, before, missing };
 }
 
-/** The spans of `missing` a list cut at `until` (null: the whole span) has reached, each ended at the cut. */
 export function missingThrough(missing: readonly MissingSpan[], until: number | null): MissingSpan[] {
   return missing.filter(held => until === null || held.firstHour <= until).map(held => until !== null && held.lastHour > until ? { ...held, lastHour: until } : held);
 }
 
-/** A `log-page` reply asked from the span's ordinal `firstOrdinal` (the service's `before + firstOrdinal`): rows
- * from there, consecutive and in hour order, each with a cell per column, none past the span's total. */
 export function validateLogPage(value: unknown, firstOrdinal: number, pageSize: number, before: number): LogReplyPage {
   const malformed = () => new Error('The log page reply is malformed.');
   if (!object(value) || !Array.isArray(value.columns) || !value.columns.every(column => typeof column === 'string')
@@ -78,16 +65,12 @@ export function validateLogPage(value: unknown, firstOrdinal: number, pageSize: 
   return { firstOrdinal, total, rows };
 }
 
-/** A page's product and params from the service's ordinal `cursor`: `log-page` names the log it pages; a family's own
- * page (`product`) has its log fixed and refuses a request naming one. */
 export function logPageRequest(spec: { product?: string; branchId: string; log: string; facets?: readonly FacetFilter[]; scope?: readonly MembershipRun[];
   firstHour: number; lastHour: number }, cursor: number, pageSize: number): { product: string; params: Record<string, unknown> } {
   return { product: spec.product ?? 'log-page', params: { branchId: spec.branchId, ...(spec.product ? {} : { log: spec.log }),
     ...(spec.facets ? { facets: spec.facets } : {}), ...(spec.scope ? { scope: spec.scope } : {}), from: spec.firstHour, to: spec.lastHour, cursor: String(cursor), pageSize } };
 }
 
-/** The pages a paged log holds for the spec `lane` names: each page's rows, what it said beside them (`notes`) and why
- * it failed. */
 export interface HeldPages<R, N> {
   lane: string | null;
   rows: ReadonlyMap<number, R>;
@@ -95,14 +78,10 @@ export interface HeldPages<R, N> {
   errors: ReadonlyMap<number, Failure>;
 }
 
-/** No pages held for `lane`. */
 export const noPages = <R, N>(lane: string | null): HeldPages<R, N> => ({ lane, rows: new Map(), notes: new Map(), errors: new Map() });
 
-/** What `held` holds for `lane`: nothing when it was held for another spec (one still loading when the list mounted). */
 export const pagesOf = <R, N>(held: HeldPages<R, N>, lane: string | null): HeldPages<R, N> => held.lane === lane ? held : noPages(lane);
 
-/** `held` with page `index`, asked for the spec `asked`, answered: its rows and what it said. An answer for a spec no
- * longer shown (`shown`) changes nothing. */
 export function heldPage<R, N>(held: HeldPages<R, N>, shown: string | null, asked: string | null, index: number, rows: R,
   said: readonly N[] | undefined): HeldPages<R, N> {
   if (asked !== shown) return held;
@@ -111,28 +90,22 @@ export function heldPage<R, N>(held: HeldPages<R, N>, shown: string | null, aske
     errors: base.errors.has(index) ? new Map([...base.errors].filter(([at]) => at !== index)) : base.errors };
 }
 
-/** `held` with page `index`, asked for the spec `asked`, failed; nothing changes for a spec no longer shown (`shown`). */
 export function failedPage<R, N>(held: HeldPages<R, N>, shown: string | null, asked: string | null, index: number, failure: Failure): HeldPages<R, N> {
   if (asked !== shown) return held;
   const base = pagesOf(held, asked);
   return { ...base, errors: new Map(base.errors).set(index, failure) };
 }
 
-/** Whether page `index` of `pageSize` rows holds any of the span's `total` rows: a page past them has none to ask. */
 export function pageInSpan(index: number, pageSize: number, total: number): boolean {
   return Number.isSafeInteger(index) && index >= 0 && index * pageSize < total;
 }
 
-/** Rows before each bin: `before[i]` rows lie in bins before `i`; `before[counts.length]` is the total. */
 export function cumulativeCounts(counts: LogCounts): Uint32Array {
   const before = new Uint32Array(counts.counts.length + 1);
   for (let at = 0; at < counts.counts.length; at++) before[at + 1] = before[at] + counts.counts[at];
   return before;
 }
 
-/** The rows a log shows through hour `until` (all of them for null), counted exactly from the bin counts and, inside
- * the bin holding `until`, the dated rows the loaded pages hold. `known` is false while a page holding a row of that
- * bin is not loaded: then `shown` counts only the bins before it, and the bin's rows wait for their page. */
 export function shownThrough(counts: LogCounts, before: Uint32Array, until: number | null, pageSize: number,
   page: (index: number) => readonly { hour: number }[] | undefined): { shown: number; known: boolean } {
   if (until === null) return { shown: counts.total, known: true };
@@ -151,8 +124,6 @@ export function shownThrough(counts: LogCounts, before: Uint32Array, until: numb
   return { shown, known: true };
 }
 
-/** The pages of `pageSize` rows holding the bin at `hour`, whose rows the cut waits on; none for no cut or a cut outside
- * the span. */
 export function binPages(counts: LogCounts, before: Uint32Array, hour: number | null, pageSize: number): number[] {
   if (hour === null) return [];
   const bin = Math.floor((hour - counts.firstHour) / counts.binHours);
@@ -162,9 +133,6 @@ export function binPages(counts: LogCounts, before: Uint32Array, hour: number | 
   return pages;
 }
 
-/** The pages a list asks: those it holds in view; following, the page at the head (`shown` rows in), the next, and every
- * page of the rows before ordinal `through` (`aheadThrough`); and while the cut waits for its bin's rows (`waiting`,
- * `binPages`), every page of that bin, which nothing may release before the cut is known. */
 export function askedPages(inView: readonly string[], shown: number, pageSize: number, follow: boolean, waiting: readonly number[], through = shown + 1): Set<number> {
   const asked = new Set(inView.map(Number).filter(Number.isSafeInteger));
   if (follow) {
@@ -175,10 +143,6 @@ export function askedPages(inView: readonly string[], shown: number, pageSize: n
   return asked;
 }
 
-/** Following at `hour` with `shown` rows through it, the ordinal the pages are held to: playing, the rows counted through
- * `AHEAD_SECONDS` of playback, so a page is asked that long before the clock reaches it however dense the log (run 13:
- * the event feed's pages, asked two blocks of rows ahead, a quarter second at 1,440 h/s, landed after the head had passed
- * them and were asked again at it), and never more rows than the blocks of that time can draw; paused, the next row. */
 export function aheadThrough(counts: LogCounts, before: Uint32Array, shown: number, hour: number, hoursPerSecond: number, playing: boolean): number {
   if (!playing || !(hoursPerSecond > 0)) return shown + 1;
   const bin = Math.floor((hour + Math.ceil(hoursPerSecond * AHEAD_SECONDS) - counts.firstHour) / counts.binHours);
@@ -186,8 +150,6 @@ export function aheadThrough(counts: LogCounts, before: Uint32Array, shown: numb
   return Math.max(shown + 1, counted);
 }
 
-/** The first hour a page from the span's ordinal `at` can hold: the start of the bin its first row is counted in (`before`
- * from `cumulativeCounts`). What a page asks from, so a page ahead of the head is told from one at it. */
 export function pageFirstHour(counts: LogCounts, before: Uint32Array, at: number): number {
   let low = 0, high = counts.counts.length - 1;
   while (low < high) {
@@ -197,9 +159,6 @@ export function pageFirstHour(counts: LogCounts, before: Uint32Array, at: number
   return counts.firstHour + low * counts.binHours;
 }
 
-/** The list's pages for `shown` rows: fixed windows of `pageSize` ordinals counted from the oldest row, so a page
- * keeps its key as rows arrive at the head; the newest is cut at `shown`. A loaded page's rows are those of its
- * window shown; a failed one keeps its count and its error. */
 export function shownPages<T>(shown: number, pageSize: number, loaded: ReadonlyMap<number, readonly LogRow<T>[]>,
   errors: ReadonlyMap<number, Failure>): LogPage<T>[] {
   const pages: LogPage<T>[] = [];
@@ -212,10 +171,6 @@ export function shownPages<T>(shown: number, pageSize: number, loaded: ReadonlyM
   return pages;
 }
 
-/** The note a log list shows for the spans of `missing` it has reached (`missingThrough`): each span as a plain sentence
- * (`subject`, such as "Division events are not recorded whole", and its dates) with the recording's reason as its
- * detail, and that the list's counts cover the recorded hours only; none without a span. `date` names an hour as the
- * list's dates do. */
 export function missingNote(missing: readonly MissingSpan[], date: (hour: number) => string, subject = 'Not recorded'):
   { spans: { text: string; detail: string }[]; counted: string } | null {
   if (!missing.length) return null;
@@ -228,9 +183,6 @@ export function missingNote(missing: readonly MissingSpan[], date: (hour: number
   };
 }
 
-/** The dates of the rows after the first `shown` of the span's `total`, read from the loaded pages up to the first page
- * not held and at most `limit` of them, oldest first: what a list can draw ahead of its cut. `complete` when they reach
- * the span's last row. */
 export function rowsAhead(shown: number, total: number, pageSize: number, limit: number,
   page: (index: number) => readonly { hour: number }[] | undefined): { hours: number[]; complete: boolean } {
   const hours: number[] = [];
@@ -243,7 +195,6 @@ export function rowsAhead(shown: number, total: number, pageSize: number, limit:
   return { hours, complete: true };
 }
 
-/** The rows of `pages` past the first `shown`, oldest first: what a list following the head draws ahead of its cut. */
 export function drawnAhead<T>(pages: readonly LogPage<T>[], shown: number): LogRow<T>[] {
   const rows: LogRow<T>[] = [];
   for (const page of pages) {
@@ -256,8 +207,6 @@ export function drawnAhead<T>(pages: readonly LogPage<T>[], shown: number): LogR
   return rows;
 }
 
-/** A count painted each frame: `base` (each key's count at the block's first hour) and each row drawn ahead of it,
- * counted under `keyOf`'s key from its hour on. Only the keys of `base` are counted. */
 export function countsAhead<K, T>(base: ReadonlyMap<K, number>, ahead: readonly LogRow<T>[], keyOf: (row: LogRow<T>) => K): (hour: number) => ReadonlyMap<K, number> {
   const hours = new Map<K, number[]>();
   for (const row of ahead) {

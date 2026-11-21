@@ -1,10 +1,3 @@
-//! The game's retained Combat Log at an hour (`combat-log-history`): its group membership,
-//! manpower months, equipment months, template statistics and battle records as the recorded state
-//! tables hold them at the hour, and each live or just-ended combat's observer operands. Two of its
-//! inputs are logs and are read only as their declared logs: a battle record's modifier hours
-//! (`combat-log-battle-modifiers`, the rows its record inserted, by battle) and the combats the
-//! game finalized at the hour (`land-combat-results`). Countries are named by the one identity
-//! rule; a reference no country holds is named by its raw id and reported.
 
 use dashboard_query::identity::Holders;
 use super::{LoadContext, Product, country_ids::Names, divisions::Content, land_battles::BattleCountryFilter};
@@ -136,7 +129,6 @@ pub struct LogActiveSide {
     pub details: Vec<LogDetailTable>,
 }
 
-/// Why each part of the reply is missing at the hour; none where it was read whole.
 #[derive(Clone, Debug, Default, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -169,7 +161,6 @@ pub struct CombatLogReply {
 
 dashboard_base::reply_warnings!(CombatLogReply);
 
-/// The state tables read at the hour.
 const STATE: [TableId; 16] = [
     TableId::CombatLogGroups,
     TableId::CombatLogMonths,
@@ -204,7 +195,6 @@ fn unavailable(frame: &DecodedFrame, sources: &[TableId]) -> Option<String> {
     (!missing.is_empty()).then(|| missing.join("; "))
 }
 
-/// Whether `tag` is chosen at `hour`: by a country going by it, or a membership run holding it.
 pub fn matches_country(filter: &BattleCountryFilter, holders: &Holders, tag: &str, hour: i32) -> bool {
     filter.countries.as_ref().is_none_or(|countries| countries.iter().any(|chosen| holders.goes_by(chosen, tag, hour)))
         && (filter.membership.is_none()
@@ -212,8 +202,6 @@ pub fn matches_country(filter: &BattleCountryFilter, holders: &Holders, tag: &st
                 && filter.membership.as_ref().is_some_and(|runs| runs.iter().any(|run| run.tag == tag && run.first_hour <= hour && hour <= run.last_hour)))
 }
 
-/// Whether a side whose countries are `tags` (none where a reference holds no tag) is chosen: a
-/// participant not known never leaves a side out, nor does a side with no country.
 pub fn matches_side(filter: &BattleCountryFilter, holders: &Holders, tags: impl IntoIterator<Item = Option<String>>, hour: i32) -> bool {
     let mut empty = true;
     for tag in tags {
@@ -233,7 +221,6 @@ fn detail(tables: &mut BTreeMap<&'static str, LogDetailTable>, title: &'static s
         .push(row);
 }
 
-/// A fixed5 raw value written exactly, trailing zeros dropped.
 pub fn fixed(raw: i64) -> String {
     let value = raw.unsigned_abs();
     let fraction = format!("{:05}", value % 100_000);
@@ -254,14 +241,12 @@ fn side(attacker: bool) -> &'static str {
     if attacker { "Attacker" } else { "Defender" }
 }
 
-/// What an observer's tables name its countries, designs and templates with.
 struct Labels<'a> {
     country: &'a mut dyn FnMut(u32) -> String,
     equipment: &'a dyn Fn(u64) -> String,
     template: &'a mut dyn FnMut(u64) -> String,
 }
 
-/// The design handles an observer's operands and losses name.
 fn observer_designs(facts: &[(u8, u64, [u64; 5])], losses: &[LandEquipmentLoss], out: &mut BTreeSet<u64>) {
     use CombatLogObserverKind as K;
     for &(kind, _, [a, b, ..]) in facts {
@@ -272,7 +257,6 @@ fn observer_designs(facts: &[(u8, u64, [u64; 5])], losses: &[LandEquipmentLoss],
     out.extend(losses.iter().map(|loss| loss.variant));
 }
 
-/// One observer side's operands as the game holds them, in its stored order.
 fn observer(combat: u64, attacker: bool, terminal: bool, facts: &[(u8, u64, [u64; 5])], losses: Result<(i32, &[LandEquipmentLoss]), String>, labels: &mut Labels<'_>) -> io::Result<LogActiveSide> {
     use CombatLogObserverKind as K;
     let mut result = LogActiveSide {
@@ -355,7 +339,6 @@ fn observer(combat: u64, attacker: bool, terminal: bool, facts: &[(u8, u64, [u64
     Ok(result)
 }
 
-/// The rows a declared log inserted from `from` through `to` that `filters` keep, in hour order.
 fn logged(query: &Query<'_>, name: &str, filters: &[log::FacetFilter], from: i32, to: i32) -> io::Result<Vec<log::Row>> {
     let declared = dashboard_declare::log(name).ok_or_else(|| invalid(format!("No log is declared as {name}")))?;
     let reader = log::Reader::new(query, declared)?;
@@ -364,7 +347,6 @@ fn logged(query: &Query<'_>, name: &str, filters: &[log::FacetFilter], from: i32
     Ok(page.rows.into_iter().map(|paged| paged.row).collect())
 }
 
-/// A finalized combat as its log row holds it: its observer operands and each side's losses.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Finalized {
     pub combat: u64,
@@ -372,7 +354,6 @@ pub struct Finalized {
     pub losses: [LandSideLosses; 2],
 }
 
-/// A `land-combat-results` row as the combat it finalized; none where a cell is not recorded.
 pub fn finalized(row: &log::Row, columns: &[usize; 3]) -> Option<Finalized> {
     let list = |at: usize| match row.cells.get(columns[at]) {
         Some(log::Cell::List(bytes)) => Some(&bytes[..]),
@@ -389,9 +370,6 @@ pub fn finalized(row: &log::Row, columns: &[usize; 3]) -> Option<Finalized> {
     })
 }
 
-/// A battle record's modifier hours: each `combat-log-battle-modifiers` row of a battle id
-/// `battles` names, inserted at or after the record's own hour (an earlier battle of the same
-/// slot is another record), the newest of each key: (battle, side, ordinal) to (modifier, hours).
 pub fn modifiers_of(rows: &[log::Row], battles: &BTreeMap<u32, i32>, columns: &[usize; 2]) -> BTreeMap<u32, Vec<(u8, u32, i64, i64)>> {
     let mut newest: BTreeMap<u128, &log::Row> = BTreeMap::new();
     for row in rows {
@@ -490,7 +468,6 @@ impl Product for CombatLog {
             availability.battles = available(TableId::CombatLogBattleModifiers)?;
         }
 
-        // The battle records the chosen countries reference, their modifier rows from the log.
         let battles: BTreeMap<u32, &replay_data::rows::CombatLogBattleRow> = rows!(CombatLogBattles).iter().map(|row| (row.id, row)).collect();
         let referenced: BTreeMap<u32, i32> = rows!(CombatLogReferences)
             .iter()
@@ -506,7 +483,6 @@ impl Product for CombatLog {
             BTreeMap::new()
         };
         crate::metadata::check_cancel(cancelled)?;
-        // The combats the game finalized at the hour: its log's rows inserted then.
         let mut ended = Vec::new();
         let mut warnings = Vec::new();
         if availability.terminal.is_none() {
@@ -523,7 +499,6 @@ impl Product for CombatLog {
             }
         }
 
-        // Every design named, read once at the hour.
         let mut designs = BTreeSet::new();
         designs.extend(rows!(CombatLogEnemyEquipment).iter().map(|row| row.variant));
         designs.extend(rows!(CombatLogEquipment).iter().map(|row| u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE)));
@@ -612,7 +587,6 @@ impl Product for CombatLog {
                 add(None, None, None);
             }
         }
-        // Templates are named as the template views name them at this hour.
         let mut template_names: BTreeMap<u64, Option<String>> = BTreeMap::new();
         let mut missing_templates = BTreeSet::new();
         let mut template_name = |id: u64| -> Option<String> {

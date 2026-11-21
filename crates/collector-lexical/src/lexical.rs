@@ -1,5 +1,3 @@
-//! The global dictionary is acquired once per refresh between passive writer witnesses.
-//! Growth, exceptional decoding and conversion allocate only off the game thread.
 
 use crate::{
     clock::qpc,
@@ -43,10 +41,6 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<cpdx_lexer::Row>,
     text: Arena<u8>,
-    /// Raw-copy split gate for a scheduled lexical refresh. Set by the game thread
-    /// when a raw payload is staged; `capture` skips the typed walk and the decode
-    /// worker fills these rows before the ready handoff. Preserved across `reset`
-    /// and cleared by the worker after decode.
     pub raw_mode: bool,
 }
 
@@ -56,8 +50,6 @@ pub struct LexicalConversionStats {
     pub misses: u64,
 }
 
-/// Borrowed only during spool conversion. No prior native rows, dictionary
-/// bytes or Captured lease are retained: equality is against this actual Arc.
 pub struct LexicalConversion<'a> {
     cached: Option<&'a Arc<TableRows>>,
     stats: &'a mut LexicalConversionStats,
@@ -88,11 +80,8 @@ impl Captured {
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        // Decode may have sized this frame from a complete owned payload.
         grow_capacity(&mut capacity.rows, self.rows.rows.len());
         self.rows.grow(&mut capacity.rows);
-        // Text demand is either owned decode output or a freshly probed prefix.
-        // Do not round a foreign string's unacquired tail into the allocation.
         capacity.text = capacity
             .text
             .max(self.text.first.len())
@@ -143,11 +132,7 @@ impl Captured {
         force_full: bool,
     ) -> [u64; N] {
         self.reset();
-        // An acquisition worker stages the refresh via `copy_lexical_refresh`.
-        // The decode worker fills typed rows before the ready handoff.
         if self.raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows, outcomes and arenas.
             return [0];
         }
         if !replay_data::cadence::should_walk(TableId::LexicalTokens, hour, force_full) {
@@ -191,8 +176,6 @@ impl Captured {
                 .zip(previous)
                 .enumerate()
                 .all(|(index, (row, prior))| {
-                    // Both native acquisition paths enumerate tokens from zero.
-                    // This also rules out duplicate/reordered keys on the hit path.
                     row.token as usize == index
                         && row.token == prior.token
                         && &bytes[row.text_start..row.text_start + row.text_len]
@@ -254,29 +237,9 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-// ===========================================================================
-// Hourly raw-copy split (LexicalTokens).
-//
-// An acquisition worker reads the writer witness as the copy gate, bulk-copies the
-// contiguous token-header table in 64 KiB chunks, copies heap payloads and
-// terminators by header length, then captures the closing writer witness. The
-// single FIFO decode worker directly decodes complete, valid packets with no
-// table/witness aliases. Exceptional outcomes reconstruct observations from
-// owned bytes and replay `cpdx_lexer::walk`, preserving exact-key arbitration,
-// skipped reads, truncation and failure reasons without touching game memory.
-//
-// An invalid witness stops the copy with its staged observations: replay
-// derives the identical reason without token observations. A failed bulk
-// chunk falls back to per-token header takes for that chunk's range, so a
-// mid-table fault fails at the identical token as the typed walk.
-// ===========================================================================
 
-/// Bulk chunk size for the contiguous header table; a documented raw-span
-/// bound (the header stride itself stays the engine's constant).
 const TABLE_CHUNK: usize = 65536;
 
-/// A schema field records only its outcome and owned-pool offset. The tag is
-/// explicit: a valid one-byte read may start at u32::MAX - 1.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Observation {
     #[default]
@@ -315,10 +278,6 @@ struct TokenPacket {
     payload: Observation,
 }
 
-/// One live capture architecture: dense header chunks and token-ordinal
-/// observations. Normal decode does not construct Spans or a Recorded index.
-/// Exceptional decoding reconstructs the old read stream from these owned
-/// bytes only, preserving exact-key alias and last-repeat behavior.
 #[derive(Debug, Default)]
 pub struct LexicalJob {
     base: usize,
@@ -330,7 +289,6 @@ pub struct LexicalJob {
     spans: usize,
     raw_bytes: u64,
     fault: bool,
-    /// Storage could not be allocated, or a span would end past a `u32` offset.
     overflowed: bool,
     has_bulk: bool,
     charge: crate::raw_memory::Charge,
@@ -354,7 +312,6 @@ impl LexicalJob {
         });
     }
 
-    /// Whether a pass left storage worth reusing.
     pub fn has_storage(&self) -> bool {
         self.bytes.capacity() != 0
     }
@@ -379,8 +336,6 @@ impl LexicalJob {
         Observation::Failed
     }
 
-    /// Preserve RawLog's source-check and storage order. Native destinations
-    /// are initialized; failed partial bytes are discarded.
     #[inline]
     fn take(&mut self, memory: &impl Memory, address: usize, len: usize) -> Observation {
         if self.overflowed {
@@ -414,7 +369,6 @@ impl LexicalJob {
             }
             self.update_charge();
         }
-        // Retain the measured fixed-width append behavior of the replaced log.
         match len {
             1 => self.bytes.push(0),
             2 => self.bytes.extend_from_slice(&[0; 2]),
@@ -448,8 +402,6 @@ impl LexicalJob {
         {
             return self.take(memory, address, len);
         }
-        // Foreign length alone is not allocation evidence. Continue one
-        // native payload observation through successfully copied chunks.
         let start = self.bytes.len();
         if start
             .checked_add(len)
@@ -504,9 +456,6 @@ impl LexicalJob {
         Ok(before)
     }
 
-    /// Enumerate the original observations, not worker requests. Repeated
-    /// addresses retain order, failed bulk attempts are ordinary failed spans,
-    /// preserving the first capture's exact fault positions.
     fn observations(&self, mut visit: impl FnMut(usize, usize, Observation, bool)) {
         let witness =
             |packet: WitnessPacket, visit: &mut dyn FnMut(usize, usize, Observation, bool)| {
@@ -543,8 +492,6 @@ impl LexicalJob {
         witness(self.after, &mut visit);
     }
 
-    /// The temporary RawLog owns and accounts for its vectors and any index
-    /// while the packet's own allocation charge remains live.
     fn reconstruct(&self) -> RawLog<1> {
         #[cfg(any(test, feature = "test-support"))]
         self.reconstructions.set(self.reconstructions.get() + 1);
@@ -614,9 +561,6 @@ impl LexicalJob {
         );
     }
 
-    /// Validate a complete owned packet before sizing its decode destinations.
-    /// Failed, incomplete, changed and aliased observations retain the
-    /// reconstruction path, preserving earlier token-error precedence.
     fn complete_output_sizes(&self) -> Option<(usize, usize)> {
         if self.fault || self.overflowed {
             return None;
@@ -651,9 +595,6 @@ impl LexicalJob {
             let inline = u64::from_le_bytes(header[24..].try_into().ok()?)
                 == engine_native::msvc_string::INLINE_CAPACITY;
             if !inline {
-                // Include the independent terminator in the protected-range
-                // check. Heap aliases with other heap observations are safe
-                // because this path consumes the complete token read sequence.
                 let end = text.source().checked_add(text.len())?.checked_add(1)?;
                 if overlaps(text.source(), end, before.table(), table_end)
                     || overlaps(text.source(), end, witness, witness.checked_add(64)?)
@@ -743,11 +684,6 @@ impl LexicalJob {
             }
         };
         let walked = cpdx_lexer::walk(&recorded, base, rows, text);
-        // Recorded repeats its final exact observation after exhaustion. If
-        // acquisition stopped before the closing witness, a short destination
-        // can skip that later token fault and mistake the opening witness for
-        // closing evidence. Retain actual typed errors, but never publish a
-        // complete or truncated table without an explicitly acquired closure.
         if !matches!(walked.outcome, Outcome::Unavailable { .. })
             && let Err(reason) = self.matching_witnesses()
         {
@@ -819,8 +755,6 @@ fn copy_token_text(
             return false;
         }
     }
-    // A readable nonzero terminator does not stop the old capture; semantic
-    // validation belongs to decoding and must not suppress later observations.
     true
 }
 
@@ -833,8 +767,6 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     let Some(witness) = witness else { return };
     job.has_bulk = true;
     let total = witness.maximum() as usize + 1;
-    // Reverse-table growth recomputes its maximum. Retain this original
-    // writer-free witness.
     let chunks = total.div_ceil(TABLE_CHUNK / TOKEN_NAME_STRIDE);
     if engine_allocation::reserve(&mut job.tokens, total).is_err()
         || engine_allocation::reserve(&mut job.chunks, chunks).is_err()
@@ -878,7 +810,6 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     job.after = copy_witness(job, memory, base).0;
 }
 
-/// Acquire one refresh into its owned payload.
 pub fn copy_lexical_refresh(
     memory: &impl Memory,
     ctx: LexicalCopyContext,
@@ -895,7 +826,6 @@ pub fn copy_lexical_refresh(
 }
 
 impl Captured {
-    /// Mark an accepted acquisition failure without retrying live memory.
     pub fn fail_lexical_capture(&mut self, reason: &'static str) {
         self.rows.outcome = Outcome::Unavailable { reason };
         self.raw_mode = false;
@@ -922,17 +852,9 @@ impl Captured {
             return;
         }
         let walked = if complete.is_some() {
-            // All native observations already belong to this payload. Grow only
-            // its owned destinations on the decode worker, before publishing the
-            // first hour, rather than discarding data until another live capture.
             job.decode_complete(rows, &mut self.rows.rows, &mut self.text.first)
                 .expect("validated complete lexical packet")
         } else {
-            // Exceptional replay must consume successful heap observations at
-            // their original exact width, including strings larger than the
-            // growth probe chunk. Prefix probes cannot consume those repeated
-            // exact occurrences. Only already-owned storage sets this bound;
-            // foreign string lengths never size these allocations.
             job.decode(base, &mut self.rows.rows, &mut self.text.first)
         };
         self.rows.outcome = walked.outcome;
@@ -943,8 +865,6 @@ impl Captured {
     }
 }
 
-/// Shared synthetic address space for the lexical copy/decode split
-/// harness: a three-token dictionary with inline, heap and empty names.
 #[cfg(any(test, feature = "test-support"))]
 pub mod lexical_test_kit {
     use super::{
@@ -1073,7 +993,6 @@ pub mod lexical_test_kit {
         }
     }
 
-    /// Reference typed walk with identical pooled buffers and arenas.
     pub fn direct(memory: &KitMemory, capacities: &Capacities) -> Captured {
         let mut captured = Captured::with_capacities(capacities);
         let walked = cpdx_lexer::walk(
@@ -1088,7 +1007,6 @@ pub mod lexical_test_kit {
         captured
     }
 
-    /// Decode one raw payload into fresh buffers with identical capacities.
     pub fn split(
         memory: &KitMemory,
         capacities: &Capacities,
@@ -1165,8 +1083,6 @@ mod tests {
             let ordinal = self.calls.borrow().len();
             self.calls.borrow_mut().push((address, output.len()));
             if self.faults.contains(&ordinal) {
-                // Native guards may partially write before failing. Neither
-                // representation may publish any of these bytes.
                 let partial = output.len().div_ceil(2);
                 output[..partial].fill(0xee);
                 return false;
@@ -1180,7 +1096,6 @@ mod tests {
         }
     }
 
-    /// A pooled packet, holding `bytes` of storage from an earlier pass.
     fn recycled(bytes: usize) -> LexicalJob {
         let mut job = LexicalJob::new();
         engine_allocation::reserve_exact(&mut job.bytes, bytes).unwrap();
@@ -1277,8 +1192,6 @@ mod tests {
         for fault in 0..11 {
             assert_packet_trace(KitMemory::fixture(), &[fault], &[], 0);
         }
-        // The first failed bulk switches to exact headers. Fail every later
-        // observation too, including all closing-witness components.
         for fault in 4..14 {
             assert_packet_trace(KitMemory::fixture(), &[3, fault], &[], 0);
         }
@@ -1291,8 +1204,6 @@ mod tests {
     #[test]
     fn packet_rejects_busy_or_changed_closing_witness_without_live_retry() {
         use lexical_test_kit::{BASE, KitMemory};
-        // Fixture: three opening observations, a bulk header and four token
-        // observations, followed by flag/header/flag at ordinals 8/9/10.
         for ordinal in [0, 2, 8, 10] {
             let job = assert_packet_trace(
                 KitMemory::fixture(),
@@ -1335,8 +1246,6 @@ mod tests {
         );
         assert_eq!(job.reconstructions.get(), 0);
         assert_eq!(&text[..21], b"abheap-token-lexical!");
-        // A different caller base is not eligible for the captured-base fast
-        // path; generic replay still reports its original missing witness.
         assert!(matches!(
             job.decode(0, &mut rows, &mut text).outcome,
             Outcome::Unavailable { .. }
@@ -1374,7 +1283,6 @@ mod tests {
             }
         );
         assert_eq!((walked.text_len, walked.text_required), (0, 0));
-        // With room to visit the malformed token, its actual first error wins.
         let walked = job.decode(
             lexical_test_kit::BASE,
             &mut [cpdx_lexer::Row::default(); 3],
@@ -1411,8 +1319,6 @@ mod tests {
         for (source, len) in [(BASE + WRITER_FLAG_RVA.0, 4), (BASE + INITIALIZED_RVA.0, 64)] {
             let mut memory = KitMemory::fixture();
             heap_source(&mut memory, 0, source, len);
-            // The terminator is an independent exact source, potentially
-            // outside KitMemory's tiny regions; explicitly provide its byte.
             let job = assert_packet_trace(memory, &[], &[(4, vec![0])], 1024);
             assert!(
                 job.fast_decode(&mut [cpdx_lexer::Row::default(); 3], &mut [0; 128])
@@ -1427,8 +1333,6 @@ mod tests {
         let mut shared = KitMemory::fixture();
         shared.heap = vec![b'x', 0];
         heap_source(&mut shared, 0, 0x30000000, 1);
-        // Token 1 has an empty heap string: its terminator aliases token 0's
-        // one-byte payload. Token 2 then reuses both exact keys yet again.
         heap_source(&mut shared, 1, 0x30000000, 0);
         heap_source(&mut shared, 2, 0x30000000, 1);
         let job = assert_packet_trace(shared, &[], &[(6, vec![0]), (8, vec![b'y'])], 0);
@@ -1499,15 +1403,11 @@ mod tests {
         memory.heap = vec![b'x'; 8192];
         memory.heap.push(0);
         heap_source(&mut memory, 0, 0x30000000, 8192);
-        // This separate heap token aliases the initial header at the same
-        // exact width, forcing owned reconstruction rather than fast decode.
         heap_source(&mut memory, 1, BASE + INITIALIZED_RVA.0, 64);
         let memory = TracedMemory {
             inner: memory,
             calls: Default::default(),
             faults: vec![],
-            // Opening witness, bulk table, then token0 terminator/payload:
-            // token1's independent terminator is ordinal6.
             replacements: vec![(6, vec![0])],
         };
         let mut job = recycled(16384);
@@ -1568,8 +1468,6 @@ mod tests {
             for attempt in 0..3 {
                 memory.probes.set(0);
                 copy_pass(&memory, BASE, &mut job);
-                // The payload is copied chunk by chunk, so the unreadable one
-                // fails it after at most one readable chunk is held.
                 assert!(job.fault && !job.overflowed);
                 assert_eq!(memory.probes.get(), if readable == 0 { 1 } else { 2 });
                 assert!(job.bytes.capacity() < 4 * 4096);
@@ -1674,12 +1572,8 @@ mod tests {
         );
     }
 
-    // Frozen scalar capture is a synthetic differential reference only; live
-    // capture has one representation and never rereads for exceptional decode.
     mod scalar_reference {
         use super::*;
-        /// Parsed writer witness: the table geometry the bulk copy sizes itself
-        /// from. Parsing is local; only the takes touch memory.
         #[derive(PartialEq, Eq)]
         struct Witness {
             maximum: u32,
@@ -1692,10 +1586,6 @@ mod tests {
             length: u32,
         }
 
-        /// Mirror of `Witness::read`: writer flag, 64-byte header, writer flag, with
-        /// identical local parses. Returns `None` exactly when the typed witness
-        /// fails, having recorded the same spans the replay re-derives the reason
-        /// from.
         fn copy_witness(log: &mut RawLog<1>, memory: &impl Memory, base: usize) -> Option<Witness> {
             use engine_native::cpdx_lexer::*;
             let writer = base.checked_add(WRITER_FLAG_RVA.0)?;
@@ -1769,9 +1659,6 @@ mod tests {
                 })
         }
 
-        /// Mirror of one token's string reads: header (served from the bulk chunk
-        /// at replay), terminator and heap payload takes. Returns `false` exactly
-        /// when the typed `text` fails for this token.
         fn copy_token_text(
             log: &mut RawLog<1>,
             memory: &impl Memory,
@@ -1810,13 +1697,9 @@ mod tests {
             {
                 return false;
             }
-            // The replay validates the terminator byte itself from the recorded
-            // spans; identical bytes give the identical verdict.
             true
         }
 
-        /// One structural pass: witness gate, bulk header chunks with per-token heap
-        /// takes, witness-after pair. Stops at the first typed abort point.
         pub fn copy_pass(
             memory: &impl Memory,
             base: usize,
@@ -1835,9 +1718,6 @@ mod tests {
                     let address = witness.table.checked_add(offset)?;
                     match log.take_bulk(memory, address, len, 0x01) {
                         Some(start) => {
-                            // Heap payloads for this chunk, parsed locally from the
-                            // just-copied headers in token order. Each header is lifted
-                            // to the stack first so the payload takes can borrow the log.
                             let tokens = len / TOKEN_NAME_STRIDE;
                             for index in 0..tokens {
                                 let header_addr = address.checked_add(index * TOKEN_NAME_STRIDE)?;
@@ -1855,8 +1735,6 @@ mod tests {
                             }
                         }
                         None if log.overflowed => return None,
-                        // Failed chunk: per-token header takes for this range, stopping
-                        // at the identical token the typed walk fails on.
                         None => {
                             let tokens = len / TOKEN_NAME_STRIDE;
                             for index in 0..tokens {
@@ -1877,7 +1755,6 @@ mod tests {
                     }
                     offset += len;
                 }
-                // Witness-after pair, read after the rows exactly like the typed walk.
                 copy_witness(log, memory, base).map(|after| after == witness)
             })();
             match closed {
@@ -2020,9 +1897,6 @@ mod tests {
 
     #[test]
     fn complete_lexical_payload_preserves_all_rows_across_destination_capacities() {
-        // Zero, undersized, exact-fit and oversized destinations all preserve
-        // the complete owned capture, regardless of the
-        // initial destination capacities. Faulted packets retain the old path.
         use super::lexical_test_kit as kit;
         let memory = kit::KitMemory::fixture();
         let direct = kit::direct(&memory, &split_capacities());
@@ -2045,12 +1919,9 @@ mod tests {
             );
             kit::assert_matches_direct(&split, &direct);
         }
-        // Exact-fit arm pins Rows with all 3 tokens present.
         let exact = Capacities { rows: 3, text: 32 };
         let (split, _, _) = kit::split(&memory, &exact);
         assert_eq!(split.rows.outcome, Outcome::Rows { len: 3 });
-        // Mid-table arm: break the middle (heap) token's length word so the
-        // typed walk and the bulk-chunk fallback fail at the identical token.
         let mut torn = kit::KitMemory::fixture();
         torn.table[16 + 32] ^= 0xff;
         let capacities = split_capacities();
@@ -2062,12 +1933,6 @@ mod tests {
 
     #[test]
     fn lexical_bulk_chunk_serves_enclosed_header_words() {
-        // S3 containment: the 64 KiB header-table chunk is a bulk span, so
-        // the walk's enclosed header reads (4 B flags, 8 B pointers inside
-        // the 32 B token headers) are served from the same recorded bytes.
-        // Proves bulk containment plus bulk-wins-for-sub-ranges: an exact
-        // 32 B header read and an unaligned sub-range inside the chunk both
-        // serve, while a straddling read fails.
         use super::lexical_test_kit as kit;
         let memory = kit::KitMemory::fixture();
         let mut job = LexicalJob::new();
@@ -2080,16 +1945,13 @@ mod tests {
             .iter()
             .find(|span| span.ok && span.bulk)
             .expect("bulk chunk");
-        // Enclosed 8 B pointer read at an unaligned offset inside the chunk.
         let mut word = [0u8; 8];
         assert!(recorded.copy(chunk.addr + 3, &mut word));
         let mut expected = [0u8; 8];
         assert!(memory.copy(chunk.addr + 3, &mut expected));
         assert_eq!(word, expected);
-        // Exact 32 B header read also serves from the bulk chunk.
         let mut header = [0u8; 32];
         assert!(recorded.copy(chunk.addr, &mut header));
-        // Straddling the chunk edge fails (not fully enclosed).
         let mut straddle = [0u8; 32];
         assert!(!recorded.copy(chunk.addr + chunk.len as usize - 16, &mut straddle));
     }
@@ -2123,7 +1985,6 @@ mod tests {
     #[test]
     fn split_copy_matches_direct_walk_on_first_writer_fault() {
         use super::lexical_test_kit as kit;
-        // The first writer gate fails with the same owned replay reason.
         let mut memory = kit::KitMemory::fixture();
         memory.writer_before = 1;
         let capacities = split_capacities();
@@ -2252,14 +2113,14 @@ mod conversion_tests {
         };
         assert!(Arc::ptr_eq(&rows, &previous));
         current.rows.rows[3].token = u32::MAX;
-        current.text.first[15] = 42; // Unused pool tails do not enter the witness.
+        current.text.first[15] = 42;
         let replacement = Arc::new((*previous).clone());
         let TableInput::SharedComplete(rows) = input(&current, Some(&replacement), &mut stats)
         else {
             panic!()
         };
         assert!(Arc::ptr_eq(&rows, &replacement));
-        assert!(!Arc::ptr_eq(&rows, &previous)); // No historical identity assumption.
+        assert!(!Arc::ptr_eq(&rows, &previous));
         assert_eq!((stats.hits, stats.misses), (2, 0));
         for byte in 0..5 {
             let mut changed = lexical_reuse_fixture(9);

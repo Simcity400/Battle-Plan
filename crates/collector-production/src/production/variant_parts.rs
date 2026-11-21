@@ -59,7 +59,6 @@ impl VariantPart {
 }
 
 fn ranges(len: usize, lanes: usize) -> impl Iterator<Item = std::ops::Range<usize>> {
-    // Preserve the native readers' 64-row and 32-row guarded-copy boundaries.
     let width = len.div_ceil(64).div_ceil(lanes.max(1)).max(1) * 64;
     (0..len)
         .step_by(width)

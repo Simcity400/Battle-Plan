@@ -3,17 +3,12 @@ use replay_data::rows::{
     CountryCounterInputRow, CountryRow, IndustrialOrganisationRow, SimulationFeatureRow,
 };
 
-/// The fields of each table the event descriptions read.
 const COUNTRY_TAG: usize = replay_data::rows::column::<CountryRow>("tag");
 const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["country", "ordinal", "token"]);
 const MIO_POLICIES: u64 = mask::<CountryCounterInputRow>(&["mio_policies"]);
 const INSTANT: u64 = mask::<SimulationFeatureRow>(&["instant_decisions"]);
 
 impl Renderer<'_, '_, '_> {
-    // Decision effects take the held scalar; mission effects additionally read
-    // mission, and activation additionally reads desc. No other own key is used.
-    // Activate/remove decision;
-    // activate/remove mission.
     pub(in crate::effect_description) fn decision_effect(
         &mut self,
         item: &Item,
@@ -42,7 +37,6 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let mut name = self.decision_title(definition, scopes)?;
-        // appends the authored description to NAME, including LF.
         if item.keyword_is("activate_mission_tooltip")
             && let Some(desc) = field(children(item), "desc")
                 .and_then(|field| field.value.read_string())
@@ -63,8 +57,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // The mission timer reads mission and evaluates days; its reader
-    // consumes exactly mission/days. Zero rounds to native-empty.
 
     pub(in crate::effect_description) fn mission_days(
         &self,
@@ -88,7 +80,7 @@ impl Renderer<'_, '_, '_> {
             .map(|operand| self.scoped_value(operand, scopes))
             .transpose()?
             .unwrap_or(0);
-        let days = crate::triggers::fixed_round(amount) as i32; // Shared mission-timer arithmetic.
+        let days = crate::triggers::fixed_round(amount) as i32;
         if days == 0 {
             return Ok(String::new());
         }
@@ -111,8 +103,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // category names use their authored identifier
-    // without the decision title's country/ideology ladder.
 
     pub(in crate::effect_description) fn decision_category(
         &self,
@@ -136,10 +126,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // reader owns only decision, show_effect_tooltip,
-    // show_modifiers. Independent detail failures retain the native NAME line.
-    // Unlock/BOP; select/remove.
-    // Both tooltip flags default to no.
     pub(in crate::effect_description) fn unlock_decision(
         &mut self,
         item: &Item,
@@ -157,7 +143,6 @@ impl Renderer<'_, '_, '_> {
             .decisions
             .ok_or_else(|| self.content_gap("decisions"))?;
         let Some(definition) = database.decision(id)? else {
-            // The wrapper is emitted even for the null decision sentinel.
             return self.char_native_line(
                 b"EFFECT_UNLOCK_DECISION",
                 &[("NAME", Argument::Text("")), ("EFFECT", Argument::Text(""))],
@@ -197,7 +182,6 @@ impl Renderer<'_, '_, '_> {
                             if header == b"EFFECT_UNLOCK_DECISION_SELECT_HEADER" {
                                 match self.decision_removal_delay(definition, scopes) {
                                     Ok(days) if days > 0 => {
-                                        // appends this after completion text.
                                         effects.push_str(&self.char_native_line(
                                             b"EFFECT_UNLOCK_DECISION_TIMED_HEADER",
                                             &[("DAYS", Argument::Int32(days))],
@@ -229,7 +213,6 @@ impl Renderer<'_, '_, '_> {
         {
             match self.decision_modifier_details(definition, scopes) {
                 Ok(modifiers) if !modifiers.is_empty() => {
-                    // adds LF when empty or already LF-terminated.
                     if effects.is_empty() || effects.ends_with('\n') {
                         effects.push('\n');
                     }
@@ -264,8 +247,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // call raw with all
-    // categories and scale 100000. Only the final NAME/EFFECT wrapper expands.
     fn decision_modifier_details(
         &self,
         definition: &Decision,
@@ -288,7 +269,6 @@ impl Renderer<'_, '_, '_> {
             else {
                 continue;
             };
-            // resolves the target in the caller's scope.
             let Some(country) = self
                 .country_target(target, scopes)?
                 .filter(|country| *country > 0)
@@ -299,8 +279,6 @@ impl Renderer<'_, '_, '_> {
                 text.push('\n');
             }
             let selected = self.fresh_country_scope(country, None)?;
-            // The shared marked-country formatter emits:
-            // flag control, tag, space, capitalized definite country name.
             let name = self.expanded("[THIS.GetNameWithFlag]", selected)?;
             text.push_str("\u{11}H");
             text.push_str(&name);
@@ -311,8 +289,6 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // Resolve the target, then use its decision seed and highlight
-    // scope. It does not require an active targeted decision (unlike removal).
 
     pub(in crate::effect_description) fn activate_targeted_decision(
         &mut self,
@@ -355,8 +331,6 @@ impl Renderer<'_, '_, '_> {
         highlight: bool,
     ) -> Result<Scopes, String> {
         let world = self.context.world()?;
-        // uses canonical_slot
-        // for a country, otherwise its stored numeric state bits.
         let target = country.unwrap_or(state) as i32;
         let seed = if definition.fixed_random_seed {
             self.decision_description_seed(definition, None, owner, target)
@@ -364,7 +338,6 @@ impl Renderer<'_, '_, '_> {
             let row = match world.tables().complete::<tables::Decisions>(DECISION) {
                 Err(_) => None,
                 Ok(rows) => {
-                    // The owner is the key's high word.
                     let mut first: Option<Cow<'_, DecisionRow>> = None;
                     for row in
                         rows.keyed(|key| world.recorded().slot((key >> 40) as u32) == Some(owner))
@@ -415,8 +388,6 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())
     }
 
-    // resolves its authored decision pointer, then the
-    // fresh country/title path, rather than the caller title scope.
 
     pub(in crate::effect_description) fn decision_cooldown(
         &self,
@@ -442,9 +413,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Event title generation draws the same seed but sets a state object.
-    // accepts id/desc/hours/days/random/random_hours
-    // random_days/major/trigger_for; id, desc and trigger_for affect own text.
 
     pub(in crate::effect_description) fn state_event(
         &mut self,
@@ -480,9 +448,6 @@ impl Renderer<'_, '_, '_> {
         };
         let object = if state == 0 {
             match object {
-                // resolves the character's unit leader first,
-                // then installs that leader and its country. Both
-                // operands survive, even when the caller carries a country.
                 EventObject::UnitLeader(leader) | EventObject::CountryUnitLeader { leader, .. } => {
                     let world = self.context.world()?;
                     let original = world.unit_leader(leader).map_err(|why| why.to_string())?
@@ -512,8 +477,6 @@ impl Renderer<'_, '_, '_> {
                 _ => EventObject::Country(0),
             }
         } else if let Some(target) = field(children(item), "trigger_for") {
-            // These links select the scope; otherwise look up the country tag.
-            // it does not evaluate scoped variables or THIS.
             let operand = target.value.read_string().unwrap_or_default();
             let lower = operand.to_ascii_lowercase();
             let link = matches!(
@@ -554,7 +517,7 @@ impl Renderer<'_, '_, '_> {
             let mut title = EventScope::of(object);
             title.random_seed = random::scope_seed(seed);
             title.random_counter = random::scope_counter(seed);
-            title.random_seed_refusal = parent.random_seed_refusal; // derives lanes.
+            title.random_seed_refusal = parent.random_seed_refusal;
             title.from = match parent.root {
                 Link::Itself => Link::Scope(cursor),
                 link => link,
@@ -573,7 +536,6 @@ impl Renderer<'_, '_, '_> {
             })?,
             selected,
         )?;
-        // does not expand the wrapper.
         self.char_native_text(
             b"EFFECT_COUNTRY_EVENT",
             &[("EVENT", Argument::Text(&title))],
@@ -582,9 +544,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // value parsing stores one operand. A
-    // template pointer wins, then the caller country's first matching instance.
-    // MIO-name/initial-trait.
     pub(in crate::effect_description) fn show_mio(
         &self,
         item: &Item,
@@ -676,7 +635,7 @@ impl Renderer<'_, '_, '_> {
             let key = self.mio_content_name_key(&base, trait_country)?;
             let name = self.localised(&key, &[], scopes, false)?;
             if !name.is_empty() {
-                out.push(' '); // adds one space, with no LF.
+                out.push(' ');
                 out.push_str(&self.char_native_text(
                     b"EFFECT_SHOW_MIO_TOOLTIP_INITIAL_TRAIT_NAME",
                     &[("NAME", Argument::Text(&name))],
@@ -688,10 +647,6 @@ impl Renderer<'_, '_, '_> {
         Ok(out)
     }
 
-    // value parsing -> stores one scoped operand and its
-    // spelling; effect parsing owns no MIO/name block fields.
-    // A scoped object supplies the name; otherwise copy the operand literally.
-    // A resolved object uses the shared name/owner environment.
 
     pub(in crate::effect_description) fn unlock_mio(
         &self,
@@ -732,11 +687,7 @@ impl Renderer<'_, '_, '_> {
         Ok(base.to_vec())
     }
 
-    // The reader owns
-    // policy/show_modifiers. Country 0 takes the raw-key localisation fallback.
 
-    // sets show_modifiers yes; the zero-country
-    // fallback never emits the modifier block.
     pub(in crate::effect_description) fn unlock_mio_policy(
         &mut self,
         item: &Item,
@@ -797,8 +748,6 @@ impl Renderer<'_, '_, '_> {
         } else {
             None
         };
-        // uses the authored raw-key fallback when the stored cache
-        // has no matching policy; it emits no modifier block on this path.
         let name = if let Some(policy) = &definition {
             let base = if policy.name.is_empty() {
                 &policy.token
@@ -820,15 +769,13 @@ impl Renderer<'_, '_, '_> {
             && let Some(policy) = definition
         {
             let body = self.char_mio_policy_modifiers(&policy, scopes);
-            text.push_str(" ("); // appended after the wrapper's LF.
+            text.push_str(" (");
             text.push_str(&body);
-            text.push(')'); // even when no modifiers are visible.
+            text.push(')');
         }
         Ok(text)
     }
 
-    // evaluates in a fresh owner scope and narrows signed /100000;
-    // changes only a positive delay to one.
     fn decision_removal_delay(&self, definition: &Decision, scopes: Scopes) -> Result<i32, String> {
         if definition.days_remove.is_empty() {
             return Ok(0);
@@ -851,9 +798,6 @@ impl Renderer<'_, '_, '_> {
         Ok(if instant != 0 { 1 } else { days })
     }
 
-    // Value parsing stores only the option name.
-    // searches manager, then option, by
-    // exact bytes; state events live in the other manager array.
     pub(in crate::effect_description) fn event_option(
         &mut self,
         item: &Item,
@@ -882,8 +826,6 @@ impl Renderer<'_, '_, '_> {
                     link => link,
                 };
                 let mut copied = caller;
-                // preserves object/seeds/PREV and both
-                // target arrays. then swap ROOT and FROM.
                 copied.root = link(caller.from);
                 copied.from = link(caller.root);
                 copied.prev = link(caller.prev);
@@ -901,8 +843,6 @@ impl Renderer<'_, '_, '_> {
                 .evaluator()?
                 .event_scopes(at)
                 .map_err(|why| why.to_string())?;
-            // invokes the option's description at indent 0 in
-            // the existing description session, then trims the result.
             return Ok(trim_description(&self.group(body, selected, 0)).to_owned());
         }
         Ok(String::new())
@@ -915,8 +855,6 @@ impl Renderer<'_, '_, '_> {
                 let Some(class) = self.effect_class(item) else {
                     continue;
                 };
-                // visits self and native children;
-                // tests the diagnostic token, not the operand.
                 if item
                     .keyword()
                     .and_then(|key| installed_content_core::effect_keys::registered(&key.folded()))
@@ -926,19 +864,14 @@ impl Renderer<'_, '_, '_> {
                 }
                 pending.push(self.effect_children(item));
                 if class.vtable == 0x1428527b0 {
-                    // also visits all attached alternatives.
                     for branch in branches {
                         pending.push(self.effect_children(branch));
                     }
                 } else if class.vtable == 0x142A32320 {
-                    // visits each embedded member
-                    // group, without evaluating weights or modifier triggers.
                     for member in installed_content_core::effect_keys::random_list_members(item)? {
                         pending.push(installed_content_core::effect_keys::random_member_fields(&member));
                     }
                 }
-                // A scripted effect inherits children; its template
-                // is expanded only by description, not this scan.
             }
         }
         Ok(false)

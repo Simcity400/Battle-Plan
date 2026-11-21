@@ -2,8 +2,6 @@ use super::*;
 use crate::event_feed_history::recovery::PreparedOwner;
 use engine_decisions::{cdecision, cdecision_cooldown, cdecision_status, decision_runtime};
 
-/// The live run's owner/emission shape, with synthetic definitions, members,
-/// random counters, candidates, ignored tokens and nonempty scope graphs.
 fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
     let mut image = owners_image(1);
     let roster = 0x2000000;
@@ -120,7 +118,6 @@ fn populated_recovery(countries: usize) {
             assert!(demand[0] > preceding);
             crate::event_feed_observer::presize_owner_for_test(&mut store, &plan);
             crate::test_support::with_allocations_denied(|| {
-                // Publication needs neither heap growth nor another native read.
                 store
                     .publish_owner(&NoReads, BASE, 7, 1, &mut plan)
                     .unwrap();
@@ -215,7 +212,6 @@ fn prepared_owner_shortage_keeps_local_control_space_and_never_publishes_a_prefi
             .all(|(_, reason)| reason == OWNER_STORAGE.as_bytes())
     );
     assert!(store.decisions.slot(0xe8000).is_none());
-    // Keep this receipt outstanding: the new budget must include its entries.
     let retained = store.entries.len();
     image.d(GAME + cgame_state::CURRENT_HOUR, 2);
     store
@@ -284,8 +280,6 @@ fn older_pressure_does_not_refuse_a_smaller_selected_owner_that_fits() {
     let country = CENSUS[1];
     let work = store.owner_work(&image, BASE, 7, GAME, 1, country);
     let mut plan = PreparedOwner::read(&image, BASE, 7, GAME, 1, country, work).unwrap();
-    // Older pressure must still reach presize, but must not refuse this
-    // owner while that larger offer is not available.
     store.entry_demand = store.capacity() + 1;
     store.token_demand = store.script_tokens.len() + 1;
     store.scope_demand = store.script_scopes.len() + 1;
@@ -350,14 +344,10 @@ fn consecutive_private_owner_failures(tokens_tight: bool) {
         .prepare_boundary(boundary(7, HOUR), Some((&image, BASE)))
         .unwrap();
     let epoch = store.begin_recovery(7, GAME).unwrap();
-    // Keep the healthy publication unacknowledged. Production prepares just
-    // one registry of the next owner; its other registry is still owed.
     let mut selected = [false; 2];
     selected[OwnerRegistry::Decisions as usize] = true;
     let mut plan = PreparedOwner::read(&image, BASE, 7, GAME, HOUR, owners[1], selected).unwrap();
     let demand = store.prepare_owner_demand(&plan);
-    // Model an offer with exactly the admitted budget, not allocator or
-    // presize headroom. The old selected-only budget leaves one control.
     let capacity = if tokens_tight {
         store.capacity()
     } else {
@@ -385,11 +375,7 @@ fn consecutive_private_owner_failures(tokens_tight: bool) {
             let mut selected = [false; 2];
             selected[registry as usize] = true;
             let before = store.entries.len();
-            // Both the private transaction and a larger offered allocation
-            // fail consecutively, without another successful installation.
             store.entry_demand = capacity + 1;
-            // Separate scopes: the presize helper's own denial guard clears
-            // denial on exit, so the refusal needs a fresh one.
             crate::test_support::with_allocations_denied(|| {
                 assert!(
                     PreparedOwner::read(&image, BASE, 7, GAME, HOUR, country, selected,).is_err()
@@ -460,7 +446,6 @@ fn consecutive_private_failures_keep_census_sized_token_controls_after_a_near_fu
 fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_controls() {
     let _globals = crate::event_feed_observer::test_globals();
     let (mut image, owners) = populated_cohort(8);
-    // Initially only the first live owner was observed by the sizing census.
     collector_primitives::country_slots::note_slots(2);
     let mut store = census_store(64);
     store
@@ -483,7 +468,6 @@ fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_
         .prepare_boundary(boundary(7, 2), Some((&image, BASE)))
         .unwrap();
     let epoch = store.begin_recovery(7, GAME).unwrap();
-    // The census expands before a successful larger offer can be installed.
     collector_primitives::country_slots::note_slots(owners.len() + 1);
     let mut plan = PreparedOwner::read(&image, BASE, 7, GAME, 2, owners[1], [true; 2]).unwrap();
     crate::test_support::with_allocations_denied(|| {
@@ -498,8 +482,6 @@ fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_
         crate::test_support::with_allocations_denied(|| {
             assert!(PreparedOwner::read(&image, BASE, 7, GAME, 2, country, [true; 2]).is_err());
         });
-        // The presize helper has its own installation-denial guard. Keep
-        // each later denial separate: those guards are not nestable.
         crate::test_support::with_allocations_denied(|| {
             crate::event_feed_observer::presize_owner_for_test(&mut store, &plan);
         });
@@ -515,14 +497,10 @@ fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_
     let written = store.entries.len();
     let rejected = store.counts.rejected;
     crate::test_support::with_allocations_denied(|| {
-        // Both of this owner's controls were already emitted. A full store
-        // must not turn their repeats into new rejections or spend controls.
         store.refuse_owner_preparation(&image, BASE, 7, 2, owners[1], [true; 2]);
     });
     assert_eq!(store.entries.len(), written);
     assert_eq!(store.counts.rejected, rejected);
-    // A control without room was not marked sent: after an off-lease offer,
-    // another failed private preparation can still emit both named refusals.
     crate::event_feed_observer::presize_owner_for_test(&mut store, &plan);
     let last = *owners.last().unwrap();
     crate::test_support::with_allocations_denied(|| {
@@ -579,8 +557,6 @@ fn ordinary_occurrences_cannot_spend_reserved_control_entries_or_token_bytes() {
         crate::test_support::with_allocations_denied(|| {
             let result = store.script_known(&NoReads, BASE, 7, 1, occurrence);
             if tokens_tight {
-                // The native occurrence remains, with its existing named
-                // token shortage, rather than overwriting control bytes.
                 assert!(result.is_ok());
                 assert_eq!(store.entries.len(), entries + 1);
                 assert!(

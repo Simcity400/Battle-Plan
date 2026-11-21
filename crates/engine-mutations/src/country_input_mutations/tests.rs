@@ -2,11 +2,8 @@ use super::*;
 
 use crate::memory::SliceMemory;
 
-/// Where the fixture's bytes start: the game state singleton slot.
 const START: usize = 0x1000_0000;
-/// The module base that puts the singleton at [`START`].
 const BASE: usize = START - cgame_state::SINGLETON_RVA.0;
-/// Countries 7 (slot 1), 9 (slot 2) and 11 (slot 3).
 const COUNTRY: [usize; 3] = [START + 0x1000, START + 0x2000, START + 0x3000];
 const DIPLOMACY: [usize; 2] = [START + 0x5000, START + 0x6000];
 const STATUS: usize = START + 0x8200;
@@ -21,16 +18,12 @@ fn put_u32(bytes: &mut [u8], address: usize, value: u32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-/// A native array header: data, capacity and count.
 fn put_array(bytes: &mut [u8], address: usize, data: usize, count: u32) {
     put_u64(bytes, address, data as u64);
     put_u32(bytes, address + 8, count);
     put_u32(bytes, address + 12, count);
 }
 
-/// The game state, its country table and links (7 -> slot 1, 9 and the
-/// alias 30 -> slot 2, 11 -> slot 3; 31 unlinked), each country's id and
-/// diplomacy, and one object per receiver kind.
 fn world() -> Vec<u8> {
     let mut bytes = vec![0_u8; 0x10000];
     let state = START + 0x100;
@@ -63,7 +56,6 @@ fn world() -> Vec<u8> {
         DIPLOMACY[0] + cdiplomacy_status::COUNTRY,
         COUNTRY[0] as u64,
     );
-    // A relation status owned by country 7, a war between 7 and the alias of 9.
     put_u64(
         &mut bytes,
         START + 0x7000 + crelation_status::DIPLOMACY_STATUS,
@@ -113,7 +105,6 @@ fn world() -> Vec<u8> {
         START + 0x8a00 + cnational_focus_progress::COUNTRY,
         COUNTRY[2] as u64,
     );
-    // A project owned through the alias of country 9.
     put_u32(&mut bytes, START + 0x8c00 + nproject_cproject::OWNER, 30);
     put_u32(
         &mut bytes,
@@ -132,8 +123,6 @@ fn named(bytes: &[u8], receiver: Receiver, first: usize, second: usize) -> (bool
     (named, ids)
 }
 
-/// One patch per site, and the sites named beside their layouts keep those
-/// addresses.
 #[test]
 fn sites_are_distinct_and_agree_with_their_layout_constants() {
     let mut rvas: Vec<Rva> = MUTATIONS.iter().map(|(site, _, _)| site.rva).collect();
@@ -158,9 +147,6 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
         "project_database_resync"
     );
     assert_eq!(site("add_stability").0.rva, ccountry::ADD_STABILITY_RVA);
-    // The licensed variants a technology's licence modifier reads change
-    // on registration, extension and removal; the faction's member order on
-    // a leader change.
     for name in [
         "register_license",
         "license_removal",
@@ -176,9 +162,6 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
         site("research_completed").0.rva,
         ctechnology_status::RESEARCH_COMPLETED_RVA
     );
-    // The tree rebuild reaches both families and the counter rows (the
-    // pride of the fleet and attack modifiers), the war body the stability
-    // and counter rows; the rest one each.
     assert_eq!(
         site("recalculate_modifiers").2,
         Tables::BOTH.with(Tables::COUNTERS).with(Tables::VISIBILITY)
@@ -217,11 +200,8 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
             "{}",
             site.name
         );
-        // A technology row writer is a research writer.
         assert!(!tables.technologies || tables.research, "{}", site.name);
     }
-    // The writers of a technology's level, classifier, applied bonuses and
-    // roster reach its row; the design team and XP boost write none of it.
     for name in [
         "set_technology",
         "set_level",
@@ -255,8 +235,6 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
         Receiver::CompletedTechnology.own(),
         Receiver::TechnologyStatus
     );
-    // Levels and classifiers are read by every country sharing research:
-    // the assignment and the fresh initialization re-classify too.
     for name in [
         "set_level",
         "reset_research",
@@ -278,8 +256,6 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
     }
 }
 
-/// The appearance and counter writers reach only their own table, and no
-/// earlier site writes an appearance field.
 #[test]
 fn appearance_and_counter_sites_reach_their_table() {
     let names = |range: std::ops::Range<usize>| -> Vec<&'static str> {
@@ -310,8 +286,6 @@ fn appearance_and_counter_sites_reach_their_table() {
             "reload_mio_policies",
         ]
     );
-    // Later sent-expeditionary writers reach counters independently of the
-    // contiguous counter range; no later writer reaches appearance.
     assert_eq!(COUNTER_SITES.end, FACTION_SHARING_BASE);
     assert_eq!(FACTION_SHARING_BASE + 1, WEATHER_WRITERS.start);
     for (index, (site, receiver, tables)) in MUTATIONS.iter().enumerate().skip(COUNTER_SITES.end) {
@@ -329,8 +303,6 @@ fn appearance_and_counter_sites_reach_their_table() {
     for (site, _, tables) in &MUTATIONS[COUNTER_SITES] {
         assert_eq!(*tables, Tables::COUNTERS, "{}", site.name);
     }
-    // Nothing before them writes the appearance fields: what modifier
-    // recalculation writes at the UI colour's offset is a static modifier slot.
     for (site, _, tables) in &MUTATIONS[..APPEARANCE_SITES.start] {
         assert!(!tables.appearance, "{}", site.name);
     }
@@ -341,8 +313,6 @@ fn appearance_and_counter_sites_reach_their_table() {
     const { assert!(!Tables::ALL.intel_networks) };
 }
 
-/// A link id names the object its slot holds, an alias its target's id; a
-/// zero, unlinked or out-of-range id names none.
 #[test]
 fn links_name_the_native_id_of_their_object() {
     let bytes = world();
@@ -358,7 +328,6 @@ fn links_name_the_native_id_of_their_object() {
     assert_eq!(of_link(&memory, BASE + 8, 7), None, "no game state");
 }
 
-/// Each receiver names the country its native layout leads to.
 #[test]
 fn receivers_name_their_countries() {
     let bytes = world();
@@ -387,9 +356,7 @@ fn receivers_name_their_countries() {
             "{receiver:?}"
         );
     }
-    // Another air statistic column names nothing and needs no read.
     assert_eq!(named(&bytes, Receiver::Interception, 0, 2), (true, vec![]));
-    // Every, a null receiver or a missing owner names none.
     assert_eq!(
         named(&bytes, Receiver::Every, COUNTRY[0], 0),
         (false, vec![])
@@ -409,10 +376,6 @@ fn receivers_name_their_countries() {
     assert!(!named(&bytes, Receiver::TechnologyStatus, START + 0xf000, 0).0);
 }
 
-/// The new receivers name a diplomacy's country, the subject rebuild's
-/// country and overlord, a state's old and new owner or controller and a
-/// core's country; a nonpositive link names none, an unlinked positive one
-/// fails the call.
 #[test]
 fn diplomacy_state_and_tag_receivers_name_their_countries() {
     let mut bytes = world();
@@ -422,12 +385,10 @@ fn diplomacy_state_and_tag_receivers_name_their_countries() {
         named(&bytes, Receiver::DiplomacyStatus, DIPLOMACY[0], 0),
         (true, vec![7])
     );
-    // No overlord: the country alone.
     assert_eq!(
         named(&bytes, Receiver::Subjects, DIPLOMACY[0], 0),
         (true, vec![7])
     );
-    // An overlord through the alias of 9.
     put_u32(&mut bytes, DIPLOMACY[0] + cdiplomacy_status::OVERLORD, 30);
     assert_eq!(
         named(&bytes, Receiver::Subjects, DIPLOMACY[0], 0),
@@ -447,8 +408,6 @@ fn diplomacy_state_and_tag_receivers_name_their_countries() {
         named(&bytes, Receiver::Subjects, DIPLOMACY[0], 0),
         (true, vec![7])
     );
-    // A state owned by 11 and controlled through the alias of 9 passes to 7;
-    // EDX alone is the argument.
     put_u32(&mut bytes, state + cstate::OWNER, 11);
     put_u32(&mut bytes, state + cstate::CONTROLLER, 30);
     let edx = 0xdead_0000_0000_0007_usize;
@@ -460,7 +419,6 @@ fn diplomacy_state_and_tag_receivers_name_their_countries() {
         named(&bytes, Receiver::StateController, state, edx),
         (true, vec![9, 7])
     );
-    // An unowned state given to nobody names none and fails nothing.
     put_u32(&mut bytes, state + cstate::OWNER, 0);
     assert_eq!(
         named(&bytes, Receiver::StateOwner, state, 0),
@@ -471,7 +429,6 @@ fn diplomacy_state_and_tag_receivers_name_their_countries() {
         (false, vec![])
     );
     assert!(!named(&bytes, Receiver::StateOwner, 0, 7).0);
-    // A core tag pointer in RDX.
     put_u32(&mut bytes, tag, 30);
     assert_eq!(
         named(&bytes, Receiver::TagPointer, state, tag),
@@ -486,8 +443,6 @@ fn diplomacy_state_and_tag_receivers_name_their_countries() {
     assert!(!named(&bytes, Receiver::DiplomacyStatus, 0, 0).0);
 }
 
-/// A war with an unlinked endpoint names its first country but not the
-/// call: both endpoints' flags change.
 #[test]
 fn a_war_endpoint_that_does_not_link_names_every_country() {
     let mut bytes = world();
@@ -497,9 +452,6 @@ fn a_war_endpoint_that_does_not_link_names_every_country() {
     assert_eq!(ids, vec![7]);
 }
 
-/// A level writer names its own country, every member of each group on its
-/// sharing roster and every member of its faction; an entry of another
-/// class or an unlinked member names none.
 #[test]
 fn shared_levels_name_every_country_sharing_research() {
     let mut bytes = world();
@@ -508,13 +460,11 @@ fn shared_levels_name_every_country_sharing_research() {
         ids.dedup();
         (named, ids)
     };
-    // No roster and no faction: the country alone.
     put_array(&mut bytes, STATUS + SHARING_ROSTER, 0, 0);
     assert_eq!(
         named(&bytes, Receiver::SharedTechnologyStatus, STATUS, 0),
         (true, vec![9])
     );
-    // A group of 7 and 11.
     put_array(&mut bytes, STATUS + SHARING_ROSTER, START + 0x9000, 1);
     put_u64(&mut bytes, START + 0x9000, (START + 0x9100) as u64);
     put_u64(
@@ -551,7 +501,6 @@ fn shared_levels_name_every_country_sharing_research() {
         named(&bytes, Receiver::ResearchSlot, START + 0x8400, 0),
         (true, vec![9])
     );
-    // A faction of 9 and 11, with an empty group.
     put_array(&mut bytes, START + 0x9100 + GROUP_MEMBERS, 0, 0);
     put_u64(
         &mut bytes,
@@ -570,7 +519,6 @@ fn shared_levels_name_every_country_sharing_research() {
         sorted(named(&bytes, Receiver::SharedTechnologyStatus, STATUS, 0)),
         (true, vec![9, 11])
     );
-    // A member that does not link, or a roster entry of another class.
     put_array(
         &mut bytes,
         START + 0x9100 + GROUP_MEMBERS,
@@ -584,7 +532,6 @@ fn shared_levels_name_every_country_sharing_research() {
     assert!(!named(&bytes, Receiver::SharedTechnologyStatus, STATUS, 0).0);
 }
 
-/// slot synchronization is compared by the slot roster header it rewrites.
 #[test]
 fn the_slot_roster_header_reads_from_the_status() {
     let mut bytes = world();
@@ -599,8 +546,6 @@ fn the_slot_roster_header_reads_from_the_status() {
     assert_eq!(slot_roster(&memory, START + 0xfff8), None);
 }
 
-/// unit-leader removal is compared by the two leader roster counts it
-/// decrements, army and navy.
 #[test]
 fn the_leader_roster_counts_read_both_rosters() {
     let mut bytes = world();
@@ -618,9 +563,6 @@ fn the_leader_roster_counts_read_both_rosters() {
     assert_eq!(unit_leader_counts(&memory, START + 0xfff8), None);
 }
 
-/// The faction sharing base setter names every member of the group's
-/// faction and each raw id on its member array; without a faction it names
-/// none, so the call reads every country.
 #[test]
 fn a_faction_sharing_base_names_its_faction_members() {
     let mut bytes = world();
@@ -651,7 +593,6 @@ fn a_faction_sharing_base_names_its_faction_members() {
     );
     assert_eq!(MUTATIONS[FACTION_SHARING_BASE].1, Receiver::FactionSharing);
     assert_eq!(MUTATIONS[FACTION_SHARING_BASE].2, Tables::RESEARCH);
-    // The detour compares the base and the member array pointer.
     let memory = SliceMemory {
         base: START,
         bytes: &bytes,
@@ -665,12 +606,8 @@ fn a_faction_sharing_base_names_its_faction_members() {
     assert_ne!(faction_sharing_base(&memory, group), Some(before));
 }
 
-/// Country 9's sharing group of 7 and 11, its technology roster [T1, T2,
-/// T3] (T2 precedes T3, T0 outside the roster precedes T2), partner 7
-/// researching T3's template and partner 11 T1's: the technologies.
 fn partner_world() -> (Vec<u8>, [usize; 4]) {
     let mut bytes = world();
-    // Country 9's sharing group of 7 and 11.
     put_array(&mut bytes, STATUS + SHARING_ROSTER, START + 0x9000, 1);
     put_u64(&mut bytes, START + 0x9000, (START + 0x9100) as u64);
     put_u64(
@@ -686,7 +623,6 @@ fn partner_world() -> (Vec<u8>, [usize; 4]) {
     );
     put_u32(&mut bytes, START + 0x9200, 7);
     put_u32(&mut bytes, START + 0x9204, 11);
-    // Country 9's roster [T1, T2, T3]; T0, outside it, precedes T2.
     let [t0, t1, t2, t3] = [0xa800, 0xa100, 0xa300, 0xa500].map(|at| START + at);
     put_array(
         &mut bytes,
@@ -706,7 +642,6 @@ fn partner_world() -> (Vec<u8>, [usize; 4]) {
     put_u64(&mut bytes, START + 0xa710, t3 as u64);
     put_array(&mut bytes, t0 + TECHNOLOGY_DEPENDENTS, START + 0xa720, 1);
     put_u64(&mut bytes, START + 0xa720, t2 as u64);
-    // Partner 7 researches database index 3, partner 11 index 1.
     for (country, at, database) in [(COUNTRY[0], 0xb000, 3), (COUNTRY[2], 0xc000, 1)] {
         let status = START + at;
         put_u64(
@@ -745,25 +680,15 @@ fn sorted((named, mut ids): (bool, Vec<u32>)) -> (bool, Vec<u32>) {
     (named, ids)
 }
 
-/// A technology write marks only the sharing partners whose rows it can
-/// change: a partner reads this country's instance at each template it
-/// researches (its level) and that instance's predecessors' classifiers,
-/// which propagate rewrites for the written technology and its transitive
-/// dependents. Country 9 owns T1, T2 and T3 (T2 precedes T3); partner 7
-/// researches T3's template, partner 11 T1's. Before, every write marked
-/// both partners.
 #[test]
 fn a_technology_write_marks_only_the_partners_it_can_change() {
     let (mut bytes, [t0, t1, t2, t3]) = partner_world();
     let shared =
         |bytes: &[u8], technology| sorted(named(bytes, Receiver::SharedTechnology, technology, 0));
-    // A predecessor of what 7 reads, or a transitive one: 7 only.
     assert_eq!(shared(&bytes, t2), (true, vec![7, 9]));
     assert_eq!(shared(&bytes, t0), (true, vec![7, 9]));
-    // The instance 7 or 11 reads itself.
     assert_eq!(shared(&bytes, t3), (true, vec![7, 9]));
     assert_eq!(shared(&bytes, t1), (true, vec![9, 11]));
-    // Completion and assignment name their technology.
     assert_eq!(
         sorted(named(&bytes, Receiver::CompletedTechnology, STATUS, t1)),
         (true, vec![9, 11])
@@ -791,13 +716,10 @@ fn a_technology_write_marks_only_the_partners_it_can_change() {
         )),
         (true, vec![7, 9, 11])
     );
-    // A partner whose research does not read: every partner.
     put_u64(&mut bytes, COUNTRY[2] + ccountry::TECHNOLOGY_STATUS, 0);
     assert_eq!(shared(&bytes, t2), (true, vec![7, 9, 11]));
 }
 
-/// A research slot that does not read is not an idle one: partner 11's slot outside readable
-/// memory marks every partner, where an idle slot marks only those whose reads the write reaches.
 #[test]
 fn an_unreadable_research_slot_marks_every_partner() {
     let (mut bytes, [_, t1, _, _]) = partner_world();
@@ -810,7 +732,6 @@ fn an_unreadable_research_slot_marks_every_partner() {
     assert_eq!(shared(&bytes), (true, vec![9]));
 }
 
-/// The weather writers name no country and reach only the weather count.
 #[test]
 fn weather_writers_reach_only_the_weather_count() {
     for index in WEATHER_WRITERS {
@@ -823,12 +744,6 @@ fn weather_writers_reach_only_the_weather_count() {
     const { assert!(!Tables::ALL.weather) };
 }
 
-/// Propagation also reclassifies a written technology's listeners through
-/// their technology observer. Dependency-list rebuilding makes a technology
-/// listen when its template names a prerequisite or exclusion, without making
-/// it a dependent. T4, in no dependent list, has T2 listening: writing T4 can
-/// re-classify T2, the predecessor of what partner 7 reads. Before, it
-/// marked only its own country.
 #[test]
 fn a_write_marks_the_partners_reading_its_listeners() {
     let (mut bytes, [_, _, t2, _]) = partner_world();
@@ -852,10 +767,8 @@ fn a_write_marks_the_partners_reading_its_listeners() {
         sorted(named(&bytes, Receiver::CompletedTechnology, STATUS, t4)),
         (true, vec![7, 9])
     );
-    // A listener of another kind: every partner.
     put_u64(&mut bytes, t2 + ctechnology::LISTENER, 0x1234);
     assert_eq!(shared(&bytes, t4), (true, vec![7, 9, 11]));
-    // A pending listener container: every partner.
     put_u64(
         &mut bytes,
         t2 + ctechnology::LISTENER,
@@ -869,8 +782,6 @@ fn a_write_marks_the_partners_reading_its_listeners() {
     assert_eq!(shared(&bytes, t4), (true, vec![7, 9, 11]));
 }
 
-/// The progress adder marks its technology's own country, and is the last
-/// site.
 #[test]
 fn research_progress_marks_its_technology_country() {
     let (site, receiver, tables) = &MUTATIONS[RESEARCH_PROGRESS];

@@ -1,0 +1,13 @@
+# 0402. Preserve agency observations at their native scope and order
+
+The agency client buffer covers only the clock's viewing country. Its publication counter rejects a changing read, and the operation buckets follow native visit order from completed operations through offers. An unresolved state reference differs from a resolved operation with no state. The speed modifier key is resolved when an offer needs it and may be held by the caller. A failure in optional duration or a positive state index outside storage leaves the other observations available.
+
+The country operation-manager walk checks the owner backlink and each instance because the root vtable is unavailable. It reads retained descriptions and operation parts with each country pass. Off-thread sizing uses the same occurrence walk and measures omitted rows without treating the result as a validated live payload. Native membership and retention of the instance can change when an operation reaches completion.
+
+Operation-token maps census the entire native slot range, including empty slots, and stop before the separate end sentinel. Static empty storage contributes no required slot reads. Slots must pass their occupancy and key validation, with signed vector counts and capacity checked before copying. A token is a lexer ordinal. Empty vectors, raw country aliases, repeated tokens and order remain observable. When a target's vector cannot fit, the entire row is counted as omitted.
+
+Strategic-operative objects are keyed by their country slot, with an independently retained raw owner reference. The saved control-trade and diplomatic-pressure maps belong to the target country and key entries by the influencing country. Control-trade values and mission or operation activity keep signed fixed5. Pressure keeps separate signed fixed15 acceptance and tension. Save order and live map extent are preserved. A wrong probe distance or unresolved key withholds the census.
+
+Propaganda history uses the native logical ring and its two saved fixed15 channels. A spare slot distinguishes its endpoints, and capacity comes from the live header even with mods. A daily append supplies the new last value, with previous entries carried from the proved history. Unused capacity and unsaved channels do not become recording inputs.
+
+[Agency buffers](../../crates/engine-intelligence/src/agency_operation_buffers.rs) · [Operation manager](../../crates/engine-intelligence/src/ccountry_operation_manager.rs) · [Operation tokens](../../crates/engine-intelligence/src/ccountry_operation_token_manager.rs) · [Strategic operatives](../../crates/engine-intelligence/src/strategic_operatives.rs) · [Propaganda history](../../crates/engine-intelligence/src/propaganda_history.rs)

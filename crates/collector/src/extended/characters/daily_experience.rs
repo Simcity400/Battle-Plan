@@ -1,10 +1,9 @@
-//! Daily residual XP, shared by the rotating character acquisition jobs.
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
 
-type Key = (usize, u32, u32); // role pointer, character and full leader ID
+type Key = (usize, u32, u32);
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Default)]
@@ -12,10 +11,7 @@ pub(super) struct Store {
     scope: (usize, usize),
     daily: bool,
     pub(super) generation: u64,
-    /// Each role's value, whether this capture saw it, and its position when it was put.
     entries: Vec<(Key, i64, bool, u32)>,
-    /// Entries before this are sorted by key; the rest were put since, in put order, so a
-    /// refresh that puts every role costs one sort rather than an insertion each.
     sorted: usize,
     charge: Option<crate::raw_memory::Charge>,
 }
@@ -31,8 +27,6 @@ pub(super) static STORE: Mutex<Store> = Mutex::new(Store {
 
 impl Store {
     pub(super) fn forget(&mut self) {
-        // Fresh boundaries and the spare left during an acquisition must
-        // certify nothing, including after a rejected or unwound worker.
         self.scope = (0, 0);
         self.daily = false;
         self.generation = 0;
@@ -41,9 +35,6 @@ impl Store {
     }
 
     pub(super) fn begin(&mut self, scope: (usize, usize), full: bool, daily: bool) {
-        // Consecutive fresh captures can still use the ordinary exact writer
-        // certificates. Returning from held daily samples must revoke them:
-        // an off-slot row may contain held XP under a current certificate.
         if full || self.scope != scope || self.generation == 0 || daily && !self.daily {
             self.entries.clear();
             self.sorted = 0;
@@ -73,10 +64,7 @@ impl Store {
             (self.entries[at].1, self.entries[at].2) = (value, true);
             return;
         }
-        // Cache storage is advisory: losing it never discards an
-        // already acquired value. An uncached role reads fresh.
         if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.entries, 1)).is_err() {
-            // A copy put earlier this capture still takes the new value.
             if let Some(entry) = self.entries[self.sorted..].iter_mut().rfind(|entry| entry.0 == key) {
                 entry.1 = value;
             }
@@ -91,7 +79,6 @@ impl Store {
         }
     }
 
-    /// Sorts the entries put since, in place, keeping the last value put for a key.
     fn settle(&mut self) {
         if self.sorted == self.entries.len() {
             return;
@@ -109,9 +96,6 @@ impl Store {
 
     pub(super) fn observe_prepared(&mut self, log: &crate::raw::RawLog<{ super::N }>) {
         self.settle();
-        // A completed fresh program has the same authenticated identities and
-        // field geometry as the pass that prepared it. Keep its supplying XP
-        // bytes too, even though it did not enter copy_unit again.
         for span in log
             .spans
             .iter()
@@ -272,7 +256,6 @@ mod tests {
                 .components[0],
             77
         );
-        // A different full identity at the same pointer cannot inherit XP.
         world.patch(army + cunit_leader::ID, &99_u32.to_le_bytes());
         let guard = DailyReadGuard {
             world: &world,
@@ -325,7 +308,7 @@ mod tests {
         let mut rejected = Captured::with_capacities(&capacities());
         for (hour, full, value) in [(12, false, -17_i64), (13, true, i64::MIN)] {
             world.patch(pointer + cunit_leader::EXPERIENCE, &value.to_le_bytes());
-            rejected.prepare_hour(hour, full); // No native acquisition follows.
+            rejected.prepare_hour(hour, full);
             let recovered = acquire(&world, &mut job, false, false);
             assert_eq!(xp(&recovered, 2_000_005), value);
         }
@@ -365,7 +348,7 @@ mod tests {
         assert_eq!(store.get(key), Some(i64::MIN));
         store.finish(true);
         store.begin((1, 2), false, false);
-        store.finish(true); // absent this hour
+        store.finish(true);
         store.begin((1, 2), false, false);
         assert_eq!(store.get(key), None);
         store.put(key, i64::MAX);

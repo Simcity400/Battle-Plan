@@ -1,10 +1,6 @@
-//! The map's tables: what the viewer reads of a native recording for its map.
 
 use replay_data::rows::TableId;
 
-/// Native map inputs and shared authored-trigger and hover-description operands.
-/// The source census in the tests checks the viewer and its shared recorded-input readers for
-/// missing tables.
 pub fn selected_tables() -> &'static [TableId] {
     static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
         const NATIVE: &[TableId] = &[
@@ -170,8 +166,6 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::WeatherProvinces,
             TableId::WeatherRegions,
             TableId::WingEquipment,
-            // The map modes' layers (viewer_world::map::map_mode); Capitulation holds each
-            // country's owned war goals.
             TableId::Capitulation,
             TableId::FactionMembers,
             TableId::Factions,
@@ -182,9 +176,6 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::StateResistance,
             TableId::Subjects,
             TableId::WarRelations,
-            // The resources map mode's origins, icons and hover
-            // (viewer_foundation::resource_origins) and the trade routes and their convoys
-            // (viewer_world::map::trade_routes).
             TableId::ConvoyClients,
             TableId::CountryOilFactors,
             TableId::RegionalConvoyEfficiency,
@@ -194,8 +185,6 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::StateTemporaryResources,
             TableId::StrategicRegionWeights,
             TableId::TradeRoutes,
-            // Border-event and medal hovers describe authored effects through the
-            // shared renderer, including its country, operative and project scopes.
             TableId::AvailableAdvisors,
             TableId::CapturedOperativeReferences,
             TableId::DecisionRandomItems,

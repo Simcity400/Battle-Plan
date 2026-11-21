@@ -1,17 +1,12 @@
-//! CFront reference and its ordered CFrontSection roster. All reads are passive.
 use crate::{
     Memory, cfront_section, corder_instance, cpdx_array::Array, creference_registry, read,
     walk::Outcome,
 };
 use engine_sites::Rva;
 
-/// Front primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_23b0);
-/// Front reference type.
 pub const REFERENCE_TYPE: u32 = 66;
-/// Inherited full reference handle.
 pub const HANDLE: usize = 8;
-/// Section pointer array used to find the section requested by an order.
 pub const SECTIONS: usize = 0x58;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,20 +25,13 @@ pub struct Walk {
     pub required_handles: usize,
 }
 
-/// The fronts a plan census binds: its plans' valid front handles, sorted,
-/// in the caller's `handles[..count]`. The first phase of [`walk`]; it reads
-/// no memory, so it runs with the plans while [`walk_bound`] reads the
-/// fronts elsewhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bound {
-    /// The handle count, or the refusal [`walk`] reports before any read.
     pub result: Result<usize, &'static str>,
-    /// The plan count, which sizes the front rows; zero before it is known.
     pub plans: usize,
 }
 
 impl Bound {
-    /// No plan census: what [`walk`] reports for a refused one.
     pub const fn refused(reason: &'static str) -> Self {
         Self {
             result: Err(reason),
@@ -52,9 +40,6 @@ impl Bound {
     }
 }
 
-/// [`Bound`] for `plans`, the complete plan census `source` describes.
-/// Storage grows on the acquisition worker. Its refusals are [`walk`]'s
-/// first ones, in the same order.
 pub fn bound(plans: &[corder_instance::PlanRow], source: Outcome, handles: &mut Vec<u64>) -> Bound {
     let Outcome::Rows { len } = source else {
         return Bound::refused("fronts require a complete army order plan census");
@@ -82,10 +67,6 @@ pub fn bound(plans: &[corder_instance::PlanRow], source: Outcome, handles: &mut 
     }
 }
 
-/// Records every section of each distinct front bound by the complete order census.
-/// A failed order census cannot silently turn this into a partial front census.
-/// Storage grows on the acquisition worker from owned plans and admitted
-/// sections and pairs, without restarting acquisition.
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     memory: &impl Memory,
@@ -101,9 +82,6 @@ pub fn walk(
     walk_bound(memory, base, bound, handles, output, sections, pairs)
 }
 
-/// The second phase of [`walk`]: the fronts [`bound`] left in `handles`,
-/// read with their sections and pairs. Rows, refusals and their order are
-/// [`walk`]'s.
 pub fn walk_bound(
     memory: &impl Memory,
     base: usize,
@@ -137,8 +115,6 @@ pub fn walk_bound(
             if handle as u32 != REFERENCE_TYPE {
                 return Err("bound front reference type mismatch");
             }
-            // A missing front means no front. Destroyed fronts can leave stale
-            // order bindings until the orders are removed, so no row is emitted.
             let Some(pointer) = creference_registry::resolve(memory, base, handle)? else {
                 continue;
             };
@@ -196,7 +172,6 @@ pub fn walk_bound(
     })();
     report.outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
     if matches!(report.outcome, Outcome::Unavailable { .. }) {
-        // Failed native suffixes cannot request an allocation during recycling.
         report.required_sections = report.sections;
         report.required_pairs = report.pairs;
     }
@@ -416,9 +391,6 @@ mod tests {
         assert_eq!(r.outcome, Outcome::Rows { len: 1 });
         assert_eq!(r.required_handles, 2);
     }
-    /// Binding reads nothing, and reading the bound fronts after it gives
-    /// the single walk's rows, sections, pairs, demand and refusals, in its
-    /// order: the Orders job binds, the Fronts job reads.
     #[test]
     fn binding_reads_nothing_and_the_bound_walk_is_the_single_walk() {
         let m = image();
@@ -460,9 +432,6 @@ mod tests {
             );
         }
     }
-    /// Format-23 live session: 30 isolated hours failed with "bound front missing
-    /// from registry" while two orders still bound their destroyed fronts; both
-    /// orders were gone the next hour.
     #[test]
     fn stale_binding_to_a_destroyed_front_has_no_row_without_hiding_live_fronts() {
         let m = image();
@@ -485,7 +454,6 @@ mod tests {
         );
         assert_eq!(r.outcome, Outcome::Rows { len: 1 });
         assert_eq!(rows[0].front, HANDLE);
-        // An unreadable registry is still a failure, never an absent front.
         let mut broken = image();
         broken.u64(0x1008, 0x9000);
         assert!(matches!(

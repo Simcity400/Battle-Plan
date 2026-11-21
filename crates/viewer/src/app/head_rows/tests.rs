@@ -30,7 +30,6 @@ use viewer_foundation::{
 };
 
 const RECORDING: Recording = Recording { branch: 3 };
-/// The only string the rows name: every text field of a default row is empty.
 const STRINGS: [&[u8]; 1] = [b""];
 const SPEED: i32 = 3;
 
@@ -79,7 +78,6 @@ impl Pages for Recorded {
     }
 }
 
-/// `row` written as its codec puts it on the wire, at the first free slot.
 fn put<R: RowCodec>(store: &mut Store, table: TableId, slot: u32, row: &R) {
     let mut changes = store.table(table.index()).unwrap();
     if changes.slot(row.key()).is_none() {
@@ -111,7 +109,6 @@ fn put<R: RowCodec>(store: &mut Store, table: TableId, slot: u32, row: &R) {
     .unwrap();
 }
 
-/// `hours` hours from game hour 0: division 1 and the clock and features rows every hour.
 fn record(name: &str, hours: u32) -> Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -147,12 +144,10 @@ fn hourly() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }
 }
 
-/// A frame of no table, as today's frame reader holds an hour it has not decoded.
 fn nothing(hour: Hour) -> DecodedFrame {
     DecodedFrame { branch: RECORDING.branch, hour, tables: std::array::from_fn(|_| replay_frame::frame::not_selected()), metrics: Default::default() }
 }
 
-/// A playhead at hour 1 with a view store of its own, as the map side's is, and its handle.
 fn opened(name: &str) -> (Apart, Views) {
     let entry = open(record(name, 40), hourly()).unwrap();
     entry.set_capture(CaptureMode::Full);
@@ -163,12 +158,10 @@ fn opened(name: &str) -> (Apart, Views) {
     (fed, views)
 }
 
-/// Steps the store an hour.
 fn step(fed: &mut Apart, hour: Hour) {
     assert!(fed.drive(hour), "the store never reached hour {hour}");
 }
 
-/// The tables the store keeps views of for its readers.
 fn held(fed: &Apart) -> Vec<TableId> {
     fed.store().held().iter().map(|(table, _)| *table).collect()
 }
@@ -220,8 +213,6 @@ fn the_clock_speed_and_the_pickers_feature_read_rows_at_the_head() {
     let mut head_rows = HeadRows::default();
     let read = |head_rows: &mut HeadRows, head| (head_rows.map(head, Some(&today), MovementFrame::clock_speed), head_rows.map(head, Some(&today), crate::app::picker::four_buttons_at));
     assert_eq!(read(&mut head_rows, None), (Some(None), Some(true)), "off: today's frame records neither");
-    // Every table is held for the view store's readers, so the rows may be at the head at once:
-    // nothing while they load, and never today's frame's answer.
     assert_ne!(read(&mut head_rows, head), (Some(None), Some(true)), "never today's");
     let mut at_head = None;
     for hour in 2..38 {
@@ -243,8 +234,6 @@ fn a_click_on_an_hour_never_read_is_answered_over_that_hours_rows_once_they_arri
     head_rows.click_at(Some((RECORDING.branch, 1)));
     let click = |head_rows: &mut HeadRows| head_rows.clicks(head, None, |frame| (frame.hour, frame.complete::<replay_data::rows::tables::Divisions>().map(|rows| rows.len()).ok()));
     assert_eq!(click(&mut head_rows), None, "the store has made nothing of hour 1 for the click yet");
-    // Frames pass with the click held and nothing else asking, while the side posts hour 1 and
-    // steps on to hour 2.
     head_rows.end_frame(head);
     head_rows.end_frame(head);
     step(&mut fed, 1);
@@ -252,10 +241,6 @@ fn a_click_on_an_hour_never_read_is_answered_over_that_hours_rows_once_they_arri
     assert_eq!(click(&mut head_rows), Some((1, Some(1))), "answered over the rows of the hour it was made at, not the hour after");
 }
 
-/// The click reader makes the rows of no icon family the view cannot click: a view of the ground
-/// alone holds none of the unit counters', the bases', the land combats' or the naval missions'
-/// tables, not even one a click learned at another view, and a family it can click is held while
-/// it can.
 #[test]
 fn the_click_reader_makes_no_family_the_view_cannot_click() {
     use super::{Clickable, click_tables, hidden_families};
@@ -291,11 +276,6 @@ fn the_click_reader_makes_no_family_the_view_cannot_click() {
     assert!(!held(&fed).contains(&TableId::ArmyIconInputs), "let go once they cannot");
 }
 
-/// A click reading a table only a family the view cannot draw names is answered: a raid offer's
-/// details read ModifierDefinitions, the naval missions' table, in the raids mode where no naval
-/// mission is drawn. The table is held from the read that learns it until the view's families
-/// change. Before, the reader learned it and declared every table but it, so the click loaded at
-/// every frame and its window never opened.
 #[test]
 fn a_click_reading_a_hidden_familys_table_is_answered_and_the_table_goes_with_the_view() {
     use super::{Clickable, hidden_families};
@@ -325,10 +305,6 @@ fn a_click_reading_a_hidden_familys_table_is_answered_and_the_table_goes_with_th
     assert!(!held(&fed).contains(&TableId::ModifierDefinitions), "let go once the view's families change");
 }
 
-/// Playing, the side's rows run ahead of the hour the display shows: the store stands at 6 while
-/// the display shows 4. A reader the frame asks every frame (the clock's) answers from no later
-/// than 4, and a click made at 4 over 4's rows. Before, both read hour 6's rows: a division gone at
-/// 6 left the selection while the map still drew it.
 #[test]
 fn readers_at_the_head_answer_no_later_than_the_hour_the_display_shows() {
     let (mut fed, views) = opened("through");

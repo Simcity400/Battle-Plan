@@ -1,5 +1,3 @@
-//! Capture-source refusal expectations. Keep this fixture independent from the
-//! application map: changes to a runtime family must satisfy both contracts.
 use super::*;
 pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
     use TableId::*;
@@ -186,7 +184,6 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
         Family::History => sites!(air_history_mutations::MUTATIONS, s => s.rva),
         Family::Flags => sites!(script_flag_mutations::MUTATIONS, (s, _) => s.rva),
         Family::Buildings => sites!(building_mutations::MUTATIONS, (s, _) => s.rva),
-        // The final pool mutation is forwarded by CountryInputs.
         Family::AdvisorPools => {
             sites!(&advisor_pool_mutations::MUTATIONS[..advisor_pool_mutations::MUTATIONS.len()-1], (s, _) => s.rva)
         }
@@ -208,13 +205,11 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
             .map(|(s, _)| s.rva)
             .chain([raid_mutations::DAILY_CAPACITIES.rva])
             .collect(),
-        // Country reset mutations arrive through CountryInputs and Politics.
         Family::NavalTrees => {
             sites!(&naval_tree_mutations::MUTATIONS[naval_tree_mutations::COUNTRY_SITES..], s => s.rva)
         }
         Family::UnitLeaders => sites!(unit_leader_mutations::MUTATIONS, s => s.rva),
         Family::Census => sites!(census_mutations::MUTATIONS, s => s.rva),
-        // Group destruction arrives through Templates.
         Family::OrdersGroups => sites!(orders_group_mutations::MUTATIONS, (s, _) => s.rva),
         Family::OrderMembership => {
             sites!(engine_mutations::order_membership_mutations::MUTATIONS, (s, _) => s.rva)
@@ -548,7 +543,6 @@ fn omitted_or_wrong_family_native_site_is_a_registration_failure() {
             .kind,
         Kind::Registration
     );
-    // A real site's existence under another family does not authorize its construction here.
     let at = engine_events::equipment_destruction::SITES[0].rva;
     let (_, report) = installation::capture(|| installation::site(at.0));
     assert_eq!(
@@ -579,7 +573,6 @@ pub(crate) fn isolated(test: &str) -> bool {
     false
 }
 pub(crate) fn reset_session() {
-    // These exercises run on the recognised build's contracts.
     collector_primitives::build_gate::record(true, None);
     for flag in &FAILED {
         flag.store(false, Ordering::Release);
@@ -610,7 +603,6 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
     configure(&directory, 1, 1000);
     let status_path = directory.join("status.json");
     std::fs::write(&status_path, b"{}").unwrap();
-    // A reader without delete sharing outlasts every replace retry of the refusal's status.
     let reader = {
         use std::os::windows::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
@@ -810,8 +802,6 @@ fn later_shared_rollback_is_latched_before_an_earlier_reporting_error() {
     configure(&directory, 1, 1000);
     let progress = crate::progress::Progress::open(&directory);
     let stage = crate::progress::Stage::new(&progress, Family::AirLosses.name());
-    // Two publication reopens, then the successful air rollback reopen,
-    // followed by the failed bombing rollback reopen.
     shared::fail_reopens(3, 1);
     let mut air_reports = 0;
     let first = crate::runtime::install_attach_batch(
@@ -927,10 +917,6 @@ fn peace_finalizer_refusal_keeps_independently_polled_bids() {
     );
 }
 
-// Mixed capture packs have resident/polled siblings that survive hook loss.
-// Explicitly partition their actual TABLES metadata; adding a table to an
-// existing producer must update its containment contract, even if no family
-// was added. These exclusions are table-specific, never whole-pack defaults.
 #[test]
 fn every_hook_capture_producer_table_has_an_explicit_classification() {
     use TableId::*;
@@ -1027,7 +1013,6 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
         assert!(dependent.contains(&table.index()));
         covered.insert(table.index());
     }
-    // Core acquisition jobs publish these directly rather than via a TABLES pack.
     covered.extend([States.index(), Provinces.index(), WarRelations.index()]);
     assert!(
         unclassified.is_empty(),

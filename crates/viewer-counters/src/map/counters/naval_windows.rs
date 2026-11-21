@@ -1,11 +1,3 @@
-//! Retained naval map windows and mission-grid items.
-//!
-//! Windows belong to per-view pools. Only [`Pool::visible`] entries draw. Refused
-//! updates retain pool membership and placement while withholding draws until later
-//! writes repair every unknown part ([`Pool::refuse`] and [`Withheld`]).
-//! A prepared [`Plan`] contains ordered instance-independent writes. [`present`]
-//! applies requests and erasures, icon visibility and placement, grid appends and
-//! layout, at-sea counters, then one tick and the windows' draws.
 
 mod draw_parts;
 
@@ -97,42 +89,25 @@ pub(super) fn update_naval(
     }
 }
 
-/// The port items of each naval base province: each item's update, or why the province's roster
-/// is undecided (every item its base may have appended is then unknown, [`unknown_items`]).
 pub(super) type PortItems = BTreeMap<u32, Result<Vec<gui_windows::Update>, Cow<'static, str>>>;
 
-/// The owner of a naval combat icon: the province whose graphics own it and
-/// the combat it shows.
 pub(super) type CombatOwner = (u32, u64);
 
-/// A map icon's window is identified by its pool and slot. Each icon type has
-/// one pool whose slots start at 0, so combat and base pools share slot numbers.
-/// An icon's window, grids, items and refusal are all keyed by both pool and slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum IconSlot {
-    /// A naval combat icon (`MapIconPool::Combat`).
     Combat(SlotId),
-    /// A naval base icon (`MapIconPool::Base`).
     Base(SlotId),
-    /// A retained naval result icon (`MapIconPool::CombatResults`).
     Result(SlotId),
-    /// A strategic-region mission icon, with its own three item pools.
     Mission(SlotId),
 }
 
-/// The item pool of an icon's object a grid item comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum ItemPool {
-    /// A port item: the naval base icon's task-force grid wrapper.
     Port,
-    /// A combat tile in this side's wrapper.
     Tile(usize),
-    /// A convoy addition in the combat icon's pool, shared by both sides.
     Convoy,
 }
 
-/// A grid item's native identity: the icon whose object holds its pool, the pool, and its place
-/// in the pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct ItemKey {
     icon: IconSlot,
@@ -148,40 +123,23 @@ enum CarrierKey {
 type CarrierViews = HashMap<CarrierKey, air_grid::View>;
 type CarrierGrid = Result<Vec<air_grid::PreparedItem>, String>;
 
-/// A combat icon's anchor and stack place, assigned by its owner's placing pass
-/// and read each frame. A placing update whose place is undecided makes it
-/// unknown; an update that does not place the icon keeps its previous place.
 pub(super) const PLACE: &str = "its place in its province's icon stack";
 
-/// One naval counter at sea: its window and the refusal standing on it ([`Withheld`]), both
-/// destroyed with its source task force.
 #[derive(Debug)]
 struct Counter {
     instance: Instance,
-    /// The column whose last finalize placed this item.
     column: land::ColumnIdentity,
     withheld: Withheld<()>,
-    /// Its parts left unknown ([`Unknowns`]).
     unknown: Unknowns,
 }
 
-/// The parts of one window an update left unknown, by why, until an update writes them: the
-/// window's own memory of them, which its refusal state ([`Withheld`]) cannot be asked for. A
-/// drawable part stays in it while a Hide leaves it unseen ([`gui_windows::Update::hidden`]), so a
-/// later Show that keeps it ([`gui_windows::Update::kept`]) withholds the window again.
 type Unknowns = HashMap<&'static str, Cow<'static, str>>;
 
-/// What an update of a window leaves on its refusal state ([`Withheld`], [`Pool::refuse`]).
 pub(super) enum Mark {
     Refuse(Unknown, Cow<'static, str>),
     Rewrote(Rewrote),
 }
 
-/// The marks `update` leaves once applied (`applied`, why a call does not apply): a call that
-/// does not apply withholds the window until its windows are built again
-/// ([`Unknown::UntilRebuilt`]: every such failure is structural, the same on every update);
-/// otherwise its calls are all made, every part it wrote is known again, and every part it left
-/// unknown withholds the window under `prefix` and why until an update writes it.
 pub(super) fn marks(
     update: &gui_windows::Update,
     applied: Result<(), Cow<'static, str>>,
@@ -206,10 +164,6 @@ pub(super) fn marks(
     marks
 }
 
-/// [`marks`] for a window that keeps the parts left unknown in `unknown`: a part an update leaves
-/// unknown is remembered and one it writes forgotten; a drawable part it hides no longer withholds
-/// the window but is remembered (a Hide replaces no drawable), and one it shows while keeping the
-/// drawable withholds it again when that drawable is unknown.
 fn window_marks(
     update: &gui_windows::Update,
     applied: Result<(), Cow<'static, str>>,
@@ -240,9 +194,6 @@ fn window_marks(
     left
 }
 
-/// A pooled mission item whose updates the hour does not know (its icon's grids undecided, or
-/// its first build after such an update): the parts its update may leave as they were
-/// ([`gui_windows::MISSION_ITEM_KEPT`]) are unknown, by `why`, remembered in `unknown`.
 fn unknown_kept(unknown: &mut Unknowns, why: &str) -> Vec<Mark> {
     gui_windows::MISSION_ITEM_KEPT
         .into_iter()
@@ -254,7 +205,6 @@ fn unknown_kept(unknown: &mut Unknowns, why: &str) -> Vec<Mark> {
         .collect()
 }
 
-/// `marks` left on `withheld` for `key`.
 pub(super) fn mark<K: Clone + Eq + std::hash::Hash>(
     withheld: &mut Withheld<K>,
     key: &K,
@@ -268,8 +218,6 @@ pub(super) fn mark<K: Clone + Eq + std::hash::Hash>(
     }
 }
 
-/// What a naval base icon's update wrote: its glyph (none hides it), scale and mode, its port
-/// items, and the art and flags they drew with. The same again writes nothing new.
 struct BaseWritten {
     province: u32,
     glyph: Option<bases::NavalBaseIcon>,
@@ -278,28 +226,16 @@ struct BaseWritten {
     items: Result<Vec<gui_windows::Update>, Cow<'static, str>>,
     art: u64,
     countries: Option<Arc<Countries>>,
-    /// Written quiet with the inputs it was written with before ([`base_due`]).
     settled: bool,
-    /// The port items its grid had no slot for.
     overflow: usize,
 }
 
-/// A base's update this frame ([`base_due`]).
 #[derive(Debug, PartialEq)]
 enum BaseDue {
-    /// Its window and port items stand as they are, and so do the items its grid left out.
     Stands { overflow: usize },
-    /// It is written, settled when it was written quiet with the same inputs as last time.
     Write { settled: bool },
 }
 
-/// Whether a base stands this frame, from what it last wrote: `quiet` when nothing wrote its
-/// window or a port item its grid holds since their tick and none changes on its own, `same` when
-/// its update would be given what it last was and its roster is decided. It stands once written twice in a row with the
-/// same inputs, the second time quiet: one write can leave what the next identical write changes
-/// (a sprite replacement drops the frame written before it), the items take the grid's opacity
-/// before the tick that ends the window's fade, and an item's movement ends where its grid's
-/// finalization does not put it.
 fn base_due(written: Option<&BaseWritten>, quiet: bool, same: bool) -> BaseDue {
     match written {
         Some(written) if quiet && same && written.settled => BaseDue::Stands { overflow: written.overflow },
@@ -334,8 +270,6 @@ impl BaseWritten {
     }
 }
 
-/// Each base written with flags the same as `now`'s holds `now`, so [`BaseWritten::same`] finds
-/// them the same by pointer: the flags of each other table it held are compared once a frame.
 fn adopt_countries<'a>(written: impl Iterator<Item = &'a mut BaseWritten>, now: Option<&Arc<Countries>>) {
     let Some(now) = now else {
         return;
@@ -362,109 +296,54 @@ fn adopt_countries<'a>(written: impl Iterator<Item = &'a mut BaseWritten>, now: 
     }
 }
 
-/// One grid item's window.
 #[derive(Debug)]
 struct Item {
     instance: Instance,
     naval_convoy: Option<u64>,
     selectable: Option<(bool, Arc<[u64]>)>,
-    /// Its task force's owner slot, for the counter filter.
     owner: Option<u32>,
     port_tooltip: Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
-    /// Its template: `unit_counter_navy`, or the convoy addition's.
     tiny: bool,
-    /// Its parts left unknown ([`Unknowns`]).
     unknown: Unknowns,
 }
 
-/// What a grid of an icon's window holds, in the order its code appended them.
 type Held_ = Vec<ItemKey>;
 
-/// Every naval map-icon window of one map view.
 #[derive(Default)]
 pub struct Windows {
-    /// The registry and GUI viewport the windows were built from; another rebuilds them.
     built: Option<(NativeWindows, [i32; 2])>,
     combats: Option<Pool<CombatOwner>>,
     bases: Option<Pool<u32>>,
-    /// The retained result icons by province; `None` when the
-    /// content declares no result window.
     results: Option<Pool<u32>>,
-    /// Each live result icon's results from its province's last update in view.
     held_results: HashMap<u32, Vec<u64>>,
-    /// The same as [`Self::diverged_combats`] for the result pool.
     diverged_results: Option<Cow<'static, str>>,
     items: HashMap<ItemKey, Item>,
-    /// This frame's resources, named for the windows' kept layouts ([`resources_stamp`]).
     stamp: u64,
-    /// Each icon's grids (by the grid element's path) and the items they hold.
     grids: HashMap<(IconSlot, String), Held_>,
-    /// The refusals standing on the grid items' windows, the module's one refusal state
-    /// ([`Withheld`]; the icons' own stand in their pools, [`Pool::refuse`]).
     items_withheld: Withheld<ItemKey>,
-    /// The combat icons whose grids an update left undecided, by why: the game may have built
-    /// more pooled items in that update (the game allocates the
-    /// ones a wrapper lacks, then reuses them), so a mission item first built here afterwards has
-    /// the same unknown parts as one that existed ([`unknown_kept`]).
     grown: HashMap<IconSlot, Cow<'static, str>>,
-    /// Why the combat pool's slots may no longer be the game's: a request or erasure the view
-    /// cannot reproduce (an icon with no decided place never requested, a pass erased because it
-    /// cannot be planned, a combat whose resolution is undecided kept, the frame a growth
-    /// completes), after which the game's round robin may give an owner another
-    /// slot than the game's, with another history. Every slot allocated afterwards is unknown
-    /// ([`allocate`]); kept until the windows are built again.
     diverged_combats: Option<Cow<'static, str>>,
-    /// The same for the naval base pool (an unanchored base never requested, the pass erased
-    /// because it cannot be planned, the frame a growth completes).
     diverged_bases: Option<Cow<'static, str>>,
-    /// The combat icons whose pool slot's `bg_btn` frame this view established for their owner
-    /// since the slot was allocated to it: by an engaged rotation, or by the engaged index's
-    /// carried frame ([`kept_frame`]). Their pool's frame wins over the index's.
     framed: HashSet<CombatOwner>,
-    /// The combat icons whose last update left `bg_btn` as their pool slot held it (an
-    /// unengaged icon the pool established, or a spill-over icon), counted where they draw.
     pool_frame: HashSet<CombatOwner>,
-    /// Each live combat icon's anchor and stack place from the last update that
-    /// placed it, read each frame.
     placed: HashMap<CombatOwner, ([f32; 3], u32)>,
-    /// What each naval base icon's update last wrote, by slot ([`BaseWritten`]).
     base_written: HashMap<SlotId, BaseWritten>,
-    /// Naval counters at sea by their source task force.
     counters: HashMap<u64, Counter>,
     carrier_wings: CarrierViews,
-    /// The previous frame's shown unit columns, including columns with only land items.
     columns: BTreeMap<land::ColumnIdentity, usize>,
-    /// Last frame's counter membership; a returning item is appended again.
     held_counters: BTreeSet<u64>,
-    /// The naval mission icons and their entries ([`naval_missions::MissionView`]).
     pub(super) missions: naval_missions::MissionView,
     pub(super) air_missions: air_missions::View,
-    /// The view's clock at the last presented frame.
     last: Option<f32>,
-    /// Something ran at the last frame's tick ([`Instance::active`], [`Pool::active`]).
     active: bool,
-    /// Nothing ran at the last frame's tick: [`Self::active`] as the tick left it, before the
-    /// view takes it.
     settled: bool,
-    /// Something it shows changed on its own at the last frame: [`Self::active`] but for an icon a
-    /// dirty province kept off screen, which asks only for the pools' passes.
     visible: bool,
-    /// An icon of the presented frame is kept off screen by its province's dirty bit alone
-    /// ([`admission`]): the frame the bit clears erases it.
     kept_off_screen: bool,
-    /// The bases written this frame with a decided roster that do not stand yet ([`update_base`]):
-    /// the next frame writes each again, so the view asks for that frame.
     owed: HashSet<SlotId>,
-    /// The view's transition clock: the sum of every tick's step, on which the windows' fades and
-    /// movements advance.
     clock: f32,
-    /// The windows whose fade and movement are unknown ([`TRANSITION`], [`transition_unknown`]).
     settling: HashMap<Registered, Settling>,
-    /// The at-sea counter whose instance the pointer state was last carried into.
     pointed: Option<u64>,
-    /// The counter the pointer holds and its state, with the presentation time it entered it.
     pub(super) pointer_clock: Option<(Option<(Unit, bool)>, f32)>,
-    /// The counters the pointer left, with the time each left, until their Up effects settle.
     pub(super) pointer_left: Vec<(Unit, f32)>,
 }
 
@@ -490,20 +369,15 @@ impl Windows {
         retries
     }
 
-    /// Whether a window changed on its own at the last frame, cleared: the view presents another
-    /// frame while one does, as the game ticks every window each frame.
-    /// Keeps the view presenting: a land plate's pointer state still changes on the clock.
     pub(super) fn keep_active(&mut self) {
         self.active = true;
         self.visible = true;
     }
 
-    /// Whether something it shows changes on its own, not cleared.
     pub fn running_visibly(&self) -> bool {
         self.visible || self.air_missions.running_visibly()
     }
 
-    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
     pub fn set_quiet(&mut self, quiet: bool) {
         self.air_missions.set_quiet(quiet);
     }
@@ -513,9 +387,6 @@ impl Windows {
         std::mem::take(&mut self.active) || air
     }
 
-    /// Builds the pools for `windows` in `viewport`, with `resources` (their registry's), when
-    /// they were built from another registry or viewport (a new document's content, a resized
-    /// window: the GUI is made again).
     fn build(
         &mut self,
         windows: &NativeWindows,
@@ -530,8 +401,6 @@ impl Windows {
             return Ok(());
         }
         *self = Self::default();
-        // then the window hidden; neither
-        // icon type's constructor writes its window.
         self.combats = Some(Pool::new(
             windows.naval_combat(),
             viewport,
@@ -549,9 +418,6 @@ impl Windows {
             )?),
             None => None,
         };
-        // the window, then its `bg_btn`
-        // found as a button; a content whose `bg_btn` is none builds no icon,
-        // and the result pass counts every shown icon it omits.
         self.results = match windows.naval_result() {
             Some(result) if result.find(native::Kind::Button, "bg_btn").is_some() => {
                 Some(Pool::new(
@@ -569,101 +435,53 @@ impl Windows {
     }
 }
 
-/// What one prepared hour's naval map-icon windows ask of the presented view, decided without
-/// any window.
 #[derive(Default)]
 pub(super) struct Plan {
-    /// The combat icon pass below `NAVAL_COMBAT_DISTANCE_CUTOFF`; `None` when it
-    /// does not run, which erases every combat icon.
     pub(super) combat: Option<CombatPass>,
-    /// The naval base icons (below `NAVAL_BASE_DISTANCE_CUTOFF`); `None` when they are not
-    /// drawn, which erases them.
     pub(super) bases: Option<BasePass>,
-    /// Why the combat icon pass runs but is not planned (its window does not lay out): every
-    /// combat icon's pooled items are then unknown ([`unknown_items`]).
     pub(super) combats_undecided: Option<Cow<'static, str>>,
-    /// Why the naval base pass runs but is not planned (the base census or window): every base
-    /// icon's port items are then unknown ([`unknown_items`]).
     pub(super) bases_undecided: Option<Cow<'static, str>>,
-    /// Combat pass admission and per-province icon erasure state.
     pub(super) results: Option<ResultPass>,
-    /// Why the result pass is not planned (its window does not lay out): its icons' requests and
-    /// erasures are then not reproduced.
     pub(super) results_undecided: Option<Cow<'static, str>>,
-    /// The task forces the hour holds, when the naval pass ran ([`settle_counters`]).
     pub(super) forces: Option<Forces>,
-    /// The hour's countries, which the windows' flags resolve through.
     pub(super) countries: Option<Arc<Countries>>,
-    /// The naval mission icons' regions ([`naval_missions::MissionPass`]).
     pub(super) missions: naval_missions::MissionPass,
     pub(super) carrier_sea: HashMap<u64, CarrierGrid>,
     pub(super) carrier_ports: BTreeMap<(u32, usize), CarrierGrid>,
 }
 
-/// The naval result icons' decisions for one camera.
 pub(super) struct ResultPass {
-    /// The hour's retained results, with their completeness.
     pub(super) tables: Arc<naval_markers::ResultTables>,
-    /// The provinces whose combat vector holds a combat, and whether that census is complete,
-    /// which a sea province's anchor reads ([`naval_markers::result_anchor`]).
     pub(super) raised: BTreeSet<u32>,
     pub(super) vectors_whole: bool,
-    /// The result window's frame size.
     pub(super) size: [i32; 2],
 }
 
-/// The task forces one hour's TaskForces census records, and whether it is complete.
 pub(super) struct Forces {
     pub(super) recorded: BTreeSet<u64>,
     pub(super) complete: bool,
 }
 
-/// The combat pass's decisions.
 pub(super) struct CombatPass {
-    /// The icons the passes place and update, in their order.
     pub(super) icons: Vec<CombatIcon>,
-    /// Combats with an empty side: the game erases their icons when their province's
-    /// pass reaches them.
     pub(super) gated: BTreeSet<u64>,
-    /// Every combat the hour holds: an icon of any other is empty, unless
-    /// [`Self::live_undecided`].
     pub(super) live: BTreeSet<u64>,
-    /// Why [`Self::live`] may lack a combat that still resolves (an incomplete `NavalCombats`
-    /// census): an icon of a combat it lacks is then kept and omitted ([`combat_resolves`]).
     pub(super) live_undecided: Option<Cow<'static, str>>,
-    /// Each detailed combat's naval-HQ frame, for an icon the hour does not place again, or why
-    /// it (or every one) is undecided.
     pub(super) hq: Result<BTreeMap<u64, Result<bool, String>>, String>,
-    /// The window's frame size, which places each icon and tests the viewport.
     pub(super) size: [i32; 2],
 }
 
-/// One placed combat icon.
 pub(super) struct CombatIcon {
     pub(super) owner: CombatOwner,
-    /// Its anchor and its place in its province's stack ([`PLACE`]), when the hour decides them.
     pub(super) place: Option<([f32; 3], u32)>,
-    /// The update after the base ([`gui_windows::combat_calls`]), with [`PLACE`].
     pub(super) update: gui_windows::Update,
-    /// The game passed its early returns and its writes are known: the
-    /// grids are emptied and then filled with [`Self::grids`].
     pub(super) rotates: bool,
-    /// What the game appends, grid by grid, in its order.
     pub(super) grids: Vec<GridFill>,
-    /// Where its `bg_btn` frame comes from (`None` for an omitted icon, whose frame is unknown
-    /// when it rotates): an engaged rotation sets it; an unengaged rotating icon keeps an
-    /// established frame, else [`kept_frame`] uses the index's frame or the native initial
-    /// fallback. A spill-over icon keeps its pool slot's.
     pub(super) frame: Option<naval_markers::FrameSource>,
-    /// An icon the hour places but cannot decide, counted with its cause by the preparation: its
-    /// withheld window is not counted again where it would draw.
     pub(super) omitted: bool,
 }
 
 impl CombatIcon {
-    /// Parts withheld after an unavailable combat rotation: bars, grids, background
-    /// frame and placement. Grid items retain their own unknown state; later writes
-    /// repair only the parts they reach.
     pub(super) fn omitted(
         owner: CombatOwner,
         place: Option<([f32; 3], u32)>,
@@ -694,37 +512,21 @@ impl CombatIcon {
     }
 }
 
-/// One grid's appends.
 #[derive(Debug)]
 pub(super) struct GridFill {
-    /// The grid's path in the combat window.
     pub(super) grid: String,
-    /// `Some(side)` for a side's task-force tiles, `None` for a convoy addition.
     pub(super) side: Option<usize>,
-    /// Each appended item's update; `Err` (the gap it is counted under) draws nothing, though
-    /// the game appends it.
     pub(super) items: Vec<Result<gui_windows::Update, Cow<'static, str>>>,
 }
 
-/// The naval base icons and their port items.
 pub(super) struct BasePass {
-    /// Every naval base province and its port anchor.
     pub(super) bases: Vec<(u32, [f32; 3])>,
-    /// Each base's port items this hour, when the unit pass fills them (`None`:
-    /// Empty every box, the camera being coarse or the
-    /// viewer in a peace conference), or why every base's items are undecided.
     pub(super) ports: Result<Option<PortItems>, Cow<'static, str>>,
-    /// Decided glyphs for the bases this hour.
     pub(super) glyphs: Vec<NavalBaseIcon>,
-    /// The base window's frame size.
     pub(super) size: [i32; 2],
-    /// Naval base provinces the content places no port anchor for, whose icons the view never
-    /// requests though the game does.
     pub(super) unanchored: usize,
 }
 
-/// Project the icon anchor into the integer GUI viewport, then apply the
-/// window's authored anchor and rounding before viewport admission.
 pub(super) fn icon_point(
     inputs: &CounterInputs<'_>,
     anchor: [f32; 3],
@@ -746,9 +548,6 @@ pub(super) fn icon_point(
     point
 }
 
-/// the window's rectangle meets `[0, w] x [0, h]` of
-/// the integer GUI viewport the point was projected in, edges included
-///
 pub(super) fn inside(inputs: &CounterInputs<'_>, point: [i32; 2], size: [i32; 2]) -> bool {
     rectangle_inside(
         point,
@@ -757,15 +556,8 @@ pub(super) fn inside(inputs: &CounterInputs<'_>, point: [i32; 2], size: [i32; 2]
     )
 }
 
-/// Counted for each owner the pool could not give a window this frame (the game
-/// found none free and started the pool's growth; the owner asks again the next frame).
-/// Why a pool's slots may no longer be the game's after it is exhausted: the frame on which the
-/// game's worker task completes the growth is in no
-/// recording, so which frame's requests get the new slots may differ.
 pub(super) const GROWTH_FRAME: &str = "the frame the pool's growth completes is not recorded";
 
-/// Sequential update laps keep short/zero phases visible instead of censoring them at
-/// PROFILE's ordinary span threshold. Nested detail still uses the ordinary spans.
 struct UpdateLaps(Option<std::time::Instant>);
 
 impl UpdateLaps {
@@ -782,10 +574,6 @@ impl UpdateLaps {
     }
 }
 
-/// The presented frame: the owners, the manager's pass, the overrides and grids, the naval
-/// counters at sea (`plates`: each counter's flotilla, local placement and graphical column;
-/// `columns`: every shown unit column), one tick of every window, and their layouts and draws:
-/// base glyphs into `bases`, port items into `counters`, and combat icons into `combats`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn present(
     inputs: &CounterInputs<'_>,
@@ -819,10 +607,8 @@ pub(super) fn present(
         if windows.settled { "naval.settled" } else { "naval.active" },
         1,
     );
-    // The view's single presentation clock and the frame's step.
     let frame = frame(&mut windows.last, time);
     update_laps.lap("dc_nu_setup");
-    // PreparedCounters::draw advances the shared province schedule before these consumers.
     let schedule = inputs
         .schedule
         .lock()
@@ -898,8 +684,6 @@ pub(super) fn present(
         view.tick(time);
     }
     update_laps.lap("dc_nu_carrier_tick");
-    // Port wrappers are pooled with their own unit item, never with another
-    // base or with the at-sea representation of the same task force.
     let port_owners: HashMap<_, _> = windows
         .bases
         .as_ref()
@@ -938,7 +722,6 @@ pub(super) fn present(
         }
     }
     update_laps.lap("dc_nu_port_carriers");
-    // Counters at sea: their source task forces' windows, destroyed with their source.
     if let Some(forces) = &plan.forces {
         settle_counters(windows, forces);
     }
@@ -1004,7 +787,6 @@ pub(super) fn present(
         .iter()
         .map(|column| (column.identity, column.count))
         .collect();
-    // The game reaches every item when a shown column is hidden.
     for counter in windows.counters.values_mut().filter(|counter| {
         windows.columns.contains_key(&counter.column) && !shown.contains_key(&counter.column)
     }) {
@@ -1019,7 +801,6 @@ pub(super) fn present(
         .iter()
         .map(|(flotilla, ..)| flotilla.source)
         .collect();
-    // A task force the unit column refuses this hour is updated by the game all the same.
     let updated: BTreeSet<u64> = placed_at_sea
         .iter()
         .map(|(flotilla, _)| flotilla.source)
@@ -1033,7 +814,6 @@ pub(super) fn present(
             );
         }
     }
-    // The map's hit test found the pointer's task force: its window's `count_bg` takes the state.
     let held = pointer.and_then(|pointer| {
         let (flotilla, _) = placed_at_sea.iter().find(|(flotilla, _)| {
             flotilla.members.iter().any(|&id| {
@@ -1128,8 +908,6 @@ pub(super) fn present(
     }
     drop(ports_profile);
     let _at_sea_profile = viewer_foundation::profiling::span("dc_naval_at_sea");
-    // At unit-stack priority, each plate retains its column's icon order.
-    // Transparent overlap still follows the presented paint order.
     for (flotilla, plate) in placed_at_sea {
         let Some(counter) = windows.counters.get(&flotilla.source) else {
             continue;
@@ -1169,7 +947,6 @@ pub(super) fn present(
             NAVY_WINDOW,
             &layout.diagnostics,
         );
-        // Move drawing; the viewport remains the logical parent.
         let local = counter.instance.position();
         let place = [0, 1].map(|axis| plate.column.grid[axis].wrapping_add(local[axis]));
         let composed =
@@ -1237,7 +1014,6 @@ pub(super) fn present(
                     report.unit_hits.len(),
                     &mut report.icon_gui_notes,
                 ));
-                // The `count_bg` as the window laid it out, where the column placed the window.
                 let scale = plate.column.holder.scale;
                 let window_at = [0, 1].map(|axis| {
                     plate.column.screen[axis] as f32
@@ -1260,7 +1036,6 @@ pub(super) fn present(
                     })
                     .filter(|region| !region.disabled)
                     .and_then(|region| {
-                        // A pass-through plate takes no pointer; an alpha-tested one is refused.
                         match region.hit.as_ref().map(|hit| hit.form) {
                             Some(viewer_foundation::map::native_gui::Hit::Through) => None,
                             Some(viewer_foundation::map::native_gui::Hit::Alpha) => {
@@ -1326,7 +1101,6 @@ pub(super) fn present(
     Ok(())
 }
 
-/// A view window in the GUI transition list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Registered {
     Icon(IconSlot),
@@ -1335,13 +1109,6 @@ enum Registered {
     Mission(naval_missions::MissionWindow),
 }
 
-/// Tick every registered window's transition in reverse registration order.
-/// An ended fade or hide movement immediately hides its children, including
-/// retained freed windows.
-/// Whether an icon the pass admitted (kept off screen when `off_screen`) asks for the next frame:
-/// only while its province `cleans` ([`viewer_foundation::map::province_schedule::Schedule::cleans`]),
-/// the one off-screen icon a later pass erases. An icon kept by a province dirty in view is kept by
-/// every later pass alike.
 fn keeps_asking(off_screen: bool, cleans: bool) -> bool {
     off_screen && cleans
 }
@@ -1360,8 +1127,6 @@ pub(super) fn tick(
     let result_template = native.naval_result();
     let tiny = native.tiny();
     let item_template = |item: &Item| if item.tiny { tiny } else { Some(navy) };
-    // The mission windows the frame's update left with an unknown fade and movement (a slot
-    // allocated after a divergence), on the clock of the frame's owners, before this tick.
     for (window, why) in windows.missions.take_unsettled() {
         transition_unknown(windows, Registered::Mission(window), &why, Marked::Once);
     }
@@ -1371,7 +1136,6 @@ pub(super) fn tick(
         settle_after(windows, native, missions.is_some(), Vec::new(), report);
         return;
     }
-    // The windows whose tick failed, with why: a pool's phase fails as a whole.
     let mut failed: Vec<(Registered, String)> = Vec::new();
     fn failing(
         failed: &mut Vec<(Registered, String)>,
@@ -1382,7 +1146,6 @@ pub(super) fn tick(
             failed.extend(windows().into_iter().map(|window| (window, why.clone())));
         }
     }
-    // Every drawable's clock.
     if let Some(pool) = windows.combats.as_mut() {
         let result = pool.tick_clocks(combat, resources, tick);
         failing(&mut failed, || pool_windows(pool, IconSlot::Combat), result);
@@ -1409,7 +1172,6 @@ pub(super) fn tick(
         let result = windows.missions.tick_clocks(missions, resources, tick);
         failing(&mut failed, || mission_windows(&windows.missions), result);
     }
-    // GUI transitions, last registered first.
     let mut order: Vec<(Registration, Registered)> = Vec::new();
     if let Some(pool) = &windows.combats {
         order.extend(
@@ -1476,7 +1238,6 @@ pub(super) fn tick(
                     },
                 };
                 failing(&mut failed, || vec![registered], result);
-                // A failed reach leaves the items it did not reach where they were.
                 let result = reach_items(windows, icon, &held);
                 failing(&mut failed, || vec![registered], result);
             }
@@ -1512,7 +1273,6 @@ pub(super) fn tick(
             }
         }
     }
-    // The draw.
     if let Some(pool) = windows.combats.as_mut() {
         let result = pool.tick_draws(combat, resources);
         failing(&mut failed, || pool_windows(pool, IconSlot::Combat), result);
@@ -1557,8 +1317,6 @@ pub(super) fn tick(
     settle_after(windows, native, missions.is_some(), failed, report);
 }
 
-/// What a tick leaves behind, whether it ticked the windows or found none due: the windows whose
-/// transition is unknown settled on the view's clock, and whether anything of the view still runs.
 fn settle_after(
     windows: &mut Windows,
     native: &NativeWindows,
@@ -1572,7 +1330,6 @@ fn settle_after(
             .entry(format!("a naval map-icon window does not tick: {why}").into())
             .or_default() += 1;
     }
-    // A window whose tick failed may stand mid-transition where the game's does not.
     for (window, why) in failed {
         transition_unknown(windows, window, &format!("its window does not tick: {why}"), Marked::EveryFrame);
     }
@@ -1581,9 +1338,6 @@ fn settle_after(
     for entry in windows.settling.values_mut() {
         entry.marked = None;
     }
-    // The next frame is asked for only by what it can still change, each reason apart: a base owed
-    // its second write, an unknown transition whose wait can run ([`Settling::asks`]), and a
-    // window that runs and is drawn ([`runs_drawn`]).
     let owed = !std::mem::take(&mut windows.owed).is_empty();
     let held = |key: &ItemKey| runs_drawn(windows, key);
     windows.visible = owed
@@ -1601,18 +1355,11 @@ fn settle_after(
     windows.settled = !windows.active;
 }
 
-/// Whether the grid item `key` (one a grid holds) runs and is drawn: it changes on its own and no
-/// refusal withholds its draw. Only such an item asks for frames; it, or one recovering a
-/// transition, keeps its base written ([`update_base`]).
 fn runs_drawn(windows: &Windows, key: &ItemKey) -> bool {
     windows.items_withheld.why(key).is_none()
         && windows.items.get(key).is_some_and(|item| item.instance.active())
 }
 
-/// Whether a tick would change any window of the view: one that changes on its own, or one a call
-/// changed since its last tick ([`Instance::idle`]). A tick of any other window only stamps the
-/// frame's clock on it, which nothing a settled window draws reads
-/// ([`native_gui::Shading::changing`]), so a frame with none due ticks none.
 fn tick_due(windows: &Windows, missions: bool) -> bool {
     windows.combats.as_ref().is_some_and(Pool::tick_due)
         || windows.bases.as_ref().is_some_and(Pool::tick_due)
@@ -1625,8 +1372,6 @@ fn tick_due(windows: &Windows, missions: bool) -> bool {
         || (missions && windows.missions.tick_due())
 }
 
-/// Every mission window, as the transition list names it: a phase of the mission view fails as a
-/// whole.
 fn mission_windows(missions: &naval_missions::MissionView) -> Vec<Registered> {
     missions
         .registrations()
@@ -1634,7 +1379,6 @@ fn mission_windows(missions: &naval_missions::MissionView) -> Vec<Registered> {
         .collect()
 }
 
-/// Every window of `pool`, in use or not, as the transition list names it.
 fn pool_windows<K: Clone + Eq + std::hash::Hash>(
     pool: &Pool<K>,
     icon: fn(SlotId) -> IconSlot,
@@ -1644,7 +1388,6 @@ fn pool_windows<K: Clone + Eq + std::hash::Hash>(
         .collect()
 }
 
-/// A naval counter at sea's update.
 fn counter_calls(
     inputs: &CounterInputs<'_>,
     navy: &native::Element,
@@ -1676,8 +1419,6 @@ fn counter_calls(
     )
 }
 
-/// Place at-sea counter items in the source's units grid, preserving its
-/// item order and finalized grid positions.
 fn counter_window(
     windows: &mut Windows,
     navy: &native::Element,
@@ -1714,12 +1455,10 @@ fn counter_window(
             })
         }
     };
-    // Show visible items before finalizing the grid; hide other items afterward.
     if appended && visible {
         counter.instance.gui_show(navy, navy)?;
     }
     if fresh || finalized || counter.column != plate.column.identity {
-        // Add the constructor offset saved by the game.
         counter.instance.set_position(navy, navy, plate.local)?;
     }
     if !visible {
@@ -1737,7 +1476,6 @@ fn counter_window(
     Ok(())
 }
 
-/// The combat icons' owners, the manager's pass and each updated icon's override and grids.
 fn combat_frame(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
@@ -1749,7 +1487,6 @@ fn combat_frame(
     let Some(mut pool) = windows.combats.take() else {
         return Ok(());
     };
-    // Requests and erasures this frame the view cannot reproduce.
     let diverged = match &plan.combat {
         None => plan.combats_undecided.clone(),
         Some(pass) => pass
@@ -1797,7 +1534,6 @@ fn combat_frame(
             if combat_resolves(combat, owner.1) == Some(false) {
                 return Admission::Empty;
             }
-            // Every live combat icon was placed before its request.
             let Some(&(anchor, ordinal)) = placed.get(owner) else {
                 return Admission::Outside;
             };
@@ -1806,7 +1542,6 @@ fn combat_frame(
                 icon_point(inputs, anchor, ordinal, size),
                 |point| inside(inputs, point, size),
             );
-            // Kept off screen by a province dirty in view, the icon is kept by every later pass.
             kept_off_screen |= keeps_asking(off_screen, schedule.cleans(owner.0));
             admitted
         })?;
@@ -1844,7 +1579,6 @@ fn combat_frame(
                 _ => update,
             };
             if update.wrote.contains(&gui_windows::BG_FRAME) {
-                // An initial fallback must let a later index result establish history.
                 if matches!(
                     frame,
                     Some(naval_markers::FrameSource::Kept(
@@ -1882,8 +1616,6 @@ fn combat_frame(
         (Ok(()), Some(why)) => Some(why.to_string()),
         (Ok(()), None) => None,
     };
-    // A pass that stops leaves the icons it did not reach as they were: withheld until the
-    // windows are built again, as a call that does not apply is structural.
     if let Err(why) = &result {
         for icon in &slots {
             if let IconSlot::Combat(slot) = *icon {
@@ -1908,8 +1640,6 @@ fn combat_frame(
     Ok(())
 }
 
-/// Apply combat-icon ownership through scheduled provinces in province order.
-/// The prepared pass determines requests and erasures.
 fn combat_owners(
     windows: &mut Windows,
     pool: &mut Pool<CombatOwner>,
@@ -1946,8 +1676,6 @@ fn combat_owners(
         }
         if let Some(pass) = pass {
             for icon in pass.icons.iter().filter(|icon| icon.owner.0 == province) {
-                // An icon whose place the hour cannot decide keeps its window where it
-                // stood; one it has none for is not given one (counted with its cause).
                 let Some(place) = icon.place else {
                     continue;
                 };
@@ -1974,8 +1702,6 @@ fn combat_owners(
     Ok(erased)
 }
 
-/// Whether `combat` still resolves : `None` when the census that
-/// would say is not whole and lacks it.
 fn combat_resolves(pass: &CombatPass, combat: u64) -> Option<bool> {
     if pass.live.contains(&combat) {
         Some(true)
@@ -1986,59 +1712,28 @@ fn combat_resolves(pass: &CombatPass, combat: u64) -> Option<bool> {
     }
 }
 
-/// A window's fade and movement : unknown
-/// for a window whose history the view does not reproduce, and for one whose tick failed. No
-/// update writes it. Every site goes through the one mechanism, [`transition_unknown`], and the
-/// one lift, [`settle`] (the census is in `classes/lifecycle.md`):
-///
-/// - a pool slot newly allocated after the view's allocations may have left the game's
-///   ([`allocate`]);
-/// - each item of an icon whose update the view does not reproduce ([`unknown_items`]);
-/// - an item of either kind, mission item or convoy addition, first constructed after such an
-///   update, which the game may have built or reused then ([`Windows::grown`], [`update_item`]);
-/// - a counter at sea whose update the view skips ([`skipped_counter`]);
-/// - a mission icon's slot newly allocated after the mission pool's allocations may have left the
-///   game's, the icon and each of its entries (`MissionView::allocated`, taken at the tick);
-/// - a window whose tick fails ([`tick`]), mission windows included.
-///
-/// It is known again once the view's own window has been out of a transition for the longest
-/// its registered windows can run ([`Instance::longest_transition`]), when whatever the game's
-/// window was doing has ended too.
 pub(super) const TRANSITION: &str = "the window's fade and movement";
 
-/// One window whose [`TRANSITION`] is unknown.
 #[derive(Debug)]
 struct Settling {
-    /// The time on [`Windows::clock`] since which the view's own window has been out of a
-    /// transition, or since the last event that made the part unknown.
     since: f32,
     why: Cow<'static, str>,
-    /// Its refusal stands on the window's refusal state ([`settle`] puts it there).
     standing: bool,
-    /// What made the part unknown at this frame, when something did ([`transition_unknown`]).
     marked: Option<Marked>,
 }
 
-/// What makes a window's [`TRANSITION`] unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Marked {
-    /// An event of this frame alone: a slot allocated after a divergence, an item built into a
-    /// grown pool. Its wait runs on the frames after it.
     Once,
-    /// An update the view cannot decide or apply, made again every frame while that holds. Its
-    /// wait starts only once it stops.
     EveryFrame,
 }
 
 impl Settling {
-    /// Whether its wait asks for the next frame: not when this frame marked it only by what
-    /// marks it every frame, which no frame advances.
     fn asks(&self) -> bool {
         self.marked != Some(Marked::EveryFrame)
     }
 }
 
-/// The template of the view's window `registered`, and its instance, when it still exists.
 fn registered_window<'w, 'n>(
     windows: &'w Windows,
     native: &'n NativeWindows,
@@ -2089,10 +1784,6 @@ fn registered_window<'w, 'n>(
     }
 }
 
-/// The one mechanism by which a window's [`TRANSITION`] becomes unknown, by `why`: a new event
-/// restarts the wait from the view's clock now. [`settle`] refuses the window at the frame's tick,
-/// before anything draws, and lifts it; a window whose registered windows have no transition is
-/// left alone there.
 fn transition_unknown(windows: &mut Windows, window: Registered, why: &str, cause: Marked) {
     let clock = windows.clock;
     let why: Cow<'static, str> = format!("{why} ({TRANSITION} is unknown)").into();
@@ -2110,12 +1801,6 @@ fn transition_unknown(windows: &mut Windows, window: Registered, why: &str, caus
     };
 }
 
-/// At each tick, after its transitions: every window whose [`TRANSITION`] is unknown
-/// ([`transition_unknown`]) has its refusal stand on its window's refusal state; one in a
-/// transition ([`Instance::transitioning`]) restarts its wait, and one out of a transition for
-/// the longest its registered windows can run ([`Instance::longest_transition`]) on the view's
-/// clock is known again. A window with no transition is known at once, and one no longer built is
-/// forgotten.
 fn settle(windows: &mut Windows, native: &NativeWindows) {
     let clock = windows.clock;
     let mut settling = std::mem::take(&mut windows.settling);
@@ -2125,7 +1810,6 @@ fn settle(windows: &mut Windows, native: &NativeWindows) {
         let Some((instance, template)) = registered_window(windows, native, window) else {
             return false;
         };
-        // A template the instance was not built from cannot say: the part stays unknown.
         let longest = instance
             .longest_transition(template)
             .unwrap_or(f32::INFINITY);
@@ -2211,12 +1895,6 @@ fn settle(windows: &mut Windows, native: &NativeWindows) {
     }
 }
 
-/// `owner`'s icon from `pool` ([`Pool::request`]). A slot newly allocated after the view's
-/// allocations may have left the game's (`diverged`, [`Windows::diverged_combats`]) may hold
-/// another owner's history there: its items are unknown ([`unknown_items`]) and so are the
-/// parts of the icon an update may keep (`kept`: for a combat icon the bars, the grids and
-/// `bg_btn`'s frame, which an unengaged or non-rotating update does not write), and its window's
-/// fade and movement ([`transition_unknown`]).
 fn allocate<K: Clone + Eq + std::hash::Hash>(
     windows: &mut Windows,
     pool: &mut Pool<K>,
@@ -2242,23 +1920,12 @@ fn allocate<K: Clone + Eq + std::hash::Hash>(
     Some(slot)
 }
 
-/// The parts of a combat icon an update may leave as its window held them.
 const COMBAT_KEPT: [&str; 3] = [
     gui_windows::BG_FRAME,
     gui_windows::PROGRESS,
     gui_windows::GRIDS,
 ];
 
-/// The `bg_btn` frame of an unengaged rotating icon stays as it was. The pool
-/// slot's frame wins when the view established it for this owner (`framed`),
-/// without a write. Otherwise the engaged index's [`Kept::Frame`] establishes
-/// the frame through `update` and is counted as carried ([`icon_frames::CARRIED`]).
-/// Any other answer uses the binding's initial frame and counts its reason as
-/// not from history.
-///
-/// [`Kept`]: crate::icon_frames::Kept
-/// [`Kept::Frame`]: crate::icon_frames::Kept::Frame
-/// [`icon_frames::CARRIED`]: crate::icon_frames::CARRIED
 fn kept_frame(
     framed: bool,
     owner: CombatOwner,
@@ -2273,7 +1940,6 @@ fn kept_frame(
     }
     let frame = match kept {
         Kept::Frame(frame) => frame.wrapping_add(1) as i32,
-        // The binding sets the background frame to one, overriding the authored frame.
         _ => 1,
     };
     let mut writes = gui_windows::Writes::new(window);
@@ -2288,12 +1954,6 @@ fn kept_frame(
     update
 }
 
-/// What the manager's update of `owner`'s icon makes this frame, with the grids
-/// its rotation refills: the hour's own update when the hour places the icon, decided or omitted
-/// ([`CombatIcon::omitted`], its unknown parts withholding it, never taken for an icon the hour
-/// does not place). An icon the hour no longer places keeps what it showed; the game still
-/// writes its HQ frame, and its rotation returns before its writes when its province is not its
-/// combat's (an icon of its own province is placed again).
 fn planned_update<'p>(
     combat: &'p CombatPass,
     owner: CombatOwner,
@@ -2306,8 +1966,6 @@ fn planned_update<'p>(
             icon.rotates.then_some(icon.grids.as_slice()),
         );
     }
-    // A combat the incomplete census lacks may still resolve and be updated, rotation included:
-    // the icon is kept, omitted.
     if let (None, Some(why)) = (combat_resolves(combat, owner.1), &combat.live_undecided) {
         return (
             Cow::Owned(CombatIcon::omitted(owner, None, true, why).update),
@@ -2331,9 +1989,6 @@ fn planned_update<'p>(
     (Cow::Owned(update), None)
 }
 
-/// Apply one admitted combat icon's ordered update after common placement
-/// and visibility. Unknown parts withhold its draw until later writes repair
-/// them; unknown grid updates also affect their pooled items.
 #[allow(clippy::too_many_arguments)]
 fn update_combat(
     windows: &mut Windows,
@@ -2347,7 +2002,6 @@ fn update_combat(
 ) -> Result<(), String> {
     let icon = IconSlot::Combat(slot);
     let instance = pool.get(slot).ok_or("an updated icon has no window")?;
-    // The base's own `gui_show` reached the grids it holds.
     let held = instance.take_held();
     reach_items(windows, icon, &held)?;
     let applied = gui_windows::apply(instance, window, &update.calls, resources).map_err(|why| {
@@ -2375,9 +2029,6 @@ fn update_combat(
     Ok(())
 }
 
-/// An unavailable pooled-item update withholds its unknown parts until later
-/// writes repair them. Kept sprites, supply and other partial writes retain
-/// their own validity; pool growth can leave additional items unknown.
 fn unknown_items(windows: &mut Windows, icon: IconSlot, why: &str, cause: Marked) {
     let grids_undecided = |name: &str| -> Cow<'static, str> {
         format!("{name} is not drawn: its icon's grids are not reproduced ({why})").into()
@@ -2403,27 +2054,17 @@ fn unknown_items(windows: &mut Windows, icon: IconSlot, why: &str, cause: Marked
         mark(items_withheld, key, left);
         keys.push((*key, why));
     }
-    // What the game's update did to the item's window (its Show or Hide, and so its fade) is
-    // unknown with it.
     for (key, why) in keys {
         transition_unknown(windows, Registered::Item(key), &why, cause);
     }
 }
 
-/// [`unknown_items`] for every window of a pool, live or free, whose updates this frame does not
-/// reproduce: a pass the hour cannot plan though it runs, or one that stops part-way (a call
-/// that does not apply, structural and the same every frame).
 fn unknown_pool(windows: &mut Windows, slots: Vec<IconSlot>, why: &str) {
     for icon in slots {
         unknown_items(windows, icon, why, Marked::EveryFrame);
     }
 }
 
-/// A naval counter at sea (by its `source`) whose update the view does not make this frame though
-/// the game does (its task force refused by the unit column, or its window's update stopped): its
-/// next update writes it again ([`Unknown::Update`]) and the parts that update may keep
-/// ([`unknown_kept`]); the Show or Hide the skipped update may have made leaves its window's fade
-/// and movement unknown too ([`TRANSITION`]).
 fn skipped_counter(windows: &mut Windows, source: u64, why: &str) {
     let Some(counter) = windows.counters.get_mut(&source) else {
         return;
@@ -2435,13 +2076,9 @@ fn skipped_counter(windows: &mut Windows, source: u64, why: &str) {
     transition_unknown(windows, Registered::Counter(source), &why, Marked::EveryFrame);
 }
 
-/// Why a counter at sea whose source an incomplete TaskForces census lacks is kept unknown.
 const COUNTER_SOURCE_UNRECORDED: &str =
     "its task force's row is absent from an incomplete TaskForces census";
 
-/// The counters at sea against the hour's task forces: one whose source a complete census lacks
-/// is destroyed with it; one whose source an incomplete census lacks may still stand and be
-/// updated by the game, so it is kept and its update skipped ([`skipped_counter`]).
 fn settle_counters(windows: &mut Windows, forces: &Forces) {
     if forces.complete {
         windows
@@ -2460,8 +2097,6 @@ fn settle_counters(windows: &mut Windows, forces: &Forces) {
     }
 }
 
-/// Propagate window show and hide calls through its retained grids and lists
-/// to every held item in order.
 fn reach_items(windows: &mut Windows, icon: IconSlot, held: &[Held]) -> Result<(), String> {
     let _profile = viewer_foundation::profiling::span("dc_nu_held");
     let Some((native, _)) = windows.built.clone() else {
@@ -2486,7 +2121,6 @@ fn reach_items(windows: &mut Windows, icon: IconSlot, held: &[Held]) -> Result<(
     Ok(())
 }
 
-/// The template of a grid item's window: the convoy addition's, or `unit_counter_navy`.
 fn item_template(native: &NativeWindows, tiny: bool) -> Result<&native::Element, String> {
     if tiny {
         native
@@ -2497,9 +2131,6 @@ fn item_template(native: &NativeWindows, tiny: bool) -> Result<&native::Element,
     }
 }
 
-/// Construct a pooled item against the GUI viewport, then apply its ordered
-/// update. Named failures leave the affected parts unknown until a later
-/// update writes them.
 fn update_item(
     windows: &mut Windows,
     key: ItemKey,
@@ -2513,9 +2144,6 @@ fn update_item(
         .as_ref()
         .map(|(_, viewport)| *viewport)
         .ok_or("the windows are not built")?;
-    // An item first built after an update that left its icon's grids undecided may be one the
-    // game built or reused then ([`Windows::grown`]): its fade and movement are unknown, and a
-    // mission item's retained parts too. Only its construction inherits them.
     let grown = windows.grown.get(&key.icon).cloned();
     let mut constructed = false;
     let mut left = Vec::new();
@@ -2572,8 +2200,6 @@ fn update_item(
     Ok(())
 }
 
-/// Prepare item layout before the frame attaches its window for drawing.
-/// Retained layout and refusal state remain per item.
 fn read_grids(
     instance: &Instance,
     window: &native::Element,
@@ -2596,9 +2222,6 @@ fn read_grids(
     }
 }
 
-/// An item appended while its icon's grids are not read (`unread`, [`read_grids`]): whether the
-/// append showed it and where finalize placed it are unknown, so it is refused until its next
-/// update reads them ([`Unknown::Update`]), counted where it would draw.
 fn unread_grid(windows: &mut Windows, key: ItemKey, tiny: bool, unread: Option<&str>) {
     let Some(unread) = unread else {
         return;
@@ -2615,8 +2238,6 @@ fn unread_grid(windows: &mut Windows, key: ItemKey, tiny: bool, unread: Option<&
     );
 }
 
-/// Clear both side grids, detaching their previous items. Update and append
-/// the prepared replacements in side and item order.
 fn fill_grids(
     resources: &dyn native_gui::Resources,
     windows: &mut Windows,
@@ -2647,8 +2268,6 @@ fn fill_grids_in(
     report: &mut CounterReport,
 ) -> Result<(), String> {
     let (native, viewport) = windows.built.clone().ok_or("the windows are not built")?;
-    // The icon as it stands after its calls: which grids are shown (a hidden grid is no holder)
-    // and their content.
     let (laid, unread) = read_grids(instance, window, NAVAL_COMBAT_WINDOW, resources);
     windows.grids.retain(|(owner, _), _| *owner != icon);
     let mut cursors = [0usize; 2];
@@ -2700,8 +2319,6 @@ fn fill_grids_in(
     finalize(windows, icon, window, laid.as_ref(), viewport)
 }
 
-/// Append an item only within the grid's authored slot limits. When visible,
-/// show its window with the grid's propagated opacity. Return whether it joined.
 fn append(
     windows: &mut Windows,
     grid: &native::Element,
@@ -2738,7 +2355,6 @@ fn append(
     Ok(true)
 }
 
-/// The templates of the items `held` holds, in order.
 fn held_templates<'n>(
     windows: &Windows,
     native: &'n NativeWindows,
@@ -2752,8 +2368,6 @@ fn held_templates<'n>(
         .collect()
 }
 
-/// Place each item in every grid of `icon`'s window at its slot plus the offset
-/// saved by construction.
 fn finalize(
     windows: &mut Windows,
     icon: IconSlot,
@@ -2794,8 +2408,6 @@ fn finalize(
     Ok(())
 }
 
-/// Rebuild the naval base's ship grid on each admitted update, preserving
-/// the prepared port-item order.
 fn base_frame(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
@@ -2807,7 +2419,6 @@ fn base_frame(
     let Some(mut pool) = windows.bases.take() else {
         return Ok(());
     };
-    // Requests and erasures this frame the view cannot reproduce.
     let diverged = match &plan.bases {
         None => plan.bases_undecided.clone(),
         Some(pass) => (pass.unanchored != 0).then(|| {
@@ -2822,7 +2433,6 @@ fn base_frame(
     }
     let result = (|| -> Result<(), String> {
         let mut erased: Vec<(SlotId, Vec<Held>)> = Vec::new();
-        // Request the icon for an admitted standing base; otherwise erase its owner.
         let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
         let mut provinces: BTreeSet<u32> = pool.live().map(|(owner, ..)| *owner).collect();
         if let Some(pass) = &plan.bases {
@@ -2910,8 +2520,6 @@ fn base_frame(
                     inputs.content.defines.naval_base_scale
                 }
             });
-            // No roster (or an emptied box) appends nothing; an undecided one appends what the
-            // hour does not know.
             let items = match &bases.ports {
                 Ok(None) => Ok(&[][..]),
                 Ok(Some(ports)) => match ports.get(&province) {
@@ -2943,8 +2551,6 @@ fn base_frame(
         (Ok(()), Some(why)) => unknown_pool(windows, slots, why),
         (Ok(()), None) => {}
     }
-    // A frame that left the windows' parts unknown has every base written again by the next, which
-    // no repaint brings any nearer to standing.
     if result.is_err() || plan.bases_undecided.is_some() {
         windows.base_written.clear();
         windows.owed.clear();
@@ -2958,7 +2564,6 @@ fn base_frame(
     Ok(())
 }
 
-/// What one admitted base's update is given this frame.
 struct BaseInputs<'a> {
     province: u32,
     glyph: Option<&'a bases::NavalBaseIcon>,
@@ -2969,9 +2574,6 @@ struct BaseInputs<'a> {
     countries: Option<&'a Arc<Countries>>,
 }
 
-/// [`update_base`], and a base whose update fails withheld alone, under why: it is written whole
-/// again next frame, owing the view nothing, and the other bases keep what they wrote. Whether
-/// the base stood.
 fn update_or_withhold(
     windows: &mut Windows,
     pool: &mut Pool<u32>,
@@ -2995,9 +2597,6 @@ fn update_or_withhold(
     }
 }
 
-/// One admitted base this frame: written whole (its glyph, its port items and their grid)
-/// unless it stands ([`base_due`]). A base written with a decided roster that does not stand yet
-/// owes the view the next frame ([`Windows::owed`]). Whether it stood.
 fn update_base(
     windows: &mut Windows,
     pool: &mut Pool<u32>,
@@ -3010,10 +2609,6 @@ fn update_base(
     let BaseInputs { province, glyph, scale, strategic, items, art, countries } = given;
     let still = |instance: &Instance| !instance.written() && !instance.active();
     let held = windows.base_written.get(&slot);
-    // The items its last decided roster put in its grid, its first ones up to those it left out:
-    // it can stand only given that roster again. An item recovering its transition is drawn once its
-    // movement ends, where the grid's finalization does not put it: the base is written through it
-    // and once after.
     let in_grid = held.map_or(0, |written| {
         written.items.as_ref().map_or(0, Vec::len).saturating_sub(written.overflow)
     });
@@ -3030,7 +2625,6 @@ fn update_base(
                                 && windows.settling.contains_key(&Registered::Item(key)))
                     })
         });
-    // An undecided roster is written every frame: its items' parts and transitions stay unknown.
     let same = quiet
         && items.is_ok()
         && held.is_some_and(|written| written.same(province, glyph, scale.to_bits(), strategic, items, art, countries));
@@ -3059,7 +2653,6 @@ fn update_base(
             for control in [c.background, c.strategic, c.capacity] {
                 instance.hide(window, control)?;
             }
-            // BaseUnknowns already counts why this hour has no decided glyph.
         }
     }
     drop(update_profile);
@@ -3088,10 +2681,6 @@ fn update_base(
     Ok(false)
 }
 
-/// Present retained result icons through scheduled provinces. Disabled passes
-/// or provinces without a visible result erase their icons; admitted results
-/// request one. Dirty provinces or viewport intersection can retain visibility.
-/// Undecided requests or erasures leave pool history diverged.
 fn result_frame(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
@@ -3107,7 +2696,6 @@ fn result_frame(
         windows.diverged_results = Some(why.clone());
     }
     let result = (|| -> Result<(), String> {
-        // Icons whose decision the hour cannot make, by why: kept, and withheld.
         let mut undecided = match &plan.results_undecided {
             None => result_owners(
                 windows,
@@ -3130,11 +2718,8 @@ fn result_frame(
             match result_empty(&pass.tables, held) {
                 Some(true) => return Admission::Empty,
                 Some(false) => {}
-                // Whether the game erased it is unknown: kept, and undecided.
                 None => undecided.push((*province, IS_EMPTY_UNDECIDED.into())),
             }
-            // An anchor the hour cannot decide leaves where the icon stands, and so whether it is
-            // admitted, undecided: kept where it stood, and undecided.
             let point = match naval_markers::result_anchor(
                 inputs,
                 &pass.raised,
@@ -3205,7 +2790,6 @@ fn result_frame(
     Ok(())
 }
 
-/// Apply result-icon ownership over scheduled provinces in province order.
 fn result_owners(
     windows: &mut Windows,
     pool: &mut Pool<u32>,
@@ -3217,7 +2801,6 @@ fn result_owners(
     let mut provinces: BTreeSet<u32> = pool.live().map(|(owner, ..)| *owner).collect();
     if let Some(pass) = results {
         provinces.extend(pass.tables.provinces.keys().copied());
-        // A province the incomplete census lacks may be one the game requests an icon for.
         if let Some(why) = pass.tables.undecided {
             windows.diverged_results = Some(why.into());
         }
@@ -3268,8 +2851,6 @@ fn result_owners(
     Ok(undecided)
 }
 
-/// An unavailable ownership decision leaves a live icon's show and hide
-/// history unknown until the view's transition state can establish it.
 fn undecided_results(
     windows: &mut Windows,
     pool: &Pool<u32>,
@@ -3290,14 +2871,9 @@ fn undecided_results(
     }
 }
 
-/// Why a result icon's the game is undecided ([`result_empty`]).
 const IS_EMPTY_UNDECIDED: &str =
     "whether a result icon's results still admit the viewer is undecided";
 
-/// An icon holding `held` uses [`naval_markers::result_presentation`]. A reference
-/// absent from a complete result census has expired and is skipped, but still
-/// counts in `held`. One absent from an incomplete census may still resolve,
-/// leaving presentation undecided.
 fn held_presentation(
     tables: &naval_markers::ResultTables,
     held: &[u64],
@@ -3313,9 +2889,6 @@ fn held_presentation(
     naval_markers::result_presentation(&resolving, held.len())
 }
 
-/// An icon holding `held` is empty unless a result still resolves in this hour
-/// and admits the viewer. `None` when an unresolved list or incomplete result
-/// tables leave that undecided.
 fn result_empty(tables: &naval_markers::ResultTables, held: &[u64]) -> Option<bool> {
     let mut undecided = tables.undecided.is_some();
     for id in held {
@@ -3332,9 +2905,6 @@ fn result_empty(tables: &naval_markers::ResultTables, held: &[u64]) -> Option<bo
     (!undecided).then_some(true)
 }
 
-/// The retained result icons of the visible list, laid out and drawn through their windows at
-/// the content's result priority past the combat icons' ordinals; what is hit is `bg_btn` as
-/// drawn, opening the icon's first result. A withheld icon or a refused layout is counted.
 fn draw_results(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
@@ -3436,8 +3006,6 @@ fn draw_results(
     Ok(())
 }
 
-/// Apply one admitted naval-base update. Its show call reaches the retained
-/// ship-grid items before their own updates.
 fn base_items(
     windows: &mut Windows,
     instance: &mut Instance,
@@ -3458,8 +3026,6 @@ fn base_items(
     }
 }
 
-/// Apply one admitted naval-base update. Its show call reaches the retained
-/// ship-grid items before their own updates. How many items its grid had no slot for.
 fn fill_ports(
     windows: &mut Windows,
     instance: &mut Instance,
@@ -3503,7 +3069,6 @@ fn fill_ports(
     Ok(overflow)
 }
 
-/// A drawn grid item: its place in its holder's content and its layout.
 struct PlacedItem {
     key: ItemKey,
     naval_convoy: Option<u64>,
@@ -3514,13 +3079,6 @@ struct PlacedItem {
     port_tooltip: Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
 }
 
-/// The items `grid` of `icon`'s window holds that draw, in the order it holds them, each laid
-/// out through its instance with its place in the holder's content (the grid object's place, as
-/// finalize measures it over every item held, plus the item window's own position): every held
-/// item keeps its slot whether or not it draws. An item whose window is hidden draws nothing; one
-/// on which a refusal stands ([`Windows::items_withheld`]) draws nothing and is counted under why;
-/// the module's refusals are counted under the item window's name. `Err` is why the grid's
-/// items cannot be placed.
 fn held_items(
     windows: &Windows,
     icon: IconSlot,
@@ -3584,11 +3142,6 @@ fn held_items(
     Ok(items)
 }
 
-/// What a combat icon of the visible list ([`Pool::visible`]) draws: its window laid out, with
-/// the items each of its grids holds placed in the grid ([`held_items`]). `None` when it draws
-/// nothing: a refusal standing on its window ([`Pool::refuse`], counted with its combat unless
-/// `counted`, an icon the preparation already counted as omitted this hour) or the module's
-/// refusal (counted with its combat).
 fn combat_parts(
     windows: &Windows,
     icon: &Visible<'_, CombatOwner>,
@@ -3658,8 +3211,6 @@ fn combat_parts(
     Some((layout, items))
 }
 
-/// Every combat icon of the visible list ([`Pool::visible`], the manager's re-attached live and
-/// visible icons), with the items its grids hold, under the naval combat priority.
 fn draw_combats(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
@@ -3739,9 +3290,6 @@ fn draw_combats(
     Ok(())
 }
 
-/// Compose the region's retained grid items through their authored holders.
-/// Every child uses the same item update, refusal and transition machinery as
-/// naval-base and combat grids, while its pool remains separate from both.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn compose_mission_grids(
     windows: &Windows,
@@ -3873,11 +3421,6 @@ pub(super) fn compose_mission_grids(
     }
 }
 
-/// The port items a base icon of the visible list ([`Pool::visible`]) draws in `box_ships`
-/// (`grid`): its window's `box_ships` holder and each drawn item's place in the holder's content
-/// and layout ([`held_items`]). `None` when its grid holds nothing; when a refusal stands on its
-/// window, its layout is refused or its items cannot be placed, counted once for each item it
-/// holds (none of them is placed).
 #[allow(clippy::too_many_arguments)]
 fn port_parts(
     windows: &Windows,
@@ -3904,8 +3447,6 @@ fn port_parts(
             .or_default() += held;
         return None;
     }
-    // The glyph and its port grid share one instance and tick. Reuse the successful
-    // glyph layout; refused or pending resources still take the ordinary second query.
     let layout;
     let drawn = match drawn.filter(|layout| layout.diagnostics.is_empty()) {
         Some(drawn) => drawn,
@@ -3949,9 +3490,6 @@ fn port_parts(
     }
 }
 
-/// What the windows' resources draw from, as one number: the assets, templates and localisation,
-/// the hour's countries their flags resolve through, the viewport and the art decoded so far. A
-/// window laid out with other resources is laid out again ([`Instance::layout_kept`]).
 fn resources_stamp(inputs: &CounterInputs<'_>, countries: Option<&Countries>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
@@ -3968,7 +3506,6 @@ fn resources_stamp(inputs: &CounterInputs<'_>, countries: Option<&Countries>) ->
     hasher.finish()
 }
 
-/// Base glyphs and their port items use separate batches to preserve the label draw order.
 #[allow(clippy::too_many_arguments)]
 fn draw_ports(
     inputs: &CounterInputs<'_>,
@@ -3993,7 +3530,6 @@ fn draw_ports(
         .map(|pass| pass.bases.iter().copied().collect())
         .unwrap_or_default();
     for base in pool.visible() {
-        // A base and the ships in its port stand together.
         let anchor = anchors.get(base.owner).and_then(|&anchor| {
             inputs.icon_anchor(
                 IconFamily::Bases,
@@ -4063,8 +3599,6 @@ fn draw_ports(
             port_tooltip,
         } in items
         {
-            // This footprint describes only the plate. An unclipped child can
-            // extend outside it; native GUI drawing/hits use the child's clip.
             let corner = [
                 origin[0] as f32 + holder.origin[0] + holder.scale * place[0] as f32,
                 origin[1] as f32 + holder.origin[1] + holder.scale * place[1] as f32,

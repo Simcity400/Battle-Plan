@@ -1,22 +1,3 @@
-//! `NavalRegionControl`: the game's naval control rule ([`naval_region_control`], the function the
-//! dashboard and the map apply) evaluated by the recorder for each viewing country and sea region
-//! whenever one of its inputs changes, so a reply reads rows at an hour and runs of a row instead
-//! of evaluating the rule a day at a time. The rows hold the rule's operands; control and the
-//! explanatory share follow from them and the region's minimum supremacy (content) at the reply.
-//!
-//! Which viewers a region holds rows for: those its currents can concern (each present owner,
-//! its faction and subject family, the countries at war with it, those listing it as an ally or
-//! enemy, those it blockades, any viewer with a row there, any viewer whose own diplomacy rosters
-//! the rule cannot read, and every viewer where the reserved slot holds a current). Every other
-//! viewer gets what a viewer with no relation gets, evaluated once per region as the
-//! [`NavalRegionControlRow::EVERY_VIEWER`] row (none when that is all zeros).
-//!
-//! Cost: a quiet hour returns at once. NavalSupremacy moves daily: the regions it moved are
-//! recomputed, each for its viewers above. A change of a relation input (links, countries,
-//! factions, subjects, wars, relation tuples, diplomacy rosters; the reserved slot's visibility
-//! where that slot is live or present) recomputes every region with a current. The frame of the
-//! rule's tables is decoded once per recompute. Held: each region's viewers with a row (4 bytes a
-//! row), rebuilt from the table at a resume; nothing else outlives an hour.
 
 use crate::{
     forces::invalid,
@@ -41,7 +22,6 @@ use std::{
 const CURRENT: [usize; 1] = columns::<NavalSupremacyRow, 1>(["current"]);
 const NAMING: [usize; 2] = columns::<ReservedCountryNamingRow, 2>(["faction", "reverse_visibility"]);
 const COUNTERS: [usize; 2] = columns::<CountryCounterInputRow, 2>(["forward_visibility", "directed_wars"]);
-/// RelationTuples' countries and Countries' and CountryLinks' slot, as the schema numbers them.
 const TUPLE_COUNTRIES: [usize; 2] = [0, 1];
 const SLOT: [usize; 1] = [0];
 
@@ -50,28 +30,22 @@ const READS: &[Read] = &[
     Read { table: TableId::Countries, columns: Columns::These(&SLOT), watch: Watch::Changed, required: true },
     Read { table: TableId::CountryLinks, columns: Columns::These(&SLOT), watch: Watch::Changed, required: true },
     Read { table: TableId::FactionMembers, columns: Columns::Every, watch: Watch::Changed, required: true },
-    // Pairs are the keys: only rows coming and going.
     Read { table: TableId::Subjects, columns: Columns::These(&[]), watch: Watch::Changed, required: true },
     Read { table: TableId::WarRelations, columns: Columns::These(&[]), watch: Watch::Changed, required: true },
     Read { table: TableId::RelationTuples, columns: Columns::These(&TUPLE_COUNTRIES), watch: Watch::Changed, required: true },
     Read { table: TableId::AirCountryRelations, columns: Columns::Every, watch: Watch::Changed, required: true },
-    // Read only for the reserved slot, which refuses by name where they are not complete.
     Read { table: TableId::ReservedCountryNaming, columns: Columns::These(&NAMING), watch: Watch::Changed, required: false },
     Read { table: TableId::CountryCounterInputs, columns: Columns::These(&COUNTERS), watch: Watch::Changed, required: false },
 ];
-/// The relation inputs among [`READS`], and the reserved slot's.
 const RELATIONS: std::ops::Range<usize> = 1..8;
 const RESERVED: std::ops::Range<usize> = 8..10;
 
-/// The viewer the rest of a region's viewers are evaluated as: no country's slot.
 const OUTSIDER: u32 = u32::MAX - 1;
 
-/// One viewer's rule outputs in one region.
 #[derive(Debug, PartialEq, Eq)]
 struct Outputs {
     control: Result<(i64, i64), String>,
     share: Result<(i64, i64), String>,
-    /// None while an owner of a nonzero current has no link.
     own: Option<i64>,
 }
 
@@ -96,9 +70,6 @@ impl Outputs {
     }
 }
 
-/// Who each country's currents can concern, beside itself: its faction and subject family, the
-/// countries at war with it, those listing it as an ally or an enemy and those it blockades; and
-/// the viewers whose own rosters the rule cannot read. A superset: the rule decides each.
 #[derive(Default)]
 struct Concerned {
     factions: HashMap<u32, u64>,
@@ -167,7 +138,6 @@ impl Concerned {
         out
     }
 
-    /// The viewers a current of slot `owner` can concern.
     fn of(&self, owner: u32, into: &mut BTreeSet<u32>) {
         into.insert(owner);
         if let Some(members) = self.factions.get(&owner).and_then(|faction| self.members.get(faction)) {
@@ -179,7 +149,6 @@ impl Concerned {
     }
 }
 
-/// The hour's frame of the rule's tables, NavalSupremacy stamped with its read hour.
 fn frame(hour: &Hour<'_>, reserved: bool) -> io::Result<DecodedFrame> {
     let mut tables = vec![
         TableId::NavalSupremacy,
@@ -206,8 +175,6 @@ fn frame(hour: &Hour<'_>, reserved: bool) -> io::Result<DecodedFrame> {
     Ok(frame)
 }
 
-/// Whether the reserved slot is a viewer or an owner of a current: then its visibility inputs
-/// move the rule.
 fn reserved(links: &TableView<'_>, supremacy: &TableView<'_>) -> bool {
     let linked_to_zero = |raw: u32| links.slot(u128::from(raw)).and_then(|slot| links.number(SLOT[0], slot)) == Some(0);
     links.rows().any(|slot| links.number(SLOT[0], slot) == Some(0))
@@ -216,16 +183,11 @@ fn reserved(links: &TableView<'_>, supremacy: &TableView<'_>) -> bool {
 
 #[derive(Default)]
 pub struct NavalControl {
-    /// Every region must be recomputed before the next hour's changes are applied: a resume, or
-    /// an hour the rule could not read NavalSupremacy.
     rebuild: bool,
-    /// Each region's viewers with a row.
     held: HashMap<u32, Vec<u32>>,
 }
 
 impl NavalControl {
-    /// The region rows of `frame`: each region's viewers' outputs, the outsider's under
-    /// [`NavalRegionControlRow::EVERY_VIEWER`]; only those not all zeros.
     fn region<'w, 'a>(world: &'w World<'a>, contexts: &mut HashMap<u32, ControlContext<'w, 'a>>, frame: &DecodedFrame, links: &BTreeMap<u32, u32>, live: &BTreeSet<u32>, concerned: &Concerned, region: u32) -> Result<Vec<(u32, Outputs)>, String> {
         let rows = naval_region_control::regional_rows(frame, region)?;
         if rows.iter().all(|row| row.current == 0) {
@@ -259,7 +221,6 @@ impl NavalControl {
                 None if unresolved => None,
                 None => Some(0),
             };
-            // The share's raw operands: unfloored, so the reply floors them by the region's minimum.
             let outputs = Outputs { control: context.sums(region), share: context.share(region, i64::MIN), own };
             if !outputs.zero() {
                 out.push((if viewer == OUTSIDER { NavalRegionControlRow::EVERY_VIEWER } else { viewer }, outputs));
@@ -286,7 +247,6 @@ impl Writer for NavalControl {
         READS
     }
 
-    // Hourly: a NavalSupremacy read stands for its day alone, the next refusing it.
     fn hourly(&self) -> bool {
         true
     }
@@ -309,7 +269,6 @@ impl Writer for NavalControl {
             return Ok(());
         }
         let links_view = hour.table(TableId::CountryLinks);
-        // A status change moves the rule as a write does: a refused input withholds the operands, its return recomputes them.
         let moved = |range: std::ops::Range<usize>| READS[range].iter().any(|read| hour.changes(read.table).status_changed || hour.wrote(read.table, read.columns));
         let mut whole = hour.fresh || self.rebuild || moved(RELATIONS);
         let reserved = reserved(&links_view, &supremacy);
@@ -368,7 +327,6 @@ impl Writer for NavalControl {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume recomputes every region.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

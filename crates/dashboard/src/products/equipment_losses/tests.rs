@@ -95,7 +95,6 @@ fn land_coverage_follows_the_identitys_row_and_its_absence_is_unknown() {
     assert_eq!(classify("The recording's own reason"), UnknownReason::DestructionWithheld);
 }
 
-/// Exact totals at 1,500 hours, as a view with that many picked hours may ask, are one valid request.
 #[test]
 fn a_request_reading_1500_exact_hours_is_valid() {
     let params = LossesParams { branch_id: "1".into(), country: "GER".into(), land_source: LandSource::default(), identity: None, from: 0, to: 2_000, width: 64, reads: (0..1_500).collect() };

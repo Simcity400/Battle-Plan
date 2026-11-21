@@ -124,26 +124,18 @@ fn width_replays_direction_grouping_and_totals() {
             rows.iter().map(|row| ((0, row.division), row)).collect();
         direction_count(committed, &divisions, COMBAT, movement).ok()
     }
-    // Distinct provinces without latched grouping count twice.
     assert_eq!(
         count(&[row(1, 9263, 0), row(2, 389, 0)], &[1, 2], &still),
         Some(2)
     );
-    // Two positive latch words group into one direction: the first arms
-    // the latch, the second folds into its direction.
     assert_eq!(
         count(&[row(1, 9263, 5), row(2, 389, 7)], &[1, 2], &still),
         Some(1)
     );
-    // A latched unit on an already-seen key does not arm the latch: the
-    // next fresh latched key still opens its own direction.
     let rows = [row(1, 9263, 0), row(2, 9263, 5), row(3, 389, 7)];
     assert_eq!(count(&rows, &[1, 2, 3], &still), Some(2));
-    // Missing rows leave the count unknown; empty lists count zero.
     assert_eq!(count(&rows, &[1, 9], &still), None);
     assert_eq!(count(&rows, &[], &still), Some(0));
-    // A unit inside the combat province keys on its movement source, and
-    // one standing there without a source keys on the province itself.
     let entered = [row(1, COMBAT, 0), row(2, 9263, 0)];
     assert_eq!(count(&entered, &[1, 2], &still), None);
     assert_eq!(
@@ -151,7 +143,6 @@ fn width_replays_direction_grouping_and_totals() {
         Some(1)
     );
     assert_eq!(count(&entered, &[1, 2], &BTreeMap::from([(1, 0)])), Some(2));
-    // Base width 80 plus one support term of 40 gives total width 120.
     let detail = LandCombatDetailsRow::default();
     let plains = [8_000_000, 4_000_000];
     assert_eq!(total_width(&detail, plains, 1), 8_000_000);

@@ -112,7 +112,6 @@ impl Projection {
             while reader.hour().is_some_and(|h| h < hour) {
                 if !reader.step(recording)? { return Err(io::Error::other("Product reader reached the end of its run")); }
                 let changes = reader.changes();
-                // Packing renumbers slots. The retained view and its edits are keyed by row identity.
                 if reset { continue; }
                 for &(_, key) in &changes.deleted {
                     if read.keys.contains(key) { dirty.insert(key, u64::MAX); }
@@ -183,7 +182,6 @@ impl Projection {
             let fresh = match decode(&keyed) {
                 Ok(rows) => rows,
                 Err(e) if Unsayable::of(&e).is_some() => {
-                    // Resolve the first unsayable row in the same order as the exact read.
                     self.selection = None;
                     return self.read(recording, read, hour, sample, view, edits, count, None);
                 }
@@ -281,7 +279,6 @@ where P::Context: Sync, P::Params: Sync {
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     use dashboard_query::identity::{Country, Holder};
     let owner = P::owner(&params);
-    // A slot's identity moves where any tag it holds starts or ends, so its name at the hour is read anew.
     let owned = |tag: &str, run: &dashboard_query::identity::HolderRun| match owner {
         None => true,
         Some(Country::Tag(owned)) => owned == tag,

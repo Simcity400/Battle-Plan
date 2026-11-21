@@ -1,9 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
-/** The countries chosen are overlords (their subjects each get a lane, the
- * default) or the subjects themselves, as the spec's "subjects of a chosen
- * overlord, or picked subjects". */
 export const OPTIONS: readonly OptionField[] = [
   { key: 'countriesAre', section: 'options', label: 'The countries chosen are', kind: 'choice', default: 'overlords',
     hint: 'Overlords show every subject they had in this campaign',

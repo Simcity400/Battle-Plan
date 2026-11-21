@@ -1,10 +1,3 @@
-//! Naval-combat transfer vectors and their live unit occurrences.
-//!
-//! Map icons can extend an engaged combat onto a sea province when one of its
-//! transfers has a resolving unit located there. Combat transfer handles are
-//! recorded raw in stored order. Transfer units retain each nonzero resolving
-//! handle in stored order, skipping stale handles; their provinces come from
-//! unit tables.
 
 use engine_sites::Rva;
 use crate::{
@@ -13,14 +6,12 @@ use crate::{
     walk::Outcome,
 };
 
-/// One naval combat with a nonempty transfer vector; `transfers` addresses its handles.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CombatTransfers {
     pub combat: u64,
     pub transfers: [usize; 2],
 }
 
-/// One live transfer some combat names, once; `units` addresses its live unit handles.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransferUnits {
     pub transfer: u64,
@@ -35,8 +26,6 @@ pub struct Walk {
     pub unit_handles_required: usize,
 }
 
-/// Unit reference-subobject offset, subtracted from a resolved pointer.
-/// A null resulting unit is skipped.
 const UNIT_REFERENCE_BASE: usize = 0x10;
 
 fn handles(memory: &impl Memory, pointer: usize, offset: usize) -> Result<Array, &'static str> {
@@ -46,7 +35,6 @@ fn handles(memory: &impl Memory, pointer: usize, offset: usize) -> Result<Array,
         .ok_or("naval transfer handle vector invalid")
 }
 
-/// Copies a handle vector in chunks of one guarded read each.
 fn for_each_handle(
     memory: &impl Memory,
     array: Array,
@@ -85,11 +73,6 @@ fn outcome(len: usize, missing: usize) -> Outcome {
     }
 }
 
-/// Walks the mixed combat registry's naval combats. A stale transfer handle stays in its
-/// combat's vector and has no units row; a transfer two combats name has one. The distinct
-/// transfers are found by sorting their handles in the caller's row buffer, so the walk is
-/// linear in reads and `n log n` in comparisons. Nothing is allocated: a short buffer
-/// truncates and reports the demand.
 pub struct Buffers<'a> {
     pub combats: &'a mut Vec<CombatTransfers>,
     pub transfer_handles: &'a mut Vec<u64>,
@@ -136,7 +119,6 @@ fn walk_buffer(
         ];
         let transfer_vtable =
             expected(cnaval_unit_transfer::VTABLE_RVA).ok_or("module address overflow")?;
-        // Every combat's raw vector.
         for_each_handle(memory, registry, |_, combat| {
             let combat = usize::try_from(combat)
                 .ok()
@@ -194,9 +176,7 @@ fn walk_buffer(
             }
             Ok(())
         })?;
-        // The distinct nonzero transfers, only once every combat's vector is held.
         if combat_missing > 0 {
-            // The rows buffer grows toward every handle's row; the next hour completes it.
             transfer_missing = transfer_required.max(1);
             return Ok(());
         }
@@ -229,8 +209,6 @@ fn walk_buffer(
             }
         }
         let mut resolver = HeaderResolver::default();
-        // Rows are compacted in place: the row at `index` is read before `transfer_len`
-        // (never past it) is written.
         for index in 0..kept {
             let transfer = transfers[index].transfer;
             let Some(pointer) = resolver.resolve(memory, base, transfer)? else {
@@ -249,7 +227,6 @@ fn walk_buffer(
             }
             let units = handles(memory, pointer, cnaval_unit_transfer::UNITS)?;
             let start = unit_used;
-            // Serialization reaches every original unit occurrence.
             unit_handles.ensure(
                 start
                     .checked_add(units.count as usize)
@@ -257,8 +234,6 @@ fn walk_buffer(
             )?;
             let mut live = 0usize;
             for_each_handle(memory, units, |_, unit| {
-                // Resolved unit reference subobjects that cast to null are skipped,
-                // as are null or unresolved handles.
                 let resolved = resolver.resolve(memory, base, unit)?;
                 if unit == 0 || resolved.is_none_or(|object| object == UNIT_REFERENCE_BASE) {
                     return Ok(());
@@ -312,7 +287,6 @@ mod tests {
     const LAND: usize = 0x2400;
     const TABLE: usize = 0x3000;
     const BUCKETS: usize = 0x3100;
-    /// Handles of type 4713 route to the registry's high root.
     const KIND: u64 = 4713;
 
     fn put(bytes: &mut Vec<u8>, at: usize, value: &[u8]) {
@@ -332,8 +306,6 @@ mod tests {
         (id << 32) | KIND
     }
 
-    /// The fixture's bytes, with the high reference root at `TABLE` and every other root
-    /// null.
     struct Image<'a>(SliceMemory<'a>);
 
     impl Memory for Image<'_> {
@@ -350,7 +322,6 @@ mod tests {
         }
     }
 
-    /// Robin-hood reference table holding `objects`.
     fn install(bytes: &mut Vec<u8>, objects: &[(u64, u64)]) -> usize {
         let capacity = (objects.len() * 3).max(8).next_power_of_two();
         let exponent = capacity.trailing_zeros();
@@ -412,8 +383,6 @@ mod tests {
         BUCKETS + cells * bucket::STRIDE
     }
 
-    /// `combats` naval combats, each naming its transfers; every transfer at `objects` holds
-    /// its unit handles. Live objects are the transfers and units listed in `live`.
     struct Fixture {
         bytes: Vec<u8>,
     }
@@ -460,8 +429,6 @@ mod tests {
                 transfer_objects.push((*transfer, object as u64));
             }
             objects.extend(transfer_objects);
-            // A live unit resolves to its unit's secondary base; the walk never reads it. A unit
-            // whose registry cell holds 0x10 itself casts to a null unit.
             objects.extend(live_units.iter().map(|&unit| (unit, 0x20_0010)));
             objects.extend(null_units.iter().map(|&unit| (unit, 0x10)));
             let registry_slots = next(&mut bytes, (combats.len() + 1) * 8);
@@ -560,8 +527,6 @@ mod tests {
     fn vectors_keep_native_order_and_units_keep_only_live_handles() {
         let (live, stale) = (handle(1), handle(2));
         let (unit, gone, null) = (handle(10), handle(11), handle(12));
-        // Combat 0 names the live transfer twice, a null and a stale one; combat 1 names the
-        // live one again. The transfer holds a stale, a live, a null-object and a zero unit.
         let fixture = Fixture::new(
             &[vec![live, 0, stale, live], vec![live]],
             &[(live, vec![gone, unit, null, 0])],
@@ -573,7 +538,6 @@ mod tests {
         assert_eq!(walked.transfer_handles_required, 5);
         assert_eq!(combats[0].transfers, [0, 4]);
         assert_eq!(handles, [live, 0, stale, live, live]);
-        // One row for the live transfer; the stale one has none.
         assert_eq!(walked.transfers, Outcome::Rows { len: 1 });
         assert_eq!(
             transfers[0],
@@ -582,10 +546,8 @@ mod tests {
                 units: [0, 1]
             }
         );
-        // Stale, null-object and zero unit handles are omitted.
         assert_eq!(units[0], unit);
         assert_eq!(walked.unit_handles_required, 1);
-        // Short arenas grow to the same rows.
         let (short, ..) = fixture.walk([2, 4, 3, 4]);
         assert_eq!(short.combats, Outcome::Rows { len: 2 });
         assert_eq!(short.transfers, Outcome::Rows { len: 1 });
@@ -632,7 +594,6 @@ mod tests {
         }
     }
 
-    /// 1,500 and 5,000 transfers, each named by two combats: the reads grow linearly.
     #[test]
     fn many_transfers_cost_reads_linear_in_their_count() {
         let mut per_transfer = None;
@@ -653,7 +614,6 @@ mod tests {
             let n = count as usize;
             let started = std::time::Instant::now();
             let (walked, _, _, rows, _) = fixture.walk_on(&census, [2, 2 * n, 2 * n, n]);
-            // Synthetic memory: the blocking cost here is the walk's own work, not the reads'.
             println!(
                 "{count} transfers named twice: {} reads, {:.3} ms",
                 census.calls(),
@@ -666,7 +626,6 @@ mod tests {
                     .all(|pair| pair[0].transfer < pair[1].transfer)
             );
             let reads = census.calls() as f64 / count as f64;
-            // Per transfer: its identity, its unit vector header and slots, and two probes.
             assert!(reads < 12.0, "{reads} reads per transfer at {count}");
             if let Some(previous) = per_transfer {
                 assert!(reads <= previous * 1.1, "{previous} -> {reads}");

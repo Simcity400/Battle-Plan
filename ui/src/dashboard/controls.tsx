@@ -13,9 +13,6 @@ import { countryNameAt, useSlotTags } from './countrySlots.ts';
 import { useMapMuted } from '../shell/muteSetting';
 import { commitZone } from '../shell/commitCount';
 
-/** The header's country picker, showing the flag the game drew at the playback hour. The flag is read
- * at the hour it last changed (`useIdentityHour`), so the picker renders only when it does. The chosen country is its
- * slot (`selectedSlot`), named by the tag it goes by at the playback hour. */
 export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined; selectedSlot: number | null }
   & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
   const first = track?.branch.firstHour, last = track?.branch.lastHour, offset = track?.axisOffset;
@@ -33,7 +30,6 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
   return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} />;
 }
 
-/** Mutes or restores the native maps' audio; only the focused map sounds. */
 function MapMuteButton() {
   const { muted, error, set } = useMapMuted();
   if (muted == null && !error) return null;
@@ -45,8 +41,6 @@ function MapMuteButton() {
 export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
 }) {
-  // React renders the strip on anchors only; the playhead, the date and the hour-bound controls are
-  // painted from the clock's frames (`place` and `settle` below), and the calendar takes the anchor's hour.
   const controlsKey = useCallback(() => {
     const snapshot = clock.getSnapshot();
     return `${snapshot.playing}:${snapshot.hoursPerSecond}:${snapshot.bounds?.firstHour}:${snapshot.bounds?.lastHour}:${snapshot.playing ? '' : snapshot.hour}`;
@@ -65,7 +59,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const bounds = snapshot.bounds;
   const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
-  // The date follows the clock's frames until a draft replaces it.
   const axisOffset = reference?.axisOffset;
   const liveDate = useMemo(() => axisOffset == null ? undefined
     : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame }, [clock, axisOffset]);
@@ -76,8 +69,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const fill = useRef<HTMLSpanElement>(null);
   const knob = useRef<HTMLSpanElement>(null);
   const painted = useRef('');
-  // The playhead moves as the clock does, linearly between anchors: one compositor animation per
-  // anchor carries it to the end at the playing speed, so no frame touches the page for it.
   const placed = useRef('');
   const moving = useRef<Animation[]>([]);
   const place = useRef(() => {});
@@ -100,7 +91,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
     const [fillTo, knobTo] = frames(1);
     moving.current = [fill.current.animate([fillFrom, fillTo], timing), knob.current.animate([knobFrom, knobTo], timing)];
   };
-  // The slider's value, its spoken date and the hour-bound buttons follow the clock's frames.
   const settle = useRef(() => {});
   settle.current = () => {
     const { hour, bounds } = clock.getSnapshot();
@@ -117,13 +107,11 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
     const gap = raw == null ? undefined : reference?.branch.gaps?.find(item => item.firstHour <= raw && item.lastHour >= raw);
     input.setAttribute('aria-valuetext', raw == null ? 'No recording selected' : `${formatDateTime(raw)}${gap ? `; reported recording gap: ${gap.reason}` : ''}`);
   };
-  // After every render, since React leaves these to the painters, and on the clock's frames and anchors.
   useLayoutEffect(() => { painted.current = ''; settle.current(); place.current(); });
   useLayoutEffect(() => {
     const stops = [clock.subscribeFrame(() => settle.current()), clock.subscribe(() => place.current())];
     return () => { for (const stop of stops) stop(); for (const animation of moving.current) animation.cancel(); };
   }, [clock]);
-  // A pressed pointer seeks to the hour under it, the hour its tooltip names; the keyboard to the range's value.
   const pointer = useRef<{ pressed: boolean; hour: number | null }>({ pressed: false, hour: null });
   const pointerAt = (event: PointerEvent<HTMLInputElement>) => {
     if (!bounds || span <= 0) return null;

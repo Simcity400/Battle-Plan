@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-// The open map settings hide the native map, and a hidden map refuses an export: the menu closes before the export is
-// asked for, and a refusal opens it again to say why.
 test('an export is asked for with the map settings closed, and a refusal reopens them with its reason', async () => {
   await withNativePage('map-controls', '/ui/src/components/MapControls.dom.fixture.tsx', page => page.stage('map controls export', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.mapControls.${expression}`);

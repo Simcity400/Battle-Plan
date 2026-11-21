@@ -1,19 +1,3 @@
-//! Allocation-free notifications from the native writers of every building status's StateBuildings
-//! and ProvinceBuildings rows ([`engine_mutations::building_mutations`]). A detour only notifies the shared
-//! watch registry ([`WatchRegistry`]) for the `CBuildingStatus` its first argument names, counts
-//! its site and calls the original; it never changes game behaviour. A building writer names its
-//! status through the building's guarded backlink (`engine_native::cbuilding::BUILDING_STATUS`); when that
-//! read fails the call revokes every certificate. Entering nudge mode (the developer map editor,
-//! [`Receiver::Structure`]) poisons the domain: the nudger then rebuilds statuses and locations at
-//! any moment without a hooked writer. Anything unobserved (disabled, poisoned, a refused
-//! registration, an epoch change, a running writer) makes the capture read that status afresh.
-//! Every notification of a registered status also marks it ([`Changes::take`]), which lets a
-//! settled hour read only the statuses writers touched without walking the locations. This family
-//! owns these patches, so each detour also forwards its call ([`forward`]) to
-//! [`crate::territory_changes`], whose carried state and province rows read the same buildings, to
-//! [`crate::rail_changes`], whose carried rail infos read the rail building of their province's
-//! status, and to [`crate::raid_changes`], whose raid state inputs read a state's infrastructure
-//! level.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -28,18 +12,13 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read statuses; reused and read rows; empty statuses; quiet
-/// hours; statuses read because a writer touched them; settled hours.
 static READS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-/// Statuses the latest complete capture walked, for off-thread sizing.
 static STATUSES: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the watched statuses and each writer site's calls.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
     unnamed: AtomicU64,
-    /// Calls of a [`Receiver::Structure`] site, each of which poisoned.
     structure: AtomicU64,
 }
 
@@ -59,9 +38,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `status`; `None` names no status and revokes every
-    /// certificate. Dropping the guard notifies its return.
     pub fn notify(&self, status: Option<usize>, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         match status {
@@ -73,10 +49,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: `site` opens a path that may later
-    /// rewrite any status and what locates it without a hooked writer (nudge
-    /// mode). Reuse ends for the attachment, and every certificate taken
-    /// before or while it runs is revoked.
     pub fn structure(&self, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.structure.fetch_add(1, Ordering::Relaxed);
@@ -84,8 +56,6 @@ impl Watches {
         self.registry.notify_every()
     }
 
-    /// Hook path: the notification of a call of `site` whose first argument
-    /// is `first`, as the site's [`Receiver`] says.
     fn notify_site(&self, site: usize, first: usize) -> Notification<'_> {
         match MUTATIONS[site].1 {
             Receiver::Structure => self.structure(site),
@@ -93,7 +63,6 @@ impl Watches {
         }
     }
 
-    /// An enabled domain with a table for `statuses` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(statuses: usize) -> Self {
         let watches = Self::new();
@@ -103,7 +72,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -114,24 +82,14 @@ impl Watches {
         self.registry.poisoned()
     }
 
-    /// Registrations since the table was last cleared or installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn registered(&self) -> usize {
         self.registry.registered()
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// The single consumer of the marks: visits every registered status a
-    /// writer touched since the previous take and returns the epoch they
-    /// were marked in; `None` when that certifies nothing (unobserved, a
-    /// writer runs or the epoch moved). A status registered in that epoch
-    /// and not visited since was touched by no observed writer.
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// `(epoch, sequence)` of one status, registering it; `None` when it
-    /// cannot be observed. Equal values across hours prove that no observed
-    /// writer touched it.
     fn sequence(&self, status: usize) -> Option<(u64, u64)>;
 }
 
@@ -144,7 +102,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
@@ -155,9 +112,6 @@ impl Changes for Observer {
     }
 }
 
-/// The status a site's first argument names: the argument itself, or a
-/// building's guarded backlink; `None` when that does not read, and for a
-/// site that names no status.
 fn status_of(receiver: Receiver, first: usize) -> Option<usize> {
     match receiver {
         Receiver::Status => Some(first),
@@ -173,7 +127,6 @@ fn status_of(receiver: Receiver, first: usize) -> Option<usize> {
     }
 }
 
-/// The marks a forwarded building write holds over the native call.
 #[must_use]
 struct Forwarded(
     #[allow(dead_code)] Option<crate::territory_changes::Marks<'static>>,
@@ -181,15 +134,6 @@ struct Forwarded(
     #[allow(dead_code)] Option<crate::dirty_set::Dirty<'static>>,
 );
 
-/// Hook path, allocation-free: this family owns the building writers' patches, so it forwards each
-/// call to [`crate::territory_changes`], whose The two state infrastructure terms and province fort
-/// sums read a status's buildings, to [`crate::rail_changes`], whose rail infos read the rail
-/// building of their province's status, and to [`crate::raid_changes`], whose state inputs read a
-/// state's infrastructure level. A named status marks its province or state through its own flags
-/// and location id (`engine_native::cbuilding_status::FLAGS` and `ID`, written only by the status
-/// constructor); a status that cannot be named or read marks every province and state; entering
-/// nudge mode poisons the three families and the air base carry
-/// ([`collector_observers::air_base_carry_changes`]). The marks cover the original in flight.
 fn forward(receiver: Receiver, first: usize) -> Forwarded {
     if receiver == Receiver::Structure {
         crate::territory_changes::poison();
@@ -220,21 +164,14 @@ fn forward(receiver: Receiver, first: usize) -> Forwarded {
     }
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the statuses the latest capture
-/// walked. Nothing is offered before a capture walked them: a later larger
-/// table waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
     let statuses = STATUSES.load(Ordering::Relaxed);
     if statuses != 0 {
@@ -242,16 +179,10 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's statuses and rows. `empty` statuses have no building and
-/// are neither read nor reused, unless a writer touched them. `settled`
-/// marks a capture that carried both tables without walking the locations,
-/// reading only the `marked` statuses a writer touched (counted as read);
-/// `quiet` a settled one that read no touched status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
@@ -264,8 +195,6 @@ pub struct Counts {
     pub quiet: bool,
 }
 
-/// A worker publishes one capture's counts and, when it walked every status,
-/// their number for sizing.
 pub fn record(counts: &Counts, statuses: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -289,14 +218,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A withheld site leaves the family uninstalled; the building
-    /// tables then read every status afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A withheld site leaves the family uninstalled; the building"]
+    #[doc = " tables then read every status afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "building_changes")
@@ -324,10 +253,6 @@ impl Hooks {
             }
         }
         if hooks.is_empty() {
-            // Nothing forwards building writes: territory_changes cannot
-            // certify a state's infrastructure or a province's fort sum, nor
-            // rail_changes a rail building's health, nor raid_changes a
-            // state's infrastructure level.
             crate::territory_changes::poison();
             crate::rail_changes::poison();
             crate::raid_changes::poison();
@@ -342,8 +267,6 @@ impl Hooks {
                 replay_data::rows::NuclearStrikePart::Buildings,
                 false,
             );
-            // The rail and raid state domains observe only while these
-            // forward their writes.
             crate::rail_changes::forwarder(false);
             crate::raid_changes::forwarder(false);
             collector_observers::air_base_carry_changes::forwarder(
@@ -351,10 +274,6 @@ impl Hooks {
                 false,
             );
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -372,8 +291,6 @@ impl Hooks {
         );
         crate::rail_changes::forwarder(enabled && !self.hooks.is_empty());
         crate::raid_changes::forwarder(enabled && !self.hooks.is_empty());
-        // Air bases carry state and province identities only while this
-        // forwards entering nudge mode.
         collector_observers::air_base_carry_changes::forwarder(
             collector_observers::air_base_carry_changes::Forwarder::Building,
             enabled && self.hooks.len() == SITES,
@@ -387,17 +304,10 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         collector_observers::world_input_changes::fog_forwarder(false);
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-// Each site takes integer or pointer arguments only (the asm prologues use
-// RCX..R9 and the caller's stack slots, which a Win64 detour forwards) and
-// returns RAX unchanged from its original; the first names the status as
-// its [`Receiver`] says. The notification covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($first:ident $(, $arg:ident)*)) => {
         unsafe extern "system" fn $name($first: usize $(, $arg: usize)*) -> usize {
@@ -411,19 +321,13 @@ macro_rules! callback {
         }
     };
 }
-// Set level (building, level, notify) -> bool.
 callback!(set_level, 0, (building, level, notify));
-// Apply damage step (building, out, amount, flag, cause, flag).
 callback!(
     apply_damage_step,
     1,
     (building, out, amount, first, cause, second)
 );
-// Advance repair (building, out, progress, flag).
 callback!(advance_repair, 2, (building, out, progress, flag));
-// Destroy healthy levels (building, out, levels, flag, source):
-// a strike's building damage, which the nuclear strike family observes
-// through this patch ([`collector_observers::nuclear_strikes::building`]).
 unsafe extern "system" fn destroy_healthy_levels(
     building: usize,
     out: usize,
@@ -439,23 +343,15 @@ unsafe extern "system" fn destroy_healthy_levels(
         unsafe { std::mem::transmute(ORIGINAL[3].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(building, out, levels, flag, source) })
 }
-// Get or create building (status, template).
 callback!(get_or_create_building, 4, (status, template));
-// Read building status (status, reader).
 callback!(read_building_status, 5, (status, reader));
-// Clear building status (status).
 callback!(clear_building_status, 6, (status));
-// Enter nudge mode (idler, a, b, c, d) -> idler. Its only caller, game idler update, passes five
-// arguments (the fifth at its stack slot); a sixth forwards the next caller stack slot, which the
-// original never reads.
 callback!(enter_nudge_mode, 7, (idler, a, b, c, d, spare));
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A building writer names the status its live backlink holds; one
-    /// whose backlink is null names none, so it revokes every certificate.
     #[test]
     fn a_building_writer_names_its_backlinked_status() {
         let mut building = vec![0_u8; engine_native::cbuilding::TEMPLATE + 8];
@@ -477,8 +373,6 @@ mod tests {
         assert_eq!(watches.unnamed.load(Ordering::Relaxed), 1);
     }
 
-    /// Entering nudge mode names no status: it poisons the domain, so no
-    /// certificate is given and no take certifies again, and counts its call.
     #[test]
     fn entering_nudge_mode_poisons_the_domain() {
         let site = MUTATIONS

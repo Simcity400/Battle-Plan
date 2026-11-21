@@ -17,7 +17,6 @@ import './combatLog.css';
 const EQUIPMENT_KINDS = ['Combat losses', 'Other attrition', 'Combat attrition', 'Training attrition', 'Recovered', 'Enemy losses'];
 type View = 'manpower' | 'equipment' | 'battles';
 
-/** The game's retained Combat Log at the widget's hour, under a disclosure: asked only once opened. */
 export default function CombatLogDetails(props: WidgetProps & { view: View }) {
   const [open, setOpen] = useState(false);
   return <details className="combat-log-details" onToggle={event => setOpen(event.currentTarget.open)}>
@@ -25,8 +24,6 @@ export default function CombatLogDetails(props: WidgetProps & { view: View }) {
   </details>;
 }
 
-/** Following, the snapshot is of the hour playback last stopped at: while playing it keeps the one it shows and asks
- * nothing, so the head's values are never asked for. */
 export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps & { view: View }) {
   const following = widget.time.mode === 'follow';
   const settled = useHeadHour(runtime.clock, active && following, at => runtime.clock.getSnapshot().playing ? 'playing' : String(Math.floor(at)));

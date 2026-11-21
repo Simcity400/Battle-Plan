@@ -1,11 +1,7 @@
-//! Shared recorded-unit admission and namespace operands.
-/// Signed route and combat counts decide the idle action.
 pub fn idle(path_count: u32, combat_count: u32) -> bool {
     (path_count as i32) <= 0 && (combat_count as i32) <= 0
 }
 
-/// A task force must be in its mission regions with an active mission kind.
-/// Invasion support additionally needs a bombardment region.
 pub fn mission_active(is_in_regions: u8, mission: u32, bombardment_region: u32) -> bool {
     if is_in_regions == 0 {
         return false;
@@ -18,8 +14,6 @@ pub fn mission_active(is_in_regions: u8, mission: u32, bombardment_region: u32) 
     }
 }
 
-/// When no explicit portrait path exists, combine [`LEADER_DIRECTORY`], the
-/// recorded country tag, a slash and the picture name. An empty tag returns `None`.
 pub fn leader_directory_path(tag: &[u8], picture: &[u8]) -> Option<Vec<u8>> {
     if tag.is_empty() || picture.is_empty() {
         return None;
@@ -31,9 +25,7 @@ pub fn leader_directory_path(tag: &[u8], picture: &[u8]) -> Option<Vec<u8>> {
     Some(path)
 }
 
-/// Patrol mission kind, whose activity also depends on the task force's region.
 pub const PATROL: u32 = 1;
-/// Directory prefix for country-qualified leader pictures.
 pub const LEADER_DIRECTORY: &str = "gfx/leaders/";
 pub const STANDSTILL: u32 = 0;
 pub const ATTACKING: u32 = 9;

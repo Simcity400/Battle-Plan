@@ -1,5 +1,3 @@
-//! Native tree batch order: palette, then squared distance.
-//! Equal keys retain the native median partition/heap permutation, not an ordinal tie-break.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Entry {
@@ -22,7 +20,6 @@ pub(super) fn sort(rows: &mut [Entry]) {
 fn sort_budget(mut rows: &mut [Entry], mut budget: usize) {
     loop {
         if rows.len() <= 32 {
-            // Small-range insertion sort leaves equal keys in place.
             for next in 1..rows.len() {
                 let value = rows[next];
                 let mut hole = next;
@@ -50,7 +47,6 @@ fn sort_budget(mut rows: &mut [Entry], mut budget: usize) {
     }
 }
 
-// Comparator used for median-of-three/nine selection.
 fn median(rows: &mut [Entry], first: usize, middle: usize, last: usize) {
     if rows[middle].before(rows[first]) {
         rows.swap(first, middle);
@@ -132,8 +128,6 @@ fn partition(rows: &mut [Entry]) -> (usize, usize) {
     }
 }
 
-// Descend first, choosing the right child on equality, then push the saved value toward the
-// original hole.
 fn adjust(rows: &mut [Entry], top: usize, value: Entry) {
     let length = rows.len();
     let bottom_parent = (length - 1) / 2;
@@ -182,9 +176,6 @@ mod tests {
     fn tie_permutations_match_msvc_insertion_partition_and_heap_paths() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // MSVC14.44 std::_Sort_unchecked fixture. Its threshold, median selection,
-        // partition rotations and heap tie rule match //.
-        // FNV over source ordinals checks equal-key permutation as well as ordering.
         let cases: &[(usize, usize, usize, u64)] = &[
             (0, 0, 0, 0xcbf29ce484222325),
             (0, 0, 1, 0xcbf29ce484222325),

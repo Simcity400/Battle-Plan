@@ -1,7 +1,3 @@
-//! Built-in modifier indices consumed by fixed-key readers and playback.
-//!
-//! Fixed names come from verified executable metadata, independently of content
-//! order. Dynamic keys come from live data.
 
 pub use engine_reference_values::modifier_keys::*;
 
@@ -11,12 +7,10 @@ pub struct Key {
     pub name: &'static str,
 }
 
-/// Fixed modifier names in the executable's own index order.
 pub fn names() -> std::io::Result<&'static [&'static str]> {
     Ok(&crate::executable_tables::keywords()?.modifier_names)
 }
 
-/// The name of a fixed modifier index, while the modifier table matches this release's.
 pub fn fixed_name(index: u32) -> std::io::Result<&'static str> {
     crate::executable_tables::keywords()?
         .fixed_modifiers()?
@@ -25,7 +19,6 @@ pub fn fixed_name(index: u32) -> std::io::Result<&'static str> {
         .ok_or_else(|| std::io::Error::other(format!("modifier {index:#x} is not fixed")))
 }
 
-/// The fixed modifier indices, which hold only while the modifier table matches this release's.
 pub fn all() -> std::io::Result<impl Iterator<Item = Key>> {
     let names = crate::executable_tables::keywords()?.fixed_modifiers()?;
     Ok(ALL_INDICES.iter().map(move |&index| Key {

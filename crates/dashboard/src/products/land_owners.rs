@@ -1,8 +1,3 @@
-//! `land-owners`: every country that held territory anywhere in the recording, for pickers: one
-//! entry per (tag, slot), first seen on the lowest timeline and hour it held land. A slot holds land
-//! while it owns or controls any state: the declared `holding` of `TerritoryTotals`, read from its
-//! summaries ([`holding`]) once per run, each span named by the tag holding the slot then. Names are
-//! read at those first hours alone.
 
 use super::{LoadContext, Product, styles};
 use crate::{Source, invalid};
@@ -22,7 +17,6 @@ use ts_rs::TS;
 
 pub struct LandOwnersProduct;
 
-/// Land ownership is recording-wide; there are no parameters.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(deny_unknown_fields)]
@@ -38,7 +32,6 @@ pub struct LandOwners {
 
 dashboard_base::reply_warnings!(LandOwners);
 
-/// Each (tag, slot) and where it was first seen holding land: (timeline, hour).
 fn witnesses(source: &Source, cancelled: &AtomicBool) -> io::Result<BTreeMap<(String, u32), (u64, i32)>> {
     let replay = source.replay_ref();
     let timelines = replay.timelines().ok_or_else(|| invalid("The recording holds no history"))?;
@@ -47,7 +40,6 @@ fn witnesses(source: &Source, cancelled: &AtomicBool) -> io::Result<BTreeMap<(St
     for timeline in &timelines.list {
         crate::metadata::check_cancel(cancelled)?;
         let query = crate::answer::query(source, timeline.id)?;
-        // Each slot's holder runs on this timeline.
         let mut holders: HashMap<u32, Vec<(&str, i32, i32)>> = HashMap::new();
         for (tag, runs) in &query.holders.tags {
             for run in runs {
@@ -99,7 +91,6 @@ impl Product for LandOwnersProduct {
         let found = witnesses(source, cancelled)?;
         let mut warnings = Vec::new();
         let localisation = styles::localisation(source, context.content.as_ref(), &mut warnings)?;
-        // Names at each first hour, from the look history of the run holding it.
         let mut names: HashMap<(String, u64, i32), String> = HashMap::new();
         if let Some(localisation) = &localisation {
             let mut looks: HashMap<u32, std::sync::Arc<styles::RunLooks>> = HashMap::new();
@@ -142,10 +133,6 @@ impl Product for LandOwnersProduct {
     }
 }
 
-/// Hours of run `run` each slot holds land (owns or controls any state), by slot, ascending, adjacent hours
-/// joined; the world row is no slot's. Read from the summaries of `TerritoryTotals`' declared `holding`: a coarse
-/// chart of every key, and only the bins whose holding changes read again a level finer, down to the walked hours
-/// of the six-hour buckets holding a change.
 pub fn holding(recording: &Recording, run: u32) -> io::Result<Vec<(u128, i64, i64)>> {
     let series = dashboard_declare::series("territory").ok_or_else(|| invalid("Territory is not declared"))?;
     let measure = series.measure("holding").ok_or_else(|| invalid("Territory declares no holding"))?;
@@ -177,8 +164,6 @@ pub fn holding(recording: &Recording, run: u32) -> io::Result<Vec<(u128, i64, i6
     Ok(out)
 }
 
-/// The holding hours of `keys` (every key when none) over `from..=to` at summary `level` ([`lanes::WALKED`]: each
-/// hour): a bin held throughout is a span, one held in part is read again a level finer.
 #[allow(clippy::too_many_arguments, reason = "a summary-guided read names its run, source, keys, hours and level")]
 fn refine(recording: &Recording, run: u32, source: Summary, keys: Option<&[u128]>, from: i32, to: i32, level: u8, spans: &mut BTreeMap<u128, Vec<(i64, i64)>>) -> io::Result<()> {
     let world = u128::from(TerritoryTotalRow::WORLD);
@@ -208,7 +193,6 @@ fn refine(recording: &Recording, run: u32, source: Summary, keys: Option<&[u128]
             if lo > hi || value.hours == 0 || value.max <= 0 {
                 continue;
             }
-            // Held throughout only where the bucket lies wholly in the span: one crossing it folds hours outside.
             if value.min > 0 && i64::from(value.hours) == bin && hi - lo + 1 == bin {
                 spans.entry(key).or_default().push((lo, hi));
             } else {

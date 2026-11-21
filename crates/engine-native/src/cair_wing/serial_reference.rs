@@ -1,7 +1,3 @@
-//! The census walk as it stood before rows were gathered across wings
-//! (`walk_projected` at eafc953b4f): every wing's pointer, then its hint,
-//! then its 14-span row scatter, each read when the walk reaches it. The
-//! tests' per-object reference ([`super::SERIAL`]).
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
@@ -30,10 +26,6 @@ pub(super) fn walk_projected(
         };
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let manager = reader.pointer(game_state, cgame_state::STRATEGIC_AIR_MANAGER)?;
-        // Country lookup returns null for a null manager. Preserve AirWings'
-        // own refusal while witnessing score's independent zero. The part that
-        // starts the census witnesses every slot, as the serial walk does; the
-        // refusal ends it, so no later part joins.
         if manager == 0 {
             if slots.start == 0 {
                 for slot in 0..countries.count() {
@@ -42,8 +34,6 @@ pub(super) fn walk_projected(
             }
             return Err("strategic air manager absent");
         }
-        // Game initialization publishes the complete strategic-air manager at the game state. Its
-        // primary vtable is distinct from its secondary base's.
         let vtable =
             read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
         let expected = engine_sites::at(base, cstrategic_air_manager::VTABLE_RVA)
@@ -101,9 +91,6 @@ pub(super) fn walk_projected(
                     return Err("air wing pool owner differs from roster");
                 }
                 let wings = reader.array(pool, cair_wing_pool::WINGS)?;
-                // The wing roster walk snapshots the pool's wing vector and count as its entire
-                // wing range. Worker storage follows that acquired range before any leaf; fixed
-                // callback projections retain their independent limits.
                 let required = map
                     .len
                     .checked_add(wings.count as usize)
@@ -134,7 +121,6 @@ pub(super) fn walk_projected(
                         0
                     }
                 };
-                // The pool's wing pointers, read one by one below.
                 memory.prefetch(wings.data, (wings.count as usize).saturating_mul(8));
                 for wing_index in 0..wings.count {
                     let wing = reader.element(wings, wing_index)?;

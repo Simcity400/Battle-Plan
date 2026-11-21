@@ -47,14 +47,11 @@ const rowKey = (row: BalanceRow) => row.key;
 const rangeOf = (row: BalanceRow) => row.range === null ? null : row.range.name ?? RANGE_UNAVAILABLE;
 const sideOf = (row: BalanceRow) => row.trending === null ? null : row.trending.name ?? SIDE_UNAVAILABLE;
 
-/** A row's value as the list shows it: exact and signed, or why it is not known. */
 const valueOf = (values: LiveValues<number>, key: string) => {
   const raw = recordValue(values, { ordinal: Number(key) });
   return raw === null ? values.missing(liveKey(key, 'value')) : exactValue(raw);
 };
 
-/** The table's columns: members by `label` (sorted by the first's `sortName`), the hiding columns' values in the row
- * tooltip; Value painted from `values` (the live cells), sorted by strength of lean. */
 export function balanceColumns(sortName: (tag: string) => string, label: CountryLabel, values: () => LiveValues<number>): TableColumn<BalanceRow>[] {
   return [
     { key: 'balance', header: 'Balance', label: 'Balance', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? BALANCE_UNAVAILABLE,
@@ -71,8 +68,6 @@ export function balanceColumns(sortName: (tag: string) => string, label: Country
   ];
 }
 
-/** Every balance record at the playback date, for all countries, a group or several chosen countries: the hour's rows,
- * followed at the head as a pushed panel. A row opens that balance's one-country view in the widget. */
 export default function BalanceTable({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
@@ -82,8 +77,6 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const head = useHeadProduct(runtime, widget, 'politics-state', track ? PARAMS : null, { active, validate: validateBalanceList, structure: balanceStructure });
-  // One ref for the widget's life: a new one each render is called with null and the element again, and the follow
-  // root it feeds would commit a second, empty render after every render.
   const headRoot = head.root;
   const rootRef = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
@@ -92,7 +85,6 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
   shownAt.current = head.shownAt;
-  // The table's painted values report the hour they are of at each frame they read.
   const tableLive = useMemo(() => mapLive(reporting(live, () => shown(shownAt.current())), balanceTableValues), [live, shown]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
@@ -100,9 +92,8 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const extent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const limit = Math.floor(shownUntil(playhead, playback, options.afterPlayhead === true) ?? extent[1]);
   const afterPlayhead = options.afterPlayhead === true;
-  const limitAt = useCallback((at: number) => Math.floor(shownUntil(at, playback, afterPlayhead) ?? extent[1]), [playback, afterPlayhead, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const limitAt = useCallback((at: number) => Math.floor(shownUntil(at, playback, afterPlayhead) ?? extent[1]), [playback, afterPlayhead, extent[1]]);
   const axisOffset = track?.axisOffset ?? 0;
-  // The opened country's chart, bars and header follow the clock each frame, between the panel's pushes.
   const liveHead = useMemo(() => widget.time.mode === 'follow' && track ? { read: () => runtime.clock.getSnapshot().position + axisOffset,
     subscribe: (changed: () => void) => runtime.clock.subscribeFrame(changed) } : undefined, [widget.time.mode, track, runtime.clock, axisOffset]);
 
@@ -110,20 +101,17 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const unread = !!data && data.unavailable.some(entry => entry.label === 'balances of power');
   const unrecorded = useCallback((at: number) => membershipUnrecordedAt(widget.countries, groups.data, at), [widget.countries, groups.data]);
-  // A held panel's rows are chosen again where the chosen group changes, at the hour its values are current through.
   const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
   const view = useMemo(() => data && !unread && match.ready && !match.reason ? balanceRows({ balances: data.balances, hour: choiceAt }, match.matches, unrecorded) : null,
     [data, unread, match, unrecorded, choiceAt]);
   const rows = view?.rows ?? NO_ROWS;
 
-  // The one-country view a row opens, held for this recording and branch only, read from its country's history.
-  const owner = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const owner = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
   const [opened, setOpened] = useState<{ owner: object; tag: string; token: string } | null>(null);
   const open = opened?.owner === owner ? opened : null;
   const openRow = useCallback((row: BalanceRow) => {
@@ -133,7 +121,6 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const request = track && open ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
     params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(open.tag) } } : null;
   const history = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
-  // Every holder's memberships once per branch, for how long each row's balance has been held.
   const membershipRequest = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
     params: { branchId: track.branch.id, mode: 'memberships' } } : null;
   const memberships = useProduct<PoliticsHistoryReply>(runtime.client, membershipRequest, active, validateMemberships, track?.source);
@@ -152,7 +139,6 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const wanted = useMemo(() => [...visible.flatMap(row => row.members.map(member => ({ hour, tag: member.tag }))),
     ...(openTag ? [{ hour, tag: openTag }] : []), ...[...openMembers.values()].flat().map(tag => ({ hour, tag }))], [visible, hour, openTag, openMembers]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  // A Members sort needs every row's first name; flags still load only for mounted rows.
   const sortingNames = useMemo(() => sort.column === 'members' ? rows.map(row => ({ hour, tag: row.members[0].tag })) : [], [rows, sort.column, hour]);
   const countryNames = useCountryNamesAt(runtime.client, track, sortingNames, active);
   const columns = useMemo(() => balanceColumns(tag => nameReadText(countryNames.get(nameKey(hour, tag))), labelAt(hour), live.read), [countryNames, labelAt, hour, live]);
@@ -166,7 +152,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
     { label: 'Value', value: valueOf(live.read(), row.key), strong: true },
     ...row.trending === null ? [] : [{ label: 'Leaning toward', value: sideOf(row)!, lookupKey: row.trending.token }],
     ...sinceRow(sinceOf(row)),
-  ] }], viewport), [labelAt, hour, viewport, live, sinceOf]); // eslint-disable-line react-hooks/exhaustive-deps
+  ] }], viewport), [labelAt, hour, viewport, live, sinceOf]);
   function sinceRow(since: number | null | undefined) {
     if (since === undefined) return [{ label: 'Active since', value: memberships.error ? 'Not loaded' : 'Loading…', tone: 'muted' as const }];
     if (since === null || !track) return [];

@@ -1,18 +1,3 @@
-//! Which side a country is on, measured against the viewing country.
-//!
-//! Victory-point colours and unit-counter plate tints share these relation
-//! inputs. The recorded LocalPlayer country or observer selection resolves
-//! through CountryLinks; fog does not change allegiance.
-//!
-//! Victory-point labels classify our country as green, a country at war with
-//! ours as red, and every other country, including faction partners, as grey.
-//! Counter plates distinguish ours, allied, enemy and other. Canonical equality
-//! wins first, then faction/subject alliance with an active-war veto, then war.
-//! Type-icon tint also considers the logical owner and sent volunteers.
-//!
-//! A WarRelations row is ongoing when its end hour is no greater than its start
-//! hour. An ended relation has a strictly later end hour; a maximum-integer
-//! sentinel is not required.
 use std::{collections::BTreeMap, io};
 
 use replay_data::{rows::Recorded, rows::tables};
@@ -23,7 +8,6 @@ use super::{
     visibility::Relations,
 };
 
-/// `NGraphics.COUNTER_MODE_ALLEGIANCE_*`, the plate modulate per side.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tints {
     pub ours: [f32; 4],
@@ -53,7 +37,6 @@ impl Tints {
         })
     }
 
-    /// The straight RGBA a unit counter's plate is multiplied by.
     pub fn of(&self, side: Allegiance) -> [f32; 4] {
         match side {
             Allegiance::Enemy => self.enemy,
@@ -63,7 +46,6 @@ impl Tints {
         }
     }
 
-    /// The shipped `00_graphics.lua` values, for tests only.
     #[cfg(any(test, feature = "test-support"))]
     pub const VANILLA: Self = Self {
         ours: [0.32, 0.71, 0.39, 1.0],
@@ -73,24 +55,15 @@ impl Tints {
     };
 }
 
-/// Which side a country is on, relative to the chosen perspective.
-///
-/// Victory-point strips contain four shape groups, each in red, blue, green, gold and grey order.
-/// Allegiance::index is explicit because no allegiance selects the gold slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Allegiance {
-    /// `COUNTER_MODE_ALLEGIANCE_ENEMY`, red.
     Enemy,
-    /// `COUNTER_MODE_ALLEGIANCE_ALLIED`, blue.
     Allied,
-    /// `COUNTER_MODE_ALLEGIANCE_OURS`, green.
     Ours,
-    /// `COUNTER_MODE_ALLEGIANCE_OTHER`, grey.
     Other,
 }
 
 impl Allegiance {
-    /// The colour's position inside a victory-point shape group of five.
     pub fn index(self) -> u32 {
         match self {
             Allegiance::Enemy => 0,
@@ -101,9 +74,6 @@ impl Allegiance {
     }
 }
 
-/// The recording client's canonical viewpoint, including an observer's selected
-/// country. Missing, partial or unresolved input names no client; never guess
-/// from Players or HumanControllers in a multiplayer recording.
 pub fn perspective(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> io::Result<Option<u32>> {
     let Ok([player]) = frame.complete::<tables::LocalPlayer>() else {
         return Ok(None);
@@ -115,10 +85,6 @@ pub fn perspective(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> io::Resu
 
 pub use dashboard_text::triggers::ongoing;
 
-/// Ours and everyone at war with us; every other country is absent.
-///
-/// This is the victory-point labels' reading; see the module docs for why
-/// faction membership is deliberately not consulted here.
 pub fn war_table(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -146,7 +112,6 @@ pub fn war_table(
     Ok(table)
 }
 
-/// Counter allegiance from recorded simulation relations and the viewing country.
 pub fn counter_table(
     relations: &Relations,
     links: &BTreeMap<u32, u32>,
@@ -168,10 +133,6 @@ pub fn counter_table(
     table
 }
 
-/// The simulation's directed relation cache, independent of current war and
-/// Counter grouping reads the other-to-first direction; path costs read owner-to-state-owner.
-/// Rebuilding it from
-/// relations loses native rebuild timing and retired owned relations.
 pub struct NativeRelations {
     countries: BTreeMap<u32, NativeCountryRelations>,
     missing: String,
@@ -247,8 +208,6 @@ impl NativeRelations {
             .ok_or_else(|| format!("country slot {owner}: {}", self.missing))
     }
 
-    /// Exact stored truth, including target zero. No war veto, symmetry or
-    /// same-owner substitution is applied.
     pub fn co_belligerent(&self, owner: u32, target: u32) -> Result<bool, String> {
         let targets = self
             .country(owner)?
@@ -258,8 +217,6 @@ impl NativeRelations {
         Ok(targets.binary_search(&target).is_ok())
     }
 
-    /// Slot-zero war pointer and retired byte. The caller also requires a signed-positive
-    /// receiver id.
     pub fn zero_at_war(&self, owner: u32) -> Result<bool, String> {
         let &[present, retired] = self
             .country(owner)?
@@ -333,12 +290,9 @@ mod tests {
 
     #[test]
     fn a_war_with_no_end_date_runs_whatever_the_hour() {
-        // `crates/engine/src/crelation.rs:46`: the engine emits `end_date` only
-        // when the start hour is below the end hour, so these rows have none.
         assert!(ongoing(60_759_371, NO_END_HOUR, NIGHT_HOUR));
         assert!(ongoing(60_759_371, NO_END_HOUR, 0));
         assert!(ongoing(60_759_371, NO_END_HOUR, i32::MAX));
-        // An equal pair is `end_hour <= start_hour` too, and so is a zero end.
         assert!(ongoing(NIGHT_HOUR, NIGHT_HOUR, NIGHT_HOUR));
         assert!(ongoing(60_759_371, 0, NIGHT_HOUR));
     }
@@ -348,14 +302,12 @@ mod tests {
         let (start, end) = (60_759_371, 60_800_000);
         assert!(ongoing(start, end, start));
         assert!(ongoing(start, end, end - 1));
-        // The end hour itself is already outside the war.
         assert!(!ongoing(start, end, end));
         assert!(!ongoing(start, end, NIGHT_HOUR));
     }
 
     #[test]
     fn null_end_hour_keeps_wars_active_at_later_hours() {
-        // A null end hour keeps the war active even when the frame hour is later.
         const { assert!(NO_END_HOUR < NIGHT_HOUR) };
         let frame = frame(
             vec![
@@ -369,7 +321,6 @@ mod tests {
         assert_eq!(ours, Some(0));
         let table = war_table(&frame, &links, ours.unwrap()).unwrap();
         assert_eq!(table.get(&0), Some(&Allegiance::Ours));
-        // Both endpoints count, whichever side of the pair we are on.
         assert_eq!(table.get(&2), Some(&Allegiance::Enemy));
         assert_eq!(table.get(&1), Some(&Allegiance::Enemy));
     }
@@ -539,7 +490,6 @@ mod tests {
         assert_eq!(Allegiance::Enemy.index(), 0);
         assert_eq!(Allegiance::Allied.index(), 1);
         assert_eq!(Allegiance::Ours.index(), 2);
-        // Slot 3 is the gold frame, which nothing selects ( open item 6).
         assert_eq!(Allegiance::Other.index(), 4);
         assert_eq!(Tints::VANILLA.of(Allegiance::Ours), Tints::VANILLA.ours);
         assert_eq!(Tints::VANILLA.of(Allegiance::Other), Tints::VANILLA.other);
@@ -547,9 +497,6 @@ mod tests {
 
     #[test]
     fn the_plate_modulate_reproduces_the_measured_screenshot_colour() {
-        // `onmap_unit_counter.dds` is a grey plate whose body
-        // samples (124, 124, 124). A German counter in `array_loaded.png`
-        // samples (37, 79, 43) on that body.
         let body = 124.0f32;
         let ours = Tints::VANILLA.of(Allegiance::Ours);
         let modulated = [body * ours[0], body * ours[1], body * ours[2]];

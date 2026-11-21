@@ -1,14 +1,8 @@
-//! A frame's pointer moves and primary and secondary button changes, in order, each with the
-//! modifiers its own event carried. The game reads Ctrl, Shift and Alt with the click; the frame's
-//! final modifiers can already have let go of a key that was down when the button changed.
 
 use eframe::egui;
 
-/// One pointer change: where it happened, and the button that changed and whether it went down
-/// (`None` for a move).
 pub(super) type Change = (egui::Pos2, Option<(egui::PointerButton, bool)>);
 
-/// The frame's changes, and beside each the modifiers it came with; a move takes the frame's.
 pub(super) fn changes(input: &egui::InputState) -> (Vec<Change>, Vec<egui::Modifiers>) {
     input
         .events
@@ -30,8 +24,6 @@ pub(super) fn changes(input: &egui::InputState) -> (Vec<Change>, Vec<egui::Modif
 mod tests {
     use super::*;
 
-    /// A Ctrl+click whose Ctrl lifts right after the button, in the same frame: the frame ends with
-    /// no Ctrl, and the click still has it.
     #[test]
     fn a_click_keeps_the_modifiers_its_button_changed_with() {
         let ctx = egui::Context::default();

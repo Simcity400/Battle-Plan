@@ -1,6 +1,5 @@
 use super::*;
 
-/// One reserve's operands, owned so a test can edit them.
 #[derive(Default)]
 struct Owned {
     context: ContextRow,
@@ -11,7 +10,6 @@ struct Owned {
 }
 
 impl Owned {
-    /// A supplied land reserve with every country movement key present at 0.
     fn normal() -> Self {
         let mut owned = Self {
             modifiers: keys(0, &[0x2b, 0x1e9, 0x5e, 0x17f, 0x286]),
@@ -71,11 +69,9 @@ fn feature_gating_and_metadata_clamps_apply_before_land_addition() {
     owned.set(0, 0x2b, 150_000);
     owned.modifiers[0].metadata_flags = 0x10;
     owned.modifiers[0].feature_selector = 8;
-    // No eligibility callback: a feature-gated key is zero.
     assert_eq!(owned.factor(), Ok(ONE));
     owned.context.ids[6] = 1;
     owned.context.ids[5] = 8;
-    // Clamped to one before it is added.
     assert_eq!(owned.factor(), Ok(2 * ONE));
     owned.context.ids[6] = 2;
     assert!(owned.factor().is_err());
@@ -99,15 +95,12 @@ fn weather_takes_the_first_maximum_and_scales_each_term_separately() {
         },
     ];
     owned.set(3, 0x2b, -10_000);
-    // The inactive first maximum wins: no adjustment.
     assert_eq!(owned.factor(), Ok(90_000));
     owned.acclimatization.swap(0, 1);
-    // The active winner halves the penalty.
     assert_eq!(owned.factor(), Ok(95_000));
     owned.context.flags[5] = 1;
     owned.set(3, 0x2b, 1);
     owned.set(3, 0x1e9, 1);
-    // Each 0.5 x 0.00001 truncates to zero; combining first would give 1.
     assert_eq!(owned.factor(), Ok(ONE));
 }
 
@@ -139,10 +132,7 @@ fn supply_days_are_not_clamped_and_the_special_share_adjusts_the_factor() {
     ];
     owned.set(0, 0x5e, -20_000);
     owned.set(0, 0x17f, -40_000);
-    // Severity (1 - 0.5) x 10/5 = 1, scaled by 1 - 0.2 + 0.5 x -0.4 = 0.6:
-    // -0.5 x 0.6 - 0.1.
     assert_eq!(owned.factor(), Ok(60_000));
-    // A zero grace define gives the sentinel, which clamps supplied to one.
     owned.context.scalar_values[6] = 0;
     assert_eq!(owned.factor(), Ok(90_000));
     owned.context.flags[11] = 0;
@@ -205,7 +195,6 @@ fn transport_scales_the_raw_static_term_before_clamping_and_bypasses_land_inputs
         own_intel: 0,
         enemy_intel: 0,
     });
-    // 0.5 density x 2.0 raw = 1.0, then clamped by the metadata bit.
     assert_eq!(owned.factor(), Ok(200_000));
     owned.modifiers.pop();
     assert!(owned.factor().is_err());
@@ -213,26 +202,16 @@ fn transport_scales_the_raw_static_term_before_clamping_and_bypasses_land_inputs
     assert!(owned.factor().is_err());
 }
 
-/// The reinforcement share's final scaling: the share of base speed times
-/// factor over SLOWEST_SPEED above one, clamped to [0, 2]; a zero define or an
-/// exceptional speed takes the upper bound.
 #[test]
 fn the_speed_share_clamps_to_the_native_bounds() {
-    // 4 km/h at factor 1 over a 4 km/h floor: no excess.
     assert_eq!(speed_share(400_000, ONE, 400_000), Ok(0));
-    // 6 km/h: half again.
     assert_eq!(speed_share(600_000, ONE, 400_000), Ok(50_000));
-    // 0.9 x 6 = 5.4 km/h over 4: 0.35.
     assert_eq!(speed_share(600_000, 90_000, 400_000), Ok(35_000));
-    // Slower than the floor clamps to zero, faster than three times to two.
     assert_eq!(speed_share(200_000, ONE, 400_000), Ok(0));
     assert_eq!(speed_share(2_000_000, ONE, 400_000), Ok(SHARE_MAXIMUM));
     assert_eq!(speed_share(600_000, ONE, 0), Ok(SHARE_MAXIMUM));
-    // The product truncates before the division: 0.00001 x 1.5 is 0.00001,
-    // which equals the floor; 0.00002 x 1.5 is three times it.
     assert_eq!(speed_share(1, 150_000, 1), Ok(0));
     assert_eq!(speed_share(2, 150_000, 1), Ok(SHARE_MAXIMUM));
-    // A negative define divides as native signed division does.
     assert_eq!(speed_share(600_000, ONE, -400_000), Ok(0));
 }
 

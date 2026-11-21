@@ -107,7 +107,6 @@ fn land_division_comparison_uses_authenticated_alias_representatives_and_keeps_d
         land::compare_divisions(&captured, &saved, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
 
-        // An unsaved division differs by itself and in the census.
         let unsaved = DivisionLandInputsRow {
             division: (8_u64 << 32) | 51,
             ..Default::default()
@@ -261,9 +260,6 @@ fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserv
             },
             &mut full,
         );
-        // This deliberately small full-save fixture has named gaps of its
-        // own. Adding authenticated reserved aliases must introduce only
-        // their named uncaptured domains, never false canonical differences.
         let failures: std::collections::BTreeMap<_, _> = full
             .failed_comparisons
             .iter()
@@ -341,7 +337,6 @@ fn template_configuration_census_refuses_reserved_aliases_and_keeps_canonical_ga
                     .failed_comparisons
                     .contains_key("reserved country RES uncaptured save operands")
             );
-            // A comparison without authenticated projection keeps the strict census.
             let mut strict = super::super::report::Report::default();
             super::super::military::compare_country_template_state(
                 &captured,

@@ -1,37 +1,8 @@
-//! What a map mode shows of the map's other layers.
-//!
-//! The game keeps these rules in its renderers rather than in content: the unit-icon test, the
-//! per-province icon pass, the strategic-region icon pass, the label texts, the fog-of-war and
-//! province-border fades, the trade-route pass and the map icon priority table it loads on every
-//! mode switch. [`of`] gathers them for one mode; content only supplies the
-//! priority values ([`PriorityTable`]).
-//!
-//! | mode | differences from the political mode |
-//! |---|---|
-//! | political | none |
-//! | air | air priorities; no army or railway-gun counters, and at sea only fleets whose first carrier has an air base; strategic grouping distance; no naval mission icons; no fog of war |
-//! | navy | navy priorities; army counters at half opacity; strategic grouping distance; adjacency-rule icons; trade routes |
-//! | operatives | operative priorities; no unit counters but the port counters; no unit arrows; no faction pins; no fog of war |
-//! | states | state priorities; no raid icons; no faction pins; no fog of war |
-//! | supply | adjacency-rule icons; trade routes; no raid icons; no faction pins; no fog of war |
-//! | resistance, compliance | resistance priorities; no raid icons; no faction pins |
-//! | resources | resource priorities; state resource icons; no unit counters; label texts empty; adjacency-rule icons; trade routes; no province borders; no raid icons; no faction pins; no fog of war |
-//! | diplomacy, factions, ideology | their own priorities; no raid icons; no faction pins; no fog of war |
-//! | players | player priorities; no raid icons; no faction pins |
-//! | infrastructure, manpower | their own priorities; no province borders; no raid icons; no faction pins; no fog of war |
-//! | terrain | no raid icons; no faction pins; no fog of war |
-//! | raids | state priorities; no unit counters; no victory points, bases, combats, radars, rocket sites or strategic locations; no land unit models or unit arrows; no naval mission icons; raid icons out to the raid mode's distance; no faction pins; no fog of war |
-//! | scripted | state priorities; no raid icons; no faction pins; no fog of war |
-//!
-//! Faction pins show in the political, air and navy modes only. Raid icons show in the
-//! political, air, navy, operatives and raids modes, and state resource icons in the resources
-//! mode only.
 
 use viewer_foundation::map::mode_visibility::{PriorityTable, RaidReach, UnitKinds, Visibility};
 
 use super::{MapMode, Stock};
 
-/// What `mode` shows of the map's other layers.
 pub fn of(mode: &MapMode) -> Visibility {
     let stock = match mode {
         MapMode::Stock(stock) => *stock,
@@ -114,8 +85,6 @@ pub fn of(mode: &MapMode) -> Visibility {
     }
 }
 
-/// A mode outside the political, air, navy and operatives group: no raid icons, faction
-/// pins or fog of war.
 fn other(priorities: PriorityTable) -> Visibility {
     Visibility {
         priorities,

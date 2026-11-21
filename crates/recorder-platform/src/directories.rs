@@ -1,4 +1,3 @@
-//! Installation, user and capture directory defaults.
 use crate::windows;
 use std::{
     ffi::{OsStr, OsString},
@@ -12,8 +11,6 @@ use windows_sys::Win32::System::{
     },
 };
 
-/// The capture root without `--out`: the recordings folder Battle Plan Recorder and
-/// Battle Plan use when none was chosen.
 pub fn default_capture_directory() -> PathBuf {
     replay::recorder_settings::default_save_folder()
 }

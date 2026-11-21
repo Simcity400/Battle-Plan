@@ -90,7 +90,6 @@ fn state(arena: &Arena, caller: &wgpu::Buffer) -> State {
     }
 }
 
-/// Independent oracle for the unchanged flush, not a call through checkpoint_bytes.
 fn pending(arena: &Arena, caller: &wgpu::Buffer) -> WriteTrace {
     let inner = arena.inner.borrow();
     let mut writes = inner
@@ -165,7 +164,6 @@ fn checkpoints_match_flush_bytes_offsets_refusals_prefix_and_carry_over_multiple
     });
     let mut image = vec![0; 64];
     let mut captures = Vec::new();
-    // Keep a spare empty chunk after reset, so oversized refusals also exercise that path.
     for arena in &arenas {
         arena.vertices(&vec![3; CHUNK as usize - 4]).unwrap();
         arena.vertices(&[4; 8]).unwrap();
@@ -174,8 +172,6 @@ fn checkpoints_match_flush_bytes_offsets_refusals_prefix_and_carry_over_multiple
     arenas[1].checkpoint().execute(&queue);
     queue.submit([]);
     for frame in 0..24_u8 {
-        // Every previous checkpoint's dependent copy has already been submitted. No reset
-        // occurs while the consumer still owns an unsubmitted use of arena destinations.
         for arena in &arenas {
             arena.reset();
         }
@@ -218,7 +214,6 @@ fn checkpoints_match_flush_bytes_offsets_refusals_prefix_and_carry_over_multiple
             assert_eq!(frozen.frame(), arenas[0].frame());
             assert_eq!(frozen_trace(&arenas[1], &callers[1], &frozen), expected);
             arenas[0].flush(&queue);
-            // Mutating producer scratch after sealing cannot change this boundary's bytes.
             let appended = std::array::from_fn(|index| {
                 arenas[index]
                     .vertices(&[frame, boundary, 19, 23, 29])
@@ -251,8 +246,6 @@ fn checkpoints_match_flush_bytes_offsets_refusals_prefix_and_carry_over_multiple
             queue.submit([encoder.finish()]);
             captures.push((reads, image.clone()));
             if boundary == 0 {
-                // A reached prefix survives a later failed main draw. Refusal must leave
-                // staged offsets/dedup intact, and retry must not invent an earlier write.
                 for constant_upload in [false, true] {
                     let errors = std::array::from_fn::<_, 2, _>(|index| {
                         let before = state(&arenas[index], &callers[index]);
@@ -288,8 +281,6 @@ fn checkpoints_match_flush_bytes_offsets_refusals_prefix_and_carry_over_multiple
                 arena.vertices(&[frame; 8]).unwrap();
             }
         }
-        // This failed/unsubmitted suffix must NOT execute. Chunk suffixes reset as today,
-        // whereas the caller-buffer write carries into the next frame's first checkpoint.
         for (index, arena) in arenas.iter().enumerate() {
             arena.write(&callers[index], 24, &[frame.wrapping_add(3); 4]);
         }
@@ -332,8 +323,6 @@ fn reached_checkpoint_executes_after_preparation_error_without_flushing_unreache
     arena.write(&caller, 0, &[1, 2, 3, 4]);
     arena.vertices(&[5, 6, 7]).unwrap();
     let reached = arena.checkpoint();
-    // Preparation fails AFTER sealing the reached boundary. The owner must still replay
-    // it, but must not accidentally seal later writes from the abandoned main segment.
     arena.write(&caller, 4, &[9, 10, 11, 12]);
     let main = Err::<(), _>("synthetic later preparation failure");
     assert_eq!(main, Err("synthetic later preparation failure"));
@@ -357,7 +346,6 @@ fn reached_checkpoint_executes_after_preparation_error_without_flushing_unreache
         read.unmap();
     };
     readback(&[1, 2, 3, 4, 0, 0, 0, 0]);
-    // Only after the dependent commands submit may preparation reset the arena.
     arena.reset();
     let carried = arena.checkpoint();
     assert_eq!(carried.writes().count(), 1);

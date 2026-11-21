@@ -72,7 +72,6 @@ impl Defines {
 pub(super) struct Inputs<'a> {
     rows: HashMap<u64, &'a OperativeMissionRow>,
     groups: HashMap<(u32, u32, i32), Vec<&'a OperativeMissionRow>>,
-    /// The auxiliary networks, or why the table cannot be read.
     auxiliary: Result<HashMap<(u32, u32, u32, u8), &'a IntelNetworkAuxiliaryRow>, String>,
     defense: Result<HashMap<u32, i64>, String>,
 }

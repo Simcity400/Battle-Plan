@@ -12,10 +12,6 @@ import { newId } from '../shell/ids.ts';
 import { busy } from '../shell/busy.ts';
 
 const requests = new BrowserRequestQueue();
-/** This page load, which owns the recordings it opens and imports. The bridge outlives the page, so a page that goes
- * away (closed or reloaded) tells it, and the bridge lets go of them, even those whose reply had not arrived. A
- * back/forward-cache visit retains the page and what it holds. Only a page that has used the bridge says so: the
- * desktop app, which never does, may not reach it. */
 const page = newId();
 let owning = false;
 function ownRecordings(): void {

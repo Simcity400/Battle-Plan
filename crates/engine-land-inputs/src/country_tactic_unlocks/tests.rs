@@ -57,18 +57,15 @@ impl Fixture {
         f.put(GAME + DOCTRINE_SYSTEM, (SYSTEM as u64).to_le_bytes());
         f.array(SYSTEM + DOCTRINE_ROWS, DOCTRINE, 4);
         f.array(SYSTEM_MOVED + DOCTRINE_ROWS, DOCTRINE, 4);
-        // Every doctrine row spans its tag through its vector header.
         for slot in 0..4 {
             f.put(Self::row(slot) + ROW_TAG, [0; ROW_SPAN]);
         }
-        // Row 1 carries country A's raw id 2 (canonical slot 1); row 3 B's.
         f.put(Self::row(1) + ROW_TAG, 2u32.to_le_bytes());
         f.put(Self::row(3) + ROW_TAG, 3u32.to_le_bytes());
         f.array(Self::row(1) + TACTICS, LIST, 3);
         for (index, tactic) in [TACTIC_B, TACTIC_A, TACTIC_B].into_iter().enumerate() {
             f.put(LIST + index * 8, (tactic as u64).to_le_bytes());
         }
-        // Database: the null tactic, then IDs 1 and 2 in ID order.
         f.put(
             ccombat_tactic::DATABASE_RVA.0,
             (DATABASE as u64).to_le_bytes(),
@@ -160,7 +157,6 @@ impl Owned {
     }
 }
 
-/// The count-only probe of every table.
 fn count(memory: &Fixture) -> Capture {
     use crate::walk::Buffer;
     capture_buffer(memory, 0, GAME, Buffer::Count, Buffer::Count, Buffer::Count, Buffer::Count)
@@ -187,7 +183,6 @@ fn census_records_saved_database_ids_in_native_order_with_one_copy_per_list() {
             },
         ]
     );
-    // Repeated native entries remain independently observed occurrences.
     assert_eq!(owned.unlocks, [2, 1, 2]);
     let reads = memory.reads.borrow();
     assert_eq!(
@@ -197,7 +192,6 @@ fn census_records_saved_database_ids_in_native_order_with_one_copy_per_list() {
             .collect::<Vec<_>>(),
         [&(LIST, 24)]
     );
-    // One copy spans each row's tag and vector header.
     assert_eq!(
         reads
             .iter()
@@ -205,7 +199,6 @@ fn census_records_saved_database_ids_in_native_order_with_one_copy_per_list() {
             .collect::<Vec<_>>(),
         [&(Fixture::row(1) + ROW_TAG, ROW_SPAN)]
     );
-    // Country lists resolve through the database, never by dereference.
     assert!(
         !reads
             .iter()
@@ -214,8 +207,6 @@ fn census_records_saved_database_ids_in_native_order_with_one_copy_per_list() {
     assert_eq!(reads.iter().filter(|(at, _)| *at == TACTIC_B).count(), 1);
 }
 
-/// An unknown requested tactic appends the null tactic, which serializes
-/// as ID zero. It remains a recorded unlock.
 #[test]
 fn the_null_tactic_is_database_entry_zero_and_records_id_zero() {
     let mut memory = Fixture::new();
@@ -226,7 +217,6 @@ fn the_null_tactic_is_database_entry_zero_and_records_id_zero() {
     let invalid = Outcome::Unavailable {
         reason: "tactic database entry identity invalid",
     };
-    // Entry 0 must be the null tactic with ID 0, nothing else.
     let mut memory = Fixture::new();
     memory.put(
         NULL_TACTIC,
@@ -258,7 +248,6 @@ fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
         ),
         (2, 3, 8, 24)
     );
-    // Every list is authenticated.
     let mut memory = Fixture::new();
     memory.put(LIST + 8, (FOREIGN as u64).to_le_bytes());
     assert_eq!(
@@ -267,8 +256,6 @@ fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
             reason: "country tactic unlock names no loaded tactic"
         }
     );
-    // A null pointer is corrupt input, separate from the authenticated nonzero
-    // null tactic with ID 0.
     let mut memory = Fixture::new();
     memory.put(LIST + 8, 0u64.to_le_bytes());
     assert_eq!(
@@ -279,10 +266,6 @@ fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
     );
 }
 
-/// A list that does not fit the staging counts as demand only once its
-/// first and last entries read: a torn header that claims a huge list at
-/// an unmapped address fails the table instead of asking the spool for
-/// gigabytes, while a readable one still reports its exact demand.
 #[test]
 fn an_unfit_list_is_demand_only_once_its_ends_read() {
     let mut memory = Fixture::new();
@@ -295,7 +278,6 @@ fn an_unfit_list_is_demand_only_once_its_ends_read() {
         }
     );
     assert!(result.required_list < 1 << 20);
-    // The same readable list reports its exact demand, as before.
     let memory = Fixture::new();
     assert_eq!(count(&memory).required_list, 24);
 }
@@ -328,11 +310,9 @@ fn malformed_database_rows_and_changed_roots_never_become_empty_lists() {
     let mut memory = Fixture::new();
     memory.put(TACTIC_B + ccombat_tactic::ID, 7i32.to_le_bytes());
     assert_eq!(Owned::fits().fixture(&memory).outcome, invalid);
-    // The same object at a second index cannot carry both IDs.
     let mut memory = Fixture::new();
     memory.put(ENTRIES + 16, (TACTIC_A as u64).to_le_bytes());
     assert_eq!(Owned::fits().fixture(&memory).outcome, invalid);
-    // A row whose own tag resolves to another country is not this one's.
     let mut memory = Fixture::new();
     memory.put(Fixture::row(1) + ROW_TAG, 3u32.to_le_bytes());
     assert_eq!(
@@ -354,13 +334,8 @@ fn malformed_database_rows_and_changed_roots_never_become_empty_lists() {
     }
 }
 
-/// Above the database RVA, so a module base below the world maps the
-/// singleton into it.
 const WORLD: usize = 0x1000_0000;
 
-/// A flat address space of `countries` live countries, each unlocking
-/// `unlocks` tactics of a `tactics`-entry database (plus the null entry).
-/// Returns the bytes, the module base and the game state.
 fn world(countries: usize, tactics: usize, unlocks: usize) -> (Vec<u8>, usize, usize) {
     let slots = countries + 1;
     let mut end = WORLD;
@@ -457,7 +432,6 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
 }
 
-// Reads through the authenticated country roster, as the collector's job does.
 #[test]
 fn each_country_costs_two_copies() {
     const COUNTRIES: usize = 30;
@@ -489,8 +463,6 @@ fn each_country_costs_two_copies() {
     assert_eq!(fresh.outcome, Outcome::Rows { len: COUNTRIES });
     assert_eq!(fresh.required_unlocks, COUNTRIES * UNLOCKS);
     assert_eq!(owned.unlocks[..3], [2, 3, 4]);
-    // One row copy and one list copy per country, two per loaded tactic
-    // and the fixed roots.
     let copies = memory.copies.get();
     assert!(copies <= 2 * COUNTRIES + 2 * (TACTICS + 1) + 16, "{copies}");
 }

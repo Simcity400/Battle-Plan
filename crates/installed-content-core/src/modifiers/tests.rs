@@ -43,8 +43,6 @@ fn numeric_notes_skip_blocks_and_show_invalid_scalar_bytes_lossily() {
     assert!(!warning.contains("= {"), "{warning}");
 }
 
-/// A test file: `block` is a modifier object, `t` a targeted modifier,
-/// `e` an equipment bonus loop; anything else is skipped.
 fn read(text: &[u8]) -> (Vec<Item>, Vec<String>, Vec<Undecided>) {
     read_with(text, UNKNOWN)
 }
@@ -93,8 +91,6 @@ fn stored_values(modifiers: &Modifiers) -> Vec<(&str, i64)> {
         .collect()
 }
 
-/// Fixed5 conversion into a zeroed destination: the CRT scan decides,
-/// a failure leaves 0; the authored text stays apart.
 #[test]
 fn values_are_the_crt_conversion_into_a_zeroed_destination() {
     let (items, misreads, undecided) = read(
@@ -112,7 +108,6 @@ fn values_are_the_crt_conversion_into_a_zeroed_destination() {
             ("disable", 0),
             ("scripted", 0),
             ("unknown", 0),
-            // A quoted token is never read as a variable reference.
             ("quoted", 0),
             ("prefix", 100_000),
             ("hex", 1_600_000),
@@ -125,10 +120,6 @@ fn values_are_the_crt_conversion_into_a_zeroed_destination() {
     assert_eq!(block.values[4].text, "@missing");
 }
 
-/// One entry per modifier whatever the key's case: bare and quoted keys
-/// fold ASCII, with the last value kept in the first place.
-/// `hidden_modifier` stores into the same entries and hides them;
-/// tooltips are one per text; `added_modifier` is a child with no line.
 #[test]
 fn modifiers_merge_hide_and_keep_children_by_identity() {
     let (items, misreads, undecided) = read(
@@ -184,11 +175,6 @@ fn custom_tooltips_are_listed_in_the_tables_slot_order() {
     assert_eq!(table.keys().count(), 10);
 }
 
-/// A displacement chain past the overflow puts the carried entry back
-/// in the new key's slot, grows and inserts the key again: these nine
-/// keys, read in order, grow the table to 32 buckets and list in this
-/// slot order. A copy holds the same keys; an empty set copies to the
-/// default table.
 #[test]
 fn a_displacement_chain_past_the_overflow_grows_the_tooltip_table() {
     let keys = [
@@ -230,7 +216,6 @@ fn targeted_and_equipment_bonuses() {
               e = { ship_hull_heavy = { build_cost_ic = -0.15 instant = yes BUILD_COST_IC = -0.1 } armor = { armor_value = 0.05 } }",
         );
     let t = targeted(block(&items, "t"));
-    // Uppercase the text before parsing the tag.
     assert_eq!(t.tag.as_deref(), Some("SOU"));
     assert_eq!(
         stored_values(&t.modifiers),
@@ -241,7 +226,6 @@ fn targeted_and_equipment_bonuses() {
     assert_eq!(targeted(block(&items, "s")).tag, None);
     assert_eq!(targeted(block(&items, "v")).tag, None);
     let e = equipment_bonuses(block(&items, "e"), &mut Unheld::default());
-    // A stat read again adds.
     let stats: Vec<_> = e[0]
         .values
         .iter()
@@ -254,10 +238,6 @@ fn targeted_and_equipment_bonuses() {
     assert_eq!((e[1].equipment.as_str(), e[1].instant), ("armor", false));
 }
 
-/// A block value under a name that is no structure keyword is read as
-/// a registered modifier's value or skipped; the replay reads the skip
-/// and records the name. A value without a key takes the next token as
-/// its operator and is no modifier name.
 #[test]
 fn block_values_under_modifier_names_are_undecided() {
     let (items, misreads, undecided) =
@@ -290,11 +270,6 @@ fn block_values_under_modifier_names_are_undecided() {
     );
 }
 
-/// With a registry (a recording's modifier definitions), the modifier
-/// reader decides a block value: a registered name reads `{` as its
-/// fixed5 value, so the block's entries are the modifier's own and its
-/// `}` ends it; any other name is reported and its block skipped.
-/// An equipment stat is not the modifier registry's to decide.
 #[test]
 fn a_registry_decides_block_values_under_modifier_names() {
     let registry: Registry<'_> = &|name| match name {

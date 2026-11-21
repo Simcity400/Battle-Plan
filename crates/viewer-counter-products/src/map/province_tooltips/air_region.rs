@@ -1,14 +1,3 @@
-//! Air region statistics: the received-damage grids the strategic air view
-//! draws in its default state for the
-//! hovered province's strategic region and the viewing country, over the
-//! last day. The rows come from AirRegionCombat at the frame's hour after the
-//! latest daily prune that visited the viewing country
-//! ([`replay_derive::air_region_derive::visiting_pass`]), found from the recorded hourly
-//! AirDailyRoster of the frame's branch ([`PassRosters`], read on a worker; the hover
-//! shows no statistics until the answer is ready); each side lists its air grid
-//! and its ground grid for our missions and the enemy's. Each line uses the
-//! item's tooltip key and its value as the received-damage formatter
-//! writes it, green for ours and red for the enemy's.
 use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
 use replay::{
@@ -27,19 +16,12 @@ use std::{
 };
 use viewer_foundation::tooltip_text::Tooltip;
 
-/// The daily air roster at a recorded sample: whether a country (canonical slot) is in
-/// the roster the daily pass visits.
 pub trait RosterSamples {
-    /// The branch's first sample hour, or None for a branch the recording lacks.
     fn first_hour(&self, branch: BranchId) -> Option<Hour>;
-    /// The country's AirDailyRoster eligibility at the branch's sample `hour`.
     fn eligible(&self, branch: BranchId, hour: Hour, slot: u32) -> Result<bool, String>;
 }
 
-/// The hover's view of the roster history.
 pub trait Rosters {
-    /// The latest daily pass of `branch` at or before `hour` that visited the country in
-    /// `slot` ([`visiting_pass`]), or None while it is still being read.
     fn visiting_pass(
         &self,
         branch: BranchId,
@@ -48,8 +30,6 @@ pub trait Rosters {
     ) -> Option<Result<Option<Hour>, String>>;
 }
 
-/// One sample's roster: which canonical slots it lists and which of them are eligible,
-/// as bit sets. Equal rosters share one interned snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Roster {
     listed: Vec<u64>,
@@ -74,8 +54,6 @@ impl Roster {
         Self::get(&self.listed, slot).then(|| Self::get(&self.eligible, slot))
     }
 
-    /// The roster AirDailyRoster's rows list, each raw country turned into its canonical
-    /// slot by CountryLinks (key-sorted rows, as a frame holds them).
     pub fn of(
         rows: &[replay_data::rows::AirDailyRosterRow],
         links: &[replay_data::rows::CountryLinkRow],
@@ -101,32 +79,22 @@ impl Roster {
 
 type Sample = Result<Arc<Roster>, String>;
 
-/// Why a search stopped: a newer demand or the service closing superseded it.
 pub const SUPERSEDED: &str = "the air roster search was superseded";
 
-/// What a source read for an asked hour: the span of hours it read, which holds that hour,
-/// and the roster at each sample of it around a daily pass's tick (hours ≡ 23 and ≡ 0 mod
-/// 24), or why that sample is unreadable.
 pub struct Span {
     pub first: Hour,
     pub last: Hour,
     pub samples: Vec<(Hour, Result<Roster, String>)>,
 }
 
-/// Whether `hour` is a sample around a daily pass's tick: the hour before it or the pass's own.
 pub fn sample_hour(hour: Hour) -> bool {
     matches!(hour.rem_euclid(derive::DAY), 0 | 23)
 }
 
-/// Where the roster samples are read from: today's block reader, today's columnar cursor,
-/// or lanes of the history's own (the viewer's).
 pub trait SampleSource: Send + Sync {
-    /// The span holding `hour` of `branch`, an empty one where nothing is recorded;
-    /// `Err(SUPERSEDED)` once `superseded` says to stop.
     fn span(&self, branch: BranchId, hour: Hour, superseded: &dyn Fn() -> bool) -> Result<Span, String>;
 }
 
-/// Today's reader: the whole block holding the hour, decoded, its samples kept.
 struct Blocks(Arc<Replay>);
 
 impl SampleSource for Blocks {
@@ -157,7 +125,6 @@ impl SampleSource for Blocks {
     }
 }
 
-/// Today's columnar cursor over the two tables, moved to each sample asked.
 struct Columnar {
     replay: Arc<Replay>,
     natives: Arc<Natives>,
@@ -209,26 +176,16 @@ fn roster(decoded: &DecodedFrame) -> Result<Roster, String> {
     Roster::of(rows, links)
 }
 
-/// The spans whose samples are kept: the newest few, so what is held does not grow with
-/// hours played. An eligible country's question reads the head's span and at most the one
-/// before it; a search further back reads and drops.
 const KEPT: usize = 8;
 
-/// The recording's daily air rosters at the samples around each daily pass, read through
-/// one source and shared by every reader of the history (the province hover, the combat
-/// window's air panel, the air-mission counters). Each sample holds an interned snapshot,
-/// so a history of unchanged rosters keeps one copy.
 pub struct Sampler {
     replay: Arc<Replay>,
     columnar: Option<Arc<Natives>>,
     source: Box<dyn SampleSource>,
     hours: Mutex<BTreeMap<(BranchId, Hour), Sample>>,
-    /// The spans read, oldest first.
     spans: Mutex<VecDeque<(BranchId, Hour, Hour)>>,
     distinct: Mutex<HashSet<Arc<Roster>>>,
-    /// Spans read, for the cancellation checks.
     blocks: AtomicUsize,
-    /// One span read at a time: a second asker of the same span waits and finds it held.
     reading: Mutex<()>,
 }
 
@@ -237,7 +194,6 @@ impl Sampler {
         Self::with(replay, None, source)
     }
 
-    /// Today's sources: the columnar cursor when `columnar` is given, else the block reader.
     pub fn today(replay: Arc<Replay>, columnar: Option<Arc<Natives>>) -> Self {
         let source: Box<dyn SampleSource> = match &columnar {
             Some(natives) => Box::new(Columnar { replay: Arc::clone(&replay), natives: Arc::clone(natives), cursor: OnceLock::new() }),
@@ -267,7 +223,6 @@ impl Sampler {
         self.columnar.as_ref()
     }
 
-    /// The samples, spans and distinct rosters held, and their bytes.
     pub fn held(&self) -> (usize, usize, usize, usize) {
         let hours = self.hours.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let distinct = self.distinct.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -289,7 +244,6 @@ impl Sampler {
         roster
     }
 
-    /// Keeps `span`'s samples, and the newest [`KEPT`] spans' only.
     fn keep(&self, branch: BranchId, span: Span) {
         let mut hours = self.hours.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for (at, sample) in span.samples {
@@ -348,7 +302,6 @@ impl Sampler {
     }
 }
 
-/// A sampler asked on behalf of one search, which `superseded` may stop between reads.
 struct Asking<'a>(&'a Sampler, &'a dyn Fn() -> bool);
 
 impl RosterSamples for Asking<'_> {
@@ -366,12 +319,9 @@ impl RosterSamples for Asking<'_> {
     }
 }
 
-/// The recording's daily air rosters read on the asking thread, for an hour builder that
-/// answers within the hour it builds; samples kept as the sampler bounds them.
 pub struct RosterHistory(Arc<Sampler>);
 
 impl RosterHistory {
-    /// Another reader of `sampler`'s history.
     pub fn of(sampler: Arc<Sampler>) -> Self {
         Self(sampler)
     }
@@ -380,9 +330,6 @@ impl RosterHistory {
         &self.0
     }
 
-    /// Whether the daily pass at `pass` visited the country in `slot`
-    /// ([`derive::pass_visited`]). A pass at or before the branch's first sample counts as not
-    /// visiting: every row read since already holds it ([`derive::visiting_pass`]).
     pub fn visited(&self, branch: BranchId, pass: Hour, slot: u32) -> Result<bool, String> {
         let asking = Asking(&self.0, &|| false);
         let first = asking
@@ -398,8 +345,6 @@ impl RosterHistory {
         )
     }
 
-    /// The latest daily pass of `branch` at or before `hour` that visited the country in
-    /// `slot`, read on this thread.
     pub fn visiting_pass(&self, branch: BranchId, hour: Hour, slot: u32) -> Result<Option<Hour>, String> {
         visiting_pass(&Asking(&self.0, &|| false), branch, hour, slot)
     }
@@ -408,38 +353,27 @@ impl RosterHistory {
 type Key = (BranchId, Hour, u32);
 type Answer = Result<Option<Hour>, String>;
 
-/// The worker's demand: only the latest question is searched; an older one still
-/// unanswered is dropped and searched again if the hover asks for it again.
 #[derive(Default)]
 struct Demand {
     latest: Option<Key>,
-    /// The question the worker is searching.
     searching: Option<Key>,
     closed: bool,
 }
 
 struct Shared {
     samples: Arc<Sampler>,
-    /// Whether the search in hand is still the latest demand.
     superseded: Box<dyn Fn() -> bool + Send + Sync>,
     answers: Mutex<BTreeMap<Key, Answer>>,
     demand: Arc<(Mutex<Demand>, Condvar)>,
-    /// Advances with every answer, so a held hover built while one was pending rebuilds.
     generation: AtomicU64,
-    /// Signalled after each answer advances the generation.
     answered: (Mutex<()>, Condvar),
-    /// Why the worker stopped while the service was open; every later question gets
-    /// this refusal instead of waiting for an answer that cannot come.
     stopped: Mutex<Option<String>>,
     wake: Box<dyn Fn() + Send + Sync>,
-    /// Makes the next search panic, to stop the worker as a failed read would.
     #[cfg(test)]
     fail: AtomicBool,
 }
 
 impl Shared {
-    /// Search the latest demand, if any, and keep its answer unless a newer demand or
-    /// closing superseded it. False once the service is closed.
     fn run_one(&self) -> bool {
         #[cfg(test)]
         if self.fail.load(Ordering::Acquire) {
@@ -487,8 +421,6 @@ impl Shared {
         Asking(&self.samples, &*self.superseded)
     }
 
-    /// Keeps `answer`, the newest per (branch, slot): what is held does not grow with the
-    /// hours a hover is asked at.
     fn keep(&self, key: Key, answer: Answer) {
         let mut answers = self
             .answers
@@ -498,7 +430,6 @@ impl Shared {
         answers.insert(key, answer);
     }
 
-    /// Failed spawns must stop the already-started service, or waiters would hang.
     fn launched(&self, spawned: std::io::Result<()>) -> Result<(), String> {
         spawned.map_err(|error| {
             let reason = format!("the air roster worker failed to start: {error}");
@@ -511,7 +442,6 @@ impl Shared {
         })
     }
 
-    /// Count an answer, signal waiters and wake the hover.
     fn advance(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         {
@@ -525,9 +455,6 @@ impl Shared {
     }
 }
 
-/// Held by the worker thread. If the worker ends while the service is still open (a
-/// panicking read, or any other exit), it records why and advances the generation, so a
-/// hover held while pending rebuilds with the refusal and a waiter returns.
 struct Exit(Arc<Shared>);
 impl Drop for Exit {
     fn drop(&mut self) {
@@ -557,10 +484,6 @@ impl Drop for Exit {
     }
 }
 
-/// The roster history service: a hover asks for a visiting pass and gets its answer once
-/// a lowest-priority worker has read the recording's blocks, so drawing decodes nothing.
-/// The worker searches only the latest question, stops between block reads when a newer
-/// one or closing supersedes it, and ends when the service is dropped.
 pub struct PassRosters {
     shared: Arc<Shared>,
     started: AtomicBool,
@@ -568,12 +491,10 @@ pub struct PassRosters {
 }
 
 impl PassRosters {
-    /// Rosters of `replay`; `wake` is called after each answer so the hover is asked again.
     pub fn new(replay: Arc<Replay>, wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self::with_worker(replay, wake, true)
     }
 
-    /// Another reader of `sampler`'s history, with a worker of its own.
     pub fn of(sampler: Arc<Sampler>, wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self::with_sampler(sampler, wake, true)
     }
@@ -594,7 +515,6 @@ impl PassRosters {
         let demand: Arc<(Mutex<Demand>, Condvar)> = Arc::default();
         let superseded = {
             let demand = Arc::clone(&demand);
-            // The search in hand must still be the latest demand.
             move || {
                 let demand = demand
                     .0
@@ -625,13 +545,10 @@ impl PassRosters {
         &self.shared.samples
     }
 
-    /// How many answers have completed.
     pub fn generation(&self) -> u64 {
         self.shared.generation.load(Ordering::Acquire)
     }
 
-    /// Blocks until an answer completes after `generation` answers had, or the worker
-    /// stops, which counts as an answer refusing every question.
     pub fn wait_beyond(&self, generation: u64) {
         let (gate, signal) = &self.shared.answered;
         let mut held = gate
@@ -728,7 +645,6 @@ impl Rosters for PassRosters {
     }
 }
 
-/// Each cause's tooltip keys, ours and the enemy's.
 const KEYS: [(u32, &str, &str); 9] = [
     (
         0,
@@ -777,8 +693,6 @@ const KEYS: [(u32, &str, &str); 9] = [
     ),
 ];
 
-/// Fixed-point rounding: half a unit away from zero, then
-/// the integer part, as an `i32`.
 fn fixed_round(value: i64) -> i32 {
     let biased = if value < 0 {
         value.wrapping_sub(50_000)
@@ -788,9 +702,6 @@ fn fixed_round(value: i64) -> i32 {
     (biased / 100_000) as i32
 }
 
-/// Received-damage value text: causes 0, 1, 2, 6 and 7 through
-/// fixed5 formatting with precision 2, cause 3 through `AIRWING_DISRUPTED_VAL`'s
-/// `VAL`, every other cause rounded to an integer.
 fn value(context: &Context<'_>, item: derive::Item) -> Result<String, String> {
     let text = match item.cause {
         0 | 1 | 2 | 6 | 7 => installed_content_core::fixed5::fixed5_to_string(item.amount, 2),
@@ -804,7 +715,6 @@ fn value(context: &Context<'_>, item: derive::Item) -> Result<String, String> {
     Ok(format!("\u{11}{colour}{text}\u{11}!"))
 }
 
-/// One grid line: the tooltip's first line, then the value.
 fn item_line(context: &Context<'_>, item: derive::Item) -> Result<String, String> {
     let (_, ours, theirs) = KEYS
         .iter()
@@ -820,8 +730,6 @@ fn item_line(context: &Context<'_>, item: derive::Item) -> Result<String, String
     Ok(format!("{label}: {}", value(context, item)?))
 }
 
-/// The viewing country's holder of the province's strategic region at the
-/// frame's hour, or `None` when the region or the holder has no records.
 fn retained<'a>(
     context: &'a Context<'_>,
     rows: &'a [replay_data::rows::AirRegionCombatRow],
@@ -847,7 +755,6 @@ fn retained<'a>(
         .air_log_timeout
         .as_ref()
         .map_err(Clone::clone)?;
-    // Until the worker answers, the hover shows no statistics; the cache rebuilds it then.
     let Some(pass) = context
         .rosters
         .visiting_pass(context.frame.branch, context.frame.hour, ours)
@@ -857,8 +764,6 @@ fn retained<'a>(
     Ok(Some(derive::retained_through(row, pass?, timeout)))
 }
 
-/// The latest daily pass of `branch` at or before `hour` that visited the country in
-/// `slot`, from the roster samples on either side of each pass's tick.
 fn visiting_pass(
     samples: &dyn RosterSamples,
     branch: BranchId,
@@ -924,7 +829,6 @@ pub(super) fn append(context: &Context<'_>, out: &mut Tooltip) {
 pub(super) mod tests {
     use super::*;
 
-    /// Eligibility by hour for slot 5 on branch 1, which starts at hour 24.
     struct Fixture(BTreeMap<Hour, bool>);
     impl RosterSamples for Fixture {
         fn first_hour(&self, branch: BranchId) -> Option<Hour> {
@@ -941,9 +845,6 @@ pub(super) mod tests {
         }
     }
 
-    /// A country without a state now, which last owned one at the pass of hour 72, is
-    /// pruned by that pass; a country the branch's passes never visited keeps its row; a
-    /// gap or a roster that changed within a pass's tick refuses.
     #[test]
     fn the_latest_pass_that_visited_the_country_comes_from_the_recorded_roster() {
         let hour = 24 * 5 + 7;
@@ -951,7 +852,6 @@ pub(super) mod tests {
         assert_eq!(visiting_pass(&eligible(80), 1, hour, 5), Ok(Some(72)));
         assert_eq!(visiting_pass(&eligible(hour), 1, hour, 5), Ok(Some(120)));
         assert_eq!(visiting_pass(&eligible(0), 1, hour, 5), Ok(None));
-        // Eligibility lost in the tick of the pass at 96 leaves that pass unknown.
         assert!(visiting_pass(&eligible(95), 1, hour, 5).is_err());
         let mut gap = eligible(0);
         gap.0.remove(&71);
@@ -962,8 +862,6 @@ pub(super) mod tests {
         assert!(visiting_pass(&eligible(80), 2, hour, 5).is_err());
     }
 
-    /// A recording of branch 1 from hour 20 to 130 whose roster holds country 7 (slot 5)
-    /// until hour `until`, and lacks the hours in `missing`.
     pub(in super::super) fn recording(until: Hour, missing: &[Hour]) -> Arc<Replay> {
         use replay::spool::Record;
         use replay_data::{
@@ -1042,7 +940,6 @@ pub(super) mod tests {
         Arc::new(Replay::from_records(b"campaign".to_vec(), &[records]).unwrap())
     }
 
-    /// The answer of `rosters` once its worker has it; the first question is pending.
     fn answered(rosters: &PassRosters, hour: Hour, slot: u32) -> Answer {
         assert_eq!(
             rosters.visiting_pass(1, hour, slot),
@@ -1059,9 +956,6 @@ pub(super) mod tests {
         }
     }
 
-    /// The hover's question is answered on the worker from the recording's real blocks:
-    /// the first ask returns pending without decoding, and the answer then wakes the
-    /// hover and advances the generation.
     #[test]
     fn the_worker_answers_from_the_recorded_roster_blocks() {
         let woken = Arc::new(AtomicU64::new(0));
@@ -1075,19 +969,15 @@ pub(super) mod tests {
         assert_eq!(answered(&rosters, 127, 5), Ok(Some(72)));
         assert_eq!(rosters.generation(), 1);
         assert_eq!(woken.load(Ordering::Acquire), 1);
-        // A held answer is returned without asking the worker again.
         assert_eq!(rosters.visiting_pass(1, 127, 5), Some(Ok(Some(72))));
         assert_eq!(rosters.generation(), 1);
-        // Never eligible since the branch's first sample: no pass prunes the row.
         let never = PassRosters::new(recording(0, &[]), || {});
         assert_eq!(answered(&never, 127, 5), Ok(None));
-        // A missing sample before any visit refuses by name.
         let gap = PassRosters::new(recording(0, &[95]), || {});
         assert_eq!(
             answered(&gap, 127, 5),
             Err("hour 95 of branch 1 is not recorded".into())
         );
-        // A country the roster lacks refuses by name.
         assert!(
             answered(&rosters, 127, 6)
                 .unwrap_err()
@@ -1095,13 +985,9 @@ pub(super) mod tests {
         );
     }
 
-    /// A worker that stops before answering (here a panicking search) still releases a
-    /// waiter: the stop advances the generation, wakes the hover, and every question from
-    /// then on refuses by name instead of staying pending.
     #[test]
     fn a_worker_that_stops_unanswered_refuses_instead_of_leaving_the_hover_pending() {
         let woken = Arc::new(AtomicU64::new(0));
-        // The stop signals waiters before it wakes the hover, so the wake has its own signal.
         let (rang, rung) = std::sync::mpsc::channel();
         let wake = {
             let woken = Arc::clone(&woken);
@@ -1154,8 +1040,6 @@ pub(super) mod tests {
         assert_eq!(rosters.visiting_pass(1, 103, 5), Some(Err(reason)));
     }
 
-    /// Only the latest question is searched: an older one still pending is dropped, not
-    /// queued behind, and a search stops before its next block once superseded.
     #[test]
     fn a_newer_question_supersedes_pending_and_running_searches() {
         let rosters = PassRosters::with_worker(recording(0, &[]), || {}, false);
@@ -1163,13 +1047,11 @@ pub(super) mod tests {
         assert_eq!(rosters.visiting_pass(1, 103, 5), None);
         assert!(rosters.shared.run_one());
         assert_eq!(rosters.visiting_pass(1, 103, 5), Some(Ok(None)));
-        // The older question was never searched; asking again demands it afresh.
         assert_eq!(rosters.visiting_pass(1, 127, 5), None);
         assert_eq!(
             rosters.shared.demand.0.lock().unwrap().latest,
             Some((1, 127, 5))
         );
-        // A search whose demand is withdrawn stops before reading another block.
         let fresh = PassRosters::with_worker(recording(0, &[]), || {}, false);
         assert_eq!(fresh.visiting_pass(1, 127, 5), None);
         fresh.shared.demand.0.lock().unwrap().searching = Some((1, 127, 5));
@@ -1179,7 +1061,6 @@ pub(super) mod tests {
             Err(SUPERSEDED.into())
         );
         assert_eq!(fresh.shared.samples.blocks.load(Ordering::Acquire), 0);
-        // Closing ends the worker without keeping an answer.
         let closed = PassRosters::with_worker(recording(0, &[]), || {}, false);
         assert_eq!(closed.visiting_pass(1, 127, 5), None);
         let shared = Arc::clone(&closed.shared);
@@ -1188,7 +1069,6 @@ pub(super) mod tests {
         assert!(shared.answers.lock().unwrap().is_empty());
     }
 
-    /// Unchanged rosters share one snapshot however long the searched history.
     #[test]
     fn unchanged_rosters_share_one_snapshot() {
         let rosters = PassRosters::with_worker(recording(80, &[]), || {}, false);
@@ -1198,7 +1078,6 @@ pub(super) mod tests {
         assert_eq!(rosters.visiting_pass(1, 127, 5), Some(Ok(Some(72))));
         let held = samples.hours.lock().unwrap();
         assert!(held.len() >= 6, "{}", held.len());
-        // Eligible and no longer eligible: two snapshots.
         assert_eq!(samples.distinct.lock().unwrap().len(), 2);
         let first = held[&(1, 23)].as_ref().unwrap();
         let later = held[&(1, 48)].as_ref().unwrap();
@@ -1212,7 +1091,6 @@ pub(super) mod tests {
         assert_eq!(fixed_round(-150_000), -2);
         assert_eq!(fixed_round(-149_999), -1);
         assert_eq!(fixed_round(0), 0);
-        // Every cause the grids list has a tooltip pair; 8 and 9 never show.
         for cause in [0, 1, 2, 3, 4, 5, 6, 7, 10] {
             assert!(KEYS.iter().any(|(listed, _, _)| *listed == cause));
         }

@@ -8,35 +8,25 @@ import { researchAt } from './researchData.ts';
 import { researchAssignments, researchStartKnown } from './researchJourney.ts';
 import type { ResearchCoverage, ResearchEntry } from '../../generated/dashboard';
 
-/** One row of a slot's lane: a completion, a stretch the recording lacks, or
- * the slot opening or closing. `hour` orders the lane. */
 export type ResearchItem =
   | { kind: 'completed'; key: string; hour: number; slot: ResearchSlotHistory; entry: ResearchEntry }
   | { kind: 'gap'; key: string; hour: number; lastHour: number }
   | { kind: 'opened'; key: string; hour: number; known: boolean }
   | { kind: 'closed'; key: string; hour: number };
 
-/** A slot's lane. `offset` is how many rows down it starts: only a slot that
- * opened during the recording starts lower, at the row the other slots had
- * reached by then. */
 export interface ResearchLane { slot: ResearchSlotHistory; appeared: number; offset: number; items: ResearchItem[] }
 
 const RANK: Record<ResearchItem['kind'], number> = { opened: 0, completed: 1, gap: 2, closed: 3 };
 
-/** Research coverage known by `hour`. */
 export function coverageAt(coverage: readonly ResearchCoverage[], hour: number): ResearchCoverage[] {
   return coverage.filter(span => span.firstHour <= hour).map(span => ({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, hour) }));
 }
 
-/** The stretches between recorded research coverage, first and last hour. */
 export function coverageGaps(coverage: readonly ResearchCoverage[]): { firstHour: number; lastHour: number }[] {
   return coverage.slice(1).map((span, index) => ({ firstHour: coverage[index].lastHour + 1, lastHour: span.firstHour - 1 }))
     .filter(gap => gap.lastHour >= gap.firstHour);
 }
 
-/** One lane per slot, in slot order: its completions in order, the recording's
- * gaps that fall inside its sequence, and its opening and closing. `slots` and
- * `coverage` are clipped at `hour`. */
 export function researchLanes(slots: readonly ResearchSlotHistory[], coverage: readonly ResearchCoverage[], hour: number): ResearchLane[] {
   const spanOf = (at: number) => coverage.findIndex(span => span.firstHour <= at && at <= span.lastHour);
   const gaps = coverageGaps(coverage).map(gap => ({ ...gap, before: gap.firstHour - 1, after: gap.lastHour + 1 }));
@@ -47,11 +37,8 @@ export function researchLanes(slots: readonly ResearchSlotHistory[], coverage: r
     slot.availability.forEach((span, index) => {
       const within = spanOf(span.firstHour);
       if (within >= 0 && coverage[within].firstHour < span.firstHour) {
-        // The read before, in the same coverage, did not list this slot.
         items.push({ kind: 'opened', key: `o:${span.firstHour}`, hour: span.firstHour, known: true });
       } else if (within > 0) {
-        // First listed after a gap: when it opened is not recorded, unless the
-        // slot simply continues from before the gap.
         const before = index > 0 ? slot.availability[index - 1] : null;
         if (before?.lastHour !== coverage[within - 1].lastHour) items.push({ kind: 'opened', key: `o:${span.firstHour}`, hour: span.firstHour, known: false });
       }
@@ -88,9 +75,6 @@ function revealedAt(item: ResearchItem): number {
     : item.kind === 'gap' ? item.lastHour + 1 : item.hour;
 }
 
-/** Index the immutable history once. Playback selects only newly revealed rows;
- * unchanged lanes retain their rows and native keyboard identities. Slot reads
- * remain in the source history and are looked up at the displayed hour. */
 export function researchLanesAt(history: ResearchHistory, hour: number): ResearchLane[] {
   if (Number.isNaN(hour)) return [];
   let index = laneIndexes.get(history);
@@ -128,24 +112,16 @@ export function researchLanesAt(history: ResearchHistory, hour: number): Researc
   return index.shown;
 }
 
-/** What the history shows at `hour`: the rows each lane has revealed, where it starts, and the coverage known. It
- * changes only when a row is revealed, so a widget following playback renders only then, never because the hour
- * moved on inside it. */
 export function researchRevealKey(history: ResearchHistory, hour: number): string {
   const lanes = researchLanesAt(history, hour).map(lane => `${lane.slot.index}:${lane.items.length}:${lane.offset}`).join(',');
   return `${lanes};${history.coverage.filter(span => span.firstHour <= hour).length}`;
 }
 
-/** One List row: a completion or a gap. */
 export type ResearchRow =
   | { kind: 'completed'; key: string; hour: number; slot: ResearchSlotHistory; entry: ResearchEntry; token: string;
     started: { hour: number; known: boolean }; startSlot: number | null; tookHours: number | null }
   | { kind: 'gap'; key: string; hour: number; lastHour: number };
 
-/** A completion's start and time taken, as its explanation joins them: started
- * with its first assignment, and taken from then to the read at which it had
- * left the slot. Both are known only when its explanation knows the start;
- * otherwise it started by its first assignment and its time is unknown. */
 export function completedRow(slots: readonly ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry, hour: number): Extract<ResearchRow, { kind: 'completed' }> {
   const first = researchAssignments(slots, slot, entry)[0];
   const known = researchStartKnown(first.slot, first.entry);
@@ -154,8 +130,6 @@ export function completedRow(slots: readonly ResearchSlotHistory[], slot: Resear
     tookHours: known ? hour - first.entry.firstObservedHour : null };
 }
 
-/** Every lane's completions with the recording's gaps,
- * in time order (the List sorts them itself). */
 export function researchRows(lanes: readonly ResearchLane[], slots: readonly ResearchSlotHistory[], coverage: readonly ResearchCoverage[]): ResearchRow[] {
   const rows: ResearchRow[] = [];
   for (const lane of lanes) for (const item of lane.items) {
@@ -165,13 +139,11 @@ export function researchRows(lanes: readonly ResearchLane[], slots: readonly Res
   return rows.sort((a, b) => a.hour - b.hour || (a.kind === 'gap' ? 1 : 0) - (b.kind === 'gap' ? 1 : 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-/** A date in the app's calendar; an hour outside it reads "Unavailable date". */
 export function researchDate(hour: number): string {
   const date = gameDate(hour);
   return date ? formatDate(date) : 'Unavailable date';
 }
 
-/** "1–3 Apr 1944": a stretch of days, written as briefly as its ends allow. */
 export function researchDateRange(firstHour: number, lastHour: number): string {
   const first = gameDate(firstHour), last = gameDate(lastHour);
   if (!first || !last) return 'Unavailable dates';
@@ -181,13 +153,11 @@ export function researchDateRange(firstHour: number, lastHour: number): string {
   return `${formatDate(first)} – ${formatDate(last)}`;
 }
 
-/** Elapsed hours as days, written as the explanation writes them. */
 export function researchDays(hours: number): string {
   const text = researchNumber(BigInt(hours) * 100_000n / 24n);
   return `${text} ${text === '1' ? 'day' : 'days'}`;
 }
 
-/** The plain date under a lane cell's name, and the List's Date column. */
 export function researchItemDate(item: Exclude<ResearchItem, { kind: 'gap' }> | Exclude<ResearchRow, { kind: 'gap' }>): string {
   switch (item.kind) {
     case 'completed': return researchDate(item.hour);
@@ -197,11 +167,9 @@ export function researchItemDate(item: Exclude<ResearchItem, { kind: 'gap' }> | 
 }
 
 export interface ResearchText {
-  /** Repeated technology definitions have distinct template indices. */
   name: (token: string, databaseIndex?: number | null) => string;
   icon: (token: string) => string | undefined;
   artworkFailure?: (token: string) => Failure | undefined;
-  /** Each recorded definition can belong to different folders. */
   folder: (token: string, databaseIndex?: number | null) => ResearchFolderLook | undefined;
 }
 
@@ -210,8 +178,6 @@ function artworkFailureRows(text: ResearchText, token: string): TooltipRow[] {
   return failure ? [{ label: failureText(failure, 'Couldn’t load artwork.'), detail: failure.message }] : [];
 }
 
-/** A completion's tooltip: the plain date's "by" bound, its start, the time it
- * took and its slot. */
 export function completedTooltip(row: Extract<ResearchRow, { kind: 'completed' }>, text: ResearchText): TooltipContent {
   const { entry, started } = row;
   const rows: TooltipRow[] = [
@@ -230,9 +196,6 @@ export function gapTooltip(gap: { hour: number; lastHour: number }): TooltipCont
     note: 'Nothing is dated through this stretch.' };
 }
 
-/** What a slot is researching at an hour: its latest read progress dated by
- * that read, the game's days-left estimate, the year it is ahead of, and
- * whether its history can be opened. */
 export function currentTooltip(token: string, slotIndex: number, progress: { fraction: number; hour: number } | null, left: number | null,
   joined: boolean, text: ResearchText, aheadOf: number | null = null, databaseIndex: number | null = null): TooltipContent {
   const rows: TooltipRow[] = [

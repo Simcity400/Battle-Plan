@@ -39,7 +39,6 @@ impl Renderer<'_, '_, '_> {
         } else {
             self.localised(b"EFFECT_SET_RULE", &[], scopes, true)?
         };
-        // Ignore desc/override; compare each value with its fulfilled state.
         for &(name, loc, _, fulfilled) in rules() {
             if let Some(item) = field(fields, name) {
                 let value = item
@@ -56,7 +55,6 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // usage_desc is postload-only.
     pub(in crate::effect_description) fn politics_relation_rule(
         &self,
         item: &Item,
@@ -77,15 +75,12 @@ impl Renderer<'_, '_, '_> {
                     .unwrap_or(false);
             } else if !(item.keyword_is("target")
                 || item.keyword_is("trigger")
-                // Only the add reader consumes usage_desc.
                 || (!remove && item.keyword_is("usage_desc")))
             {
                 return Err(format!("unknown relation rule {}", key(item)));
             }
         }
         let trigger = field(fields, "trigger");
-        // tests the decoded specifier, not
-        // target presence. Invalid strings and scope selectors permit a template.
         let explicit = trigger.is_none() || self.relation_has_country_specifier(fields)?;
         let target = if explicit && field(fields, "target").is_some() {
             self.country_target(item, scopes)?
@@ -132,7 +127,7 @@ impl Renderer<'_, '_, '_> {
             true,
         )?;
         text.push_str(&self.rule_prefix(value, scopes)?);
-        text.push_str(&self.localised(rule.1.as_bytes(), &[], scopes, false)?); // no separator/LF.
+        text.push_str(&self.localised(rule.1.as_bytes(), &[], scopes, false)?);
         Ok(text)
     }
 
@@ -140,7 +135,6 @@ impl Renderer<'_, '_, '_> {
         let mut specified = false;
         for item in fields.iter().filter(|item| item.keyword_is("target")) {
             let operand = installed_content_core::parser::c_string(item.value.scalar().unwrap_or_default());
-            // Scope-selector parsing stores flags without changing the bound name.
             if item.value_keyword().is_some_and(|word| {
                 [
                     "root",
@@ -163,15 +157,12 @@ impl Renderer<'_, '_, '_> {
                 .content
                 .key_names
                 .ok_or_else(|| self.content_gap("effect key names"))?;
-            // exact tag, then alias
-            // token. A missing/empty name resets both selector alternatives.
             specified = names.countries.contains(operand)
                 || names.aliases.contains(&operand.to_ascii_lowercase());
         }
         Ok(specified)
     }
 
-    // Template, called with inversion=false, indent=0, mode=2.
     pub(in crate::effect_description) fn politics_rule_target(
         &self,
         body: &[Item],
@@ -203,7 +194,6 @@ impl Renderer<'_, '_, '_> {
         Ok(items)
     }
 
-    // mode=2 suppresses Check/prefix.
     fn rule_trigger_body(
         &self,
         fields: &[Item],
@@ -248,7 +238,6 @@ impl Renderer<'_, '_, '_> {
         mode: u8,
     ) -> Result<String, String> {
         if item.keyword_is("not") {
-            // not trigger flips inversion and resets mode.
             return self.rule_trigger_body(children(item), scopes, !inverted, indent, 0);
         }
         if item.keyword_is("and") || item.keyword_is("or") {
@@ -280,7 +269,6 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         if item.keyword_is("custom_trigger_tooltip") || item.keyword_is("custom_override_tooltip") {
-            // descendants are empty.
             let fields = children(item);
             let positive = field(fields, "tooltip")
                 .and_then(|item| item.value.scalar())
@@ -316,7 +304,6 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         if item.keyword_is("has_country_flag") {
-            // flag trigger own.
             let flag = if let Some(fields) = item.value.items() {
                 if let Some(item) = fields.iter().find(|item| !item.keyword_is("flag")) {
                     return Err(format!(
@@ -365,7 +352,6 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         if item.keyword_is("is_on_continent") {
-            // reader interns the scalar token.
             let operand = item.value.c_str().map_err(|why| why.to_string())?;
             let content = self.politics_content()?;
             let continent = content
@@ -377,7 +363,6 @@ impl Renderer<'_, '_, '_> {
                 .ok_or_else(|| {
                     format!("is_on_continent continent {operand} is absent from recorded content")
                 })?;
-            // no scope expansion.
             let prefixed = format!("{}_{continent}", self.tag(self.context.perspective)?);
             let name = self.localised(
                 if self.context.localisation.get(&prefixed).is_some() {
@@ -403,7 +388,6 @@ impl Renderer<'_, '_, '_> {
             text.push_str(&own);
             return Ok(text);
         }
-        // use the one scope parser and evaluator.
         let evaluator = self.evaluator()?;
         let parsed =
             installed_content_core::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());

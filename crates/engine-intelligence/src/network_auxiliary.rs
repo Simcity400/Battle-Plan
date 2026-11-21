@@ -1,5 +1,3 @@
-//! Saved network occurrences outside the state-strength census. The caller
-//! supplies an authenticated, marked network; this reader never finds owners.
 
 use engine_sites::Rva;
 use crate::{
@@ -56,9 +54,6 @@ pub mod kind {
     pub const UNSELECTED_QUIET: u8 = 16;
 }
 
-/// Logical occurrence identity is (kind, subnetwork, ordinal). Values preserve
-/// signed saved counts, raw references and fixed5 words. Handle/edge words use
-/// their exact u64 bit pattern in the signed carrier.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub kind: u8,
@@ -126,9 +121,6 @@ fn list<M: Memory>(
     }
     Ok(())
 }
-/// Acquire only the independent operands. Existing state rows supply the
-/// selected subnetwork terms and all saved gains/strengths; no duplicate native
-/// payload read or recording is needed for those terms.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct State {
     pub ordinal: u32,
@@ -343,8 +335,6 @@ pub fn acquire(
                 ..Entry::default()
             },
         )?;
-        // Native storage holds the factor before the chance; recorded channels
-        // follow their saved chance/factor meaning.
         let modifiers = field::<[u8; 16]>(memory, at, SUB_DETECTION_FACTOR)?;
         push(
             out,

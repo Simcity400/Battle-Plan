@@ -1,4 +1,3 @@
-//! Allocation-free terminal evidence, prepared before collector hooks are enabled.
 
 use std::io;
 
@@ -27,9 +26,7 @@ pub enum FailurePhase {
     Journal,
     SpoolHelper,
     History,
-    /// A thread that entered no collector phase.
     Unphased,
-    /// A game thread running a collector event hook.
     Hook,
 }
 
@@ -76,7 +73,6 @@ impl FailureCode {
     }
 }
 
-/// Hours an ordered writer admitted in one context that no spool commit covers yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UncommittedRange {
     pub campaign_id: [u8; 36],
@@ -92,7 +88,6 @@ impl UncommittedRange {
     }
 }
 
-/// A complete spool watermark is evidence of publication, never an inferred hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalWitness {
     pub session: u64,
@@ -107,7 +102,6 @@ pub struct TerminalWitness {
     pub pending_campaign_id: Option<[u8; 36]>,
     pub pending_segment: Option<u32>,
     pub pending_bytes: u64,
-    /// Independent of the attempted context: it may name another campaign or branch.
     pub uncommitted: Option<UncommittedRange>,
     pub phase: u8,
     pub code: u8,
@@ -115,7 +109,6 @@ pub struct TerminalWitness {
 }
 
 impl TerminalWitness {
-    /// The recorder supplies identity before the collector's first heap operation.
     pub fn prepared(session: u64, process_start_time: u64) -> [u8; WITNESS_BYTES] {
         Self {
             session,

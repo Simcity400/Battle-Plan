@@ -1,10 +1,7 @@
-//! What the pointer highlights in a drawn frame, as the host's map state names it
-//! ([`dashboard::protocol::DashboardMapState::hover`]).
 
 use viewer_combat::picker::Control;
 use viewer_foundation::unit_handle::Unit;
 
-/// The picker's control first, as it takes the pointer over the map; then a counter.
 pub(crate) fn describe(control: Option<&Control>, unit: Option<Unit>) -> Option<String> {
     if let Some(control) = control {
         return Some(match control {

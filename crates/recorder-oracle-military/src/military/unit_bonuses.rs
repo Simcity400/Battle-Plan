@@ -1,8 +1,3 @@
-//! CountryUnitBonuses against each saved country's `deployment.unit_modifiers`.
-//! The list is read whole at its daily slot; at any other hour the group is
-//! carried, not compared. Entries compare in stored order, and each entry's
-//! targets by position: the save names a target by its token but does not
-//! mark whether it is an exact or a category target.
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::{
@@ -20,7 +15,6 @@ use super::{
     CountryContext, Report, TokenNames, complete, invalid, required_country_tag, tag_text,
 };
 
-/// The save writer's `type` name of each recorded source kind.
 const SOURCE_TYPES: [&[u8]; 7] = [
     b"none",
     b"project",
@@ -30,7 +24,6 @@ const SOURCE_TYPES: [&[u8]; 7] = [
     b"rewards",
     b"milestones",
 ];
-/// The source id token whose `id` the writer omits.
 const NO_SOURCE: &[u8] = b"none";
 
 pub fn compare(
@@ -73,7 +66,6 @@ pub fn compare(
             ),
         }
     }
-    // A saved country without the key has an empty list, as one without rows.
     for (tag, saved) in report.canonical_countries(&save.production.unit_bonuses) {
         if recorded.contains_key(tag.as_slice()) {
             continue;
@@ -115,7 +107,6 @@ fn compare_list(
     }
 }
 
-/// A recorded token's name, or the difference that it has none.
 fn name<'a>(
     tokens: &TokenNames<'a>,
     token: u32,
@@ -186,7 +177,6 @@ fn compare_entry(
     }
 }
 
-/// The saved `(stat name, raw value)` of each nonzero recorded stat, in order.
 fn named_stats(stats: &[UnitBonusStat], label: &str, report: &mut Report) -> Vec<(Vec<u8>, i64)> {
     let metadata = installed_content_core::equipment::stat_metadata();
     stats
@@ -225,8 +215,6 @@ fn compare_target(
         (target.combat_width_raw != 0).then_some(target.combat_width_raw),
         saved.combat_width.as_ref().map(|width| width.raw),
     );
-    // The dense stats have one word per selector; compare them as a set of
-    // named values, independently of the writer's key order.
     let stats = format!("{label}.stats");
     let mut actual = named_stats(&target.stats, &stats, report);
     let mut expected = saved_stats(&saved.stats);
@@ -250,8 +238,6 @@ fn compare_target(
     }
 }
 
-/// A grant's stats are saved from its sparse list in stored order, without
-/// zero amounts.
 fn compare_grant(
     label: &str,
     grant: &RecordedGrant,

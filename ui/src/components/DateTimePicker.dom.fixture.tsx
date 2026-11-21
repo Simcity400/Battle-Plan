@@ -1,4 +1,3 @@
-/** The date picker on a live value in a real browser: opened while the value plays on, then edited. */
 import { createRoot } from 'react-dom/client';
 import DateTimePicker from './DateTimePicker';
 import type { LiveValue } from './DateTimePicker';
@@ -20,11 +19,8 @@ const dayStart = (at: number) => at - gameDate(at)!.hour + 1;
 export const fixture = {
   async ready() { await settle(); return document.querySelector('.date-time-trigger') !== null; },
   async open() { document.querySelector<HTMLButtonElement>('.date-time-trigger')!.click(); await settle(); },
-  /** The live value plays on `hours`. */
   async play(hours: number) { hour += hours; for (const changed of [...listeners]) changed(); await settle(); },
-  /** The day the open calendar marks selected. */
   selectedDay() { return document.querySelector('.calendar-grid [role="gridcell"][aria-selected="true"] [data-day]')?.getAttribute('data-day') ?? null; },
-  /** Picks `time` (1 to 24) in the calendar's time field: the hour chosen, and the one of the live day at that time. */
   async pickTime(time: number) {
     document.querySelector<HTMLButtonElement>('.calendar-time .select-trigger')!.click();
     await settle();

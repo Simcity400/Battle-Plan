@@ -1,28 +1,19 @@
-//! Allocation-equipment row in the garrison-alert walk; its concrete type is unknown.
 
 use crate::{Memory, cequipment_type, cpdx_array::Array, read as read_memory, walk::Outcome};
 
-/// Allocation-equipment row stride.
 pub const STRIDE: usize = 0x18;
-/// Archetype pointer, authenticated by its signed lookup key.
 pub const ARCHETYPE: usize = 0x00;
-/// Amount, signed i64 fixed point.
 pub const AMOUNT: usize = 0x10;
-/// Fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub source_ordinal: u32,
-    /// Signed equipment-type lookup key.
     pub archetype_id: i32,
     pub amount_raw: i64,
-    /// Callback-local address, excluded from replay serialization.
     pub archetype_pointer: usize,
 }
 
-/// Preserve each allocation separately; do not sum, clamp or filter amounts.
-/// The unclassified middle qword is not part of this table's field set.
 pub fn read(
     memory: &impl Memory,
     module_base: usize,
@@ -53,8 +44,6 @@ pub fn read(
     })
 }
 
-/// The caller authenticates the owning pool and supplies its bounded first
-/// array. Every live slot is a row; omitted slots remain explicitly truncated.
 pub fn walk(memory: &impl Memory, module_base: usize, array: Array, output: &mut [Row]) -> Outcome {
     let len = output.len().min(array.count as usize);
     for (ordinal, destination) in output[..len].iter_mut().enumerate() {

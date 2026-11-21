@@ -1,35 +1,3 @@
-//! PoliticalParties and ActiveIdeas rows held between hours per country
-//! ([`crate::party_changes`]).
-//!
-//! The Politics walk still authenticates every country's political status
-//! each hour and reads its party and idea array headers, every party and idea
-//! pointer in them, the ruling party and each party's popularity.
-//!
-//! A country's PoliticalParties rows are carried, without reading its
-//! parties' identities, ideology tokens, tags, names or default flags, only
-//! when all of these hold at this boundary: the same country, political
-//! status and party array data pointer and count as the held read, the same
-//! party pointers in the same order, and no hooked writer touched any of
-//! those parties since that read registered it (same watch epoch and
-//! sequence; a load, gap, recovery, table change, poison or a running writer
-//! revokes it). Every writer of those fields is a hooked site
-//! ([`engine_mutations::political_party_mutations`]); popularity and the ruling flag
-//! are read afresh, so they are held as zero.
-//!
-//! A country's ActiveIdeas rows are carried, without reading any idea, when
-//! the same country, status, idea array header and idea pointers are those
-//! of the held read, taken in the current epoch: a row is the slot's
-//! `CIdea` definition token, which the idea database fixes for the session.
-//!
-//! The store follows the Governance job's loan and holds only the countries
-//! of the latest complete walk of each table. Allocation is advisory: a
-//! country whose rows cannot be held is read afresh next hour.
-//!
-//! The store also holds the latest complete walk's four politics tables for
-//! a quiet politics hour ([`super::politics_hour`]), with every listed party
-//! pointer in walk order, recorded here as each country's parties are read or
-//! carried. A quiet hour neither begins nor finishes a walk, so the
-//! per-country rows above stay as the latest walk left them.
 use super::politics_hour::{QuietWalk, Visit};
 use crate::party_changes::{Changes, Counts};
 use engine_allocation as allocation;
@@ -50,26 +18,20 @@ struct PartyEntry {
     parties: Parties,
     rows: Range<usize>,
     text: Range<usize>,
-    /// Each listed party with its certificate, in array order.
     pointers: Range<usize>,
 }
 
 #[derive(Clone, Debug)]
 struct IdeaEntry {
     ideas: Ideas,
-    /// The status's certificate: no writer notifies it, so it changes only
-    /// with the epoch.
     certificate: Certified,
     rows: Range<usize>,
     text: Range<usize>,
-    /// Each slot's stored pointer, in array order.
     pointers: Range<usize>,
 }
 
-/// One walk's held parties.
 #[derive(Default)]
 struct HeldParties {
-    /// Sorted by political status once the walk finishes.
     entries: Vec<PartyEntry>,
     rows: Vec<Row>,
     text: Vec<u8>,
@@ -92,8 +54,6 @@ impl HeldParties {
         (self.entries[index].parties == *parties).then_some(index)
     }
 
-    /// Holds one country; `false` when the storage could not grow, which
-    /// only withholds the certificate.
     fn hold(
         &mut self,
         parties: Parties,
@@ -112,7 +72,6 @@ impl HeldParties {
             return false;
         }
         let (row, byte, pointer) = (self.rows.len(), self.text.len(), self.pointers.len());
-        // Popularity and the ruling flag are read every hour, never held.
         self.rows.extend(rows.iter().map(|row| Row {
             popularity: 0,
             is_ruling: 0,
@@ -141,10 +100,8 @@ impl HeldParties {
     }
 }
 
-/// One walk's held ideas.
 #[derive(Default)]
 struct HeldIdeas {
-    /// Sorted by political status once the walk finishes.
     entries: Vec<IdeaEntry>,
     rows: Vec<IdeaRow>,
     text: Vec<u8>,
@@ -167,7 +124,6 @@ impl HeldIdeas {
         (self.entries[index].ideas == *ideas).then_some(index)
     }
 
-    /// Holds one country; `false` when the storage could not grow.
     fn hold(
         &mut self,
         ideas: Ideas,
@@ -212,8 +168,6 @@ impl HeldIdeas {
     }
 }
 
-/// Sorts held entries by status and drops every status occurring twice,
-/// which names no single held read.
 fn sort_unique<T>(entries: &mut Vec<T>, status: impl Fn(&T) -> usize) {
     entries.sort_unstable_by_key(&status);
     let mut index = 0;
@@ -237,24 +191,18 @@ struct Held {
     ideas: HeldIdeas,
 }
 
-/// The country being planned or read afresh, per table.
 #[derive(Default)]
 struct Pending {
     token: usize,
-    /// The held entry whose certificates are all current.
     held: Option<usize>,
-    /// Every fresh party registered.
     certified: bool,
-    /// The read's party pointers and certificates, or idea pointers.
     parties: Vec<(usize, Certified)>,
     ideas: Vec<usize>,
-    /// The ideas plan's status certificate.
     certificate: Option<Certified>,
     parties_header: Option<Parties>,
     ideas_header: Option<Ideas>,
 }
 
-/// Rows of the latest complete walk and the walk being made.
 #[derive(Default)]
 pub struct PartyStore {
     current: Held,
@@ -263,11 +211,8 @@ pub struct PartyStore {
     next_token: usize,
     counts: [Counts; 2],
     receivers: usize,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walk drops every held row.
     forgotten: bool,
-    /// The latest complete walk's four politics tables.
     quiet: QuietWalk,
 }
 
@@ -276,13 +221,10 @@ impl PartyStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next walk reads afresh.
-    /// Allocation-free for the game thread.
     pub fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -292,13 +234,11 @@ impl PartyStore {
         self.counts
     }
 
-    /// The latest walk hour's use of the political status domains.
     #[cfg(any(test, feature = "test-support"))]
     pub fn quiet_counts(&self) -> crate::political_status_changes::Counts {
         self.quiet.counts()
     }
 
-    /// The held politics tables; `None` once forgotten.
     pub(super) fn quiet(&self) -> Option<&QuietWalk> {
         (!self.forgotten).then_some(&self.quiet)
     }
@@ -307,7 +247,6 @@ impl PartyStore {
         &mut self.quiet
     }
 
-    /// Measures again after the politics tables changed.
     pub(super) fn remeasure(&mut self) {
         self.bytes = self.measure();
     }
@@ -343,8 +282,6 @@ impl PartyStore {
         self.quiet.begin();
     }
 
-    /// Keeps each table's rows only when the walk read or carried every
-    /// country of it completely, and publishes the counts.
     fn finish(&mut self, parties: bool, ideas: bool) {
         if parties {
             self.current.parties.sort();
@@ -377,7 +314,6 @@ impl PartyStore {
     }
 }
 
-/// One walk's view of the store and the observation that certifies reuse.
 pub struct PoliticsReuse<'a> {
     store: &'a mut PartyStore,
     changes: &'a dyn Changes,
@@ -389,8 +325,6 @@ impl<'a> PoliticsReuse<'a> {
         Self { store, changes }
     }
 
-    /// Ends the walk: each flag says whether every country of that table was
-    /// read or carried whole.
     pub fn finish(self, parties: bool, ideas: bool) {
         self.store.finish(parties, ideas);
     }
@@ -400,15 +334,11 @@ impl<'a> PoliticsReuse<'a> {
         (pending.token == token && token != 0).then_some(pending)
     }
 
-    /// Records a visited country's rows for a quiet politics hour, with the
-    /// party pointers its PoliticalParties read or carry listed.
     pub(super) fn visit(&mut self, visit: Visit) {
         self.store.quiet.visit(visit);
     }
 }
 
-/// Appends without failing the read: a full buffer only withholds the
-/// certificate.
 fn push<T>(values: &mut Vec<T>, value: T) -> bool {
     if allocation::advisory(|| allocation::reserve(values, 1)).is_err() {
         return false;
@@ -418,9 +348,6 @@ fn push<T>(values: &mut Vec<T>, value: T) -> bool {
 }
 
 impl PartyCarry for PoliticsReuse<'_> {
-    /// Carryable, and carried without a read, when the held read of the same
-    /// status and array header lists parties whose certificates are all
-    /// still current.
     fn plan(&mut self, parties: &Parties) -> (usize, Option<(usize, usize)>) {
         let token = self.store.start(PARTIES);
         self.store.quiet.start_country();
@@ -456,7 +383,6 @@ impl PartyCarry for PoliticsReuse<'_> {
         })
     }
 
-    /// The held rows of a carryable plan, held again for the next hour.
     fn carry(&mut self, token: usize, rows: &mut [Row], text: &mut [u8]) {
         let Some((index, header)) = self
             .pending(PARTIES, token)
@@ -476,14 +402,11 @@ impl PartyCarry for PoliticsReuse<'_> {
         text.copy_from_slice(&previous.parties.text[entry.text]);
         counts[PARTIES].reused += 1;
         counts[PARTIES].reused_rows += rows.len() as u64;
-        // The live pointers, which `same_parties` found equal.
         let pointers = &previous.parties.pointers[entry.pointers];
         quiet.carried_parties(pointers.iter().map(|&(party, _)| party));
-        // A failed hold only withholds the next hour's certificate.
         let _ = current.parties.hold(header, rows, text, pointers);
     }
 
-    /// Registers a party before its fields are read.
     fn party(&mut self, token: usize, party: usize) {
         let certificate = self.changes.sequence(party);
         self.store.receivers += 1;
@@ -500,7 +423,6 @@ impl PartyCarry for PoliticsReuse<'_> {
         }
     }
 
-    /// A fresh read, held for the next hour.
     fn read(&mut self, token: usize, outcome: Outcome, rows: &[Row], text: &[u8]) {
         let PartyStore {
             current,
@@ -530,8 +452,6 @@ impl PartyCarry for PoliticsReuse<'_> {
 }
 
 impl IdeaCarry for PoliticsReuse<'_> {
-    /// Carryable, and carried without a read, when the held read of the same
-    /// status and array header was taken in this epoch.
     fn plan(&mut self, ideas: &Ideas) -> (usize, Option<(usize, usize)>) {
         let token = self.store.start(IDEAS);
         let certificate = self.changes.sequence(ideas.status);
@@ -562,7 +482,6 @@ impl IdeaCarry for PoliticsReuse<'_> {
             .is_some_and(|held| held == chunk)
     }
 
-    /// The held rows of a carryable plan, held again for the next hour.
     fn carry(&mut self, token: usize, rows: &mut [IdeaRow], text: &mut [u8]) {
         let Some((index, header, certificate)) = self
             .pending(IDEAS, token)
@@ -590,7 +509,6 @@ impl IdeaCarry for PoliticsReuse<'_> {
         );
     }
 
-    /// Records a slot's stored pointer before the idea is read.
     fn idea(&mut self, token: usize, slot: usize) {
         let pending = &mut self.store.pending[IDEAS];
         if pending.token != token || token == 0 {
@@ -599,7 +517,6 @@ impl IdeaCarry for PoliticsReuse<'_> {
         pending.certified &= push(&mut pending.ideas, slot);
     }
 
-    /// A fresh read, held for the next hour.
     fn read(&mut self, token: usize, outcome: Outcome, rows: &[IdeaRow], text: &[u8]) {
         let PartyStore {
             current,

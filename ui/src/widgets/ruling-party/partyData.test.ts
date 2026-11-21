@@ -25,7 +25,6 @@ test('bands follow content order and colours; unknown ideologies use the palette
     ['democratic', 'Democratic'], ['fascism', 'Fascist'], ['mod_ideology', 'Ideology name unavailable'],
   ]);
   assert.equal(list[2].color, '#111111');
-  // Each band's lines are the popularity series' parts its party was read under.
   assert.deepEqual(list.map(band => band.keys), [[{ tag: 'GER', part: '0' }, { tag: 'GER', part: '4' }], [{ tag: 'GER', part: '1' }], [{ tag: 'GER', part: '3' }]]);
 });
 
@@ -37,7 +36,6 @@ test('content ideology colours keep their hue in the palette tone, and a grey st
     const reply = { ...REPLY, ideologies: [...REPLY.ideologies, { token: 'neutrality', name: 'Non-Aligned', color: [128, 128, 128] as [number, number, number] }],
       parties: [...REPLY.parties, { token: 'neutrality', parts: [] }] };
     const shown = new Map(bands(reply, 'GER', palette).map(band => [band.token, rgbToOklch(parseColor(band.color)!)]));
-    // Pure content blue and red no longer appear as raw primaries.
     assert.ok(bands(reply, 'GER', palette).every(band => band.color.startsWith('#') && band.color !== '#0000ff'));
     for (const [token, rgb] of [['democratic', [0, 0, 255]], ['fascism', [150, 75, 0]]] as const) {
       const source = rgbToOklch({ r: rgb[0], g: rgb[1], b: rgb[2] }), colour = shown.get(token)!;
@@ -87,7 +85,6 @@ test('the keyboard steps to the nearest mark within the view', () => {
 test('a change of government next to a gap is not a badge; elections are', () => {
   const badges = partyBadges(REPLY, token => token);
   assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph]), [[104, '✓'], [107, '⇆']]);
-  // A run after a new identity is not a change of government.
   const replaced = { ...REPLY, ruling: REPLY.ruling.map((item, index) => index === 2 ? { ...item, startsSegment: true } : item) };
   assert.deepEqual(partyBadges(replaced, token => token).map(badge => badge.glyph), ['✓']);
   assert.equal(badges[1].label, 'fascism took power from democratic');
@@ -121,14 +118,11 @@ test('the leader is named as recorded, and every gap in what is known is said', 
     ideologyTypes: [{ token: 'nazism', name: 'Nazism' }, { token: 'mod_type', name: null }] };
   const at = (hour: number) => leaderShown(reply, leaderAt(reply, hour));
   assert.deepEqual(at(100), { name: 'Adolf Hitler', known: true, portrait: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', portraitMissing: null, ideology: 'Nazism' });
-  // A rename or a new portrait is its own entry, so both follow the hour shown.
   assert.deepEqual([at(102).name, at(102).portrait], ['Der Führer', null]);
   assert.match(at(102).portraitMissing!, /generates/);
   assert.deepEqual([at(103).name, at(104).name, at(105).name], ['Leader not recorded', 'Leader not identified', 'No leader']);
   assert.equal(at(104).ideology, 'Nazism');
-  // An unnamed character and an ideology content does not name say so, rather than guessing.
   assert.deepEqual([at(106).name, at(106).known, at(106).ideology], ['Leader’s name not known', false, 'Ideology name unavailable']);
-  // A new character is a change of leader; a rename, a gap or an unidentified leader is not.
   const successions = { ...reply, leaders: [...reply.leaders, { ideology: 'nazism', person: 3, firstHour: 107, lastHour: 107, startsSegment: false }],
     people: [...reply.people, { character: { id: 8, token: 'GER_karl_donitz', name: 'GER_karl_donitz' }, name: 'Karl Dönitz', portrait: null, portraitMissing: null }] };
   assert.deepEqual(partyBadges(successions, token => token, true).filter(badge => badge.glyph === '♔').map(badge => [badge.hour, badge.label]),

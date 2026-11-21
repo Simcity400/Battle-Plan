@@ -8,18 +8,11 @@ import type { FollowedAnswer } from './message.ts';
 import { canonical } from './canonical.ts';
 import type { FollowEntry, FollowHandle, FollowQuery, FollowStore, Painter } from './store.ts';
 
-/** Tells `changed` whether `element` is on screen, now and as it changes; the returned function
- * stops. */
 export type OnScreen = (element: Element, changed: (visible: boolean) => void) => () => void;
 
-/** How near the dashboard's scrolled view a widget is active: its follows are held over the same reach, so an active
- * widget never asks for its head values by the fallback because its follow is off. */
 export const NEAR_SCREEN = '240px 0px';
 export const DASHBOARD_SCROLL = '.dash-grid-scroll';
 
-/** On screen as the browser sees it, or near the dashboard's view as its widgets are active there; always, where there
- * is no `IntersectionObserver`. An element with no box of its own (`display: contents`) is never seen by the browser:
- * it is on screen while any of its children is, the children watched as they come and go. */
 export const observeOnScreen: OnScreen = (element, changed) => {
   if (typeof IntersectionObserver !== 'function') { changed(true); return () => {}; }
   element = element.closest('article.dash-widget') ?? element;
@@ -40,7 +33,6 @@ export const observeOnScreen: OnScreen = (element, changed) => {
     for (const entry of entries) if (seen.has(entry.target)) seen.set(entry.target, entry.isIntersecting);
     tell();
   }, reach);
-  // A child taking another's place is told by its own first sighting, so a loading state giving way keeps the follow.
   const watch = () => {
     const children = new Set(element.children);
     let added = false;
@@ -56,26 +48,18 @@ export const observeOnScreen: OnScreen = (element, changed) => {
 
 const noStructure = () => '';
 
-/** A text panel's structure: its text, which moves the entry's version only when it differs. */
 export const panelStructure = (_answer: FollowedAnswer | undefined, entry: FollowEntry) => entry.panel ? String(entry.version) : '';
 
-/** A followed query as a widget renders it: whether the service follows it, and the answer's structure. */
 export interface Followed {
-  /** Off while it is not on screen or not asked; the widget reads the value as before unless followed. */
   status: 'off' | FollowEntry['status'];
   reason?: string;
   structure: string;
-  /** The followed entry, while one is held. */
   entry: FollowEntry | null;
-  /** Its element is watched and seen off screen (not merely not watched yet, nor missing): nothing of it is shown, so
-   * nothing need be read for it until it comes back. */
   hidden: boolean;
 }
 
-/** Whether the service accepted the widget's follow. */
 export const followsHead = (followed: Followed) => followed.status === 'followed';
 
-/** The request hour at an anchor, including paused seeks. */
 export function useFallbackHour(clock: PlaybackController, on = true): number {
   const widget = measuredWidget();
   countWork(widget, 'render');
@@ -84,7 +68,6 @@ export function useFallbackHour(clock: PlaybackController, on = true): number {
   return useSyncExternalStore(subscribe, read, read) ?? clock.getHour();
 }
 
-/** A visible widget shares its query and renders when availability or row structure changes. */
 export function useFollow(store: FollowStore | null, asked: FollowQuery | null, target: RefObject<Element | null>, paint: ((entry: FollowEntry) => unknown) | null,
   structureOf: (answer: FollowedAnswer | undefined, entry: FollowEntry) => string = noStructure, onScreen: OnScreen = observeOnScreen): Followed {
   const prepared = useContext(PreparingPage);
@@ -115,7 +98,6 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
     return { status, reason: reason || undefined, structure, entry, hidden: hidden === 'hidden' };
   }, [snapshot, entry]);
   const structure = followed.structure;
-  // The follow, held while the query stands and its element is on screen.
   useEffect(() => {
     if (!store || !query) return;
     let handle: FollowHandle | null = null, painter: Painter | null = null, unwatch: (() => void) | null = null;
@@ -139,9 +121,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
     };
     box.show(box.visible);
     return () => { box.show = null; leave(); };
-    // `query` is compared by its canonical text, `key`.
   }, [store, key, box, widget, paints]);
-  // Whether its element is on screen: a new element is watched in its place without letting the follow go.
   useEffect(() => {
     const element = target.current;
     const seen = (visible: boolean, watched = true) => {
@@ -153,7 +133,6 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
     if (!element || prepared) { seen(false, false); return; }
     return onScreen(element, seen);
   }, [store, key, target, onScreen, box, prepared]);
-  // Rows rendered for a new structure are painted in the frame after they are committed.
   useLayoutEffect(() => { box.painter?.repaint(); }, [structure, box]);
   return followed;
 }

@@ -10,9 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-# The writers' test store and helpers, for other crates' tests.
 test-support = []
-# Measurement builds: each writer's own allocations counted under its label.
 memory-labels = ["engine-allocation/memory-labels"]
 
 [dependencies]

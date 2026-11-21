@@ -1,4 +1,3 @@
-//! The generated TypeScript contract against the transport constants it exports.
 
 #[test]
 fn the_frontend_command_budget_matches_the_reply_transport() {
@@ -19,7 +18,6 @@ fn the_contract_names_the_refusals_a_reader_may_try_again() {
         TRANSIENT_ERROR_NAMES, TRANSIENT_ERRORS, transient_error,
     };
     let contract = crate::typescript_contract();
-    // Each refusal is exported by name, and the list is made of those names.
     for (name, message) in TRANSIENT_ERROR_NAMES {
         assert!(contract.contains(&format!("export const {name} = {message:?};")));
     }
@@ -35,8 +33,6 @@ fn the_contract_names_the_refusals_a_reader_may_try_again() {
             MAP_CONTROLS_BUSY
         ]
     );
-    // Every refusal, alone or with a producer's advice after it, may be tried again;
-    // the product's own answers and other failures may not.
     for refusal in TRANSIENT_ERRORS {
         assert!(transient_error(refusal), "{refusal}");
         assert!(transient_error(&format!("{refusal}. Retry this view.")));

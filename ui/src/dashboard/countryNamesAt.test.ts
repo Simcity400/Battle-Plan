@@ -58,8 +58,6 @@ test('dated fact hooks own independent reads and mask switched clients immediate
       }) } as unknown as DashboardClient;
       const wanted = [{ hour: 100, tag: 'A' }];
       const spec = { product: 'synthetic', perRequest: 64, params: () => ({}), extract: () => new Map([['A', 'Recorded name']]) };
-      // The dispatcher wrappers select the current consumer, while all production
-      // store, request and transient transport code remains unchanged.
       host.__datedFactHooks = a;
       a.begin(); assert.equal(hook(client, track, wanted, true, spec).size, 0); a.commit();
       host.__datedFactHooks = b;
@@ -117,7 +115,6 @@ test('dated names retain explicit loading, absence, failure and stable completed
     await new Promise<void>(resolve => setImmediate(resolve));
     const failed = render(true, failedClient).get(nameKey(10, 'present'));
     assert.deepEqual(failed, { kind: 'failed', failure: refusal });
-    // Playing on, a later hour shows the last read while it loads: a refusal stays until a name comes, never the name before it.
     let refuse = false;
     const playing = { product: (input: ProductRequest) => refuse ? Promise.reject(refusal)
       : Promise.resolve({ ...input, data: { styles: [{ tag: 'present', name: 'Named' }] } }) } as unknown as DashboardClient;

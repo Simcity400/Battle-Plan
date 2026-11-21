@@ -1,4 +1,3 @@
-//! Shared synthetic frame wire fixture for frame and container tests.
 use replay_data::rows::TableId;
 
 pub fn empty_frame97(hour: i32, keyframe: bool) -> Vec<u8> {

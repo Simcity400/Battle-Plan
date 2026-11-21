@@ -1,7 +1,4 @@
-//! Regional naval unit grids and occurrence-count badges.
-//! Membership is simulation state; local selection only affects ordering and frames.
 use super::*;
-/// An active-raider view assembled from independent recorded columns.
 struct RaidingGrid<'a> {
     active: u8,
     row: &'a replay_data::rows::NavalMissionTaskForceRow,
@@ -35,7 +32,6 @@ fn keyed<T, K: Ord>(rows: &[T], key: K, field: impl FnMut(&T) -> K) -> Option<&T
         .map(|at| &rows[at])
 }
 
-/// Target resolution uses the native OR: one live reference is conclusive.
 fn raiding_visible(grid: &RaidingGrid<'_>, region: u32) -> Fact<bool> {
     if grid.active == 0 {
         return Ok(false);
@@ -78,8 +74,6 @@ fn assigned(
     })
 }
 
-/// The alternate enemy sight predicate counts searchers whose roster owner is
-/// the viewer. It is independent of the task force's ordinary visibility.
 fn searched(
     row: &replay_data::rows::TaskForceCounterInputRow,
     hour: i32,
@@ -239,8 +233,6 @@ pub(super) fn sort_own(
     Ok(order.iter().map(|&index| keys[index]).collect())
 }
 
-/// Prepare only the mission windows' reached regional children. This reuses the
-/// hour's naval context, including ship rosters and current visibility.
 pub(super) fn prepare<'a>(
     inputs: &CounterInputs<'_>,
     frame: &'a DecodedFrame,
@@ -505,7 +497,6 @@ pub(super) fn prepare<'a>(
                                 flag_owner: slot,
                                 sight: Sight::None,
                                 byte,
-                                // The regional path reads only a complete census.
                                 ships: Some(context.ships[&handle].0),
                                 position: None,
                                 strength: context.ships[&handle].1,
@@ -691,9 +682,6 @@ pub(super) fn prepare<'a>(
     Ok(())
 }
 
-/// The controls actually presented by the regional root inherit its hover
-/// handler. Container membership chooses the arm; content controls still own
-/// their native hit geometry and supported status.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn control_hovers(
     region: u32,

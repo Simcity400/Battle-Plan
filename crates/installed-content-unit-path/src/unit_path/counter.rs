@@ -1,10 +1,6 @@
-//! Fresh army, railway-gun and task-force counter routes, with no client
-//! cache. The A* loop is shared with invasions; requests change prechecks,
-//! edge admission and mode/forced-transfer fallback.
 
 use super::*;
 
-/// Unit class, with the recorded handle for class-specific facts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CounterClass {
     #[default]
@@ -13,9 +9,6 @@ pub enum CounterClass {
     TaskForce(u64),
 }
 
-/// Viewer-owned route preference and this unit's simulation rail mode.
-/// `local_option` supplies the interface route option; the interface's
-/// retained path cache is not a recorded operand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CounterRequest {
     pub class: CounterClass,
@@ -24,9 +17,6 @@ pub struct CounterRequest {
 }
 
 impl<W: MoveWorld + ?Sized> Mover<'_, W> {
-    /// Counter cache-miss routing. Source excluded, destination included;
-    /// empty routes include failed searches and equal-endpoint success.
-    /// The request leaves rail-speed cost division disabled.
     pub fn counter_route(
         &self,
         army: &Army,
@@ -34,8 +24,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         to: u32,
         request: CounterRequest,
     ) -> Fact<Vec<u32>> {
-        // Mode-2 region admission compares against the request source.
-        // Counter callers pass this unit's actual location.
         if from != army.location {
             return Err("counter path source differs from its unit location".into());
         }
@@ -48,8 +36,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         route = self
             .counter_attempt(army, from, to, request, true)?
             .unwrap_or_default();
-        // Definition flags with both low bits clear mean sea. The filter
-        // checks naval-base-map presence, not positive building level.
         if request.local_option
             && !request.strategic
             && let Some(&first) = route.first()
@@ -72,8 +58,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         let mode_two = request.strategic || request.local_option;
         let route =
             self.counter_search(army, from, to, request.class, mode_two, forced_transfer)?;
-        // Retry on search failure, independently of route length. Some(empty)
-        // retains equal-endpoint success at this inner boundary.
         if mode_two && !request.strategic && route.is_none() {
             self.counter_search(army, from, to, request.class, false, forced_transfer)
         } else {
@@ -97,7 +81,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
             if !self.counter_edge(army, from, to, class, forced_transfer)? {
                 return Ok(false);
             }
-            // Evaluate class-specific edge access before the mode-2 node predicate.
             if mode_two {
                 self.counter_node_admissible(army, to, class)
             } else {
@@ -106,7 +89,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         })
     }
 
-    /// Request precheck with only region checks enabled.
     fn counter_precheck(
         &self,
         army: &Army,
@@ -136,8 +118,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         Ok(true)
     }
 
-    /// Class-specific counter admission. Transport classification reads
-    /// stored port-sea links rather than active naval-base levels.
     fn counter_edge(
         &self,
         army: &Army,
@@ -162,7 +142,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         let transfer =
             matches!(class, CounterClass::TaskForce(_)) || forced_transfer || army.naval_transfer;
         let class_admits = if transfer {
-            // Classification byte 6: sea/sea or an exact port/sea pair.
             match [from_land, to_land] {
                 [true, true] => false,
                 [true, false] => self.world.port_sea(from)? == to,
@@ -170,8 +149,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
                 [false, false] => true,
             }
         } else {
-            // Classification byte 7: land/land or sea/land, without a port
-            // or active naval-base requirement on the latter.
             to_land
                 && (!matches!(class, CounterClass::Railway(_))
                     || self.world.counter_rail_connected(from, to)?)
@@ -193,8 +170,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
             }
         }
         if army.exiled {
-            // Request exile bypasses fleet, move-access and task-force access,
-            // but refuses embarkation even on a forced-transfer route.
             return Ok(!from_land || to_land);
         }
         let access = if matches!(class, CounterClass::TaskForce(_)) {
@@ -239,7 +214,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         }
     }
 
-    /// Choose the class's permission before evaluating the rule verdict.
     fn counter_rule_admits(
         &self,
         rule: &AdjacencyRule,

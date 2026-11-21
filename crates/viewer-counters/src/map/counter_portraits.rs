@@ -1,15 +1,3 @@
-//! Authored character portraits for headquarters counters.
-//!
-//! Army categories zero and one select the large army portrait. Recorded runtime
-//! portrait holders and non-character portrait strings take precedence where available;
-//! older formats use the leader character's authored portrait.
-//!
-//! A recorded `GFX_` sprite resolves through all declared content sprites
-//! ([`Portraits::declared`]). Texture paths resolve through authored character portrait
-//! aliases ([`Portraits::aliases`]). Effective files and textures use the resolved
-//! content layers. Conditional character alternatives and duplicate effective
-//! definitions must agree on the army portrait; DLC and scripted triggers are not
-//! evaluated here.
 
 use std::collections::BTreeSet;
 use std::{collections::BTreeMap, io, sync::Arc};
@@ -34,13 +22,10 @@ fn asset_path(path: &str) -> String {
         .join("/")
 }
 
-/// Where a portrait name resolves: a texture read, or a dead end the merge
-/// loop reports with the same message as the serial load.
 enum PortraitSource {
     Texture(String, u32),
     NoTexture,
     Undeclared,
-    /// Its latest declaration is refused, with why.
     Refused(String),
 }
 
@@ -59,8 +44,6 @@ fn portrait_source(sprites: &SpriteSet, name: &str) -> PortraitSource {
     }
 }
 
-/// The lookup key of a recorded portrait identity: a `GFX_` sprite name verbatim, a texture path
-/// with its separators normalised and ASCII case folded, as the content layers resolve paths.
 pub fn identity_key(identity: &str) -> String {
     if identity.starts_with("GFX_") {
         identity.to_owned()
@@ -69,7 +52,6 @@ pub fn identity_key(identity: &str) -> String {
     }
 }
 
-/// One character token's authored army portrait: its sprite name, texture and frame count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TokenSprite {
     name: String,
@@ -77,31 +59,21 @@ struct TokenSprite {
     frames: u32,
 }
 
-/// Authored portraits by character token, with the sprite names and texture paths that reach
-/// each one. Textures decode on first draw into a bounded LRU ([`LazyImages`]).
 pub struct Portraits {
     tokens: BTreeMap<String, TokenSprite>,
-    /// A texture path's [`identity_key`] to the tokens it can name, in the order the serial load
-    /// aliased them: the first whose texture decodes to a valid strip is the one drawn.
     aliases: BTreeMap<String, Vec<String>>,
-    /// Every declared sprite with a texture, by name. the game looks a kind-0 descriptor
-    /// up among all sprites, so a recorded sprite no character token names still draws.
     declared: BTreeMap<String, TokenSprite>,
     images: Arc<LazyImages>,
 }
 
-/// What a recorded portrait identity resolves to this frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resolved {
     Sheet(SpriteSheet),
-    /// A texture it depends on is queued; nothing is drawn until it decodes.
     Pending,
-    /// Nothing loaded answers it, as when the serial load rejected its texture.
     Unresolved,
 }
 
 impl Portraits {
-    /// A descriptor sprite name, independent of the naming convention used by its mod.
     pub fn sprite(&self, name: &str) -> Resolved {
         self.declared
             .get(name)
@@ -109,7 +81,6 @@ impl Portraits {
             .unwrap_or(Resolved::Unresolved)
     }
 
-    /// The sheet an [`identity_key`] resolves to.
     pub fn resolve(&self, key: &str) -> Resolved {
         if key.starts_with("GFX_") {
             return self
@@ -126,8 +97,6 @@ impl Portraits {
         Resolved::Unresolved
     }
 
-    /// One sprite's sheet, `Pending` while its texture decodes, or `None` when the texture
-    /// cannot be decoded or is narrower than its frame count.
     fn sheet(&self, sprite: &TokenSprite) -> Option<Resolved> {
         match self.images.get(&sprite.path) {
             Lookup::Pending => Some(Resolved::Pending),
@@ -144,7 +113,6 @@ impl Portraits {
         }
     }
 
-    /// The first token's sheet (in token order) drawn from a resident texture, for the census.
     pub fn sheet_of_texture(&self, texture: usize) -> Option<SpriteSheet> {
         let path = self.images.path_of(texture)?;
         let Lookup::Loaded { size, .. } = self.images.peek(&path) else {
@@ -163,8 +131,6 @@ impl Portraits {
     }
 }
 
-/// Loads one declared portrait sprite, verifying covered texture paths.
-/// Fall back to `GFX_leader_unknown`.
 pub fn load_sprite(
     layers: &ResolvedLayers,
     sprites: &SpriteSet,
@@ -180,7 +146,6 @@ pub fn load_sprite(
             .as_deref()
             .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?,
     );
-    // The game applies the client's force_pow2_textures.
     let texture = resources::stack_texture(layers, path.as_bytes(), decode)?
         .map_err(|why| invalid(format!("{name}: {why}")))?;
     let texture = texture.image;
@@ -200,12 +165,6 @@ pub fn load_sprite(
     })
 }
 
-/// Indexes every authored army portrait, keyed by character token.
-///
-/// `SpriteSheet` describes a complete horizontal strip, not an arbitrary atlas rectangle.
-/// Native decoded extents and mipmaps are retained. Character files are read
-/// once per content set; textures are read and decoded the first time a counter draws them,
-/// with no per-hour file reads, and stay resident while counters draw them.
 pub fn load(
     shared: &Arc<ResolvedLayers>,
     sprites: &SpriteSet,
@@ -213,18 +172,13 @@ pub fn load(
     lazy: &Arc<LazyTextures>,
 ) -> io::Result<(Portraits, Vec<String>)> {
     let layers: &ResolvedLayers = shared;
-    // The loader's own list and order.
     let paths = characters::paths(layers)?;
     let names = layers.key_names()?;
-    // Character files read and parse on a bounded pool; the merge below runs
-    // in that order, so token agreement matches the serial load.
     type Parsed = (BTreeMap<String, Authored>, Option<String>);
     let parsed: Vec<io::Result<Parsed>> = map(&paths, |path| {
         characters::portraits(&path.read(layers)?, &names, "army", "large")
             .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))
     });
-    // A file whose reading stops short leaves every character it could
-    // define or redefine unknown, with the file and the cause.
     let mut characters = BTreeMap::<String, Authored>::new();
     let mut coverage = installed_content_core::coverage::Coverage::default();
     for (path, parsed_path) in paths.iter().zip(parsed) {
@@ -246,9 +200,6 @@ pub fn load(
             *portrait = Authored::Unknown(gap.to_string());
         }
     }
-    // Each character's own sprite, then the alternatives of the ambiguous ones. A recorded
-    // identity names the sprite outright, so an instance set the viewer cannot choose between
-    // still resolves; only the pre-format-23 token path stays undrawn.
     let mut entries: Vec<(String, String)> = Vec::new();
     let mut ambiguous = Vec::new();
     let mut unknown = Vec::new();
@@ -289,7 +240,6 @@ pub fn load(
                 tokens.push(token.clone());
             }
         };
-        // A `GFX_` name resolves through `declared`; only texture paths need the tokens.
         if !name.starts_with("GFX_") {
             alias(identity_key(&name));
         }
@@ -314,7 +264,6 @@ pub fn load(
         })
         .collect();
     let reader = Arc::clone(shared);
-    // A portrait the visual mods break is the recording's own, named.
     let recorded = reader.without_overlays();
     let images = LazyImages::new(
         "HQ portrait",
@@ -447,10 +396,8 @@ mod tests {
             declared: BTreeMap::new(),
             images,
         };
-        // Queued first: nothing is drawn, and nothing falls back yet.
         assert_eq!(portraits.resolve("gfx/leaders/a.dds"), Resolved::Pending);
         lazy.settle();
-        // The first token's texture is broken, so the second is queued.
         assert_eq!(portraits.resolve("gfx/leaders/a.dds"), Resolved::Pending);
         lazy.settle();
         let Resolved::Sheet(sheet) = portraits.resolve("gfx/leaders/a.dds") else {
@@ -461,7 +408,6 @@ mod tests {
             portraits.sheet_of_texture(sheet.texture).map(|s| s.name),
             Some("GFX_a".into())
         );
-        // A strip narrower than its frame count is refused, as at load.
         portraits.resolve("gfx/leaders/w.dds");
         lazy.settle();
         assert_eq!(portraits.resolve("gfx/leaders/w.dds"), Resolved::Unresolved);
@@ -493,7 +439,6 @@ mod tests {
             path: path.into(),
             frames: 1,
         };
-        // A generated leader's holder names a random portrait that no character file uses.
         let portraits = Portraits {
             tokens: BTreeMap::from([("a".into(), sprite("GFX_a", "gfx/leaders/a.dds"))]),
             aliases: BTreeMap::from([("gfx/leaders/a.dds".into(), vec!["a".into()])]),
@@ -516,7 +461,6 @@ mod tests {
             portraits.sheet_of_texture(sheet.texture).map(|s| s.name),
             Some("GFX_random_17".into())
         );
-        // A character's sprite and its texture path reach the same texture.
         portraits.resolve("GFX_a");
         lazy.settle();
         let (Resolved::Sheet(by_name), Resolved::Sheet(by_path)) = (
@@ -526,8 +470,6 @@ mod tests {
             panic!("both resolve")
         };
         assert_eq!((by_name.texture, by_name.size), (by_path.texture, [8, 4]));
-        // A sprite nothing declares stays unresolved, and so does a texture path no character
-        // names, even one a declared sprite uses.
         assert_eq!(portraits.resolve("GFX_undeclared"), Resolved::Unresolved);
         assert_eq!(
             portraits.resolve("gfx/leaders/generic_17.dds"),

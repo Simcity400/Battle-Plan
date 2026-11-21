@@ -27,7 +27,6 @@ pub(crate) struct Relations {
     by_overlord: ValueIndex<(u32, u32), ()>,
     undecided: ValueIndex<u32, Retained<String>>,
     inherit_conflicts: ValueIndex<u32, ()>,
-    /// Why an absent `Autonomy` row is no evidence; `None` when the table is complete.
     autonomy_gap: Retained<Option<String>>,
     subject_gap: Retained<Option<String>>,
     pub(crate) changed: ValueIndex<u32, ()>,
@@ -48,8 +47,6 @@ fn gap<T: replay_data::rows::TableSchema>(
         }
     }))
 }
-/// The warning for an incomplete `Autonomy` table, which leaves a country without a recorded
-/// current autonomy with an unknown colour source.
 pub(crate) fn autonomy_gap_warning(gap: &str) -> String {
     format!(
         "{gap}, so a country without a recorded current autonomy has an unknown colour source; \
@@ -57,7 +54,6 @@ pub(crate) fn autonomy_gap_warning(gap: &str) -> String {
     )
 }
 
-/// The warning for a country whose colour source the hour cannot decide, and why.
 pub(crate) fn undecided_warning(slot: u32, why: &str) -> String {
     format!("Country slot {slot}'s colour source is unknown ({why}); its colour is withheld")
 }
@@ -301,7 +297,6 @@ impl Relations {
         next.changed = ValueIndex::default();
         let mut warnings_changed = next.autonomy_gap != autonomy_gap;
         for (&slot, _) in dirty_slots.iter() {
-            // Its rows changed, so whether its source is known may have, edge or not.
             next.changed = next.changed.inserted(slot, ())?;
             let before_edge = next.inherited.get(&slot).copied();
             let before_warning = next.undecided.get(&slot).cloned();
@@ -371,12 +366,8 @@ impl Relations {
         next.hour = frame.hour;
         Ok(next)
     }
-    /// The slot whose colour `slot` takes, following inheriting subjects to their overlords as
-    /// the game does; `None` when the hour cannot say: a country reached has undecided
-    /// inheritance, or no recorded current autonomy while `Autonomy` is incomplete.
     pub(crate) fn source(&self, slot: u32) -> io::Result<Option<u32>> {
         let mut source = slot;
-        // A chain without a cycle reaches each inheriting country once.
         for _ in 0..=self.inherited.len() {
             if self.undecided.get(&source).is_some()
                 || (self.autonomy_gap.is_some() && self.states.get(&source).is_none())
@@ -391,8 +382,6 @@ impl Relations {
         Err(invalid("cycle in subject colour inheritance"))
     }
 
-    /// Whether `Autonomy` became complete or incomplete since `previous`, which decides the
-    /// source of every country without a recorded current autonomy.
     pub(crate) fn recolors_all(&self, previous: Option<&Self>) -> bool {
         previous.is_some_and(|old| old.autonomy_gap.is_some() != self.autonomy_gap.is_some())
     }

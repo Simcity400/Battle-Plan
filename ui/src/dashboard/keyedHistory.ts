@@ -1,14 +1,7 @@
 import type { HourSpan } from '../generated/dashboard';
 
-/** One run of a keyed name: first hour, last hour, exact value as decimal
- * text, and whether it starts a new observation. */
 export type KeyedRun = readonly [number, number, string, boolean];
 
-/** A window of a keyed family (`dashboard-keyed`'s `KeyedWindow`): the hours
- * whose inputs were read, each stretch's supplying read hour (null where every
- * hour of the stretch was read at that hour), and the selected names' runs. A
- * name without a run at a known hour holds no value then; an hour outside
- * `known` is not recorded. */
 export interface KeyedWindow {
   firstHour: number;
   lastHour: number;
@@ -24,7 +17,6 @@ const isRun = (value: unknown): value is KeyedRun => { const run = value as unkn
 const ordered = <T>(items: readonly T[], first: (item: T) => number, last: (item: T) => number) =>
   items.every((item, index) => index === 0 || last(items[index - 1]) < first(item));
 
-/** Validate a keyed window from a reply; throws on a malformed one. */
 export function validateKeyedWindow(value: unknown): KeyedWindow {
   const window = value as KeyedWindow;
   if (!window || typeof window !== 'object' || !Number.isSafeInteger(window.firstHour) || !Number.isSafeInteger(window.lastHour)
@@ -49,21 +41,16 @@ function find<T>(items: readonly T[], hour: number, first: (item: T) => number, 
   return undefined;
 }
 
-/** Whether the family read its inputs at `hour`. */
 export const keyedKnown = (window: KeyedWindow, hour: number) =>
   !!find(window.known, hour, span => span.firstHour, span => span.lastHour);
 
-/** The supplying read hour of the values at `hour`, if known. */
 export function keyedRead(window: KeyedWindow, hour: number): number | undefined {
   const read = find(window.reads, hour, read => read[0], read => read[1]);
   return read && (read[2] ?? hour);
 }
 
-/** The run of `runs` holding `hour`. */
 export const runAtHour = (runs: readonly KeyedRun[], hour: number) => find(runs, hour, run => run[0], run => run[1]);
 
-/** Every name's value at `hour`, as exact decimal text; names without a value
- * then are absent. Empty when the hour is not known. */
 export function keyedValuesAt(window: KeyedWindow, hour: number): Map<string, string> {
   const values = new Map<string, string>();
   if (!keyedKnown(window, hour)) return values;
@@ -74,18 +61,14 @@ export function keyedValuesAt(window: KeyedWindow, hour: number): Map<string, st
   return values;
 }
 
-/** A name's parts, as the backend joins them with `|`. */
 export const nameParts = (name: string) => name.split('|');
 
-/** A country name part (`TAG@slot`): its tag and canonical slot. */
 export function countryPart(part: string): { tag: string; slot: number } | null {
   const at = part.lastIndexOf('@');
   const slot = Number(part.slice(at + 1));
   return at > 0 && Number.isSafeInteger(slot) ? { tag: part.slice(0, at), slot } : null;
 }
 
-/** Hours at which any of the names changes value or presence within the
- * window, in order: the stops keyboard and Jump navigation can reach. */
 export function keyedChanges(window: KeyedWindow): number[] {
   const hours = new Set<number>();
   for (const span of window.known) hours.add(span.firstHour);
@@ -93,7 +76,6 @@ export function keyedChanges(window: KeyedWindow): number[] {
   return [...hours].filter(hour => hour >= window.firstHour && hour <= window.lastHour).sort((a, b) => a - b);
 }
 
-/** A name's runs as chart runs on a display scale (`divisor` raw units per unit). */
 export function chartRuns(runs: readonly KeyedRun[], divisor = 1): { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] {
   return runs.map(run => ({ firstHour: run[0], lastHour: run[1], value: Number(run[2]) / divisor, breakBefore: run[3] }));
 }

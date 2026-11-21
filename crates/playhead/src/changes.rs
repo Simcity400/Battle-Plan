@@ -1,5 +1,3 @@
-//! One table's change set of a step as owned data: everything a reader on another thread needs,
-//! read from nothing else. Numbers keep the width the lane's cells hold them at.
 
 use crate::{invalid, lane::log::Ordinal};
 use replay_columnar::{
@@ -17,45 +15,32 @@ pub(crate) enum Form {
     List,
 }
 
-/// A column's cells as a step holds them, in step with `Written::slots()`. A missing or
-/// unrecorded cell (`Written::missing`, `Written::unrecorded`) still has its place: zero bytes for
-/// a number or a text id, an empty range for a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Raw<'a> {
-    /// Numbers and bools: `width` bytes a cell (0, 1, 2, 4 or 8), little-endian, two's complement
-    /// sign-extended when `signed`.
     Numbers { width: u8, signed: bool, bytes: &'a [u8] },
-    /// Text ids: `width` bytes a cell, little-endian.
     Texts { width: u8, bytes: &'a [u8] },
-    /// Lists and opaque cells: cell `i` is `bytes[ends[i - 1]..ends[i]]` (from 0 for the first).
     Lists { ends: &'a [u32], bytes: &'a [u8] },
 }
 
-/// One selected column's cells a step wrote, each slot once, with their values.
 #[derive(Clone, Debug, Default)]
 pub struct Written {
     pub(crate) column: usize,
     pub(crate) form: Form,
     pub(crate) slots: Vec<u32>,
-    /// Numbers, bools and text ids: `width` bytes a cell, little-endian, sign-extended when read.
     pub(crate) width: u8,
     pub(crate) signed: bool,
     pub(crate) numbers: Vec<u8>,
-    /// Lists and opaque cells: each cell's end in `bytes`.
     pub(crate) ends: Vec<u32>,
     pub(crate) bytes: Vec<u8>,
-    /// Indexes into `slots` of the cells missing and unrecorded, ascending.
     pub(crate) missing: Vec<u32>,
     pub(crate) unrecorded: Vec<u32>,
 }
 
 impl Written {
-    /// The column's index in its table.
     pub fn column(&self) -> usize {
         self.column
     }
 
-    /// A list or opaque column.
     pub fn list(&self) -> bool {
         self.form == Form::List
     }
@@ -72,7 +57,6 @@ impl Written {
         self.slots.is_empty()
     }
 
-    /// Its cells as held, for a reader that copies them by width; no copy is made.
     pub fn raw(&self) -> Raw<'_> {
         match self.form {
             Form::Number => Raw::Numbers { width: self.width, signed: self.signed, bytes: &self.numbers },
@@ -81,17 +65,14 @@ impl Written {
         }
     }
 
-    /// Indexes into `slots()` of the cells missing (an optional number without a value), ascending.
     pub fn missing(&self) -> &[u32] {
         &self.missing
     }
 
-    /// Indexes into `slots()` of the cells unrecorded, ascending.
     pub fn unrecorded(&self) -> &[u32] {
         &self.unrecorded
     }
 
-    /// The cell of `slots()[index]`.
     pub fn value(&self, index: usize) -> Value<'_> {
         let at = index as u32;
         if self.unrecorded.binary_search(&at).is_ok() {
@@ -103,7 +84,6 @@ impl Written {
         }
     }
 
-    /// Every cell in slot list order, with its slot.
     pub fn values(&self) -> impl Iterator<Item = (u32, Value<'_>)> + '_ {
         let (mut missing, mut unrecorded) = (0, 0);
         self.slots.iter().enumerate().map(move |(index, &slot)| {
@@ -120,7 +100,6 @@ impl Written {
         })
     }
 
-    /// Every cell in slot list order, with its slot, the column's form and width decided once.
     pub fn each(&self, mut each: impl FnMut(u32, Value<'_>)) {
         if !self.missing.is_empty() || !self.unrecorded.is_empty() {
             self.values().for_each(|(slot, value)| each(slot, value));
@@ -179,8 +158,6 @@ impl Written {
         }
     }
 
-    /// Made ready for cells appended one at a time, of the form `held` holds; staged numbers at
-    /// eight bytes, so a column widened later in the step still fits.
     pub(crate) fn start(&mut self, column: usize, held: &ColumnState, staged: bool) {
         self.column = column;
         self.clear();
@@ -195,7 +172,6 @@ impl Written {
         }
     }
 
-    /// Widens it, before anything is appended, to hold `bits` as a number of its sign.
     pub(crate) fn fit(&mut self, bits: u64) {
         if self.form == Form::List {
             return;
@@ -215,8 +191,6 @@ impl Written {
         self.width = self.width.max(needed);
     }
 
-    /// Staged numbers (eight bytes a cell) packed at the width their values need, signed as the
-    /// column `held` is.
     pub(crate) fn narrow(&mut self, held: &ColumnState) {
         if self.form == Form::List || self.width != 8 {
             return;
@@ -235,7 +209,6 @@ impl Written {
         self.numbers.truncate(cells * width);
     }
 
-    /// Appends `value` as the cell of `slot`.
     pub(crate) fn push(&mut self, slot: u32, value: Value<'_>) -> io::Result<()> {
         let index = self.slots.len() as u32;
         self.slots.push(slot);
@@ -272,7 +245,6 @@ impl Written {
         self.unrecorded.clear();
     }
 
-    /// The values of the slots listed, read from the lane's cells of this column.
     pub(crate) fn fill(&mut self, held: &ColumnState) -> io::Result<()> {
         self.numbers.clear();
         self.ends.clear();
@@ -350,8 +322,6 @@ fn put_numbers(out: &mut Vec<u8>, width: u8, slots: &[u32], get: impl Fn(u32) ->
     }
 }
 
-/// Rows a step deleted or inserted: hour and slot, and the key when the table's readers asked
-/// for keys.
 #[derive(Clone, Debug, Default)]
 pub struct Lives {
     pub(crate) hours: Vec<Hour>,
@@ -377,7 +347,6 @@ impl Lives {
         &self.hours
     }
 
-    /// Each row's key, when the table's readers asked for keys.
     pub fn keys(&self) -> Option<&[u128]> {
         self.keyed.then_some(self.keys.as_slice())
     }
@@ -408,7 +377,6 @@ impl Lives {
     }
 }
 
-/// Strings first named: id and text.
 #[derive(Clone, Debug, Default)]
 pub struct Texts {
     pub(crate) ids: Vec<u32>,
@@ -449,10 +417,6 @@ impl Texts {
     }
 }
 
-/// The rows of a table declared passing that a step saw born and gone, in birth order: each one's
-/// birth hour, its last live hour, its key (when the table's readers asked for keys), and its
-/// selected cells as they stood at the end of its last live hour. A column's `slots()` are the
-/// rows' places in this list.
 #[derive(Clone, Debug, Default)]
 pub struct Passing {
     pub(crate) born: Vec<Hour>,
@@ -479,12 +443,10 @@ impl Passing {
         &self.last
     }
 
-    /// Each row's key, when the table's readers asked for keys.
     pub fn keys(&self) -> Option<&[u128]> {
         self.keyed.then_some(self.keys.as_slice())
     }
 
-    /// Per selected column, in selection order.
     pub fn columns(&self) -> &[Written] {
         &self.columns
     }
@@ -505,7 +467,6 @@ impl Passing {
     }
 }
 
-/// Rows `from..to` of a log forgotten at `hour`: the game no longer lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Forgotten {
     pub hour: Hour,
@@ -513,11 +474,6 @@ pub struct Forgotten {
     pub to: Ordinal,
 }
 
-/// What a step of a log table did, in its run (`run()`): the rows it appended in order, at
-/// consecutive ordinals from `appended().start`, each with its hour, its key (when the table's
-/// readers asked for keys) and its selected cells as read when it passed; then the runs of rows it
-/// forgot, each with its hour (within an hour, appends come before forgets); and the log's count
-/// and rows listed after the step. A column's `slots()` are the appended rows' places, 0 first.
 #[derive(Clone, Debug, Default)]
 pub struct Logged {
     pub(crate) run: usize,
@@ -536,7 +492,6 @@ impl Logged {
         self.run
     }
 
-    /// The ordinals appended.
     pub fn appended(&self) -> Range<Ordinal> {
         self.first..self.first + self.hours.len() as Ordinal
     }
@@ -549,42 +504,34 @@ impl Logged {
         self.hours.is_empty()
     }
 
-    /// Each appended row's game hour, by place.
     pub fn hours(&self) -> &[Hour] {
         &self.hours
     }
 
-    /// Each appended row's key, when the table's readers asked for keys.
     pub fn keys(&self) -> Option<&[u128]> {
         self.keyed.then_some(self.keys.as_slice())
     }
 
-    /// Per selected column, in selection order.
     pub fn columns(&self) -> &[Written] {
         &self.columns
     }
 
-    /// The appended rows' cells of table column `column`, when it is selected.
     pub fn column(&self, column: usize) -> Option<&Written> {
         self.columns.iter().find(|written| written.column == column)
     }
 
-    /// Each appended row in order: its place (its cell's index in every column), ordinal and hour.
     pub fn rows(&self) -> impl Iterator<Item = (u32, Ordinal, Hour)> + '_ {
         self.hours.iter().enumerate().map(|(place, &hour)| (place as u32, self.first + place as Ordinal, hour))
     }
 
-    /// The runs of rows forgotten, in hour order.
     pub fn forgotten(&self) -> &[Forgotten] {
         &self.forgotten
     }
 
-    /// Rows appended through the step's head, ever.
     pub fn count(&self) -> Ordinal {
         self.count
     }
 
-    /// Rows the game lists after the step.
     pub fn listed(&self) -> u64 {
         self.listed
     }
@@ -601,7 +548,6 @@ impl Logged {
         }
     }
 
-    /// Row `at` of an hour's appended `rows`, appended at game hour `hour`.
     pub(crate) fn push(&mut self, hour: Hour, key: u128, rows: &TableState, at: u32) -> io::Result<()> {
         let place = self.hours.len() as u32;
         self.hours.push(hour);
@@ -637,10 +583,6 @@ impl Logged {
     }
 }
 
-/// What one step changed in one table. Applied in order: deletes, inserts, cells, renumber; slots
-/// are those before the renumber. A reset names no row: a reader that rebuilt the table takes its
-/// state from the step ([`crate::Consumer::state`]); one given none keeps its own, which stands at
-/// the reset's head (a table re-sought for another reader).
 #[derive(Clone, Debug, Default)]
 pub struct Changes {
     pub(crate) table: usize,
@@ -670,69 +612,54 @@ impl Changes {
         self.reset
     }
 
-    /// The table's head after the step: the last game hour its cells are at.
     pub fn head(&self) -> Option<Hour> {
         self.head
     }
 
-    /// Hours the table is behind the step's last hour.
     pub fn short(&self) -> u32 {
         self.short
     }
 
-    /// The table stopped short because a part it needs was not fetched yet.
     pub fn stalled(&self) -> bool {
         self.stalled
     }
 
-    /// Per selected column, in selection order.
     pub fn columns(&self) -> &[Written] {
         &self.columns
     }
 
-    /// Rows live before the step and gone or replaced after it.
     pub fn deleted(&self) -> &Lives {
         &self.deleted
     }
 
-    /// Rows live after the step that were not before it; their selected cells are in the columns.
     pub fn inserted(&self) -> &Lives {
         &self.inserted
     }
 
-    /// The table's status and sample hour, when the step changed them (always on a reset).
     pub fn status(&self) -> Option<(Status, Option<Hour>)> {
         self.status
     }
 
-    /// The first hour inside the step at which the table's status left the one it held before
-    /// the step, whether or not the step ends back at it; none on a reset.
     pub fn status_left(&self) -> Option<Hour> {
         self.status_left
     }
 
-    /// When the step ended at a packed block's end: each new slot's old one.
     pub fn renumber(&self) -> Option<&[u32]> {
         self.renumbered.then_some(self.renumber.as_slice())
     }
 
-    /// Strings first named in the step (none on a reset: those are the lane's, read by a rebuild).
     pub fn texts(&self) -> &Texts {
         &self.texts
     }
 
-    /// The rows born and gone inside the step, when a reader declared the table passing.
     pub fn passing(&self) -> &Passing {
         &self.passing
     }
 
-    /// What the step appended and forgot, for a log table (none for a table holding state, whose
-    /// other parts it leaves empty).
     pub fn log(&self) -> Option<&Logged> {
         self.is_log.then_some(&self.log)
     }
 
-    /// Cells written, rows inserted and deleted, and the bytes they take.
     pub fn cells(&self) -> usize {
         self.columns.iter().map(Written::len).sum::<usize>() + self.log.columns.iter().map(Written::len).sum::<usize>()
     }
@@ -745,7 +672,6 @@ impl Changes {
         self.columns.iter().map(Written::payload).sum::<usize>() + (self.deleted.len() + self.inserted.len()) * 8 + self.renumber.len() * 4 + self.texts.bytes.len() + self.texts.ids.len() * 8 + self.passing.payload() + self.log.payload()
     }
 
-    /// The bytes it holds, buffers included.
     pub fn bytes_held(&self) -> usize {
         self.columns.iter().map(Written::bytes_held).sum::<usize>()
             + self.columns.capacity() * size_of::<Written>()
@@ -757,7 +683,6 @@ impl Changes {
             + self.log.bytes_held()
     }
 
-    /// Made ready for a step of `columns` of `table`, its buffers kept.
     pub(crate) fn begin(&mut self, table: usize, columns: &[usize], keyed: bool, reset: bool) {
         self.table = table;
         self.reset = reset;

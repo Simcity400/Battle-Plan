@@ -16,14 +16,9 @@ export function validateShareReply(value: unknown): TerritoryShareReply {
   return value as unknown as TerritoryShareReply;
 }
 
-/** What a share renders for: the `count` countries it draws, in order, and the reply's notes. The service orders every
- * country by amount, so those in the rest trade places at nearly every push; they render nothing. */
 export const shareStructure = (reply: TerritoryShareReply, count: number) =>
   JSON.stringify([reply.entries.slice(0, Math.max(0, count)), reply.unnamed, reply.missing, reply.warnings]);
 
-/** A share's slices at the moment the cells hold: the first `count` countries and the rest of every country's
- * territory, or why the whole is not known. Land no tag names counts in the rest; a country's amount not known is a
- * slice not measured, never zero. */
 export function shareItems(reply: TerritoryShareReply, count: number, values: LiveValues<number>, look: (tag: string) => SunburstKey, rest: SunburstKey):
   { items: SunburstItem[]; unavailableReason: string | null } {
   const total = values.get(WORLD_TOTAL);

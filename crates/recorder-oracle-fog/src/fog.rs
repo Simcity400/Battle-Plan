@@ -1,10 +1,3 @@
-//! Fog-derivation input comparisons.
-//!
-//! Unit intel, volunteer permissions, stationed references and representative
-//! areas have saved counterparts. State Air-base dense countries and fuel
-//! words compare independently with their serialized container occurrences.
-//! Complete area membership, indexed registration order, pool partitions and
-//! radar coverage retain their separately named comparison boundaries.
 
 use std::{collections::BTreeMap, io};
 
@@ -14,7 +7,6 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, country_tag, invalid};
 
-/// One country's ordered host positions: the resolved host tag and its tally.
 type HostPositions<'a> = Vec<(Option<&'a [u8]>, i32)>;
 
 pub fn compare(
@@ -55,8 +47,6 @@ pub fn compare(
     }
 }
 
-/// Ordered captured rows of one parent, rejecting a gap or a repeat in the
-/// native ordinals the walker published.
 fn ordered<'a, K: Ord + Copy + std::fmt::Debug, R>(
     rows: impl Iterator<Item = (K, u32, &'a R)>,
     label: &str,
@@ -109,8 +99,6 @@ fn compare_unit_intel(frame: &DecodedFrame, saved: &Save, report: &mut Report) -
         }
         for (ordinal, (actual, expected)) in actual.iter().zip(entries.iter()).enumerate() {
             compared += 1;
-            // The writer emits the stored key with a signed spelling; the same
-            // 32 bits are compared, without normalizing either side.
             if actual.viewer != expected.viewer as u32 {
                 report.difference(
                     format!("{label}[{ordinal}].viewer"),
@@ -224,9 +212,6 @@ fn compare_volunteer_hosts(
     Ok(())
 }
 
-/// Saved volunteer theatres, keyed by handle. The writer emits
-/// `volunteers_theatre` exactly when the native key is positive, which is the
-/// same gate the walker applies, so the two scopes are directly comparable.
 fn volunteer_theatres(
     saved: &Save,
 ) -> io::Result<BTreeMap<u64, &installed_content_save::naval_history::LandTheatre>> {
@@ -360,8 +345,6 @@ fn record_registrations(frame: &DecodedFrame, report: &mut Report) -> io::Result
     Ok(())
 }
 
-/// The base writer emits its dense country occurrences and exact fixed5 fuel
-/// words, omitting each zero scalar. Indexed ordinals stay recording-only.
 fn compare_state_container_fuel(
     frame: &DecodedFrame,
     saved: &Save,
@@ -506,8 +489,6 @@ fn compare_state_container_fuel(
     Ok(())
 }
 
-/// Host names, host fuel and pool projections have no exact text-save join
-/// here; state container fuel compares separately above. Numeric presence and cross-table joins are recording self-checks only.
 fn record_carrier(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, &CountryRow>,
@@ -539,7 +520,6 @@ fn record_carrier(
             "duplicate carrier base or indexed registration key",
         ));
     }
-    // Build this index once, only if a nonempty carrier pool needs it.
     let mut wings = None;
     let mut checks_complete = true;
     for base in bases {
@@ -669,8 +649,6 @@ fn record_carrier(
                     Ok(())
                 });
                 consumed = end;
-                // Fuel reads remain independently reportable even after a bad
-                // partition or a different pool's optional acquisition fault.
                 for (field, value) in [
                     ("current_fuel_raw", &pool.current_fuel_raw),
                     ("maximum_fuel_raw", &pool.maximum_fuel_raw),
@@ -684,7 +662,6 @@ fn record_carrier(
                     let end = end.ok_or_else(|| invalid("carrier pool range overflow"))? as usize;
                     let members = registration.wings.get(pool.wing_start as usize..end)
                         .ok_or_else(|| invalid("carrier pool range outside recorded wings"))?;
-                    // Empty pools need no fabricated saved base or member.
                     if members.is_empty() { return Ok(()); }
                     let wings = wings.get_or_insert_with(|| {
                         complete::<tables::AirWings>(frame).and_then(|rows| {
@@ -747,7 +724,6 @@ fn carrier_country(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // Native country_slot checks raw zero before consulting the link table.
     match (raw, slot, links.get(&raw)) {
         (0, 0, _) => {}
         (0, _, _) => return Err(invalid("carrier raw zero country must use slot zero")),
@@ -1086,7 +1062,6 @@ states={} provinces={}"#,
         assert_eq!(carrier_count(&report, "host_name"), 1);
         assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
         assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
-        // The retired selected-transport plane sums are never checked.
         assert_eq!(carrier_count(&report, "empty_pool_planes"), 0);
         assert_eq!(carrier_count(&report, "pool_planes"), 0);
         assert_eq!(report.compared_tables["AirBases.carrier"], 0);
@@ -1568,8 +1543,6 @@ states={} provinces={}"#,
             let mut frame = complete_frame();
             mutate(&mut frame);
             let mut report = Report::default();
-            // A difference is recorded, not raised: only a comparison that
-            // cannot run at all fails its group.
             compare(&frame, &save, &links, &mut report).unwrap();
             assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         }

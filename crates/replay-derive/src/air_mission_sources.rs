@@ -1,8 +1,3 @@
-//! The air bases this hour's reference registry resolves.
-//!
-//! AirBases is the manager's roster, not the registry. A witness names every
-//! resolved handle and carries the base's own fields where the roster lacks
-//! it, so a registry miss stays distinct from a base missing from the roster.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,7 +9,6 @@ use replay_data::rows::{
 };
 use replay_frame::frame::{DecodedFrame, TableView};
 
-/// Incomplete tables are unknown; a table holding another table's rows is corrupt.
 pub(crate) fn complete<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Option<&[T::Row]>> {
     match &*frame.tables[T::ID.index()] {
         TableView::Complete(_) => frame.complete::<T>().map(Some),
@@ -42,14 +36,11 @@ fn invalid(reason: &'static str) -> io::Error {
 #[derive(Debug, Default)]
 pub struct AirRegistrySources {
     pub bases: BTreeMap<u64, AirBaseRow>,
-    /// A base's host task-force roster owner, when the host resolves.
     pub host_owners: BTreeMap<u64, u32>,
-    /// Bases whose host ship resolves with a null task force.
     pub hosts_without_task_force: BTreeSet<u64>,
 }
 
 impl AirRegistrySources {
-    /// `None` without a complete witness table.
     pub fn read(frame: &DecodedFrame) -> io::Result<Option<Self>> {
         let Some(witnesses) = complete::<tables::AirReferenceWitnesses>(frame)? else {
             return Ok(None);
@@ -71,7 +62,6 @@ impl AirRegistrySources {
                     state: row.state,
                     province: row.province,
                     host: row.host.unwrap_or(0),
-                    // Only the roster records capacity; the map does not use it.
                     capacity: 0,
                     carrier: replay_data::rows::Recorded::NotRecorded,
                 },
@@ -94,13 +84,10 @@ impl AirRegistrySources {
         Ok(sources)
     }
 
-    /// Reject a transfer only when its base resolves.
     pub fn transfer_resolves(&self, handle: u64) -> bool {
         handle != 0 && self.bases.contains_key(&handle)
     }
 
-    /// A stateless base uses its host's roster owner, or raw zero when the host does not resolve. A
-    /// null task force leaves the controller unavailable.
     pub fn host_owner(&self, base: u64) -> Option<u32> {
         if self.hosts_without_task_force.contains(&base) {
             return None;
@@ -109,7 +96,6 @@ impl AirRegistrySources {
     }
 }
 
-/// A raw country reference as its canonical slot; zero is the null country.
 pub fn canonical(raw: u32, links: &BTreeMap<u32, u32>) -> Option<u32> {
     if raw == 0 {
         Some(0)
@@ -118,7 +104,6 @@ pub fn canonical(raw: u32, links: &BTreeMap<u32, u32>) -> Option<u32> {
     }
 }
 
-/// The wing's raw effective country: a positive override, else its owner.
 pub fn effective_raw(wing: &AirWingRow) -> u32 {
     if wing.country_override > 0 {
         wing.country_override as u32
@@ -127,14 +112,11 @@ pub fn effective_raw(wing: &AirWingRow) -> u32 {
     }
 }
 
-/// A mission country's canonical slot, the key of every same-hour join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissionCountry {
     pub slot: u32,
 }
 
-/// Effective mission-country sources, shared by sortie counts and target scans. These sources read no
-/// port or naval target table.
 pub struct MissionCountrySources<'a> {
     registry: &'a AirRegistrySources,
     provinces: Option<&'a [ProvinceRow]>,
@@ -152,9 +134,6 @@ impl<'a> MissionCountrySources<'a> {
             let mut by_country = BTreeMap::<u32, BTreeSet<u32>>::new();
             for row in hosts {
                 let country = canonical(row.country, links)?;
-                // Match by raw reference or canonical country identity. An unlinked host never
-                // matches; a zero host matches a null controller by raw equality, stopping the base
-                // search there.
                 if let Some(host) = canonical(row.host, links) {
                     by_country.entry(country).or_default().insert(host);
                 }
@@ -169,15 +148,11 @@ impl<'a> MissionCountrySources<'a> {
         })
     }
 
-    /// The effective raw country and its recorded canonical slot.
     pub fn effective(&self, wing: &AirWingRow) -> Option<(u32, u32)> {
         let raw = effective_raw(wing);
         Some((raw, *self.links.get(&raw)?))
     }
 
-    /// Try the pool-base controller, then the transfer-base controller, stopping at the first
-    /// volunteer host of the effective country. Use that host only when its raw reference is signed-
-    /// positive; otherwise use the effective country.
     pub fn resolve(&self, wing: &AirWingRow) -> Option<MissionCountry> {
         let hosts = self.volunteer_hosts.as_ref()?;
         let fallback = MissionCountry {
@@ -190,14 +165,12 @@ impl<'a> MissionCountrySources<'a> {
             if handle == 0 {
                 continue;
             }
-            // A handle the complete registry does not resolve is a native miss.
             let Some(base) = self.registry.bases.get(&handle) else {
                 continue;
             };
             let controller_raw = self.base_controller(base)?;
             let controller = canonical(controller_raw, self.links)?;
             if hosts.contains(&controller) {
-                // No other base is tried after the first eligible one.
                 return Some(if (controller_raw as i32) > 0 {
                     MissionCountry { slot: controller }
                 } else {
@@ -208,9 +181,6 @@ impl<'a> MissionCountrySources<'a> {
         Some(fallback)
     }
 
-    /// Air-base controller: a state base's province controller, with refusal for a state base lacking a
-    /// province; a stateless base's host task-force owner, or zero when the host is null or unresolved.
-    /// A null task-force result is refused.
     fn base_controller(&self, base: &AirBaseRow) -> Option<u32> {
         let Some(state) = base.state else {
             return if base.host == 0 {

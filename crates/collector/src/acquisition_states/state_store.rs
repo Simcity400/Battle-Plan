@@ -1,32 +1,3 @@
-//! States rows held between hours ([`crate::territory_changes`]).
-//!
-//! Each hour the States job still reads the state array header, every slot
-//! pointer, each state's identity, available manpower (rewritten every hour
-//! by reinforcement) and population in one record, and the shared infrastructure and continent operands
-//! ([`cstate::globals`]), and the StateFlags visitor still reads every
-//! state. A state's owner, controller, continent, movement infrastructure,
-//! names, marked owners and railway fraction are carried, without reading its tags,
-//! template, building status or strings, only when all of these hold: the
-//! take of the hour's marked states returned the epoch of the held complete
-//! capture, the state was not marked, and the header, every slot pointer and
-//! the shared operands are those of the held capture. Every writer of those
-//! fields is a hooked site ([`engine_mutations::territory_mutations`]) or a building
-//! writer the building family forwards, so a carried row equals a fresh
-//! read's.
-//!
-//! The take clears the marks, so a capture that does not complete holds
-//! nothing and a failed job forgets the store: the next hour reads every
-//! state. Allocation is advisory; a store that cannot grow holds nothing.
-//!
-//! Infrastructure ([`cstate::infrastructure_map`]) rides on the same carry: a
-//! carried, unmarked state keeps what only marking writers change (its
-//! status's building instance, level and country, and its controller). Its
-//! unmarked operands (construction queue headers and level bonus, category,
-//! fort rule and technology limit) are proven unchanged without reading the
-//! state: one gather per hour over every instance, the category pointer the
-//! carry's manpower record already read, and per-hour and per-controller
-//! reads. Queued construction, whose entries are separate objects, and plans
-//! that walk other buildings are read every hour.
 use super::Inputs;
 use crate::{
     extended::state_flags,
@@ -38,14 +9,11 @@ use engine_railways::crailway_manager::fresh_inputs::StateFractionRow;
 
 type Fraction = Result<i64, &'static str>;
 
-/// The latest complete capture.
 #[derive(Default)]
 struct Held {
-    /// The marks' epoch it was certified in; `None` holds nothing.
     epoch: Option<u64>,
     header: [u8; 16],
     globals: Option<cstate::Globals>,
-    /// In census (state id) order, with spans into `names`.
     rows: Vec<cstate::Row>,
     pointers: Vec<usize>,
     names: Vec<u8>,
@@ -80,23 +48,17 @@ impl Held {
     }
 }
 
-/// The hour's view before any read: its marks and the operands that certify
-/// carried rows.
 #[derive(Default)]
 struct Hour {
     epoch: Option<u64>,
     header: Option<[u8; 16]>,
     globals: Option<cstate::Globals>,
-    /// Marks lost to a failed scratch allocation certify nothing.
     complete: bool,
 }
 
-/// One hour's gather of the held instances' queue records
-/// ([`infrastructure_map::gather_queues`]).
 #[derive(Default)]
 struct Queues {
     instances: Vec<usize>,
-    /// Per held row: its record's position, or `u32::MAX` when not gathered.
     at: Vec<u32>,
     bytes: Vec<u8>,
     complete: Vec<bool>,
@@ -105,8 +67,6 @@ struct Queues {
 type HeldInfrastructure = Option<(infrastructure_map::Held, infrastructure_map::Proof)>;
 
 impl Queues {
-    /// Gathers the record of every unmarked held state's instance; false,
-    /// gathering nothing, when the scratch cannot grow.
     fn gather(&mut self, memory: &impl Memory, held: &[HeldInfrastructure], reread: &[bool]) -> bool {
         let rows = held.len();
         let grown = allocation::advisory(|| {
@@ -134,7 +94,6 @@ impl Queues {
         true
     }
 
-    /// Row `index`'s complete record this hour.
     fn queue(&self, index: usize) -> Option<&infrastructure_map::Queue> {
         let at = *self.at.get(index)? as usize;
         if !*self.complete.get(at)? {
@@ -152,28 +111,20 @@ impl Queues {
     }
 }
 
-/// The States job's held rows and scratch.
 pub(crate) struct StateStore {
     changes: &'static dyn Changes,
     held: Held,
     hour: Hour,
-    /// Set on the game thread; the next capture drops every held row.
     forgotten: bool,
-    /// Allocated bytes as of the last capture, for the game thread.
     bytes: usize,
     marked: Vec<u32>,
     slots: Vec<usize>,
     ids: Vec<u32>,
     manpower: Vec<cstate::Manpower>,
-    /// The hour's category definitions by pointer, with their tokens; reserved
-    /// for every held state with the other scratch, so naming allocates nothing.
     categories: Vec<(u64, Option<u32>)>,
-    /// Per held row: read afresh.
     reread: Vec<bool>,
     counts: Counts,
-    /// This hour carried the held rows.
     carried: bool,
-    /// Per held row: its infrastructure operands and proof, when read complete.
     infrastructure: Vec<Option<(infrastructure_map::Held, infrastructure_map::Proof)>>,
     infrastructure_cache: infrastructure_map::Cache,
     queues: Queues,
@@ -203,19 +154,14 @@ impl StateStore {
         }
     }
 
-    /// Nothing held certifies anything: the next capture reads afresh.
-    /// Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last capture, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes + self.infrastructure_bytes
     }
 
-    /// Scripted-only operands are read only while their optional writer
-    /// certificate can be taken. An unavailable observer refuses them.
     pub(super) fn scripted(&self, id: u32) -> (bool, bool) {
         if self.hour.complete && self.hour.epoch.is_some() {
             crate::scripted_maps::state(id)
@@ -229,8 +175,6 @@ impl StateStore {
         self.counts
     }
 
-    /// Worker, first in the job: take the hour's marked states and read the
-    /// operands that certify carried rows.
     pub(super) fn begin(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
@@ -257,7 +201,6 @@ impl StateStore {
         };
     }
 
-    /// Whether this hour may carry the held rows.
     fn carryable(&self) -> bool {
         self.hour.complete
             && self.held.epoch.is_some()
@@ -267,10 +210,6 @@ impl StateStore {
             && self.hour.globals == self.held.globals
     }
 
-    /// The carried capture: rows, names, the visitor's sources and the
-    /// fractions, as a fresh read would leave them. `None`, with nothing
-    /// visited, when the held rows cannot be carried or a read the carry
-    /// needs fails; the caller then reads every state.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn carry(
         &mut self,
@@ -297,8 +236,6 @@ impl StateStore {
             allocation::reserve(&mut self.categories, len)
         });
         scratch.ok()?;
-        // The occupied slots are exactly the held states, at the same
-        // addresses.
         cstate::read_slots(memory, array, &mut self.slots).ok()?;
         let mut occupied = self
             .slots
@@ -334,8 +271,6 @@ impl StateStore {
         {
             return None;
         }
-        // Every state's category pointer is read each hour; a definition
-        // several states share is authenticated and named once.
         for (index, row) in rows[..len].iter_mut().enumerate() {
             let pointer = self.manpower[index].category;
             let held = self
@@ -349,7 +284,6 @@ impl StateStore {
                     let token = (pointer != 0)
                         .then(|| cstate::category_token(memory, base, pointer).ok())
                         .flatten();
-                    // At most one entry per held state: within the reservation.
                     self.categories.push((pointer, token));
                     token
                 }
@@ -396,7 +330,6 @@ impl StateStore {
         if walk.outcome != census {
             return None;
         }
-        // Nothing below falls back: the visitor sees exactly the census.
         for (&pointer, &id) in self.held.pointers.iter().zip(&self.ids) {
             let source = cstate::Source { pointer, id };
             visitor.visit(source);
@@ -412,12 +345,6 @@ impl StateStore {
         Some((census, walk))
     }
 
-    /// Worker, after the census: every row's infrastructure. On a carried
-    /// hour an unmarked state keeps its held status operands, and one gather
-    /// of every held instance's construction queues and level bonus, with the
-    /// category pointer the carry already read, proves its held value without
-    /// reading it; any other row reads afresh. Held only for the rows this
-    /// hour held.
     pub(super) fn infrastructure(
         &mut self,
         memory: &impl Memory,
@@ -508,8 +435,6 @@ impl StateStore {
         self.counts.quiet = self.marked.is_empty();
     }
 
-    /// Holds a capture whose census, names, sources and fractions are all
-    /// complete, under the hour's marks; otherwise holds nothing.
     pub(super) fn hold(
         &mut self,
         rows: &[cstate::Row],
@@ -567,8 +492,6 @@ impl StateStore {
         held.globals = Some(globals);
     }
 
-    /// Worker, last in the job: publish the capture's counts; `full` when
-    /// it read all `len` states afresh.
     pub(super) fn finish(&mut self, full: bool, len: usize) {
         self.counts.full = full;
         if full {
@@ -594,7 +517,6 @@ impl StateStore {
     }
 }
 
-/// The fractions of a complete capture.
 impl Inputs {
     pub(super) fn complete(&self, len: usize) -> Option<&[StateFractionRow]> {
         (self.outcome == (Outcome::Rows { len })).then(|| &self.rows[..len])

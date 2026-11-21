@@ -1,7 +1,3 @@
-//! Stored political port-tooltip operands. The fleet visitor has authenticated
-//! the primary task force, full handle and embedded mission. No selection,
-//! hover cache or game call supplies values. Owned ranges survive callbacks;
-//! reference-memo temporary pointers clear on drop.
 
 use crate::{
     Memory,
@@ -14,44 +10,31 @@ use crate::{
     walk::Buffer,
 };
 
-/// Ordered full searcher handles. Addition appends; removal tail-swaps.
-/// Serialization uses the secondary receiver to write this primary array.
 const SEARCHING: usize = 0x610;
-/// Mission target, owned by commands and simulation. Serialization writes the full reference
-/// whenever either raw word is nonzero.
 const ENGAGEMENT_TARGET: usize = super::NAVAL_MISSION + 0xa0;
-/// Ordered 32-byte target-ship-type strings copied by commands and serialized.
 const AVOIDED_SHIP_TYPES: usize = 0x740;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Searcher {
-    /// None is an unreadable raw slot, not a null or dangling reference.
     pub reference: Option<u64>,
     pub resolves: Option<bool>,
-    /// Raw unit roster owner (`cunit::ROSTER_OWNER`), including zero; never the logical owner.
     pub roster_owner: Option<u32>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EngagementTarget {
     pub reference: u64,
-    /// Exactly the native resolution predicate: secondary is nonnull and not
-    /// 0x10. No CTaskForce type/class gate is applied to this liveness bit.
     pub resolves: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Inputs {
     pub sample_hour: i32,
-    /// (start, len) in the caller's Searcher arena; empty is a known empty list.
     pub searching: Option<Span>,
     pub engagement_target: Option<EngagementTarget>,
-    /// (start, len) in the caller's nullable byte-span arena.
     pub avoided_ship_types: Option<Span>,
 }
 
-/// Storage is prepared off-thread. The shared byte arena lends an independent
-/// port partition, so these strings cannot consume cached-name capacity.
 pub struct Arenas<'a> {
     pub searchers: Buffer<'a, Searcher>,
     pub searching_len: usize,
@@ -61,8 +44,6 @@ pub struct Arenas<'a> {
     pub avoided_required: usize,
 }
 
-/// This is capture scratch, never a recorded row. Every pointer is erased by
-/// Reader::drop before the acquisition boundary returns, including a failed walk.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ReferenceAnswer {
     handle: u64,
@@ -70,8 +51,6 @@ pub struct ReferenceAnswer {
     owner: Option<Result<Option<u32>, &'static str>>,
 }
 
-/// Reserve twice the complete occurrence demand, rounded to a power of two.
-/// Full probing never evicts or retries a failed observation.
 pub fn reference_slots(occurrences: usize) -> Option<usize> {
     if occurrences == 0 {
         Some(0)
@@ -88,8 +67,6 @@ pub struct Reader<'a, M: Memory> {
     pub reference_required: usize,
 }
 
-/// The complete port supplement loan for one fleet traversal. Both byte and
-/// record cursors are independent from the existing name and supply loans.
 pub struct Collector<'a, M: Memory> {
     reader: Reader<'a, M>,
     arenas: Arenas<'a>,
@@ -109,7 +86,6 @@ pub struct Captured {
 }
 
 impl<'a, M: Memory> Collector<'a, M> {
-    /// Worker storage grows from original search/string headers before publication.
     pub fn new(
         memory: &'a M,
         base: usize,
@@ -174,8 +150,6 @@ impl<'a, M: Memory> Collector<'a, M> {
         )
     }
 
-    /// Finishing or dropping erases all transient reference answers. Only
-    /// copied scalars and arena ranges survive the acquisition boundary.
     pub fn finish(self) -> Captured {
         Captured {
             searching_len: self.arenas.searching_len,
@@ -221,8 +195,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
         let mut grown = crate::allocation::default_vec::<ReferenceAnswer>(required)
             .map_err(|_| "port reference scratch allocation failed")?;
-        // Grow only owned answers, retaining sticky native faults and owners.
-        // No reference is resolved again after the original header's growth.
         for answer in answers.iter().filter(|answer| answer.resolution.is_some()) {
             let hash = answer
                 .handle
@@ -333,8 +305,6 @@ impl<'a, M: Memory> Reader<'a, M> {
                         .ok(),
                 }
             });
-        // Rule four and a known resolving target bypass readiness/avoidance.
-        // A failed target read cannot hide a separately readable late group.
         if prefix.engagement_rule != 4
             && inputs
                 .engagement_target
@@ -354,7 +324,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.reference_required = self.reference_required.saturating_add(count);
         let start = arenas.searching_len;
         let end = start.checked_add(count)?;
-        // Port presentation visits the complete original searcher list.
         arenas.searchers.ensure(end).ok()?;
         self.prepare_answers().ok()?;
         let output = arenas.searchers.get_mut(start..end)?;
@@ -391,7 +360,6 @@ impl<'a, M: Memory> Reader<'a, M> {
                 break;
             }
         }
-        // Unreadable raw slots remain None; the readable ordered prefix is kept.
         arenas.searching_len = end;
         Some((start, count))
     }
@@ -458,7 +426,6 @@ fn avoided(
     arenas.avoided_required = arenas.avoided_required.saturating_add(count);
     let start = arenas.avoided_len;
     let end = start.checked_add(count)?;
-    // Serialization retains every ordered string slot.
     arenas.avoided.ensure(end).ok()?;
     let mut output = arenas.avoided.get_mut(start..end);
     if let Some(output) = output.as_deref_mut() {
@@ -508,8 +475,6 @@ fn avoided(
                     names.len = start + len;
                 }
             } else {
-                // A missing span arena still counts every independently valid
-                // byte demand, without copying/committing orphan payloads.
                 let mut demand = Names {
                     bytes: crate::walk::Buffer::Count,
                     len: 0,
@@ -533,8 +498,6 @@ fn avoided(
     Some((start, count))
 }
 
-/// Header-only demand for the same authenticated fleet visitor used by hourly
-/// capture. Failed components remain named; they never supply an empty list.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Demand {
     pub searchers: usize,
@@ -583,8 +546,6 @@ pub fn demand(memory: &impl Memory, base: usize, task: usize, mission_kind: u32)
         if rule == 4 {
             return Ok(());
         }
-        // Target liveness can skip this late group in capture. Conservatively
-        // prepare its real native demand without adding a registry census here.
         let avoided = Array::read(memory, at(AVOIDED_SHIP_TYPES)?, crate::msvc_string::STRIDE)
             .ok_or("port sizing avoidance header unreadable or invalid")?;
         demand.avoided = avoided.count as usize;

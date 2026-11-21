@@ -1,9 +1,3 @@
-//! The map inside its host's process. Each map draws on a thread of its own into a window of its
-//! own ([`window::Window`]), which the thread that owns the host's window makes and pumps: the
-//! map runs no event loop. It talks to its host through in-process channels that carry the
-//! desktop protocol's commands and events. A panic in the map stays on its thread and ends the map
-//! by name; a lost GPU device ends it so that its host starts it again on a new device and surface.
-//! The development harness runs its frames on a thread from the same [`spawn`].
 
 pub(crate) mod driver;
 mod window;
@@ -24,39 +18,28 @@ use std::{
 pub use embedded::install_follow;
 pub use window::{Inputs, Window};
 
-/// Writes each map's frame timings to `<prefix>.<map>.jsonl`.
 pub fn log_map_frames(prefix: &std::path::Path) {
     crate::perf_log::log_to(prefix);
 }
 
-/// The embedded map's own window's title, by which tools find it among the app's windows.
 pub const MAP_WINDOW_TITLE: &str = "Battle Plan map";
 
-/// Makes a map's window, a child of `parent`, on the calling thread, which owns `parent` and pumps
-/// its messages.
 pub fn create_window(parent: usize) -> io::Result<(Window, Inputs)> {
     Window::create(Some(parent), [1, 1], MAP_WINDOW_TITLE)
 }
 
-/// A map thread's stack.
 const STACK_BYTES: usize = 64 << 20;
 
-/// Where a map's events go, from threads of the map's own, never its frame thread.
 pub type Events = Arc<dyn Fn(NativeEvent) + Send + Sync>;
 
-/// How a map ended.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ending {
-    /// Its host or its window closed it.
     Closed,
-    /// Its GPU device was lost, and why: a new map makes a new device and surface.
     DeviceLost(String),
-    /// It could not start, or it stopped: why, by name.
     Failed(String),
 }
 
 impl Ending {
-    /// A map that did not close, as an error naming why.
     pub(crate) fn into_error(self) -> io::Error {
         match self {
             Self::Closed => io::Error::other("The map closed"),
@@ -65,7 +48,6 @@ impl Ending {
     }
 }
 
-/// Why a map's GPU device was lost, once it was.
 #[derive(Clone, Default)]
 pub struct Lost(Arc<Mutex<Option<String>>>);
 
@@ -81,9 +63,6 @@ impl Lost {
             .get_or_insert(reason);
     }
 
-    /// Watches `device`: its loss is kept by name and `wake` runs, and the errors its work
-    /// raises after the loss are the loss's own; before it, an error panics as wgpu's own
-    /// handler does.
     pub fn watch(&self, device: &wgpu::Device, wake: impl Fn() + Send + 'static) {
         let lost = self.clone();
         device.set_device_lost_callback(move |reason, message| {
@@ -109,11 +88,9 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 }
 
 thread_local! {
-    /// Where this thread's last panic was raised, which the caught payload does not carry.
     static PANICKED_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Notes each panic's location for the thread that raised it, then reports it as before.
 fn note_panic_locations() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
@@ -126,8 +103,6 @@ fn note_panic_locations() {
     });
 }
 
-/// Runs a map, a panic in it included, to how it ended. A map whose device was lost ended for
-/// that, whatever followed the loss.
 pub(crate) fn contain<T>(lost: &Lost, run: impl FnOnce() -> Result<T, String>) -> Result<T, Ending> {
     note_panic_locations();
     PANICKED_AT.with(|held| held.borrow_mut().take());
@@ -148,7 +123,6 @@ pub(crate) fn contain<T>(lost: &Lost, run: impl FnOnce() -> Result<T, String>) -
     }
 }
 
-/// Runs `run` on a map thread of its own and hands how it ended to `ended` on that thread.
 pub fn spawn<T: 'static>(
     name: &str,
     run: impl FnOnce(&Lost) -> Result<T, String> + Send + 'static,
@@ -164,7 +138,6 @@ pub fn spawn<T: 'static>(
     Ok(())
 }
 
-/// [`spawn`], waiting for how the map ended.
 pub(crate) fn run<T: Send + 'static>(
     name: &str,
     run: impl FnOnce(&Lost) -> Result<T, String> + Send + 'static,
@@ -176,7 +149,6 @@ pub(crate) fn run<T: Send + 'static>(
     ended.recv().map_err(|_| io::Error::other("The map's thread ended without saying how"))
 }
 
-/// Which of the host's maps this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Main,
@@ -192,29 +164,20 @@ impl Role {
     }
 }
 
-/// What a map starts with.
 pub struct Launch {
-    /// Viewer options as a command line names them (the recording, an hour, a camera, the
-    /// folders).
     pub args: Vec<OsString>,
-    /// The map's own window, a child of the host's ([`create_window`]), and its input.
     pub window: Window,
     pub inputs: Inputs,
     pub events: Events,
     pub role: Role,
-    /// The host's one data service: the map reads its sources and map settings from it, and never
-    /// makes a second.
     pub service: Arc<dashboard::Service>,
 }
 
-/// A map running in this process. Dropping it closes the map.
 pub struct Map {
     commands: mpsc::Sender<NativeCommand>,
 }
 
 impl Map {
-    /// Starts a map on a thread of its own; `ended` hears how it ended, on that thread, once the
-    /// map has let go of its surface and asked for its window to be destroyed.
     pub fn start(launch: Launch, ended: impl FnOnce(Ending) + Send + 'static) -> io::Result<Self> {
         let (commands, received) = mpsc::channel();
         let name = format!("map ({})", launch.role.name());
@@ -226,15 +189,11 @@ impl Map {
         Ok(Self { commands })
     }
 
-    /// Sends `command` to the map; false once the map has gone.
     pub fn send(&self, command: NativeCommand) -> bool {
         self.commands.send(command).is_ok()
     }
 }
 
-/// `--window-dump` from the desktop app's own command line: the recording's map drawn through its
-/// window from the installed layout, written to `--out`. Folders are its options, else the app's
-/// saved ones.
 pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     let options = Options::parse(args)?;
     if !options.window_dump || options.out.is_none() || options.replay.is_none() {
@@ -253,8 +212,6 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     dump_window(config, options, config_error)
 }
 
-/// A `--window-dump` draws into a window of its own, made and pumped by this thread, from a map
-/// thread as the desktop's maps do.
 pub(crate) fn dump_window(
     config: dashboard::Config,
     options: Options,
@@ -294,8 +251,6 @@ pub(crate) fn dump_window(
         .map_err(Ending::into_error)
 }
 
-/// A paced measurement run draws into a window of its own, made and pumped by this thread, from a
-/// map thread as the desktop's maps do, so its frames go out through a real swap chain.
 pub(crate) fn paced_window(
     size: [u32; 2],
     job: impl FnOnce(&Window, Inputs) -> io::Result<()> + Send + 'static,
@@ -336,9 +291,7 @@ fn embedded_map(
         );
     }
     crate::perf_log::enter(role.name());
-    // This thread draws the map.
     viewer_foundation::worker_priority::frame_priority();
-    // The host owns the content folders and sends them; the map reads none of its own.
     let mut config = dashboard::Config::default();
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
@@ -388,21 +341,16 @@ mod tests {
         let expected = Err(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into()));
         assert_eq!(contain(&lost, || -> Result<(), String> { panic!("wgpu error: Parent device is lost") }), expected);
         assert_eq!(contain(&lost, || Ok::<(), String>(())), expected);
-        // The first reason stays.
         lost.lose("later".into());
         assert_eq!(contain(&lost, || Err::<(), _>("closed".to_owned())), expected);
     }
 
-    /// A map started after another ended (the "Retry map" after a panic) builds on a device of its
-    /// own: wgpu tells devices apart by an id, and the device-keyed caches the map's passes share
-    /// (pipelines, layouts, the null cube) must never hand the new map the old map's objects.
     // quarantine: #1453 needs a GPU adapter
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn a_map_started_after_another_ended_builds_on_a_device_of_its_own() {
         let _gpu = viewer_foundation::map::test_support::serial();
         let (first, _) = driver::map_device(None).unwrap();
-        // The caches keep the first map's device and what was made on it.
         let kept = first.device.clone();
         let made = viewer_foundation::map::device_shared::shared(&first.device, "restart probe", || 1_u32);
         drop(first);
@@ -417,8 +365,6 @@ mod tests {
         drop(made);
     }
 
-    /// A real device destroyed under the watcher (the loss a driver reset causes, faked) is kept by
-    /// name, wakes the map, and makes the device's later errors the loss's own.
     // quarantine: #1453 needs a GPU adapter
     #[test]
     #[ignore = "needs a GPU adapter"]
@@ -436,7 +382,6 @@ mod tests {
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
         woken.recv().unwrap();
         assert!(lost.reason().is_some_and(|reason| reason.starts_with("The map's GPU device was lost (Destroyed")));
-        // Work on a lost device raises errors, which the watcher keeps from panicking.
         let _ = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: 4,

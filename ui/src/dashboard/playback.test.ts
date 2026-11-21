@@ -73,7 +73,6 @@ test('the position carries forward between ticks only while playing and stops at
   clock.setSpeed(720);
   const before = performance.now();
   clock.setPlaying(true);
-  // The clock starts counting no earlier than before, so half a second adds at most 360 hours.
   const ahead = clock.positionAt(before + 500);
   assert.ok(ahead >= 100 && ahead <= 100 + 0.5 * 720);
   assert.equal(clock.positionAt(before + 60_000), 1000);
@@ -153,12 +152,12 @@ test('seek sequence survives coalesced playback updates but not pauses, speed ch
   assert.equal(clock.getSnapshot().hour, 72);
   assert.equal(clock.getSnapshot().seekSequence, initial);
   clock.seek(200);
-  clock.setPlaying(true); // The native viewer may receive only this latest update.
+  clock.setPlaying(true);
   now += 100;
   clock.setSpeed(168);
   assert.equal(clock.getSnapshot().hour, 272);
   assert.equal(clock.getSnapshot().seekSequence, initial + 1);
-  clock.seek(272); // A same-hour seek is still explicit.
+  clock.seek(272);
   assert.equal(clock.getSnapshot().seekSequence, initial + 2);
   clock.setPlaying(true);
   now += 10_000;

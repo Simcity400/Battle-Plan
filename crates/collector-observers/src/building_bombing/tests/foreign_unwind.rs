@@ -1,4 +1,3 @@
-//! Actual native handler dispatch through the production relocated entry.
 use super::*;
 use crate::foreign_unwind_probe as probe;
 use std::mem::offset_of;
@@ -19,9 +18,6 @@ struct NativeCall {
 }
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 
-// Same verified relocatable store as the existing synthetic unwind fixture;
-// the rest is authored native code. Throws cross the actual assembly bridge,
-// not a Rust callback frame. Saved registers are changed before the raise.
 core::arch::global_asm!(
     ".text", ".globl bombing_foreign_caller", ".seh_proc bombing_foreign_caller",
     "bombing_foreign_caller:", "sub rsp, 0x48", ".seh_stackalloc 0x48",
@@ -232,8 +228,6 @@ fn building_bombing_foreign_unwind_retains_stranded_observation_and_restores_cal
             "PASS building bombing {}: actual handler, stranded capture, restored native call",
             case.name
         );
-        // All synthetic calls and native handlers have returned. Reset belongs
-        // to test teardown; production detach still retains a stranded owner.
         drop(hook);
         LEDGER.reset();
         CURRENT.store(0, Ordering::Release);

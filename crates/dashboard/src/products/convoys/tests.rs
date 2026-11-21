@@ -42,7 +42,6 @@ fn only_a_lend_lease_client_names_its_receiver_and_an_unrecorded_category_names_
 
 #[test]
 fn a_handle_reused_for_another_importer_names_each_country_only_over_its_own_hours() {
-    // Deal 5 is imported by 1 then, after a gap, the same handle by 2; deal 9 by 1 throughout.
     let owned = owned([(5, vec![(100, 149, Some(1)), (150, 159, None), (160, 199, Some(2))]), (9, vec![(100, 199, Some(1))])]);
     assert_eq!(owned[&1], vec![(5, 100, 149), (9, 100, 199)]);
     assert_eq!(owned[&2], vec![(5, 160, 199)]);
@@ -54,7 +53,6 @@ fn a_handle_reused_for_another_importer_names_each_country_only_over_its_own_hou
 #[test]
 fn a_deals_efficiency_is_its_factors_product_cut_to_its_importers_hours_and_never_made_up() {
     let cells = |a: Option<i64>, b: i64| Some(vec![a.map_or(Cell::Unrecorded, Cell::Number), Cell::Number(b)].into_boxed_slice());
-    // Factor A unrecorded at 120-129; the row not shown at 140-149.
     let steps = [
         Step { hour: 100, cells: cells(Some(50_000), 80_000) },
         Step { hour: 120, cells: cells(None, 80_000) },
@@ -67,7 +65,6 @@ fn a_deals_efficiency_is_its_factors_product_cut_to_its_importers_hours_and_neve
         _ => None,
     };
     let runs = steps_runs(&steps, 199, value);
-    // The importer held the deal over 100-134 and 150-199 only.
     assert_eq!(numbers(&runs, &[(100, 134), (150, 199)]), vec![(100, 119, 40_000), (130, 134, 99_998), (150, 199, 100_000)]);
     assert_eq!(product(-3, 50_000), Some(-1));
 }

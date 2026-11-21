@@ -1,5 +1,3 @@
-//! FuelDemandParts and the demand pack's hour stamp
-//! ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
 use super::*;
 use crate::codec::Decoder;
 use crate::format::FormatVersion;
@@ -17,8 +15,6 @@ fn unit(reference: u64, rate: i64) -> FuelDemandUnit {
     }
 }
 
-/// A pack with every list, a repeated division and a wing that names its
-/// context by index.
 fn pack() -> FuelDemandRead {
     FuelDemandRead {
         hour: FuelDemandHour::Host,
@@ -107,7 +103,6 @@ fn a_pack_hour_read_with_its_row_costs_one_unchanging_byte() {
         input.finish().unwrap();
     }
     assert_eq!(FuelDemandHour::Host.at(17), 17);
-    // Each hour counts the bytes its own writer stored.
     for (hour, bytes) in [
         (FuelDemandHour::Host, 1),
         (FuelDemandHour::Stamped(-2), 5),
@@ -116,8 +111,6 @@ fn a_pack_hour_read_with_its_row_costs_one_unchanging_byte() {
         assert_eq!(Value::recorded_bytes(&hour).unwrap(), bytes);
     }
     assert_eq!(FuelDemandHour::Stamped(-7).at(17), -7);
-    // Older recordings stored every pack's hour, which the historical
-    // writer stands in for and which decodes as a stamp.
     let bytes = crate::rows::with_historical_stamp(41, || encoded(&FuelDemandHour::Host));
     assert_eq!(bytes, 41_i32.to_le_bytes());
     let mut input = Decoder::new(&bytes);
@@ -127,7 +120,6 @@ fn a_pack_hour_read_with_its_row_costs_one_unchanging_byte() {
         FuelDemandHour::Historical(41)
     );
     input.finish().unwrap();
-    // Two daily reads of an unchanged pack now store no change.
     let (first, _) = split(pack());
     let (next, _) = split(pack());
     assert!(next.delta(Some(&first)).unwrap().is_none());
@@ -140,7 +132,6 @@ fn a_pack_splits_into_a_row_a_part_and_assembles_exactly() {
     let Recorded::Value(demand) = &header.demand else {
         panic!()
     };
-    // The header keeps the hour, identity and reasons; every list moves.
     assert_eq!(
         demand,
         &FuelDemandRead {
@@ -152,7 +143,6 @@ fn a_pack_splits_into_a_row_a_part_and_assembles_exactly() {
     );
     assert_eq!(parts.len(), 3 + 1 + 1 + 1 + 2 + 2);
     assert!(parts.windows(2).all(|pair| pair[0].key() < pair[1].key()));
-    // The repeated division is its second occurrence, at position 2.
     let repeated: Vec<_> = parts
         .iter()
         .filter(|part| part.kind == 0 && part.ident == 7 << 32 | 1)
@@ -195,7 +185,6 @@ fn one_division_whose_rate_moves_stores_only_its_part() {
         .unwrap();
     let delta = after[at].delta(Some(&before[at])).unwrap();
     assert!(delta.is_some_and(|delta| delta.mask == 1 << 1));
-    // A division joining at the front moves the others' positions only.
     let mut joined = pack();
     joined.divisions.insert(0, unit(99, 3));
     let (_, joined) = split(joined);
@@ -213,7 +202,6 @@ fn missing_or_inconsistent_parts_refuse_only_their_pack() {
         demand: Recorded::Value(FuelDemandRead::default()),
         ..Default::default()
     };
-    // A country with no parts has empty lists; a gap in a list refuses.
     parts.retain(|part| !(part.kind == 0 && part.position == 1));
     let view = TableView::Complete(TableRows::FuelDemandParts(parts));
     let assembled = with_demand_parts(
@@ -271,8 +259,6 @@ fn older_recordings_keep_their_inline_lists_and_refuse_only_the_parts() {
         with_demand_parts(std::slice::from_ref(&inline), &view, previous).unwrap(),
         [inline]
     );
-    // The previous format's pack, written as its writers wrote it, decodes
-    // with its lists and its hour as a stamp.
     let bytes = crate::rows::with_historical_stamp(1000, || encoded(&pack()));
     let mut input = Decoder::new(&bytes);
     input.format = previous.version();
@@ -281,14 +267,11 @@ fn older_recordings_keep_their_inline_lists_and_refuse_only_the_parts() {
     let mut expected = pack();
     expected.hour = FuelDemandHour::Historical(1000);
     assert_eq!(decoded, expected);
-    // Its size is what it stored: the hour's four bytes, no tag.
     assert_eq!(Value::recorded_bytes(&decoded).unwrap(), bytes.len());
 }
 
 #[test]
 fn a_list_splits_up_to_the_last_occurrence_its_key_holds() {
-    // 65,536 repeats of one identity end at occurrence 65,535; one more is
-    // a pack no key holds, which stays whole.
     let repeated = |count: usize| FuelDemandRead {
         divisions: vec![unit(7, 1); count],
         ..Default::default()
@@ -304,7 +287,6 @@ fn a_list_splits_up_to_the_last_occurrence_its_key_holds() {
     let over = repeated(usize::from(u16::MAX) + 2);
     assert!(!over.splittable());
     assert!(over.split(4).is_err());
-    // An unsplit pack holds its lists, which assembly keeps.
     let whole = row(repeated(usize::from(u16::MAX) + 2));
     let view = TableView::Complete(TableRows::FuelDemandParts(Vec::new()));
     assert_eq!(

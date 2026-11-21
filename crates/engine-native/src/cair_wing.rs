@@ -1,6 +1,3 @@
-//! CAirWing; field offsets are relative to the primary object.
-//! The secondary subobject follows the primary header. Read widths alone do
-//! not establish the full width of fixed-point storage.
 
 use crate::{
     Memory, air_mission, cair_wing_pool, ccountry, cgame_state, corders_group,
@@ -16,86 +13,46 @@ pub mod fuel_inputs;
 pub mod replacement;
 pub mod transport_operands;
 
-/// Primary wing vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_7748);
-/// Secondary wing vtable.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029f_7780);
-/// Secondary subobject displacement.
 pub const SECONDARY: usize = 0x10;
-/// Registry type value.
 pub const TYPE: u32 = 69;
-/// Registry type field, u32.
 pub const REFERENCE_TYPE: usize = 0x18;
-/// Instance id, u32.
 pub const ID: usize = 0x1c;
-/// CAirWing CAirWingPool* (`POOL`); translated from the secondary body's copy and independently
-/// used by fuel walkers.
 pub const POOL: usize = 0x38;
-/// Air-group paired-u32 handle.
 pub const GROUP_HANDLE: usize = 0x40;
-/// Plane count, i32.
 pub const PLANE_COUNT: usize = 0x7c;
-/// Air-wing signed i32 acquired manpower: aircraft destruction subtracts the lost crews and clamps
-/// at zero.
 pub const ACQUIRED_MANPOWER: usize = 0x80;
-/// CAirWing cumulative signed i32 accident count; the accident update increments this word after
-/// aircraft removal.
 pub const AIR_ACCIDENTS: usize = 0x84;
-/// Embedded mission object, with layout in air_mission.
 pub const MISSION: usize = 0x90;
-/// Inline equipment-bank vector.
 pub const EQUIPMENT_BANK: usize = 0x1f8;
-/// Embedded CEquipmentVariantPool initialized by wing construction.
 pub const EQUIPMENT_POOL: usize = 0x1d8;
-/// Equipment-bank capacity, u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const EQUIPMENT_BANK_CAPACITY: usize = 0x200;
-/// Equipment-bank count, u32.
 pub const EQUIPMENT_BANK_COUNT: usize = 0x204;
-/// Experience, signed i64; updates read, add, clamp and write the complete value.
 pub const EXPERIENCE: usize = 0x218;
-/// Inline wing modifier accumulator.
 pub const MODIFIERS: usize = 0x238;
-/// Night-operations statistic in a cached mission/default stat record.
 pub const NIGHT_OPERATIONS_STAT: usize = 0x4c;
-/// Base override reference resolved before falling back to the pool base.
 pub const BASE_OVERRIDE: usize = 0x48;
-/// Signed fixed5 distance already travelled during relocation.
 pub const RELOCATION_PROGRESS: usize = 0x50;
-/// Signed fixed5 total relocation distance, assigned with the destination.
 pub const RELOCATION_DISTANCE: usize = 0x58;
-/// Mission-admission counter, i32; admission requires it not to exceed the limit.
 pub const ELIGIBILITY_COUNTER: usize = 0x60;
-/// Mission-admission limit, i32.
 pub const ELIGIBILITY_LIMIT: usize = 0x64;
-/// Byte veto rejecting every mission while nonzero.
 pub const ELIGIBILITY_VETO: usize = 0x79;
-/// Assigned ace paired-u32 reference; the high word is the ace id.
 pub const ACE_REFERENCE: usize = 0x2e8;
-/// Base range, i64; scaled to map units before applying range modifiers.
 pub const BASE_RANGE: usize = 0x500;
-/// Base fuel, i64, read before applying fixed-point modifiers.
 pub const BASE_FUEL: usize = 0x5b8;
-/// Signed country-tag override; a positive value wins over the pool owner.
 pub const COUNTRY_OVERRIDE: usize = 0x9c4;
 pub const EXILE_COUNTRY: usize = 0x9c8;
-/// Attached orders-group pointer matched against combat armies in tactical target scans.
 pub const ATTACHED_ORDERS_GROUP: usize = 0x9b8;
-/// Stored wing name string.
 pub const NAME: usize = 0x998;
-/// The tactical (CAS) mission bit, the only reader of the attached group here.
 pub const TACTICAL_MISSION: u32 = 1 << 1;
 
-/// Inline i64 default stat block.
 pub const DEFAULT_STATS: usize = 0x390;
-/// Cached mission-stat array.
 pub const MISSION_STATS: usize = 0x968;
-/// Signed mission-bit index map relative to MISSION_STATS.
 pub const MISSION_STAT_INDEXES: usize = 0x18;
-/// Per-mission stat-record size.
 pub const MISSION_STAT_STRIDE: usize = 0x270;
 
-/// Authenticated wing identity and shared score count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScoreLeaf {
     pub id: u64,
@@ -106,18 +63,10 @@ pub struct ScoreLeaf {
 pub struct GameScoreWalk {
     pub shared: SharedWalk,
     pub score: Outcome,
-    /// The walk stopped before the end of its owner slots: a mandatory
-    /// fault, or every projection failed. The serial walk stops there too,
-    /// so no later part of a census split by owner range belongs to it.
     pub ended: bool,
-    /// This walk's record gathers that did not complete and pointer runs
-    /// that did not read, after which the serial reads ran ([`ROW_BATCH`]).
-    /// Each is also counted for status where it starts
-    /// ([`crate::batch_fallback`]), whichever walk wrapper ran it.
     pub row_fallbacks: u32,
 }
 
-/// Every owner slot: the serial walk, one part covering the whole census.
 pub const EVERY_OWNER: std::ops::Range<u32> = 0..u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,8 +92,6 @@ impl MissionStatError {
     }
 }
 
-/// The selector admits NONE or one mission bit. Only -1 selects the
-/// default record; other invalid indices stay unknown.
 pub fn mission_stat_index(
     memory: &impl Memory,
     wing: usize,
@@ -162,7 +109,6 @@ pub fn mission_stat_index(
         .ok_or(MissionStatError::IndexUnreadable)
 }
 
-/// Select the cached record without recalculating it.
 pub fn mission_stat_record(
     memory: &impl Memory,
     wing: usize,
@@ -185,71 +131,37 @@ pub fn mission_stat_record(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native reference; no collector generation or pointer.
     pub id: u64,
-    /// Raw country reference from the owning CStrategicAir roster.
     pub owner: u32,
-    /// Already authenticated census context for regional map consumers.
-    /// These pointers and the canonical slot never enter replay rows.
     pub owner_pointer: usize,
     pub owner_slot: u32,
-    /// Position in the owner's roster: pools in order, then wings in each pool,
-    /// starting at zero for each owner. Every wing counts even when a bounded
-    /// consumer omits it. This walk already supplies the order without extra
-    /// reads. Training takes its first fifty region-matching candidates in that
-    /// order before drawing randomly; serialization retains the same wing order.
     pub pool_ordinal: u32,
-    /// Signed country override; positive values select it, otherwise the pool owner.
     pub country_override: i32,
-    /// Assigned pool base, distinct from the wing's override reference.
     pub air_base: u64,
-    /// Try the base override first, then the pool base if resolution fails.
     pub base_override: u64,
-    /// Signed integer counts without an imposed range restriction.
     pub planes: i32,
-    /// Collector-owned certified acquired-crew observation.
     pub acquired_manpower: Option<i32>,
     pub exile_country: Option<i32>,
     pub mission_mask: u32,
-    /// None means a null native region pointer, never a failed region read.
     pub mission_region: Option<u32>,
     pub region_pointer: usize,
-    /// [`BASE_RANGE`], the raid range limit's wing operand.
     pub base_range_raw: i64,
-    /// [`ACE_REFERENCE`], unresolved.
     pub ace: u64,
-    /// Mission-admission operands: active byte, veto, counter and limit.
     pub mission_active: u8,
     pub eligibility_veto: u8,
     pub eligibility_counter: i32,
     pub eligibility_limit: i32,
-    /// For a tactical-mission wing, the attached orders group's full handle
-    /// authenticated in the reference registry, `Some(0)` when null. `None`
-    /// for other wings, or when the group does not authenticate.
     pub attached_orders_group: Option<u64>,
-    /// Already-gathered attachment pointer, joined to the same pass's group
-    /// census during conversion. Acquisition context only; never serialized.
     pub attached_group_pointer: u64,
-    /// Span in the caller's name arena; absent after a field-local refusal.
     pub name: Option<(usize, usize)>,
-    /// Authenticated containing pool's recorded-content database index.
-    /// Null subtype is Some(0); optional field read failure is None.
     pub pool_subunit: Option<u32>,
-    /// Complete stored raid handle plus authenticated registry liveness. The
-    /// transport pass or certified worker observation supplies this field.
     pub raid_reference: Option<transport_operands::RaidReference>,
-    /// Selected tactical mission stat, None after an optional-read refusal.
     pub strategic_bombing_raw: Option<i64>,
-    /// Writer-certified raw replacement preference, populated by the owning worker.
     pub replacement_setting: Option<u8>,
-    /// Worker-only writer-certified Air grid flags; the synchronous fallback
-    /// leaves them unknown without reading these fields.
     pub map_flags: Option<u32>,
-    /// Independent simulation fuel operands, acquired only by the existing worker.
     pub fuel_inputs: Option<fuel_inputs::Inputs>,
 }
 
-/// Allocation-free name acquisition into caller-owned live-sized storage.
 pub struct NameArena<'a> {
     pub bytes: &'a mut Vec<u8>,
     pub used: usize,
@@ -315,8 +227,6 @@ impl NameArena<'_> {
     }
 }
 
-/// Worker name growth uses the original retained string header and copies
-/// its bytes once.
 pub fn capture_name_growing(
     memory: &impl Memory,
     pointer: usize,
@@ -335,9 +245,6 @@ pub fn capture_name_growing(
     )
 }
 
-/// `header` is the census's gathered copy of the 32-byte header
-/// ([`Admitted::name_header`]), the bytes the whole-header read would take;
-/// without it the header is read here.
 fn capture_name(
     memory: &impl Memory,
     pointer: usize,
@@ -365,8 +272,6 @@ fn capture_name(
     Ok((start, name.len))
 }
 
-/// Presizing only: the shared authenticated census reads each header, no text
-/// payload, using its unbounded visitor admission and no row storage.
 pub fn name_demand(memory: &impl Memory, base: usize, state: usize) -> Result<usize, &'static str> {
     let mut required = Ok(0usize);
     let walked = walk_shared(
@@ -382,8 +287,6 @@ pub fn name_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
                     let at = pointer
                         .checked_add(NAME)
                         .ok_or("air wing name address overflow")?;
-                    // The header gathered with the row holds the fields the
-                    // field reads would take.
                     let name = match admitted.name_header {
                         Some(header) => StoredString::from_whole_header(memory, at, header),
                         None => StoredString::read(memory, at),
@@ -403,8 +306,6 @@ pub fn name_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
     }
 }
 
-/// Owned copied row plus callback-local discovery context. Pointer values are
-/// opaque after the callback and must never be dereferenced or serialized then.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Source {
     pub pointer: usize,
@@ -419,43 +320,30 @@ pub struct SharedWalk {
     pub naval: Outcome,
 }
 
-/// Which independently bounded consumers admitted this authenticated row.
-/// One visitor invocation can populate shared extension inputs without rereads.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Admitted {
     pub map: bool,
     pub sources: bool,
     pub naval: bool,
-    /// The stored name's header, when the census gathered it with the row;
-    /// [`NameArena::capture`] and [`capture_name_growing`] take it instead
-    /// of reading it.
     pub name_header: Option<[u8; msvc_string::STRIDE]>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CumulativeRow {
     pub id: u64,
-    /// Signed counter incremented after removing accident losses.
     pub accidents: i32,
-    /// Signed fixed-point value, read and stored as a complete i64.
     pub experience: i64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EquipmentRow {
     pub wing: u64,
-    /// Native vector position; repeated variants retain separate positions.
     pub ordinal: u32,
     pub variant: u64,
     pub amount_raw: i64,
-    /// Callback-local discovery context for shared variant definitions only.
-    /// This is never replay identity and must not be serialized or cached.
     pub variant_pointer: usize,
 }
 
-/// Extends an already authenticated row from `walk_with`. The primary pointer
-/// and row must be those passed to the same visitor invocation. Only the two
-/// extra native fields are copied; a failure belongs to the extension table.
 pub fn read_cumulative(
     memory: &impl Memory,
     pointer: usize,
@@ -477,9 +365,6 @@ pub fn read_cumulative(
     })
 }
 
-/// Wing construction initializes the embedded CEquipmentVariantPool.
-/// Use the shared entry reader inside the wing visitor, retaining wing
-/// identity and source ordinal on every variant entry.
 pub fn equipment_pool(
     memory: &impl Memory,
     base: usize,
@@ -491,10 +376,6 @@ pub fn equipment_pool(
     crate::cequipment_variant_pool::entries(memory, base, pool)
 }
 
-/// Reads one already authenticated visitor wing's equipment into caller-owned
-/// storage. Keep this outcome independent of AirWings. A truncated/unavailable
-/// AirWings census still invalidates a seemingly complete visited prefix.
-/// Entries are not filtered by amount, merged by variant, sorted or allocated.
 pub fn read_equipment(
     memory: &impl Memory,
     base: usize,
@@ -528,12 +409,6 @@ pub fn read_equipment(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Read the manager's canonical-country roster, then each pool and wing once.
-/// Country slots are indexed by the resolved raw country reference. Null
-/// manager slots contain no roster; dense pool and wing vectors cannot
-/// silently lose null entries. Duplicate handles are checked when the spool
-/// sorts rows. A full buffer counts omitted pointer slots without reading
-/// their wing fields, allocating, retrying or calling the engine.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_with(memory, base, game_state, output, |_, _, _| {})
 }
@@ -556,12 +431,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     .map
 }
 
-/// Shares the authenticated wing walk with independent state extensions. The
-/// visitor receives transient primary/pool pointers and the exact copied row;
-/// pointers must never become replay identity. It runs only for emitted rows,
-/// and cannot turn a failed extension into a failed AirWings table. Extensions
-/// must withhold complete baselines when this parent census is incomplete.
-/// Caller code must remain allocation-free and account for its own measured cost.
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,
@@ -586,17 +455,6 @@ pub fn walk_with(
     .map
 }
 
-/// Acquires independently bounded map, full-source and naval-source censuses
-/// in one traversal. Naval rows go directly to the visitor instead of another
-/// buffer. The visitor runs once for each row admitted to any consumer, with
-/// explicit admission flags, including prefixes before later census failures.
-/// Its private extension failures do not change these census outcomes.
-///
-/// A consumer that is full still validates mandatory roster pointers/headers,
-/// but does not require omitted wing fields. Consequently a source-only leaf
-/// failure cannot invalidate an already full map, or vice versa. Each outcome
-/// preserves the first failure that its independent bounded walk would see.
-/// Call independently for each required consistency pass; nothing is retained.
 pub fn walk_shared(
     memory: &impl Memory,
     base: usize,
@@ -650,9 +508,6 @@ pub fn walk_with_names(
     .map
 }
 
-/// The named wing census plus field-local political transport inputs.
-/// Optional reads run only for independently admitted map rows, not naval
-/// or equipment-only leaves. Scratch contains no cross-pass observations.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn walk_shared_names_with_operands(
@@ -685,8 +540,6 @@ pub fn walk_shared_names_with_operands(
     .shared
 }
 
-/// Independently captures minimal score leaves in the same authenticated walk;
-/// `scored` false disables score reads.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_game_score_with_owners(
@@ -720,13 +573,6 @@ pub(crate) fn walk_game_score_with_owners(
     )
 }
 
-/// Worker projections grow from each original pool header.
-///
-/// `slots` are the owner (country) slots walked after the shared manager and
-/// roster headers, which every part reads. Parts over consecutive slot ranges,
-/// joined in slot order up to and including the first that [`GameScoreWalk::ended`],
-/// are the serial walk when every projection grows: each admits every wing
-/// until it fails, so no part's admissions depend on an earlier part's rows.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
@@ -815,14 +661,9 @@ impl Projection {
     }
 }
 
-/// Wings whose census rows and stored-name headers one record gather reads.
 pub const ROW_BATCH: usize = 64;
-/// Census steps queued between replays: up to [`ROW_BATCH`] wings and the
-/// owner and pool steps among them.
 const STEP_BATCH: usize = 4 * ROW_BATCH;
 
-/// A wing's census-row spans in [`Reader::row`]'s order, then the 32-byte
-/// stored-name header [`capture_name`] reads (`NAME`).
 const ROW_SPANS: [(usize, usize); 15] = [
     (0, 8),
     (SECONDARY, 16),
@@ -849,14 +690,9 @@ const ROW_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&ROW_FIELDS, R
 
 #[cfg(test)]
 thread_local! {
-    /// The tests' per-object reference: the census as it stood before its
-    /// rows were gathered ([`serial_reference`]).
     static SERIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// One step of the census in its serial order, queued by the roster walk
-/// and replayed by [`walk_projected`]: an owner witness, a pool's storage
-/// demand and base, or a wing.
 #[derive(Clone, Copy)]
 enum Step {
     Owner {
@@ -885,7 +721,6 @@ struct Queue {
 }
 
 impl Queue {
-    /// Queues `step`; true when the queue must be replayed before another.
     fn push(&mut self, step: Step) -> bool {
         self.steps[self.len] = step;
         self.len += 1;
@@ -901,26 +736,6 @@ impl Queue {
     }
 }
 
-/// The census in two halves, reading what the serial walk read.
-///
-/// The roster half reads the manager, owners, pools and each pool's wing
-/// pointers exactly as the serial walk did, a run of pointers in one copy,
-/// and queues the census's steps. The replay half then visits the queued
-/// steps in their serial order, so storage growth, owner witnesses, wing
-/// admission and every visitor run as before; the first wing that needs its
-/// row gathers the rows and stored-name headers of every queued wing from it
-/// on in one record copy ([`ROW_BATCH`] a copy). Rows and headers are read
-/// ahead of the earlier wings' visitors, and roster reads ahead of earlier
-/// replays; a value is used only where the serial walk read it.
-///
-/// A failed gather keeps the rows it completed; the wing it failed at and
-/// the later queued wings read their rows serially, as does a pointer run
-/// that does not read; each such fallback is counted
-/// ([`crate::batch_fallback`], [`GameScoreWalk::row_fallbacks`]). So a
-/// persistent fault refuses what the serial walk refused, at the same wing,
-/// and a one-shot fault met by a gather refuses nothing the serial walk
-/// would not have. A roster fault or full projections end the census where
-/// the serial walk ended it.
 #[allow(clippy::too_many_arguments)]
 fn walk_projected(
     memory: &impl Memory,
@@ -937,7 +752,6 @@ fn walk_projected(
 ) -> GameScoreWalk {
     let mut map = Projection::new(output.len());
     let mut source = sources.as_ref().map(|rows| Projection::new(rows.len()));
-    // The naval and score projections admit every wing: their storage grows with them.
     let mut naval = naval.then(|| Projection::new(usize::MAX));
     let mut score = scored.then(|| Projection::new(usize::MAX));
     #[cfg(test)]
@@ -975,7 +789,6 @@ fn walk_projected(
         wings: 0,
     };
     let result = {
-        // Replays queued steps in order; true when every projection failed.
         let mut replay = |steps: &[Step]| -> Result<bool, &'static str> {
             let mut pointers = [0_usize; ROW_BATCH];
             let mut wings = 0;
@@ -986,7 +799,6 @@ fn walk_projected(
                 }
             }
             let mut records = [0_u8; ROW_BATCH * ROW_STRIDE];
-            // The gathered rows: queued wings `first..first + rows`.
             let mut gathered: Option<(usize, usize)> = None;
             let mut index = 0;
             for step in steps {
@@ -1000,9 +812,6 @@ fn walk_projected(
                         wings: count,
                         air_base,
                     } => {
-                        // The wing roster walk snapshots the pool's wing vector and count as its
-                        // entire wing range. Worker storage follows that acquired range before any
-                        // leaf; fixed callback projections retain their independent limits.
                         let required = map
                             .len
                             .checked_add(count as usize)
@@ -1179,7 +988,6 @@ fn walk_projected(
             Ok(false)
         };
         let roster = (|| -> Result<bool, &'static str> {
-            // Queues a step; a full queue is replayed, which may end the census.
             macro_rules! queue {
                 ($step:expr) => {
                     if queue.push($step) {
@@ -1192,10 +1000,6 @@ fn walk_projected(
             }
             let countries = ccountry::Reader::new(memory, base, game_state)?;
             let manager = reader.pointer(game_state, cgame_state::STRATEGIC_AIR_MANAGER)?;
-            // Country lookup returns null for a null manager. Preserve
-            // AirWings' own refusal while witnessing score's independent zero.
-            // The part that starts the census witnesses every slot, as the
-            // serial walk does; the refusal ends it, so no later part joins.
             if manager == 0 {
                 if slots.start == 0 {
                     for slot in 0..countries.count() {
@@ -1204,8 +1008,6 @@ fn walk_projected(
                 }
                 return Err("strategic air manager absent");
             }
-            // Game initialization publishes the complete strategic-air manager in the game state.
-            // Its primary vtable is distinct from its secondary base's.
             let vtable =
                 read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
             let expected = engine_sites::at(base, cstrategic_air_manager::VTABLE_RVA)
@@ -1275,11 +1077,9 @@ fn walk_projected(
                         air_base,
                     });
                     if air_base.is_err() && !scored {
-                        // The replay refuses the census at this pool.
                         return Ok(false);
                     }
                     let air_base = air_base.unwrap_or(0);
-                    // The pool's wing pointers, a run in one copy.
                     memory.prefetch(wings.data, (wings.count as usize).saturating_mul(8));
                     let mut next = 0_u32;
                     while next < wings.count {
@@ -1327,9 +1127,6 @@ fn walk_projected(
             }
             Ok(false)
         })();
-        // The steps queued before the roster finished or refused replay
-        // first: a replay refusal or the end of the census comes before the
-        // roster's own refusal, as in the serial walk.
         match roster {
             Ok(true) => Ok(true),
             roster => {
@@ -1367,11 +1164,6 @@ fn walk_projected(
     }
 }
 
-/// Hints the lines of one wing that its census row and stored name read: identity, pool, planes,
-/// eligibility and the embedded mission through its region, the ace reference, the base range, and
-/// the name, attached group and country override. Issued right after the wing's pointer is read, so
-/// its misses overlap rather than serialise in the guarded scatter that follows. A hint reads
-/// nothing and cannot fault ([`crate::prefetch`]): every read keeps its place and order.
 fn hint_wing(memory: &impl Memory, wing: usize) {
     for (offset, len) in [
         (0, MISSION + air_mission::REGION + 8),
@@ -1383,9 +1175,6 @@ fn hint_wing(memory: &impl Memory, wing: usize) {
     }
 }
 
-/// One wing's census-row fields: one guarded scatter's ([`Reader::row_fields`])
-/// with its completed prefix, or a completed gathered record's, which also
-/// holds the stored-name header.
 #[derive(Default)]
 struct RowFields {
     completed: usize,
@@ -1398,7 +1187,6 @@ struct RowFields {
     region: [u8; 8],
     active: [u8; 1],
     veto: [u8; 1],
-    // ELIGIBILITY_COUNTER and ELIGIBILITY_LIMIT, adjacent: one span.
     eligibility: [u8; 8],
     country_override: [u8; 4],
     base_range: [u8; 8],
@@ -1408,7 +1196,6 @@ struct RowFields {
 }
 
 impl RowFields {
-    /// A gathered [`ROW_LAYOUT`] record, every field read.
     fn gathered(record: &[u8]) -> Self {
         fn take<const N: usize>(record: &[u8], field: usize) -> [u8; N] {
             let at = ROW_FIELDS[field].destination_offset;
@@ -1441,12 +1228,6 @@ struct Reader<'a, M> {
     regions: RegionMemo,
 }
 
-/// Strategic regions this pass authenticated, by address. A region's two
-/// vtables and its id are read once a pass rather than once for every wing
-/// whose mission names it: the pass reads the hour's world while the game
-/// thread is parked at the hourly boundary, so a region read again in it
-/// reads the same bytes. Only successes are held; a slot another region
-/// took is read again, so the memo never changes a row or a failure.
 struct RegionMemo {
     cells: [std::cell::Cell<(usize, u32)>; RegionMemo::CELLS],
 }
@@ -1515,8 +1296,6 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    /// The row's exact fields in one guarded scatter, without copying
-    /// intervening bytes; without `details` only the leaf's four.
     fn row_fields(&self, pointer: usize, details: bool) -> RowFields {
         let mut fields = RowFields::default();
         let detail = |len: usize| if details { len } else { 0 };
@@ -1558,7 +1337,6 @@ impl<M: Memory> Reader<'_, M> {
         fields
     }
 
-    /// Authentication precedes following the mission-region pointer.
     #[allow(clippy::too_many_arguments)]
     fn row(
         &self,
@@ -1654,8 +1432,6 @@ impl<M: Memory> Reader<'_, M> {
             Some(id)
         };
         let mission_mask = u32::from_le_bytes(mask);
-        // Only the tactical scan reads the group, and a group that does not
-        // authenticate leaves that one field unknown, not the census.
         let attached_orders_group = if mission_mask & TACTICAL_MISSION == 0 {
             None
         } else {
@@ -1706,9 +1482,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// The signed mission index selects a cached record; -1 selects the
-/// default word. An invalid index or unreadable selected word is unknown.
-/// Never substitute zero or default after a failed mission-record read.
 pub fn strategic_bombing_stat(memory: &impl Memory, wing: usize) -> Result<i64, &'static str> {
     let collection = wing
         .checked_add(0x968)

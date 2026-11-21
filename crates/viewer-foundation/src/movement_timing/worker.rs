@@ -1,7 +1,6 @@
 use super::Etas;
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
-/// Success-only ETA sharing for one ticket's immutable overlay and movers inputs.
 #[derive(Default)]
 pub struct WorkerEtas {
     ready: OnceLock<Arc<Etas>>,
@@ -11,7 +10,6 @@ pub struct WorkerEtas {
 }
 
 impl WorkerEtas {
-    /// The synchronous initializer must not wait for siblings or locks they retain.
     pub fn get_or_try_init<E>(
         &self,
         build: impl FnOnce() -> Result<Arc<Etas>, E>,
@@ -35,7 +33,6 @@ impl WorkerEtas {
         if let Some(ready) = self.ready.get() {
             return Ok(Arc::clone(ready));
         }
-        // Errors publish nothing; panics unwind the guard and later callers retry.
         let value = build()?;
         Ok(Arc::clone(self.ready.get_or_init(|| value)))
     }

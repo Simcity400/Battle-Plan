@@ -1,4 +1,3 @@
-//! Immutable packet names/selections and reusable temporary view storage.
 use super::super::native_shader::{
     draw,
     library::{Effect, Selection},
@@ -11,7 +10,6 @@ pub(super) struct Cache {
 }
 
 struct NamedEffect {
-    // Holding the allocation makes the pointer key unambiguous for this entry's lifetime.
     _effect: Arc<Effect>,
     techniques: HashMap<String, Technique>,
 }
@@ -105,8 +103,6 @@ impl Cache {
         }
         let label = label();
         let selection = asset.select(name);
-        // Failed declared techniques report Cache::refuse on EVERY reached selection. Never
-        // memoize their error; missing techniques, unlike failures, have no diagnostic effect.
         let label = if let Ok(selection) = &selection {
             let label = Arc::<str>::from(label);
             self.effects
@@ -138,8 +134,6 @@ impl Cache {
     }
 }
 
-/// Fill current bindings, not a cache of views: a null, missing or newly resident texture is
-/// resolved again on every draw. Clearing after preparation releases the scratch's handles.
 pub(super) fn views<T>(
     storage: &mut Vec<(u32, Result<Option<T>, String>)>,
     draw: &draw::Quad,

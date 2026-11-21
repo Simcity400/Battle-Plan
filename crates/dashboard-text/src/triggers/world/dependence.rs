@@ -1,36 +1,16 @@
-//! What each world query's answer is a function of
-//! ([`super::super::inputs::Key::dependence`]): the tables, fields and rows
-//! its implementation reads, nested queries and lazily built indexes
-//! included. Every world query also needs the hour's world, which the
-//! caller adds. Acquisition freshness is checked again independently of row changes;
-//! the other queries declare their table reads.
-//!
-//! A query that reads one country's rows of a table keyed by raw country,
-//! and refuses when a row's country does not resolve, declares those rows
-//! ([`TableRead::owned_by`]): another country's rows changing leave it
-//! unchanged.
-//!
-//! A declaration that misses a read is a wrong answer reused: check mode
-//! reads every query a declaration let through and fails on any change, and
-//! the tests read each declared query on frames that differ only outside
-//! its declaration.
 
 use replay_data::rows::TableId;
 
 use super::{super::inputs::TableRead, Query, Store};
 
-/// A raw country reference's canonical slot (`World::slot`): the links of
-/// every row whose country a query resolves.
 fn links() -> TableRead {
     TableRead::fields(TableId::CountryLinks, &["canonical_slot"])
 }
 
-/// A canonical slot's own raw reference (`World::raw_country`).
 fn raw_ids() -> TableRead {
     TableRead::fields(TableId::Countries, &["canonical_slot"])
 }
 
-/// The fields a character scope reads of `table` (`crate::character_scope::FIELDS`), of every row.
 fn character_fields(table: TableId) -> TableRead {
     let (_, names) = crate::character_scope::FIELDS
         .iter()
@@ -39,8 +19,6 @@ fn character_fields(table: TableId) -> TableRead {
     TableRead::fields(table, names)
 }
 
-/// A character's unit leader (`character_scope::Tables::unit_leader`): every UnitLeaders row's
-/// character and leader fields, which index it, else its own CharacterOperatives row.
 fn character_leader(character: u32) -> Vec<TableRead> {
     vec![
         character_fields(TableId::UnitLeaders),
@@ -48,8 +26,6 @@ fn character_leader(character: u32) -> Vec<TableRead> {
     ]
 }
 
-/// Whether a character is retired (`character_scope::Tables::retired`): its country and every
-/// retired record's character and name, with the links that compare countries.
 fn character_retired() -> Vec<TableRead> {
     vec![
         character_fields(TableId::Characters),
@@ -58,18 +34,15 @@ fn character_retired() -> Vec<TableRead> {
     ]
 }
 
-/// The lexer's folds over every literal (`World::token_of`).
 fn folds() -> TableRead {
     TableRead::fields(TableId::LexicalTokens, &["literal"])
 }
 
-/// The rows keyed by `prefix` in the bits above `shift`.
 fn prefixed(read: TableRead, prefix: u128, shift: u32) -> TableRead {
     let first = prefix << shift;
     read.rows(first, first | ((1_u128 << shift) - 1))
 }
 
-/// The ideology index every party query builds (`World::political_parties`).
 fn parties() -> [TableRead; 2] {
     [
         TableRead::fields(TableId::PoliticalParties, &["is_ruling", "token"]),
@@ -77,7 +50,6 @@ fn parties() -> [TableRead; 2] {
     ]
 }
 
-/// A country's faction (`World::faction`).
 fn faction(slot: u32) -> Vec<TableRead> {
     if slot == 0 {
         vec![TableRead::fields(
@@ -92,9 +64,6 @@ fn faction(slot: u32) -> Vec<TableRead> {
     }
 }
 
-/// Whether a country owns a state (`World::exists`): a positive country's
-/// stored count, Country0's from its singleton, as the hour's recorded
-/// scopes read it (`OriginalTagLists::reserved_owned_states`).
 fn exists(slot: u32) -> Vec<TableRead> {
     if slot == 0 {
         vec![TableRead::fields(
@@ -109,12 +78,10 @@ fn exists(slot: u32) -> Vec<TableRead> {
     }
 }
 
-/// [`exists`] of a country the query finds in the hour's rows.
 fn any_exists() -> Vec<TableRead> {
     [exists(0), exists(1)].concat()
 }
 
-/// The ongoing war relations, between slots.
 fn wars() -> [TableRead; 2] {
     [
         TableRead::fields(TableId::WarRelations, &["start_hour", "end_hour"]).ending(),
@@ -122,7 +89,6 @@ fn wars() -> [TableRead; 2] {
     ]
 }
 
-/// The ongoing subject relations, between slots.
 fn subjects() -> [TableRead; 2] {
     [
         TableRead::fields(TableId::Subjects, &["start_hour", "end_hour"]).ending(),
@@ -130,18 +96,15 @@ fn subjects() -> [TableRead; 2] {
     ]
 }
 
-/// A country's enemy vector (`World::enemies`).
 fn enemies() -> Vec<TableRead> {
     [vec![TableRead::all(TableId::CountryWars)], wars().to_vec()].concat()
 }
 
-/// A variable store's row, by its scope (`World::variable_store`).
 fn store(store: Store, field: &str) -> Vec<TableRead> {
     let read = TableRead::fields(TableId::ScriptVariables, &[field]);
     let row = |kind: u128, id: u32| read.row(kind << 32 | u128::from(id));
     match store {
         Store::Global => vec![row(0, 0)],
-        // The country's raw id keys its row.
         Store::Country(slot) => vec![prefixed(read, 1, 32).of_country(slot, 0), raw_ids()],
         Store::State(id) => vec![row(2, id)],
         Store::Character(id) => vec![row(3, id)],
@@ -156,8 +119,6 @@ fn store(store: Store, field: &str) -> Vec<TableRead> {
     }
 }
 
-/// A country's parties and their leaders (`World::party_leaders`): its own
-/// rows of both tables, and any row whose country does not resolve.
 fn party_leaders(slot: u32) -> Vec<TableRead> {
     vec![
         TableRead::fields(TableId::PoliticalParties, &["is_ruling"]).owned_by(slot, 32),
@@ -167,21 +128,15 @@ fn party_leaders(slot: u32) -> Vec<TableRead> {
     ]
 }
 
-/// A dynamic-modifier target's match (`World::modifier_matches`): the
-/// target country's raw reference and each entry country's slot.
 fn modifier_target() -> [TableRead; 2] {
     [links(), raw_ids()]
 }
 
 impl Query {
-    /// What this query's answer is a function of, besides the content and
-    /// the hour's world; None when undeclared.
     pub(crate) fn dependence(&self) -> Option<Vec<TableRead>> {
         use TableId as T;
         Some(match self {
-            // Freshness reads acquisition metadata and the enclosing hour, not row values.
             Query::TableFresh(_) => return None,
-            // The hour itself changes every hour: read it again.
             Query::Clock => return None,
             Query::TableStatus(_)
             | Query::CoreGap
@@ -194,7 +149,6 @@ impl Query {
                 vec![TableRead::fields(T::States, &["continent"]).row(state.into())]
             }
             &Query::FocusTree(raw) => vec![TableRead::fields(T::Focus, &["tree"]).row(raw.into())],
-            // The unit's identity and the retained naming operands.
             &Query::UnitStatus(reference) => vec![
                 TableRead::keys(T::Divisions).row(reference.into()),
                 TableRead::fields(T::DivisionStatus, &["name", "naming", "country_ordinal"])
@@ -253,8 +207,6 @@ impl Query {
             &Query::SameFaction(a, b) => [faction(a), faction(b)].concat(),
             Query::AtWar(..) => wars().to_vec(),
             Query::Overlord(_) => subjects().to_vec(),
-            // Country0's from its singleton; any other's from its appearance,
-            // by its own raw reference.
             &Query::OriginalReference(slot) => {
                 if slot == 0 {
                     vec![TableRead::fields(
@@ -268,16 +220,11 @@ impl Query {
                     ]
                 }
             }
-            // Both references resolve through the recorded scopes' links.
             Query::SameTag(..) => vec![links()],
-            // The country's completed focuses, and whether a row's country
-            // does not resolve, which refuses an answer its rows lack.
             &Query::HasFocus(slot, _) => vec![
                 TableRead::fields(T::CompletedFocuses, &["token"]).owned_by(slot, 32),
                 links(),
             ],
-            // Every definition's name; the country's completed rows, and any
-            // completed row whose country does not resolve.
             &Query::HasTech(slot, _) => vec![
                 TableRead::fields(T::TechnologyDefinitions, &["id"]),
                 TableRead::fields(T::ResearchTechnologies, &["classifier"]).owned_by(slot, 32),
@@ -304,15 +251,12 @@ impl Query {
             }
             &Query::Flag(kind, id, _) => vec![
                 folds(),
-                // Keyed by scope kind, scope id and token.
                 prefixed(
                     TableRead::fields(T::ScriptFlags, &["value", "set_hour"]),
                     u128::from(kind) << 32 | u128::from(id),
                     32,
                 ),
             ],
-            // The country's entries, and any entry whose owner does not
-            // resolve, which may be the country's.
             &Query::HasCountryModifier(slot, ..) => [
                 vec![
                     TableRead::fields(
@@ -324,7 +268,6 @@ impl Query {
                 modifier_target().to_vec(),
             ]
             .concat(),
-            // Keyed by state and ordinal.
             &Query::HasStateModifier(state, ..) => [
                 vec![prefixed(
                     TableRead::fields(
@@ -337,7 +280,6 @@ impl Query {
                 modifier_target().to_vec(),
             ]
             .concat(),
-            // The state's controller, then its amount.
             &Query::StateResource(state, resource) => [
                 vec![
                     TableRead::fields(T::States, &["controller"]).row(state.into()),
@@ -349,7 +291,6 @@ impl Query {
             &Query::StateResourceAmount(state, resource, controller) => {
                 resource_amount(state, resource, controller, false)
             }
-            // Building rows are keyed by location and type.
             &Query::BuildingLevel(province, location, building_type) => {
                 let table = if province {
                     T::ProvinceBuildings
@@ -361,7 +302,6 @@ impl Query {
                         .row(u128::from(location) << 32 | u128::from(building_type)),
                 ]
             }
-            // Every province's state.
             Query::StateMembers | Query::StateOrder(_) => {
                 vec![TableRead::fields(T::Provinces, &["state"])]
             }
@@ -420,7 +360,6 @@ impl Query {
             },
             Query::Variable(scope, _) => store(*scope, "entries"),
             Query::VariableSeed(scope) => store(*scope, "seed"),
-            // The States rows' keys, and whether the table is complete.
             Query::StateOfValue(_) => vec![TableRead::keys(T::States)],
             &Query::Character(id) => vec![TableRead::all(T::Characters).row(id.into())],
             &Query::CharacterExists(id) => vec![TableRead::keys(T::Characters).row(id.into())],
@@ -439,7 +378,6 @@ impl Query {
                 character_retired(),
                 vec![
                     character_fields(T::UnitLeaderTraits),
-                    // Keyed by (character, kind, role): a character's rows are one key range.
                     prefixed(character_fields(T::CharacterRoleTraits), u128::from(*character), 40),
                     folds(),
                 ],
@@ -456,8 +394,6 @@ impl Query {
                 TableRead::fields(T::CountryCharacters, &["character"]).owned_by(slot, 32),
                 links(),
             ],
-            // The ruling party's first leader; its role's presence, then its
-            // country-leader traits, of a character found in the hour.
             &Query::LeaderHasTrait(slot, _) => [
                 party_leaders(slot),
                 vec![
@@ -478,8 +414,6 @@ impl Query {
                 faction.into(),
                 32,
             )],
-            // Its own and each existing enemy's civil-war lists, of
-            // countries found in the hour, Country0 among them.
             Query::HasCivilWar(_) => [
                 vec![
                     raw_ids(),
@@ -491,8 +425,6 @@ impl Query {
             ]
             .concat(),
             Query::Enemies(_) => enemies(),
-            // An advisor's hire is read from the country's rows, an active
-            // idea from its rows and any row whose country does not resolve.
             &Query::HasIdea(slot, _) => [
                 vec![
                     TableRead::fields(T::AdvisorTokens, &["token"]),
@@ -529,16 +461,12 @@ impl Query {
                 ],
                 _ => Vec::new(),
             },
-            // Each template's owner and name, its icon's country, and that
-            // country's tag.
             Query::HasTemplate(..) => vec![
                 TableRead::fields(T::DivisionTemplates, &["owner", "name", "name_key"]),
                 TableRead::fields(T::DivisionTemplateIcons, &["country"]),
                 links(),
                 TableRead::fields(T::Countries, &["canonical_slot", "tag"]),
             ],
-            // The country's whole row, and any row whose country does not
-            // resolve.
             &Query::Appearance(slot) => vec![
                 TableRead::all(T::CountryAppearance).owned_by(slot, 0),
                 links(),
@@ -551,8 +479,6 @@ impl Query {
                 TableRead::fields(T::StateCores, &["claims"]).row(state.into()),
                 links(),
             ],
-            // Keyed by country and nuke type; a row whose country does not
-            // resolve is skipped, so only the country's rows count.
             &Query::Nukes(slot) => vec![
                 TableRead::fields(T::Nukes, &["amount_raw"]).owned_by(slot, 32),
                 links(),
@@ -561,9 +487,6 @@ impl Query {
     }
 }
 
-/// A state's resource amount (`StateResources::amount`) under `controller`'s
-/// building overrides; `any_controller` when the controller is the state's,
-/// found in the hour.
 fn resource_amount(
     state: u32,
     resource: u32,
@@ -572,8 +495,6 @@ fn resource_amount(
 ) -> Vec<TableRead> {
     use TableId as T;
     let resource_row = u128::from(state) << 32 | u128::from(resource);
-    // Every row's slot builds the overrides index, which a missing table
-    // refuses; the controller's rows are read.
     let overrides = TableRead::fields(
         T::CountryBuildingResources,
         &["building", "count", "resource", "amount"],

@@ -1,4 +1,3 @@
-//! Division career entries and awarded medals, read only for changed roots.
 use crate::{
     Memory, allocation, carmy, cgame_date, cpdx_array::Array, cprovince, msvc_string::Descriptor,
     read,
@@ -57,8 +56,6 @@ pub struct Entry {
     pub multiplier: i64,
     pub orders: i32,
     pub provinces: Vec<u32>,
-    /// Used only by the same acquisition worker to take the embedded record.
-    /// Never retain this pointer in a replay row or between observations.
     pub sunk_ship: Option<usize>,
 }
 
@@ -88,7 +85,6 @@ fn identity(
     Ok(())
 }
 
-/// The caller already holds the authenticated class-zero division seed.
 pub fn roots(
     memory: &impl Memory,
     base: usize,
@@ -117,7 +113,6 @@ pub fn roots(
     })
 }
 
-/// Authenticates the identity already acquired by the common census.
 pub fn validate_seed(base: usize, seed: &carmy::DivisionSeed) -> Result<(), &'static str> {
     if seed.division == 0
         || seed.handle != Some(seed.division)
@@ -135,8 +130,6 @@ impl Roots {
         self.entries[usize::from(awards)].count as usize
     }
 
-    /// Every entry, including repeats, in native list order. A callback owns
-    /// each acquired entry; no native pointer may escape its acquisition.
     pub fn visit(
         &self,
         memory: &impl Memory,
@@ -148,9 +141,6 @@ impl Roots {
             visit(ordinal, entry)
         })
     }
-    /// Acquire the occurrences from `first`. Only the latest career entry
-    /// changes unobserved (its provinces, see [`province_count`]); earlier ones
-    /// change only under an observed entry edit or bulk inheritance writer.
     pub fn visit_range(
         &self,
         memory: &impl Memory,
@@ -174,8 +164,6 @@ impl Roots {
     }
 }
 
-/// The game adds a province to the latest career entry in place, running no
-/// observed writer, when the next event of the same kind follows it.
 pub fn province_count(memory: &impl Memory, address: usize) -> Result<u32, &'static str> {
     Array::read(memory, at(address, PROVINCES)?, 8)
         .map(|array| array.count)
@@ -264,12 +252,9 @@ pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry,
     })
 }
 
-/// Embedded active officer holder; both XP mutators name this receiver.
 pub const OFFICER: usize = 0x4f8;
 const OFFICER_VTABLE_RVA: Rva = Rva(0x29d4838);
 const OFFICER_EXPERIENCE: usize = 0x88;
-/// The history panel's saved cumulative casualty counter. The native label
-/// uses HISTORY_KILL_COUNT_TEXT even though damage increments casualties.
 pub const CAREER_COUNTER: usize = 0x678;
 pub fn officer_experience(
     memory: &impl Memory,

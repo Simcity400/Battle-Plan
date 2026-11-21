@@ -1,11 +1,6 @@
-//! The counters layer's line of the proof tool (`playback_cost::proof`): the window's layer, made on
-//! its worker ([`Fed`]), from the loaded recording, and how the product it hands the window compares
-//! with today's division counters of the same hour and with the counters composed anew. The proof's
-//! comparisons follow a whole settle, which waits for the product of its hour.
 
 use super::{Counters, PHASES, Source, fed::Fed};
 
-/// [`PHASES`] as the nanosecond counters' names.
 const PHASE_NS: [&str; PHASES.len()] = ["ns groups", "ns orders", "ns plans", "ns arrays", "ns members", "ns whole members", "ns strength", "ns orders only", "ns outside", "ns memberships", "ns rows"];
 use crate::{
     document::Document,
@@ -36,8 +31,6 @@ pub fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     marked
 }
 
-/// The layer's sources against today's division counters at the document's hour, under the
-/// perspective the layer was given. Each member's type tint and action are left out.
 pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = counters(layer);
     let hour = document.hour()?;
@@ -114,8 +107,6 @@ fn ids(members: &[(&Member, Action)]) -> Vec<u64> {
     members.iter().map(|(member, _)| member.id).collect()
 }
 
-/// The product the window was handed against the counters composed anew on this thread from the
-/// same mirrors and upstream layers, each admitted source with its members and their actions.
 pub fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = counters(layer);
     let mut fresh = layer.fresh();

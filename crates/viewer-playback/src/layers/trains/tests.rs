@@ -22,9 +22,6 @@ use viewer_world::map::{
     trains::{Curve, PlanCache, TrainAssets, TrainPlan, TrainRows},
 };
 
-/// Frames at `hour` until it is applied, nothing composes, no layer carries frame-thread work and
-/// every layer's product holds every change: one step taken whole, the trains' plan made on their
-/// worker however the frames are paced. Fails by name within 120 s.
 fn settled_at(side: &mut MapSide, hour: i32) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -43,20 +40,17 @@ fn settled_at(side: &mut MapSide, hour: i32) {
     }
 }
 
-/// What the layer's values answered when it last asked for a plan.
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
     head: i32,
     country: Option<u32>,
     complete: bool,
-    /// Our nodes: index, province, available, parent.
     nodes: Vec<(u32, u32, i64, i32)>,
     fallback: Result<bool, String>,
     allowed: [bool; 3],
     rail: [bool; 2],
 }
 
-/// A yard that answers with an empty plan and records what the mirrors told it.
 #[derive(Default)]
 struct Probe(Mutex<Vec<Seen>>);
 
@@ -92,9 +86,6 @@ fn key(high: u32, low: u32) -> u128 {
     u128::from(high) << 32 | u128::from(low)
 }
 
-/// Country 10 (slot 1) with three nodes, one a vertex; country 20's node of kind 4, whose country
-/// has no Countries row until hour 20; a node's supply written twice inside one step; a rail edge
-/// inserted; a cooldown ending; and the trains' tables in order.
 fn side(name: &str, probe: &Arc<Probe>) -> MapSide {
     let tables = [
         TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens, TableId::Provinces, TableId::ReservedCountryNaming,
@@ -173,9 +164,6 @@ fn trains(side: &MapSide) -> &Trains {
     side.parts().unwrap().1[1].any().downcast_ref::<Trains>().unwrap()
 }
 
-/// One step at a time, each settled whole before the next: a plan is built once in each step that
-/// changes what it reads (hours 9 to 12, 20 and 30) and in no other. Paced by the frames instead,
-/// a step taken while the trains wait for the rails, or for settling, is built with the next one.
 #[test]
 fn trains_read_nodes_census_access_and_rails_at_the_head_and_build_only_when_they_change() {
     let probe = Arc::new(Probe::default());
@@ -192,7 +180,6 @@ fn trains_read_nodes_census_access_and_rails_at_the_head_and_build_only_when_the
         }
     }
     let seen = probe.0.lock().unwrap().clone();
-    // The first plan built at or after an hour: a build may come a frame after its step.
     let at = |hour: i32| seen.iter().find(|seen| seen.head >= hour).cloned().unwrap_or_else(|| panic!("no plan built from hour {hour}: {seen:?}"));
     let first = at(0);
     assert_eq!((first.country, first.complete), (Some(10), true));
@@ -221,9 +208,6 @@ fn trains_above_the_cutoff_declare_nothing_and_build_again_when_shown() {
     assert!(inputs.into_tables().is_empty(), "hidden, the layer declares nothing");
     frames_until(&mut side, |side, frame| !side.composing() && frame.applied.is_some_and(|hour| hour >= 24));
     let before = probe.0.lock().unwrap().len();
-    // Shown again, its tables return as a reset in a step built once their lanes are prepared; at
-    // the recording's end none is built (the playhead's declared-while-paused case), as the host's
-    // own test allows.
     side.set_view(View::default()).unwrap();
     frames_until(&mut side, |side, frame| (side.draws("trains") && !side.composing()) || frame.applied == Some(59));
     let seen = probe.0.lock().unwrap().clone();
@@ -235,8 +219,6 @@ fn trains_above_the_cutoff_declare_nothing_and_build_again_when_shown() {
     }
 }
 
-/// A yard that makes today's plan from the layer's values, with no consist drawn, on a curve a
-/// path's provinces lay out in a line.
 #[derive(Default)]
 struct Laid(TrainAssets);
 
@@ -275,15 +257,10 @@ fn opaque<T: NativeValue>(value: T) -> Vec<u8> {
     bytes
 }
 
-/// Country 10 (slot 1) whose supply runs from its capital in province 1 to nodes in provinces 2
-/// and 3, routes 1 to 2 and 1 to 3; at hour 6 the node in province 2 takes the line through
-/// province 4, and nothing the route to 3 reads changes. With `churn`, from hour 8 the node in
-/// province 3 has its `route_to` written every hour and its supply every fourth.
 fn routes_side(name: &str, hours: u32, churn: bool) -> MapSide {
     routes_side_with(name, hours, Changes { churn, ..Changes::default() })
 }
 
-/// What [`routes_side_with`] changes besides the base routes.
 #[derive(Clone, Copy, Default)]
 struct Changes {
     churn: bool,
@@ -293,14 +270,6 @@ struct Changes {
     waking: bool,
 }
 
-/// [`routes_side`], with `rails` the edge from province 1 to 3 closed at hour 14 and open again at
-/// hour 18: the rail network changes under the routes mid-run; with `grows`, at hour 20 a fourth node
-/// comes in province 4 (route 1 to 4) in a slot no row held, and the census counts it; with
-/// `crossing`, the node in province 3 has only its supply written: at hour 10 across a departure
-/// step (weight 500,000 to 900,000), at hour 12 the row is deleted and inserted again in slot 70,
-/// as it was, and at hour 15 its supply falls across steps again (to 200,000); with `waking`, a
-/// fourth node stands in province 4 (route 1 to 4) from the start with no supply, so no weight and
-/// no route, and at hour 10 only its supply is written (500,000).
 fn routes_side_with(name: &str, hours: u32, changes: Changes) -> MapSide {
     let Changes { churn, rails, grows, crossing, waking } = changes;
     let tables = [
@@ -393,7 +362,6 @@ fn routes_side_with(name: &str, hours: u32, changes: Changes) -> MapSide {
     side
 }
 
-/// The layer at its hour against itself composed from the mirrors there.
 fn equals_composed(side: &MapSide, what: &str) {
     let (mirrors, layers) = side.parts().unwrap();
     let mut fresh = trains(side).fresh();
@@ -401,8 +369,6 @@ fn equals_composed(side: &MapSide, what: &str) {
     assert_eq!(trains(side).differ(&fresh), (0, None), "{what}: the plan equals one composed");
 }
 
-/// One route's own inputs change: the frame reads nothing for it, and the worker remakes that route
-/// alone: the other route keeps the curve it had, and the plan equals one composed.
 #[test]
 fn trains_a_change_to_one_route_is_folded_on_the_worker_and_remakes_that_route_alone() {
     let mut side = routes_side("trains-routes", 12, false);
@@ -423,17 +389,10 @@ fn trains_a_change_to_one_route_is_folded_on_the_worker_and_remakes_that_route_a
     equals_composed(&side, "settled");
 }
 
-/// A row written in each of a thousand steps, the frames as fast as they come and no settling: the
-/// frame carries nothing at any frame (its rows are the worker's), the worker folds the steps it
-/// was behind by into one plan rather than one a step, and every plan holds every step the frame had
-/// applied when the worker began it: the plan shown is one plan's work behind at most, however few
-/// hours a loaded machine gives that work. Settled at the head, it is the plan composed there.
-/// Before, the frame copied the marked rows within its settling and, starved, never handed a batch.
 #[test]
 fn trains_a_row_changed_in_a_thousand_steps_is_folded_and_the_plan_follows_the_head() {
     const HOURS: u32 = 4040;
     let mut side = routes_side("trains-bounded", HOURS, true);
-    // Past the fixture's hour 6 path change: from here only the churned node changes.
     settled_at(&mut side, 8);
     let built = trains(&side).marked()[0];
     let (mut steps, mut carried, mut behind) = (0u64, 0usize, 0i32);
@@ -451,8 +410,6 @@ fn trains_a_row_changed_in_a_thousand_steps_is_folded_and_the_plan_follows_the_h
     assert_eq!(carried, 0, "the frame carried no row in {steps} steps");
     assert_eq!(layer.applied_reads(), 0, "apply read nothing from the mirrors");
     let made = layer.marked()[0] + layer.marked()[1] + layer.marked()[3] - built;
-    // A worker behind folds the steps it was behind by into one plan; one that keeps up makes a plan
-    // a step. Either way it never makes more plans than steps (and the first one).
     assert!((made as u64) <= steps + 1, "at most a plan a step: {made} makings for {steps} steps");
     assert!(layer.stats.plan_short <= 0, "a plan stood {} hours before the hour applied when its work began (the shown plan lagged {behind} hours at the worst)", layer.stats.plan_short);
 
@@ -461,10 +418,6 @@ fn trains_a_row_changed_in_a_thousand_steps_is_folded_and_the_plan_follows_the_h
     equals_composed(&side, &format!("settled at hour {hour} after {steps} steps"));
 }
 
-/// The stepped harness's head: driven an hour at a time, each hour reached and then settled whole.
-/// At every hour the trains show the plan of that hour, equal to one composed there, its curves
-/// made. Before, while the worker waited for curves it folded the steps handed past the head, the
-/// plan they made was of a later hour, and the hour driven to was never shown.
 #[test]
 fn trains_at_a_head_driven_hour_by_hour_and_settled_whole_show_the_plan_of_each_hour() {
     let mut side = routes_side("trains-driven", 48, true);
@@ -479,11 +432,6 @@ fn trains_at_a_head_driven_hour_by_hour_and_settled_whole_show_the_plan_of_each_
     }
 }
 
-/// The rail network changes mid-run (the edge from 1 to 3 closed at hour 14, open again at 18) while
-/// the head is driven an hour at a time with no frame settling, each hour settled whole: the worker
-/// makes every curve the changed network needs from its own copy of the network, so no settle waits
-/// on a frame, and each hour shows the plan composed there. Before, curves the worker asked for and
-/// the spent settling left unmade held a whole settle for good (the equality proof's hang).
 #[test]
 fn trains_with_the_rail_network_changing_mid_run_settle_whole_each_hour_with_no_frame_budget() {
     let mut side = routes_side_with("trains-network", 30, Changes { churn: true, rails: true, ..Changes::default() });
@@ -498,9 +446,6 @@ fn trains_with_the_rail_network_changing_mid_run_settle_whole_each_hour_with_no_
     }
 }
 
-/// The maker away on the worker is not frame-thread work: while a change is not in the plan the
-/// layer shows an hour before the head, and once the plan holds every change it is current and
-/// equals the plan composed there.
 #[test]
 fn trains_show_an_hour_before_a_change_their_plan_does_not_hold_yet() {
     let mut side = routes_side("trains-published", 40, true);
@@ -527,9 +472,6 @@ fn trains_show_an_hour_before_a_change_their_plan_does_not_hold_yet() {
     }
 }
 
-/// Plays a step a frame: between two steps, frames at the hour applied (taking none) hand the
-/// trains the steps built past the head until their worker has made the next step's plan; then the
-/// frame that takes the step, which `each` sees until it returns true.
 fn ahead_steps(side: &mut MapSide, mut each: impl FnMut(i32) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -551,13 +493,6 @@ fn ahead_steps(side: &mut MapSide, mut each: impl FnMut(i32) -> bool) {
     }
 }
 
-/// The trains' worker had folded the four-hour steps built ahead, a fourth node inserted at hour 20
-/// among them, when the pace fell to an hour a step at hour 16: those steps are void and built again
-/// an hour each, the worker starts over from the mirrors at hour 16, and at every hour after, a step
-/// of one hour, the plan equals the one composed there. Before, the maker kept the rows the void steps
-/// had brought (the node of hour 20, in a slot the mirrors at 16 do not hold) and the copies queued
-/// from them, so the plan at 17 to 19 read a later hour's rows: the equality proof's flat hours, where
-/// the layer was current with routes and weighted nodes that today's plan of the hour lacks.
 #[test]
 fn trains_after_a_slower_pace_start_over_and_hold_no_row_of_a_void_step() {
     let mut side = routes_side_with("trains-pace", 48, Changes { grows: true, ..Changes::default() });
@@ -594,12 +529,6 @@ fn trains_after_a_slower_pace_start_over_and_hold_no_row_of_a_void_step() {
     assert!(voided >= 1, "the steps the trains folded ahead were voided and the worker started over");
 }
 
-/// A node's supply alone moves its weight across a departure step, with nothing else changing at
-/// that hour, and its row is deleted and inserted again in another slot between two such moves:
-/// driven an hour at a time and settled whole, each hour shows the weights the rows have then. The
-/// equality proof found weights a day old at the hours a weight crossed a step: a plan-country row's
-/// supply write reached the worker only while a set kept apart from the rows listed its slot. It is
-/// now read from the row's own key in the worker's table.
 #[test]
 fn trains_a_supply_change_alone_moves_the_weights_at_its_hour() {
     let mut side = routes_side_with("trains-supply", 24, Changes { crossing: true, ..Changes::default() });
@@ -615,13 +544,6 @@ fn trains_a_supply_change_alone_moves_the_weights_at_its_hour() {
     assert!(weights.contains(&200_000), "the fall at hour 15 is in the plan: {weights:?}");
 }
 
-/// A node with no supply, so no weight and no route, gains supply alone at hour 10 and nothing else
-/// changes: from that hour it is weighted and its route, whose curve no plan had made, is in the
-/// plan, equal to the one composed there. Before, the maker took the batch for weights alone, found
-/// the weighted nodes changed and began the plan again, asked for the new route's curve, and on
-/// coming back with it judged the batch quiet: the plan before stayed shown, current, until another
-/// change. That is the equality proof's flat hours, each the first batch after a day's build, where
-/// a node stopped or started being weighted.
 #[test]
 fn trains_a_node_weighted_by_its_supply_alone_brings_its_route_at_that_hour() {
     let mut side = routes_side_with("trains-waking", 16, Changes { waking: true, ..Changes::default() });

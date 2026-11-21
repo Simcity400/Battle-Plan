@@ -1,14 +1,3 @@
-//! The world log of format 12: per run its directory, per block a page, per [`SPAN_BLOCKS`]
-//! blocks a span. A block's page holds every table's entry (its parts' frames, its restore's
-//! chunks and its status runs, [`TableEntry`]) and its summary piece, with the block's clock, the
-//! strings its hours appended and the chain after it. A span's index holds the same entries table
-//! by table, each table's row read alone, with the table's summary pieces of the levels above a
-//! block's that the span closes. The run's directory, rewritten at each commit, names its span
-//! pages and the block pages of its open span.
-//!
-//! Frames are named by place, length and digest ([`FrameEntry`]); pages, rows and directories
-//! are the container's extents. The chain after a block covers the one before it and the page's
-//! bytes, which name every frame of the block by its digest.
 
 use crate::{
     envelope::{Extent, Kind, RowPlace, SPAN_BLOCKS, SpanPages, UNIT_ORDINALS},
@@ -50,25 +39,17 @@ fn get_array<const N: usize>(bytes: &[u8], at: &mut usize) -> io::Result<[u8; N]
     Ok(held.try_into().expect("N bytes"))
 }
 
-/// What a block is besides its tables: its hours, its clock, the strings its hours appended
-/// (their first id), and the chain after it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockHead {
     pub hours: u16,
     pub clock: FrameEntry,
-    /// The strings the block's hours appended, in chunks of about [`STRING_CHUNK`] raw bytes,
-    /// each its own frame `count | per string: length | bytes`, so a reader of one string
-    /// decodes its chunk alone; none when they appended none.
     pub strings: Vec<StringChunk>,
-    /// The id of the first string the block appended.
     pub first_string: u32,
     pub chain: [u8; 32],
 }
 
-/// A string chunk's raw size past which the next string starts a new chunk.
 pub const STRING_CHUNK: usize = 1 << 20;
 
-/// One chunk of a block's strings: the id of its first string and its frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StringChunk {
     pub first: u32,
@@ -114,7 +95,6 @@ impl BlockHead {
     }
 }
 
-/// One table's entry of one block: its unit's entry, and its summary piece of the block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub unit: TableEntry,
@@ -153,19 +133,15 @@ impl Entry {
     }
 }
 
-/// One block's page: its head and every table's entry, in table order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub run: u32,
-    /// Its place in the run.
     pub block: u32,
     pub head: BlockHead,
     pub tables: Vec<Entry>,
 }
 
 impl Block {
-    /// The chain after a block whose page is `body` ([`Self::body`]), the chain before it being
-    /// `before`.
     pub fn chain_after(before: &[u8; 32], body: &[u8]) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(before);
@@ -173,7 +149,6 @@ impl Block {
         *hasher.finalize().as_bytes()
     }
 
-    /// Its bytes but the chain.
     pub fn body(&self) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         put_varint(&mut out, u64::from(self.run));
@@ -187,7 +162,6 @@ impl Block {
         Ok(out)
     }
 
-    /// The page of a schema of `tables` tables, read through its envelope `page`.
     pub fn read(bytes: &[u8], page: &Extent, tables: usize) -> io::Result<Self> {
         let mut at = 0;
         let run = get_varint(bytes, &mut at)? as u32;
@@ -210,12 +184,10 @@ impl Block {
         Ok(Self { run, block, head, tables: entries })
     }
 
-    /// Whether its chain is the one after `before`.
     pub fn chains_from(&self, before: &[u8; 32]) -> io::Result<bool> {
         Ok(Self::chain_after(before, &self.body()?) == self.head.chain)
     }
 
-    /// Its page as written: [`Self::body`] with the chain in its head.
     pub fn write(&self) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         put_varint(&mut out, u64::from(self.run));
@@ -228,14 +200,11 @@ impl Block {
         Ok(out)
     }
 
-    /// The page as the unit's reader primitives take it.
     pub fn unit_page(&self) -> BlockPage {
         BlockPage { block: self.block, hours: self.head.hours, tables: self.tables.iter().map(|entry| entry.unit.clone()).collect() }
     }
 }
 
-/// One table's row of a span: its entry of each of the span's blocks, in order, and its summary
-/// pieces of the levels above a block's that the span closes, ascending by level.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpanRow {
     pub blocks: Vec<Entry>,
@@ -256,7 +225,6 @@ impl SpanRow {
         Ok(())
     }
 
-    /// `table`'s row of run `run`'s span of `blocks` blocks.
     pub fn read(bytes: &[u8], run: u32, table: u32, blocks: u32) -> io::Result<Self> {
         let mut at = 0;
         let count = get_varint(bytes, &mut at)?;
@@ -285,16 +253,12 @@ impl SpanRow {
     }
 }
 
-/// One span's directory: each block's head, the chain after its last block, and where each
-/// table's row lies in the span's index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpanDirectory {
     pub run: u32,
-    /// Its first block's place in the run.
     pub first_block: u32,
     pub blocks: Vec<BlockHead>,
     pub chain: [u8; 32],
-    /// Each table's row in the span index, in table order.
     pub rows: Vec<RowPlace>,
 }
 
@@ -351,22 +315,15 @@ impl SpanDirectory {
     }
 }
 
-/// One run: its place in the campaign, its closed spans' pages and the block pages of its open
-/// span. The run's first restore is in its first block's entries ([`TableEntry::first`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDirectory {
     pub branch: u64,
-    /// Why the run starts ([`crate::envelope::epoch`]).
     pub epoch: u8,
     pub first_hour: i32,
     pub hours: u32,
-    /// The chain after its last block.
     pub chain: [u8; 32],
     pub spans: Vec<SpanPages>,
-    /// The block pages after its last closed span, in order: fewer than [`SPAN_BLOCKS`].
     pub open: Vec<Extent>,
-    /// For a finished run whose last span is not whole, each summarized table's piece of the
-    /// level above a block's covering that span.
     pub tail: Vec<(u32, Extent)>,
 }
 
@@ -400,7 +357,6 @@ impl RunDirectory {
         Ok(out)
     }
 
-    /// Run `run`'s directory, read through its envelope `directory`.
     pub fn read(bytes: &[u8], directory: &Extent, run: u32) -> io::Result<Self> {
         if directory.kind != Kind::RunDirectory || directory.run != run {
             return Err(directory.damaged(&format!("is not run {run}'s directory")));
@@ -437,7 +393,6 @@ impl RunDirectory {
         Ok(read)
     }
 
-    /// Its closed spans cover its blocks by [`SPAN_BLOCKS`], its open pages the rest, in order.
     fn validate(&self, run: u32) -> io::Result<()> {
         let blocks = self.blocks();
         if self.spans.len() as u64 != u64::from(blocks / SPAN_BLOCKS) {

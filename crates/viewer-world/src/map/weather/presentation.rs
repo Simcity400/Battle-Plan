@@ -1,4 +1,3 @@
-//! Viewer-local native snow/mud graphics refresh, independent of replay hours.
 
 use super::{Refresh, SnowMud};
 use map_display_data::Paged;
@@ -8,36 +7,18 @@ use viewer_foundation::map::presentation::Continuity;
 #[derive(Default)]
 pub struct Presentation {
     pub size: [u32; 2],
-    /// The planes shown, page by page where [`Self::shown`] says so: a page it does not hold shows
-    /// the target's bytes, which an install writes to the texture without copying them here, and
-    /// which are copied here only where a path reads or blends them
-    /// ([`Self::planes_shown`], [`Self::owed_planes`]).
     texels: Vec<u8>,
-    /// Per page of [`Self::texels`]: whether it holds the planes shown there, rather than the
-    /// target's bytes standing for them.
     shown: Vec<bool>,
-    /// One rectangle's bytes, rows `columns * 4` apart ([`Self::take_rect`]).
     rect: Vec<u8>,
-    /// One byte per cell, non-zero where the hatch overlay draws: the cell is unknown in the
-    /// pending hour, in the snapshot the texels show, or in the one they still fade from.
     pub unknown: Vec<u8>,
-    /// Which squares of the map hold a cell [`Self::unknown`] hatches; none until a mask is
-    /// folded over this grid, which owes the texture every byte.
     coverage: Option<super::HatchCoverage>,
-    /// The hatch mask the texture is owed whole, rather than in [`Self::hatch_writes`].
     hatch_whole: bool,
-    /// The cell ranges of [`Self::unknown`] the texture is owed; a rectangle writes its own.
     hatch_writes: Vec<Range<usize>>,
-    /// The pending, shown and faded masks [`Self::unknown`] was last folded from, held so their
-    /// pages' identities stay theirs.
     refreshed: [Option<Paged<u8>>; 3],
     shown_unknown: Paged<u8>,
     faded_unknown: Option<Paged<u8>>,
     shared_pending: Option<Arc<SnowMud>>,
     target: Paged<u8>,
-    /// Pages whose planes a refresh's blend left unlike their bytes, which the next install writes
-    /// even where the bytes did not change. A grid installed at once leaves none: its cells are
-    /// `[mud, snow, snow, mud]`, which reads the same backwards.
     mismatched: Vec<usize>,
     uploads: Vec<Range<usize>>,
     dirty: bool,
@@ -47,15 +28,10 @@ pub struct Presentation {
     fade: f32,
 }
 
-/// Bytes a write to a texture costs about as much as the call itself, so ranges nearer than this
-/// go to the texture in one write rather than two.
 const MERGE: usize = 32 * 1024;
 
-/// Grids installed at once, for the judge's rate.
 static CHECKED_GRIDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Whether `now` and `was` hold page `page` in one allocation, so what was read from it still
-/// holds.
 fn shared_page(now: &Paged<u8>, was: &Paged<u8>, page: usize) -> bool {
     let (pages, held) = (now.pages().len(), was.pages().len());
     (page >= pages && page >= held)
@@ -67,7 +43,6 @@ fn shared_page(now: &Paged<u8>, was: &Paged<u8>, page: usize) -> bool {
             })
 }
 
-/// [`shared_page`] where either mask may be absent.
 fn same_page(now: &Option<Paged<u8>>, was: &Option<Paged<u8>>, page: usize) -> bool {
     match (now, was) {
         (None, None) => true,
@@ -76,9 +51,6 @@ fn same_page(now: &Option<Paged<u8>>, was: &Option<Paged<u8>>, page: usize) -> b
     }
 }
 
-/// Whether a cell of `bytes` shows its planes unlike its bytes: what a blend can leave and a grid
-/// cannot. A cell is the mud, snow, snow and mud it draws, so a cell read backwards unlike itself is
-/// one whose planes differ. Only the judge reads this ([`crate::map::weather::Presentation`]).
 fn mismatching(bytes: &[u8]) -> bool {
     bytes.chunks_exact(4).fold(0u32, |differs, cell| {
         let cell = u32::from_ne_bytes([cell[0], cell[1], cell[2], cell[3]]);
@@ -86,7 +58,6 @@ fn mismatching(bytes: &[u8]) -> bool {
     }) != 0
 }
 
-/// `pages` with the pages a blend left mismatched, in order and each once.
 fn dirty_pages(mut pages: Vec<usize>, mismatched: &[usize]) -> io::Result<map_display_data::retained::Retained<Vec<usize>>> {
     pages
         .try_reserve(mismatched.len())
@@ -138,29 +109,22 @@ impl Presentation {
         }
     }
 
-    /// The planes the texture shows, every page of them made current.
     pub fn planes_shown(&mut self) -> &[u8] {
         self.planes();
         &self.texels
     }
 
-    /// The ranges the texture is owed and the planes they are written from, those pages made
-    /// current: an install hands over bytes out of the planes, so the pages it copies are the
-    /// pages it owes.
     pub fn owed_planes(&mut self) -> (&[Range<usize>], &[u8]) {
         self.planes_owed();
         (&self.uploads, &self.texels)
     }
 
-    /// Every page of the planes made current: the target's bytes where a page stands for them.
     fn planes(&mut self) {
         for page in 0..self.shown.len() {
             self.plane_page(page);
         }
     }
 
-    /// `page` of the planes made current, and its byte range: the target's bytes copied in where
-    /// the page stood for them.
     fn plane_page(&mut self, page: usize) -> Range<usize> {
         let start = page * map_display_data::PAGE_ITEMS;
         if std::mem::replace(&mut self.shown[page], true) {
@@ -172,7 +136,6 @@ impl Presentation {
         start..end
     }
 
-    /// The planes shown in `page`, which are the target's bytes where the page stands for them.
     fn shown_page(&self, page: usize) -> &[u8] {
         let start = page * map_display_data::PAGE_ITEMS;
         if self.shown[page] {
@@ -181,7 +144,6 @@ impl Presentation {
         self.target.page(page)
     }
 
-    /// The pages the owed ranges are written from made current.
     fn planes_owed(&mut self) {
         let owed: Vec<Range<usize>> = self.uploads.clone();
         for range in owed {
@@ -191,8 +153,6 @@ impl Presentation {
         }
     }
 
-    /// The planes stand for the target's bytes everywhere: what an install at once leaves, whole
-    /// or band by band.
     fn planes_are_the_target(&mut self) {
         self.shown.clear();
         self.shown.resize(self.target.pages().len(), false);
@@ -215,9 +175,6 @@ impl Presentation {
             return Ok(false);
         }
         self.reserve(snow)?;
-        // The pages the grid's maker rebuilt: a page it shares holds the bytes it held, so the
-        // bytes are not read to find them, and a page it rebuilt is written whether or not the
-        // bytes in it moved.
         let dirty = if !reset && snow.refresh.is_none() {
             let rebuilt = (0..snow.texels.pages().len()).filter(|&page| !shared_page(&snow.texels, &self.target, page)).collect();
             Some(dirty_pages(rebuilt, &self.mismatched)?)
@@ -233,9 +190,6 @@ impl Presentation {
                 self.uploads.clear();
                 self.uploads.push(0..snow.texels.len());
             } else {
-                // A page the maker rebuilt differs from the one the planes show there, and a page
-                // a blend left mismatched owes its bytes too: the dirty pages are the owed ones,
-                // and none of them is read to ask again.
                 for &page in dirty.as_ref().unwrap().iter() {
                     let start = page * map_display_data::PAGE_ITEMS;
                     self.upload(start..start + snow.texels.page(page).len());
@@ -272,10 +226,6 @@ impl Presentation {
         Ok(false)
     }
 
-    /// Whether `snow` can be taken a rectangle at a time ([`Self::begin_parts`]) as [`Self::set_shared`]
-    /// would take it whole: a reset always; a continuation only while it and the planes are drawn at
-    /// once (no graphics refresh pending or due) and at one size. The planes shown are then their
-    /// bytes, cells whose planes differ included, as every grid drawn at once leaves them.
     pub fn takes_parts(&self, snow: &SnowMud, continuity: Continuity) -> bool {
         continuity == Continuity::Reset
             || (self.size == [snow.width, snow.height]
@@ -285,8 +235,6 @@ impl Presentation {
                 && !self.dirty)
     }
 
-    /// Starts taking `snow` in rectangles: a reset sizes the planes, whose every byte the
-    /// rectangles then write, and drops a refresh still pending.
     pub fn begin_parts(&mut self, snow: &SnowMud, continuity: Continuity) -> io::Result<()> {
         if continuity == Continuity::Reset {
             self.reserve(snow)?;
@@ -298,9 +246,6 @@ impl Presentation {
         Ok(())
     }
 
-    /// `snow`'s cells of `rows` and `columns`, rows `columns.len() * 4` bytes apart, for the
-    /// texture; the planes they stand for are the grid's own, as [`Self::finish_parts`] leaves
-    /// them.
     pub fn take_rect(&mut self, snow: &SnowMud, rows: Range<u32>, columns: Range<u32>) -> io::Result<&[u8]> {
         let [width, height] = self.size;
         if rows.end > height || columns.end > width || snow.texels.len() != self.texels.len() {
@@ -321,8 +266,6 @@ impl Presentation {
         Ok(&self.rect)
     }
 
-    /// Ends taking `snow` in rectangles, every cell where it differs from the grid held written:
-    /// the presentation is then as [`Self::set_shared`] leaves it after taking `snow` whole.
     pub fn finish_parts(&mut self, snow: &Arc<SnowMud>, continuity: Continuity) {
         self.installed_at_once(&snow.texels);
         self.shared_pending = Some(Arc::clone(snow));
@@ -340,8 +283,6 @@ impl Presentation {
         }
     }
 
-    /// Recomputes the drawn hatch flags from the pending, shown and faded-from masks: every flag
-    /// that turns patches the coverage and owes the texture its byte.
     fn refresh_unknown(&mut self) {
         let count = self.size[0] as usize * self.size[1] as usize;
         let masks = [
@@ -360,7 +301,6 @@ impl Presentation {
         }
         let mut folded = [0u8; map_display_data::PAGE_ITEMS];
         for page in 0..count.div_ceil(map_display_data::PAGE_ITEMS) {
-            // A page whose three source pages are the ones it was folded from keeps its flags.
             if masks
                 .iter()
                 .zip(&self.refreshed)
@@ -378,8 +318,6 @@ impl Presentation {
                     }
                 }
             }
-            // The page is read as wide as it is folded; only one that differs is walked for the
-            // flags that turned.
             if self.unknown[first..first + folded.len()] == *folded {
                 continue;
             }
@@ -403,7 +341,6 @@ impl Presentation {
         self.settle_coverage();
     }
 
-    /// `cell`'s mask byte owed to the texture, in one range with the bytes near it.
     fn owe_mask(&mut self, cell: usize) {
         match self.hatch_writes.last_mut() {
             Some(last) if cell + MERGE >= last.start && cell <= last.end.saturating_add(MERGE) => {
@@ -414,9 +351,6 @@ impl Presentation {
         }
     }
 
-    /// `texels` are on the texture as they stand, whole or band by band: a cell's planes are its
-    /// bytes, so no page is left mismatched and the next install owes none. The judge reads the
-    /// grid and names a page whose planes differ, which only a blend can make.
     fn installed_at_once(&mut self, texels: &Paged<u8>) {
         self.mismatched.clear();
         if viewer_foundation::install_check::due(&CHECKED_GRIDS) {
@@ -429,8 +363,6 @@ impl Presentation {
         }
     }
 
-    /// The coverage counted whole where it cannot be patched: none held, or another grid's. The
-    /// texture is then owed every byte of the mask.
     fn settle_coverage(&mut self) {
         if self
             .coverage
@@ -444,22 +376,18 @@ impl Presentation {
         self.hatch_whole = true;
     }
 
-    /// Which squares of the map hold a hatched cell; none before a grid is installed.
     pub fn coverage(&self) -> Option<&super::HatchCoverage> {
         self.coverage.as_ref()
     }
 
-    /// Whether the mask texture is owed every byte of [`Self::unknown`].
     pub fn hatch_whole(&self) -> bool {
         self.hatch_whole
     }
 
-    /// The cell ranges of [`Self::unknown`] the mask texture is owed.
     pub fn hatch_writes(&self) -> &[Range<usize>] {
         &self.hatch_writes
     }
 
-    /// The mask texture holds what [`Self::unknown`] says.
     pub fn clear_hatch(&mut self) {
         self.hatch_whole = false;
         self.hatch_writes.clear();
@@ -488,7 +416,6 @@ impl Presentation {
             && self.refresh.is_some_and(|refresh| {
                 f64::from(refresh.interval as f32 / 100_000.0) <= f64::from(now) - last_refresh
             });
-        // A blend is not idempotent, so only the pages whose bytes moved are blended.
         let dirty = if refreshed {
             let pending = &self.shared_pending.as_ref().expect("pending snow").texels;
             Some(dirty_pages(pending.changed_pages(&self.target), &self.mismatched)?)
@@ -507,9 +434,6 @@ impl Presentation {
                 .clone();
             self.mismatched.clear();
             for &page in dirty.as_ref().unwrap().iter() {
-                // The blend reads the planes shown and writes over them: this page holds them from
-                // here on, where a page it does not blend stands for the target's bytes, which the
-                // pending grid holds unchanged.
                 let Range { start, end } = self.plane_page(page);
                 let target = pending.page(page);
                 let mut mismatch = false;
@@ -519,7 +443,6 @@ impl Presentation {
                     .zip(target.chunks_exact(4))
                 {
                     let next = [cell[3], target[1], cell[1], target[3]];
-                    // An immediate install copies raw bytes, so planes shown unlike them stay dirty.
                     mismatch |= next[0] != next[3] || next[2] != next[1] || next[..] != *target;
                     changed |= *cell != next;
                     cell.copy_from_slice(&next);
@@ -608,7 +531,6 @@ mod tests {
     #[test]
     fn pending_upload_ranges_go_in_one_write_where_a_write_costs_more_than_the_gap() {
         for count in [3, 1500, 5000] {
-            // Groups further apart than a write of the gap between them costs stay apart.
             let apart = MERGE + 16;
             let mut presentation = Presentation::default();
             for key in (0..count).rev() {
@@ -633,7 +555,6 @@ mod tests {
                 count * 8,
                 "the bytes pushed, with nothing between the groups"
             );
-            // Nearer than that, one write carries the gap rather than paying for two.
             let mut near = Presentation::default();
             for key in (0..count).rev() {
                 near.upload(key * 12..key * 12 + 4);
@@ -673,14 +594,12 @@ mod tests {
         assert!(player.hatch_whole(), "the first mask is owed whole");
         player.clear_hatch();
         player.advance(0.0, 0.0).unwrap();
-        // Equal bytes with another mask are a change; the texels still show the old cells.
         player
             .set_shared(&snapshot([1, 0, 0], 2), Continue)
             .unwrap();
         assert_eq!(player.unknown, [1, 1, 0]);
         assert_eq!(player.hatch_writes(), [0..1], "the cell that turned, not the mask");
         player.clear_hatch();
-        // The refresh shows the new hour while its planes still fade from the old one.
         assert!(player.advance(0.5, 0.5).unwrap());
         assert_eq!(player.unknown, [1, 1, 0]);
         assert!(player.hatch_writes().is_empty() && !player.hatch_whole());
@@ -690,15 +609,12 @@ mod tests {
         assert_eq!(player.hatch_writes(), [1..2], "the cell that stopped fading");
         assert!(player.coverage().unwrap().covered());
         player.clear_hatch();
-        // A whole hour clears the hatch once nothing shown or pending is unknown.
         player.set_shared(&snapshot([0, 0, 0], 3), Reset).unwrap();
         assert_eq!(player.unknown, [0, 0, 0]);
         assert!(!player.coverage().unwrap().covered());
         assert_eq!(player.hatch_writes(), [0..1]);
     }
 
-    /// A grid taken a rectangle at a time leaves the planes, the target and the hatch as taking it
-    /// whole does, a reset as a continuation, copying only the rectangles' cells.
     #[test]
     fn a_grid_taken_in_rectangles_is_presented_as_one_taken_whole() {
         let (width, height) = (40u32, 30u32);
@@ -752,7 +668,6 @@ mod tests {
         (parts.clear_hatch(), whole.clear_hatch());
         assert!(parts.target == whole.target && parts.mismatched == whole.mismatched);
 
-        // One cell changed: the rectangle holding it alone is copied, and nothing else moves.
         let third = Arc::new(SnowMud { texels: second.texels.edited((0..4).map(|channel| ((12 * width as usize + 9) * 4 + channel, 77))), ..SnowMud::clone(&second) });
         let before = parts.planes_shown().to_vec();
         parts.begin_parts(&third, Continue).unwrap();
@@ -765,8 +680,6 @@ mod tests {
         whole.set_shared(&third, Continue).unwrap();
         assert_eq!(parts.planes_shown().to_vec(), whole.planes_shown().to_vec());
 
-        // A cell written on the second page, in rectangles, leaves the planes as one taken whole
-        // leaves them, and an install at once lists no page: its planes are its bytes.
         let mut last = third;
         for (row, column, cell) in [(27, 3, [4, 3, 3, 4]), (2, 5, [6, 6, 6, 6]), (27, 3, [9, 8, 8, 9])] {
             let next = Arc::new(SnowMud { texels: last.texels.edited((0..4).map(|channel| ((row * width as usize + column) * 4 + channel, cell[channel]))), ..SnowMud::clone(&last) });
@@ -784,7 +697,6 @@ mod tests {
         assert!(parts.mismatched.is_empty());
         let third = last;
 
-        // A refresh pending, or a grid that refreshes, is taken whole.
         let refreshed = Arc::new(SnowMud { refresh: Some(Refresh { interval: 25_000, identity: 1 }), ..SnowMud::clone(&third) });
         assert!(!parts.takes_parts(&refreshed, Continue) && parts.takes_parts(&refreshed, Reset));
     }
@@ -827,7 +739,6 @@ mod tests {
             "copy raw current; no blended baseline"
         );
         assert_eq!(player.fade(), 0.125);
-        // Freeze the replay entirely: frames alone finish the one-second fade.
         player.advance(1.625, 0.25).unwrap();
         assert_eq!(player.fade(), 0.375);
         player.advance(2.5, 0.5).unwrap();
@@ -835,7 +746,6 @@ mod tests {
         assert!(!player.set_shared(&snapshot(130, 140, 4), Continue).unwrap());
         assert!(!player.advance(2.625, 0.125).unwrap());
         assert_eq!(player.fade(), 1.0, "unchanged hour does not restart");
-        // A full rebuild can publish equal bytes; the native identity catches it.
         player.set_shared(&snapshot(130, 140, 5), Continue).unwrap();
         assert!(player.advance(2.75, 0.125).unwrap());
         assert_eq!(player.fade(), 0.125);
@@ -853,7 +763,7 @@ mod tests {
             let mut player = Presentation::default();
             player.set_shared(&snapshot(10, 20, 1), Reset).unwrap();
             player.advance(10.0, 0.0).unwrap();
-            player.set_shared(&snapshot(90, 100, 2), Continue).unwrap(); // Queued old-hour work.
+            player.set_shared(&snapshot(90, 100, 2), Continue).unwrap();
             let mode = continuity(previous, next, sought, &[]);
             assert_eq!(mode, Reset);
             assert!(player.set_shared(&snapshot(30, 40, 3), mode).unwrap());
@@ -895,7 +805,6 @@ mod tests {
             assert!(!player.advance(base + 0.125, 0.125).unwrap());
             assert_eq!(player.planes_shown(), [20, 10, 10, 20]);
             assert_eq!(player.fade(), 0.125);
-            // Replacing pending skipped hours never changes the shown planes.
             assert!(!player.set_shared(&snapshot(110, 120, 3), Continue).unwrap());
             assert!(!player.set_shared(&snapshot(130, 140, 4), Continue).unwrap());
             assert!(player.advance(base + 0.25, 0.125).unwrap());
@@ -903,8 +812,6 @@ mod tests {
             assert_eq!(player.fade(), 0.125);
             assert!(!player.advance(base + 0.375, 0.125).unwrap());
             assert_eq!(player.fade(), 0.25);
-            // Equal bytes with a new refresh identity still copy actual current
-            // planes, not the partially blended result.
             assert!(!player.set_shared(&snapshot(130, 140, 5), Continue).unwrap());
             assert!(player.advance(base + 0.5, 0.125).unwrap());
             assert_eq!(player.planes_shown(), [140, 130, 130, 140]);
@@ -928,7 +835,6 @@ mod tests {
         }
     }
 
-    // Frozen texel-first install reference, independent of the production refresh-first path.
     fn set_reference(
         player: &mut Presentation,
         snow: &Arc<SnowMud>,
@@ -1005,7 +911,6 @@ mod tests {
         let snapshot = |hour: u32, branch: u32| {
             let width = 1 + branch + map_display_data::PAGE_ITEMS as u32 / 4;
             let bytes = (hour / 3 % 4) as u8 * 30;
-            // A cell is the mud, snow, snow and mud it draws, as `map_snow` writes one.
             let texels: Vec<u8> = (0..width)
                 .flat_map(|cell| {
                     let snow = bytes.wrapping_add(cell as u8);

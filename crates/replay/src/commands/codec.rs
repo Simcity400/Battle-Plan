@@ -206,7 +206,6 @@ pub(super) fn decode_batch(bytes: &[u8], from: u64, to: u64) -> io::Result<Batch
             .departures
             .push((narrow(input.varint()?)?, narrow(input.varint()?)?));
     }
-    // Timestamps and span durations always consume at least one byte per item.
     let count = input.count(1)?;
     batch.events = engine_allocation::vec(count)?;
     let mut time = from;

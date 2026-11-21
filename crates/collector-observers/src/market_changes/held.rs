@@ -1,5 +1,3 @@
-//! Worker-owned state and demand-filtered acquisition. Country and contract
-//! discovery is supplied by the existing economy census, never another roster.
 use super::*;
 use engine_native::{ccountry, cpdx_array::Array};
 use engine_production::market_ledger as market;
@@ -117,7 +115,6 @@ impl State {
             .replace(manager)
             .is_some_and(|old| old != manager)
         {
-            // A changed manager revokes every held backlink, not just the failed owner's.
             self.recertify_countries();
             for (_, pending_manager) in self.pending_countries.values_mut() {
                 *pending_manager = manager;
@@ -166,18 +163,14 @@ pub(super) fn finish_renewals(renewed: [Option<usize>; 4]) {
     for (domain, demand) in renewed.into_iter().enumerate() {
         if demand.is_some() {
             let watch = WATCHES.get(domain).unwrap_or(&RESET_WATCH);
-            // A clear can succeed while a predecessor still blocks offered growth.
             state.renewed_watches[domain] = demand.filter(|_| !watch.growth_pending());
         }
     }
-    // A completed renewal loses its marks, so its held owners need one fresh read.
     state.recertify_countries();
 }
 pub(super) fn recovery_requested() -> bool {
     RECOVERY.load(Ordering::SeqCst)
 }
-/// The first successful publication of each census epoch is a complete table,
-/// including when a spool recovery reaches us without the caller's full flag.
 pub fn full_publication_required() -> bool {
     let state = STATE
         .lock()
@@ -230,7 +223,6 @@ fn read_agreement(
     base: usize,
     pointer: usize,
 ) -> Result<LendLeaseAgreementRow, &'static str> {
-    // The giver is the giver resources' owner link, the key every agreement event carries.
     let identity = lease::identity(memory, base, pointer)?;
     let mut terms = lease::Terms::default();
     lease::terms(memory, base, pointer, identity, &mut terms)?;
@@ -471,7 +463,6 @@ fn authenticate_country(
     }
     Ok(())
 }
-/// The existing census authenticates membership; reset occurrences order old delivery baselines.
 pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Country, manager: usize) {
     if !ENABLED.load(Ordering::SeqCst) {
         return;
@@ -588,7 +579,6 @@ pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Countr
         state.refusals[1] = Some(reason);
     }
 }
-/// The existing census reads the market root only for discovery or recovery.
 pub fn discover_country(
     memory: &impl Memory,
     base: usize,
@@ -640,9 +630,6 @@ pub fn seed_contract(memory: &impl Memory, base: usize, pointer: usize, id: u64,
     {
         return;
     }
-    // After bootstrap, the reached birth event supplies the new holder's zero
-    // delivery baseline. Census seeding its current total would erase this
-    // interval's first delivery before the worker can difference it.
     if state.contracts_complete {
         state.discovered_contracts.insert((owner, id, 1));
         return;
@@ -684,9 +671,6 @@ pub fn seed_contract(memory: &impl Memory, base: usize, pointer: usize, id: u64,
         Err(reason) => state.refusals[1] = Some(reason),
     }
 }
-/// Complete an off-slot bootstrap inside the existing hourly resource census.
-/// The ordinary owning-contract census already seeds daily slots. Only a fresh
-/// census epoch without that seed visits the owned contract list here.
 pub fn recover_contracts(memory: &impl Memory, base: usize, game: usize) {
     if !ENABLED.load(Ordering::SeqCst) {
         return;
@@ -794,13 +778,9 @@ fn reset_country(state: &mut State, owner: u32) {
             .entry(owner)
             .or_insert((held.identity, held.manager));
     }
-    // Country holdings are reset, while live exchanges and manager-owned
-    // contracts keep their identities. Their own removal/amendment witnesses
-    // decide lifetime; purging them here would discard surviving baselines.
     state.dirty_inventory.remove(&owner);
     state.changed[0].insert(owner);
 }
-// Rebind holdings only after consuming the interval's ordered delivery records.
 fn reseed_countries(state: &mut State, memory: &impl Memory, base: usize) -> BTreeSet<u32> {
     let pending = std::mem::take(&mut state.pending_countries);
     let mut acquired = BTreeSet::new();
@@ -862,9 +842,6 @@ fn apply(state: &mut State, event: &MarketEventRow) -> Result<(), &'static str> 
         {
             return Ok(());
         }
-        // The daily census may discover this holder before its queued birth
-        // or removal drains. Either reached lifetime accounts for discovery,
-        // including a birth and removal within the same acquisition interval.
         state.discovered_contracts.remove(&key);
         state.contracts.remove(&key);
         state.variable_owners.retain(|_, owner| *owner != key);
@@ -906,8 +883,6 @@ fn apply(state: &mut State, event: &MarketEventRow) -> Result<(), &'static str> 
             },
         });
         let row = &mut held.row;
-        // Zero denotes the initial census. Even the first observed occurrence
-        // (whose identity may be zero) must establish a distinct revision.
         row.revision = event
             .occurrence
             .checked_add(1)
@@ -932,7 +907,6 @@ fn apply(state: &mut State, event: &MarketEventRow) -> Result<(), &'static str> 
             ..Default::default()
         }
         .into();
-        // Native clear removes entries while retaining each pool's zero policy.
         row.delivered = MarketPool {
             allow_zero: row.delivered.allow_zero,
             items: Vec::new(),
@@ -1003,7 +977,6 @@ fn event_domain(event: &MarketEventRow) -> usize {
 }
 fn apply_observed(state: &mut State, event: &MarketEventRow) {
     let domain = event_domain(event);
-    // Lifetimes must still cancel private pointers after a state refusal.
     if (state.refusals[domain].is_none()
         || matches!(
             event.kind,
@@ -1014,9 +987,6 @@ fn apply_observed(state: &mut State, event: &MarketEventRow) {
         state.refusals[domain] = Some(reason);
     }
 }
-/// The native hourly giver fuel pass overwrites last-delivered for every
-/// outgoing exchange. Only previously nonzero caches need resetting; the two
-/// nonzero native ADD operands then supply this hour's values. No holder scan.
 fn reset_last_fuel(state: &mut State, hour: i32, full: bool) {
     if state.fuel_hour == Some(hour) {
         return;
@@ -1035,7 +1005,6 @@ fn reset_last_fuel(state: &mut State, hour: i32, full: bool) {
     }
 }
 fn acquire_admissions(state: &mut State, memory: &impl Memory, base: usize) {
-    // Only new holders still alive after all removal witnesses need definitions.
     for (key, pointer) in std::mem::take(&mut state.admissions) {
         if state.refusals[1].is_some() || state.contracts.contains_key(&key) {
             continue;
@@ -1222,7 +1191,6 @@ fn reread_variables(
     held.row.variable_state = seed?;
     Ok(())
 }
-/// Read marked domains and retry only uncertified country holders.
 pub fn acquire(
     memory: &impl Memory,
     base: usize,
@@ -1806,8 +1774,6 @@ mod tests {
                 .items
                 .is_empty()
         );
-        // Already seeded or no new admission: no re-read, even if the pointer
-        // supplied to admission is stale. Only a new live identity is demanded.
         state.admissions.insert((5000, 17, 0), usize::MAX);
         acquire_admissions(&mut state, &NoNativeRead, 0);
         assert!(state.admissions.is_empty());
@@ -1867,7 +1833,6 @@ mod tests {
             23
         );
     }
-    // regression: 22013c14f7 Fix market capture cost and lifecycle handling; reuse Trade flows variant
     #[test]
     fn one_fuel_write_publishes_one_of_many_agreements_of_the_same_giver_with_shared_pools() {
         const AGREEMENTS: usize = 32;

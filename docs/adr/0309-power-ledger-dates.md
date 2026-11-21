@@ -1,0 +1,7 @@
+# Date power spending by its recorded evidence
+
+The dashboard lists changes in recorded running totals. A payment is dated to the hour it was read. Recurring costs and gains count when their day closes. The history follows the tag’s holders and the recording’s stretches, using the totals at the boundary as a baseline where the earlier observations supply none. It preserves coverage gaps and takes no hourly walk. The open-day view publishes spending only if its currency was covered since midnight. Moving amounts, including allocations, are live cells on the panel’s fixed structure.
+
+An item's stable identity includes its holder, ordinal and first read because ordinals reset with a run. Equal category, recorded operands, and names drive presentation grouping. Names and artwork are dated to the first payment, then cached per source and catalogue. Read the country and item operands first, plus the scripted world only when text or artwork depends on it. If that hour cannot be read, name the operands that can be resolved and report the reason. An empty literal supplies no token. The recorded cause supplies a category where the content does not, and a negative net command power gain is a known deficit.
+
+[Power ledger](../../crates/dashboard/src/products/power_ledger.rs) · [Day view](../../crates/dashboard/src/products/power_ledger/day.rs) · [Naming](../../crates/dashboard/src/products/power_ledger/naming.rs)

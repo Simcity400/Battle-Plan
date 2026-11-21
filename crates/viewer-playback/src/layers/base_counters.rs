@@ -1,21 +1,3 @@
-//! The map's base counters, from the mirrors: which provinces have a controller, each state's
-//! bases by kind, each state base's wings box and frame operands, and the states whose radar
-//! icon shows, for the viewing country. These are part of today's base tables
-//! (`viewer_counters::map::counters::{controlled_of, site_bases_of, base_count, RadarCircle}`
-//! decide them for both); placing the icons stays camera-bound.
-//!
-//! A change costs what it touched, never the world: the layer keeps, with the mirrors, each
-//! base's aggregate of the wings standing at it and its registrations' counts of listed wings
-//! holding planes or missing, each base's placing, and the radar groups by state. A wing, a
-//! registration, a base, a state's flag or a province makes again only the sites, provinces and
-//! radar states it reads into, a unit at a time inside the settling. What reads every site (the
-//! viewing country, the country links, a census becoming whole or partial) sweeps them in the
-//! same units, carried across frames. The values are shared by shard ([`BaseValues`]), so the
-//! window keeps the last version while the next copies only the shards it changes. Until all of a
-//! step's changes are in the values, the layer says it shows the hour before that step
-//! ([`Published::At`]). Vision is an input set from outside until the vision layer can be read.
-//! Not this layer's yet: the strategic-location icons, the air volunteer allowances, and the
-//! naval base, naval HQ and facility icons.
 
 use super::{Carried, Settling, Inputs, Layer, List, Num, Published, Scope, Scoped, Sight, View, land_markers::{bytes_of, held, recorded, u64s}, touched::Touched};
 use crate::playhead_host::mirror::{Mirror, Mirrors};
@@ -36,23 +18,19 @@ use std::{
 use viewer_counters::map::counters::{AirBaseCount, BaseFacts, BaseValues, RadarCircle, RadarOutcome, RegistrationFacts, WingCensus, base_count, controlled_of, merge_count, radar_notes_of, site_kind, wing_base_of, wing_country};
 use viewer_foundation::map::perspective::{Choice, Vision};
 
-/// The rows of a table held whole at the head.
 fn whole(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| mirror.status() == Some(Status::Complete))
 }
 
-/// A held table's row of `key`.
 fn row(mirror: Option<&Mirror>, key: u128) -> Option<(&Mirror, u32)> {
     let mirror = held(mirror)?;
     Some((mirror, mirror.slot(key)?))
 }
 
-/// A held table's live rows with their keys.
 fn keyed(mirror: Option<&Mirror>) -> impl Iterator<Item = (&Mirror, u128, u32)> {
     held(mirror).into_iter().flat_map(|mirror| mirror.rows().filter_map(move |slot| Some((mirror, mirror.key(slot)?, slot))))
 }
 
-/// Whether a status holds rows the layer reads ([`held`]).
 fn holds(status: Status) -> bool {
     matches!(status, Status::Complete | Status::Truncated { .. })
 }
@@ -92,37 +70,26 @@ const TABLES: [TableId; 10] = [
     TableId::CountryLinks,
 ];
 
-/// Units made between two looks at the settling: provinces, bases placed, sites or radar states.
-/// Each unit reads a fixed number of rows (a site's bases and their registrations), never a list
-/// of wings.
 const PER_LOOK: usize = 8;
 
-/// One wing as the counts read it.
 #[derive(Clone, Copy)]
 struct WingRow {
     base: u64,
-    /// The country it counts for, raw ([`wing_country`]).
     country: u32,
     planes: i32,
 }
 
-/// What one base's count reads of its wings, kept as they change.
 #[derive(Default)]
 struct Aggregate {
-    /// The positive planes of the wings standing at it.
     standing: i64,
-    /// The wings standing at it by raw country, counted.
     located: Vec<(u32, u32)>,
-    /// Its registrations by country slot.
     registered: Vec<Registered>,
 }
 
-/// One registration's counts of its listed wings.
 #[derive(Clone, Copy)]
 struct Registered {
     slot: u32,
     listed: u32,
-    /// Listed wings holding a plane, and listed wings `AirWings` holds no row of.
     positive: u32,
     missing: u32,
 }
@@ -138,22 +105,15 @@ fn take_from<K: std::hash::Hash + Eq + Ord, T: PartialEq>(map: &mut HashMap<K, V
     }
 }
 
-/// Which rows count for which base and radar state, kept with the mirrors.
 #[derive(Default)]
 struct Index {
-    /// Each `AirBases` row with a state: its (state, kind).
     placed: HashMap<u64, (u32, i32)>,
     wings: HashMap<u64, WingRow>,
-    /// Each registration's wings, and the registrations listing each wing (once a listing).
     registrations: HashMap<u128, Vec<u64>>,
     listing: HashMap<u64, Vec<u128>>,
     bases: HashMap<u64, Aggregate>,
-    /// Each `RadarCoverage` row with a state: its (raw country, state); the countries keeping a
-    /// group in each state.
     groups: HashMap<u128, (u32, u32)>,
     hosts: BTreeMap<u32, Vec<u32>>,
-    /// What reads each raw country's link: the bases where its wings stand, the states where it
-    /// keeps a radar group, and the radar host states it controls (as last decided).
     stationed: HashMap<u32, Vec<u64>>,
     hosting: HashMap<u32, Vec<u32>>,
     controllers: HashMap<u32, u32>,
@@ -194,7 +154,6 @@ impl Index {
         }
     }
 
-    /// Sets `wing`'s row (none: gone); the bases whose counts read it go to `touched`.
     fn set_wing(&mut self, wing: u64, row: Option<WingRow>, touched: &mut BTreeSet<u64>) {
         let old = match row {
             Some(row) => self.wings.insert(wing, row),
@@ -225,7 +184,6 @@ impl Index {
         }
     }
 
-    /// Counts a wing of `country` standing at `base` in, or out.
     fn locate(&mut self, base: u64, country: u32, up: bool) {
         let at = self.bases.entry(base).or_default();
         match at.located.iter().position(|&(held, _)| held == country) {
@@ -245,7 +203,6 @@ impl Index {
         }
     }
 
-    /// Records `state`'s raw controller as last decided (none: not a host state, or no row).
     fn set_controller(&mut self, state: u32, controller: Option<u32>) {
         let old = match controller {
             Some(controller) => self.controllers.insert(state, controller),
@@ -261,7 +218,6 @@ impl Index {
         }
     }
 
-    /// Sets the registration `key`'s wings (none: gone); its base goes to `touched`.
     fn set_registration(&mut self, key: u128, wings: Option<Vec<u64>>, touched: &mut BTreeSet<u64>) {
         let (base, slot) = ((key >> 32) as u64, key as u32);
         for wing in self.registrations.remove(&key).unwrap_or_default() {
@@ -285,7 +241,6 @@ impl Index {
         touched.insert(base);
     }
 
-    /// Sets the radar group `key` (none: gone or stateless); the states it hosts in go to `states`.
     fn set_group(&mut self, key: u128, group: Option<(u32, u32)>, states: &mut BTreeSet<u32>) {
         if let Some((country, state)) = self.groups.remove(&key) {
             take_from(&mut self.hosting, country, &state);
@@ -320,7 +275,6 @@ impl Index {
     }
 }
 
-/// What the counts read of the census as a whole: which tables are whole or partial.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Census {
     flags: bool,
@@ -329,7 +283,6 @@ struct Census {
     truncated: bool,
     bases: bool,
     members: bool,
-    /// `RadarCoverage` whole, or unavailable.
     coverage: Result<bool, ()>,
 }
 
@@ -350,7 +303,6 @@ impl Census {
         }
     }
 
-    /// Why `RadarCoverage` is unavailable, when it is.
     fn unavailable(mirrors: &Mirrors) -> Option<&str> {
         let coverage = mirrors.get(TableId::RadarCoverage)?;
         matches!(coverage.status(), Some(Status::Unavailable { .. }) | Some(Status::NotRecorded) | None).then(|| coverage.reason().unwrap_or("not recorded here"))
@@ -361,58 +313,40 @@ impl Census {
     }
 }
 
-/// The base counters layer's parts and what keeps them.
 pub struct BaseCounters {
     columns: Option<Columns>,
     refused: Option<String>,
     values: Option<Arc<BaseValues>>,
     index: Index,
-    /// The viewing country and the census the values were made for.
     ours: Option<u32>,
     census: Option<Census>,
     circle: RadarCircle,
-    /// Each radar host state's outcome but [`RadarOutcome::Hidden`], and how many are withheld
-    /// and uncontrolled.
     outcomes: HashMap<u32, RadarOutcome>,
     withheld: usize,
     uncontrolled: usize,
-    /// Provinces whose controller changed.
     provinces: Vec<u32>,
-    /// Bases whose placing changed, each with the placing the values hold.
     moved: HashMap<u64, Option<(u32, i32)>>,
-    /// Bases and states whose sites changed, and the sites themselves.
     bases: BTreeSet<u64>,
     states: BTreeSet<u32>,
     sites: BTreeSet<(u32, usize)>,
-    /// Radar states to decide again.
     radar: BTreeSet<u32>,
-    /// The rows the steps applied since touched, not yet read.
     touched: Touched,
-    /// The next site (`site_bases` key) and radar host state a sweep of them all makes again.
     sweep_sites: Option<(u32, i32)>,
     sweep_radar: Option<u32>,
-    /// The radar circle is to be made again, and the radar notes.
     circle_stale: bool,
     notes_stale: bool,
-    /// Made whole at the next settle, with the index.
     all: bool,
-    /// The first hour of the oldest step whose changes are not all in the values, and of the
-    /// first step applied since the last settle.
     pending: Option<Hour>,
     stepped: Option<Hour>,
     hidden: bool,
     since: Option<u64>,
     vision: Mutex<Option<(Choice, Arc<Vision>)>>,
     vision_new: AtomicBool,
-    /// Whether each of its tables holds rows ([`holds`]).
     statuses: HashMap<usize, bool>,
     frame: u64,
-    /// Units made since it was made, and rows read or changed in all.
     made: usize,
     work: u64,
-    /// Its settled sites, provinces and radar states, for the paced count of those in view.
     scoped: Scoped,
-    /// Mirror rows its applies read: none.
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
@@ -460,7 +394,6 @@ impl BaseCounters {
         }
     }
 
-    /// A layer of the same inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let fresh = Self { columns: self.columns, hidden: self.hidden, ..Self::new() };
         if let Some((choice, vision)) = self.perspective() {
@@ -485,7 +418,6 @@ impl BaseCounters {
         self.refused.as_deref()
     }
 
-    /// The view does not draw the base icons.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
@@ -494,8 +426,6 @@ impl BaseCounters {
         self.values.as_deref()
     }
 
-    /// The parts the window's base icons would draw; none while refused or hidden. The window's
-    /// layer is its worker's ([`BaseCountersFed`]).
     #[cfg(any(test, feature = "test-support"))]
     pub fn published(&self) -> Option<&Arc<BaseValues>> {
         self.values.as_ref().filter(|_| self.refused.is_none() && !self.hidden)
@@ -506,13 +436,11 @@ impl BaseCounters {
         self.made
     }
 
-    /// Rows read or changed since it was made: what its applies and settles cost.
     #[cfg(any(test, feature = "test-support"))]
     pub fn work(&self) -> u64 {
         self.work
     }
 
-    /// Mirror rows its applies read since it was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
@@ -522,8 +450,6 @@ impl BaseCounters {
         self.columns.expect("the base counters layer is declared before it composes")
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it, with nothing to make; its view,
-    /// vision and counters kept.
     fn release(&mut self) {
         let kept = std::mem::replace(self, Self::new());
         (self.columns, self.hidden, self.vision, self.vision_new, self.frame, self.made, self.work) = (kept.columns, kept.hidden, kept.vision, kept.vision_new, kept.frame, kept.made, kept.work);
@@ -555,13 +481,10 @@ impl BaseCounters {
         }
     }
 
-    /// The values to change: the window keeps the version it holds, and this one copies only the
-    /// shard each change touches.
     fn edit(&mut self) -> &mut BaseValues {
         Arc::make_mut(self.values.get_or_insert_with(Default::default))
     }
 
-    /// Whether anything waits to be made again.
     fn carries(&self) -> bool {
         self.all
             || self.circle_stale
@@ -577,7 +500,6 @@ impl BaseCounters {
             || !self.touched.is_empty()
     }
 
-    /// One base's count in `state`, from its aggregate and three rows.
     fn base(&self, base: u64, state: u32, mirrors: &Mirrors, columns: Columns, census: &WingCensus, link: &dyn Fn(u32) -> Option<u32>) -> AirBaseCount {
         let capacity = row(mirrors.get(TableId::AirBases), u128::from(base)).and_then(|(bases, slot)| bases.number(columns.base_capacity, slot).value()).unwrap_or(0);
         let flag = row(mirrors.get(TableId::StateFlags), u128::from(state)).map(|(flags, slot)| flags.number(columns.demilitarized, slot).value().unwrap_or(0));
@@ -599,7 +521,6 @@ impl BaseCounters {
         base_count(&BaseFacts { capacity, flag, registrations: &facts, located: &located, standing: at.standing }, census)
     }
 
-    /// A site's count: its bases' merged; none when its state holds no base of its kind.
     fn site(&mut self, site: (u32, usize), mirrors: &Mirrors, columns: Columns, census: &WingCensus, link: &dyn Fn(u32) -> Option<u32>) -> Option<AirBaseCount> {
         self.scoped.state(site.0);
         let values = self.values.as_deref()?;
@@ -615,7 +536,6 @@ impl BaseCounters {
         Some(count)
     }
 
-    /// Makes `site` again in the values.
     fn make_site(&mut self, site: (u32, usize), mirrors: &Mirrors, columns: Columns, census: &WingCensus, link: &dyn Fn(u32) -> Option<u32>) {
         let count = self.site(site, mirrors, columns, census, link);
         if self.values.as_deref().and_then(|values| values.wings.get(&site)) != count.as_ref() {
@@ -627,7 +547,6 @@ impl BaseCounters {
         self.made += 1;
     }
 
-    /// Moves `base` from the placing the values hold to the index's; its sites go to `sites`.
     fn place(&mut self, base: u64, held: Option<(u32, i32)>) {
         match held.or_else(|| self.index.placed.get(&base).copied()) {
             Some((state, _)) => self.scoped.state(state),
@@ -667,7 +586,6 @@ impl BaseCounters {
         RadarCircle::of(link, &members, whole(mirrors.get(TableId::FactionMembers)).is_some(), appearance.as_ref(), ours)
     }
 
-    /// Decides a radar state again: its hosts, its controller and the circle.
     fn decide(&mut self, state: u32, mirrors: &Mirrors, columns: Columns, link: &dyn Fn(u32) -> Option<u32>) {
         self.scoped.state(state);
         let hosting: Vec<u32> = self.index.hosts.get(&state).into_iter().flatten().filter_map(|&country| link(country)).collect();
@@ -700,8 +618,6 @@ impl BaseCounters {
         self.notes_stale = true;
     }
 
-    /// Everything made anew from the mirrors, with the index: a compose, a seek, a table that
-    /// starts or stops holding rows.
     fn make_whole(&mut self, mirrors: &Mirrors, columns: Columns, ours: u32, link: &dyn Fn(u32) -> Option<u32>) {
         self.statuses = TABLES.iter().filter_map(|&table| Some((table.index(), holds(mirrors.get(table)?.status()?)))).collect();
         self.index = Index::build(mirrors, columns);
@@ -744,7 +660,6 @@ impl BaseCounters {
         self.made += 1;
     }
 
-    /// Changes the values only where `change` leaves them different.
     fn edit_parts(&mut self, change: impl FnOnce(&mut BaseValues)) {
         let mut made = self.values.as_deref().cloned().unwrap_or_default();
         change(&mut made);
@@ -765,7 +680,6 @@ impl BaseCounters {
         self.notes_stale = false;
     }
 
-    /// What reads the whole census or the viewing country is marked when they change.
     fn follow(&mut self, census: Census, ours: u32) {
         let (Some(held), Some(was)) = (self.census, self.ours) else { return };
         let marked = self.carries();
@@ -783,7 +697,6 @@ impl BaseCounters {
             (values.complete, values.aircraft_complete) = (census.bases, census.wings);
         }
         (self.census, self.ours) = (Some(census), Some(ours));
-        // What it marked came with the steps applied since the last settle.
         if !marked && self.carries() && self.pending.is_none() {
             self.pending = self.stepped;
         }
@@ -794,7 +707,6 @@ impl BaseCounters {
         let core = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let vision = match core {
             Ok(vision) => vision,
-            // Nothing is held or marked while refused: drawn again, it is made whole.
             Err(why) => {
                 if self.refused.as_ref() != Some(&why) {
                     self.release();
@@ -805,7 +717,6 @@ impl BaseCounters {
             }
         };
         let ours = vision.ours();
-        // Of the vision, the parts read only the viewing country ([`Self::follow`]).
         self.vision_new.swap(false, Ordering::AcqRel);
         if self.refused.take().is_some() {
             self.all = true;
@@ -857,7 +768,6 @@ impl BaseCounters {
                 }
             }
         }
-        // A site's bases are the values' once every moved base is placed.
         if self.moved.is_empty() {
             for base in std::mem::take(&mut self.bases) {
                 if let Some(&(state, kind)) = self.index.placed.get(&base) {
@@ -912,8 +822,6 @@ impl BaseCounters {
         }
     }
 
-    /// The column groups of `table` the layer reads `column` in: a written cell touches its row
-    /// in each ([`Self::touch`]).
     fn groups(table: TableId, column: usize, columns: Columns) -> u8 {
         match table {
             TableId::Provinces => u8::from(column == columns.controller.column),
@@ -930,7 +838,6 @@ impl BaseCounters {
         }
     }
 
-    /// One row a step touched, in the column groups `groups`: what reads it made again.
     fn touch(&mut self, table: TableId, groups: u8, key: u128, mirrors: &Mirrors, columns: Columns) {
         let mirror = mirrors.get(table);
         let (first, second) = (groups & 1 != 0, groups & 2 != 0);
@@ -985,8 +892,6 @@ impl BaseCounters {
                 self.radar.insert(key as u32);
             }
             TableId::FactionMembers | TableId::CountryAppearance => self.circle_stale = true,
-            // A country's link is read where its wings stand, where it keeps or controls a radar
-            // host state, and in the radar circle.
             TableId::CountryLinks => {
                 let country = key as u32;
                 let index = &self.index;
@@ -999,7 +904,6 @@ impl BaseCounters {
         }
     }
 
-    /// The marks the applies left.
     fn take_touched(&mut self, mirrors: &Mirrors, columns: Columns) {
         let mut touched = std::mem::take(&mut self.touched);
         touched.take(mirrors, |table, touch, key| self.touch(table, touch.groups(), key, mirrors, columns));
@@ -1059,7 +963,6 @@ impl Layer for BaseCounters {
         Ok(())
     }
 
-    /// Marks only: the rows each of its tables' change sets names, read at the settle.
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         if step.gap() || self.columns.is_none() || self.hidden || self.refused.is_some() || self.all {
             return;
@@ -1068,13 +971,10 @@ impl Layer for BaseCounters {
         let reads = crate::playhead_host::mirror::probe::reads();
         self.stepped.get_or_insert(step.first());
         let columns = self.columns();
-        // In the step's order, as its tables were applied to the mirrors.
         let mut order = TABLES;
         order.sort_unstable_by_key(|table| table.index());
         for table in order {
             let Some(changes) = step.table(table.index()) else { continue };
-            // A table that starts or stops holding rows, or a seek, makes everything anew; a
-            // census turning whole or partial is followed at the settle.
             if changes.reset() || changes.status().is_some_and(|(status, _)| self.statuses.insert(changes.table(), holds(status)) != Some(holds(status))) {
                 self.all = true;
                 self.touched.clear();
@@ -1103,8 +1003,6 @@ impl Layer for BaseCounters {
         Carried { entities }
     }
 
-    /// The hour before the oldest step whose changes are not all in the values; nothing while it
-    /// is to be made anew.
     fn published(&self) -> Published {
         if self.refused.is_some() || self.hidden {
             Published::Current

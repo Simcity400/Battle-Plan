@@ -21,20 +21,16 @@ import { causeAt, contributionCell, contributorName, eventKeys, percent, percent
 export interface TensionBreakdownProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   extent: [number, number]; playhead: number | null; following: boolean;
-  /** The hour shown: the head's while following, else the one picked. */
   hour: number;
   reply: WorldTensionReply | undefined; live: Live<LiveValues<number>>; error?: Failure; onRetry?: () => void;
   looks: CountryLooks; colour: (tag: string | null) => string; otherColour: string;
   layers: readonly TensionContribution[];
   events: readonly ThreatEvent[];
   tooltip: (hour: number) => TooltipContent | null;
-  /** Reports the hour the painted values are of. */
   report: () => void;
   onPick?: (hour: number) => void;
 }
 
-/** World tension at one hour taken apart: every country's contribution (painted from the cells while following), the
- * tension and the contributions' sum, a cause's contribution, and the stack over time marked at the hour. */
 export default function TensionBreakdown({ runtime, track, active, options, extent, playhead, following, hour, reply, live, error, onRetry, looks, colour,
   otherColour, layers, events, tooltip, report, onPick }: TensionBreakdownProps) {
   const [cause, setCause] = useState<string | null>(null);
@@ -55,7 +51,7 @@ export default function TensionBreakdown({ runtime, track, active, options, exte
       return { parts: rows, total: world.sum === null ? null : world.sum / scale, totalText: world.sum === null ? 'Not recorded' : percentOf(world.sum, scale, 3) };
     },
     subscribe: live.subscribe,
-  } : undefined, [reply, live, scale, looks, colour, report]); // eslint-disable-line react-hooks/exhaustive-deps
+  } : undefined, [reply, live, scale, looks, colour, report]);
   const texts = useMemo<LiveTexts>(() => ({
     text: key => {
       if (!reply) return '';

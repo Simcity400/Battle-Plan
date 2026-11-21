@@ -1,47 +1,25 @@
-//! Ace owner-roster state and references. Killer identifiers are read only when
-//! the alive byte is zero; handled and raw kill type are read for living aces
-//! too. Unknown enum and reference values retain their bytes. Assigned wings
-//! remain raw references for resolution through the recorded wing table.
 
 use crate::{Memory, ccountry, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome};
 use engine_sites::Rva;
 
-/// Primary ace vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0285_be00);
-/// Full reference containing u32 type and id; construction initializes both words.
 pub const REFERENCE: usize = 0x08;
-/// Instance id, u32.
 pub const ID: usize = 0x0c;
-/// Aircraft-type mask, u32, intersected with the requested mask.
 pub const AIRCRAFT_TYPE_MASK: usize = 0x18;
-/// Modifier container holding i64 raw values.
 pub const MODIFIERS: usize = 0x30;
-/// Owner-country pointer.
 pub const OWNER_COUNTRY: usize = 0xe0;
-/// Assigned-wing reference first u32; resolution checks both words.
 pub const ASSIGNED_WING_REFERENCE: usize = 0xe8;
-/// Name string.
 pub const NAME: usize = 0xf0;
-/// Surname string.
 pub const SURNAME: usize = 0x110;
-/// Callsign string.
 pub const CALLSIGN: usize = 0x130;
-/// Portrait gender byte; zero selects male, other values female.
 pub const PORTRAIT_GENDER: usize = 0x150;
-/// Portrait-pool index, i32; selection uses signed remainder by pool count.
 #[cfg(any(test, feature = "test-support"))]
 pub const PORTRAIT_POOL_INDEX: usize = 0x154;
-/// Alive byte, accepting zero or one and bracketing death-record reads.
 pub const ALIVE: usize = 0x158;
-/// Raw kill type, u32; unknown enum values are preserved.
 pub const KILL_TYPE: usize = 0x15c;
-/// Full killer reference; serialization retains both type and id words.
 pub const KILLER_ACE_REFERENCE: usize = 0x160;
-/// Killer country link, u32, read only when alive is zero.
 pub const KILLER_COUNTRY: usize = 0x168;
-/// Handled byte, validated independently of the alive byte.
 pub const HANDLED: usize = 0x16c;
-/// Selected type definition pointer; serialization writes its name string.
 pub const TYPE_DEFINITION: usize = 0x170;
 pub const TYPE_NAME: usize = 0x08;
 
@@ -53,7 +31,6 @@ pub struct TextRange {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Death {
-    /// Raw values, including native null/unknown sentinels; no country resolution.
     pub killer_ace: u64,
     pub killer_country: u32,
 }
@@ -62,7 +39,6 @@ pub struct Death {
 pub struct Presentation {
     pub gender: u8,
     pub pool_index: i32,
-    /// None is a genuine null selected definition, not a failed string read.
     pub definition: Option<TextRange>,
     pub portrait: Option<Portrait>,
 }
@@ -76,24 +52,18 @@ pub struct Portrait {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Complete native reference: low u32 type and high u32 id.
     pub id: u64,
-    /// Owning CCountry's current raw id, which may be a country-link alias.
     pub country: u32,
     pub ordinal: u32,
     pub aircraft_type_mask: u32,
-    /// Raw type/id pair, including null or unresolved references; not a pointer.
     pub assigned_wing: u64,
     pub alive: u8,
     pub handled: u8,
-    /// Unknown native enum values are preserved, for living and dead aces.
     pub kill_type: u32,
-    /// Killer fields have meaning only for a dead ace and are not read when alive.
     pub death: Option<Death>,
     pub name: TextRange,
     pub surname: TextRange,
     pub callsign: TextRange,
-    /// Independent of the established roster fields; None is a failed extension read.
     pub presentation: Option<Presentation>,
 }
 
@@ -101,7 +71,6 @@ pub struct Row {
 pub struct NameWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// Sum of full native string lengths, including rows omitted for capacity.
     pub required_bytes: usize,
 }
 
@@ -109,10 +78,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Reads each canonical country's current ace roster into caller-owned storage.
-/// The names arena contains exact bytes, including empty or non-UTF-8 strings.
-/// Capacity omits whole rows and counts them; it never shortens a name. This
-/// primary read has no retry, allocation, engine call, pointer cache or I/O.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -191,7 +156,6 @@ pub fn walk_buffer(
                 required_bytes = required_bytes
                     .checked_add(total_bytes)
                     .ok_or("ace name byte count overflow")?;
-                // Serialization retains these complete strings.
                 names.ensure(required_bytes)?;
                 if len == output.len() || row_bytes > names.len() - bytes_len {
                     unread_rows = unread_rows
@@ -232,7 +196,7 @@ pub fn walk_buffer(
                         if source.copy(memory, &mut names[bytes_len..end]).is_err() {
                             if index == 3 {
                                 continue;
-                            } // Global is reached only after an empty culture pool.
+                            }
                             complete = false;
                             break;
                         }
@@ -259,8 +223,6 @@ pub fn walk_buffer(
         if !found_country {
             return Err("country table has no readable countries");
         }
-        // Keep native roster order here. The spool thread sorts and rejects
-        // duplicate replay keys through the shared table encoder.
         Ok(NameWalk {
             outcome: if unread_rows == 0 {
                 Outcome::Rows { len }
@@ -278,8 +240,6 @@ pub fn walk_buffer(
     })
 }
 
-// The selected definition is a literal name, not a lexer token. Failed
-// presentation reads leave the old roster/name prefix intact.
 fn presentation(
     memory: &impl Memory,
     base: usize,
@@ -331,10 +291,6 @@ fn presentation(
     ))
 }
 
-/// Retained GUI country/gender portrait-pool selection, or operands needed
-/// while that pool is empty. Startup seeds country and global pools; a
-/// country pool is filled from culture only when empty. Never refresh or
-/// reconstruct a retained pool.
 pub fn portrait_sources(
     memory: &impl Memory,
     base: usize,
@@ -371,7 +327,6 @@ pub fn portrait_sources(
         if pool.count == 0 {
             return Ok(None);
         }
-        // Use signed division remainder rather than Euclidean modulo.
         let count = i32::try_from(pool.count).map_err(|_| "ace portrait pool count overflow")?;
         let ordinal = index % count;
         let ordinal = u32::try_from(ordinal)
@@ -396,8 +351,6 @@ pub fn portrait_sources(
         .element(0, crate::cpdx_array::STRIDE)
         .and_then(|p| Array::read(memory, p, msvc_string::STRIDE))
         .and_then(|pool| selected(pool).ok().flatten());
-    // Global errors cannot refuse a culture pool the game would select first.
-    // The consumer names an unavailable global fallback only when reached.
     Ok([None, Some(culture), fallback])
 }
 
@@ -599,7 +552,6 @@ mod tests {
             memory.inline(pointer + SURNAME, b"");
             memory.inline(pointer + CALLSIGN, b"One");
         }
-        // A living ace deliberately has no readable killer fields at all.
         memory.u64(ACE[1] + KILLER_ACE_REFERENCE, u64::MAX);
         memory.u32(ACE[1] + KILLER_COUNTRY, u32::MAX);
         memory.u64(ACE[1] + NAME, 0x8000);
@@ -731,8 +683,6 @@ mod tests {
         memory.array(POOLS + crate::cpdx_array::STRIDE, STRINGS, 2);
         memory.inline(STRINGS, b"GFX_other_ace");
         memory.inline(STRINGS + msvc_string::STRIDE, b"GFX_stale_ace");
-        // Raw country id is 2; the retained pool is indexed by canonical slot 1.
-        // No culture bytes exist: a nonempty retained pool must not refresh them.
         let mut rows = vec![Row::default(); 1];
         let mut names = vec![0; 64];
         let result = walk(&memory, 0, GS, &mut rows, &mut names);
@@ -757,7 +707,6 @@ mod tests {
             &[0xff; 32]
         );
         assert_eq!(result.required_bytes, 5 + 32 + 13);
-        // A missing extension keeps the old fields.
         let mut memory = Synthetic(memory.0.clone());
         memory.0.remove(&(DEFINITION + TYPE_NAME + 16));
         let result = walk(&memory, 0, GS, &mut rows, &mut names);

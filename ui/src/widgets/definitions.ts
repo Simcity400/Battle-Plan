@@ -1,4 +1,3 @@
-// Pure widget metadata for node tests and the layout model; no React or CSS.
 import { registerWidgets } from '../dashboard/definitions.ts';
 import { definition as airRegion } from './air-superiority-region/definition.ts';
 import { definition as airTimeline } from './air-superiority-timeline/definition.ts';

@@ -1,4 +1,3 @@
-//! Division career and honor text from recorded entries and content localisation.
 use super::*;
 use replay_data::{rows::DivisionHistoryRow, rows::SharedDivisionHistoryRow, rows::TableId};
 use viewer_foundation::tooltip_text::token_with;
@@ -183,7 +182,6 @@ fn medal_effects(
             .ok()
             .map(|at| links[at].canonical_slot)
             .ok_or("medal unit owner link unavailable")?;
-        // Only the viewing country's own divisions show their career, so the owner is the viewer.
         let text_context = ScriptedText::new(frame, loc, scripted, owner).viewing(owner);
         let context = effect_description::Context::new(
             &text_context,
@@ -305,7 +303,6 @@ pub(super) fn text(
         text.push_str(&builtin(icons, loc, heading, &[])?);
         text.push('\n');
         for entry in entries {
-            // A retained null medal is known absence, rather than a failed content lookup.
             if list == DivisionHistoryRow::AWARDS && entry.medal_enabled == 0 {
                 continue;
             }

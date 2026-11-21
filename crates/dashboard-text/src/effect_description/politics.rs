@@ -1,4 +1,3 @@
-//! Country/political own descriptions. Operands retain the effect_keys readers.
 
 use super::*;
 use replay_data::rows::tables;
@@ -15,9 +14,6 @@ mod tests;
 pub(super) const NULL_IDEOLOGY: &str = Evaluator::NULL_IDEOLOGY;
 
 impl Renderer<'_, '_, '_> {
-    // cached named group, numeric database
-    // ID, then decoded country's ruling group. IDs/tokens are
-    // recorded native identities; KeyNames verifies the content-stack group.
     pub(super) fn politics_ideology(
         &self,
         operand: Option<&[u8]>,
@@ -30,8 +26,6 @@ impl Renderer<'_, '_, '_> {
             .key_names
             .ok_or_else(|| self.content_gap("effect key names"))?;
         if names.counts.is_ideology(operand)? {
-            // Cached named pointers open no variable session or strict map
-            // world; cached lookup returns immediately.
             let world = match self.context.expansion.and_then(|scopes| scopes.world) {
                 Some(world) => world,
                 None => self.context.text.trigger_world()?,
@@ -51,7 +45,6 @@ impl Renderer<'_, '_, '_> {
         Ok(token.to_vec())
     }
 
-    // noun suffix, IDEOLOGY and VALUE, explicit LF.
 
     pub(super) fn politics_popularity(
         &self,
@@ -63,7 +56,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
         )?;
         let mut noun = ideology;
-        noun.extend_from_slice(b"_noun"); // native suffix.
+        noun.extend_from_slice(b"_noun");
         let name = self.localised(&noun, &[], scopes, false)?;
         let value = field(children(item), "popularity")
             .map(|item| self.scoped_value(item.value.scalar().unwrap_or_default(), scopes))
@@ -80,9 +73,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Keep long_name and name in separate fields.
-    // Expand the selected name before NAME substitution;
-    // ideology name remains plain until the outer expansion.
 
     pub(super) fn politics_party_name(
         &self,
@@ -113,8 +103,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // choose the authored base's definite key,
-    // expand it in the caller, then substitute current definite COUNTRY.
     pub(super) fn politics_cosmetic(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let base = item.value.c_str().map_err(|why| why.to_string())?;
         let Some(country) = (match scopes.this {
@@ -153,8 +141,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // gate on client debug byte.
-    // Viewer policy: use debug off, like its selection/pause decisions.
     pub(super) fn politics_shine(&self) -> Result<String, String> {
         Ok(String::new())
     }
@@ -173,7 +159,6 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("COUNTRY", Argument::Text(&name))], scopes, true)
     }
 
-    // ordinary name, no scope expansion.
     pub(super) fn politics_core(
         &self,
         item: &Item,
@@ -188,7 +173,6 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("COUNTRY", Argument::Text(&name))], scopes, false)
     }
 
-    // Substitute the name without scope expansion.
     pub(super) fn politics_claim(
         &self,
         item: &Item,
@@ -215,10 +199,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // a positive carried state selects
-    // the country operand; otherwise keep scope.country and select a state.
-    // parses selectors first, then scoped variable; the core target
-    // helpers share country/state evaluation. No explicit LF.
     pub(super) fn politics_contested_owner(
         &self,
         item: &Item,
@@ -261,8 +241,6 @@ impl Renderer<'_, '_, '_> {
             };
             (country, self.state_target(item, scopes)?)
         };
-        // set country, then state in a default scope;
-        // have no arguments.
         self.localised(
             key,
             &[],
@@ -271,7 +249,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // gates on the operand but describes the CURRENT country.
 
     pub(super) fn politics_change_tag(
         &self,
@@ -290,7 +267,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Copy the raw operand into the wrapper; no LF.
     pub(super) fn politics_oob(
         &self,
         item: &Item,
@@ -301,7 +277,6 @@ impl Renderer<'_, '_, '_> {
         self.localised(key, &[("NAME", Argument::Text(name))], scopes, true)
     }
 
-    // tree string, localise/expand before TREE_NAME substitution.
 
     pub(super) fn politics_focus_tree(
         &self,
@@ -322,7 +297,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // name is execution-only; zero selects REMOVE, negate wraps.
 
     pub(super) fn politics_named_threat(
         &self,
@@ -341,7 +315,6 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("THREAT", Argument::Fixed5(value))], scopes, true)
     }
 
-    // Sound names are RAW strings.
 
     pub(super) fn politics_sound(
         &self,
@@ -371,7 +344,6 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    // bool read, not a scoped country operand.
 
     pub(super) fn politics_major(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let enabled = item
@@ -388,7 +360,6 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("COUNTRY", Argument::Text(&name))], scopes, true)
     }
 
-    // Localise and expand the name, then substitute NAME into the wrapper.
     pub(super) fn politics_mio_name(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let name = self.localised(item.value.scalar().unwrap_or_default(), &[], scopes, true)?;
         self.line(
@@ -399,8 +370,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // feature 0x19 ( bit 5), then agency == 0.
-    // retain the recorded table cadence.
     pub(super) fn politics_create_agency(&self, scopes: Scopes) -> Result<String, String> {
         let Some(features) = self.features(DLC_MASK)? else {
             return Err("simulation features lacks the agency feature mask".into());
@@ -423,8 +392,6 @@ impl Renderer<'_, '_, '_> {
         self.line(b"EFFECT_CREATE_INTELLIGENCE_AGENCY", &[], scopes, true)
     }
 
-    // Block reader consumes target, not captured_by.
-    // No scope expansion and no LF; captive counts do not enter the description.
     pub(super) fn politics_release_generals(
         &self,
         item: &Item,
@@ -451,8 +418,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // reader appends focus tokens and stores signed32 cost.
-    // Names alone expand; header/list localisations do not.
     pub(super) fn politics_focus_cost(
         &self,
         item: &Item,
@@ -480,7 +445,6 @@ impl Renderer<'_, '_, '_> {
         let days = cost.wrapping_abs();
         let mut text = if focuses.len() == 1 {
             let name = self.localised(focuses[0], &[], scopes, true)?;
-            // REDUCE_FOCUS_DAYS_EFFECT and its negative variant select the header.
             self.localised(
                 if cost < 0 {
                     b"REDUCE_FOCUS_DAYS_EFFECT_NEGATIVE"
@@ -495,7 +459,6 @@ impl Renderer<'_, '_, '_> {
                 false,
             )?
         } else {
-            // Header and item keys are localised separately.
             let mut text = self.localised(
                 if cost < 0 {
                     b"REDUCE_FOCUS_DAYS_MULTIPLE_HEADER_NEGATIVE"

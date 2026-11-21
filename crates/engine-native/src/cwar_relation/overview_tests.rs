@@ -310,13 +310,10 @@ fn hourly_cost_at_1500_and_5000_countries() {
     }
 }
 
-/// The pass shares authenticated building templates across states and
-/// countries; every score still equals the per-building native count.
 #[test]
 fn shared_templates_keep_every_factory_score_native() {
     use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
     let mut w = cost_fixture(4);
-    // Positive, zero, negative and wrapping production sums.
     let words: [[u32; 2]; 4] = [[1, 0], [0, 0], [0, (-5_i32) as u32], [i32::MAX as u32, 1]];
     let templates = words.map(|[first, second]| {
         let template = w.alloc(cbuilding_template::SIZE);
@@ -384,7 +381,6 @@ fn shared_templates_keep_every_factory_score_native() {
         .filter(|row| row.score_available == 1)
         .map(|row| (row.country, row.factories))
         .collect();
-    // The viewpoint and its enemy share every template and differ in total.
     assert_eq!(scored.len(), 2, "{scores:?}");
     assert_ne!(scored[0].1, scored[1].1);
     for (country, factories) in scored {
@@ -399,7 +395,6 @@ fn score_failures_keep_owned_and_goals_and_the_first_reason() {
     let production =
         read::<u64>(&w.memory(), w.object(1) + ccountry::PRODUCTION_STATUS).unwrap() as usize;
     w.u64(production, 0);
-    // A second score also fails, but never replaces the first reason.
     let other =
         read::<u64>(&w.memory(), w.object(2) + ccountry::PRODUCTION_STATUS).unwrap() as usize;
     w.u64(other, 0);
@@ -623,7 +618,6 @@ fn batched_goals_preserve_owner_side_and_page_order_and_exact_truncation() {
             expected
         );
     }
-    // Recycling an address can change its type without changing the header.
     w.u32(relation + crelation::TYPE_ID, 99);
     assert_eq!(
         walk_cached(
@@ -689,8 +683,6 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
             Outcome::Rows { len: 4 }
         ]
     );
-    // Seed 2's first side is [1]. Its second candidate includes retained 3,
-    // so native cross-side pruning cannot remove 3 despite no live 1/3 war.
     assert_eq!(
         scores.iter().map(|r| r.score_available).collect::<Vec<_>>(),
         [1, 1, 1, 0]
@@ -719,9 +711,6 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
 
 #[test]
 fn a_flush_partway_through_a_country_keeps_its_later_pages_previous_rows() {
-    // Country 1 owns three pages: wars at ordinals 0-62 and 128-149. Making 63 a war
-    // too, under an unchanged header, puts this hour's rows one ahead of last hour's,
-    // so the flush at the 64th row lands on page 2's first previous row.
     fn war(w: &mut World) -> usize {
         let relation = w.alloc(0x1b0);
         w.u64(relation, super::super::VTABLE_RVA.0 as u64);
@@ -823,9 +812,6 @@ fn certified_hour(world: &World, cache: &mut DiscoveryCache, certified: bool) ->
     (outcomes, owned, goals, scores, visited)
 }
 
-/// A certified hour publishes the held walk and visits its owners without
-/// reading any relation: a broken relation it no longer reads leaves the
-/// rows equal, while an uncertified hour reads it and refuses.
 #[test]
 fn a_certified_hour_publishes_the_held_walk_without_reading_relations() {
     let mut world = fixture(4);

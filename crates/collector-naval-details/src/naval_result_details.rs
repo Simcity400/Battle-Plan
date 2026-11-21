@@ -1,5 +1,3 @@
-//! Retained naval results: primary snapshots and hit lists.
-//! Original-pass growth runs only in the Ordinary worker; projection is deferred.
 use crate::{
     clock::qpc,
     naval_details::{air_hit, naval_hit},
@@ -55,7 +53,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Each side retains its ship and plane vectors, including their hit lists.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -200,7 +197,6 @@ pub struct Captured {
     first_refusal: Option<&'static str>,
 }
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self {
             results: CaptureRows::new(0),
@@ -287,7 +283,6 @@ impl Captured {
             + self.commander_keys.capacity() * (size_of::<(u64, usize)>() + 1)
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        // Carry successfully observed rows and arena lengths to reusable frames.
         c.results = c.results.max(self.results.outcome.len());
         c.ships = c.ships.max(self.ships.len);
         c.planes = c.planes.max(self.planes.len);
@@ -302,8 +297,6 @@ impl Captured {
         self.commander_timed_traits
             .grow(&mut c.commander_timed_traits);
         self.results.grow(&mut c.results);
-        // All owned arenas grow from readable entries in the original pass;
-        // carry their used lengths without trusting a failed payload's count.
         if self.ships.first.len() < c.ships
             && resize_default(&mut self.ships.first, c.ships).is_err()
         {
@@ -563,8 +556,6 @@ impl Pass<'_> {
         self.commander_keys.insert(handle, index);
         self.commanders_required = end;
         ensure(self.commanders, end)?;
-        // A missing retained commander portrait is hidden. Preserve
-        // the side's full handle while the optional context is absent.
         self.commanders[index] =
             if engine_native::creference_registry::resolve(memory, base, handle)?.is_some() {
                 commander::capture(
@@ -611,8 +602,6 @@ impl Pass<'_> {
                 planes: [self.lengths[1], 0],
                 ..Side::default()
             };
-            // Mandatory HQ fields cannot represent a failed read. The absent
-            // row stays unknown; independent retained result rows survive.
             s.details = match side::capture_details(memory, base, pointer) {
                 Ok(details) => details,
                 Err(reason) if reason.starts_with("naval result HQ") => {
@@ -1125,8 +1114,6 @@ mod tests {
         ] {
             word(&mut bytes, at, value);
         }
-        // Empty MSVC strings still require the inline capacity sentinel.
-        // Initialize ship names, the plane name and the hit target name.
         for string in [0x2040, 0x2060, 0x2080, 0x20a0, 0x2220, 0x2810] {
             word(
                 &mut bytes,
@@ -1154,8 +1141,6 @@ mod tests {
             (4, 2, 12, 12)
         );
         let trace = memory.reads.borrow().clone();
-        // The healthy capture, which a one-touch fault absorbed by a hit run
-        // leaves unchanged.
         let healthy = (
             full.outcomes(),
             full.results.rows[..2].to_vec(),
@@ -1246,17 +1231,8 @@ mod tests {
                             (2, 1, 6, 6)
                         );
                     } else if matches!(grown.outcomes()[0], Outcome::Unavailable { .. }) {
-                        // The capture stops at the read that met the fault.
                         assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
                     } else {
-                        // This test's positional fault is met once. A hit
-                        // run's copy that met it reads its entries again one
-                        // at a time (cfex_member::append_entries) and gives
-                        // the healthy capture: never harsher than the
-                        // per-entry reads, as the relaxed read order allows.
-                        // Lasting faults keep the per-entry result exactly
-                        // (cfex_member::entry_run_tests).
-                        // The result rows have no Debug: compare with `==`.
                         assert!(
                             (
                                 grown.outcomes(),

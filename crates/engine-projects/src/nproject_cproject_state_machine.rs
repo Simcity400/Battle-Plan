@@ -1,4 +1,3 @@
-//! Project state machine.
 
 #[cfg(test)]
 use crate::Memory;
@@ -8,21 +7,13 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Project-state-machine primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02aa_8930);
-/// Current-state pointer required to name one of four inline states.
 pub const CURRENT_STATE: usize = 0x08;
-/// Not-completed u8 flag, restricted to zero or one.
 pub const NOT_COMPLETED: usize = 0x10;
-/// Inline prototype-project state.
 pub const PROTOTYPE_STATE: usize = 0x18;
-/// First inline simple-project state.
 pub const SIMPLE_STATE_1: usize = 0xe8;
-/// Second inline simple-project state.
 pub const SIMPLE_STATE_2: usize = 0x168;
-/// Third inline simple-project state.
 pub const SIMPLE_STATE_3: usize = 0x1e8;
-/// State-machine allocated extent, including all four states.
 pub const SIZE: usize = 0x268;
 
 const STATES: [usize; 4] = [
@@ -32,8 +23,6 @@ const STATES: [usize; 4] = [
     SIMPLE_STATE_3,
 ];
 
-// Spans joining neighbouring words, and where each word sits in a packed
-// `FIELDS` record.
 const PROTOTYPE_TAIL: usize = prototype::ITERATIONS + 4 - prototype::STATE_ENUM;
 const SIMPLE_1_TAIL: usize = SIMPLE_STATE_2 + 8 - (SIMPLE_STATE_1 + simple::STATE_ENUM);
 const SIMPLE_2_TAIL: usize = SIMPLE_STATE_3 + 8 - (SIMPLE_STATE_2 + simple::STATE_ENUM);
@@ -49,13 +38,8 @@ const SIMPLE_2_ENUM: usize = SIMPLE_1_ENUM + SIMPLE_1_TAIL;
 const SIMPLE_3_VTABLE: usize =
     SIMPLE_2_ENUM + SIMPLE_STATE_3 - (SIMPLE_STATE_2 + simple::STATE_ENUM);
 const SIMPLE_3_ENUM: usize = SIMPLE_2_ENUM + SIMPLE_2_TAIL;
-/// Packed size of one `FIELDS` record.
 pub const FIELDS_SIZE: usize = SIMPLE_3_ENUM + 4;
 
-/// The words a row records, 100 of the machine's 616 bytes: the identity,
-/// current state and completion flag, every inline state's vtable and enum,
-/// and the prototype's progress and iterations. Neighbouring words share one
-/// span, so the padding between them inside the machine is read too.
 pub const FIELDS: [RecordField; 6] = [
     RecordField {
         source_offset: 0,
@@ -91,8 +75,6 @@ pub const FIELDS: [RecordField; 6] = [
 pub const LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&FIELDS, FIELDS_SIZE).expect("valid record layout");
 
-/// The current state's phase progress and target, gathered from the state
-/// `phase_source` names once `FIELDS` is copied.
 pub const PHASE_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: simple::PHASE_PROGRESS,
     destination_offset: 0,
@@ -102,8 +84,6 @@ pub const PHASE_SIZE: usize = PHASE_FIELDS[0].len;
 pub const PHASE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PHASE_FIELDS, PHASE_SIZE).expect("valid record layout");
 
-// The packing relies on these native neighbours and shared state offsets:
-// the first span holds the vtable, current state and flag before the states.
 const _: () = assert!(
     CURRENT_STATE + 8 <= PROTOTYPE_STATE
         && NOT_COMPLETED < PROTOTYPE_STATE
@@ -118,7 +98,6 @@ const _: () = assert!(
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct State {
     pub current_offset: u32,
-    /// Native enums for prototype and the three simple states, in object order.
     pub state_enums: [u32; 4],
     pub not_completed: u8,
     pub phase_progress: i64,
@@ -135,9 +114,6 @@ fn half(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
-/// The inline state whose phase a row records: the current one, or, for a
-/// current pointer decoding refuses, the prototype, so the gather never
-/// leaves the machine.
 pub fn phase_source(pointer: usize, fields: &[u8; FIELDS_SIZE]) -> usize {
     let current = word(fields, CURRENT_STATE) as usize;
     match current.checked_sub(pointer) {
@@ -164,7 +140,6 @@ fn read_state(memory: &impl Memory, base: usize, pointer: usize) -> Result<State
     Decoder::new(base)?.decode(pointer, &fields, &phase)
 }
 
-/// Relocated immutable layout, prepared once for a complete pool walk.
 pub(crate) struct Decoder {
     machine_vtable: u64,
     prototype_vtable: u64,
@@ -185,8 +160,6 @@ impl Decoder {
         })
     }
 
-    /// Decodes copied `FIELDS` and the phase `phase_source` named, checking in
-    /// native object order. This does no foreign reads.
     pub(crate) fn decode(
         &self,
         pointer: usize,
@@ -276,7 +249,6 @@ mod tests {
 
     #[test]
     fn current_phase_and_inactive_prototype_fields_keep_their_distinct_native_widths() {
-        // These prototype fields are initialized even when a simple state is current.
         let bytes = machine();
         let state = read_state(
             &SliceMemory {
@@ -375,7 +347,6 @@ mod tests {
         ] {
             assert_eq!(read(fault), Err("project state machine unreadable"));
         }
-        // Words no row field records, including other states' phases.
         for fault in [
             PROTOTYPE_STATE + prototype::PHASE_PROGRESS,
             SIMPLE_STATE_2 + simple::PHASE_PROGRESS,

@@ -1,17 +1,3 @@
-//! One table's changes in one hour, column-major, written and read by the same code.
-//!
-//! Layout, in order: for a table the hour read in part, the slots it read (of those
-//! live when the hour began); the changed-slot list (every slot with a SET, ADD, PATCH,
-//! NOOP or touch run this hour); deleted slots; inserted slots, their keys ([`Writer::keys`])
-//! and every column's values for them in schema order; a varint count of column runs, each
-//! `column id (varint) | op (u8) | ...`; a varint count of unrecorded cells' columns, each
-//! `column id (varint) | slots` in column order, naming changed or inserted slots whose
-//! cell the recording did not record (a value written later records it again); touched
-//! slots. SET, ADD, PATCH and NOOP runs
-//! address positions in the changed-slot list; a FILL names its exception slots and
-//! carries one value. Deletes apply before inserts, so an hour may reuse a freed slot.
-//! Integer values are varints, signed ones zigzagged; bytes, bools and presence bits are
-//! raw; a cell is its length then its items.
 
 use crate::{
     invalid,
@@ -25,19 +11,13 @@ mod tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
-    /// New values: each differs from the one it replaces.
     Set,
-    /// Integer deltas at the column's width.
     Add,
-    /// An explicit write of the value already held.
     Noop,
-    /// One value for every live slot but the exceptions.
     Fill,
-    /// Edits to list or opaque cells, applied to the held cell.
     Patch,
 }
 
-/// The items a PATCH run inserts, of its column's element type.
 #[derive(Clone, Copy, Debug)]
 pub enum PatchItems<'a> {
     U32(&'a [u32]),
@@ -45,9 +25,6 @@ pub enum PatchItems<'a> {
     Bytes(&'a [u8]),
 }
 
-/// A PATCH run's edits: per value its count of hunks; per hunk the held items it keeps,
-/// the held items it then removes and how many items it inserts; the inserted items.
-/// The held items after a value's last hunk are kept.
 #[derive(Clone, Copy, Debug)]
 pub struct Patches<'a> {
     pub hunks: &'a [u32],
@@ -78,35 +55,25 @@ impl Op {
     }
 }
 
-/// One column run as the writer supplies it.
 #[derive(Clone, Copy, Debug)]
 pub struct Run<'a> {
     pub column: usize,
     pub op: Op,
-    /// Positions in the changed-slot list (SET, ADD, NOOP).
     pub positions: &'a [u32],
-    /// The run's values: one per position, one for a FILL, none for a NOOP.
     pub values: Option<Values<'a>>,
-    /// A FILL's exception slots.
     pub except: &'a [u32],
-    /// A PATCH's edits.
     pub patches: Option<Patches<'a>>,
 }
 
-/// One table's changes in one hour, as the writer supplies them.
 #[derive(Clone, Copy, Debug)]
 pub struct TableHour<'a> {
-    /// For a table read in part, the slots it read; the hour changes and deletes only these.
     pub read: Option<&'a [u32]>,
     pub changed: &'a [u32],
     pub deleted: &'a [u32],
     pub inserted: &'a [u32],
     pub keys: &'a [u128],
-    /// Every column's values for the inserted slots, in schema order.
     pub inserts: &'a [Values<'a>],
     pub runs: &'a [Run<'a>],
-    /// Per column, in column order, the changed or inserted slots whose cell the recording
-    /// did not record this hour.
     pub unrecorded: &'a [(usize, &'a [u32])],
     pub touched: &'a [u32],
 }
@@ -178,7 +145,6 @@ fn put_patches(writer: &mut Writer, kind: Kind, run: &Run<'_>) -> io::Result<()>
     }
 }
 
-/// Whether `values` hold one value (or presence bit) for each of `count` slots.
 fn counts(values: Values<'_>, count: usize) -> bool {
     match values {
         Values::U8(values) | Values::Bool(values) => values.len() == count,
@@ -199,13 +165,10 @@ fn counts(values: Values<'_>, count: usize) -> bool {
     }
 }
 
-/// The section's bytes. Each run's values are checked against its column's kind and its
-/// count of positions, so a section that reads back is one the state can apply.
 pub fn write(kinds: &[Kind], hour: &TableHour<'_>) -> io::Result<Vec<u8>> {
     write_with(kinds, hour, Vec::new())
 }
 
-/// [`write`] into `bytes`, emptied first, keeping its allocation.
 pub(crate) fn write_with(
     kinds: &[Kind],
     hour: &TableHour<'_>,
@@ -297,7 +260,6 @@ pub(crate) fn write_with(
     Ok(writer.into_bytes())
 }
 
-/// The integer kind an ADD to `kind` carries.
 pub(crate) fn base(kind: Kind) -> io::Result<Kind> {
     Ok(match kind {
         Kind::U8
@@ -316,7 +278,6 @@ pub(crate) fn base(kind: Kind) -> io::Result<Kind> {
     })
 }
 
-/// Buffers a section's values decode into, kept between sections.
 #[derive(Default)]
 pub struct Scratch {
     u8s: Vec<u8>,
@@ -339,7 +300,6 @@ pub struct Scratch {
     masks: Vec<u64>,
 }
 
-/// Whether every slot of ascending `slots` is in ascending `of`.
 pub(crate) fn within(slots: &[u32], of: &[u32]) -> bool {
     let mut of = of.iter().peekable();
     slots.iter().all(|slot| {
@@ -348,33 +308,22 @@ pub(crate) fn within(slots: &[u32], of: &[u32]) -> bool {
     })
 }
 
-/// What one table's section changed: the families' changed keys.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// The table was read in part; `read` holds the slots it read.
     pub truncated: bool,
     pub read: Vec<u32>,
     pub changed: Vec<u32>,
-    /// The columns each changed slot's runs wrote, a bit by column (at `changed`'s
-    /// positions): SET, ADD, PATCH, NOOP and unrecorded cells.
     pub masks: Vec<u64>,
-    /// [`Self::masks`] without NOOPs: the columns whose cell each changed slot's runs set.
     pub written: Vec<u64>,
     pub deleted: Vec<u32>,
-    /// The keys the deleted slots held, at `deleted`'s positions.
     pub deleted_keys: Vec<u128>,
     pub inserted: Vec<u32>,
     pub touched: Vec<u32>,
-    /// Columns a FILL set this hour, for every live slot but its exceptions.
     pub filled: Vec<usize>,
-    /// Every slot a FILL set this hour, ascending: rows whose values changed although
-    /// `changed` does not name them.
     pub fill_slots: Vec<u32>,
-    /// The columns each fill slot's FILLs set, a bit by column (at `fill_slots`' positions).
     pub fill_masks: Vec<u64>,
 }
 
-/// `column`'s bit in a change mask; none past the 64 a mask holds.
 pub(crate) fn column_bit(column: usize) -> u64 {
     u32::try_from(column)
         .ok()
@@ -382,7 +331,6 @@ pub(crate) fn column_bit(column: usize) -> u64 {
         .unwrap_or(0)
 }
 
-/// Sets `bit` in the masks at `positions`.
 fn mark(masks: &mut [u64], positions: &[u32], bit: u64) {
     for &position in positions {
         if let Some(mask) = masks.get_mut(position as usize) {
@@ -429,7 +377,6 @@ macro_rules! read_cells {
     }};
 }
 
-/// Present values among `count`; bits past `count` must be clear.
 fn present_count(words: &[u64], count: usize) -> io::Result<usize> {
     if let Some(&last) = words.last()
         && count % 64 != 0
@@ -440,7 +387,6 @@ fn present_count(words: &[u64], count: usize) -> io::Result<usize> {
     Ok(words.iter().map(|word| word.count_ones() as usize).sum())
 }
 
-/// `count` values of `kind`, decoded into `scratch`.
 pub(crate) fn read_values<'s>(
     reader: &mut Reader<'_>,
     scratch: &'s mut Scratch,
@@ -488,9 +434,6 @@ fn fill_run(
     table.fill(column, except, value, targets)
 }
 
-/// The ascending union of `slots` and `more`, into `slots`, with `bit` set in the mask (at
-/// `slots`' positions in `masks`) of every slot `more` names. `merged` and `merged_masks` are
-/// scratch, swapped with the union.
 pub(crate) fn union(
     slots: &mut Vec<u32>,
     masks: &mut Vec<u64>,
@@ -499,7 +442,6 @@ pub(crate) fn union(
     merged: &mut Vec<u32>,
     merged_masks: &mut Vec<u64>,
 ) -> io::Result<()> {
-    // An hour's FILLs mostly set the same slots: every live row but a few.
     if slots.as_slice() == more {
         for mask in masks.iter_mut() {
             *mask |= bit;
@@ -625,8 +567,6 @@ fn patch_run(
     )
 }
 
-/// Applies one table's section for an hour to `table` and returns what it changed.
-/// `truncated` is the manifest's word that the hour read the table in part.
 pub fn apply(
     bytes: &[u8],
     kinds: &[Kind],
@@ -666,13 +606,10 @@ pub fn apply(
     }
     changes.deleted_keys.clear();
     engine_allocation::reserve(&mut changes.deleted_keys, changes.deleted.len())?;
-    // A slot holding no row is refused by the delete itself.
     changes
         .deleted_keys
         .extend(changes.deleted.iter().filter_map(|&slot| table.key(slot)));
     table.delete(&changes.deleted)?;
-    // The writer fills the lowest free slots first, then extends the table by one slot per
-    // new row, so a section grows the table by no more than the rows it inserts.
     let fresh = changes
         .inserted
         .iter()
@@ -687,8 +624,6 @@ pub fn apply(
     }
     let inserted = changes.inserted.len();
     reader.keys(inserted, &mut scratch.keys)?;
-    // Each column's insert values decode into the shared scratch, so they apply one column
-    // at a time.
     if inserted > 0 {
         table.insert_keys(&changes.inserted, &scratch.keys)?;
         for (column, &kind) in kinds.iter().enumerate() {
@@ -718,7 +653,6 @@ pub fn apply(
                     &mut targets,
                 );
                 scratch.except = except;
-                // A partly read table sets only rows it read or added.
                 let filled = filled.and_then(|()| {
                     if truncated
                         && targets.iter().any(|slot| {

@@ -1,18 +1,3 @@
-//! The bytes of an answer and of a step's message, little-endian, every section starting on an
-//! eight-byte boundary so the UI reads numbers as typed arrays over the message itself.
-//!
-//! Message: magic, flags (bit 0: a reset, the settled answers after a seek; the bits above: its
-//! follow's route, [`crate::Follow::route`]), confirmed hour, answer count, page seek, clock offset.
-//! Each answer has its id, reading hour, body length, zero, then the body. The confirmed hour
-//! covers unchanged answers through the common lane head.
-//!
-//! Body: kind (0 not recorded, 1 rows, 2 rows appended, 3 rows changed), three zero bytes, rows,
-//! columns, texts; kind 0 is one text, the reason. Kinds 1 to 3: keys' low and high 64 bits, rows;
-//! cells as i64, row-major; kind 2 only, each row's insert hour as i32; each cell's [`State`] as a
-//! byte; each row's reason as u32, an index into the texts or [`NO_REASON`]; each row's name (a
-//! series' tag) the same way; the texts, each a u32 length and UTF-8. Kind 3 holds the rows of a
-//! live query ([`crate::Rows::Live`]) that differ from its answer before, each by its key: the
-//! reader keeps the rows it holds and replaces these.
 
 use crate::invalid;
 use replay_data::Hour;
@@ -28,19 +13,14 @@ pub(crate) const LOG: u8 = 2;
 pub(crate) const CHANGED: u8 = 3;
 
 const RESET: u32 = 1;
-/// The greatest route: the flags' bits above the reset bit.
 pub const ROUTES: u32 = u32::MAX >> 1;
 
-/// A cell of an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum State {
     Value = 0,
-    /// An optional number without a value.
     Missing = 1,
-    /// The cell was not recorded.
     Unrecorded = 2,
-    /// The row is not live (or the tag has no holder): the row's reason says why.
     NoRow = 3,
 }
 
@@ -56,7 +36,6 @@ impl State {
     }
 }
 
-/// One step's message: every answer that changed, as bytes.
 #[derive(Clone, Debug)]
 pub struct Message {
     pub hour: Hour,
@@ -65,11 +44,9 @@ pub struct Message {
     pub bytes: Vec<u8>,
 }
 
-/// An answer's rows while it is made.
 #[derive(Debug, Default)]
 pub struct Table {
     pub(crate) columns: usize,
-    /// Rows appended, each with its hour.
     pub(crate) log: bool,
     pub(crate) keys: Vec<u128>,
     pub(crate) values: Vec<i64>,
@@ -78,7 +55,6 @@ pub struct Table {
     pub(crate) names: Vec<u32>,
     pub(crate) hours: Vec<Hour>,
     pub(crate) texts: Vec<String>,
-    /// Each text's index in `texts`.
     held: HashMap<String, u32>,
 }
 
@@ -100,7 +76,6 @@ impl Table {
         self.keys.len()
     }
 
-    /// A row of `key`; its cells follow with [`Self::cell`].
     pub(crate) fn row(&mut self, key: u128) {
         self.keys.push(key);
         self.reasons.push(NO_REASON);
@@ -112,7 +87,6 @@ impl Table {
         self.states.push(state as u8);
     }
 
-    /// The last row has no cells, for `reason`.
     pub(crate) fn absent(&mut self, reason: &str) {
         for _ in 0..self.columns {
             self.cell(0, State::NoRow);
@@ -120,13 +94,11 @@ impl Table {
         self.explain(reason);
     }
 
-    /// The last row's reason.
     pub(crate) fn explain(&mut self, reason: &str) {
         let at = self.text(reason);
         *self.reasons.last_mut().expect("a row") = at;
     }
 
-    /// The last row's name.
     pub(crate) fn name(&mut self, name: &str) {
         let at = self.text(name);
         *self.names.last_mut().expect("a row") = at;
@@ -142,22 +114,18 @@ impl Table {
         at
     }
 
-    /// The body of kind 1, or kind 2 with each row's hour.
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         self.encode_kind(if self.log { LOG } else { ROWS }, out);
     }
 
-    /// The body of kind 3: these rows changed.
     pub(crate) fn encode_changed(&self, out: &mut Vec<u8>) {
         self.encode_kind(CHANGED, out);
     }
 
-    /// Row `row`'s reason, if it has one.
     fn reason_of(&self, row: usize) -> Option<&str> {
         self.texts.get(self.reasons[row] as usize).map(String::as_str)
     }
 
-    /// Row `row`'s cells and reason set to these; whether any differed.
     pub(crate) fn set_row(&mut self, row: usize, cells: &[(i64, State)], reason: Option<&str>) -> bool {
         let same_reason = self.reason_of(row) == reason;
         let at = row * self.columns;
@@ -176,7 +144,6 @@ impl Table {
         changed
     }
 
-    /// Rows `rows` (ascending) copied into `out`, each by its key.
     pub(crate) fn rows_into(&self, rows: &[u32], out: &mut Self) {
         out.clear(self.columns, false);
         for &row in rows {
@@ -190,7 +157,6 @@ impl Table {
         }
     }
 
-    /// What it holds, in bytes.
     pub(crate) fn bytes(&self) -> usize {
         self.keys.capacity() * 16 + self.values.capacity() * 8 + self.states.capacity() + (self.reasons.capacity() + self.names.capacity()) * 4 + self.hours.capacity() * 4 + self.texts.iter().map(|text| text.capacity() * 2).sum::<usize>() + self.held.capacity() * (size_of::<String>() + 4 + 1)
     }
@@ -236,13 +202,11 @@ fn texts<'a>(out: &mut Vec<u8>, texts: impl Iterator<Item = &'a str>) {
     pad(out);
 }
 
-/// The body of an answer that is not recorded, and why.
 pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
     head(out, NOT_RECORDED, 0, 0, 1);
     texts(out, std::iter::once(reason));
 }
 
-/// A message of the follow `route` being made in `out`.
 pub fn begin(out: &mut Vec<u8>, route: u32, clock: i32, hour: Hour, seek: u32, reset: bool) {
     debug_assert!(route <= ROUTES, "a route fits above the reset bit");
     out.clear();
@@ -264,8 +228,6 @@ pub fn push(out: &mut Vec<u8>, id: u32, hour: Hour, body: &[u8]) {
     out[12..16].copy_from_slice(&count.to_le_bytes());
 }
 
-/// A message read back: its follow's route, its hour, whether it is a reset, and each answer's id,
-/// hour and body.
 #[derive(Debug)]
 pub struct Decoded<'a> {
     pub stamp: (u32, i32),
@@ -324,7 +286,6 @@ pub fn decode(bytes: &[u8]) -> io::Result<Decoded<'_>> {
     Ok(Decoded { stamp, route: flags >> 1, hour, reset: flags & RESET != 0, limited, answers })
 }
 
-/// An answer's body read back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Answer {
     pub columns: usize,
@@ -333,12 +294,9 @@ pub struct Answer {
     pub states: Vec<State>,
     pub reasons: Vec<u32>,
     pub names: Vec<u32>,
-    /// Rows appended: each one's insert hour.
     pub hours: Option<Vec<Hour>>,
-    /// Only the rows that changed since the answer before (kind 3).
     pub changed: bool,
     pub texts: Vec<String>,
-    /// The whole answer is not recorded, and why.
     pub not_recorded: Option<String>,
 }
 
@@ -391,20 +349,15 @@ impl Answer {
         self.keys.len()
     }
 
-    /// Row `row`'s reason, if it has one.
     pub fn reason(&self, row: usize) -> Option<&str> {
         self.reasons.get(row).and_then(|&at| self.texts.get(at as usize)).map(String::as_str)
     }
 
-    /// Row `row`'s name (a series' tag), if it has one.
     pub fn name(&self, row: usize) -> Option<&str> {
         self.names.get(row).and_then(|&at| self.texts.get(at as usize)).map(String::as_str)
     }
 }
 
-/// One message holding `older`'s answers and `newer`'s, the newer of each id kept (newer rows
-/// changed laid over the older rows they change), at `newer`'s hour, a reset when either is; and
-/// the answers superseded. Messages of two follows are refused: their hours are of two playheads.
 pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let (old, new) = (decode(older)?, decode(newer)?);
     if old.route != new.route || old.stamp != new.stamp {
@@ -437,7 +390,6 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     Ok((out, superseded))
 }
 
-/// Row `row` of `answer` copied to the end of `table`.
 fn copy_row(table: &mut Table, answer: &Answer, row: usize) {
     table.row(answer.keys[row]);
     for column in 0..answer.columns {
@@ -451,8 +403,6 @@ fn copy_row(table: &mut Table, answer: &Answer, row: usize) {
     }
 }
 
-/// `earlier`'s rows (every row, or the rows it changed) with `later`'s changed rows laid over them
-/// by key, as `earlier`'s kind.
 fn changed(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
     let (a, b) = (Answer::parse(earlier)?, Answer::parse(later)?);
     if a.columns != b.columns {
@@ -478,7 +428,6 @@ fn changed(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// One log answer of `earlier`'s rows and then `later`'s.
 fn logs(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
     let mut table = Table::default();
     let (a, b) = (Answer::parse(earlier)?, Answer::parse(later)?);

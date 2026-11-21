@@ -1,4 +1,3 @@
-//! Lossless codecs for nuclear strike events.
 use super::*;
 use crate::event_feed_rows::EventFeedCountry;
 

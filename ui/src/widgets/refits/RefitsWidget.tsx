@@ -23,15 +23,11 @@ import './yards.css';
 import type { RefitLine } from '../../generated/dashboard';
 import type { RefitsReply } from './yardsData';
 
-/** A refit line, or one ship on it. */
 interface RefitRow { key: string; line: RefitLine; ship?: number }
 
 const rowKey = (row: RefitRow) => row.key;
 const lineName = (line: RefitLine) => line.target ?? 'Design name unavailable';
 
-/** One country's refit work at the hour shown: each live refit line with its target design, its
- * progress and the ships on it, under one totals line. Following playback it is a pushed panel;
- * progress and hulls are painted between the renders its rows cause. */
 export default function RefitsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(YARD_OPTIONS, widget.options);
@@ -40,7 +36,6 @@ export default function RefitsWidget({ widget, runtime, active, onDiagnostics }:
   const root = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct(runtime, widget, 'naval-refits', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRefits, structure: refitsStructure });
   const { data, error, retry } = head;
-  // Hourly numbers are painted from the product's live cells each frame they move, reporting the hour they are of.
   const shown = useShownHour();
   const painted = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
   const texts = useMemo(() => data ? (values: LiveValues<number>) => refitsTexts(data, values) : null, [data]);
@@ -71,10 +66,8 @@ export default function RefitsWidget({ widget, runtime, active, onDiagnostics }:
       value: row => row.ship === undefined ? row.line.dockyards : null, render: row => row.ship === undefined ? countText(row.line.dockyards) : '' },
   ], [data]);
   const tooltip = useCallback((row: RefitRow): TooltipContent => data ? refitTooltip(data, row, dayLabel(shownHour())) : { title: '', rows: [] },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, head.hour]);
   const menu = useCallback(() => track ? [jumpItem(runtime, track.id, shownHour())] : [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [track, runtime, head.hour]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see refits." />;

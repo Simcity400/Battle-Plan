@@ -1,5 +1,3 @@
-//! A query's answer from a lane's cells at the lane's head: the one product function, run by the
-//! hook on the playhead's lanes and by [`answer_at`] on a lane sought to any hour.
 
 use crate::{
     answer::{self, State, Table},
@@ -17,15 +15,11 @@ use replay_columnar::{
 use replay_data::Hour;
 use std::{cmp::Ordering, collections::HashMap, io};
 
-/// Where a query's rows are in a table's cells.
 pub(crate) trait Find {
-    /// The slot of the live row with `key`.
     fn slot(&self, key: u128) -> Option<u32>;
-    /// Every live row, by key ascending.
     fn ordered(&self) -> &[(u128, u32)];
 }
 
-/// The rows of a table's cells, read once.
 pub(crate) struct Scan {
     slots: HashMap<u128, u32>,
     ordered: Vec<(u128, u32)>,
@@ -49,9 +43,6 @@ impl Find for Scan {
     }
 }
 
-/// Why a table of `status` answers nothing at this hour, in a user's words whatever the table's
-/// number (no verb to agree): an unavailable table with its recorded reason's text where it is
-/// known, never the reason's id.
 pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
     let name = table_words(table);
     match status {
@@ -65,8 +56,6 @@ pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> 
     }
 }
 
-/// The text of each unavailable table's reason met, by run and id, kept for the steps whose head
-/// sits between parts, where no part names it ([`Lane::reason`]). One entry a distinct reason.
 #[derive(Default)]
 pub(crate) struct Reasons(HashMap<(usize, u32), Box<str>>);
 
@@ -80,7 +69,6 @@ impl Reasons {
         }
     }
 
-    /// Why `lane`'s table answers nothing at its head, if it does not.
     pub(crate) fn unrecorded(&self, lane: &Lane) -> Option<String> {
         let status = lane.status().0;
         let text = match status {
@@ -91,7 +79,6 @@ impl Reasons {
     }
 }
 
-/// Why `query` cannot be answered from cells of these kinds, by name.
 pub(crate) fn refusal(query: &Query, cells: &TableState) -> Option<String> {
     for column in query.declared() {
         let kind = cells.column(column).map(|held| held.kind())?;
@@ -106,7 +93,6 @@ pub(crate) fn refusal(query: &Query, cells: &TableState) -> Option<String> {
     None
 }
 
-/// The lane is sought and holds every column `query` reads.
 pub(crate) fn holds(query: &Query, lane: &Lane) -> bool {
     lane.head().is_some() && query.declared().iter().all(|column| lane.requested().contains(column))
 }
@@ -120,7 +106,6 @@ pub(crate) fn number(value: Value<'_>) -> (i64, State) {
     }
 }
 
-/// A lane's cells as a computed column reads a row.
 struct Row<'a>(&'a TableState);
 
 impl Cells for Row<'_> {
@@ -144,8 +129,6 @@ impl Cells for Row<'_> {
     }
 }
 
-/// A series' value at `slot`: its cell, or its computed value from the row's cells (not recorded
-/// when an input is not).
 #[inline]
 pub(crate) fn series_value(source: &Source, cells: &TableState, slot: u32) -> (i64, State) {
     match source {
@@ -222,7 +205,6 @@ impl Ranking {
     }
 }
 
-/// Reusable buffers of the answers made on one thread.
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) table: Table,
@@ -233,8 +215,6 @@ fn by_rank(a: &(i64, u128, u32), b: &(i64, u128, u32)) -> Ordering {
     b.0.cmp(&a.0).then(a.1.cmp(&b.1))
 }
 
-/// `query`'s answer at `lane`'s head into `out`, a series' tags as `tags` (its [`tag_rows`] at the
-/// head); `query` reads no appended rows.
 pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, reasons: &Reasons, scratch: &mut Scratch, out: &mut Vec<u8>) {
     out.clear();
     if let Some(reason) = reasons.unrecorded(lane) {
@@ -350,7 +330,6 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 }
                 _ => None,
             }));
-            // As the UI ranks (`compareTags`): greatest first, a tie by tag in byte order.
             let by_tag = |a: &(i64, u128, u32), b: &(i64, u128, u32)| {
                 let (a0, b0) = if *least { (b.0, a.0) } else { (a.0, b.0) };
                 b0.cmp(&a0).then_with(|| names[a.2 as usize].key().cmp(&names[b.2 as usize].key()))
@@ -398,10 +377,6 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
     table.encode(out);
 }
 
-/// `query`'s answer from `lane`'s cells at the lane's head, as the hook pushes it: the product at
-/// whatever hour the lane was sought or stepped to. A log has no answer at an hour (its answer is
-/// the rows appended since its last push), and a lane that does not hold the query's columns is
-/// refused.
 pub fn answer_at(query: &Query, lane: &Lane) -> io::Result<Vec<u8>> {
     query.check()?;
     if query.appended() {
@@ -423,7 +398,6 @@ pub fn answer_at(query: &Query, lane: &Lane) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The game hour of `lane`'s head.
 pub(crate) fn head(lane: &Lane) -> Hour {
     lane.head().expect("a sought lane")
 }

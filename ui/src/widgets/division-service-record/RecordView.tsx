@@ -15,12 +15,9 @@ import { divisionName, entryText, entryTooltip, headerDetail, recordRows, record
 import type { RecordItem } from './careersData';
 import './serviceRecord.css';
 
-/** One division's header line and dated record: the standalone widget's body and the Most decorated divisions
- * drill. Live, it is the widget's followed panel at the head; otherwise it is asked once for `hour`. */
 export default function RecordView({ runtime, widget, trackId, division, hour, show, log, live, active, onDiagnostics, caption, onAnswered }: {
   runtime: WidgetRuntime; widget: WidgetSpec; trackId: string; division: string; hour: number; show: string; log: LogSettings; live: boolean; active: boolean;
   onDiagnostics: WidgetProps['onDiagnostics']; caption?: ReactNode;
-  /** The hour the shown record answers, which a record kept while the next hour loads holds. */
   onAnswered?: (hour: number | undefined) => void;
 }) {
   const track = runtime.tracks.find(t => t.id === trackId);

@@ -1,14 +1,10 @@
-// The readings of the market family's replies (`market-lendlease`, `lend-lease-history`) the international market,
-// lend-lease agreements, the market ledger, the market drill and Trade flows' market view share.
 import type { LendLeaseHistoryReply, MarketLendLeaseReply } from '../generated/dashboard';
 import { object } from './validation.ts';
 
-/** The reply with the hour its structure is of (the panel carries no hour). */
 export type MarketAt = MarketLendLeaseReply & { hour: number };
 
 export const MARKET = 'market-lendlease';
 export const LEASE_HISTORY = 'lend-lease-history';
-/** Equipment and CIC are fixed5, lend-lease fuel /32768, shares /1000 percent. */
 export const FIXED5 = 100000n;
 export const FUEL_QUANTITY = 32768n;
 export const SHARE = 1000n;
@@ -43,7 +39,6 @@ export function validateLeaseHistory(value: unknown): LendLeaseHistoryReply {
   return value as unknown as LendLeaseHistoryReply;
 }
 
-/** `raw` over `denominator`, exact, trailing zeros dropped. */
 export function fixedText(raw: bigint, denominator = FIXED5): string {
   const negative = raw < 0n, magnitude = negative ? -raw : raw;
   const places = denominator.toString().length - 1;
@@ -54,7 +49,6 @@ export function fixedText(raw: bigint, denominator = FIXED5): string {
 
 export const priceLevel = (level: number | null): string => level === null ? '—' : ['Low', 'Normal', 'High'][level] ?? 'Price level unavailable';
 
-/** Each variant's names and its icon's image, by the variant id the items name. */
 export interface Equipment { name: string | null; icon: string | null; missing: string | null }
 export function equipmentOf(reply: Pick<MarketLendLeaseReply, 'variants' | 'icons'>): (variant: string) => Equipment {
   const images = new Map(reply.icons.map(icon => [icon.key, icon.image]));
@@ -66,7 +60,6 @@ export function equipmentOf(reply: Pick<MarketLendLeaseReply, 'variants' | 'icon
   };
 }
 
-/** The tags of a pick's parties at the drill's hour: the row's tags, which the drill asks the market for. */
 export const partyTags = (...tags: readonly (string | null)[]): string[] | null => {
   const known = [...new Set(tags.filter((tag): tag is string => tag !== null))];
   return known.length ? known.sort() : null;

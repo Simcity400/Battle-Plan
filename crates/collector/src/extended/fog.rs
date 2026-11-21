@@ -1,5 +1,3 @@
-//! Native fog-derivation inputs. Worker acquisitions grow rows and arenas from
-//! original headers before publication; all reads finish before the hourly boundary returns.
 
 use crate::{
     read_accounting,
@@ -45,7 +43,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Advisory original-header demand at attach and the input-demand cadence.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -108,27 +105,12 @@ pub struct Captured {
     pub(super) carrier: super::air::carrier::Registrations,
     pub(super) carrier_scratch: super::air::carrier::Scratch,
     wings: Arena<u64>,
-    /// Dense per-walk country-link resolver for the registrations walk. It is
-    /// sized from the live link count off the game thread (worker preparation
-    /// or `grow`); a shorter cache only repeats resolves, never changes rows.
     resolved: Vec<cair_base::ResolvedLink>,
-    /// Live link count observed by the last registrations walk.
     required_links: usize,
     active: [bool; N],
-    /// Owned hourly payload staged for direct worker installation. Preserved
-    /// across reset and cleared only after the current payload is installed.
     pub(crate) radar_raw_mode: bool,
-    /// Owned UnitIntel payload uses the shared division census when available.
     pub(crate) intel_raw_mode: bool,
-    /// Raw-copy split gate for the shared hourly bases payload's
-    /// registrations half (AirBaseRegistrations). Set by the game thread
-    /// every hour with a valid raw payload staged via the shared air copy;
-    /// `capture` then skips the typed walk and the decode worker fills the
-    /// rows before the ready handoff. Preserved across `reset`, cleared by
-    /// the worker.
     pub(crate) registrations_raw_mode: bool,
-    /// False when the capture mode leaves out TheatreAreas and StationedUnits:
-    /// their walk does not run. Set with each Gated loan.
     pub(crate) stationed: bool,
 }
 
@@ -137,7 +119,6 @@ const SKIPPED: Outcome = Outcome::Unavailable {
 };
 
 impl Captured {
-    /// Fail only the Gated job's tables, preserving independent raw verdicts.
     pub(crate) fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
         let outcomes = TABLES.map(|table| super::failed_capture(table, hour, force_full, reason));
@@ -156,7 +137,6 @@ impl Captured {
         }
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -229,8 +209,6 @@ impl Captured {
         self.area_provinces.grow(&mut capacity.area_provinces);
         self.units.grow(&mut capacity.rows[3]);
         self.intel.grow(&mut capacity.rows[4]);
-        // The worker can satisfy this payload's complete demand before the
-        // first decode. Propagate that storage to the other pooled frames.
         grow_capacity(&mut capacity.rows[5], self.registrations.rows.len());
         grow_capacity(&mut capacity.wings, self.wings.first.len());
         self.registrations.grow(&mut capacity.rows[5]);
@@ -239,7 +217,6 @@ impl Captured {
         self.grow_resolver(self.required_links);
     }
 
-    /// Size the dense resolver to a live link count. Off the capture only.
     fn grow_resolver(&mut self, links: usize) {
         if links > self.resolved.len() {
             let _ = resize(&mut self.resolved, links, None).map_err(crate::allocation::io);
@@ -251,7 +228,6 @@ impl Captured {
             TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
-    /// Worker-only storage growth continues from the original native headers.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -275,13 +251,9 @@ impl Captured {
         self.reset();
         let mut ticks = [0; N];
 
-        // A staged owned payload already contains this hour's native rows.
-        // Its acquisition costs are applied by the caller.
         if !self.active[0] {
             self.radar.outcome = SKIPPED;
         } else if self.radar_raw_mode {
-            // Refresh payload staged: leave the reset outcome for the decode
-            // worker, which installs identical rows and outcomes.
             ticks[0] = 0;
         } else {
             let _reads = read_accounting::table(TableId::RadarCoverage);
@@ -376,10 +348,7 @@ impl Captured {
         }
         drop(area_reads);
 
-        // Shared census acquisition already produced this hour's owned rows.
         if self.intel_raw_mode {
-            // Refresh payload staged: leave the reset outcome for the decode
-            // worker, which installs identical rows and outcomes.
             ticks[4] = 0;
         } else {
             let _reads = read_accounting::table(TableId::UnitIntel);
@@ -397,13 +366,7 @@ impl Captured {
             ticks[4] = elapsed(begin);
         }
 
-        // Shared bases payload's registrations half: on hours with a valid
-        // raw payload staged via the shared air copy, the decode worker
-        // fills the typed rows before the ready handoff, so the typed walk
-        // is skipped here.
         if self.registrations_raw_mode {
-            // Refresh payload staged: leave the reset outcome for the decode
-            // worker, which installs identical rows and outcomes.
             ticks[5] = 0;
         } else {
             let _reads = read_accounting::table(TableId::AirBaseRegistrations);
@@ -629,8 +592,6 @@ impl Captured {
         )
     }
 
-    /// Complete an accepted shared-bases failure after the reserved generic
-    /// capture has skipped this table. Other fog tables keep their own result.
     pub(crate) fn fail_registrations_capture(&mut self, reason: &'static str) {
         self.registrations.outcome = Outcome::Unavailable { reason };
         self.carrier.reset();
@@ -638,8 +599,6 @@ impl Captured {
         self.registrations_raw_mode = false;
     }
 
-    /// Reserve complete storage from counts already observed by acquisition.
-    /// This hint never replaces the owned walk's validation or outcome.
     fn prepare_registrations_payload(
         &mut self,
         job: &super::air::AirBasesJob,
@@ -654,12 +613,6 @@ impl Captured {
         super::air::carrier::prepare(&mut self.wings.first, wings)
     }
 
-    /// Decode-worker interpretation of the shared bases payload's
-    /// registrations half: replays `cair_base::walk_registrations` against
-    /// the same recorded spans the bases and aces decodes read (see
-    /// `super::air::Captured::decode_air_bases_payload`), installing
-    /// identical rows, arena bytes and failure reasons. Complete owned demand
-    /// grows typed storage before this one walk, avoiding startup truncation.
     #[cfg(test)]
     pub(crate) fn decode_registrations_payload(
         &mut self,
@@ -699,8 +652,6 @@ impl Captured {
         );
     }
 
-    /// All storage the registrations decode and its carrier observer write,
-    /// sized from this hour's owned demand before the walk.
     pub(crate) fn prepare_decode(
         &mut self,
         job: &super::air::AirBasesJob,
@@ -714,12 +665,6 @@ impl Captured {
         self.carrier_scratch.prepare(demand)
     }
 
-    /// The optional observer shares this exact mandatory pass. Every optional
-    /// read is served by the separate owned carrier log, including failures;
-    /// no live memory is available to the decoder. `reuse` appends the rows of
-    /// state bases whose held segment it walked before
-    /// ([`super::air::DecodedRegistrations`]). A refused `prepared` refuses
-    /// this table and is returned: `carrier_bases` then holds no rows either.
     #[allow(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
     pub(crate) fn decode_registrations_prepared(
         &mut self,
@@ -745,7 +690,6 @@ impl Captured {
                 return Err(reason);
             }
         };
-        // The census took the callback's roster when it had one.
         let recorded = crate::extended::roster_replay::RosterReplay::new(
             &log,
             &job.roster,
@@ -766,7 +710,6 @@ impl Captured {
                     .map(|countries| (optional, countries))
             });
         let refusal = optional_countries.as_ref().err().copied();
-        // The slots this pass's acquisition took ([`crate::air_base_changes`]).
         let slots = cair_base::SlotMode {
             dense: job.slot_run.dense,
         };
@@ -799,11 +742,6 @@ impl Captured {
                     slots,
                     reuse.as_deref_mut(),
                 );
-                // Registrations stop at their first failure, while the
-                // independent AirBases walk can accept later host bases and
-                // stage their names. The observer's demand counts every begun
-                // host, including the faulting one and short output arenas.
-                // Accepted rows retain the original traversal-order prefix.
                 let visited_hosts = carrier.demand().bases;
                 for source in base_rows
                     .iter()
@@ -811,10 +749,6 @@ impl Captured {
                     .filter(|source| source.state.is_none())
                     .skip(visited_hosts)
                 {
-                    // This names-only terminal observation follows no base
-                    // pointer: finish(false) keeps dense/indexed data refused.
-                    // Never send indexed/pool events or complete it with true.
-                    // Every query still uses only the owned optional log.
                     carrier.begin_base(0, source.id, true);
                     carrier.authenticated_base(source);
                     carrier.finish_base(false);
@@ -867,8 +801,6 @@ impl Captured {
     }
 }
 
-/// Native registrations owned by the decode worker's single AirBases memo.
-/// It never owns a pooled frame or observes game memory.
 #[derive(Debug, Default)]
 pub(crate) struct RegistrationsMemo {
     rows: Vec<cair_base::RegistrationRow>,
@@ -914,8 +846,6 @@ impl Captured {
     }
 
     pub(crate) fn restore_registrations_memo(&mut self, memo: &RegistrationsMemo) {
-        // The caller has compared the complete invocation capacity fingerprint
-        // before restoring either half. No partial family restore is possible.
         self.registrations.rows[..memo.rows.len()].copy_from_slice(&memo.rows);
         self.registrations.outcome = Outcome::Rows {
             len: memo.rows.len(),
@@ -939,9 +869,6 @@ pub(crate) struct RegistrationsSnapshot {
 
 #[cfg(test)]
 impl Captured {
-    /// Typed direct collection for the shared bases copy/decode harness:
-    /// runs `walk_registrations` into caller-sized buffers with the same
-    /// arena handling the game thread applies.
     pub(crate) fn collect_registrations_direct(
         rows_cap: usize,
         wings_cap: usize,
@@ -976,7 +903,6 @@ impl Captured {
         captured.registrations_snapshot()
     }
 
-    /// Snapshot of the decoded registrations half for harness comparison.
     pub(crate) fn registrations_snapshot(&self) -> RegistrationsSnapshot {
         RegistrationsSnapshot {
             outcome: self.registrations.outcome,
@@ -986,7 +912,6 @@ impl Captured {
     }
 }
 
-/// A row whose payload is a span of a shared caller-owned arena.
 trait ArenaRow<T>: Default + Clone + Copy + PartialEq {
     fn key(&self) -> u128;
     fn span(&self) -> (usize, usize);
@@ -1042,8 +967,6 @@ fn arena_outcome<R: ArenaRow<T>, T>(
     required: usize,
 ) -> Outcome {
     let outcome = bounded(outcome, rows.len());
-    // This pass reported `len` used elements of a `buffer`-element arena; every
-    // published span must lie inside them and the demand can never be smaller.
     if len <= buffer
         && required >= len
         && rows.get(..outcome.len()).is_some_and(|rows| {
@@ -1089,15 +1012,9 @@ pub(crate) type IntelJob = OwnedFogJob<unit_viewer_entry::Row>;
 #[cfg(test)]
 mod tests;
 
-/// Shared synthetic address space for the radar copy/decode harness: one
-/// country with one radar group covering two provinces. Mirrors the engine
-/// radar fixture shapes.
 #[cfg(test)]
 pub(crate) mod radar_test_kit;
 
-/// Shared synthetic address space for the intel copy/decode harness: one
-/// country with one division (two viewer entries) and one task force (no
-/// entries). Mirrors the engine viewer-entry fixture shapes.
 #[cfg(test)]
 pub(crate) mod intel_test_kit;
 

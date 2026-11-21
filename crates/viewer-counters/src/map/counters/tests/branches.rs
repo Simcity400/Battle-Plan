@@ -1,4 +1,3 @@
-//! The composed counter draw against the plain one ([`PreparedCounters::draw_branched`]).
 
 use super::*;
 
@@ -24,7 +23,6 @@ fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTable
     .unwrap()
 }
 
-/// Each reference owns a cold atlas and independent window history.
 fn transcript(branched: bool) -> Vec<String> {
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
@@ -150,7 +148,6 @@ fn transcript(branched: bool) -> Vec<String> {
     )
 }
 
-/// Compare every quad and report field with the independent plain draw.
 #[test]
 fn branched_counters_draw_every_frame_as_the_plain_draw() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();

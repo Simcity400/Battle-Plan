@@ -1,7 +1,3 @@
-//! The Politics tab's content, read once per catalogue: idea categories and
-//! ideas, characters (advisor and leader roles, portraits), leader traits,
-//! ideologies and scripted modifier definitions. Every widget that names an
-//! idea, advisor, trait or ideology reads it here, so the files are parsed once.
 
 use super::ContentOptions;
 use crate::findings::{Finding, Kind};
@@ -23,10 +19,8 @@ use std::{
 
 pub use crate::idea_names::{CountryLook, IdeaCountry, IdeaName, idea_name};
 
-/// Longest side of a returned idea icon or portrait.
 const ICON_EDGE: u32 = 96;
 
-/// See [`PoliticsContent::recorded_name`].
 pub fn recorded_name(
     localisation: &installed_content_localisation::localisation::Localisation,
     saved: &str,
@@ -34,28 +28,19 @@ pub fn recorded_name(
     if saved.is_empty() {
         return RecordedName::None;
     }
-    // Localise the saved name without a probe: an undefined name keeps its
-    // own bytes, even when it is the script token. Show character names plain.
     match catalogue::localised(localisation, saved, View::Plain) {
         Ok(name) => RecordedName::Named(name),
         Err(reason) => RecordedName::Unresolved(reason),
     }
 }
 
-/// A recorded character name, as [`PoliticsContent::recorded_name`] reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedName {
-    /// The name to show.
     Named(String),
-    /// Why the recorded name cannot be shown: no other name stands in.
     Unresolved(String),
-    /// No saved name recorded: the authored name stands.
     None,
 }
 
-/// A recorded portrait entry: its kind, identity and requested thumbnail edge.
-/// A portrait by kind, identity and edge, kept apart per artwork mode
-/// ([`installed_content_core::content::ArtworkMode`]).
 type PortraitKey = (u32, Vec<u8>, u32, installed_content_core::content::ArtworkMode);
 
 pub struct PoliticsContent {
@@ -65,17 +50,11 @@ pub struct PoliticsContent {
     pub traits: LeaderTraits,
     pub ideologies: Ideologies,
     pub modifier_definitions: ModifierDefinitions,
-    /// The names database a generated advisor name draws from.
     pub names: installed_content_core::names::NameLists,
-    /// Standing notes about the content: files left out, closed or ambiguous.
     pub warnings: Vec<String>,
-    /// Artwork already built, by token, with why its icon is missing if it is.
     artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
-    /// Recorded portraits already loaded, by kind, identity and requested edge.
     portraits: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
     portrait_thumbnails: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
-    // World borrows these facts for the event scope's lifetime. The shared
-    // outcome owns loading/refusal policy; this stable Arc supplies that borrow.
     power: OnceLock<Arc<PowerContent>>,
     power_result: catalogue::CachedResult<PowerContent>,
     power_requested: std::sync::atomic::AtomicBool,
@@ -83,12 +62,9 @@ pub struct PoliticsContent {
     idea_classes: catalogue::KeyedResults<String, Option<bool>>,
 }
 
-/// Presentation definitions needed only by the power ledger. Reading is lazy
-/// and shared by every country/widget using this catalogue.
 pub struct PowerContent {
     pub decisions: installed_content_core::decisions::Database,
     pub abilities: installed_content_abilities::abilities::AbilitySprites,
-    /// The national database only: power is spent selecting a national focus.
     focuses: installed_content_focus::focus::Focuses,
     pub warnings: Vec<String>,
     pub unit_traits: installed_content_core::unit_leader::Traits,
@@ -98,8 +74,6 @@ pub struct PowerContent {
 }
 
 impl PowerContent {
-    /// A national focus by id: `None` when no national file defines it, `Err`
-    /// with the refused national file that could define it.
     pub fn national_focus(
         &self,
         id: &str,
@@ -115,8 +89,6 @@ type CachedPolitics = Option<(
     Arc<catalogue::CachedResult<PoliticsContent>>,
 )>;
 
-/// Both outcomes are retained for this catalogue binding; changing folders or
-/// language binds a new result. Cancellation remains retryable.
 pub fn politics_content(
     source: &Source,
     options: &ContentOptions,
@@ -125,8 +97,6 @@ pub fn politics_content(
     kept(source, catalogue)
 }
 
-/// [`politics_content`] over [`catalogue::recorded_catalogue`], for prepared families whose
-/// stored payloads hold artwork.
 pub fn recorded_politics_content(
     source: &Source,
     options: &ContentOptions,
@@ -134,9 +104,6 @@ pub fn recorded_politics_content(
     kept(source, catalogue::recorded_catalogue(source, options)?)
 }
 
-/// `catalogue`'s politics content, kept apart for the recording's own catalogue and the shown
-/// one ([`catalogue::ByCatalogue`]) and bound anew for another catalogue; it is loaded once the
-/// cache's lock is released.
 fn kept(source: &Source, catalogue: Arc<Catalogue>) -> io::Result<Arc<PoliticsContent>> {
     let result = {
         let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();
@@ -156,9 +123,6 @@ fn kept(source: &Source, catalogue: Arc<Catalogue>) -> io::Result<Arc<PoliticsCo
     result.get_or_init(|| PoliticsContent::load(catalogue))
 }
 
-/// `catalogue`'s politics content loaded ahead of a request, as [`kept`] keeps it, unless a
-/// request kept another catalogue's in its place: work done ahead never replaces what a request
-/// bound. `None` when it loads nothing.
 pub(crate) fn warm(
     source: &Source,
     catalogue: Arc<Catalogue>,
@@ -181,7 +145,6 @@ pub(crate) fn warm(
     Some(result.get_or_init(|| PoliticsContent::load(catalogue)))
 }
 
-/// The politics content kept for `catalogue`, loading nothing.
 #[cfg(test)]
 pub(crate) fn held(source: &Source, catalogue: &Arc<Catalogue>) -> Option<Arc<PoliticsContent>> {
     let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();
@@ -210,7 +173,6 @@ pub fn content_loads(source: &Source) -> usize {
         .sum()
 }
 
-/// A helper thread's read, its panic resumed here once the reads before it succeeded.
 fn settled<T>(read: std::thread::Result<io::Result<T>>) -> io::Result<T> {
     read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
@@ -228,7 +190,6 @@ impl PoliticsContent {
         Self::read(catalogue, installed_content_core::ideologies::read)
     }
 
-    /// Offline, the corpus ideologies reader owns the ideology notes.
     pub fn load_with_ideologies(
         catalogue: Arc<Catalogue>,
         ideologies: Ideologies,
@@ -244,9 +205,6 @@ impl PoliticsContent {
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let (ideologies, ideology_warnings) = ideologies(layers)?;
-        // The groups named by this define contain character advisor templates.
-        // Read them as advisors rather than ideas.
-        // Read before any helper starts: a define script's metamethods can change later reads.
         let officers = installed_content_core::defines::read(layers)?
             .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
         let (read, traits, definitions, names) = std::thread::scope(|threads| {
@@ -258,7 +216,6 @@ impl PoliticsContent {
             });
             let names =
                 installed_content_core::parallel::spawn(threads, || installed_content_core::names::read(layers));
-            // Characters need the ideas' advisor templates: the longest chain.
             let read = (|| {
                 let (ideas, advisors, idea_warnings) =
                     installed_content_core::ideas::read(layers, &officers)?;
@@ -267,7 +224,6 @@ impl PoliticsContent {
             })();
             (read, traits.join(), definitions.join(), names.join())
         });
-        // The first read to fail in the order above decides, as if read one after another.
         let (ideas, idea_warnings, (characters, character_warnings)) = read?;
         let (traits, trait_warnings) = settled(traits)?;
         let (modifier_definitions, definition_warnings) = settled(definitions)?;
@@ -309,8 +265,6 @@ impl PoliticsContent {
         self.prepare_power_content()
     }
 
-    /// Resolve fixed databases during preparation configuration without making
-    /// their diagnostics reachable before a ledger item demands them.
     pub fn prepare_power_content(&self) -> Result<&PowerContent, String> {
         let power = self
             .power_result
@@ -348,7 +302,6 @@ impl PoliticsContent {
                         aliases.join(),
                     )
                 });
-                // The first read to fail in the order above decides, as if read one after another.
                 let decisions = decisions?;
                 let abilities = settled(abilities)?;
                 let (focuses, focus_warnings) = settled(focuses)?;
@@ -390,11 +343,6 @@ impl PoliticsContent {
         Ok(self.power.get_or_init(|| power).as_ref())
     }
 
-    /// Reading diagnostics already requested by an item's presentation; merely
-    /// reporting them never loads the optional power databases.
-    /// Whether a ledger item demanded the power content
-    /// ([`Self::power_content`]): only then are its diagnostics reachable
-    /// ([`Self::power_warnings`]), and never unreachable again.
     pub fn power_requested(&self) -> bool {
         self.power_requested
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -412,13 +360,10 @@ impl PoliticsContent {
             .map_or(&[], |power| power.warnings.as_slice())
     }
 
-    /// Whether localisation defines a key: only for naming and description
-    /// ladders, never to hide a selected key.
     pub fn defines(&self, key: &str) -> bool {
         self.catalogue.localisation.get(key).is_some()
     }
 
-    /// [`Catalogue::localise_in`]: a Scripted view evaluated for a country.
     pub fn localise_in(
         &self,
         key: &str,
@@ -427,11 +372,8 @@ impl PoliticsContent {
         self.catalogue.localise_in(key, scripted)
     }
 
-    /// [`Catalogue::localised`]: a key the content lacks is its own bytes.
     pub fn localised(&self, key: &str, view: View) -> Option<String> {
         if view == View::Plain {
-            // Only fixed content keys enter this slot. Recorded names and
-            // scoped/scripted evaluation keep their production path below.
             return self
                 .fixed_text
                 .get_or_init(&key.to_owned(), |key| {
@@ -444,10 +386,6 @@ impl PoliticsContent {
         self.catalogue.localised(key, view)
     }
 
-    /// What a recorded character's saved name says: it is
-    /// localised, a name localisation does not define being its own bytes;
-    /// text that cannot be shown is unresolved, the reason noted in the
-    /// catalogue.
     pub fn recorded_name(&self, saved: &str) -> RecordedName {
         let name = recorded_name(&self.catalogue.localisation, saved);
         if let RecordedName::Unresolved(reason) = &name {
@@ -456,30 +394,24 @@ impl PoliticsContent {
         name
     }
 
-    /// A content lookup's gap, noted in the catalogue by token.
     fn refused(&self, gap: &Gap, token: &str) -> String {
         let reason = gap.to_string();
         self.catalogue.refuse(&reason, token);
         reason
     }
 
-    /// The idea a token names: `Ok(None)` when content defines none, the
-    /// reason (noted by token) when a file that could define it stops short.
     pub fn idea(&self, token: &str) -> Result<Option<&Idea>, String> {
         self.ideas
             .idea(token)
             .map_err(|gap| self.refused(gap, token))
     }
 
-    /// The advisor role an idea token appoints, as [`Self::idea`] answers.
     pub fn advisor(&self, idea_token: &str) -> Result<Option<&AdvisorRole>, String> {
         self.characters
             .advisor(idea_token)
             .map_err(|gap| self.refused(gap, idea_token))
     }
 
-    /// The advisor role an idea token appoints for a recorded holder
-    /// ([`Characters::held_advisor`]); a refusal is noted by token.
     pub fn held_advisor(
         &self,
         idea_token: &str,
@@ -503,9 +435,6 @@ impl PoliticsContent {
             })
     }
 
-    /// A sprite's first frame as its artwork URL, or None when the content has no
-    /// such sprite or texture. A name that is not a sprite and not a `GFX_` name is
-    /// a texture path, as authored portraits may give one.
     pub fn sprite_png(&self, name: &str) -> io::Result<Option<String>> {
         self.sprite_png_sized(name, ICON_EDGE)
     }
@@ -514,8 +443,6 @@ impl PoliticsContent {
         sprite_png_in(&self.catalogue, name, edge)
     }
 
-    /// The first small portrait in native role order. An
-    /// unknown higher role stops the search; a lower one cannot stand in.
     fn portrait(&self, character: &str) -> Result<Option<&str>, Box<Finding>> {
         let Some(portraits) = self.characters.portraits(character).map_err(|gap| {
             Box::new(Finding::new(
@@ -551,14 +478,10 @@ impl PoliticsContent {
         Ok(None)
     }
 
-    /// A recorded character's name: the saved name first (a rename shows its
-    /// current name), then the authored name of its script token; None when the
-    /// saved name cannot be shown as plain text or nothing names the character.
     pub fn character_name(&self, script: Option<&str>, saved: &str) -> Option<String> {
         self.character_name_for(script, saved, None)
     }
 
-    /// The same native name selection, retaining this caller's refusals.
     pub fn character_name_with_refusals(
         &self,
         script: Option<&str>,
@@ -593,10 +516,6 @@ impl PoliticsContent {
         }
     }
 
-    /// A content character's authored name, localised plain as its text
-    /// boxes show it; None when content names none,
-    /// or when its alternatives name different keys, which is noted by
-    /// character.
     pub fn authored_character_name(&self, character: &str) -> Option<String> {
         self.authored_character_name_for(character, false, None)
     }
@@ -652,24 +571,6 @@ impl PoliticsContent {
         }
     }
 
-    /// The key selected for
-    /// an idea token and a country, in its order:
-    /// 1. the idea's `name` when set, without asking whether
-    ///    localisation defines it;
-    /// 2. unless the dynamic country is in civil war ([`super::identity::civil_war`]),
-    ///    `TAG_token` when localisation defines it
-    ///    else the token when defined;
-    /// 3. for an idea whose group is neither a law nor a designer group
-    ///    in a category of type 0, a
-    ///    generated advisor name ([`Self::generated_name`]), for a country
-    ///    in civil war only when its cosmetic tag is empty;
-    /// 4. else the token, which a missing key copies.
-    ///
-    /// Only the selected key is localised, so its refusal is
-    /// final. `Err` names what cannot be decided (noted by token): a file
-    /// that could define the idea stops short, a dynamic country whose
-    /// civil-war inputs the hour does not hold, or a country whose
-    /// CountryAppearance row the hour does not hold.
     pub fn idea_name(&self, token: &str, country: IdeaCountry<'_>) -> Result<IdeaName, String> {
         idea_name(
             &self.ideas,
@@ -681,8 +582,6 @@ impl PoliticsContent {
         .inspect_err(|reason| self.catalogue.refuse(reason, token))
     }
 
-    /// [`Self::idea_name`] as far as content alone decides it: the name
-    /// override, then the token's own key. The country's rungs are offline.
     pub fn idea_name_offline(&self, token: &str) -> Result<IdeaName, String> {
         let Some(idea) = self.idea(token)? else {
             return Ok(IdeaName::Key(token.to_owned()));
@@ -719,12 +618,7 @@ impl PoliticsContent {
         Ok(IdeaName::Key(token.to_owned()))
     }
 
-    /// Select an idea's description key: `token_desc` when localisation defines it, else the
-    /// `name` override's `_desc` when that is defined, else none, and the
-    /// game shows no description.
     pub fn idea_description_key(&self, token: &str) -> Option<String> {
-        // Append to the definition's key. Localisation
-        // itself remains case-sensitive.
         let idea = self.idea(token).ok()?;
         let token = idea.map_or(token, |idea| idea.token.as_str());
         let own = format!("{token}_desc");
@@ -735,16 +629,10 @@ impl PoliticsContent {
         self.defines(&named).then_some(named)
     }
 
-    /// A recorded portrait entry as its artwork URL (kind 0 a sprite, kind 1 a
-    /// texture path), or why it cannot be shown: a sprite content lacks or a
-    /// texture that does not load is one the game replaces with a generated
-    /// portrait.
     pub fn recorded_portrait(&self, kind: u32, identity: &[u8]) -> Result<String, String> {
         self.recorded_portrait_sized(kind, identity, ICON_EDGE)
     }
 
-    /// The same recorded asset and fallback rules, at the longest edge the caller draws.
-    /// The size is part of the cache identity, so a thumbnail never replaces larger art.
     pub fn recorded_portrait_sized(
         &self,
         kind: u32,
@@ -762,7 +650,6 @@ impl PoliticsContent {
             edge,
             installed_content_core::content::artwork_mode(),
         );
-        // Small mounted-row thumbnails cannot evict Politics' full-size portraits.
         let store = if edge == ICON_EDGE {
             &self.portraits
         } else {
@@ -788,9 +675,6 @@ impl PoliticsContent {
         loaded
     }
 
-    /// Name, description and icon for an idea token, with why the icon is missing
-    /// if it could not load (the text is kept either way). Advisors (whose ideas
-    /// come from characters, not `common/ideas`) show the character's name and portrait.
     pub fn idea_artwork(
         &self,
         token: &str,
@@ -800,9 +684,6 @@ impl PoliticsContent {
         self.idea_artwork_for(token, character, Some(country), None)
     }
 
-    /// A recorded holder's saved name wins before authored alternatives are
-    /// examined. This also avoids
-    /// emitting an authored-name ambiguity for a name the recording settles.
     pub fn held_idea_artwork(
         &self,
         token: &str,
@@ -813,9 +694,6 @@ impl PoliticsContent {
         self.idea_artwork_for(token, character, Some(country), Some(saved))
     }
 
-    /// The name [`Self::idea_artwork`] gives, without drawing its icon: what preparation keeps
-    /// while the icon is drawn when a reply is served. With why where the content cannot say
-    /// what the token is.
     pub fn idea_named(
         &self,
         token: &str,
@@ -832,8 +710,6 @@ impl PoliticsContent {
         }
     }
 
-    /// Why [`Self::idea_artwork`] (or [`Self::held_idea_artwork`] with `saved`) names no idea,
-    /// None when it names it.
     pub fn idea_name_missing(
         &self,
         token: &str,
@@ -852,8 +728,6 @@ impl PoliticsContent {
         }
     }
 
-    /// What content says the token is: its idea definition, else its advisor role. A defined
-    /// idea is named and drawn from its definition, so a gap in the advisor roles does not hide it.
     fn idea_and_role(&self, token: &str) -> Result<(Option<&Idea>, Option<&AdvisorRole>), String> {
         match (self.idea(token), self.advisor(token)) {
             (Ok(idea), Ok(role)) => Ok((idea, role)),
@@ -873,7 +747,6 @@ impl PoliticsContent {
         country: Option<IdeaCountry<'_>>,
         saved: Option<&str>,
     ) -> (Artwork, Option<String>) {
-        // Kept apart per artwork mode ([`installed_content_core::content::ArtworkMode`]).
         let key = format!(
             "{token}\u{0}{}\u{0}{country:?}\u{0}{saved:?}\u{0}{:?}",
             character.unwrap_or(""),
@@ -887,15 +760,11 @@ impl PoliticsContent {
         {
             return cached.get().clone();
         }
-        // Content that cannot say what the token is (a file that could
-        // define it stops short) leaves the idea's artwork unknown.
         let (idea, role) = match self.idea_and_role(token) {
             Ok(found) => found,
             Err(reason) => {
                 let art = Artwork {
                     token: token.to_owned(),
-                    // A content refusal cannot erase the holder's recorded
-                    // name; it is independent of authored role/idea lookup.
                     name: saved.and_then(|saved| self.character_name(None, saved)),
                     description: None,
                     base_duration_days: None,
@@ -915,10 +784,6 @@ impl PoliticsContent {
         result
     }
 
-    /// `icon` as the reply shows it ([`catalogue::draw`]): drawn through this content's
-    /// catalogue and, when the selected visual mods cannot draw it, as a whole through the
-    /// recording's own, whose own choice of candidate is made again. When neither draws it, why
-    /// is the recording's.
     fn shown_idea_icon(
         &self,
         token: &str,
@@ -926,8 +791,6 @@ impl PoliticsContent {
     ) -> Result<Option<String>, Box<Finding>> {
         let recorded = match self.catalogue.recorded() {
             Some(recorded) if !installed_content_core::content::is_strict() => recorded,
-            // The recording's own catalogue, or inside another transaction's strict attempt:
-            // drawn once, as it is.
             _ => return idea_icon(&self.catalogue, token, icon),
         };
         let drawn = catalogue::draw(
@@ -945,8 +808,6 @@ impl PoliticsContent {
         }
     }
 
-    /// An idea's name, description and icon from the content that says what it is, with why
-    /// the icon is missing if it is.
     fn draw_idea_artwork(
         &self,
         token: &str,
@@ -960,13 +821,9 @@ impl PoliticsContent {
         let name = self
             .idea_display_name(token, character, country, saved, idea, role)
             .ok();
-        // No defined description key means the
-        // game shows nothing. Authored absence is not a product finding.
         let description = self
             .idea_description_key(token)
             .and_then(|key| self.localised(&key, View::Scripted));
-        // Recorded facts decide what the icon is drawn from; what the catalogue declares decides
-        // which candidate sprite is drawn.
         let icon = match idea {
             Some(idea) => self.shown_idea_icon(
                 token,
@@ -1003,8 +860,6 @@ impl PoliticsContent {
                 } else {
                     format!("{token}: icon unavailable: {}", finding.message)
                 };
-                // Portrait findings have already reached Refusals; leave their
-                // original identity intact so the offline set deduplicates them.
                 self.catalogue.note(*finding);
                 (None, Some(reason))
             }
@@ -1019,8 +874,6 @@ impl PoliticsContent {
         (art, problem)
     }
 
-    /// An idea's name: one source is selected, then localised; a key content lacks or a
-    /// refused text leaves the name unknown, and no other text stands in. The error says why.
     fn idea_display_name(
         &self,
         token: &str,
@@ -1042,7 +895,6 @@ impl PoliticsContent {
                     IdeaName::Key(key) => self.catalogue.localised_or_why(&key, View::Scripted),
                     IdeaName::Generated(text) => Ok(text),
                 },
-                // An advisor's idea is its character.
                 (None, Some(character)) => self
                     .authored_character_name_for(character, country.is_none(), None)
                     .ok_or_else(|| format!("the name of advisor {character} is unknown")),
@@ -1051,8 +903,6 @@ impl PoliticsContent {
     }
 }
 
-/// What an idea's icon is drawn from: its candidate sprites in priority order (and whether the
-/// recorded holder tag that ends them is known), or one sprite or texture path.
 enum IdeaIcon {
     Candidates {
         names: Vec<String>,
@@ -1061,9 +911,6 @@ enum IdeaIcon {
     Sprite(String),
 }
 
-/// `icon` drawn through `catalogue`, or None when it has no such sprite or texture: the first
-/// candidate it declares (a refused declaration ending the search), else the shared fallback
-/// sprite once the recorded holder tag is known.
 fn idea_icon(
     catalogue: &Catalogue,
     token: &str,
@@ -1097,7 +944,6 @@ fn idea_icon(
             reason,
         )));
     }
-    // Use the shared fallback sprite after all authored candidates miss.
     const UNKNOWN: &str = "GFX_idea_unknown";
     sprite_png_in(catalogue, UNKNOWN, ICON_EDGE)
         .map_err(|why| refused(format!("idea fallback sprite {UNKNOWN} is unreadable: {why}")))?
@@ -1105,7 +951,6 @@ fn idea_icon(
         .ok_or_else(|| Box::new(Finding::new(Kind::Fallback, token, format!("{token}: icon unavailable: idea fallback sprite {UNKNOWN} is undeclared or has no texture; a placeholder is shown"))))
 }
 
-/// A texture path as authored, its separators normalised.
 fn texture_path(text: &str) -> String {
     text.split(['/', '\\'])
         .filter(|part| !part.is_empty())
@@ -1113,9 +958,6 @@ fn texture_path(text: &str) -> String {
         .join("/")
 }
 
-/// A sprite's first frame drawn through `catalogue` as its artwork URL, or None when it has no
-/// such sprite or texture. A name that is not a sprite and not a `GFX_` name is a texture path,
-/// as authored portraits may give one.
 pub fn sprite_png_in(catalogue: &Catalogue, name: &str, edge: u32) -> io::Result<Option<String>> {
     let decode = || -> io::Result<installed_content_image::native::Decode> {
         catalogue
@@ -1143,9 +985,6 @@ pub fn sprite_png_in(catalogue: &Catalogue, name: &str, edge: u32) -> io::Result
     catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode()?, 0, edge).map(Some)
 }
 
-/// A recorded portrait entry drawn through `catalogue` (kind 0 a sprite, kind 1 a texture path),
-/// or why it cannot be shown: a sprite the content lacks or a texture that does not load is one
-/// the game replaces with a generated portrait.
 fn recorded_portrait_in(
     catalogue: &Catalogue,
     kind: u32,

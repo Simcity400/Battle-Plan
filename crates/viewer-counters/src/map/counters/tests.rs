@@ -29,7 +29,6 @@ use viewer_foundation::table_access::TokenKeys;
 #[test]
 fn a_stack_slot_the_file_leaves_out_takes_the_provinces_centroid_default() {
     use super::{STACK_KINDS, VICTORY_POINT, default_anchor, seeded_only, stack_anchor};
-    // Heights 20 everywhere: the sampler's 0.1 scale gives 2.0.
     let values = [20u8; 16];
     let heights = HeightField {
         width: 4,
@@ -37,10 +36,7 @@ fn a_stack_slot_the_file_leaves_out_takes_the_provinces_centroid_default() {
         values: &values,
     };
     let seeded = default_anchor([2.75, 1.5], &heights);
-    // The seed is the integer centroid at the native bilinear height.
     assert_eq!(seeded, [2.0, heights.native_height(2.0, 1.0), 1.0]);
-    // 4424 authors slots 0 and 10 but not 19 or 38; 7 authors 38 and
-    // 10; 9 authors nothing.
     let anchors = [
         ((4424, 0), [4414.0, 10.0, 678.0]),
         ((4424, DEFENDING), [4416.5, 10.25, 678.0]),
@@ -55,18 +51,14 @@ fn a_stack_slot_the_file_leaves_out_takes_the_provinces_centroid_default() {
     let at = |province, kind| stack_anchor(&anchors, &defaults, province, kind);
     assert_eq!(at(4424, 0), Some([4414.0, 10.0, 678.0]));
     assert_eq!(at(4424, 19), Some(seeded));
-    // Slot 38 unset: the whole slot-10 record, not the seed.
     assert_eq!(at(4424, VICTORY_POINT), Some([4416.5, 10.25, 678.0]));
     assert!(!seeded_only(&anchors, 4424, VICTORY_POINT));
-    // Slot 38 authored: it stands; nothing else inherits.
     assert_eq!(at(7, VICTORY_POINT), Some([7.0, 7.0, 7.0]));
     assert_eq!(at(7, 9), Some(seeded));
-    // Both unset: slot 38 takes slot 10's seed, the province default.
     assert_eq!(at(9, VICTORY_POINT), Some(seeded));
     assert!(seeded_only(&anchors, 9, VICTORY_POINT));
     assert_eq!(at(4424, STACK_KINDS), None);
     assert_eq!(at(4425, 19), None);
-    // The labels read that same slot: inherited, authored and seeded.
     let (labels, fallbacks) = viewer_foundation::map::label_reads::label_anchors(
         [0, 4424, 7, 9, 4425].into_iter(),
         |province| at(province, VICTORY_POINT),
@@ -137,7 +129,6 @@ fn visible_and_question_mark_type_quads_keep_each_relation_color() {
                 None,
             );
             assert!(batch.quads.is_empty());
-            // NATO counters use the no-intel icon's second frame.
             let _ = land::draw_type_icon(
                 &atlas,
                 &mut batch,
@@ -176,7 +167,6 @@ fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted
     hidden.sight = Sight::Partial;
     let members = [hidden, land_unit(3, 2, 10, 10, true)];
     let (batch, report) = draw_land_action_fixture(guis, &members, false);
-    // Even a loaded authored sprite cannot stand in for the unrecorded pool history.
     assert!(!batch.quads.is_empty());
     assert!(batch.quads.iter().all(|quad| quad.texture == 1));
     assert_eq!(report.land_counters, 1);
@@ -316,13 +306,9 @@ fn only_the_viewing_countrys_peace_conference_hides_unit_sources() {
         ..Default::default()
     };
     let countries = [country(1, 0), country(2, 1)];
-    // The viewing country sits in a conference: every unit source is hidden.
     assert!(peace_conference_hides_units(&countries, 2));
-    // Someone else's conference hides nothing from us.
     assert!(!peace_conference_hides_units(&countries, 1));
-    // A viewing country absent from the table is not in a conference.
     assert!(!peace_conference_hides_units(&countries, 3));
-    // Any nonzero byte counts, as the native test is `!= '\0'`.
     assert!(peace_conference_hides_units(&[country(1, 255)], 1));
 }
 
@@ -409,20 +395,15 @@ fn the_flag_union_is_rebuilt_only_when_it_changes() {
     let mut target = BTreeSet::new();
     assign_union(&mut target, &base, extra.iter());
     assert_eq!(target, text(&["AAA", "BBB", "CCC"]).into_iter().collect());
-    // The same union leaves the set's own strings in place.
     let kept = target.first().expect("filled above").as_ptr();
     assign_union(&mut target, &base, extra.iter());
     assert_eq!(target.first().expect("still filled").as_ptr(), kept);
-    // A tag that is no longer missing leaves the set.
     assign_union(&mut target, &base, extra[..1].iter());
     assert_eq!(target, text(&["AAA", "CCC"]).into_iter().collect());
     assign_union(&mut target, &BTreeSet::new(), [].iter());
     assert!(target.is_empty());
 }
 
-/// One state (7) with one base (0xB0) holding one wing (0xC1) of five
-/// planes, viewed as slot 0 (raw country 100, the recorded player).
-/// `flags` controls the `StateFlags` table state under test.
 pub(super) fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
     const HOUR: Hour = 60_832_633;
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
@@ -492,11 +473,6 @@ pub(super) fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
     (frame, vision)
 }
 
-/// Each base kind's icon follows the state's recorded base of that kind,
-/// whatever building type raised it: a mod's `mod_airfield` shows its
-/// state's air-base icon, a state that holds a type named `air_base` but no
-/// ordinary base shows none, and a rocket site's base shows the rocket-site
-/// icon, not the air-base one.
 #[test]
 fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
     use replay_data::{rows::AirBaseRow, rows::BuildingRow, rows::LexicalTokenRow};
@@ -563,22 +539,16 @@ fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
         bases(vec![ordinary.clone(), site.clone(), carrier], None);
     let expected = [BTreeSet::from([7]), BTreeSet::from([9]), BTreeSet::new()];
     assert_eq!(site_icon_states(&frame).unwrap(), (expected.clone(), true));
-    // A truncated hour still places the bases it recorded, and says so.
     *frame.tables[TableId::AirBases.index()] = bases(vec![ordinary, site], Some(1));
     assert_eq!(site_icon_states(&frame).unwrap(), (expected, false));
 }
 
-/// A radar icon is admitted when the viewer, a member of its faction, a
-/// direct subject or its direct overlord keeps a radar group hosted in the
-/// state, and stays while the state's controller keeps one there; a group
-/// counts whatever it covers. Before, no radar icon was drawn.
 #[test]
 fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
     use replay_data::rows::{
         CountryAppearanceRow, FactionMemberRow, RadarCoverageRow, Recorded, StateRow,
     };
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
-    // Raw countries 100 (the viewer), 101, 102 and 103 at slots 0 to 3.
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         (0..4)
             .map(|slot| CountryLinkRow {
@@ -637,20 +607,15 @@ fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
     *frame.tables[TableId::FactionMembers.index()] =
         members(vec![member(100, 0), member(101, 1)], None);
     *frame.tables[TableId::CountryAppearance.index()] = appearance(0, Vec::new());
-    // The viewer's own group and its faction partner's show; a stranger's
-    // does not, nor a group whose state another country now controls.
     assert_eq!(
         radar_states(&frame, 0).unwrap().shown,
         BTreeSet::from([7, 9])
     );
-    // The direct overlord and direct subjects are searched too.
     *frame.tables[TableId::CountryAppearance.index()] = appearance(102, vec![103]);
     assert_eq!(
         radar_states(&frame, 0).unwrap().shown,
         BTreeSet::from([7, 8, 9, 11])
     );
-    // A truncated faction roster cannot admit the partner it lost: those
-    // icons are withheld and the input named, never guessed.
     *frame.tables[TableId::CountryAppearance.index()] = appearance(0, Vec::new());
     *frame.tables[TableId::FactionMembers.index()] = members(vec![member(100, 0)], Some(1));
     let radar = radar_states(&frame, 0).unwrap();
@@ -663,10 +628,6 @@ fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
     );
 }
 
-/// A base is occupied only while a registered wing holds a plane: a site
-/// whose registered wings are all empty shows the empty frame. A wing a
-/// partial AirWings leaves out leaves occupancy undecided. Before, any
-/// registered wing occupied the base.
 #[test]
 fn a_base_holding_only_empty_wings_is_not_occupied() {
     let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
@@ -693,11 +654,6 @@ fn a_base_holding_only_empty_wings_is_not_occupied() {
     assert_eq!(occupied(&frame), None);
 }
 
-/// The base icons need a province with a controller: a positive raw
-/// controller shows, controller zero does not, and a province the hour does
-/// not record is withheld. Before, a province with no controller kept its
-/// icon.
-// regression: 528fb4138c Occupy a base only with planes, and show base icons only where controlled
 #[test]
 fn base_icons_need_a_controlled_province() {
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
@@ -717,11 +673,6 @@ fn base_icons_need_a_controlled_province() {
     );
 }
 
-/// A province's strategic-location icon lists the province's own tokens,
-/// then its own state's locations anchored on it, each in stored order; a
-/// pair anchored in another state's province is not gathered, a province
-/// with neither has no icon, and a state whose lists are not recorded is
-/// named. Before, a foreign anchor added an icon.
 #[test]
 fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
     use replay_data::{rows::Recorded, rows::StateCoreRow};
@@ -732,7 +683,6 @@ fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
         state,
         ..Default::default()
     };
-    // Provinces 31 to 33 are state 4's; 40 is state 5's.
     *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
         province(31, 4),
         province(32, 4),
@@ -742,8 +692,6 @@ fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
     *frame.tables[TableId::StateCores.index()] = TableView::Complete(TableRows::StateCores(vec![
         StateCoreRow {
             state: 4,
-            // 703 anchors in state 5's province 40: the game never gathers
-            // it for that province, and 704's province is not recorded.
             strategic_locations: Recorded::Value(vec![
                 pair(701, 31),
                 pair(702, 33),
@@ -782,10 +730,6 @@ fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
     );
 }
 
-/// A state holding an air base and a rocket site keeps their counts apart:
-/// the air-base icon reads only the air base, and the rocket-site icon only
-/// the rocket site. Before, every recorded base of a state was merged into
-/// the air-base icon's count.
 #[test]
 fn each_base_icon_reads_its_own_state_base() {
     use replay_data::rows::AirBaseRow;
@@ -812,8 +756,6 @@ fn each_base_icon_reads_its_own_state_base() {
     assert_eq!((rocket.capacity, rocket.planes), (4, 0));
     assert!(air.shown && !rocket.shown);
     assert_eq!(rocket.occupied, Some(false));
-    // Without access a site's buttons take frame 3; with it, frame 2 while
-    // it holds a wing and frame 1 otherwise.
     assert_eq!(site_frame(&rocket), 3);
     assert_eq!(
         site_frame(&AirBaseCount {
@@ -841,9 +783,6 @@ fn each_base_icon_reads_its_own_state_base() {
     );
 }
 
-/// Truncated `StateFlags` hides every wings box; the recorded containers
-/// stay decided (registrations are complete here), and the badge falls
-/// back with undecided detail but stays plain on decided-no-detail.
 #[test]
 fn truncated_state_flags_hide_every_box_and_fall_back_the_badge() {
     let (frame, vision) = wings_frame(TableView::Truncated {
@@ -889,9 +828,6 @@ fn unavailable_state_flags_do_not_invent_a_non_demilitarized_base() {
     assert_eq!(count.stationed, Some(true));
 }
 
-/// A recorded state on a truncated hour reads its own row: our accessed,
-/// non-demilitarised base shows its box, and decided stationed-false beats
-/// decided-true detail — the engine's stationed branch, not the detail one.
 #[test]
 fn recorded_states_read_their_own_flag_row() {
     let (mut frame, vision) = wings_frame(TableView::Truncated {
@@ -902,7 +838,6 @@ fn recorded_states_read_their_own_flag_row() {
         }]),
         missing: 1,
     });
-    // Our access row survives empty; foreign wings give it planes.
     let TableView::Complete(TableRows::AirBaseRegistrations(registrations)) =
         &mut *frame.tables[TableId::AirBaseRegistrations.index()]
     else {
@@ -923,8 +858,6 @@ fn recorded_states_read_their_own_flag_row() {
     );
 }
 
-/// Complete flags decide whether our accessed, non-demilitarized
-/// base shows its box with recorded stationed wings.
 #[test]
 fn complete_state_flags_show_an_accessed_base() {
     let (frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(vec![
@@ -945,8 +878,6 @@ fn complete_state_flags_show_an_accessed_base() {
     assert_eq!(air_base_frame(&count, Some(true)), 1);
 }
 
-/// Base visibility and access are independent gates; an admitted base does
-/// not alone establish accessible registered wings.
 #[test]
 fn another_countrys_wings_take_the_flag_frame() {
     let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(vec![
@@ -992,7 +923,6 @@ fn another_countrys_wings_take_the_flag_frame() {
         3,
         "another country's wings, none of ours: the flag with no badge"
     );
-    // Our own wing beside theirs badges the same flag frame.
     let stationed = AirBaseCount {
         stationed: Some(true),
         ..count
@@ -1000,8 +930,6 @@ fn another_countrys_wings_take_the_flag_frame() {
     assert_eq!(air_base_frame(&stationed, Some(true)), 4);
 }
 
-/// The game refuses a container whose capacity
-/// word is not positive, whatever it holds.
 #[test]
 fn a_container_without_capacity_gives_no_access() {
     let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(vec![
@@ -1027,7 +955,6 @@ fn a_container_without_capacity_gives_no_access() {
     );
 }
 
-/// Two bases in one state OR their flags: one true anywhere shows.
 #[test]
 fn state_merge_ors_stationed_and_occupied() {
     assert_eq!(merge(Some(false), Some(true)), Some(true));
@@ -1036,10 +963,6 @@ fn state_merge_ors_stationed_and_occupied() {
     assert_eq!(merge(None, None), None);
 }
 
-/// Truncated registrations keep per-base precision: a surviving row of ours
-/// decides access and stationed for that base, and a surviving wing decides
-/// occupancy — only absent wings stay unknown. Global-None for all bases
-/// here would hide a decided `stationed=false` behind the fallback.
 #[test]
 fn truncated_registrations_keep_surviving_rows_decided() {
     let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(vec![
@@ -1099,18 +1022,12 @@ fn truncated_registrations_keep_surviving_rows_decided() {
     );
 }
 
-/// The shared native reader's view of a test source, read in a 1920 x 1080 GUI viewport.
 fn native_gui(source: impl AsRef<str>) -> native::Gui {
     native::read_at(source.as_ref().as_bytes(), [1920, 1080])
 }
 
-/// Independently authored test templates. Names match the controls the updaters look up;
-/// dimensions, positions and artwork identifiers are synthetic.
 use viewer_foundation::map::test_support::SYNTHETIC_NAVAL_GUI;
 
-/// A synthetic counter with the named children used by the sea and mission-item updates.
-/// It exercises declaration order, nested clipping, text, flags and rotated bars without
-/// redistributing an installed game's GUI template.
 use viewer_foundation::map::test_support::SYNTHETIC_NAVY_GUI;
 
 fn layouts() -> Layouts {
@@ -1261,7 +1178,6 @@ fn counter_action_anchor_draws_the_authored_child_frame_and_white_tint() {
         )
     );
 
-    // Only additional fully visible members compare with the partial representative.
     members[2].action = Ok(4);
     let batch = draw_land_action_fixture(action_gui(false), &members, false).0;
     let quad = batch.quads.iter().find(|quad| quad.texture == 2).unwrap();
@@ -1363,8 +1279,6 @@ fn counter_display_hides_kinds_and_owners_it_filters() {
         ..CounterDisplay::default()
     };
     assert!(!nobody.land_plate(false, 0) && !nobody.naval_plate(0));
-    // Ships in port follow the port switch and their task force's owner; an item with no
-    // task force behind it follows the switch alone.
     assert!(players.port_item(Some(1)) && !players.port_item(Some(7)));
     assert!(players.port_item(None) && !nobody.port_item(Some(0)));
     let ports = CounterDisplay {
@@ -1467,7 +1381,6 @@ fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
                 glyphs(&[&recorded, &unrecorded]),
                 counter_status::Glyphs::default()
             );
-            // Map's witness draws the training glyph alone; a refused read is never off.
             let mut witnessed = unrecorded.clone();
             witnessed.status.exercising = Some(true);
             witnessed.status.attrition = true;
@@ -1486,7 +1399,6 @@ fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
     );
 }
 
-/// Native stack fold and production counter drawing, with synthetic content only.
 fn draw_land_action_fixture(
     guis: native::Guis,
     members: &[LandUnit<'_>],
@@ -1589,7 +1501,6 @@ fn draw_land_action_fixture_with(
     )
 }
 
-/// Shared synthetic inputs for production counter passes, without a renderer or game assets.
 pub(super) fn with_counter_inputs_fixture<R>(
     guis: native::Guis,
     configure: impl FnOnce(&mut CounterAssets),
@@ -2043,8 +1954,6 @@ fn counter_action_hidden_children_and_named_refusals_survive_report_copy() {
 
 #[test]
 fn a_column_nearer_the_camera_sorts_to_a_smaller_depth_and_draws_on_top() {
-    // Reference 00's camera over Gdynia: the `?` column sits lower on the screen, so nearer
-    // the eye, than the enemy column it covers in the game.
     let camera = Camera {
         center: [3009.986, 1567.9869],
         height: 310.13113,
@@ -2056,7 +1965,6 @@ fn a_column_nearer_the_camera_sorts_to_a_smaller_depth_and_draws_on_top() {
     let nearer = Camera::map_icon_depth(&matrix, [3092.0, 10.0, 1590.0]);
     let farther = Camera::map_icon_depth(&matrix, [3092.0, 10.0, 1605.0]);
     assert!(nearer < farther, "{nearer} {farther}");
-    // Keep the signed homogeneous division.
     let behind = Camera::map_icon_depth(&matrix, [3009.986, 400.0, 1567.9869]);
     assert!(behind.is_finite());
     assert!(behind > farther);
@@ -2077,7 +1985,6 @@ fn rules(coarse: bool) -> JoinRules {
     }
 }
 
-/// [`first_fit`] over land units with their own join.
 fn land_fit<'a, 'm>(
     units: impl IntoIterator<Item = &'a LandUnit<'m>>,
     templates: &TemplateIcons,
@@ -2113,7 +2020,6 @@ fn land_items_share_by_type_and_allegiance_but_hq_and_own_orders_split() {
         unit.can_join(&first, &templates, &countries, rules(false))
             .unwrap()
     );
-    // Two owners never share a plate below the coarse switch, allied or not.
     unit.owner = 2;
     assert!(
         !unit
@@ -2128,9 +2034,6 @@ fn land_items_share_by_type_and_allegiance_but_hq_and_own_orders_split() {
             .can_join(&first, &templates, &countries, rules(false))
             .unwrap()
     );
-    // With NATO counters on, the game gives -1 for a
-    // template whose keep-my-custom-icon flag is clear, so the two icons compare equal; a
-    // template that keeps its picture still parts.
     let nato = JoinRules {
         nato: true,
         ..rules(false)
@@ -2147,7 +2050,6 @@ fn land_items_share_by_type_and_allegiance_but_hq_and_own_orders_split() {
             .can_join(&first, &templates, &countries, rules(false))
             .unwrap()
     );
-    // Either side's separate byte refuses.
     assert!(
         !first
             .can_join(&unit, &templates, &countries, rules(false))
@@ -2167,7 +2069,6 @@ fn land_items_share_by_type_and_allegiance_but_hq_and_own_orders_split() {
             .can_join(&own, &templates, &countries, rules(false))
             .unwrap()
     );
-    // Different own groups under one parent join only when both take its branch.
     own.orders_group = 40;
     unit.orders_group = 41;
     own.group_parent = Some(7);
@@ -2183,14 +2084,12 @@ fn land_items_share_by_type_and_allegiance_but_hq_and_own_orders_split() {
         unit.can_join(&own, &templates, &countries, rules(false))
             .unwrap()
     );
-    // Off-side divisions ignore orders groups entirely.
     unit.owner = 2;
     own.owner = 2;
     assert!(
         unit.can_join(&own, &templates, &countries, rules(false))
             .unwrap()
     );
-    // Coarse grouping ignores the owner, the type, HQ and orders once the allegiance agrees.
     unit.template = 30;
     unit.alternate_template = 30;
     unit.hq = true;
@@ -2317,8 +2216,6 @@ fn railway_gun_counters_keep_their_hover_at_both_zoom_levels() {
     }
 }
 
-/// Keep kinds apart before the definition comparison; guns then compare their stat definition, and
-/// two own guns their idle/reference actions and assigned group.
 #[test]
 fn railway_guns_join_only_guns_of_one_definition_and_own_orders() {
     let countries = countries([(1, Allegiance::Allied), (3, Allegiance::Ours)]);
@@ -2334,7 +2231,6 @@ fn railway_guns_join_only_guns_of_one_definition_and_own_orders() {
             .can_join(&gun, &templates, &countries, rules(false))
             .unwrap()
     );
-    // Kinds stay apart even where the coarse pass merges everything else.
     assert!(
         !gun.can_join(&division, &templates, &countries, rules(true))
             .unwrap()
@@ -2355,7 +2251,6 @@ fn railway_guns_join_only_guns_of_one_definition_and_own_orders() {
             .can_join(&gun, &templates, &countries, rules(true))
             .unwrap()
     );
-    // Own guns: idle and reference-entry actions and the assigned group split.
     let own = gun_unit(5, 3, "railway_gun", 1, 7);
     let busy = gun_unit(6, 3, "railway_gun", 12, 7);
     assert!(
@@ -2421,8 +2316,6 @@ fn ability(
     }
 }
 
-/// The grid follows native vector order, only active records with a caster, and the last
-/// fully visible member that has a commander, even when that commander has none active.
 #[test]
 fn the_ability_grid_takes_vector_order_and_the_last_visible_commander() {
     let rows = TableView::Complete(TableRows::ActiveAbilities(vec![
@@ -2456,18 +2349,14 @@ fn the_ability_grid_takes_vector_order_and_the_last_visible_commander() {
     let mut tokens = Some(Vec::new());
     update_abilities(&mut tokens, Sight::Full, Some(Some(11)), 7, &abilities);
     assert_eq!(tokens.as_ref().map(Vec::len), Some(2));
-    // A partly seen member and one without a commander leave the grid alone.
     update_abilities(&mut tokens, Sight::Partial, Some(Some(22)), 7, &abilities);
     update_abilities(&mut tokens, Sight::Full, Some(None), 7, &abilities);
     assert_eq!(tokens.as_ref().map(Vec::len), Some(2));
-    // The last commander wins, even with nothing active.
     update_abilities(&mut tokens, Sight::Full, Some(Some(33)), 7, &abilities);
     assert_eq!(tokens, Some(Vec::new()));
-    // An unrecorded commander makes the grid unknown.
     update_abilities(&mut tokens, Sight::Full, None, 7, &abilities);
     assert_eq!(tokens, None);
 
-    // A truncated hour or an unknown country cannot say a commander has nothing.
     let truncated = TableView::Truncated {
         rows: TableRows::ActiveAbilities(vec![ability(101, 0, Some(11), 0, b"first")]),
         missing: 1,
@@ -2489,20 +2378,16 @@ fn the_ability_grid_takes_vector_order_and_the_last_visible_commander() {
 fn ability_items_step_right_from_the_item_centre_without_centring_the_sprite() {
     let mut grid = layouts().abilities.unwrap();
     let sheet = sheet("GFX_ability_force_attack_animated", 1, [32, 32]);
-    // The shipped item: `orientation = center` only moves the anchor to the 20 x 20 item's
-    // centre (10, 10); the 25.6-pixel sprite (32 at 0.8) hangs right and down from it.
     let first = land::ability_rect(&sheet, &grid, [100.0, 100.0], 0);
     assert_eq!(first, [165.0, 101.0, 25.6, 25.6]);
     let second = land::ability_rect(&sheet, &grid, [100.0, 100.0], 1);
     assert_eq!(second[0] - first[0], 25.0);
     assert_eq!(second[1], first[1]);
-    // `centerPosition = yes` centres it on that anchor, halving in whole pixels.
     grid.centred = true;
     assert_eq!(
         land::ability_rect(&sheet, &grid, [100.0, 100.0], 0),
         [153.0, 89.0, 25.6, 25.6]
     );
-    // Without `orientation = center` the anchor is the item's upper left.
     grid.from_centre = false;
     grid.centred = false;
     assert_eq!(
@@ -2524,8 +2409,6 @@ fn a_mixed_column_takes_the_first_width_and_accumulated_heights() {
     assert_eq!(land::column_origin([0.0, 0.0], &[]), None);
 }
 
-/// a moving gun's last ordinary province's controller against its logical
-/// owner. No controller or the owner itself is no enemy; missing relations cannot say.
 #[test]
 fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
     use replay_data::{
@@ -2617,8 +2500,6 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
             (4, Ok(false))
         ])
     );
-    // Without a recorded packet (current recordings store none) the cells
-    // derive from the hour's WarRelations: 100 is at war with 200 only.
     *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
         reason: "directed observations incomplete".into(),
     };
@@ -2632,13 +2513,10 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
             (4, Ok(false))
         ])
     );
-    // The derived answer follows WarRelations, not the absent packet.
     *frame.tables[TableId::WarRelations.index()] =
         TableView::Complete(TableRows::WarRelations(Vec::<WarRelationRow>::new()));
     let inputs = gun_inputs(&frame, &links, Ok(&subunit_keys()));
     assert_eq!(inputs.destination_enemy[&1], Ok(false));
-    // Without the hour's WarRelations the derivation refuses by name, while
-    // an uncontrolled destination still needs no war operand.
     *frame.tables[TableId::WarRelations.index()] = TableView::Unavailable {
         reason: "war relations incomplete".into(),
     };
@@ -2650,7 +2528,6 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
     assert_eq!(inputs.destination_enemy[&3], Ok(false));
 }
 
-/// The authored sub-units the gun tests name.
 fn subunit_keys() -> TokenKeys {
     TokenKeys::new(&["railway_gun".to_owned()])
 }
@@ -2694,7 +2571,6 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
             },
         ]));
     let inputs = gun_inputs(&frame, &BTreeMap::new(), Ok(&subunit_keys()));
-    // The spelling differs from the authored key only in ASCII case.
     assert_eq!(
         inputs.names,
         BTreeMap::from([
@@ -2710,8 +2586,6 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
             "railway gun sub-unit: token 8 is not in LexicalTokens".to_owned(),
         ])
     );
-    // That authored key is what the class-13 join compares and what names
-    // the counter's icon; a refused gun has none and draws no counter.
     let rows = inputs.rows.as_ref().expect("the census is complete");
     let name_of = |gun: &RailwayGunCounterInputRow| inputs.names[&gun.subunit_token].as_deref().ok();
     assert_eq!(name_of(&rows[0]), Some("railway_gun"));
@@ -2732,8 +2606,6 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
             .unwrap(),
         "the join compares the authored key, not the token's spelling"
     );
-    // The railway gun's icon: its authored key, no custom icon, and the NATO frame
-    // when the option is on.
     for (nato, frame) in [
         (false, templates::PICTORIAL_FRAME),
         (true, templates::NATO_FRAME),
@@ -2749,7 +2621,6 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
             .refused
             .contains("railway gun sub-unit: sub-units unavailable: no units")
     );
-    // Two authored keys equal under the fold are refused by name.
     let ambiguous = TokenKeys::new(&BTreeSet::from([
         "railway_gun".to_owned(),
         "RAILWAY_GUN".to_owned(),
@@ -2761,8 +2632,6 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
     ));
 }
 
-/// `assign` carries the refused tokens, and clears them when the next
-/// draw refuses none.
 #[test]
 fn an_assigned_report_copies_and_clears_its_refused_tokens() {
     let refusing = CounterReport {
@@ -2787,8 +2656,6 @@ fn an_assigned_report_copies_and_clears_its_refused_tokens() {
     assert_eq!(kept.warnings().count(), 0);
 }
 
-/// Naval-base, naval-HQ and facility icons not drawn reach the diagnostics by kind and
-/// reason, and missing facility sprites by name, after the refused tokens.
 #[test]
 fn base_icon_refusals_reach_the_diagnostics_by_reason() {
     let mut refusing = CounterReport {
@@ -2825,8 +2692,6 @@ fn base_icon_refusals_reach_the_diagnostics_by_reason() {
     assert_eq!(kept.warnings().count(), 0);
 }
 
-/// Task forces the hour does not draw, and moving ones standing for an unplaced route,
-/// reach the diagnostics by reason and saved id, and go when a later hour draws them.
 #[test]
 fn task_force_refusals_reach_the_diagnostics_by_reason_and_id() {
     let mut refusing = CounterReport::default();
@@ -2909,7 +2774,6 @@ fn gun_inputs_need_the_whole_census_and_keep_rail_status_per_province() {
         inputs.names,
         BTreeMap::from([(3, Ok("railway_gun".to_owned()))])
     );
-    // The cooldown census is unavailable, so no province's rail status is known.
     assert_eq!(inputs.rail, None);
     *frame.tables[TableId::RailCooldowns.index()] =
         TableView::Complete(TableRows::RailCooldowns(vec![RailCooldownRow {
@@ -2935,7 +2799,6 @@ fn gun_inputs_need_the_whole_census_and_keep_rail_status_per_province() {
             }
         )]))
     );
-    // The raw count survives loss of the unrelated sorted-pair census.
     *frame.tables[TableId::RailEdges.index()] = TableView::Unavailable {
         reason: "sorted pairs unreadable".into(),
     };
@@ -2943,7 +2806,6 @@ fn gun_inputs_need_the_whole_census_and_keep_rail_status_per_province() {
         gun_inputs(&frame, &BTreeMap::new(), Ok(&subunit_keys())).rail,
         inputs.rail
     );
-    // A complete old/stale/refused domain remains unknown, never zero.
     for selection in [
         Recorded::NotRecorded,
         None.into(),
@@ -3007,8 +2869,6 @@ fn naval_context<'a>(
     }
 }
 
-/// The game joins foreign task forces of one allegiance whoever owns them, and keeps
-/// the viewer's own fleets apart.
 #[test]
 fn sea_items_join_by_allegiance_and_own_fleets_stay_apart() {
     use replay_data::rows::TaskForceRow;
@@ -3018,7 +2878,6 @@ fn sea_items_join_by_allegiance_and_own_fleets_stay_apart() {
         (2, Allegiance::Allied),
         (3, Allegiance::Enemy),
     ]);
-    // The default vision views as slot 0.
     let vision = Vision::default();
     let native = NativeInputs::default();
     let context = naval_context(&vision, &native, BTreeMap::new());
@@ -3051,7 +2910,6 @@ fn sea_items_join_by_allegiance_and_own_fleets_stay_apart() {
     let (own_a, own_b) = (force(20, 5), force(21, 6));
     assert!(!join(&unit(&own_a, 0), &unit(&own_b, 0)));
     assert!(join(&unit(&own_a, 0), &unit(&force(22, 5), 0)));
-    // Country-colour mode compares roster owners.
     for coarse in [false, true] {
         let country = JoinRules {
             coarse,
@@ -3066,7 +2924,6 @@ fn sea_items_join_by_allegiance_and_own_fleets_stay_apart() {
     }
 }
 
-/// A nonzero fleet without its recorded roster stays unknown; fleet zero is not reserve.
 #[test]
 fn reserve_is_unknown_without_the_recorded_roster() {
     let vision = Vision::default();
@@ -3076,7 +2933,6 @@ fn reserve_is_unknown_without_the_recorded_roster() {
     assert_eq!(context.reserve(0), Some(false));
 }
 
-/// The bar means fill from recorded ratios and hide without operands or members.
 #[test]
 fn naval_bars_fill_or_hide() {
     assert_eq!(
@@ -3088,7 +2944,6 @@ fn naval_bars_fill_or_hide() {
         NavalBars::Unknown(naval::BARS_UNRECORDED.to_owned())
     );
     assert_eq!(mean_bars(std::iter::empty()), NavalBars::Hidden);
-    // An unusable ship's sentinel flows through the native sum, exactly as recorded.
     assert_eq!(
         mean_bars([Some((counter_inputs::UNDEFINED, counter_inputs::UNDEFINED))].into_iter()),
         NavalBars::Fill(
@@ -3098,11 +2953,6 @@ fn naval_bars_fill_or_hide() {
     );
 }
 
-/// A column of allied infantry whose recorded order decides plate order.
-///
-/// Two disclosing owners never share a plate below the coarse switch, so Romania
-/// and Hungary have two plates regardless of arrival order. The recorded province
-/// unit order decides which leads. Two owners that do not disclose share one plate.
 #[test]
 fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
     let countries = countries([
@@ -3120,13 +2970,10 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
         priorities: [(10, 7), (20, 7), (21, 7)].into(),
         ..Default::default()
     };
-    // Handles: Romania's two divisions sort before Hungary's by id.
     let rom_a = land_unit(0x10, 1, 10, 10, true);
     let rom_b = land_unit(0x11, 1, 10, 10, true);
     let hun = land_unit(0x20, 2, 20, 21, true);
 
-    // An owner that does not disclose is compared on the fake-preferred template alone, so
-    // two of them share one plate.
     let hidden: Vec<LandUnit> = [&rom_a, &hun]
         .into_iter()
         .map(|unit| LandUnit {
@@ -3145,7 +2992,6 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].len(), 2);
 
-    // Cold handle order leads with Romania's two divisions, Hungary's own plate below.
     let cold = land_fit(
         [&rom_a, &rom_b, &hun],
         &templates,
@@ -3158,7 +3004,6 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
         .map(|item| (item[0].owner, item.len()))
         .collect();
     assert_eq!(cold, vec![(1, 2), (2, 1)]);
-    // The coarse pass merges the two allies into one plate of three.
     let coarse = land_fit(
         [&rom_a, &rom_b, &hun],
         &templates,
@@ -3168,7 +3013,6 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
     );
     assert_eq!(coarse.len(), 1);
     assert_eq!(coarse[0].len(), 3);
-    // Country-colour mode compares roster owners.
     let by_country = JoinRules {
         coarse: true,
         color_mode: CounterColorMode::Country,
@@ -3187,14 +3031,12 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
         .collect();
     assert_eq!(split, vec![(1, 2), (2, 1)]);
 
-    // The recorded province unit order walks Hungary first.
     let order =
         counter_order::RecordedOrder::from_rows(&[replay_data::rows::ProvinceUnitOrderRow {
             province: 500,
             mixed: vec![0x20, 0x10, 0x11],
             naval: Vec::new(),
         }]);
-    // As land_counters admits them: sorted by their recorded ordinal.
     let mut admitted: Vec<LandUnit> = [&rom_a, &rom_b, &hun]
         .into_iter()
         .map(|unit| LandUnit {
@@ -3214,7 +3056,6 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
         .iter()
         .map(|item| (item[0].flag_owner, item.len()))
         .collect();
-    // Two plates, Hungary above Romania: the game's separate plates and their order.
     assert_eq!(plates, vec![(2, 1), (1, 2)]);
 }
 
@@ -3271,28 +3112,21 @@ fn lead_type_and_supply_follow_different_ends_of_the_admitted_members() {
             .collect::<Vec<_>>();
         assert_eq!(counter_status::stack_supply(&visible), supply);
     }
-    // A disclosed custom picture overrides the fake-preferred type; hidden
-    // custom pictures and absent custom pictures both use the alternate.
     let icon = |template, alternate, shared, nato| {
         icons.icon(template, alternate, shared, nato, &declared)
     };
     assert_eq!(icon(30, 20, true, false), Some(custom));
     assert_eq!(icon(30, 20, false, false), Some(plain_b.clone()));
     assert_eq!(icon(10, 20, true, false), Some(plain_b.clone()));
-    // NATO counters drop the custom picture of a template that does not keep it, and the
-    // fake-preferred type takes its NATO frame.
     let nato_b = templates::type_icon("type_b", -1, true, &declared);
     assert_eq!(nato_b.frame, templates::NATO_FRAME);
     assert_eq!(icon(30, 20, true, true), Some(nato_b));
-    // A custom index the content does not declare falls through to the plain type.
     assert_eq!(
         icons.icon(30, 20, true, false, &|name| name != "GFX_div_templ_7_small"),
         Some(plain_b)
     );
 }
 
-/// Pool and grouping history can produce either order at the same hour and
-/// camera. Retain each view's established history.
 #[test]
 fn mixed_plate_lead_follows_source_order_not_majority_or_strength() {
     let countries = countries([(1, Allegiance::Allied), (2, Allegiance::Allied)]);
@@ -3326,8 +3160,6 @@ fn mixed_plate_lead_follows_source_order_not_majority_or_strength() {
     assert_eq!(members(&a[0]), members(&b[0]));
 }
 
-/// The census's port counters read capital totals (Danzig 2) and a battleship silhouette that
-/// no earlier format could produce. Format 23's operands give both, over every member.
 #[test]
 fn a_port_counter_sums_capitals_over_every_member_and_selects_its_hull() {
     use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
@@ -3372,14 +3204,11 @@ fn a_port_counter_sums_capitals_over_every_member_and_selects_its_hull() {
     };
     let cells = inputs.cells(&[10, 11], true);
     assert_eq!(cells.capitals, Some(2));
-    // Two battleships of one variant tie on strength; the first stays, and both name it.
     assert_eq!(
         cells.hull,
         counter_order::HullIcon::Resolved(Some(b"battleship".to_vec()))
     );
-    // No carrier: the air-base child is settled hidden even without a viewer.
     assert_eq!(cells.carrier, BTreeSet::from([None]));
-    // A task force with an empty roster adds nothing; a legacy row leaves the count unknown.
     assert_eq!(inputs.cells(&[10, 99], false).capitals, Some(1));
     let mut legacy = models[1].clone();
     legacy.counter = None;
@@ -3392,10 +3221,6 @@ fn a_port_counter_sums_capitals_over_every_member_and_selects_its_hull() {
     assert_eq!(cells.hull, counter_order::HullIcon::Unrecorded);
 }
 
-/// A division or task force offers a unit source while the camera admits its
-/// province. The admission box is 70 high with side planes ten units out. A
-/// province just past the right edge offers a source; a province south of
-/// the view that requires a 256-high column does not.
 #[test]
 fn only_provinces_the_camera_admits_offer_unit_sources() {
     let camera = Placement {
@@ -3409,15 +3234,9 @@ fn only_provinces_the_camera_admits_offer_unit_sources() {
     let sources: Vec<u32> = (0..=7)
         .filter(|&province| admission.admits_province(&bounds, province))
         .collect();
-    // Neither the absent box nor province zero offers a source.
     assert_eq!(sources, [1, 2, 5, 6]);
 }
 
-/// One land combat (62, attacked by `attackers`) over recorded Divisions
-/// (1 -> 11, 2 -> 22, 3 -> 33, 6 -> 66, complete) and
-/// DivisionMovement rows (complete; 1 and 4 without a map entity, 2, 3, 5
-/// and 6 with one; 2 and 3 with a resolved kind, 6 with an unplaced route), read through
-/// `LandMarkers::read` with an indexed flag.
 fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMarkers {
     use replay_data::{rows::DivisionMovementRow, rows::DivisionRow, rows::LandCombatRow};
     let mut frame = DecodedFrame {
@@ -3480,10 +3299,6 @@ fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMar
     .unwrap()
 }
 
-/// Walk the attackers in order and skips only a null map
-/// entity. A recorded null entity is skipped without a
-/// province; an attacker whose entity is unrecorded is a gap naming the
-/// combat however complete the rosters are.
 #[test]
 fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
     use viewer_foundation::engaged::Engaged;
@@ -3502,18 +3317,14 @@ fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
         assert!(markers.gaps.is_empty(), "{:?}", markers.gaps);
         markers.markers[0].attacker
     };
-    // Unit 1 has no map entity; unit 2 is the first that does.
     assert_eq!(placed(vec![1, 2, 3]), Some((22, 9)));
     assert_eq!(placed(vec![1]), None);
-    // Unit 4's null entity is recorded: skipped though it has no Divisions row.
     assert_eq!(placed(vec![4, 2]), Some((22, 9)));
     let refused = |attackers: Vec<u64>| {
         let markers = land_markers(attackers, Engaged::No, unseen());
         assert!(markers.markers.is_empty());
         markers.gaps
     };
-    // Unit 7 has no DivisionMovement row: complete Divisions and
-    // DivisionMovement do not record its entity.
     assert_eq!(
         refused(vec![7, 2]),
         BTreeMap::from([(
@@ -3521,10 +3332,7 @@ fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
             BTreeSet::from([62])
         )])
     );
-    // Nothing after the first mapped attacker is read: unit 8 is unrecorded.
     assert_eq!(placed(vec![4, 3, 8]), Some((33, 0)));
-    // A mapped attacker whose route content cannot place has no native
-    // kind to anchor on: unknown, never the counter's standstill fallback.
     assert_eq!(
         refused(vec![1, 6, 2]),
         BTreeMap::from([(
@@ -3532,7 +3340,6 @@ fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
             BTreeSet::from([62])
         )])
     );
-    // A mapped attacker whose Divisions row is missing has no province.
     assert_eq!(
         refused(vec![1, 5]),
         BTreeMap::from([(
@@ -3542,9 +3349,6 @@ fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
     );
 }
 
-/// Keep a combat icon only while both sides' country lists are non-empty. A
-/// missing side row leaves its existence unknown; an empty list draws nothing.
-/// An unseen icon without a carried frame uses its authored initial frame.
 #[test]
 fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
     use viewer_foundation::{
@@ -3615,11 +3419,6 @@ fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
     );
 }
 
-/// The game turns the naval progress by the attacking side's countries
-/// in order: the viewer or a sharing country turns it, a
-/// country at war with the viewer stops the walk unturned, and
-/// any other is passed. GER (100 -> 0) views; ITA (102 -> 2) is its
-/// partner; SOV (101 -> 1) is at war with it; ROM (103 -> 3) is neither.
 #[test]
 fn naval_progress_turns_by_the_first_attacker_the_walk_decides() {
     use replay_data::{rows::FactionMemberRow, rows::WarRelationRow};
@@ -3683,8 +3482,6 @@ fn naval_progress_turns_by_the_first_attacker_the_walk_decides() {
     assert_eq!(turned(&whole, vec![102, 101]), decided(true));
     assert_eq!(turned(&whole, vec![103, 102]), decided(true));
     assert_eq!(turned(&whole, vec![103]), decided(false));
-    // Without whole relations the viewer itself still turns it; an
-    // earlier entry nothing decides leaves it unknown, named.
     assert_eq!(turned(&partial, vec![100, 101]), decided(true));
     assert_eq!(
         turned(&partial, vec![101, 100]),
@@ -3731,14 +3528,10 @@ fn undecided_land_markers_reach_the_diagnostics_and_survive_assign() {
             ),
         ]
     );
-    // Once the index covers the hour the reasons clear with the next frame.
     kept.assign(&CounterReport::default());
     assert_eq!(kept.combat_gap_lines().count(), 0);
 }
 
-/// A flag rebuilt as a load keeps its value, and its combat is named
-/// under where the flag came from; an indexed one is not. the game's
-/// flag for the viewer (1) on the attacking side draws the combat seen.
 #[test]
 fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
     use replay_data::{rows::LandCombatRow, rows::LandCombatSideRow};
@@ -3809,12 +3602,6 @@ fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
     assert!(markers.limits.is_empty());
 }
 
-/// Every counter part that asks the game keeps a proven positive
-/// and never takes an unproven negative as no. GER (raw 100, slot 0)
-/// views; ITA (102 -> 2) is its faction partner and SOV (101 -> 1) is not.
-/// With `FactionMembers` whole each answer is decided; unavailable or
-/// truncated, with fog on or off, only GER itself is proven and every
-/// negative is refused under that input.
 #[test]
 fn counter_parts_never_take_unknown_vision_sharing_as_no() {
     use replay_data::rows::FactionMemberRow;
@@ -3849,12 +3636,7 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
         Vision::read(&frame, &links, &tags, &choice, Err("no fog content")).unwrap()
     };
     let missing = SharingUnknown::Relations("FactionMembers");
-    // One plate question: ITA's division against SOV's representative, one
-    // allegiance, one template. Disclosure keeps two owners apart;
-    // without it they share a plate.
     let countries = Countries::default();
-    // A template with a custom picture (index 3): the disclosed glyph is the picture, the
-    // other the plain sub-unit's.
     let templates = TemplateIcons {
         by_template: [(
             10,
@@ -3887,7 +3669,6 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
             },
         ]
         .map(|factions| read(factions, fog));
-        // Land plate join, first fit and type glyph (land.rs).
         let mut ita = land_unit(2, 2, 10, 10, false);
         ita.shared_vision = whole.shares_vision_proven(2);
         assert_eq!(
@@ -3914,7 +3695,6 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
             assert_eq!(fitted.len(), 2, "an undecided join is not taken");
             assert_eq!(undecided, BTreeMap::from([(2, missing)]));
             assert_eq!(glyph_disclosure(&ita, &templates), Err(missing));
-            // The viewer's own unit still proves its disclosure.
             let mut own = land_unit(3, 0, 10, 10, false);
             own.shared_vision = vision.shares_vision_proven(0);
             assert_eq!(glyph_disclosure(&own, &templates), Ok(true));
@@ -3922,12 +3702,6 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
     }
 }
 
-/// The game mirrors a seen marker when a defender shares vision with
-/// the viewer. With the viewer's relations unavailable or
-/// truncated, `Vision` keeps only the viewer as sharing, so an indexed
-/// Yes flag must not draw the attacker's percentage for an allied
-/// defender: the side is unknown, with fog on or off. A defender that is
-/// the viewer itself still proves the defending side.
 #[test]
 fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
     use replay_data::{
@@ -3968,8 +3742,6 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
                 .to_vec(),
         )),
     );
-    // The attacker's map entity is recorded as null: both anchors stay
-    // on the defender.
     set(
         TableId::DivisionMovement,
         TableView::Complete(TableRows::DivisionMovement(vec![
@@ -4019,9 +3791,6 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
     };
     with_defenders(&mut frame, vec![2], vec![]);
     for fog in [true, false] {
-        // Whole relations: ally 2 defends, so the viewer's side is 75:
-        // VAL 75 in fixed point; text and its content-dependent
-        // limitation are decided when the marker is laid out.
         *frame.tables[TableId::FactionMembers.index()] =
             TableView::Complete(TableRows::FactionMembers(allies.to_vec()));
         let whole = read(&frame, fog);
@@ -4052,7 +3821,6 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
             );
         }
     }
-    // The viewer itself among the defenders proves the side without relations.
     with_defenders(&mut frame, vec![2], vec![1]);
     for fog in [true, false] {
         assert_eq!(
@@ -4171,13 +3939,10 @@ fn hq_portraits_require_runtime_leader_data_even_with_an_authored_character() {
 #[test]
 fn a_combat_icon_sits_between_both_anchors_across_the_seam() {
     const W: f32 = 5632.0;
-    // Defender and attacker anchors have distinct heights and nearby map positions.
     let (midpoint, angle) = combat_midpoint(W, [3104.32, 9.7, 1606.0], [3086.12, 10.6, 1610.0]);
     assert!((midpoint[0] - 3095.22).abs() < 1e-3);
     assert!((midpoint[2] - 1608.0).abs() < 1e-3);
-    // The attacker lies west and a little north: the wedge points east, slightly south.
     assert!((angle + 1.787).abs() < 1e-3, "{angle}");
-    // An attacker recorded on the far side of the seam is read near the defender.
     let (midpoint, _) = combat_midpoint(W, [10.0, 0.0, 0.0], [W - 10.0, 0.0, 0.0]);
     assert!(midpoint[0].abs() < 1e-3);
     let (same, angle) = combat_midpoint(W, [5.0, 1.0, 2.0], [5.0, 1.0, 2.0]);
@@ -4185,40 +3950,29 @@ fn a_combat_icon_sits_between_both_anchors_across_the_seam() {
     assert!((angle.abs() - std::f32::consts::PI).abs() < 1e-6);
 }
 
-/// The ladder: the frames are status glyphs, not levels, and
-/// they run in "no ships / ships in port" pairs.
 #[test]
 fn the_naval_base_frame_pairs_ships_with_the_known_and_foreign_arms() {
-    // A port we are not shown keeps the plain anchor.
     assert_eq!(naval_base_frame(false, true, false, false), 0);
     assert_eq!(naval_base_frame(false, true, false, true), 1);
-    // Our own port.
     assert_eq!(naval_base_frame(true, false, false, false), 2);
     assert_eq!(naval_base_frame(true, false, false, true), 3);
-    // The list we are in adds the red prohibition.
     assert_eq!(naval_base_frame(true, false, true, false), 4);
     assert_eq!(naval_base_frame(true, false, true, true), 5);
-    // A known foreign port takes the permission flag, and both together.
     assert_eq!(naval_base_frame(true, true, false, false), 6);
     assert_eq!(naval_base_frame(true, true, false, true), 7);
     assert_eq!(naval_base_frame(true, true, true, false), 8);
     assert_eq!(naval_base_frame(true, true, true, true), 9);
-    // The prohibition never reaches a port we are not shown.
     assert_eq!(naval_base_frame(false, true, true, true), 1);
 }
 
 #[test]
 fn a_quarter_turned_bar_keeps_its_left_edge_and_its_vertical_centre() {
     let layouts = layouts();
-    // The synthetic quarter-turn fixture swaps dimensions and preserves the
-    // bar's centred authored position.
     let origin = [943.0, 846.0];
     let rect = turned_rect(&layouts.land.as_ref().unwrap().bar_org, [3.0, 17.0], origin);
     assert_eq!(rect, [957.0, 861.0, 17.0, 3.0]);
-    // The strength bar sits four pixels below it, at y 865..867.
     let rect = turned_rect(&layouts.land.as_ref().unwrap().bar_str, [3.0, 17.0], origin);
     assert_eq!(rect, [957.0, 865.0, 17.0, 3.0]);
-    // A child with no rotation at all is unmoved and unturned.
     let upright = Child {
         sprite: "GFX_test".into(),
         at: [4.0, 5.0],
@@ -4239,7 +3993,6 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
     let layouts = layouts();
     let reference = 310.178;
     let defines = CounterDefines::VANILLA;
-    // All four counter kinds remain visible at this camera height.
     assert!(visible(reference, defines.icons_cutoff));
     assert!(visible(reference, defines.air_base_cutoff));
     assert!(visible(reference, defines.naval_base_cutoff));
@@ -4247,9 +4000,7 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
     assert!(!visible(1000.0, defines.icons_cutoff));
     assert!(visible(1000.0, defines.naval_combat_cutoff));
     assert!(!visible(1600.0, defines.land_combat_cutoff));
-    // the game compares strictly.
     assert!(!visible(defines.icons_cutoff, defines.icons_cutoff));
-    // The zoomed-in lift is off at this height and on below the unit cutoff.
     let units = defines.units_cutoff;
     assert_eq!(
         zoom_lift(layouts.columns.as_ref().unwrap(), units, reference),
@@ -4268,7 +4019,6 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
 #[test]
 fn counter_defines_read_each_define_through_its_native_getter() {
     let defines = installed_content_core::defines::Defines::new().unwrap();
-    // Every other map mode's table: its icons' priorities count up from 40 + 12 * its index.
     let others = PriorityTable::ALL[1..]
         .iter()
         .enumerate()
@@ -4363,16 +4113,12 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     defines.load("mod.lua", text.as_bytes()).unwrap();
     let read = CounterDefines::read(&defines).unwrap();
     assert_eq!(read.type_colors, type_tint::Colors::TEST);
-    // fixed5 keeps five decimals where a plain number would keep 12.345674.
     assert_eq!(read.icons_cutoff, 12.34567);
     assert_eq!(read.movement_speeds, [12.0, 6.5]);
-    // Integer defines truncate; the game compares strictly, and the
-    // naval bubble's small form takes the same answer.
     assert_eq!(read.coarse_distance, [500.0, 350.0]);
     assert!(!read.coarse(500.0, false));
     assert!(read.coarse(500.01, false));
     assert!(!read.coarse(400.0, false));
-    // The air and navy modes group by country from the strategic distance.
     assert!(read.coarse(400.0, true));
     assert!(!read.coarse(350.0, true));
     let default = |icon| read.priorities.get(PriorityTable::Default, icon);
@@ -4401,7 +4147,6 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     );
     assert_eq!(default(PriorityIcon::AdjacencyRule), 11);
     assert_eq!(default(PriorityIcon::Resource), 10);
-    // Each map mode's table is its own: the navy table is the second after the default one.
     assert_eq!(
         read.priorities
             .get(PriorityTable::StrategicNavy, PriorityIcon::NavalBase),
@@ -4417,7 +4162,6 @@ fn counter_defines_read_each_define_through_its_native_getter() {
             .get(PriorityTable::StrategicAir, PriorityIcon::AirMission),
         51
     );
-    // The group icon's priority takes over from the province distance on.
     assert_eq!(read.stack_priority(89.9, PriorityTable::Default), 10);
     assert_eq!(read.stack_priority(90.0, PriorityTable::Default), 11);
     assert_eq!(read.stack_priority(89.9, PriorityTable::StrategicAir), 40);
@@ -4456,7 +4200,6 @@ fn children_take_their_declaration_order_and_their_font() {
     let count = text_child(window, "count_txt", LAND_WINDOW, &mut missing).unwrap();
     assert!(plate.order < flag.order && flag.order < count.order);
     assert_eq!(count.font.as_deref(), Some("modded_12"));
-    // An undeclared child is reported and sorts last.
     let absent = child(
         window,
         native::Kind::Icon,
@@ -4473,8 +4216,6 @@ fn children_take_their_declaration_order_and_their_font() {
 fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Independently authored windows share a synthetic button sprite while
-    // retaining the control names required by the counter binders.
     let document = layout_gui(
         br#"guiTypes = {
             containerWindowType = { name = "unit_counter" size = { width = 81 height = 29 }
@@ -4505,7 +4246,6 @@ fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
         );
         assert_eq!(plate.at, [3.0, 5.0]);
         let mut batch = Batch::default();
-        // Both detailed counters submit their resolved plate through draw_child.
         draw_child(
             &mut batch,
             &plate_sheet,
@@ -4577,9 +4317,6 @@ fn counter_button_sprite_aliases_and_frames_match_native_button_drawing() {
     }
 }
 
-/// Land plates take the counter colour mode as naval ones do: the allegiance tint, or the
-/// logical owner's current UI colour (its overlord's for a subject that takes it); a plate
-/// whose colour the hour cannot give is counted on the diagnostics lines and survives assign.
 #[test]
 fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() {
     let tints = allegiance::Tints::VANILLA;
@@ -4604,8 +4341,6 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     assert_eq!(color(country, Some(4)), Ok([0.5, 0.25, 0.125, 1.0]));
     assert!(color(country, None).unwrap_err().contains("logical owner"));
     assert!(color(country, Some(9)).is_err());
-    // A subject whose colour source the hour cannot decide refuses its plate by the
-    // missing operand, rather than drawing its own colour.
     let undecided = Countries {
         ui_colors: UiColors {
             colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0]), (5, [1.0; 4])]),
@@ -4635,8 +4370,6 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     assert_eq!(kept.land_counter_gaps, report.land_counter_gaps);
 }
 
-/// The naval result icons' undecided counts reach the diagnostics lines the window, the map
-/// details and the dump all print; the combat icons' causes are the combat gap lines.
 #[test]
 fn undecided_naval_icons_reach_the_warnings() {
     let report = CounterReport {
@@ -4663,9 +4396,6 @@ fn undecided_naval_icons_reach_the_warnings() {
     assert_eq!(kept.warnings().count(), 0);
 }
 
-/// Complete inputs still disclose what the drawn naval combat icons cannot reproduce of the
-/// client's retained icons: the rebuild, and the base frame a spill-over icon takes, on the
-/// same diagnostics lines, and only while such an icon is drawn.
 #[test]
 fn retained_naval_icon_limits_reach_the_warnings_when_drawn() {
     let report = CounterReport {
@@ -4693,7 +4423,6 @@ fn retained_naval_icon_limits_reach_the_warnings_when_drawn() {
     assert_eq!(kept.warnings().count(), 0);
 }
 
-/// `centerPosition` starts false and retains its value on failed assignments.
 #[test]
 fn active_ability_center_position_is_a_native_boolean() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4755,12 +4484,9 @@ fn the_gun_window_and_ability_grid_are_read_or_refused_by_name() {
     assert_eq!((grid.from_centre, grid.centred), (true, false));
     let gun = gun_counter(&document, &mut missing).unwrap().unwrap();
     assert_eq!((gun.size, gun.action.at), ([58.0, 24.0], [54.0, 7.0]));
-    // The gun window's other children are absent here and reported, not invented.
     assert!(missing.contains(&format!("{GUN_WINDOW}.bar_str")));
     assert!(unsupported.is_empty());
 
-    // A two-row grid, and on its own an item anchored anywhere but its upper left or
-    // centre, is refused rather than approximated.
     for (rows, orientation) in [(2, "center"), (1, "LOWER_RIGHT")] {
         let source = format!(
             r#"guiTypes = {{
@@ -4795,7 +4521,6 @@ fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
     let names = layouts.sprite_names();
     assert!(names.contains(&"GFX_onmap_action_icon"));
     assert!(names.contains(&"GFX_onmap_unit_counter"));
-    // The natively laid-out windows' sprites come from their template walk.
     assert!(!names.contains(&"GFX_onmap_naval_unit_counter"));
     let walked = NativeWindows::read(
         format!(
@@ -4816,10 +4541,7 @@ fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
     ] {
         assert!(walked.contains(name), "{}", String::from_utf8_lossy(name));
     }
-    // The flag stripe carries no `texturefile`, so it is never loaded as a
-    // sprite; the atlas stands in for it.
     assert!(!names.contains(&"GFX_mapicon_unit_flag_stripe"));
-    // `GFX_mapicon_unit_bar_org` is named by both counters and loaded once.
     assert_eq!(
         names
             .iter()
@@ -4829,8 +4551,6 @@ fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
     );
 }
 
-/// The rest of the game: negative lengths, `%%`, percentage rounding and
-/// each `preserve_aspect_ratio` branch.
 #[test]
 fn a_size_block_evaluates_as_the_native_evaluator_does() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4848,18 +4568,14 @@ fn a_size_block_evaluates_as_the_native_evaluator_does() {
         assert!(grid.refusals().is_empty(), "{:?}", grid.refusals());
         evaluate_size(&grid.grid().unwrap().size, Some(parent), position, "size").ok()
     };
-    // A negative length measures back from the parent's far edge past the position.
     assert_eq!(
         evaluate("width = -5 height = 100%%", [33, 43], [30, 30]),
         Some([-2, 13])
     );
-    // -3.3 rounds away from zero to -3 before the negative rule applies.
     assert_eq!(
         evaluate("width = -10% height = 10%", [33, 43], [0, 0]),
         Some([30, 4])
     );
-    // Too narrow for 2:1: the height is refitted, or, when `min` holds it, the width is
-    // widened up to `max`.
     let aspect = "width = 100 height = 50 preserve_aspect_ratio = yes";
     assert_eq!(
         evaluate(&format!("{aspect} max = {{ width = 60 }}"), [0; 2], [0; 2]),
@@ -4877,7 +4593,6 @@ fn a_size_block_evaluates_as_the_native_evaluator_does() {
         evaluate(&format!("{aspect} min = {{ height = 80 }}"), [0; 2], [0; 2]),
         Some([160, 80])
     );
-    // Too wide: the width is refitted, or, when `min` holds it, the height up to `max`.
     assert_eq!(
         evaluate(&format!("{aspect} max = {{ height = 10 }}"), [0; 2], [0; 2]),
         Some([20, 10])
@@ -4894,12 +4609,9 @@ fn a_size_block_evaluates_as_the_native_evaluator_does() {
         evaluate(&format!("{aspect} min = {{ width = 200 }}"), [0; 2], [0; 2]),
         Some([200, 100])
     );
-    // Without a bound the ratio already holds.
     assert_eq!(evaluate(aspect, [0; 2], [0; 2]), Some([100, 50]));
 }
 
-/// Read the first member's byte: "?" below 100, ranges from 100, and the
-/// hull and pride only from 150. A combat tile can hold members below 150.
 #[test]
 fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
     use replay_data::rows::TaskForceRow;
@@ -4939,7 +4651,6 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
         );
         assert_eq!(count == "?", byte < 100, "{byte}: {count}");
     }
-    // An at-sea counter follows its hidden members, whatever the first byte.
     let unit = NavalUnit {
         force: &force,
         ordinal: 0,
@@ -4956,13 +4667,10 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
     sea.status.pride = Some(true);
     assert!(sea.no_intel_type());
     assert_eq!(sea.shows_pride(), Some(true));
-    // An unsettled pride flag decides nothing, unless the byte hides the icon anyway.
     sea.status.pride = None;
     assert_eq!(sea.shows_pride(), None);
 }
 
-/// The naval grids' gaps reach the diagnostics through `warnings()` with their counts,
-/// survive `assign`, and clear with the next frame that has none.
 #[test]
 fn naval_grid_gaps_reach_the_warnings_and_survive_assign() {
     let mut source = CounterReport::default();
@@ -5113,17 +4821,12 @@ fn a_counter_flag_takes_its_group_flag_and_falls_back_to_its_tag() {
     );
     assert_eq!(batch.quads.len(), 1);
     let (_, germany) = countries.flag_now(&flags, 1).unwrap();
-    // A tag with no flag for its group falls back to its plain flag.
     let (_, romania) = countries.flag_now(&flags, 2).unwrap();
     assert_ne!(germany, romania);
     assert_eq!(countries.flag_now(&flags, 3), None);
     assert_eq!(flags.len(), 2);
 }
 
-/// A window's flags resolve through the recorded countries and the flag atlases
-/// (`native_flags`), decided before the frame that draws them: a recorded tag's current flag
-/// on the first frame, a country whose flag files do not read an invalid record (nothing
-/// drawn), an unrecorded tag refused by name.
 #[test]
 fn window_flags_resolve_recorded_tags_through_the_small_atlas() {
     use viewer_foundation::map::native_flags;
@@ -5138,7 +4841,6 @@ fn window_flags_resolve_recorded_tags_through_the_small_atlas() {
         groups: [(1, Ok(None)), (2, Ok(None))].into(),
         ..Countries::default()
     };
-    // Decided before the frame that draws it: no stand-in, no empty first frame.
     let source = gui_windows::WindowFlags {
         countries: &countries,
         small: &flags,
@@ -5182,7 +4884,6 @@ fn window_flags_resolve_recorded_tags_through_the_small_atlas() {
 fn the_overlay_blends_by_its_alpha() {
     let mut pixels = [200, 100, 0, 77];
     blend_flag_overlay(&mut pixels, &[0, 99, 255, 51]);
-    // 200 - 200*0.2 = 160; -0.2 truncates to no change; 0 + 255*0.2 = 51; alpha kept.
     assert_eq!(pixels, [160, 100, 51, 77]);
 }
 
@@ -5216,14 +4917,11 @@ fn a_counter_flag_follows_the_cosmetic_and_exact_original_tag() {
     );
     assert_eq!(countries.flag_now(&flags, 2), flags.acquire(&["GER_NEW"]));
     assert_ne!(countries.flag_now(&flags, 1), flags.acquire(&["D01"]));
-    // A cosmetic tag with no flag file flies the tag's group flag, not its plain one.
     assert_eq!(
         countries.flag_now(&flags, 3),
         flags.acquire(&["Z01_communism"])
     );
     assert_ne!(countries.flag_now(&flags, 3), flags.acquire(&["Z01"]));
-    // An unknown original suffix cannot fabricate the own-tag fallback,
-    // but a successful earlier cosmetic rung supplies the complete flag.
     for reason in [
         "CountryAppearance.original_tag capture refused",
         "CountryAppearance.original_tag not recorded",
@@ -5235,8 +4933,6 @@ fn a_counter_flag_follows_the_cosmetic_and_exact_original_tag() {
         assert!(unknown.flag_refusal(1).unwrap().contains(reason));
         assert_eq!(unknown.flag_now(&flags, 2), flags.acquire(&["GER_NEW"]));
     }
-    // Unsupported earlier cosmetic bytes cannot fall through to an
-    // otherwise known original or a replacement-character asset.
     let mut unknown = countries.clone();
     unknown.flag_tags.get_mut(&1).unwrap().0 = Err("country cosmetic tag is not UTF-8".into());
     assert_eq!(unknown.flag_now(&flags, 1), None);
@@ -5257,36 +4953,27 @@ fn a_counter_flag_follows_the_cosmetic_and_exact_original_tag() {
             .unwrap()
             .contains("ruling group is not UTF-8")
     );
-    // An explicitly known inactive group permits the unqualified cosmetic rung.
     unknown.groups.insert(2, Ok(None));
     assert_eq!(unknown.flag_now(&flags, 2), flags.acquire(&["GER_NEW"]));
 }
 
 #[test]
 fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
-    // 5.5: bases 3, victory points 5, counters 10, combat 20. The three
-    // groups are separate so the caller can put the labels between them.
     let mut batch = Batch::default();
     let plate = sheet("GFX_onmap_unit_counter", 3, [198, 27]);
     batch.scaled(&plate, 0, [10.0, 20.0], [66.0, 27.0], [1.0; 4]);
     assert_eq!(batch.quads[0].rect, [10.0, 20.0, 66.0, 27.0]);
-    // A bar is clipped in both the rectangle and the atlas rectangle.
     let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
     batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 8.5, [1.0; 4]);
     assert_eq!(batch.quads[1].rect, [24.0, 28.0, 8.0, 3.0]);
     assert_eq!(batch.quads[1].uv, [0.0, 0.0, 8.0 / 17.0, 1.0]);
-    // A bar under one pixel contributes no quad at all.
     batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 0.0, [1.0; 4]);
     assert_eq!(batch.quads.len(), 2);
-    // A full native bar stretches the whole frame over one pixel past the sprite, no further.
     batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 30.0, [1.0; 4]);
     assert_eq!(batch.quads[2].rect, [24.0, 28.0, 18.0, 3.0]);
     assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 1.0]);
 }
 
-/// An icon is on screen or it is not; it is laid out when it is on screen or within the pad a
-/// camera moving over the map may reach before the overlay is placed again
-/// ([`viewer_foundation::map::anchored::PAD`]), so the frame that brings it in has it already.
 #[test]
 fn an_icon_wholly_outside_the_viewport_and_its_pad_is_dropped() {
     use viewer_foundation::map::{anchored::PAD, icon_windows::on_screen};
@@ -5303,17 +4990,9 @@ fn an_icon_wholly_outside_the_viewport_and_its_pad_is_dropped() {
     assert!(!admitted([10.0, 1153.0 + PAD], [76.0, 24.0], viewport));
 }
 
-/// `province_at` truncates like the engine's grid lookup, rejects
-/// off-map, unclaimed and non-finite anchors, and never folds one onto a
-/// real province: a `None` there keeps the air-base icon.
-/// The hide decision of `bases()`: a fogged foreign province hides the icon,
-/// a clear one shows it, and an undecided hour — no byte, no province under
-/// the anchor, no recorded controller — keeps it. Hiding on undecided, or
-/// dropping the keep, goes red.
 #[test]
 fn air_base_icons_hide_only_on_an_answered_no() {
     use installed_content_core::map::MapData;
-    // Anchor [1,1] reads province 9; the controller slot 1 is foreign.
     let map = MapData {
         width: 4,
         height: 3,
@@ -5347,10 +5026,6 @@ fn air_base_icons_hide_only_on_an_answered_no() {
                 controller: 101,
                 ..Default::default()
             }]));
-        // Complete-but-empty intel and relations decide false rather than
-        // undecided; without them every gate below is None and keeps.
-        // Complete-but-empty sight tables keep the hour decided, so the
-        // gates below answer from rows rather than the undecided rule.
         views[TableId::CountryIntel.index()] =
             TableView::Complete(TableRows::CountryIntel(Vec::new()));
         views[TableId::RelationLinks.index()] =
@@ -5413,13 +5088,10 @@ fn air_base_icons_hide_only_on_an_answered_no() {
     );
 }
 
-/// `province_lookup_truncates_and_rejects_what_is_not_a_province` pins the
-/// lookup the hide decision above stands on.
 #[test]
 fn province_lookup_truncates_and_rejects_what_is_not_a_province() {
     use installed_content_core::map::MapData;
     use std::collections::BTreeMap;
-    // 4 wide, 3 high, rows stored north first; row flips like the lookup.
     let map = MapData {
         width: 4,
         height: 3,
@@ -5427,28 +5099,18 @@ fn province_lookup_truncates_and_rejects_what_is_not_a_province() {
         definitions: BTreeMap::new(),
         country_colors: Default::default(),
     };
-    // world z flips: z=0 is the southernmost row.
     assert_eq!(province_at(&map, [0.0, 0.0, 0.0]), Some(31));
     assert_eq!(province_at(&map, [3.9, 0.0, 2.9]), Some(14));
-    // Truncation, not rounding: 0.9 stays in column 0.
     assert_eq!(province_at(&map, [0.9, 0.0, 0.9]), Some(31));
-    // The zero pixel is unclaimed water, not province 0.
     assert_eq!(province_at(&map, [2.0, 0.0, 2.0]), None);
-    // Off the map on every side.
     assert_eq!(province_at(&map, [-0.1, 0.0, 1.0]), None);
     assert_eq!(province_at(&map, [4.0, 0.0, 1.0]), None);
     assert_eq!(province_at(&map, [1.0, 0.0, -0.1]), None);
     assert_eq!(province_at(&map, [1.0, 0.0, 3.0]), None);
-    // Non-finite anchors keep the icon instead of landing on column 0.
     assert_eq!(province_at(&map, [f32::NAN, 0.0, 1.0]), None);
     assert_eq!(province_at(&map, [1.0, 0.0, f32::INFINITY]), None);
 }
 
-/// The default map-mode branch: with access the badge follows
-/// our own stationed wings, without it the air port detail gates any wings
-/// at the base, and an hour that records neither keeps the earlier reading,
-/// a badge for any recorded plane — except access-certain-but-stationed-
-/// unknown, which stays plain rather than inventing our wings.
 #[test]
 fn the_air_base_badge_prefers_recorded_wings_over_the_fallback_reading() {
     let count =
@@ -5483,17 +5145,11 @@ fn the_air_base_badge_prefers_recorded_wings_over_the_fallback_reading() {
     assert_eq!(air_base_frame(&count(false, None, None, 0), Some(true)), 0);
     assert_eq!(air_base_frame(&count(true, None, None, 5), None), 0);
     assert_eq!(air_base_frame(&count(false, None, Some(true), 0), None), 0);
-    // Access certain but stationed unknown (a truncated hour): asserting
-    // our wings would invent data, so the badge stays plain even with
-    // recorded planes. A wholly absent table never reaches this arm beside
-    // shown=true, so legacy hours keep the fallback below.
     assert_eq!(air_base_frame(&count(true, None, None, 5), Some(true)), 0);
     assert_eq!(
         air_base_frame(&count(true, None, Some(true), 5), Some(true)),
         0
     );
-    // Zero or negative detail stays plain regardless of occupancy; this branch
-    // requires positive detail. Only unknown detail keeps the legacy planes reading.
     assert_eq!(air_base_frame(&count(false, None, None, 5), Some(false)), 0);
     assert_eq!(
         air_base_frame(&count(false, None, Some(true), 5), Some(false)),
@@ -5613,7 +5269,6 @@ fn counter_sprite_aliases_keep_the_selected_sprites_hit_flags() {
     unit.action = Ok(5);
     let (_, report) =
         draw_land_action_fixture_with(gui, &[unit], false, &AbilityInputs::default(), |assets| {
-            // Two registered sprites share pixels but have different native hit flags.
             assets
                 .sheets
                 .get_mut("GFX_synthetic_overlay")
@@ -5894,29 +5549,20 @@ fn a_view_shows_an_icon_family_below_its_own_cutoff_or_at_the_height_a_zoom_is_s
     use super::Shown;
     let defines = &CounterDefines::VANILLA;
     let political = &Visibility::POLITICAL;
-    // The zoomed stress camera draws every family; the whole map, at the fit camera, none of them.
     assert_eq!(Shown::at(Some(110.0), None, political, defines), Shown::EVERY);
     assert_eq!(
         Shown::at(Some(2844.0), None, political, defines),
         Shown { units: false, bases: false, land_combats: false, naval_missions: false },
         "above every icon cutoff nothing of the hour's icon families can be drawn"
     );
-    // Zooming in from the whole map declares each family as soon as the target reaches it, so its
-    // parts are made during the ease rather than at the publication after it lands.
     assert_eq!(Shown::at(Some(2844.0), Some(110.0), political, defines), Shown::EVERY);
-    // Between the cutoffs: the combats and the naval missions draw at 1,200, the counters, bases
-    // and radar do not.
     assert_eq!(
         Shown::at(Some(1200.0), None, political, defines),
         Shown { units: false, bases: false, land_combats: true, naval_missions: true }
     );
-    // A free eye lays every icon out in the world, and a camera not placed yet draws everything.
     assert_eq!(Shown::at(None, None, political, defines), Shown::EVERY);
 }
 
-/// The sea regions' dominance hovers read the hour's dominance sources at every view, so a view
-/// that can draw no naval mission icon still has them. Before, the tables made them only where the
-/// icons draw, and at a wide view every sea region's hover refused its dominance text.
 #[test]
 fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
     use super::{Need, Shown};

@@ -1,13 +1,7 @@
-//! Breakthrough progress in an ordered MSVC tree. Traversal starts at the
-//! sentinel's minimum-node link and follows successors, preserving ancestors.
-//! The walk checks the exact declared size rather than accepting a prefix.
 
 use engine_sites::Rva;
-/// Breakthrough-progress primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02aa_49b0);
-/// MSVC tree sentinel pointer.
 pub const TREE_HEADER: usize = 0x08;
-/// Tree u64 size checked against the exact traversed count.
 pub const TREE_SIZE: usize = 0x10;
 
 use crate::{
@@ -81,8 +75,6 @@ pub fn walk_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The caller authenticates the enclosing status and its owner. This walk
-/// authenticates the embedded progress object and follows its exact tree size.
 pub fn walk_status_buffer(
     memory: &impl Memory,
     base: usize,
@@ -133,7 +125,6 @@ pub fn walk_progress_buffer(
         if root.nil || root.parent != header {
             return Err("breakthrough root parent mismatch");
         }
-        // Original ordered tree size.
         output.ensure(count as usize)?;
         let mut current = sentinel.left;
         let mut previous_key = None;
@@ -152,7 +143,6 @@ pub fn walk_progress_buffer(
                 return Err("breakthrough tree reached foreign sentinel");
             }
             let (specialization, points) = node::value(memory, current)?;
-            // Compare token words as signed i32 keys.
             if previous_key.is_some_and(|key| key >= specialization as i32) {
                 return Err("breakthrough keys duplicated or unordered");
             }
@@ -175,8 +165,6 @@ pub fn walk_progress_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Brent's repeated-link detection adds no memory reads or allocation. It
-/// bounds malformed left/parent cycles independently of the advertised size.
 struct Chain {
     checkpoint: usize,
     power: u64,

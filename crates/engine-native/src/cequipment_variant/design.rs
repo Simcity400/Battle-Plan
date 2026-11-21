@@ -1,4 +1,3 @@
-//! Stored design operands beyond naming, module and upgrade assignments.
 use engine_sites::Rva;
 use super::*;
 
@@ -37,7 +36,6 @@ pub const NAMED_BONUS_HANDLE: usize = 0xc0;
 pub const NAMED_BONUS_NAME: usize = 0x80;
 pub const NAMED_BONUS_DESCRIPTION: usize = 0xa0;
 
-/// Authenticate the complete source form before following extension fields.
 pub fn bonus_source_size(
     memory: &impl Memory,
     base: usize,
@@ -85,8 +83,6 @@ fn entries(
     entries_with_layout(memory, object, offset, false)
 }
 
-/// Resource pools store amount then resource ID; indexed stat maps store
-/// index then value. Padding in either layout is not an operand.
 fn entries_with_layout(
     memory: &impl Memory,
     object: usize,
@@ -95,8 +91,6 @@ fn entries_with_layout(
 ) -> Result<Vec<VariantStatEntry>, &'static str> {
     let source = array(memory, object, offset, 16)?;
     let mut result = Vec::new();
-    // Read before reserving: native counts never authorize a large allocation
-    // without readable payload. Each admitted element is kept in native order.
     for ordinal in 0..source.count {
         let bytes = read::<[u8; 16]>(
             memory,
@@ -369,7 +363,6 @@ pub struct DesignSourceLinks {
     pub provider: Option<(u32, usize)>,
 }
 
-/// Decode one authenticated direct source, without any design or country walk.
 pub fn read_bonus_source(
     memory: &impl Memory,
     base: usize,
@@ -389,7 +382,6 @@ pub fn read_bonus_source(
     let idea = if idea == 0 {
         None
     } else {
-        // The bonus holds the complete primary idea object.
         if word::<u64>(memory, idea, 0)? != site(base, crate::cidea::VTABLE_RVA)? as u64 {
             return Err("variant bonus idea identity mismatch");
         }
@@ -453,9 +445,6 @@ pub fn read_named_bonus_source(
     Ok(source)
 }
 
-/// Visit only the named handles this saved design holds, in native order.
-/// Missing handles are skipped by the game. The callback can stage the source
-/// without constructing an owned value or invoking any native function.
 pub fn visit_named_sources(
     memory: &impl Memory,
     base: usize,

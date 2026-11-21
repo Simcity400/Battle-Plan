@@ -1,22 +1,15 @@
-//! Proven field, wire and meaning history; no translation or old decoders.
 pub use replay_rows::rows::compatibility::*;
 use super::TableId;
 #[cfg(test)]
 use crate::FORMAT_VERSION;
 
 
-/// Initial exact combat scalar aliases; their row markers were later removed
-/// by PRIVATE_COPY_ALIASES_FORMAT. Historical numbering only, not an old decoder.
 #[cfg(test)]
 pub const SAME_FRAME_ALIASES_FORMAT: u16 = 111;
-/// Initial exact province and factory-efficiency aliases, likewise superseded
-/// by PRIVATE_COPY_ALIASES_FORMAT without retaining their row markers.
 #[cfg(test)]
 pub const SAME_FRAME_OPERAND_ALIASES_FORMAT: u16 = 112;
-/// Conditional display aliases retain literal values outside recorded exact demand.
 #[cfg(test)]
 pub const PRIVATE_DISPLAY_ALIASES_FORMAT: u16 = 115;
-/// The tables [`STORED_ONCE_FORMAT`] relays.
 pub const STORED_ONCE_TABLES: [TableId; 5] = [
     TableId::DivisionStatus,
     TableId::DivisionPanelStats,
@@ -24,20 +17,10 @@ pub const STORED_ONCE_TABLES: [TableId; 5] = [
     TableId::LandCombatDivisions,
     TableId::LandCombatDivisionModifiers,
 ];
-// Provisional until all widget capture families are integrated.
 
 
 
 
-/// Provisional main+1: DivisionStatus.supply (field 22), the division supply
-/// footer, is recorded again for every division at display precision
-/// ([`super::DivisionSupplyFooter`], owner decision 2026-10-11) with the
-/// wire layout formats 99 to 101 recorded exact, which they still decode
-/// unscaled. Format-102 recordings written while the field was a provisional
-/// tombstone hold its empty payload, which reads as not recorded
-/// (`opaque_value!(T, restored)`); format-102 captures written before that
-/// retirement hold exact amounts this reader multiplies by the step. No
-/// published build wrote either.
 #[cfg(test)]
 pub const SUPPLY_FOOTER_FORMAT: u16 = 102;
 
@@ -67,10 +50,6 @@ pub const SUPPLY_FOOTER_FORMAT: u16 = 102;
 
 
 
-/// A row field whose capture ended at `retired`. A whole field keeps its
-/// Opaque framing as a [`super::Retired`] tombstone; a nested name
-/// (`field.part`) left its parent's nested layout, which still decodes older
-/// bytes through their source format.
 #[derive(Clone, Copy, Debug)]
 pub struct RetiredField {
     pub table: TableId,
@@ -88,24 +67,17 @@ const fn retired(table: TableId, index: usize, name: &'static str) -> RetiredFie
     }
 }
 
-/// Every retired table: no current writer emits it, and older recordings
-/// discard it through its framing and refuse it by name.
 pub static RETIRED_TABLES: [TableId; 19] = [
     TableId::NavalMineLevels,
     TableId::DivisionEtaInputs,
     TableId::AttritionModifierBreakdowns,
     TableId::ReservedNearestNavies,
     TableId::ReservedNearestBases,
-    // Hover-only modifier breakdowns.
     TableId::ReserveModifierBreakdowns,
     TableId::NavalModifierBreakdowns,
-    // Read only by create_wargoal's effect-description hover text.
     TableId::OwnedWargoals,
-    // Superseded by AirRegionCombat, which records both in one row.
     TableId::AirRegionHistory,
     TableId::AirRegionDamage,
-    // Oracle-only.
-    // The selected transport preview's split tables (RESERVED_SPLIT_TABLES).
     TableId::TransportNavies,
     TableId::TransportLedgers,
     TableId::TransportReceivers,
@@ -117,7 +89,6 @@ pub static RETIRED_TABLES: [TableId; 19] = [
     TableId::TransportRiskShips,
 ];
 
-/// Every retired row field, beside the retired tables' lifetimes in [`HISTORY`].
 pub static RETIRED_FIELDS: [RetiredField; 50] = [
     retired(TableId::Provinces, 8, "selected_areas"),
     retired(TableId::DivisionLandInputs, 1, "received_supply"),
@@ -138,13 +109,7 @@ pub static RETIRED_FIELDS: [RetiredField; 50] = [
         22,
         "transport_mission_inputs",
     ),
-    // The side's list of every member's entries, which
-    // LandCombatDivisionModifiers holds a row a member
-    // ([`LAND_MODIFIER_ROWS_FORMAT`]).
     retired(TableId::LandCombatModifiers, 1, "divisions"),
-    // The side's hover and oracle round values and its commander's hover
-    // operands, which the side inputs record ([`SIDE_INPUTS_FORMAT`]); the
-    // marker's organisation-loss ring and the window's air damage lanes stay.
     retired(TableId::LandCombatDetails, 7, "sides.anti_air_attack"),
     retired(TableId::LandCombatDetails, 7, "sides.damage[2..6]"),
     retired(TableId::LandCombatDetails, 7, "sides.commander_experience"),
@@ -155,17 +120,11 @@ pub static RETIRED_FIELDS: [RetiredField; 50] = [
     ),
     retired(TableId::LandCombatDetails, 7, "sides.timed_traits"),
     retired(TableId::LandCombatDetails, 7, "sides.learning_traits"),
-    // Playback derives progress and direction from LandCombats, Divisions
-    // and DivisionMovement.
     retired(TableId::LandCombatProgress, 0, "attacker_progress"),
     retired(TableId::LandCombatProgress, 1, "defender_progress"),
     retired(TableId::LandCombatProgress, 2, "direction_attacker"),
     retired(TableId::LandCombatProgress, 3, "direction_province"),
-    // The port strike-force readiness hover's strike operands.
     retired(TableId::ShipModels, 7, "strike"),
-    // Oracle-only values. Ships.experience is recorded again, at its display
-    // step ([`super::ShipRow::EXPERIENCE_STEP`]); format-102 captures written
-    // while it was retired hold zero there, and no published build wrote them.
     retired(TableId::CountryFuel, 2, "gain_raw"),
     retired(TableId::CountryFuel, 3, "cost_raw"),
     retired(TableId::CountryFuel, 4, "gain_from_states_raw"),
@@ -176,8 +135,6 @@ pub static RETIRED_FIELDS: [RetiredField; 50] = [
     retired(TableId::CountryFuel, 13, "ring_requested_0_raw"),
     retired(TableId::CountryFuel, 14, "ring_requested_1_raw"),
     retired(TableId::CountryFuel, 15, "ring_requested_2_raw"),
-    // The update-by-update fuel award window; `award_day` sums what the Fuel
-    // widget shows, and only the oracle read the hourly source witness.
     retired(TableId::CountryFuel, 20, "awards"),
     retired(TableId::Politics, 1, "election_frequency"),
     retired(TableId::Politics, 2, "elections_allowed"),
@@ -188,11 +145,7 @@ pub static RETIRED_FIELDS: [RetiredField; 50] = [
     retired(TableId::ProductionLines, 8, "produced_raw"),
     retired(TableId::ProductionLineOutput, 4, "mio_credit"),
     retired(TableId::ProductionLineOutput, 10, "instant_raw"),
-    // No reader at all.
     retired(TableId::ProductionLineModifiers, 7, "conversion"),
-    // Playback derives the glyph byte from the row's own value and threshold.
-    // Path-cost operands no consumer reads; CountryCounterInputs records
-    // the same slot-0 relation bytes.
     retired(TableId::InvasionPreparations, 9, "zero_war_present"),
     retired(TableId::InvasionPreparations, 10, "zero_war_retired"),
     retired(TableId::InvasionPreparations, 11, "zero_co_belligerent"),
@@ -236,7 +189,6 @@ pub enum RecordKind {
     EventFeedEvent,
     EventLoss,
     PlayerCommands,
-    /// AirRegionCombat's nested retained air-combat record.
     AirCombatRecord,
 }
 
@@ -275,43 +227,24 @@ pub enum Subject {
 #[derive(Clone, Copy, Debug)]
 pub struct LastChange {
     pub subject: Subject,
-    /// Table lifetime in the timing/update stream. Baseline entries were
-    /// already present at PROVEN_FROM; their earlier introduction is unaudited.
     pub introduced: u16,
-    /// Retain retired TableIds and their field framing as wire tombstones.
-    /// Never reuse an id or shift the remaining timing/update positions.
     pub retired: Option<u16>,
-    /// For baseline entries: unchanged since this proven horizon, possibly older.
     pub format: u16,
     pub commit: &'static str,
     pub kind: ChangeKind,
     pub appended: &'static [AppendedField],
-    /// For an entry whose fields were appended after an earlier layout change: the format of
-    /// that change, before which every format is refused; 0 for none.
     pub layout_since: u16,
 }
 
-/// Audited changes retain enough framing to skip incompatible rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
     Unchanged,
-    /// Every older layout decodes: fields were appended, or retired as
-    /// tombstones that keep their framing ([`RETIRED_FIELDS`]).
     AppendedOnly,
     Layout,
     Meaning,
 }
 
 
-/// One code-owned catalog for tables, nested values and framing/control kinds.
-/// Evidence: row declarations and typed_codec diffs at each listed commit,
-/// including the wider DivisionStatus mask (the recorded field count owns it).
-/// The baseline is #302; #323/#325/#328/#341/#343 were audited against it. New
-/// fields were appended; nested Opaque values keep their byte-length framing.
-/// Nested suffixes use source format even when parent field counts are unchanged.
-/// Record-kind dates 1/24/33 are inert below the proven horizon of 91.
-/// Adding/retiring a table changes its lifetime, not the Frame framing date.
-/// A table a recording's format does not hold, displayed as the readers' refusal.
 #[derive(Clone, Copy, Debug)]
 pub struct TableGap {
     table: TableId,
@@ -567,8 +500,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         i += 1;
     }
     history[TableId::StateResistance.index()] = LastChange {
-        // Opaque native packets cannot decode an absent suffix. Keep its
-        // declared prefix for schema accounting, with whole-layout admission.
         kind: ChangeKind::Layout,
         ..appended_at(
             TableId::StateResistance,
@@ -598,8 +529,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         POLITICAL_FORMAT,
         "technology-occurrences",
     );
-    // The changed key has the same width; the old payload's five scalar
-    // fields can be skipped by the compatibility reader without decoding rows.
     history[TableId::ResearchTechnologies.index()].appended = &[
         AppendedField {
             index: 5,
@@ -847,7 +776,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: POLITICAL_FORMAT,
         }],
     );
-    // MOVEMENT_TERMS_FORMAT grew `combat` by its army speed and attack speed entries.
     history[TableId::WeatherRegions.index()] = appended_at(
         TableId::WeatherRegions,
         CAPTURE_ADDITIONS_FORMAT,
@@ -906,7 +834,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "pending political runtime inputs",
     );
     history[TableId::StateFlags.index()] = table(TableId::StateFlags, 93, "9fb09a565f");
-    // WING_NAME extended the meaning of the existing packed entry family.
     history[TableId::RaidTooltipOperands.index()] =
         table(TableId::RaidTooltipOperands, 94, "ccf740b81d");
     history[TableId::DivisionMovement.index()] = table(
@@ -1756,11 +1683,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
-    // From provisional format 102 `directed_wars` (index 18) is no longer
-    // captured: writers store None and playback derives every cell from the
-    // hour's WarRelations (`directed_war_derive`). The layout is unchanged,
-    // so format 101 and earlier 102 development recordings keep answering
-    // from their packets and no table is refused.
     history[TableId::FleetCounterInputs.index()] = appended_at(
         TableId::FleetCounterInputs,
         AIR_MAP_FORMAT,
@@ -2434,8 +2356,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 17,
                 name: "launch_sources",
-                // The native-null naval discriminator preserves the original
-                // unavailable/list bytes and this historical field boundary.
                 introduced: POLITICAL_FORMAT,
             },
             AppendedField {
@@ -2967,8 +2887,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         index += 1;
     }
-    // Shared immutable headquarters membership uses the owned-value field
-    // framing; the current mission layout includes its raw spotting suffix.
     history[TableId::NavalMissionTaskForces.index()] = table(
         TableId::NavalMissionTaskForces,
         AIR_MAP_FORMAT,
@@ -3315,8 +3233,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: WIDGET_CAPTURE_FORMAT,
         }],
     );
-    // Signed net rows preserve every historical positive amount. Missing new
-    // columns remain field gaps; correctly decoded old prefixes still open.
     history[TableId::EquipmentDestruction.index()] = appended_at(
         TableId::EquipmentDestruction,
         WIDGET_CAPTURE_FORMAT,
@@ -3400,7 +3316,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "91cbbe55",
     );
     history[TableId::DivisionLandInputs.index()].introduced = WIDGET_CAPTURE_FORMAT;
-    // Its retired supply copies keep their framing: every layout decodes.
     history[TableId::DivisionLandInputs.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::LandCombatResults.index()] = table(
         TableId::LandCombatResults,
@@ -3420,7 +3335,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "91cbbe55",
     );
     history[TableId::LandEventCoverage.index()].introduced = WIDGET_CAPTURE_FORMAT;
-    // Independent suffixes preserve existing payloads and retired inputs.
     history[TableId::CountryCounterInputs.index()].format = EXPERIENCE_FORMAT;
     history[TableId::DivisionMovement.index()].format = EXPERIENCE_FORMAT;
     history[TableId::DivisionStatus.index()].format = EXPERIENCE_FORMAT;
@@ -3525,8 +3439,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
-    // These raw suffixes cannot represent NotRecorded. Keep their wire prefix
-    // framing in the catalogue without promising an absent-field row decoder.
     history[TableId::VariantStats.index()].kind = ChangeKind::Layout;
     history[TableId::IntelNetworkSummaries.index()] = LastChange {
         introduced: INTEL_CACHES_FORMAT,
@@ -3544,9 +3456,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "pol/capture-intel",
         )
     };
-    // Source tables preserve empty extents after certified clears, including
-    // the daily allied clear outside sharing replacements. Local UI estimates
-    // have no recording contract; bounds derive from game-state operands.
     history[TableId::IntelContributions.index()] = LastChange {
         introduced: INTEL_CACHES_FORMAT,
         ..table(
@@ -3583,7 +3492,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         participation += 1;
     }
     apply_catalog_passes(&mut history);
-    // Format 135 appended the menu; the layout before format 104 stays refused.
     history[TableId::RaidAirScores.index()] = LastChange {
         introduced: history[TableId::RaidAirScores.index()].introduced,
         layout_since: AIR_MAP_FORMAT,
@@ -3606,7 +3514,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "native air history slots",
         )
     };
-    // Format 135 appended AirCombatRecord.equipment within AirRegionCombat's records.
     history[TableId::ALL.len() + RecordKind::AirCombatRecord as usize] = LastChange {
         subject: Subject::Record(RecordKind::AirCombatRecord),
         introduced: AIR_REGION_COMBAT_FORMAT,
@@ -3730,8 +3637,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         ],
     );
 
-    // Format 137 only appended fields; each table's earlier columns keep their layout.
-    // States' field 13 is declared with its earlier appended fields.
     const PARITY: u16 = MAP_MODE_PARITY_FORMAT;
     const fn parity(index: usize, name: &'static str) -> AppendedField {
         AppendedField {
@@ -3774,7 +3679,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         copies += 1;
     }
-    // Format 142 appended fields alone; each table's last layout change stays refused before it.
     const CAPTURE: u16 = CAPTURE_ADDITIONS_FORMAT;
     const CAPTURE_FIELDS: [(TableId, u16, &[AppendedField]); 2] = [
         (
@@ -3809,14 +3713,9 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history
 };
 
-// Common changes can follow declarations added by another capture family.
-// Their older formats must not erase a later field, layout or its attribution.
 const fn apply_catalog_passes(
     history: &mut [LastChange; TableId::ALL.len() + RecordKind::ALL.len()],
 ) {
-    // Hourly hosts' nested packets stopped storing their read hour. The
-    // stamped nested layout decodes through its source format, so these
-    // tables stay readable and only their nested records changed.
     let mut host = 0;
     while host < super::PACKET_HOUR_HOSTS.len() {
         let id = super::PACKET_HOUR_HOSTS[host];
@@ -3827,9 +3726,6 @@ const fn apply_catalog_passes(
         );
         host += 1;
     }
-    // The singleton's transport packet was split into hourly tables in this
-    // provisional format, and both retired in it; no published build wrote
-    // the tables.
     note_change(
         &mut history[TableId::ReservedCountryNaming.index()],
         RESERVED_SPLIT_FORMAT,
@@ -3847,8 +3743,6 @@ const fn apply_catalog_passes(
         );
         split += 1;
     }
-    // The nearest-cache tables were introduced and retired in this same
-    // provisional format; no published build wrote them.
     let mut nearest = 0;
     while nearest < 2 {
         let id = [
@@ -3864,7 +3758,6 @@ const fn apply_catalog_passes(
         );
         nearest += 1;
     }
-    // The naval hover source trees and their diagnostic oracle samples.
     let mut naval = 0;
     while naval < 2 {
         let id = [
@@ -3907,11 +3800,6 @@ const fn apply_catalog_passes(
             "raid-dispatchers",
         ),
     );
-    // Arrival-time, attrition-breakdown, selected-attack and selected
-    // transport inputs retire. Tables keep their ids and framing so older
-    // recordings discard them by name.
-    // Hover-only breakdowns, oracle-only histories and the owned-wargoal
-    // roster only effect-description hovers read retire the same way.
     let mut r = 0;
     while r < RETIRED_TABLES.len() {
         history[RETIRED_TABLES[r].index()].retired = Some(RETIRED_INPUTS_FORMAT);
@@ -3920,9 +3808,6 @@ const fn apply_catalog_passes(
     let mut field = 0;
     while field < RETIRED_FIELDS.len() {
         let id = RETIRED_FIELDS[field].table;
-        // A tombstone keeps its field's framing, so every layout since the
-        // table's last layout change still decodes. A table whose layout
-        // changed within its lifetime keeps that refusal and its format.
         let entry = history[id.index()];
         let earlier_layout = !matches!(entry.kind, ChangeKind::AppendedOnly)
             && !matches!(entry.kind, ChangeKind::Unchanged)
@@ -3992,16 +3877,12 @@ const fn table(id: TableId, format: u16, commit: &'static str) -> LastChange {
     }
 }
 
-/// The fields a table held before a later layout change replaced them, until the format of
-/// that change: what frames an older recording's table whose layout this build reads otherwise.
 pub struct EarlierLayout {
     pub table: TableId,
     pub until: u16,
     pub fields: usize,
 }
 
-/// Every earlier layout of a table since native captures began whose field count the table's
-/// latest change no longer tells; a native reader checks them against the recording's schema.
 pub static EARLIER_LAYOUTS: [EarlierLayout; 6] = [
     EarlierLayout {
         table: TableId::AirNavalPatrolHistories,
@@ -4048,7 +3929,6 @@ impl LastChange {
         self.gap(table, format).map(|gap| gap.to_string())
     }
 
-    /// Why `table` is not recorded at `format`, formatted only when it is displayed.
     pub fn gap(&self, table: TableId, format: u16) -> Option<TableGap> {
         let cause = if format < self.introduced {
             GapCause::Introduced(self.introduced)
@@ -4078,8 +3958,6 @@ impl LastChange {
             .map_or(table.field_count(), |field| field.index)
     }
 
-    /// The fields `table` held at `format`, whether or not this build reads that layout: the
-    /// earlier layout's ([`EARLIER_LAYOUTS`]) before a layout change, else [`Self::fields`].
     pub fn framed_fields(&self, table: TableId, format: u16) -> usize {
         EARLIER_LAYOUTS
             .iter()
@@ -4105,8 +3983,6 @@ impl RecordKind {
 mod tests {
     use super::*;
 
-    /// Format 135 appended fields alone: earlier Cryptology, RaidAirScores, WeatherRegions and
-    /// AirRegionCombat records read, RaidAirScores' layout before format 104 still refused.
     #[test]
     fn air_combat_menu_appends_leave_earlier_layouts_readable() {
         let before = EXACT_NAVAL_CONDITION_FORMAT;
@@ -4133,8 +4009,6 @@ mod tests {
         );
     }
 
-    /// Native captures of format 126 to 136 framed these tables with other field counts than
-    /// today's; counts from each format's row declarations.
     #[test]
     fn earlier_native_formats_frame_their_tables_as_written() {
         let fewer = |format: u16| -> Vec<(TableId, usize)> {
@@ -4203,7 +4077,6 @@ mod tests {
         }
     }
 
-    /// Format 137 only appended fields: an older recording keeps every earlier column.
     #[test]
     fn map_mode_parity_fields_leave_earlier_columns_readable() {
         let states = TableId::States.last_change();
@@ -4227,9 +4100,6 @@ mod tests {
         }
     }
 
-    /// An older recording's DivisionRetreatBans are each owner's daily read,
-    /// not the hour's bans, and its StockpileArchetypes every archetype's raw
-    /// total: it refuses both by name.
     #[test]
     fn older_retreat_bans_and_stock_are_refused() {
         for table in [TableId::DivisionRetreatBans, TableId::StockpileArchetypes] {
@@ -4345,8 +4215,6 @@ mod tests {
                     .contains("retired at format")
             );
         }
-        // Older recordings held the arrival and attrition tables; they are
-        // framed for discard and refused by the same name.
         for table in [
             TableId::DivisionEtaInputs,
             TableId::AttritionModifierBreakdowns,
@@ -4367,8 +4235,6 @@ mod tests {
                     ))
             );
         }
-        // Retired fields alone do not change a table's meaning. Daily display
-        // samples and removing public alias marks separately changed their hosts.
         for field in RETIRED_FIELDS {
             let history = field.table.last_change();
             if field.table == TableId::ProductionLines {
@@ -4379,7 +4245,6 @@ mod tests {
                 continue;
             }
             assert_eq!(history.kind, ChangeKind::AppendedOnly, "{:?}", field.table);
-            // The table last changed with its latest appended or retired field.
             let retired = RETIRED_FIELDS
                 .iter()
                 .filter(|other| other.table == field.table)
@@ -4549,8 +4414,6 @@ mod tests {
 
     #[test]
     fn occupation_layout_survives_catalog_passes() {
-        // The occupation family appends opaque suffixes with whole-layout
-        // admission. Exercise that declaration without importing its row data.
         let table = TableId::StateResistance;
         let mut history = HISTORY;
         history[table.index()] = LastChange {
@@ -4780,8 +4643,6 @@ mod tests {
                     .fields(table, PRIVATE_ALIASES_FORMAT - 1),
                 fields
             );
-            // Alias storage leaves the native prefix unchanged. These two
-            // tables independently changed meaning at the later daily format.
             let daily = matches!(table, TableId::CombatLogObservers);
             assert_eq!(
                 table
@@ -4807,8 +4668,6 @@ mod tests {
         }
     }
 
-    /// Format 142 only appended these fields: an older recording reads every earlier column and
-    /// each appended field as not recorded, and each table's last layout change stays refused.
     #[test]
     fn capture_additions_leave_earlier_columns_readable() {
         let before = CAPTURE_ADDITIONS_FORMAT - 1;
@@ -4846,8 +4705,6 @@ mod tests {
             assert!(!entry.commit.is_empty());
             assert!(entry.introduced <= entry.format);
             assert!(entry.format <= FORMAT_VERSION);
-            // A provisional table can retire in the format that introduced
-            // it; no published build ever wrote it.
             assert!(
                 entry
                     .retired
@@ -4856,7 +4713,6 @@ mod tests {
             );
             if entry.kind == ChangeKind::AppendedOnly {
                 if entry.appended.is_empty() {
-                    // Only framing-preserving retirements changed it.
                     assert!(
                         RETIRED_FIELDS.iter().any(|field| field.table == table),
                         "{table:?}"

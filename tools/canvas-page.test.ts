@@ -48,7 +48,6 @@ test('Canvas shutdown waits for its owned process tree after a graceful-close de
   let forced = false;
   const stopped = stopBrowser(child, async () => {}, async () => {
     forced = true;
-    // The force request completes before the process/pipe close notification.
     setTimeout(() => { child.signalCode = 'SIGKILL'; child.emit('close', null, 'SIGKILL'); }, 10);
   });
   await nextTurn();
@@ -122,8 +121,6 @@ test('Canvas shutdown cleans the owned family after its process observation time
   let observations = 0, forced = false;
   await stopBrowser(child, async () => { throw new Error('unavailable endpoint'); }, async () => {
     forced = true;
-    // A detached browser outlives the launcher tree. Cleanup must sweep the
-    // exact owned profile while retaining other runs and similar prefixes.
     processes.delete(11);
     for (const [pid, owner] of processes) if (owner === profile) processes.delete(pid);
     child.exitCode = 0; child.emit('close', 0, null);
@@ -146,8 +143,8 @@ test('Canvas profile cleanup retries observer timeouts and sweeps relaunched sur
       assert.equal(launcherPid, stops < 2 ? 11 : undefined, 'retain the launcher check through a timed-out stop, then rely on exact-profile ownership');
       assert.equal(browserPid, 12);
       if (++stops === 1) throw new Error('Observing owned Headless Edge processes timed out');
-      if (stops === 2) processes.delete(11); // The tree kill misses a detached browser.
-      if (stops === 3) { processes.delete(12); processes.set(13, profile); } // A relaunch races the first sweep.
+      if (stops === 2) processes.delete(11);
+      if (stops === 3) { processes.delete(12); processes.set(13, profile); }
       if (stops === 4) processes.delete(13);
     } else if (++verifications === 1) throw new Error('Observing owned Headless Edge processes timed out');
     return [...processes].filter(([, path]) => path === owner).map(([pid]) => ({ pid, parentId: 0 }));

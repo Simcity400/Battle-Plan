@@ -1,15 +1,6 @@
-//! The game's `std::stable_sort` (MSVC STL), step for step, so a comparator that is not a strict
-//! weak order orders exactly as the game orders.
-//!
-//! Naval fleet comparisons subtract signed handle words with wrapping i32 arithmetic, which can make
-//! the relation nontransitive. Preserve insertion sorting up to 32 items, buffered sorted runs and
-//! ordered merging. The temporary buffer holds n minus n/2 items; allocation-failure buffer reduction
-//! is not reconstructed.
 
-/// `_ISORT_MAX`: at or below this many items the range is insertion-sorted.
 const INSERTION_MAX: usize = 32;
 
-/// Sorts `values` as the game's `std::stable_sort` does, with `less(a, b)` its predicate.
 pub fn sort<T: Copy>(values: &mut [T], mut less: impl FnMut(&T, &T) -> bool) {
     let count = values.len();
     if count <= INSERTION_MAX {
@@ -24,8 +15,6 @@ pub fn sort<T: Copy>(values: &mut [T], mut less: impl FnMut(&T, &T) -> bool) {
     inplace_merge(values, first, &mut buffer, &mut less);
 }
 
-/// each item goes to the front when it precedes the first,
-/// otherwise down past every item it precedes.
 fn insertion_sort<T: Copy>(values: &mut [T], less: &mut impl FnMut(&T, &T) -> bool) {
     for next in 1..values.len() {
         let value = values[next];
@@ -43,8 +32,6 @@ fn insertion_sort<T: Copy>(values: &mut [T], less: &mut impl FnMut(&T, &T) -> bo
     }
 }
 
-/// Use runs of 32 insertion-sorted, then merged pairwise into the buffer and back,
-/// doubling the run each pass, until one run holds everything (ending in `values`).
 fn buffered_merge_sort<T: Copy>(
     values: &mut [T],
     buffer: &mut Vec<T>,
@@ -72,8 +59,6 @@ fn buffered_merge_sort<T: Copy>(
     }
 }
 
-/// Merge each adjacent pair of `chunk`-long runs of `source` into `dest`, and
-/// copies a last unpaired run as it is.
 fn chunked_merge<T: Copy>(
     source: &[T],
     dest: &mut [T],
@@ -93,7 +78,6 @@ fn chunked_merge<T: Copy>(
     dest[first..].copy_from_slice(&source[first..]);
 }
 
-/// `_Merge_move`: the right run's item goes first only when it precedes the left's.
 fn merge_move<T: Copy>(
     source: &[T],
     mid: usize,
@@ -122,8 +106,6 @@ fn merge_move<T: Copy>(
     }
 }
 
-/// Skip the left items no right item precedes and the right items that do not
-/// precede the left's last, then merges what is left through the buffer.
 fn inplace_merge<T: Copy>(
     values: &mut [T],
     mid: usize,
@@ -148,7 +130,6 @@ fn inplace_merge<T: Copy>(
     loop {
         last -= 1;
         if mid == last {
-            // `_Rotate_one_right`: the one right item goes before the left run.
             values[first..=mid].rotate_right(1);
             return;
         }
@@ -159,7 +140,6 @@ fn inplace_merge<T: Copy>(
     last += 1;
     let (left, right) = (mid - first, last - mid);
     if left == 1 {
-        // `_Rotate_one_left`: the one left item goes after the right run.
         values[first..last].rotate_left(1);
         return;
     }
@@ -172,8 +152,6 @@ fn inplace_merge<T: Copy>(
     }
 }
 
-/// Move the left run to the buffer and merge forward, placing its highest item last without a
-/// comparison.
 fn merge_buffer_left<T: Copy>(
     values: &mut [T],
     mid: usize,
@@ -209,8 +187,6 @@ fn merge_buffer_left<T: Copy>(
     }
 }
 
-/// Move the right run to the buffer and merge backward, placing its lowest item first without a
-/// comparison.
 fn merge_buffer_right<T: Copy>(
     values: &mut [T],
     mid: usize,
@@ -252,8 +228,6 @@ fn merge_buffer_right<T: Copy>(
 mod tests {
     use super::*;
 
-    /// A fixed linear congruential sequence of `count` keys below `range`, each tagged with its
-    /// position so stability shows.
     fn keys(count: usize, range: u64, seed: u64) -> Vec<(u64, usize)> {
         let mut state = seed;
         (0..count)
@@ -266,8 +240,6 @@ mod tests {
             .collect()
     }
 
-    /// For a strict weak order every stable sort agrees, so the port must equal the standard
-    /// library's at every size the branches split on, up to 5,000 items.
     #[test]
     fn a_strict_weak_order_sorts_as_any_stable_sort() {
         for count in [
@@ -283,27 +255,19 @@ mod tests {
         }
     }
 
-    /// The game's comparator on wrapping handles: `a - b < 0` in `i32`. Three values pairwise
-    /// more than `i32::MAX` apart form a cycle, which the insertion sort resolves by position.
     #[test]
     fn a_wrapping_comparator_orders_as_the_games_insertion_sort() {
         let less = |a: &i32, b: &i32| a.wrapping_sub(*b) < 0;
         let (low, mid, high) = (i32::MIN + 10, 0, i32::MAX - 10);
-        // low < mid, mid < high, but high - low wraps negative: high < low.
         assert!(less(&low, &mid) && less(&mid, &high) && less(&high, &low));
         let mut values = [mid, high, low];
         sort(&mut values, less);
-        // `high` stays after `mid`; `low` precedes the first (`mid`) and goes to the front.
         assert_eq!(values, [low, mid, high]);
         let mut values = [high, low, mid];
         sort(&mut values, less);
-        // `low` does not precede the first (`high`) and stays; `mid` precedes the first and
-        // goes to the front without being compared with `low`.
         assert_eq!(values, [mid, high, low]);
     }
 
-    /// Above 32 items the merges run; a cyclic comparator still yields every item exactly once,
-    /// deterministically.
     #[test]
     fn a_wrapping_comparator_through_the_merges_keeps_every_item() {
         let less = |a: &(i32, usize), b: &(i32, usize)| a.0.wrapping_sub(b.0) < 0;

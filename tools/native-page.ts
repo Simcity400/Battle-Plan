@@ -1,6 +1,3 @@
-// A headless Edge page serving the repository through Vite, driven over the DevTools protocol
-// with native input: keys reach the page as a person's keys do, focus moves as the browser moves
-// it. A test loads its fixture module into the page and acts through it.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
@@ -33,8 +30,6 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
 
 type ReplyFormat = { FORMAT_FILE: string; formatOf(text: string): { lines: string[]; digest: string } };
 
-/** The real replies a fixture is served (`ui/src/test-support/recorded.ts`): the file `BATTLE_PLAN_RECORDED_REPLIES` names at
- * `/recorded-replies`, and this tree's recording format at `/recorded-replies/format`, which the file must match. */
 async function recordedReplies(path: string, response: ServerResponse): Promise<void> {
   const file = (process.env.BATTLE_PLAN_RECORDED_REPLIES ?? process.env.HOI4_RECORDED_REPLIES) || null;
   if (path === '/format') {
@@ -58,19 +53,12 @@ const KEY_CODES = { Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End
 export type NativeKey = keyof typeof KEY_CODES;
 
 export interface NativePage {
-  /** Evaluates an expression in the page, awaiting a promise it gives. */
-  evaluate<T = any>(expression: string): Promise<T>; // eslint-disable-line @typescript-eslint/no-explicit-any
-  /** Presses and releases a key natively, with Shift when `shift`. */
+  evaluate<T = any>(expression: string): Promise<T>;
   press(key: NativeKey, shift?: boolean): Promise<void>;
-  /** The page's own DevTools endpoint, for a caller holding its own connection. */
   page: string;
-  /** Runs `run` as one stage bounded by `timeout`, failing it if the browser exits. */
   stage<T>(label: string, run: (signal: AbortSignal) => Promise<T>, timeout?: number): Promise<T>;
 }
 
-/** Runs `run` on a fresh page that has imported `fixture` (a path from the repository root),
- * then closes the browser and its profile whatever happens. `run` bounds its own work in
- * stages ([`NativePage.stage`]). */
 export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>): Promise<void> {
   const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
@@ -112,7 +100,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     const { targetId } = await cdp(endpoint, 'Target.createTarget', { url: 'about:blank' });
     const targets = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/list`).then(response => response.json()) as { id: string; webSocketDebuggerUrl: string }[];
     const target = targets.find(target => target.id === targetId)!.webSocketDebuggerUrl;
-    const evaluate = async <T = any,>(expression: string): Promise<T> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const evaluate = async <T = any,>(expression: string): Promise<T> => {
       const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
       assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
       return result.result.value as T;

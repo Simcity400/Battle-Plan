@@ -1,4 +1,3 @@
-//! Authored source-only fixtures. Parent execution is required.
 
 use super::*;
 use crate::raw::Recorded;
@@ -142,7 +141,7 @@ fn optional_fault_is_sticky_but_does_not_stop_an_independent_field() {
     let log = carrier.borrow();
     assert_eq!(log.fault, [true, false]);
     assert_eq!(log.raw_bytes, [0, 4]);
-    assert_eq!(log.bytes.len(), 8); // Failed partial byte was never published.
+    assert_eq!(log.bytes.len(), 8);
     let recorded = Recorded::build(&log).unwrap();
     assert!(!recorded.copy(0x1008, &mut [0; 4]));
     assert!(recorded.copy(0x100c, &mut [0; 4]));
@@ -154,8 +153,6 @@ fn exact_failure_overrides_a_successful_containing_bulk_on_capture_and_decode() 
         base: 0x1000,
         bytes: &[0x29; 32],
     };
-    // RawLog preflights attempted bytes even for a failed read: the 32-byte
-    // bulk plus the exact 4-byte failure need the same budget in both logs.
     let mut original = RawLog::<3>::new(8, 32 + 4);
     assert_eq!(original.take_bulk(&image, 0x1000, 32, 7), Some(0));
     assert_eq!(original.record(0x1008, 4, None, 7), None);
@@ -250,7 +247,6 @@ fn short_optional_reads_and_invalid_addresses_refuse_and_decoder_stays_offline()
     let recorded = Recorded::build(&log).unwrap();
     assert!(recorded.copy(0x1000, &mut [0; 3]));
     assert!(!recorded.copy(0x1000, &mut [0; 4]));
-    // Live memory can supply this byte, but the owned walk never acquired it.
     assert!(!recorded.copy(0x1001, &mut [0; 1]));
     assert_eq!(live.calls.get(), 2);
 }

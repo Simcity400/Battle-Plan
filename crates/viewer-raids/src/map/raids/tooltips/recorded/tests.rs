@@ -107,7 +107,6 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             building_location: 3,
             ..Default::default()
         };
-        // Country zero has CURRENT=0. Equality reveals the project.
         match (
             required,
             first_project,
@@ -153,8 +152,6 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
             projects.projects = [("oilfield".into(), project)].into();
             assets.tooltip.projects = Ok(projects);
             let mut frame = positive_frame();
-            // The project owner's country supplies the naming scope, even when
-            // its program occurs in the target controller's roster.
             put::<tables::RaidFacilities>(
                 &mut frame,
                 vec![replay_data::rows::RaidFacilityRow {
@@ -271,7 +268,6 @@ fn captive_uses_original_leader_name_without_character_identity() {
         Ok(Some("Viewer language name".into()))
     );
     assert_eq!(context.captive(&RaidScope::default()), Ok(None));
-    // The game names every targeted leader; an unrecorded one is refused.
     assert_eq!(
         context.captive(&RaidScope {
             leader_reference: (8 << 32) | 84,
@@ -280,7 +276,6 @@ fn captive_uses_original_leader_name_without_character_identity() {
         Err("captive leader is absent from UnitLeaders".into())
     );
 }
-/// Scripted text content with `MAX_SCRIPTED_LOC_RECURSION` alone.
 fn scripted_content() -> dashboard_text::scripted_text::ScriptedContent {
     let (scripted, root) = scripted_content_with_files(&[]);
     std::fs::remove_dir_all(root).unwrap();
@@ -592,8 +587,6 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
             "test",
         );
         assert_eq!(text[0].1.as_deref(), Ok("+GER/10/ENG/GER\n"));
-        // An ordinary positive country supplies no naming data for reserved
-        // country zero. Its missing singleton stays a refusal.
         let zero = context.trigger_text(
             &triggers("custom_trigger_tooltip={tooltip=scoped always=yes}"),
             Scopes {
@@ -618,10 +611,6 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
     });
 }
 
-/// The raid condition chain's scope (ROOT GER) with FROM a default scope
-/// of the target (ENG): chains follow the chosen scope's own links. A
-/// scope change leaves the linked scopes' links unknown, so a chain
-/// through them is refused rather than guessed.
 #[test]
 fn custom_tooltip_chains_follow_the_raid_scopes_links() {
     engine_executable::executable_tables::initialize_for_tests()

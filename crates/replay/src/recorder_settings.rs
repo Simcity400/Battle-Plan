@@ -1,4 +1,3 @@
-//! Recorder-owned preferences shared with the replay app.
 
 use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
@@ -9,32 +8,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// What the next session of a campaign records into.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NextLoad {
-    /// Continue the campaign's current recording.
     #[default]
     Continue,
-    /// Start a new recording; the earlier one stays as it is.
     NewFile,
 }
 
-/// One campaign's choices, keyed in [`RecorderSettings::campaigns`] by its
-/// recorded campaign id.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CampaignChoice {
-    /// Record automatically; absent follows `record_every_campaign`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<bool>,
     #[serde(default)]
     pub next: NextLoad,
-    /// Folder of the recording new sessions continue, relative to the save
-    /// folder. Absent is the save folder itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
-    /// Recorded country tag whose flag stands for the campaign.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<String>,
 }
@@ -56,7 +46,6 @@ fn full() -> CaptureMode {
     CaptureMode::Full
 }
 
-/// A [`CaptureMode`] by its name.
 mod capture_mode {
     use replay_data::scope::CaptureMode;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
@@ -77,42 +66,30 @@ mod capture_mode {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecorderSettings {
-    /// Saved as `liveCompression`: the level the recorder writes at while a game runs.
     #[serde(default, rename = "liveCompression")]
     pub compression: crate::compression::Compression,
-    /// Auto Compress: after saving, the tray compresses the recording to High's level in the
-    /// background. No effect while Compression is High.
     #[serde(default = "enabled")]
     pub auto_compress: bool,
-    /// Auto record: campaigns record when they load, unless their own choice says otherwise.
     #[serde(default = "enabled")]
     pub record_every_campaign: bool,
-    /// Auto save: otherwise recordings wait for Save or Discard.
     #[serde(default = "enabled")]
     pub auto_save: bool,
-    /// Where recordings are saved; absent is the recorder's default folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_folder: Option<PathBuf>,
-    /// Folders saved into before the save folder whose sessions may hold hours waiting to be
-    /// saved: listed and saved from until none waits there ([`Self::choose_save_folder`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub earlier_save_folders: Vec<PathBuf>,
-    /// The Paradox user folder; absent finds it automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_folder: Option<PathBuf>,
     #[serde(default = "enabled")]
     pub start_with_replay: bool,
-    /// A campaign recorded in another mode continues in a new file.
     #[serde(default = "full", with = "capture_mode")]
     pub capture_mode: CaptureMode,
     #[serde(default)]
     pub campaigns: BTreeMap<String, CampaignChoice>,
-    /// Recordings whose name the user chose; later saves keep it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chosen_names: Vec<RecordingId>,
 }
 
-/// A recording: its folder and the campaign its header names, whatever its file is called.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RecordingId {
     pub folder: PathBuf,
@@ -125,7 +102,6 @@ impl RecordingId {
     }
 }
 
-/// The form Windows compares paths in: one separator, no verbatim prefix, any case.
 fn path_key(path: &Path) -> String {
     let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
     if let Some(share) = text.strip_prefix(r"\\?\unc\") {
@@ -169,12 +145,10 @@ pub fn directory() -> PathBuf {
     local_data().join("recorder")
 }
 
-/// Where the viewer keeps its choices of how each campaign's histories join.
 pub fn histories_folder() -> PathBuf {
     local_data().join("histories")
 }
 
-/// Where recordings are saved and listed when no folder was chosen.
 pub fn default_save_folder() -> PathBuf {
     local_data().join("captures")
 }
@@ -204,8 +178,6 @@ impl RecorderSettings {
         write_atomic(path, &serde_json::to_vec_pretty(self)?)
     }
 
-    /// Load the current file, apply `change` and save it, holding a short OS
-    /// lock so the recorder and the replay app never undo each other's fields.
     pub fn update<T>(change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
         Self::update_at(&Self::path(), change)
     }
@@ -230,14 +202,10 @@ impl RecorderSettings {
         Ok((settings, result))
     }
 
-    /// The recordings folder both programs use: the recorder saves into it and
-    /// the replay app lists it.
     pub fn effective_save_folder(&self) -> PathBuf {
         self.save_folder.clone().unwrap_or_else(default_save_folder)
     }
 
-    /// Save into `folder` from now on. The folder saved into until now stays among the session
-    /// roots, since its sessions may hold hours waiting to be saved, until it is forgotten.
     pub fn choose_save_folder(&mut self, folder: PathBuf) {
         let before = self.effective_save_folder();
         if !same_path(&before, &folder)
@@ -253,8 +221,6 @@ impl RecorderSettings {
         self.save_folder = Some(folder);
     }
 
-    /// Every folder whose sessions may hold hours waiting to be saved: the save folder, then each
-    /// earlier one.
     pub fn session_roots(&self) -> Vec<PathBuf> {
         let current = self.effective_save_folder();
         let mut roots = Vec::with_capacity(1 + self.earlier_save_folders.len());
@@ -268,7 +234,6 @@ impl RecorderSettings {
         roots
     }
 
-    /// Keep `root`, a folder a session records in, among the session roots; whether it was not.
     pub fn keep_session_root(&mut self, root: PathBuf) -> bool {
         if self
             .session_roots()
@@ -281,7 +246,6 @@ impl RecorderSettings {
         true
     }
 
-    /// Forget `folder` as an earlier save folder, none of its sessions waiting to be saved now.
     pub fn forget_save_folder(&mut self, folder: &Path) {
         self.earlier_save_folders
             .retain(|earlier| !same_path(earlier, folder));
@@ -291,7 +255,6 @@ impl RecorderSettings {
         self.chosen_names.iter().any(|id| id.is(folder, campaign))
     }
 
-    /// Whether the change was needed.
     pub fn choose_name(&mut self, folder: &Path, campaign: &str, chosen: bool) -> bool {
         let before = self.chosen_names.len();
         self.chosen_names
@@ -305,7 +268,6 @@ impl RecorderSettings {
         chosen || self.chosen_names.len() != before
     }
 
-    /// Whether a campaign records automatically.
     pub fn records_campaign(&self, campaign: &str) -> bool {
         self.campaigns
             .get(campaign)
@@ -329,8 +291,6 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
             .as_nanos()
     ));
     let temporary = PathBuf::from(name);
-    // If create_new refuses an existing temporary file, it belongs to another
-    // write or an earlier interruption; never remove it as our own cleanup.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -399,7 +359,6 @@ mod tests {
         assert!(!settings.records_campaign("unknown"));
         assert_eq!(settings.campaigns["b"].next, NextLoad::NewFile);
         assert_eq!(settings.campaigns["b"].folder.as_deref(), Some("b (2)"));
-        // An entry with no choices is not kept.
         assert!(!settings.campaigns.contains_key("c"));
         assert_eq!(RecorderSettings::load_from(&path).unwrap(), settings);
         fs::remove_dir_all(root).unwrap();
@@ -414,7 +373,6 @@ mod tests {
         assert!(settings.name_chosen(Path::new("c:/r"), campaign.to_uppercase().as_bytes()));
         assert!(!settings.name_chosen(Path::new(r"C:\r\Germany (2)"), campaign.as_bytes()));
         assert!(!settings.name_chosen(Path::new(r"C:\r"), b"00000000-0000-4000-8000-000000000001"));
-        // Chosen again, it is kept once.
         settings.choose_name(Path::new(r"C:\r"), campaign, true);
         assert_eq!(settings.chosen_names.len(), 1);
         assert!(settings.choose_name(Path::new("C:/r"), campaign, false));
@@ -425,8 +383,6 @@ mod tests {
         ));
     }
 
-    /// A folder saved into before stays a session root after another is chosen, once, until it
-    /// is forgotten or chosen again.
     #[test]
     fn earlier_save_folders_stay_session_roots_until_forgotten() {
         let root = scratch("save-folders");
@@ -453,7 +409,6 @@ mod tests {
                 PathBuf::from(r"C:\first")
             ]
         );
-        // Chosen again, a folder is the save folder alone.
         let mut chosen = settings.clone();
         chosen.choose_save_folder(PathBuf::from(r"C:\FIRST"));
         assert_eq!(
@@ -471,7 +426,6 @@ mod tests {
         .unwrap();
         assert_eq!(settings.session_roots(), [PathBuf::from("c:/SECOND")]);
         assert_eq!(RecorderSettings::load_from(&path).unwrap(), settings);
-        // A session's folder forgotten before the session began is kept again, once.
         let mut kept = settings.clone();
         assert!(!kept.keep_session_root(PathBuf::from(r"\\?\C:\Second")));
         assert!(kept.keep_session_root(PathBuf::from(r"C:\first")));
@@ -500,8 +454,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// A key no longer read (`blockCompression`, `compression`) loads as if absent; Compression
-    /// and Auto Compress are saved by their keys and kept.
     #[test]
     fn old_compression_keys_are_ignored_and_auto_compress_is_on_until_turned_off() {
         use crate::compression::Compression;

@@ -1,10 +1,3 @@
-//! Class-13 fresh-route common operands after the established capture pass.
-//!
-//! Speed uses fresh variant stat 0x3e, separate from the gun's cached speed. The land branch
-//! applies the fresh supply factor acquired by `eta.rs`. A nonnull naval transfer selects transport
-//! independently of fresh endpoints. Orders-group access uses `carmy::ORDERS_GROUP`; the rail
-//! assignee (`crailway_gun::ASSIGNEE`) is different. No game function, map entity, client path
-//! cache or duration is acquired.
 
 use super::{FreshEta, FreshEtaObservations, Row, at, eta, pointer_at};
 use crate::{

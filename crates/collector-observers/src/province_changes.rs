@@ -1,20 +1,3 @@
-//! The Provinces rows carried between hours ([`engine_native::cprovince::carry`]):
-//! the Provinces job reads only the provinces a native writer may have
-//! changed, the provinces in a border conflict and the `fort_bunker` operand
-//! of every fortified province whose state's modifiers a writer rebuilt.
-//!
-//! The job first drains the territory family's province marks
-//! ([`crate::territory_changes`]) once for the hour: the marked province ids
-//! (controller and victory-point writers, the province reader and building
-//! writes forwarded by location) and the state ids whose provinces a writer
-//! reached (owner setter, state reset and reader, border-conflict insertion
-//! and removal). Province initialization, the owner-area rebuild and a
-//! building write naming no status move the epoch. The
-//! row carry expands a state mark through the provinces its held rows link
-//! to the state, the membership before a reset emptied the state's list,
-//! and the [area family](crate::area_changes) takes the same province marks.
-//! It then drains the state ids whose modifier accumulator the raid family's
-//! forwarded writers rebuilt, for the row carry's `fort_bunker` terms.
 use crate::territory_changes::Changes;
 use engine_native::{cprovince::Capture, cprovince::carry::Counts, walk::Outcome};
 use std::{
@@ -22,13 +5,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// Full, quiet and marked hours.
 static HOURS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-/// Carried rows, read rows and refreshed `fort_bunker` operands.
 static ROWS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
-/// The Provinces job: one drain of the hour's province marks, the walk
-/// carrying unmarked provinces, and the area step over the same marks.
 pub fn walk(
     capture: &mut Capture,
     memory: &impl engine_native::Memory,
@@ -50,10 +29,6 @@ pub fn walk(
     crate::area_changes::capture(capture, outcome, memory, base, take)
 }
 
-/// Drains the hour's province marks once into the stores that consume
-/// them: the province ids into both, the state ids into the row carry.
-/// `None` when the take refused or a mark could not be kept; then neither
-/// store carries anything. Without either store nothing is taken.
 pub fn take(changes: &dyn Changes, capture: &mut Capture) -> Option<[u64; 2]> {
     let Capture {
         province_store,
@@ -150,9 +125,6 @@ mod tests {
         capture
     }
 
-    /// One drain feeds both consumers: the row carry receives the province
-    /// and state marks, the area family the same province marks, and a
-    /// second take finds them consumed.
     #[test]
     fn one_take_feeds_the_row_carry_and_the_areas() {
         use crate::territory_changes::Target;
@@ -174,12 +146,10 @@ mod tests {
         assert_eq!(capture.area_store.as_mut().unwrap().marks().clone(), [700]);
         assert_eq!(take(&domain, &mut capture), Some(epochs));
         assert!(capture.area_store.as_mut().unwrap().marks().is_empty());
-        // The area family alone still takes its marks.
         let mut areas = stores(false, true);
         drop(domain.notify(0, Target::Province(Some(5))));
         assert_eq!(take(&domain, &mut areas), Some(epochs));
         assert_eq!(areas.area_store.as_mut().unwrap().marks().clone(), [5]);
-        // Without a consumer the marks stay for the next take.
         drop(domain.notify(0, Target::Province(Some(6))));
         assert_eq!(take(&domain, &mut stores(false, false)), None);
         assert_eq!(take(&domain, &mut capture), Some(epochs));

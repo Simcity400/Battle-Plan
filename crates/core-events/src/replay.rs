@@ -295,7 +295,6 @@ impl Publication for ReplayPublication<'_> {
         }
         self.out.publish(record)
     }
-    // Coverage belongs to the full pass, and replay cannot create new provisional windows.
     fn coverage(&mut self, _: Coverage<'_>) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
     }
@@ -309,7 +308,6 @@ pub struct ReplayContext<'a> {
     inner: &'a mut dyn CallContext,
 }
 impl<'a> ReplayContext<'a> {
-    // The wrapped reader owns only this batch's retained inputs and timers.
     pub fn new(scope: ReplayScope<'a>, inner: &'a mut dyn CallContext) -> Self {
         Self { scope, inner }
     }

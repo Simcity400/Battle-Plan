@@ -72,7 +72,6 @@ fn inactive_state_pair_payload_is_refused() {
     assert!(row.delta(None).is_err());
 }
 
-/// Isolate the added mask byte in a synthetic 24-hour DivisionStatus stream.
 #[test]
 #[ignore = "recording-size measurement"]
 fn division_status_mask_recording_cost() {
@@ -112,7 +111,6 @@ fn division_status_mask_recording_cost() {
                     assert_eq!(delta.mask >> 16, 0);
                     key = delta.key;
                     let end = encoded.len() - input.remaining();
-                    // Only remove the measured third mask byte; retain all production bytes.
                     before.extend_from_slice(&encoded[start..mask + 2]);
                     before.extend_from_slice(&encoded[mask + 3..end]);
                 }

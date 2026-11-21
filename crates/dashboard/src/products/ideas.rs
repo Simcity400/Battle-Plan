@@ -1,13 +1,3 @@
-//! Ideas (family 24): which ideas a country held over a branch (laws, designers, advisors,
-//! national spirits, …), with each idea's category, slot and effects from content, for the idea
-//! timelines and the national spirits widgets.
-//!
-//! The holdings are folded from the recording's own rows ([`read`]): per stretch and holder of
-//! the tag, the history of its `ActiveIdeas` and `HiredAdvisors` rows and of its advisors'
-//! `Characters` and `LexicalTokens` rows, read at the hours they change. A span starts at the
-//! first hour an idea is read; spans never bridge an hour not read or a change of holder. An
-//! advisor span keeps the seat and character recorded for it. An hour is read when both tables
-//! were read at it.
 
 use dashboard_base::products::Country;
 use super::{
@@ -35,8 +25,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// An idea held over consecutive read hours. An advisor idea carries the seat and character the
-/// recording gave it for this span; a change of either starts a new span.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -48,43 +36,40 @@ pub struct IdeaSpan {
     pub character: Option<IdeaCharacter>,
 }
 
-/// One recorded character: the holder of an advisor idea.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaCharacter {
-    /// The recorded character id.
+    #[doc = " The recorded character id."]
     pub id: u32,
-    /// The script token (resolved through LexicalTokens); empty when unresolved.
+    #[doc = " The script token (resolved through LexicalTokens); empty when unresolved."]
     pub token: String,
-    /// The saved name as recorded (a localisation key or a literal); a rename changes it, so it
-    /// comes before the authored name.
+    #[doc = " The saved name as recorded (a localisation key or a literal); a rename changes it, so it"]
+    #[doc = " comes before the authored name."]
     pub name: String,
 }
 
-/// One modifier as the game stores it, before formatting: one line per modifier, its last value.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EffectLine {
-    /// The modifier's case-folded key; formats are keyed the same way.
+    #[doc = " The modifier's case-folded key; formats are keyed the same way."]
     pub key: String,
-    /// The stored fixed5 value as a decimal string.
+    #[doc = " The stored fixed5 value as a decimal string."]
     pub fixed5: String,
-    /// Named in hidden_modifier: applied, never listed.
+    #[doc = " Named in hidden_modifier: applied, never listed."]
     pub hidden: bool,
 }
 
-/// Effects against one country, or to one equipment type.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EffectGroup {
     pub target: Option<String>,
-    /// An equipment bonus that applies at once to existing equipment.
+    #[doc = " An equipment bonus that applies at once to existing equipment."]
     pub instant: bool,
     pub lines: Vec<EffectLine>,
-    /// A targeted modifier's custom tooltip keys in stored order; none for an equipment bonus.
+    #[doc = " A targeted modifier's custom tooltip keys in stored order; none for an equipment bonus."]
     pub tooltips: Vec<String>,
 }
 
@@ -93,10 +78,10 @@ pub struct EffectGroup {
 #[serde(rename_all = "camelCase")]
 pub struct TraitEffects {
     pub token: String,
-    /// Content defines the trait. When it does not, its effects are unknown and the lists below
-    /// are empty for that reason, not because it has none.
+    #[doc = " Content defines the trait. When it does not, its effects are unknown and the lists below"]
+    #[doc = " are empty for that reason, not because it has none."]
     pub known: bool,
-    /// Why content cannot say whether it defines the trait; None when it can.
+    #[doc = " Why content cannot say whether it defines the trait; None when it can."]
     pub unknown: Option<String>,
     pub name: Option<String>,
     pub lines: Vec<EffectLine>,
@@ -105,15 +90,14 @@ pub struct TraitEffects {
     pub tooltips: Vec<String>,
 }
 
-/// What content and the recording say about one idea the country held.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaInfo {
     pub token: String,
-    /// The idea category; None when neither content nor the recording places it.
+    #[doc = " The idea category; None when neither content nor the recording places it."]
     pub category: Option<String>,
-    /// The slot or character seat it fills; None for category-wide ideas such as national spirits.
+    #[doc = " The slot or character seat it fills; None for category-wide ideas such as national spirits."]
     pub slot: Option<String>,
     pub law: bool,
     pub designer: bool,
@@ -122,29 +106,28 @@ pub struct IdeaInfo {
     pub equipment: Vec<EffectGroup>,
     pub research: Vec<EffectLine>,
     pub traits: Vec<TraitEffects>,
-    /// Custom tooltip localisation keys the idea shows instead of values.
+    #[doc = " Custom tooltip localisation keys the idea shows instead of values."]
     pub tooltips: Vec<String>,
-    /// Content defines the idea or its advisor role, so the lists above are its effects.
+    #[doc = " Content defines the idea or its advisor role, so the lists above are its effects."]
     pub effects_known: bool,
-    /// Why content cannot say what the idea is; None when it can.
+    #[doc = " Why content cannot say what the idea is; None when it can."]
     pub unknown: Option<String>,
-    /// Why the idea's artwork has no name (a localisation key missing or refused, or what the
-    /// hour cannot say about the naming country); None when it is named.
+    #[doc = " Why the idea's artwork has no name (a localisation key missing or refused, or what the"]
+    #[doc = " hour cannot say about the naming country); None when it is named."]
     pub name_missing: Option<String>,
 }
 
-/// One slot of a category, as the category lists it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SlotInfo {
     pub token: String,
     pub name: Option<String>,
-    /// A character seat (advisors) rather than an idea slot (laws, designers).
+    #[doc = " A character seat (advisors) rather than an idea slot (laws, designers)."]
     pub character: bool,
-    /// How many seats of this slot the category has.
+    #[doc = " How many seats of this slot the category has."]
     pub seats: u32,
-    /// For a law slot: its laws in content order, so a law's escalation is its place here.
+    #[doc = " For a law slot: its laws in content order, so a law's escalation is its place here."]
     pub laws: Vec<String>,
 }
 
@@ -154,22 +137,21 @@ pub struct SlotInfo {
 pub struct CategoryInfo {
     pub token: String,
     pub name: Option<String>,
-    /// `type`, such as `national_spirit`.
+    #[doc = " `type`, such as `national_spirit`."]
     pub kind: Option<String>,
     pub hidden: bool,
     pub politics_tab: bool,
     pub slots: Vec<SlotInfo>,
 }
 
-/// The artwork of one character who held an advisor idea.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct HolderArtwork {
     pub token: String,
-    /// The recorded character id, as on the span.
+    #[doc = " The recorded character id, as on the span."]
     pub character: u32,
-    /// The script token and saved name, as on the span.
+    #[doc = " The script token and saved name, as on the span."]
     pub character_token: String,
     pub name: String,
     pub artwork: Artwork,
@@ -181,26 +163,26 @@ pub struct HolderArtwork {
 pub struct IdeaHistoryReply {
     pub branch_id: String,
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub spans: Vec<IdeaSpan>,
     pub ideas: Vec<IdeaInfo>,
     pub artwork: Vec<Artwork>,
-    /// Each recorded holder of an advisor idea with that character's own name and portrait.
+    #[doc = " Each recorded holder of an advisor idea with that character's own name and portrait."]
     pub holders: Vec<HolderArtwork>,
-    /// Every category in content order, so widgets list mod categories too.
+    #[doc = " Every category in content order, so widgets list mod categories too."]
     pub categories: Vec<CategoryInfo>,
-    /// Hours the country's ideas were not read: a span ending or starting next to one is a gap,
-    /// not a change.
+    #[doc = " Hours the country's ideas were not read: a span ending or starting next to one is a gap,"]
+    #[doc = " not a change."]
     pub unobserved: Vec<HourSpan>,
-    /// Hours the country's recorded identity starts: its first hour read, after an hour not read,
-    /// or as another holder. The ideas held then are that identity's initial state, not changes.
+    #[doc = " Hours the country's recorded identity starts: its first hour read, after an hour not read,"]
+    #[doc = " or as another holder. The ideas held then are that identity's initial state, not changes."]
     pub identity_starts: Vec<i32>,
-    /// How the game shows each modifier the effects above use; a key missing here is shown as
-    /// authored, unformatted.
+    #[doc = " How the game shows each modifier the effects above use; a key missing here is shown as"]
+    #[doc = " authored, unformatted."]
     pub modifiers: Vec<ModifierFormat>,
-    /// The texts the tooltips need: custom tooltips, research categories, equipment names, and
-    /// `YES` / `NO`.
+    #[doc = " The texts the tooltips need: custom tooltips, research categories, equipment names, and"]
+    #[doc = " `YES` / `NO`."]
     pub texts: Vec<LocalisedText>,
     pub warnings: Vec<String>,
 }
@@ -211,29 +193,22 @@ pub(crate) const TOKENLESS_SEATS: &str = "Some appointed advisors have no record
 pub(crate) const SEAT: &str = "hired advisors seat is not UTF-8; appointment cannot be identified.";
 pub(crate) const TOKEN: &str = "Held idea token is not UTF-8; holding cannot be identified.";
 
-/// Why an advisor template is unknown when its character has no Characters row at `hour`.
 fn missing_template(id: u32, hour: i32) -> String {
     format!("character {id} has no Characters row at hour {hour}")
 }
 
-/// One country's recorded idea history, before content is joined.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Ideas {
     pub spans: Vec<IdeaSpan>,
     pub unobserved: Vec<HourSpan>,
     pub identity_starts: Vec<i32>,
-    /// Each identity start's run and holder (canonical slot, raw id), as `identity_starts`.
     pub starts: Vec<(u32, u32, u32)>,
-    /// Each advisor holder's template as read at the first hour of its latest span, by character.
     pub templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
     pub warnings: BTreeSet<&'static str>,
-    /// The last hour read and its holder: the next hour continues it.
     last: Option<(i32, (u32, u32))>,
-    /// Open spans by token.
     open: BTreeMap<String, usize>,
 }
 
-/// The fields a fold reads, by index.
 struct Columns {
     idea: usize,
     advisor: [usize; 3],
@@ -258,11 +233,9 @@ impl Columns {
     }
 }
 
-/// A history's cells of each key, stepped through in hour order.
 struct Stepper<'a> {
     history: &'a History,
     at: Vec<usize>,
-    /// Each key's cells now, none while not shown.
     now: Vec<Option<&'a [Cell]>>,
 }
 
@@ -284,7 +257,6 @@ impl<'a> Stepper<'a> {
         }
     }
 
-    /// The shown keys with their cells.
     fn shown(&self) -> impl Iterator<Item = (u128, &'a [Cell])> + '_ {
         self.history.keys.iter().zip(&self.now).filter_map(|((key, _), cells)| Some((*key, (*cells)?)))
     }
@@ -310,7 +282,6 @@ fn number(cell: Cell) -> Option<i64> {
     }
 }
 
-/// `a` and `b`'s common hours, both ascending runs.
 fn both(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
@@ -324,7 +295,6 @@ fn both(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     out
 }
 
-/// Adds hours to the unobserved spans, merging with the last span they touch.
 fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     match spans.last_mut() {
         Some(span) if i64::from(span.last_hour) + 1 >= i64::from(first_hour) => {
@@ -335,7 +305,6 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     }
 }
 
-/// `tag`'s idea history over `query`'s timeline.
 pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Ideas> {
     let columns = Columns::new()?;
     let mut ideas = Ideas::default();
@@ -373,13 +342,11 @@ pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> 
 }
 
 impl Ideas {
-    /// An hour not read: every open span ends.
     fn close(&mut self) {
         self.last = None;
         self.open.clear();
     }
 
-    /// One holder's rows over `first..=last` of run `run`, folded.
     fn country(&mut self, query: &Query<'_>, columns: &Columns, run: u32, who: (u32, u32), first: i32, last: i32, cancelled: &AtomicBool) -> io::Result<()> {
         let recording = query.replay.recording();
         let key = u128::from(who.1);
@@ -460,7 +427,6 @@ impl Ideas {
         Ok(())
     }
 
-    /// The holder `who` read from `hour` through `end`.
     #[allow(clippy::too_many_arguments, reason = "one hour's four row sets of one holder")]
     fn observe(&mut self, hour: i32, end: i32, run: u32, who: (u32, u32), columns: &Columns, held: &Stepper<'_>, hired: &Stepper<'_>, characters: &Stepper<'_>, lexicon: &Stepper<'_>) {
         let continues = self.last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
@@ -475,7 +441,6 @@ impl Ideas {
             let place = lexicon.place(columns.literal)?;
             lexicon.cells(u128::from(word)).and_then(|cells| lexicon.text(cells[place]))
         };
-        // Each appointed advisor's idea with its recorded seat and character.
         let place = |stepper: &Stepper<'_>, column: usize| stepper.place(column);
         let mut roles: BTreeMap<Vec<u8>, (String, IdeaCharacter)> = BTreeMap::new();
         if let (Some(at_character), Some(at_idea), Some(at_seat)) = (place(hired, columns.advisor[0]), place(hired, columns.advisor[1]), place(hired, columns.advisor[2])) {
@@ -492,8 +457,6 @@ impl Ideas {
                 }
                 let Some(id) = number(cells[at_character]).and_then(|id| u32::try_from(id).ok()) else { continue };
                 let row = character_row(characters, columns, id);
-                // The character's script token (its saved name is another field); unresolved, the
-                // holder stays unidentified rather than misnamed.
                 let token = row.as_ref().and_then(|row| literal(i64::from(row.name_token_id))).and_then(|token| std::str::from_utf8(token).ok()).unwrap_or_default();
                 let name = row.as_ref().and_then(|row| std::str::from_utf8(&row.token).ok()).unwrap_or_default();
                 roles.insert(idea.to_vec(), (seat.to_owned(), IdeaCharacter { id, token: token.to_owned(), name: name.to_owned() }));
@@ -512,7 +475,6 @@ impl Ideas {
             };
             let role = roles.get(&bytes);
             match self.open.get(token) {
-                // The same holder in the same seat continues its span.
                 Some(&index) if self.spans[index].slot.as_deref() == role.map(|role| role.0.as_str()) && self.spans[index].character.as_ref() == role.map(|role| &role.1) => {
                     self.spans[index].last_hour = end;
                 }
@@ -540,10 +502,6 @@ impl Ideas {
         }
     }
 
-    /// The spans the event feed lists as additions: a holding the hour before did not hold, not at
-    /// an identity's start and not first read after hours not read. A rename or a newly resolved
-    /// script token of the same character in the same seat is not a new appointment. Dated by
-    /// first read: an upper bound.
     #[allow(dead_code, reason = "the event feed's builder reads it")]
     pub fn additions(&self) -> impl Iterator<Item = &IdeaSpan> {
         let mut previous: BTreeMap<&str, &IdeaSpan> = BTreeMap::new();
@@ -565,7 +523,6 @@ impl Ideas {
     }
 }
 
-/// A character's row as the template and naming read it, from its history at the hour.
 fn character_row(characters: &Stepper<'_>, columns: &Columns, id: u32) -> Option<CharacterRow> {
     let cells = characters.cells(u128::from(id))?;
     let at = |column: usize| characters.place(column).map(|place| cells[place]);
@@ -585,9 +542,6 @@ fn character_row(characters: &Stepper<'_>, columns: &Columns, id: u32) -> Option
     })
 }
 
-/// The naming of holder `id` at `hour`: its country row and appearance, and the tables a dynamic
-/// country's civil war reads. `frames` moves on from the hour it read before, so a history's
-/// identity starts, asked in hour order, restore each table once.
 pub(crate) fn naming_at(frames: &mut super::at_hour::Frames<'_>, hour: i32, id: u32) -> io::Result<NamingCountry> {
     use super::at_hour::Read;
     let reads = [
@@ -607,18 +561,11 @@ pub(crate) fn naming_at(frames: &mut super::at_hour::Frames<'_>, hour: i32, id: 
     Ok(NamingCountry::read_with_appearance(&frame, country, appearance))
 }
 
-/// The recorded modifier definitions by the modifier each names; none where the hour read does not
-/// hold them.
 pub(crate) type RecordedDefinitions = Option<BTreeMap<String, ModifierDefinitionRow>>;
 
-/// The recorded definitions a source's replies read, by the run and hour they were read at: a fact
-/// of the recording, read once for every reply that formats ideas (the idea history, each chunk of
-/// the power spending), never once a reply.
 #[derive(Default)]
 struct KeptDefinitions(Vec<((u32, i32), Arc<RecordedDefinitions>)>);
 
-/// The recorded modifier definitions at the timeline's last hour, read once a source: a reply
-/// asking while another reads them waits for that read.
 pub(crate) fn recorded_definitions(source: &Source, query: &Query<'_>) -> io::Result<Arc<RecordedDefinitions>> {
     let Some(stretch) = query.timeline.stretches.last() else { return Ok(Arc::new(None)) };
     let at = (stretch.run, stretch.last);
@@ -649,7 +596,6 @@ fn line(modifier: &Modifier, hidden: bool) -> EffectLine {
     EffectLine { key: modifier.name.clone(), fixed5: modifier.value.to_string(), hidden }
 }
 
-/// A lookup's answer, and the gap's text when content cannot say.
 fn known<'a, T>(found: Result<Option<&'a T>, &Gap>) -> (Option<&'a T>, Option<String>) {
     match found {
         Ok(found) => (found, None),
@@ -668,24 +614,16 @@ fn equipment(bonuses: &[installed_content_core::modifiers::EquipmentBonus]) -> V
         .collect()
 }
 
-/// A modifier's lines: one per stored modifier, a hidden one marked.
 fn lines(modifiers: &Modifiers) -> Vec<EffectLine> {
     modifiers.values.iter().map(|m| line(m, modifiers.hidden.contains(&m.name))).collect()
 }
 
-/// Joins an idea to content: category, slot and effects. `recorded_seat` is the latest seat the
-/// recording gives an advisor idea, used first, so an advisor whose authored role content cannot
-/// resolve is still placed. Otherwise the slot comes from content (the character's advisor role,
-/// or the idea's own group). `built` is the latest holder's template, which decides a role the
-/// character's alternatives disagree on, or why it is not known.
 pub(crate) fn idea_info(content: &PoliticsContent, token: &str, recorded_seat: Option<&str>, built: Result<&BuiltTemplate, &str>) -> IdeaInfo {
     let tags = &content.ideas.tags;
     let mut unknown = Vec::new();
     let (idea, gap) = known(content.ideas.idea(token));
     unknown.extend(gap);
     let authored_role = content.characters.held_advisor(token, built).inspect_err(|reason| unknown.push(reason.clone())).ok().flatten();
-    // The idea's group resolves to its category by the category's name (a national spirit's) or
-    // by a slot it holds.
     let (group_category, gap) = match idea {
         Some(idea) => known(tags.resolve(&idea.group)),
         None => (None, None),
@@ -714,10 +652,7 @@ pub(crate) fn idea_info(content: &PoliticsContent, token: &str, recorded_seat: O
                 token: trait_token.clone(),
                 known: found.is_some(),
                 unknown,
-                // Trait names localise the selected trait's stored name.
                 name: found.and_then(|found| content.localised(&found.token, View::Plain)),
-                // The trait's command fields are not lines of the trait: an advisor shows their sum
-                // with its own cost.
                 lines: found.map(|found| lines(&found.modifiers)).unwrap_or_default(),
                 targeted: found.map(|found| targeted(&found.targeted)).unwrap_or_default(),
                 equipment: found.map(|found| equipment(&found.equipment_bonuses)).unwrap_or_default(),
@@ -725,7 +660,6 @@ pub(crate) fn idea_info(content: &PoliticsContent, token: &str, recorded_seat: O
             }
         })
         .collect();
-    // An idea's effects, else its advisor role's modifier and research_bonus.
     let modifiers = idea.map(|idea| &idea.modifiers).or_else(|| authored_role.map(|role| &role.modifiers));
     let research = idea.map(|idea| &idea.research_bonuses).or_else(|| authored_role.map(|role| &role.research_bonuses));
     let effects_known = idea.is_some() || authored_role.is_some();
@@ -747,7 +681,6 @@ pub(crate) fn idea_info(content: &PoliticsContent, token: &str, recorded_seat: O
     }
 }
 
-/// Every category read, in load order.
 pub(crate) fn categories(content: &PoliticsContent) -> Vec<CategoryInfo> {
     let (categories, _) = content.ideas.tags.categories();
     categories
@@ -782,9 +715,7 @@ pub(crate) fn categories(content: &PoliticsContent) -> Vec<CategoryInfo> {
         .collect()
 }
 
-/// The modifier keys and texts the ideas' tooltips read.
 pub(crate) fn effect_keys<'a>(ideas: impl IntoIterator<Item = &'a IdeaInfo>) -> (BTreeSet<String>, BTreeSet<String>) {
-    // Boolean modifier values use YES/NO localisation.
     let mut modifier_keys = BTreeSet::new();
     let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
     for idea in ideas {
@@ -797,15 +728,12 @@ pub(crate) fn effect_keys<'a>(ideas: impl IntoIterator<Item = &'a IdeaInfo>) -> 
         for found in &idea.traits {
             effects(&found.lines, &found.targeted, &found.tooltips);
         }
-        // Research bonuses use the research-tooltip content key.
         text_keys.extend(idea.research.iter().map(|line| format!("{}_research", line.key)));
         text_keys.extend(idea.equipment.iter().chain(idea.traits.iter().flat_map(|found| &found.equipment)).filter_map(|group| group.target.clone()));
     }
     (modifier_keys, text_keys)
 }
 
-/// The reply to `params` from `ideas`, the country's history, joined with `content` and formatted
-/// with `recorded`, the recorded modifier definitions by name; `naming` names each identity start.
 pub(crate) fn present(
     content: &PoliticsContent,
     params: &CountryParams,
@@ -818,7 +746,6 @@ pub(crate) fn present(
     let tokens: BTreeSet<&str> = ideas.spans.iter().map(|span| span.token.as_str()).collect();
     let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned()];
     warnings.extend(content.warnings.iter().cloned());
-    // A file that could declare a category or law stops short.
     let (_, category_gap) = content.ideas.tags.categories();
     let (_, law_gap) = content.ideas.laws("");
     for gap in category_gap.into_iter().chain(law_gap) {
@@ -833,7 +760,6 @@ pub(crate) fn present(
     for token in tokens {
         check_cancel(cancelled)?;
         let latest = ideas.spans.iter().rev().find(|span| span.token == token);
-        // The identity the latest span belongs to names the idea.
         let named = latest
             .and_then(|span| ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1))
             .and_then(|index| naming.get(index))
@@ -848,18 +774,14 @@ pub(crate) fn present(
         if found.category.is_none() {
             unplaced.push(token.to_owned());
         }
-        // A holder's artwork: the content's for its script token, named as recorded.
         let holder_art = |script: Option<&str>, saved: &str| {
             let (mut art, mut problem) = content.held_idea_artwork(token, script, saved, country);
-            // Without a script token the content cannot say whose portrait this is; the idea's
-            // authored advisor may be someone else.
             if script.is_none() {
                 art.icon = None;
                 problem = Some(format!("{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"));
             }
             (art, problem)
         };
-        // The idea's artwork shows its latest holder as recorded; each holder also has its own.
         let held = latest.and_then(|span| span.character.as_ref()).map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
         let (art, problem) = match held {
             Some((script, saved)) => holder_art(script, saved),
@@ -895,7 +817,6 @@ pub(crate) fn present(
     let (modifiers, format_warnings) = idea_format::modifier_formats_from_recorded(recorded, &modifier_keys, content);
     warnings.extend(format_warnings);
     let texts = idea_format::texts(content, &text_keys);
-    // Names left out for a localisation refusal, by reason and key.
     warnings.extend(content.catalogue.refusal_lines());
     Ok(IdeaHistoryReply {
         branch_id: params.branch_id.clone(),
@@ -914,12 +835,9 @@ pub(crate) fn present(
     })
 }
 
-/// The last country read, with its identities' naming, kept for the next request of it.
 #[derive(Default)]
 struct Kept(Option<(u64, Country, Arc<(Ideas, Vec<NamingCountry>)>)>);
 
-/// `tag`'s idea history on `branch` of `source` and each identity start's naming: the one kept
-/// when it is that country's.
 pub(crate) fn history(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<(Ideas, Vec<NamingCountry>)>> {
     let state = source.state::<Kept>();
     let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, read)| Arc::clone(read));
@@ -974,7 +892,6 @@ impl Product for IdeaHistory {
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let content = politics_content(source, context.content()?)?;
         let query = crate::answer::query(source, params.branch())?;
-        // Apart: the country's history and the recording's definitions are read side by side.
         let (read, recorded) = rayon::join(|| history(source, params.branch(), &params.country, cancelled), || recorded_definitions(source, &query));
         let (read, recorded) = (read?, recorded?);
         let reply = present(&content, params, &query.holders.name(&params.country, query.timeline.last), &read.0, &read.1, (*recorded).as_ref(), cancelled)?;

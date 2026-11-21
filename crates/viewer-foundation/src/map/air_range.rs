@@ -1,5 +1,3 @@
-//! The native wing-range law shared by raid gates and battle-plan labels.
-//! Callers retain their own lazy table admission and current-frame joins.
 
 use replay_data::rows::{
     AceRangeInputRow, AirWingRow, CountryCommandPowerRow, RaidCountryInputRow,
@@ -21,12 +19,10 @@ pub trait Sources {
     fn ace(&self, handle: u64) -> Result<Option<&AceRangeInputRow>, String>;
 }
 
-/// Current recorded operands for callers without a more specialised lazy source.
 pub struct FrameSources<'a> {
     frame: &'a replay_frame::frame::DecodedFrame,
     countries: OnceCell<Result<BTreeMap<u32, &'a RaidCountryInputRow>, String>>,
     command_power: OnceCell<Result<BTreeMap<u32, &'a CountryCommandPowerRow>, String>>,
-    // Keep table-wide read failure distinct from each handle's conflicting observations.
     #[allow(clippy::type_complexity)]
     aces: OnceCell<Result<BTreeMap<u64, Result<&'a AceRangeInputRow, String>>, String>>,
 }
@@ -98,8 +94,6 @@ impl Sources for FrameSources<'_> {
                     .frame
                     .complete::<replay_data::rows::tables::AceRangeInputs>()
                     .map_err(|error| error.to_string())?;
-                // The table orders country before handle. Full references are
-                // globally identified, but are not globally sorted in that order.
                 let mut aces = BTreeMap::<u64, Result<&AceRangeInputRow, String>>::new();
                 for row in rows {
                     match aces.entry(row.ace) {
@@ -126,7 +120,6 @@ impl Sources for FrameSources<'_> {
     }
 }
 
-/// Modified map range for an air wing.
 pub fn wing_range(
     wing: &AirWingRow,
     defines: Defines,
@@ -148,7 +141,6 @@ pub fn wing_range(
             .ace(wing.ace)?
             .ok_or("a wing's ace has no AceRangeInputs row")?;
         if ace.alive != 0 {
-            // Ace country modifiers are read hourly from CountryCommandPower.
             let owner = sources.command_power(ace.canonical_slot)?;
             let scaled = ace.range.wrapping_mul(ace_scale(ace, defines, sources)?) / 100_000;
             let scaled = registered(owner.ace_effectiveness_factor, "ace_effectiveness_factor")?
@@ -168,7 +160,6 @@ pub fn wing_range(
     Ok(base.wrapping_mul(factor.wrapping_add(air)) / 100_000)
 }
 
-/// The bonus shrinks with the ace's daily recorded wing size.
 pub fn ace_scale(
     ace: &AceRangeInputRow,
     defines: Defines,
@@ -192,14 +183,10 @@ pub fn ace_scale(
     })
 }
 
-/// Accept signed 64-bit values except the maximum, minimum and minimum plus one. This range
-/// validity check does not convert fixed5 sentinels.
 pub fn finite(value: i64) -> bool {
     (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// Scale by 100000 with wrapping multiplication, then divide by the map pixel-to-km scale.
-/// Invalid values or a zero scale return 0xFFFFFFFF.
 pub fn to_map(value: i64, scale: i64) -> i64 {
     if scale == 0 || !finite(value) {
         0xffff_ffff

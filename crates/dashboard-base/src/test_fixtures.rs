@@ -1,11 +1,8 @@
-//! Test sources and content options over the recording builders in
-//! [`dashboard_core::test_fixtures`].
 
 pub use dashboard_core::test_fixtures::*;
 use replay::spool::Record;
 use replay_frame::frame::DecodedFrame;
 
-/// A real read-only recording binding for native query tests, with scratch outside Git.
 pub fn file_source(replay: replay::campaign::Replay) -> (crate::Source, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("replay-query-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
@@ -24,8 +21,6 @@ pub fn file_source(replay: replay::campaign::Replay) -> (crate::Source, std::pat
     (source, root)
 }
 
-/// Writes a synthetic language list into the game folder `root`, English then French, unless it
-/// already holds one: every language the game prepares text in is chosen from that list.
 pub fn declare_languages(root: &std::path::Path) {
     let list = root.join("localisation/languages.yml");
     if !list.exists() {
@@ -38,7 +33,6 @@ pub fn declare_languages(root: &std::path::Path) {
     }
 }
 
-/// Gather a synthetic content root whose executable contains `test`.
 pub fn content_identity(
     root: &std::path::Path,
 ) -> (
@@ -79,8 +73,6 @@ pub fn content_identity(
     (options, identity)
 }
 
-/// Writes to `path` the recording of `input` carrying the game facts of the content `options`
-/// name, as a recorder adds them to a recording of `identity`: what its content plays back.
 pub fn write_with_facts(
     path: &std::path::Path,
     options: &crate::products::ContentOptions,
@@ -120,7 +112,6 @@ pub fn write_with_facts(
     .unwrap();
 }
 
-/// [`write_with_facts`], held in memory.
 pub fn with_facts(
     options: &crate::products::ContentOptions,
     identity: &replay_data::identity::Identity,
@@ -136,7 +127,6 @@ pub fn with_facts(
     replay::campaign::Replay::open(bytes).unwrap()
 }
 
-/// Open frames against an English synthetic content root, the recording carrying its facts.
 pub fn source_with_content(
     frames: Vec<DecodedFrame>,
     root: &std::path::Path,

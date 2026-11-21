@@ -1,5 +1,3 @@
-/** The followed eAPM and campaign clock (`{head: 'player-apm' | 'campaign-clock'}`): their answers read as rows, and as
- * the live values a table paints. Cells follow `crates/dashboard/src/products/player_apm_head.rs`. */
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import type { SortValue } from '../../charts/table/logic';
@@ -7,13 +5,10 @@ import { CELL, cellState, cellValue, rowName } from '../../dashboard/follow/mess
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';
 
-/** The cells of a followed eAPM row (`APM_COLUMNS`). */
 const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8 } as const;
-/** The cells of the followed clock's row (`CLOCK_COLUMNS`). */
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
 
 const bits = new DataView(new ArrayBuffer(8));
-/** A float cell written as its bits. */
 function float(answer: FollowedRows, at: number): number | null {
   if (cellState(answer, at) !== CELL.value) return null;
   bits.setBigInt64(0, cellValue(answer, at), true);
@@ -21,7 +16,6 @@ function float(answer: FollowedRows, at: number): number | null {
 }
 const whole = (answer: FollowedRows, at: number): bigint | null => cellState(answer, at) === CELL.value ? cellValue(answer, at) : null;
 
-/** A tag packed into one number, first byte lowest. */
 function unpacked(raw: bigint | null): string | null {
   if (raw === null) return null;
   let out = '';
@@ -29,19 +23,16 @@ function unpacked(raw: bigint | null): string | null {
   return out || null;
 }
 
-/** What follows eAPM at the head: the widget's request without its hours, the branch's hours, the window. */
 export function apmHeadQuery(params: { branchId: string; group: ApmGroup; tags: string[] | null; membership: ApmMembership[] | null; players: string[] },
   branch: { firstHour: number; lastHour: number }, windowHours: number) {
   return { head: 'player-apm', params: { ...params, firstHour: branch.firstHour, lastHour: branch.lastHour, windowHours } };
 }
 
-/** What follows the campaign clock at the head. */
 export const clockHeadQuery = (branch: { id: string; firstHour: number; lastHour: number }) =>
   ({ head: 'campaign-clock', params: { branchId: branch.id, firstHour: branch.firstHour, lastHour: branch.lastHour } });
 
 const rowsOf = (answer: FollowedAnswer | undefined): FollowedRows | null => answer && answer.kind !== 'notRecorded' ? answer : null;
 
-/** A followed eAPM row's value, as the request path's summary. */
 function valueAt(answer: FollowedRows, row: number): ApmValue {
   const at = row * answer.columns;
   const count = (column: number) => whole(answer, at + column)?.toString() ?? null;
@@ -49,7 +40,6 @@ function valueAt(answer: FollowedRows, row: number): ApmValue {
     unpausedMinutes: float(answer, at + APM.minutes), complete: whole(answer, at + APM.complete) === 1n, gaps: whole(answer, at + APM.gaps) === 1n };
 }
 
-/** The followed eAPM's rows as the request path's series (no points): what a table's structure renders. */
 export function apmHeadRows(answer: FollowedAnswer | undefined): ApmSeries[] {
   const held = rowsOf(answer);
   if (!held) return [];
@@ -59,7 +49,6 @@ export function apmHeadRows(answer: FollowedAnswer | undefined): ApmSeries[] {
   });
 }
 
-/** Which rows a followed eAPM holds, each with the tag it shows: its structure. A value moving never changes it. */
 export function apmHeadStructure(answer: FollowedAnswer | undefined): string {
   if (answer?.kind === 'notRecorded') return `not recorded: ${answer.reason}`;
   const held = rowsOf(answer);
@@ -69,25 +58,19 @@ export function apmHeadStructure(answer: FollowedAnswer | undefined): string {
   return out;
 }
 
-/** An eAPM value as a sort value that orders by the rate and carries whether part of its period was not recorded:
- * thousandths of the rate, doubled, plus one where it has gaps. */
 export const apmSortValue = (value: ApmValue): bigint | null =>
   value.apm === null ? null : BigInt(Math.round(value.apm * 1000)) * 2n + (value.gaps ? 1n : 0n);
 
-/** An [`apmSortValue`] back as its rate and whether it has gaps. */
 export function apmFromSort(value: bigint): { apm: number; gaps: boolean } {
   return { apm: Number(value >> 1n) / 1000, gaps: (value & 1n) === 1n };
 }
 
-/** Why an eAPM row's cell holds no value, as the widget's note says it. */
 function apmReason(value: ApmValue): string {
   if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
   if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
   return 'It is unclear whether some orders count toward eAPM; the rate is unknown.';
 }
 
-/** The table's live values of a followed eAPM, keyed `liveKey(series id, column)`: `apm` (an [`apmSortValue`]),
- * `orders`, `paused` and `minutes`. */
 export function apmLiveValues(answer: FollowedAnswer | undefined): LiveValues<SortValue> {
   const values = new Map<string, SortValue>(), reasons = new Map<string, string>();
   for (const row of apmHeadRows(answer)) {
@@ -105,7 +88,6 @@ export function apmLiveValues(answer: FollowedAnswer | undefined): LiveValues<So
   return { get: key => values.get(key) ?? undefined, missing };
 }
 
-/** The followed clock's totals: seconds (null where not recorded) and whether its period is whole; or why none. */
 export function clockHead(answer: FollowedAnswer | undefined): { recorded: number | null; playing: number | null; paused: number | null; complete: boolean } | { reason: string } | null {
   if (!answer) return null;
   if (answer.kind === 'notRecorded') return { reason: answer.reason };
@@ -114,18 +96,12 @@ export function clockHead(answer: FollowedAnswer | undefined): { recorded: numbe
     complete: whole(answer, CLOCK.complete) === 1n };
 }
 
-/** The graph's view following the head at a pause or after a seek: the trailing window that ends at the head, within
- * the branch, never past it (at the branch's first hour, its one hour); null while playing, where the chart's moving
- * window follows the head without a render. */
 export function apmPausedView(head: number | null, first: number, last: number, windowHours: number): [number, number] | null {
   if (head === null) return null;
   const end = Math.max(first, Math.min(last, Math.floor(head)));
   return [Math.max(first, end - windowHours), Math.max(end, first + 1)];
 }
 
-/** The country holders the graph's legend names: each series at its own last hour (`series.hour`), or, at the head,
- * at `shown` (the hour shown, as each reads there) where that is earlier, so a holder is never named as at the
- * campaign's end while the head is before it. */
 export function apmHolders(rows: readonly Pick<ApmSeries, 'id' | 'tag' | 'hour'>[], shown: number | null): { key: string; tag: string; hour: number }[] {
   return rows.flatMap(row => row.tag ? [{ key: row.id, tag: row.tag, hour: shown === null ? row.hour : Math.min(row.hour, shown) }] : []);
 }

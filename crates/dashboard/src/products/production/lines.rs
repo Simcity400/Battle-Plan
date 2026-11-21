@@ -1,8 +1,3 @@
-//! A country's production lines over a branch (`production-lines`): each line's steps (its
-//! variant and factories over its hours), its final count and the names and pictures of what it
-//! made; and every recorded value of its lines over one window of [`DETAIL_HOURS`]
-//! (`production-line-detail`). Neither walks hours: the lines come from each run's index, their
-//! values from their columns' runs over the hours asked.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -30,36 +25,34 @@ use ts_rs::TS;
 pub struct ProductionLines;
 pub struct ProductionLineDetail;
 
-/// A stretch of a line's hours with one variant and the same factories: what its lane draws.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineStep {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// It follows hours the line was not recorded as the country's.
+    #[doc = " It follows hours the line was not recorded as the country's."]
     pub starts_segment: bool,
     pub variant: String,
     pub active_factories: i32,
     pub requested_factories: i32,
 }
 
-/// One production line's life in the branch.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineHistory {
-    /// Unique in the branch: the handle and which appearance of it this is.
+    #[doc = " Unique in the branch: the handle and which appearance of it this is."]
     pub key: String,
     pub handle: String,
-    /// Its native class; null where not recorded.
+    #[doc = " Its native class; null where not recorded."]
     pub kind: Option<LineKind>,
     pub steps: Vec<LineStep>,
-    /// The output published when it ended, counting every unit it made in the branch.
+    #[doc = " The output published when it ended, counting every unit it made in the branch."]
     pub final_output: Option<OutputRun>,
-    /// The first hour it was gone while its country was still recorded: it ended before.
+    #[doc = " The first hour it was gone while its country was still recorded: it ended before."]
     pub ended_by: Option<i32>,
-    /// It ran at the first recorded hour of its country: it began before recording.
+    #[doc = " It ran at the first recorded hour of its country: it began before recording."]
     pub before_recording: bool,
 }
 
@@ -78,23 +71,21 @@ pub struct ProductionLinesReply {
     pub branch_id: String,
     pub tag: String,
     pub decimals: u8,
-    /// Every line of the country in the branch, in the order first seen.
+    #[doc = " Every line of the country in the branch, in the order first seen."]
     pub lines: Vec<LineHistory>,
-    /// Each variant a line made, named at one hour it was made.
+    #[doc = " Each variant a line made, named at one hour it was made."]
     pub variants: Vec<VariantName>,
-    /// Each organisation a line was assigned to, named at one hour it was.
+    #[doc = " Each organisation a line was assigned to, named at one hour it was."]
     pub organisations: Vec<OrganisationName>,
     pub icons: Vec<super::EquipmentIcon>,
-    /// Hours a holder of the tag was recorded, ascending: outside them its lines are not known,
-    /// which is not none.
+    #[doc = " Hours a holder of the tag was recorded, ascending: outside them its lines are not known,"]
+    #[doc = " which is not none."]
     pub line_hours: Vec<HourSpan>,
-    /// The hours one `production-line-detail` window covers.
+    #[doc = " The hours one `production-line-detail` window covers."]
     pub detail_hours: i32,
     pub warnings: Vec<String>,
 }
 
-/// A request for window `window` of a country's line values: hours `window × detailHours`
-/// through the hour before the next window.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,7 +95,6 @@ pub struct ProductionDetailParams {
     pub window: i32,
 }
 
-/// Every recorded value of a line over hours it held still.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -113,34 +103,33 @@ pub struct LineRun {
     pub last_hour: i32,
     pub starts_segment: bool,
     pub variant: String,
-    /// The organisation's reference; "0" for none.
+    #[doc = r#" The organisation's reference; "0" for none."#]
     pub mio: String,
     pub active_factories: i32,
     pub requested_factories: i32,
-    /// The most factories the line takes (the efficiency average's clamp).
+    #[doc = " The most factories the line takes (the efficiency average's clamp)."]
     pub max_factories: i32,
-    /// IC per unit, fixed5.
+    #[doc = " IC per unit, fixed5."]
     pub cost_raw: String,
-    /// IC added at each production tick, fixed5.
+    #[doc = " IC added at each production tick, fixed5."]
     pub speed_raw: String,
-    /// Units per week, fixed5; null without a positive cost.
+    #[doc = " Units per week, fixed5; null without a positive cost."]
     pub weekly_raw: Option<String>,
-    /// Efficiency, Q15: 100% is 3276800.
+    #[doc = " Efficiency, Q15: 100% is 3276800."]
     pub efficiency_raw: String,
     pub priority: i32,
-    /// Units still ordered; −1 for no limit.
+    #[doc = " Units still ordered; −1 for no limit."]
     pub amount: i32,
 }
 
-/// A line's values within one window.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineDetail {
-    /// The line's key in `production-lines`.
+    #[doc = " The line's key in `production-lines`."]
     pub key: String,
     pub runs: Vec<LineRun>,
-    /// Its output rows over the window, where recorded.
+    #[doc = " Its output rows over the window, where recorded."]
     pub output: Vec<OutputRun>,
 }
 
@@ -152,10 +141,10 @@ pub struct ProductionLineDetailReply {
     pub tag: String,
     pub decimals: u8,
     pub window: i32,
-    /// The window's hours, both included.
+    #[doc = " The window's hours, both included."]
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Every line with an hour in the window, in the order first seen.
+    #[doc = " Every line with an hour in the window, in the order first seen."]
     pub lines: Vec<LineDetail>,
     pub warnings: Vec<String>,
 }
@@ -169,12 +158,10 @@ fn validate_params(branch: &str, country: &Country) -> Result<(), &'static str> 
     validate_country(country)
 }
 
-/// Run `run`'s line index, kept while the recording is open.
 pub(super) fn index_of(source: &Source) -> impl Fn(u32) -> io::Result<Arc<RunLines>> + '_ {
     move |run| crate::answer::production_lines(source, run)
 }
 
-/// `columns` of `table` over `from..=to` of run `run` for `keys`, each column's runs by key.
 fn column_runs(recording: &replay::columnar_frames::Recording, run: u32, table: TableId, columns: &[&str], keys: &[u128], from: i32, to: i32) -> io::Result<Vec<std::collections::HashMap<u128, read::Runs>>> {
     if keys.is_empty() {
         return Ok(columns.iter().map(|_| std::collections::HashMap::new()).collect());
@@ -190,7 +177,6 @@ fn column_runs(recording: &replay::columnar_frames::Recording, run: u32, table: 
 
 static NONE: read::Runs = Vec::new();
 
-/// A line's steps over its pieces, from its variant's and factories' runs.
 fn steps(appearance: &Appearance, by_run: &BTreeMap<u32, Vec<std::collections::HashMap<u128, read::Runs>>>) -> (Vec<LineStep>, Option<LineKind>, BTreeSet<u64>, BTreeSet<u64>) {
     let key = u128::from(appearance.handle);
     let (mut out, mut kind, mut variants, mut mios) = (Vec::new(), None, BTreeSet::new(), BTreeSet::new());
@@ -222,23 +208,17 @@ fn same_step(a: &LineStep, b: &LineStep) -> bool {
     a.last_hour.checked_add(1) == Some(b.first_hour) && a.variant == b.variant && a.active_factories == b.active_factories && a.requested_factories == b.requested_factories
 }
 
-/// The output columns a part reads, in order.
 const OUTPUT_COLUMNS: [&str; 6] = ["variant", "mio", "units", "since_hour", "observed_since_creation", "exact"];
 
-/// An output row's part from its columns' values; none where a column is not recorded.
 fn part(values: &[Option<i64>]) -> Option<(OutputPart, i32, bool)> {
     let [variant, mio, units, since, observed, exact] = [values[0]?, values[1]?, values[2]?, values[3]?, values[4]?, values[5]?];
     Some((OutputPart { variant: (variant as u64).to_string(), mio: (mio as u64).to_string(), units: units.to_string(), exact: exact != 0 }, since as i32, observed != 0))
 }
 
-/// The output rows published when `appearance` ended: its rows that lived with it and were
-/// published ended from its last hour on, each to be read at its last hour.
 fn ended_rows(appearance: &Appearance, index: &RunLines) -> Vec<super::OutputLife> {
     index.outputs_of(appearance.handle).iter().filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last())).copied().collect()
 }
 
-/// Each asked output row of run `run` at its hour, read by one reader moving forward through the
-/// run (each block advanced through once), as its part: none where a column is not recorded.
 fn ended_parts(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<BTreeMap<u128, (OutputPart, i32, bool)>> {
     let columns: Vec<usize> = OUTPUT_COLUMNS.iter().map(|name| dashboard_declare::field(TableId::ProductionLineOutput, name)).collect::<io::Result<_>>()?;
     let mut parts = BTreeMap::new();
@@ -255,8 +235,6 @@ fn ended_parts(recording: &replay::columnar_frames::Recording, run: u32, asks: &
     Ok(parts)
 }
 
-/// The output published when `appearance` ended, from `rows` (its [`ended_rows`]) and their parts
-/// read at their last hours.
 fn final_output(rows: &[super::OutputLife], parts: &BTreeMap<u128, (OutputPart, i32, bool)>, ended_by: i32) -> Option<OutputRun> {
     let found: Vec<&(OutputPart, i32, bool)> = rows.iter().filter_map(|row| parts.get(&row.key)).collect();
     if found.is_empty() {
@@ -309,7 +287,6 @@ impl Product for ProductionLines {
     }
 }
 
-/// The lines reply for `params` over `query`'s timeline, named through `content`.
 pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &ProductionLinesParams, content: &names::Context, cancelled: &AtomicBool) -> io::Result<ProductionLinesReply> {
     let recording = query.replay.recording();
     let index = index_of(source);
@@ -319,7 +296,6 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     if !query.holders.named(&params.country) {
         warnings.push(query.holders.say(&params.country, to, |name| format!("{name} is held by no country in this branch")));
     }
-    // Each run's step columns, for that run's lines, over the hours they lived.
     let mut by_run: BTreeMap<u32, Vec<std::collections::HashMap<u128, read::Runs>>> = BTreeMap::new();
     let mut spans: BTreeMap<u32, (i32, i32, BTreeSet<u128>)> = BTreeMap::new();
     for appearance in &found {
@@ -335,7 +311,6 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
         let keys: Vec<u128> = keys.iter().copied().collect();
         by_run.insert(run, column_runs(recording, run, TableId::ProductionLines, &["variant", "active_factories", "requested_factories", "kind", "mio"], &keys, *first, *last)?);
     }
-    // Every ended line's final rows, read per run by one reader through the hours they ended.
     let mut ended: Vec<Option<(i32, Vec<super::OutputLife>)>> = Vec::with_capacity(found.len());
     let mut asks: BTreeMap<u32, Vec<(i32, u128)>> = BTreeMap::new();
     for appearance in &found {
@@ -357,7 +332,6 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     }
     let no_parts = BTreeMap::new();
     let mut lines = Vec::with_capacity(found.len());
-    // The last hour each variant and organisation was made under, by run: where they are named.
     let mut used: BTreeMap<(u32, i32), (BTreeSet<u64>, BTreeSet<u64>)> = BTreeMap::new();
     let mut first_used: BTreeMap<u64, i32> = BTreeMap::new();
     for (appearance, ended) in found.iter().zip(&ended) {
@@ -407,8 +381,6 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     })
 }
 
-/// Names what `used` lists: each run's at its latest hour first (most were still defined then),
-/// then each one not known there at the last hour it was made.
 fn name_used(query: &Query<'_>, used: &BTreeMap<(u32, i32), (BTreeSet<u64>, BTreeSet<u64>)>, content: &names::Context, named: &mut Named, cancelled: &AtomicBool) -> io::Result<()> {
     let recording = query.replay.recording();
     let mut latest: BTreeMap<u32, (i32, BTreeSet<u64>, BTreeSet<u64>)> = BTreeMap::new();
@@ -436,7 +408,6 @@ fn name_used(query: &Query<'_>, used: &BTreeMap<(u32, i32), (BTreeSet<u64>, BTre
     Ok(())
 }
 
-/// `appearance`'s runs over its pieces within `first..=last`.
 fn line_runs(appearance: &Appearance, by_run: &BTreeMap<u32, Vec<std::collections::HashMap<u128, read::Runs>>>, first: i32, last: i32) -> Vec<LineRun> {
     let key = u128::from(appearance.handle);
     let mut out: Vec<LineRun> = Vec::new();
@@ -479,7 +450,6 @@ fn line_runs(appearance: &Appearance, by_run: &BTreeMap<u32, Vec<std::collection
     out
 }
 
-/// `appearance`'s output rows over its pieces within `first..=last`, cut where any row changes.
 fn output_runs(appearance: &Appearance, outputs: &BTreeMap<u32, (Vec<u128>, Vec<std::collections::HashMap<u128, read::Runs>>)>, first: i32, last: i32) -> Vec<OutputRun> {
     let low = u128::from(appearance.handle) << 32;
     let high = low | u128::from(u32::MAX);
@@ -516,7 +486,6 @@ fn output_runs(appearance: &Appearance, outputs: &BTreeMap<u32, (Vec<u128>, Vec<
     out
 }
 
-/// The line columns a detail run reads, in [`line_runs`]' order.
 const DETAIL_COLUMNS: [&str; 10] = ["variant", "mio", "active_factories", "requested_factories", "max_factories", "cost_raw", "speed_raw", "efficiency_raw", "priority", "amount"];
 
 impl Product for ProductionLineDetail {
@@ -544,12 +513,10 @@ impl Product for ProductionLineDetail {
     }
 }
 
-/// The detail reply for `params` over `query`'s timeline.
 pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &ProductionDetailParams, cancelled: &AtomicBool) -> io::Result<ProductionLineDetailReply> {
     let (first, last) = window_hours(params.window).ok_or_else(|| dashboard_core::invalid("Invalid production window"))?;
     let recording = query.replay.recording();
     let index = index_of(source);
-    // Keys are counted over the whole branch, so a line keeps the key `production-lines` gives it.
     let found: Vec<Appearance> = appearances(query, &params.country, query.timeline.first, query.timeline.last, &index)?
         .into_iter()
         .filter(|appearance| appearance.pieces.iter().any(|piece| piece.first <= last && piece.last >= first))

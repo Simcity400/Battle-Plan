@@ -30,7 +30,6 @@ export const definition = {
   variants: raceViewVariants('Air kills & losses', OPTIONS, { breakdown: 'Aircraft loss causes' }),
 } as const satisfies WidgetMeta;
 
-/** Fold saved Chart/Loss causes and race/lines settings into the visible View. */
 export function normaliseAirOptions(options: WidgetOptions = {}): WidgetOptions {
   const { show, ...rest } = options;
   return { ...rest, view: show === 'breakdown' ? 'breakdown' : rest.view ?? 'race' };

@@ -1,4 +1,3 @@
-//! Exact-hour comparison against an independently parsed text save.
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
@@ -261,7 +260,6 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     if let Some(roster) = saved_roster {
         characters::note_saved_roster(&mut report, roster);
     }
-    // A naval binding refusal leaves only its own comparison group incomplete.
     report.attempt_table(TableId::NavalMissionTaskForces, |_| {
         bind_raiding_save_fields(&frame, &save_document, &mut save)
     });
@@ -292,7 +290,6 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         },
         &mut report,
     );
-    // The per-line output is checked along the branch, not against the save.
     report.attempt_table(TableId::ProductionLineOutput, |report| {
         production::compare_line_output(&replay, &frame, report)
     });
@@ -305,7 +302,6 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     report.attempt_table(TableId::PeaceSettlements, |report| {
         peace::compare_recorded_settlements(&replay, &frame, &save, report)
     });
-    // So is each construction line's output, against the recorded queues.
     report.attempt_table(TableId::ConstructionLineOutput, |report| {
         construction::compare_output(&replay, &frame, report)
     });
@@ -346,7 +342,6 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     report.outcome()
 }
 
-/// Bind the retained raiding-grid save fields through the recording's lexical tokens.
 fn bind_raiding_save_fields(
     frame: &DecodedFrame,
     save_document: &save::SaveDocument,
@@ -476,8 +471,6 @@ fn validate_identity(frame: &DecodedFrame, save: &Save) -> io::Result<()> {
     Ok(())
 }
 
-/// What the frame labelled with the save's hour sampled. Hour H is compared
-/// with save hour H in both cases; only the printed limitation differs.
 fn boundary_description(boundary: SampleBoundary) -> &'static str {
     match boundary {
         SampleBoundary::AfterHourlyUpdate => {
@@ -684,7 +677,6 @@ fn compare_core(
     Ok(report)
 }
 
-/// The content's `is_port` building types, whose levels `naval-base cache` sums.
 fn port_types(buildings: &installed_content_core::buildings::Buildings) -> BTreeSet<Vec<u8>> {
     buildings
         .types
@@ -694,7 +686,6 @@ fn port_types(buildings: &installed_content_core::buildings::Buildings) -> BTree
         .collect()
 }
 
-/// The content reads the extended comparisons need, each failing on its own.
 struct ExtendedContent<'a> {
     membership: ContentRead<'a, save::PartialMapMembership>,
     base_resources: ContentRead<'a, save::construction::PartialBaseResources>,
@@ -703,15 +694,11 @@ struct ExtendedContent<'a> {
     defines: ContentRead<'a, installed_content_core::defines::Defines>,
     raid_graph: ContentRead<'a, projects::RaidGraph>,
     equipment: ContentRead<'a, installed_content_core::equipment::Database>,
-    /// Each essential archetype's largest raid requirement, by name
-    /// ([`installed_content_raids::raids::Catalog::essential_caps`]).
     essential_caps: ContentRead<'a, BTreeMap<Vec<u8>, i32>>,
     leader_traits: ContentRead<'a, installed_content_core::leader_traits::LeaderTraits>,
     sub_units: ContentRead<'a, installed_content_core::unit_leader::SubUnits>,
     intelligence: ContentRead<'a, installed_content_core::intelligence::AgencyUpgrades>,
-    /// What the hourly temperature pass reads, which recordings that store only its inputs need.
     temperature: ContentRead<'a, replay_data::temperature::Content>,
-    /// What a province weather record's modifier rebuild reads.
     province_modifiers: ContentRead<'a, weather::ProvinceModifierContent>,
 }
 
@@ -1177,8 +1164,6 @@ fn compare_extended(
             report,
         )
     });
-    // Own-ID spellings are raw tag-array observations. CountryLinks aliases
-    // certify object identity but do not certify their raw tag spelling.
     let occupation_tags = complete::<tables::Countries>(frame).map(|countries| {
         let mut tags = countries
             .iter()
@@ -1456,7 +1441,6 @@ fn compare_extended(
             frame,
             &save.characters,
             &required_context("country links", &countries)?.links,
-            // Only the definitions need the dictionary; appointments do not.
             required_context("lexical dictionary", &tokens),
             report,
         )

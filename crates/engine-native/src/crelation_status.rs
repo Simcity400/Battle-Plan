@@ -1,4 +1,3 @@
-//! CRelationStatus, one eagerly allocated relation record per target country.
 
 use crate::{
     Memory, cair_base_access_relation, cattache_relation, ccountry, cdiplomacy_status,
@@ -16,81 +15,43 @@ mod baseline;
 use baseline::Identity;
 pub use baseline::{Baseline, Counts as BaselineCounts, Mark, Observation};
 
-/// CRelationStatus primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_d490);
-/// Relation-status constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d7_9480);
-/// Relation-status allocation size.
 #[cfg(test)]
 pub const OBJECT_SIZE: usize = 0x9c0;
-/// Target country reference, separate from the owner.
 pub const TARGET_COUNTRY: usize = 0x50;
-/// Subrelation pointer-vector data.
 pub const SUBRELATIONS: usize = 0xd0;
-/// Serializable relation vector containing relations only for their first endpoint.
 pub const SERIALIZABLE_RELATIONS: usize = 0xe8;
-/// Serializable relation count, signed i32, shrunk on removal and used to bound serialization.
 pub const SERIALIZABLE_RELATION_COUNT: usize = 0xf4;
-/// CRelationStatus embedded CModifier.
 pub const MODIFIER: usize = 0x130;
-/// The embedded modifier's value accumulator, holding the relation's entries
-/// such as `river_crossing_factor_against`.
-/// Effective-value accumulator within the relation modifier.
 pub const MODIFIER_ACCUMULATOR: usize = MODIFIER + 0x10;
-/// Owning diplomacy pointer, assigned only during construction and equal to
-/// the owner country's diplomacy. Opinion-write observers use it to file a
-/// mark under that owner.
 pub const DIPLOMACY_STATUS: usize = 0x1f0;
-/// Subject-relation pointer, authenticated before following its fields.
 pub const SUBJECT_RELATION: usize = 0x288;
-/// War-relation pointer, separate from inline visibility fields.
 pub const WAR_RELATION: usize = 0x2e8;
-/// Directed stored co-belligerent byte. Rebuilding assigns zero or one;
-/// construction and reset clear it. Counter grouping and path cost test
-/// nonzero without an active-war veto.
 pub const CO_BELLIGERENT: usize = 0x310;
-/// Cached opinion, signed i32, serialized as `cached_sum` only when nonzero.
 pub const OPINION: usize = 0x300;
 
-/// Directional attache link written in the second country's status toward
-/// the first, cleared by removal and tested by fog alliance.
 pub const ATTACHE_LINK: usize = 0x210;
 
-/// Air-base access pointer admitting foreign air-base visibility for the viewer.
 pub const AIR_BASE_ACCESS: usize = 0x2c0;
-/// [`LinkRow::links`] bit: [`ATTACHE_LINK`] is set.
 pub const LINK_ATTACHE: u8 = 1;
-/// [`LinkRow::links`] bit: [`AIR_BASE_ACCESS`] is set.
 pub const LINK_AIR_BASE_ACCESS: u8 = 2;
-/// Military-access pointer used by province movement and full-country
-/// visibility. Direct access links the first country toward the second;
-/// offered access links the second toward the first. Removal clears the slot.
 pub const MILITARY_ACCESS: usize = 0x2a0;
-/// [`LinkRow::links`] bit: [`MILITARY_ACCESS`] is set.
 pub const LINK_MILITARY_ACCESS: u8 = 8;
-/// Docking-rights pointer used by province access, full-country visibility
-/// and naval-base icon access. Direct rights link the first toward the second;
-/// offered rights link the second toward the first.
 pub const DOCKING_RIGHTS: usize = 0x2b0;
-/// [`LinkRow::links`] bit: [`DOCKING_RIGHTS`] is set.
 pub const LINK_DOCKING_RIGHTS: u8 = 16;
 
-/// A directed status with at least one political pointer slot set.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LinkRow {
-    /// Raw id of the country whose matrix holds the status.
     pub country: u32,
-    /// Matrix index: the target's canonical slot.
     pub target: u32,
     pub links: u8,
-    /// Supplied only by links_observed_transport; no native pointer survives.
     pub transport_subject: Option<Result<TransportSubject, &'static str>>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportSubject {
     pub sample_hour: i32,
-    /// Self-keyed row certifies this owner's complete sparse candidate walk.
     pub complete_owner: bool,
     pub target_raw: Option<u32>,
     pub subject: Option<ZeroSubjectInputs>,
@@ -98,23 +59,11 @@ pub struct TransportSubject {
 
 mod transport_access;
 
-/// Country occupation-rule/enemy-set operands. Active owned war relations
-/// supply the same endpoint set as the enemy vector, regardless of order.
-/// Read the vector where derivation can fail: civil-war revolters before
-/// their own declaration and owners of retired relations lingering in lists.
-/// The selected-route suffix independently retains every enemy occurrence,
-/// including zero and repeats. This exceptional-set prefix cannot supply it.
-/// Wartime allies and co-belligerent bytes are not needed for the raid source
-/// search because their mode-2 edge cost cannot alter source reachability.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WarRow {
-    /// Raw id of the country.
     pub country: u32,
-    /// The native [`ccountry::CAN_OCCUPY_NON_WAR`] byte, not normalized.
     pub can_occupy_non_war: u8,
-    /// Whether the enemy vector was read; otherwise the span is empty.
     pub enemies_read: bool,
-    /// Span of the raw links, in native order, in [`WarOutput::countries`].
     pub enemies_start: usize,
     pub enemies_len: usize,
     pub ordered: Option<(usize, usize)>,
@@ -122,14 +71,11 @@ pub struct WarRow {
     pub ordered_failure: Option<&'static str>,
 }
 
-/// Caller-owned bounded storage for the war rows the relation-link walk produces.
 pub struct WarOutput<'a> {
     pub rows: &'a mut Vec<WarRow>,
-    /// Every row's enemy links.
     pub countries: &'a mut Vec<u32>,
 }
 
-/// Independent outcomes of the one diplomacy pass behind RelationLinks and CountryWars.
 pub struct WarBuffers<'a> {
     pub rows: Buffer<'a, WarRow>,
     pub countries: Buffer<'a, u32>,
@@ -147,11 +93,8 @@ impl<'a> From<WarOutput<'a>> for WarBuffers<'a> {
 pub struct LinkWalk {
     pub links: Outcome,
     pub wars: Outcome,
-    /// Links written to [`WarOutput::countries`].
     pub countries_len: usize,
-    /// Links every nonempty vector needed, including rows that did not fit.
     pub required_countries: usize,
-    /// Current occurrence refusals, including missing reserved roots and short rows.
     pub ordered_refusals: u32,
 }
 
@@ -162,7 +105,6 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
         len,
     }
 }
-/// Type word, both endpoints and the retired byte of one owned relation.
 const OWNED_FIELDS: [RecordField; 3] = [
     field(crelation::TYPE_ID, 0, 4),
     field(crelation::FIRST_COUNTRY, 4, 8),
@@ -171,8 +113,6 @@ const OWNED_FIELDS: [RecordField; 3] = [
 const OWNED_BYTES: usize = 13;
 const OWNED_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&OWNED_FIELDS, OWNED_BYTES).expect("valid owned relation layout");
-/// A country's diplomacy status pointer, occupation rule byte and civil-war
-/// link, read for a batch of countries in one guarded copy.
 const COUNTRY_FIELDS: [RecordField; 3] = [
     field(ccountry::DIPLOMACY_STATUS, 0, 8),
     field(ccountry::CAN_OCCUPY_NON_WAR, 8, 1),
@@ -181,8 +121,6 @@ const COUNTRY_FIELDS: [RecordField; 3] = [
 const COUNTRY_BYTES: usize = 13;
 const COUNTRY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COUNTRY_FIELDS, COUNTRY_BYTES).expect("valid country layout");
-/// A diplomacy status's vtable, owning country and owned-relation header
-/// (what `diplomacy_root` checks one country at a time).
 const DIPLOMACY_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(cdiplomacy_status::COUNTRY, 8, 8),
@@ -191,7 +129,6 @@ const DIPLOMACY_FIELDS: [RecordField; 3] = [
 const DIPLOMACY_BYTES: usize = 32;
 const DIPLOMACY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DIPLOMACY_FIELDS, DIPLOMACY_BYTES).expect("valid diplomacy layout");
-/// Identity and the four political slots of one status.
 const LINK_FIELDS: [RecordField; 7] = [
     field(0, 0, 8),
     field(DIPLOMACY_STATUS, 8, 8),
@@ -205,7 +142,6 @@ const LINK_BYTES: usize = 52;
 const LINK_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&LINK_FIELDS, LINK_BYTES).expect("valid link layout");
 
-/// The owned relation types whose matrix status supplies a link bit.
 fn original_candidate(kind: u32) -> bool {
     matches!(
         kind,
@@ -219,13 +155,10 @@ fn original_candidate(kind: u32) -> bool {
     )
 }
 
-/// A matrix cell pointer.
 const CELL_FIELDS: [RecordField; 1] = [field(0, 0, 8)];
 const CELL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&CELL_FIELDS, 8).expect("valid matrix cell layout");
 
-/// A candidate status's link fields ([`LINK_FIELDS`]) and its transport
-/// subject pointer, which the walk reads next.
 const CANDIDATE_FIELDS: [RecordField; 8] = [
     LINK_FIELDS[0],
     LINK_FIELDS[1],
@@ -240,9 +173,6 @@ const CANDIDATE_BYTES: usize = LINK_BYTES + 8;
 const CANDIDATE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&CANDIDATE_FIELDS, CANDIDATE_BYTES).expect("valid candidate layout");
 
-/// One batch of owned relations' distinct political candidates: each
-/// target slot, its matrix status, that status's link fields and its
-/// transport subject pointer.
 struct Candidates {
     len: usize,
     others: [u32; BATCH],
@@ -260,8 +190,6 @@ impl Candidates {
         }
     }
 
-    /// The gathered status, link fields and transport subject pointer of
-    /// target slot `other`.
     fn find(&self, other: u32) -> Option<(usize, [u8; LINK_BYTES], u64)> {
         let at = self.others[..self.len]
             .iter()
@@ -277,12 +205,9 @@ impl Candidates {
 
 #[cfg(test)]
 thread_local! {
-    /// Tests: the serial walk, which gathers no candidate ahead.
     static SERIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Tests: `walk` as the serial walk makes it, with no candidate gathered or
-/// resolved ahead ([`gather_candidates`]).
 #[cfg(test)]
 pub(crate) fn serially<T>(walk: impl FnOnce() -> T) -> T {
     SERIAL.set(true);
@@ -291,19 +216,6 @@ pub(crate) fn serially<T>(walk: impl FnOnce() -> T) -> T {
     result
 }
 
-/// The relaxed read order (owner decision 2026-10-12): the distinct
-/// political candidates of one batch of owned `records` (the targets the
-/// walk resolves them to, as it does), then every candidate's matrix cell in
-/// one guarded gather, then every cell's status link fields and transport
-/// subject pointer in another,
-/// read before the walk visits them, a duplicate or skipped candidate
-/// included. The walk then takes each candidate's status and fields from
-/// `candidates` and applies its own checks in its own order, so healthy
-/// memory gives its rows and refusals. Anything that does not complete (a
-/// resolution, the matrix header, a cell, a null cell, a status) leaves
-/// `candidates` empty and returns false: the walk then reads each
-/// candidate itself, once, as the serial walk does, which gives its result
-/// for a fault that persists and refuses no more for one that does not.
 #[allow(clippy::too_many_arguments)]
 fn gather_candidates(
     memory: &impl Memory,
@@ -391,7 +303,6 @@ fn gather_candidates(
     false
 }
 
-/// Visits every raw u32 link of one vector in native order, in guarded batches.
 fn for_each_link(
     memory: &impl Memory,
     vector: Array,
@@ -440,8 +351,6 @@ pub fn count_links_observed_transport(
     )
 }
 
-/// Same original transport pass with worker-owned storage; native
-/// observations are never restarted.
 pub fn links_observed_transport(
     memory: &impl Memory,
     base: usize,
@@ -477,8 +386,6 @@ fn links_observed_inner(
     let mut countries_len = 0_usize;
     let mut required_countries = 0_usize;
     let mut ordered_refusals = 0_u32;
-    // Read each receiver's original enemy vector. Its first required-read
-    // failure refuses wars without stopping relation links.
     let mut war_failure = None;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -495,10 +402,7 @@ fn links_observed_inner(
         let mut pointers = [0_usize; BATCH];
         let mut records = [0_u8; BATCH * OWNED_BYTES];
         let mut candidates = Candidates::new();
-        // The targets of this country's rows in `output[start..len]`.
         let mut emitted = target_words(countries.count())?;
-        // Independent suffix observations must neither suppress original
-        // link-field attempts nor retry their own failed subject attempt.
         let mut subject_seen = target_words(countries.count())?;
         let (mut len, mut unread) = (0_usize, 0_u32);
         let (mut war_len, mut war_unread) = (0, 0_u32);
@@ -509,10 +413,6 @@ fn links_observed_inner(
         let mut country_records = [0_u8; BATCH * COUNTRY_BYTES];
         let mut diplomacy_pointers = [0_usize; BATCH];
         let mut diplomacy_records = [0_u8; BATCH * DIPLOMACY_BYTES];
-        // Actual slot zero uses the same reader's original/cached reserved
-        // observation. Positive aliases never substitute for this receiver.
-        // Its optional suffix cannot turn a reserved failure into a failure
-        // of the established positive-country relation-link pass.
         if let Some(hour) = ordered_hour {
             let source = countries.reserved().and_then(|country| {
                 let diplomacy = diplomacy_root(memory, base, country)?;
@@ -572,8 +472,6 @@ fn links_observed_inner(
         }
         let mut next = 1;
         while next < countries.count() {
-            // Each batch of countries: one guarded copy of their fields, one
-            // of their diplomacy statuses' identity and owned-relation header.
             let end = countries.count().min(next + BATCH as u32);
             let mut present = 0;
             for slot in next..end {
@@ -609,10 +507,6 @@ fn links_observed_inner(
             {
                 return Err("country diplomacy unreadable");
             }
-            // Each owner's first owned-relation pointers and its enemy
-            // vector header, which its pass reads one owner at a time: their
-            // misses overlap the batch. Hints read nothing, so rows and the
-            // first fault are unchanged.
             for (record, &diplomacy) in diplomacy_records[..present * DIPLOMACY_BYTES]
                 .chunks_exact(DIPLOMACY_BYTES)
                 .zip(&diplomacy_pointers[..present])
@@ -638,10 +532,7 @@ fn links_observed_inner(
                 }
                 let owned = Array::from_header(record[16..32].try_into().unwrap(), 8)
                     .ok_or("owned relation vector unreadable or invalid")?;
-                // The matrix header is read lazily, once per owner.
                 let mut matrix: Option<Result<Array, &'static str>> = None;
-                // Owned relations and the owner suffix are the complete row
-                // demand.
                 output.ensure(
                     len.checked_add(owned.count as usize)
                         .and_then(|n| n.checked_add(usize::from(transport_hour.is_some())))
@@ -694,9 +585,6 @@ fn links_observed_inner(
                     {
                         return Err("owned relation fields unreadable");
                     }
-                    // The batch's political candidates' matrix cells, then
-                    // their statuses, each in one guarded gather; the walk
-                    // below takes them instead of reading each candidate's.
                     if !gather_candidates(
                         memory,
                         &countries,
@@ -920,8 +808,6 @@ fn links_observed_inner(
                 let civil_war: [u8; 4] = fields[9..13].try_into().unwrap();
                 let read_enemies = retired_war || u32::from_le_bytes(civil_war) != 0;
                 if rule[0] != 0 || read_enemies || ordered_hour.is_some() {
-                    // Read this header/payload once. Both legacy exceptional
-                    // set consumers and current occurrence consumers borrow it.
                     let mut failure = None;
                     let enemies = if read_enemies || ordered_hour.is_some() {
                         let result = diplomacy
@@ -1033,40 +919,27 @@ fn links_observed_inner(
     }
 }
 
-/// One directed country pair whose cached opinion dword is nonzero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OpinionRow {
-    /// Raw reference of the country whose relation matrix holds this record.
     pub owner_country: u32,
-    /// Raw reference stored at `TARGET_COUNTRY`, not the matrix index.
     pub target_country: u32,
-    /// Native signed dword (`OPINION`), retained without scaling.
     pub opinion: i32,
 }
 
-/// One typed relation object serialized under a directed country pair.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TupleRow {
     pub owner_country: u32,
     pub target_country: u32,
-    /// Native CRelation type word, which is also the serialized key token.
     pub type_id: u32,
-    /// Native index in the serializable relation vector (`SERIALIZABLE_RELATIONS`), counting the
-    /// CWarRelation and CSubjectRelation elements that this table skips.
     pub ordinal: u32,
-    /// Raw CRelation first-country reference, retained even when it is an alias of the owner.
     pub first_country: u32,
-    /// Raw CRelation second-country reference, retained even when it is an alias of the target.
     pub second_country: u32,
     pub start_hour: i32,
     pub end_hour: i32,
-    /// Raw engine byte, retained without boolean normalization.
     pub cancel: u8,
-    /// Raw engine byte, retained without boolean normalization.
     pub retired: u8,
 }
 
-/// Independent outcomes for the two tables one matrix pass produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub opinions: Outcome,
@@ -1074,9 +947,7 @@ pub struct Walk {
 }
 
 pub const BATCH: usize = 64;
-/// Relation identity-authentication spans for vtable and type.
 const TUPLE_AUTH_BYTES: usize = 12;
-/// Exactly the vtable and type word the tuple skip decision needs from one relation.
 const TUPLE_AUTH_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -1091,9 +962,7 @@ const TUPLE_AUTH_FIELDS: [RecordField; 2] = [
 ];
 const TUPLE_AUTH_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&TUPLE_AUTH_FIELDS, TUPLE_AUTH_BYTES).expect("valid record layout");
-/// Relation payload spans for endpoints, dates and cancellation.
 const TUPLE_REST_BYTES: usize = 18;
-/// Exactly the payload spans the tuple rows need from one non-skipped relation.
 const TUPLE_REST_FIELDS: [RecordField; 6] = [
     RecordField {
         source_offset: crelation::FIRST_COUNTRY,
@@ -1129,7 +998,6 @@ const TUPLE_REST_FIELDS: [RecordField; 6] = [
 const TUPLE_REST_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&TUPLE_REST_FIELDS, TUPLE_REST_BYTES).expect("valid record layout");
 
-/// A marked status: identity, owning diplomacy, target and opinion.
 const MARK_FIELDS: [RecordField; 4] = [
     field(0, 0, 8),
     field(DIPLOMACY_STATUS, 8, 8),
@@ -1139,11 +1007,9 @@ const MARK_FIELDS: [RecordField; 4] = [
 const MARK_BYTES: usize = 24;
 const MARK_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MARK_FIELDS, MARK_BYTES).expect("valid mark layout");
-/// One matrix entry, read at its own address.
 const POINTER_FIELDS: [RecordField; 1] = [field(0, 0, 8)];
 const POINTER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POINTER_FIELDS, 8).expect("valid pointer layout");
-/// Identity, target and opinion of a status not yet authenticated.
 const AUTH_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(TARGET_COUNTRY, 8, 4),
@@ -1152,7 +1018,6 @@ const AUTH_FIELDS: [RecordField; 3] = [
 const AUTH_BYTES: usize = 16;
 const AUTH_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&AUTH_FIELDS, AUTH_BYTES).expect("valid authentication layout");
-/// A tuple-only pass authenticates without the opinion.
 const TARGET_FIELDS: [RecordField; 2] = [AUTH_FIELDS[0], AUTH_FIELDS[1]];
 const TARGET_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&TARGET_FIELDS, AUTH_BYTES).expect("valid target layout");
@@ -1160,30 +1025,11 @@ const SERIALIZABLE_FIELDS: [RecordField; 1] = [field(SERIALIZABLE_RELATIONS, 0, 
 const SERIALIZABLE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SERIALIZABLE_FIELDS, 16).expect("valid serializable layout");
 
-/// Country-link and direct-war queries use signed dword slots. Province
-/// controller storage does not bound the domain. Preparation uses original
-/// acquired extent, including holes.
 fn target_words(count: u32) -> Result<Vec<u64>, &'static str> {
     crate::allocation::filled((count as usize).div_ceil(u64::BITS as usize), 0)
         .map_err(|_| "relation target set allocation failed")
 }
 
-/// Emits nonzero cached opinions and serializable typed relations in stored
-/// vector order. Matrix serialization starts at one, leaving reserved slot
-/// zero without a row. War and subject elements authenticate and consume their
-/// ordinal before being skipped for their own recorded tables.
-///
-/// Matrix/status identities are written during construction at world reset.
-/// When every opinion write since [`Baseline`] was observed, unchanged country,
-/// diplomacy and matrix controls allow replaying prior rows with marked statuses
-/// reread. Other owners are read in full.
-/// Relation installers append owned relations and serialize them only for the
-/// first endpoint; removals drop both memberships and reset empties serializable
-/// lists. First-endpoint owned relations therefore name all serializing statuses.
-/// Refuse RelationTuples if their counts disagree, independently of Opinions.
-/// A refused walk or an unauthenticated mark forgets the baseline so the next
-/// walk reads all statuses. Worker target storage follows original extent
-/// without calling the game.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -1221,8 +1067,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize, active: [bool
     )
 }
 
-/// Worker output grows at each original nonzero opinion or serializable
-/// occurrence without another read.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_with(
     memory: &impl Memory,
@@ -1270,8 +1114,6 @@ fn walk_buffers(
         };
     }
     let mut targets = Vec::new();
-    // Opinions never read the owned vectors: a failure there refuses
-    // RelationTuples alone, and the rest of the walk reads opinions only.
     let mut owned_failure: Option<&'static str> = None;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -1412,8 +1254,6 @@ fn walk_buffers(
     walk
 }
 
-/// One owner's authenticated diplomacy and the two vectors the walk reads.
-/// `owned` is read only for tuples, and its failure refuses tuples alone.
 #[derive(Clone, Copy)]
 struct Owner {
     diplomacy: usize,
@@ -1421,8 +1261,6 @@ struct Owner {
     owned: Option<Result<Array, &'static str>>,
 }
 
-/// The diplomacy identity, matrix header and (for tuples) owned-vector header
-/// in one guarded gather: the three headers share the object's first line.
 fn read_owner(
     memory: &impl Memory,
     base: usize,
@@ -1487,9 +1325,6 @@ fn read_owner(
     })
 }
 
-/// Marks the matrix slot of every owned relation whose first endpoint is this
-/// owner and returns how many there are. A relation whose second endpoint
-/// links to no slot would sit in the reserved slot zero, which no pass reads.
 fn owned_targets(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -1527,16 +1362,11 @@ fn owned_targets(
         }
         for record in records[..count * OWNED_BYTES].chunks_exact(OWNED_BYTES) {
             let word = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
-            // Relation replacement compares the first endpoint with the owner's ID
-            // and then by country; an alias links to the same slot. An unreadable
-            // link refuses the walk rather than shrinking the expected count.
             let owned_first =
                 word(4) != 0 && countries.link(word(4))? == Some(country.canonical_slot);
             if !owned_first {
                 continue;
             }
-            // `canonical_slot` maps a null or unlinked second endpoint to
-            // the reserved slot zero, which is never serialized.
             if word(8) == 0 {
                 continue;
             }
@@ -1559,7 +1389,6 @@ fn owned_targets(
     Ok(expected)
 }
 
-/// One owner's pass over its matrix.
 struct Pass<'p, 'm, M: Memory> {
     memory: &'m M,
     base: usize,
@@ -1571,10 +1400,6 @@ struct Pass<'p, 'm, M: Memory> {
 }
 
 impl<M: Memory> Pass<'_, '_, M> {
-    /// Reads the matrix page by page and returns the serializable relations
-    /// found in the statuses `targets` names, clearing each target it visits.
-    /// Opinions read and authenticate every status and record each row in
-    /// `baseline`; a tuple-only pass reads the target pages only.
     fn statuses(
         &self,
         targets: &mut [u64],
@@ -1608,7 +1433,6 @@ impl<M: Memory> Pass<'_, '_, M> {
                 continue;
             }
             read_pointers(self.memory, matrix, index, &mut pointers[..len])?;
-            // Opinions need every status of the page; tuples only their own.
             let needed = if self.active[0] {
                 u64::MAX >> (64 - len)
             } else {
@@ -1638,7 +1462,6 @@ impl<M: Memory> Pass<'_, '_, M> {
             let (mut row, mut header) = (0, 0);
             for offset in (0..len).filter(|offset| needed & (1 << offset) != 0) {
                 let slot = index + offset as u32;
-                // `copy_records` counts completed fields in row-major order.
                 if copied < (row + 1) * fields {
                     return Err("relation matrix slot fields unreadable");
                 }
@@ -1700,7 +1523,6 @@ impl<M: Memory> Pass<'_, '_, M> {
     }
 }
 
-/// Copies the pointers `mask` selects, in order, and returns how many.
 fn gather(pointers: &[usize], mask: u64, output: &mut [usize; BATCH]) -> usize {
     let mut count = 0;
     for (offset, &pointer) in pointers.iter().enumerate() {
@@ -1712,13 +1534,6 @@ fn gather(pointers: &[usize], mask: u64, output: &mut [usize; BATCH]) -> usize {
     count
 }
 
-/// Caller-owned dense successful-authentication storage for one relation walk: raw
-/// link IDs select reference cells and canonical country slots select diplomacy
-/// cells. Store successful results by full raw ID or slot plus country pointer.
-/// Reuse is valid only within the stable hourly world and cannot detect later
-/// mutation or unreadability within that walk. Live census/link extents bound
-/// storage; uncovered IDs use uncached validation and grow off-thread from
-/// `required_*`. Generation stamps make `begin` constant-time.
 #[derive(Default)]
 pub struct Resolver {
     references: Vec<(u32, ccountry::Country)>,
@@ -1735,7 +1550,6 @@ const VACANT_COUNTRY: ccountry::Country = ccountry::Country {
 };
 
 impl Resolver {
-    /// Storage for `links` raw ids and as many canonical slots.
     pub fn try_with_capacity(links: usize) -> std::io::Result<Self> {
         let mut resolver = Self {
             required_links: links,
@@ -1751,20 +1565,15 @@ impl Resolver {
         Self::try_with_capacity(links).unwrap()
     }
 
-    /// Link and census header counts observed by the most recent walk.
     pub fn required(&self) -> [usize; 2] {
         [self.required_links, self.required_slots]
     }
 
-    /// Current cell counts, `[links, slots]`.
     pub fn capacity(&self) -> [usize; 2] {
         [self.references.len(), self.diplomacies.len()]
     }
 
-    /// Grow to the observed headers. Called only by the storage owner, off the
-    /// game thread; allocation failure is reported before use of new storage.
     pub fn grow(&mut self) -> std::io::Result<()> {
-        // New cells carry generation zero, which `begin` never makes current.
         let links = self.required_links.max(self.references.len());
         let slots = self.required_slots.max(self.diplomacies.len());
         let additional = links - self.references.len();
@@ -1776,20 +1585,17 @@ impl Resolver {
         Ok(())
     }
 
-    /// Heap payload only; the owner accounts the inline object.
     pub fn allocated_bytes(&self) -> usize {
         self.references.capacity() * size_of::<(u32, ccountry::Country)>()
             + self.diplomacies.capacity() * size_of::<(u32, usize, usize)>()
     }
 
-    /// Start one walk: invalidate every cell and record the live headers.
     pub(crate) fn begin(&mut self, countries: &ccountry::Reader<'_, impl Memory>) {
         let [census, links] = countries.arrays();
         self.required_links = links.count as usize;
         self.required_slots = census.count as usize;
         self.generation = self.generation.wrapping_add(1);
         if self.generation == 0 {
-            // Once per 2^32 walks: stale stamps could otherwise become current.
             self.references.fill((0, VACANT_COUNTRY));
             self.diplomacies.fill((0, 0, 0));
             self.generation = 1;
@@ -1817,8 +1623,6 @@ impl Resolver {
         Ok(country)
     }
 
-    /// Reuses a successful diplomacy authentication of this exact country
-    /// object; `validate` is the original uncached reader.
     pub(crate) fn diplomacy(
         &mut self,
         country: ccountry::Country,
@@ -1908,13 +1712,9 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
     }
 }
 
-/// Reserved-slot-zero operands for stateless-province movement. War tests
-/// current pointer and retirement, while co-belligerence reads its byte even
-/// without war. No serializer writes this status.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroRelation {
     pub war_present: u8,
-    /// The pointed relation's raw retired byte; zero when there is no war.
     pub war_retired: u8,
     pub co_belligerent: u8,
 }
@@ -1942,19 +1742,12 @@ fn zero_target(memory: &impl Memory, status: usize) -> Result<(), &'static str> 
         .ok_or("slot-0 relation target mismatch")
 }
 
-/// Slot zero's independently readable war operands, after status authentication.
 fn zero_war_at(memory: &impl Memory, status: usize) -> Result<[u8; 2], &'static str> {
     zero_war_observed(memory, status, &mut ForwardZeroObservation::default())
 }
 
-/// Stack-only attempts from one positive-to-zero owner observation. None
-/// means unattempted; the independent packet may fill only those None slots.
-/// Original attempts, including Err, stay immutable. Pointed values can only
-/// be shared after the reverse cell observes the same nonnull pointer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ForwardZeroObservation {
-    // Controls and the raw target-country attempt precede the original literal-zero guard. Both
-    // outcomes are retained; the new packet never retries them.
     status: Option<Result<usize, &'static str>>,
     target: Option<Result<u32, &'static str>>,
     war_pointer: Option<Result<u64, &'static str>>,
@@ -1988,9 +1781,6 @@ fn zero_war_observed(
     Ok([u8::from(war != 0), war_retired])
 }
 
-/// Exact slot-zero subject inputs. Null and non-subject type supply false.
-/// First-party zero short-circuits before second demand; a failed first read
-/// can still retain a known second zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroSubjectInputs {
     pub relation_type: Option<u32>,
@@ -1998,8 +1788,6 @@ pub struct ZeroSubjectInputs {
 }
 
 impl ZeroSubjectInputs {
-    /// The successful partial reader result that still contains a guard
-    /// refusal. First zero/second None is a normal native short-circuit.
     pub fn read_refusal(&self) -> Option<&'static str> {
         (self.relation_type == Some(csubject_relation::TYPE_VALUE)
             && self.parties == Some([None, Some(0)]))
@@ -2074,7 +1862,6 @@ fn zero_subject_at(
     })
 }
 
-/// The authenticated status in `diplomacy`'s matrix at `slot`.
 fn status_at(
     memory: &impl Memory,
     base: usize,
@@ -2121,11 +1908,6 @@ fn status_in_matrix(
     Ok(status)
 }
 
-/// One co-belligerent candidate's directed byte: [`status_in_matrix`], then [`country_target_with`]
-/// over the country links, then the `CO_BELLIGERENT` byte. The status's identity, target and byte
-/// sit on four separate lines of a scattered object, so after the matrix element they are copied in
-/// one guarded, prefetched batch whose misses overlap, and checked in the order of the separate
-/// reads: the first fault is theirs.
 fn co_candidate_byte(
     memory: &impl Memory,
     base: usize,
@@ -2147,7 +1929,6 @@ fn co_candidate_byte(
     let mut owner = [0_u8; 8];
     let mut target = [0_u8; 4];
     let mut byte = [0_u8; 1];
-    // CO_BELLIGERENT is the furthest field, so none of these overflow.
     let copied = memory.copy_scattered_prefetched(
         [
             status,
@@ -2182,8 +1963,6 @@ fn country_target_with(
     slot: u32,
     mut canonical: impl FnMut(u32) -> Result<Option<u32>, &'static str>,
 ) -> Result<(), &'static str> {
-    // Construction stores each resolved matrix index's raw link. Live links can
-    // be aliases, so raw equality alone does not establish identity.
     let raw =
         read::<u32>(memory, status + TARGET_COUNTRY).ok_or("relation status target unreadable")?;
     if raw == 0 || canonical(raw)? != Some(slot) {
@@ -2235,7 +2014,6 @@ fn for_each_co_candidate_with(
     for offset in CO_CANDIDATE_VECTORS {
         let vector = co_candidate_vector(memory, diplomacy, offset)?;
         for_each_link(memory, vector, |_, raw| {
-            // Resolve canonical slot as the setter does for matrix indexing.
             let slot = if raw == 0 { 0 } else { canonical(raw)? };
             visit(slot)
         })?;
@@ -2243,34 +2021,14 @@ fn for_each_co_candidate_with(
     Ok(())
 }
 
-/// Independent native operands for one already-authenticated positive country.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoBelligerentInputs {
-    /// Complete sorted unique canonical target slots whose stored `CO_BELLIGERENT` byte is nonzero,
-    /// including slot zero. An error exposes no usable prefix.
     pub targets: Result<usize, &'static str>,
-    /// Exact unique target demand after a complete walk, including an arena
-    /// shortage; on a read refusal, only the known demand before that fault.
     pub required_targets: usize,
-    /// Slot-zero war pointer presence (0/1) and the pointed relation's exact
-    /// retired byte (zero for a null pointer), independent of `targets`.
     pub zero_war: Result<[u8; 2], &'static str>,
-    /// Independent pointer/type/parties from the same authenticated slot-zero
-    /// status. A failure does not erase the war or directed-cache operands.
     pub zero_subject: Result<ZeroSubjectInputs, &'static str>,
 }
 
-/// Directed cache for counter grouping and movement cost. Rebuilding clears
-/// matrix bytes then sets targets in wartime allies. Later enemy classification
-/// can move targets without clearing bytes, so both lists supply a candidate
-/// superset rather than derived values. Status reset only clears bytes; full
-/// reset clears lists or rebuilds. Read slot zero explicitly. Any nonzero byte
-/// is stored truth, including values above one; add no symmetry or war veto.
-/// Controls are acquired once and never retried. Slot-zero identity failure
-/// refuses all results; after authentication, independent war, subject and cache
-/// failures preserve other results. Refusal clears the written prefix; success
-/// retains exact demand despite short capacity and exposes only returned length.
-/// No allocation or game call.
 pub fn co_belligerent_inputs(
     memory: &impl Memory,
     base: usize,
@@ -2312,8 +2070,6 @@ pub fn co_belligerent_inputs_observed_buffer(
     let controls = controls.and_then(|controls| {
         let raw = read::<u32>(memory, controls.2 + TARGET_COUNTRY);
         observed.target = Some(raw.ok_or("forward-zero relation target unreadable"));
-        // Preserve zero_target's original read width, mismatch error and
-        // short-circuit; the new packet alone accepts a positive alias0.
         (raw == Some(0))
             .then_some(controls)
             .ok_or("slot-0 relation target mismatch")
@@ -2333,8 +2089,6 @@ pub fn co_belligerent_inputs_observed_buffer(
     let zero_subject = zero_subject_at(memory, base, zero, observed);
     let mut required_targets = 0;
     let targets = (|| {
-        // Wartime-ally rebuilding indexes the acquired signed matrix extent.
-        // Deduplicate before payload reads even beyond output capacity.
         let mut seen = target_words(matrix.count)?;
         seen[0] = 1;
         if read::<u8>(memory, zero + CO_BELLIGERENT)
@@ -2357,8 +2111,6 @@ pub fn co_belligerent_inputs_observed_buffer(
             }
             *word |= bit;
             if co_candidate_byte(memory, base, countries, diplomacy, matrix, slot)? != 0 {
-                // Wartime ally rebuilding supplies these native candidate
-                // headers.
                 output.ensure(
                     required_targets
                         .checked_add(1)
@@ -2389,33 +2141,20 @@ pub fn co_belligerent_inputs_observed_buffer(
     }
 }
 
-/// Full-country-visibility operands. Original receiver-zero cells and positive
-/// receivers' status0 use the same shape. Missing remains distinct from null
-/// and false. Authenticate raw target aliases against the cell matrix ordinal.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReverseZeroVisibilityInputs {
     pub target: Option<u32>,
     pub war: Option<[u8; 2]>,
     pub subject: Option<ZeroSubjectInputs>,
-    /// Native flag1 arm: exact `MILITARY_ACCESS` qword presence, not a pointed getter. Some(0/1) is
-    /// null/nonnull; None is skipped or refused.
     pub military_access: Option<u8>,
 }
 
-/// Nonserialized diagnostics for target, war, subject and military access respectively.
-/// Unreached None values have no failure; partial OR truth retains the first
-/// actually refused operand. A status fault refuses the whole cell value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReverseZeroVisibilityCapture {
     pub value: Result<ReverseZeroVisibilityInputs, &'static str>,
     pub failures: [Option<&'static str>; 4],
 }
 
-/// Independent status0 packet of a positive receiver. The original guard
-/// and fields are unchanged. This consumes that same callback's attempts,
-/// including failures, and fills only operands the old guard never reached.
-/// Its value shape is the existing four-value visibility payload; no pointers
-/// escape. War precedes military, and flag0 subject inputs remain independent.
 pub fn forward_zero_visibility_inputs<M: Memory>(
     memory: &M,
     base: usize,
@@ -2456,8 +2195,6 @@ pub fn forward_zero_visibility_inputs<M: Memory>(
             .ok_or("forward-zero military access pointer unreadable");
         value.military_access = military.ok();
         failures[3] = military.err();
-        // These exact raw target/party links belong to one native status0
-        // predicate. Three fixed keys retain failed as well as healthy links.
         let mut links = [None; 3];
         let mut canonical = |raw: u32| {
             if raw == 0 {
@@ -2509,9 +2246,6 @@ pub fn forward_zero_visibility_inputs<M: Memory>(
     ReverseZeroVisibilityCapture { value, failures }
 }
 
-/// One callback's authenticated receiver-zero root and matrix header. The
-/// shared naming preparation owns F88/identity/backlink/faction attempts;
-/// this source adds only the matrix header. No native pointer arena or index.
 #[derive(Debug)]
 pub struct ReservedVisibilitySource {
     controls: Option<(usize, Array)>,
@@ -2537,14 +2271,10 @@ impl ReservedVisibilitySource {
         })
     }
 
-    /// Actual native matrix count, including0, retained after control clear.
     pub fn required_slots(&self) -> usize {
         self.required
     }
 
-    /// Invoke each admitted ordinal once, including0 independently of the
-    /// positive census. The caller admits/commits one whole value arena.
-    /// Exact same-nonnull pointed observations reuse failures as failures.
     pub fn cell<M: Memory>(
         &self,
         memory: &M,
@@ -2580,8 +2310,6 @@ impl ReservedVisibilitySource {
             })();
             value.war = war.ok();
             failures[1] = war.err();
-            // War veto precedes the military-access word. A failed faction observation
-            // cannot hide this independent arm.
             if !matches!(war, Ok([0, _]) | Ok([1, 1..=u8::MAX])) {
                 return Ok(value);
             }
@@ -2590,13 +2318,9 @@ impl ReservedVisibilitySource {
                 .ok_or("reverse-zero military access pointer unreadable");
             value.military_access = military.ok();
             failures[3] = military.err();
-            // The same packet serves flag0 and flag1. Retain the flag0
-            // faction/subject union even when military access is present.
             if self.faction.is_err() || (slot == 0 && matches!(self.faction, Ok(1..=u64::MAX))) {
                 return Ok(value);
             }
-            // Three fixed stack keys avoid repeated target/party link reads
-            // in this cell. Literal zero bypasses the positive Reader.
             let mut links = [None; 3];
             let mut canonical = |raw: u32| {
                 if raw == 0 {
@@ -2667,8 +2391,6 @@ fn reverse_subject_at(
 ) -> Result<ZeroSubjectInputs, &'static str> {
     let raw_pointer = read::<u64>(memory, status + SUBJECT_RELATION)
         .ok_or("reverse-zero subject pointer unreadable")?;
-    // A distinct reverse status always reads its own pointer. Only exact
-    // equality to a known nonnull pointer admits sharing pointed attempts.
     let mut attempts = forward
         .filter(|observed| raw_pointer != 0 && observed.subject_pointer == Some(Ok(raw_pointer)))
         .copied()
@@ -2684,9 +2406,6 @@ fn reverse_subject_at(
     )
 }
 
-// One narrow pointed body serves both roles. Existing diagnostic strings
-// remain exact. get_or_insert_with retains every original attempt and stores
-// newly reached Err as Err for the paired reverse consumer; no pointer cache.
 fn visibility_subject_at_pointer(
     memory: &impl Memory,
     base: usize,
@@ -2742,8 +2461,6 @@ fn visibility_subject_at_pointer(
             Ok(canonical(first)? == canonical(target)?)
         })
     });
-    // Target refusal has its own domain; a refused party link is a subject
-    // fault even when its raw word was readable.
     if target.is_ok()
         && let Err(reason) = first_matches
     {
@@ -2764,16 +2481,12 @@ fn visibility_subject_at_pointer(
     if let Err(reason) = second {
         failure.get_or_insert(reason);
     }
-    // Raw parties remain useful after a refused first read. The consumer
-    // applies raw OR; a known second match can still prove true.
     Ok(ZeroSubjectInputs {
         relation_type: Some(relation_type),
         parties: Some([first.ok(), second.ok()]),
     })
 }
 
-/// Standalone attach/poll hint only. No names, count, faction or strings are
-/// acquired. Never use this as a fallback after a failed capture source.
 pub fn reserved_visibility_demand(
     memory: &impl Memory,
     base: usize,
@@ -2784,10 +2497,6 @@ pub fn reserved_visibility_demand(
     Ok(relation_matrix(memory, diplomacy)?.count as usize)
 }
 
-/// Header-only conservative target demand for initial live arena sizing. The native wartime-ally
-/// and enemy counts plus one explicit slot-zero status bound the complete set. This hint neither
-/// reads payload nor certifies captured data; a caller sums each readable country's bound without
-/// dropping earlier countries when another country refuses its own headers.
 pub fn co_belligerent_demand(
     memory: &impl Memory,
     base: usize,
@@ -2803,11 +2512,6 @@ pub fn co_belligerent_demand(
     Ok(required)
 }
 
-/// Nonzero co-belligerent target slots in ascending order, with written and
-/// required counts. Reserved slot zero is separate. Rebuilding clears bytes
-/// then sets wartime allies; moving an ally to enemies can leave its byte.
-/// Status reset clears bytes and full reset clears vectors or rebuilds. Their
-/// union therefore supplies candidates; read each byte rather than inferring it.
 pub fn co_belligerents(
     memory: &impl Memory,
     base: usize,
@@ -2829,8 +2533,6 @@ pub fn co_belligerents(
     )
 }
 
-/// Invasion worker retains original candidate traversal, growing slots as
-/// each distinct status authenticates.
 #[cfg(test)]
 pub(crate) fn co_belligerents_native(memory: &impl Memory, base: usize, countries: &ccountry::NativeReferenceContext<'_, impl Memory>, country: ccountry::Country, output: &mut Vec<u32>) -> Result<(usize, usize), &'static str> {
     co_belligerents_native_buffer(memory, base, countries, country, crate::walk::Buffer::Growing(output))
@@ -2843,8 +2545,6 @@ pub fn co_belligerents_native_buffer(
     country: ccountry::Country,
     output: crate::walk::Buffer<'_, u32>,
 ) -> Result<(usize, usize), &'static str> {
-    // Check the borrowed pass without demanding a country/header observation,
-    // including when every candidate is zero or both vectors are empty.
     countries.canonical_slot(0)?;
     co_belligerents_buffer(
         memory,
@@ -2918,8 +2618,6 @@ fn diplomacy_root(
     Ok(pointer)
 }
 
-/// One guarded copy of the contiguous pointer span; a null slot is a fault
-/// because diplomacy construction constructs every matrix cell eagerly.
 fn read_pointers(
     memory: &impl Memory,
     matrix: Array,
@@ -2957,11 +2655,6 @@ fn read_tuples(
     counters: &mut Counters,
     resolved: &mut Resolver,
 ) -> Result<(), &'static str> {
-    // Relation pointers with their authentication and payload spans are
-    // gathered in 64-row batches instead of eight guarded reads per tuple;
-    // every tuple is still authenticated, skipped and emitted in native vector
-    // order with its own copied prefix, so ordinals and single-fault reasons
-    // keep their positions.
     let mut first = 0;
     let mut pointers = [0_usize; BATCH];
     let mut pointer_bytes = [0_u8; BATCH * 8];
@@ -3025,11 +2718,6 @@ fn read_tuples(
             if type_id != expected_type {
                 return Err("relation type word differs from its class");
             }
-            // CWarRelation and CSubjectRelation rows are recorded by WarRelations and
-            // Subjects. They are authenticated here like every other class, so an
-            // unclassified or contradictory object still fails, and then skipped.
-            // Their native ordinal is still consumed, because the ordinal is the
-            // serializable vector's own index and the save writes that vector whole.
             if rva == cwar_relation::VTABLE_RVA || rva == csubject_relation::VTABLE_RVA {
                 continue;
             }
@@ -3102,10 +2790,6 @@ mod tests;
 #[path = "crelation_status/zero_subject_tests.rs"]
 mod zero_subject_tests;
 
-/// Synthetic capture benches for the army-reach walkers: an arena whose address
-/// is real, read through the SEH-guarded `LiveMemory` with call and byte counts.
-/// The first [`bench::IMAGE`] bytes stand in for the module image, so every
-/// `base + RVA` global lands inside the arena.
 #[cfg(all(
     any(test, feature = "test-support"),
     windows,

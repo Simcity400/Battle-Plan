@@ -30,8 +30,6 @@ const NO_ROWS: readonly Agency[] = [];
 const rowKey = (agency: Agency) => String(agency.country.id);
 const UNNAMED = (agency: Agency) => ({ name: `Country ${agency.country.id}` });
 
-/** Every country's agency at the hour shown, as the agency screen shows it: a pushed panel at the head that renders only when an agency's
- * shown values change (they move at game events, never hour by hour). */
 export default function AgencyComparisonWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -46,7 +44,6 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const includeUncreated = options.includeUncreated === true;
@@ -59,17 +56,13 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
     [ready, head.data, hour, match, widget.countries.kind, top, field]);
   const [visible, setVisible] = useState<readonly Agency[]>(NO_ROWS);
   const onVisible = useCallback((shown: readonly Agency[]) => setVisible(shown), []);
-  // Pushed at the head, every row is named, at the last hour one of them changed: a push (a new hour each time) or a row
-  // scrolling into view asks for no name and renders nothing more.
   const pushed = head.read === 'followed';
-  // Rows are made again at each push's hour: the countries they name are the same list while their order and set hold.
   const rowTagsKey = (pushed ? rows : visible).flatMap(agency => agency.country.tag ? [agency.country.tag] : []).join(',');
   const rowTags = useMemo(() => rowTagsKey ? rowTagsKey.split(',') : [], [rowTagsKey]);
   const nameHour = usePushedLooksHour(runtime, widget, track, rowTags, active && pushed, hour).hour;
   const wanted = useMemo(() => rowTags.map(tag => ({ hour: nameHour, tag })), [rowTags, nameHour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   useWhyCommit('AgencyComparisonWidget', { reply: head.data, at: head.at, read: head.read, groups: groups.data, visible, nameHour, labels: labelAt });
-  // A sort by name needs every name; flags are asked only for the rows drawn.
   const sortingNames = useMemo(() => sort.column === 'country' ? rows.flatMap(agency => agency.country.tag ? [{ hour: nameHour, tag: agency.country.tag }] : []) : [],
     [rows, sort.column, nameHour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
@@ -113,7 +106,6 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
     </>;
   };
   const table = <div ref={head.root} className="agency-comparison">{body()}</div>;
-  // The raw intel records are diagnostic; they show only when asked for.
   if (options.intelRecords !== true) return table;
   return <div className="agency-comparison-product"><div className="agency-table-section">{table}</div>
     <IntelSection widget={widget} runtime={runtime} active={active} hour={track ? hour : null} playing={live && (hoursPerSecond ?? 0) > 0} /></div>;

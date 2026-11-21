@@ -1,24 +1,3 @@
-//! PartyLeaders rows held between hours per country
-//! ([`crate::party_leader_changes`]).
-//!
-//! The Politics walk still authenticates every country's political status and
-//! reads its party array header each hour. A country's held rows are
-//! carried, without reading its parties, leaders or characters, only when all
-//! of these hold at this boundary: the same country, political status and
-//! party array data pointer and count as the held read; no hooked writer
-//! touched any party that read listed since it registered it (same watch
-//! epoch and sequence; a load, gap, recovery, table change, poison or a
-//! running writer revokes it); and every listed leader's character keeps the
-//! certificate that read took ([`crate::character_changes`], whose sites
-//! cover every write of a character's leader map). A party listed at a
-//! destroyed party's address carries that destructor's notification, and a
-//! leader's character link and id are written only on a new object a hooked
-//! insert lists. Registration precedes every read it certifies: a party
-//! before its leader vector, a character before its identity and leader map.
-//!
-//! The store follows the Governance job's loan and holds only the countries
-//! of the latest complete walk. Allocation is advisory: a country whose rows
-//! cannot be held is read afresh next hour.
 use crate::party_leader_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
@@ -32,16 +11,12 @@ type Certified = (u64, u64);
 struct Entry {
     parties: Parties,
     rows: Range<usize>,
-    /// Each listed party with its certificate.
     party_certificates: Range<usize>,
-    /// Each listed leader's character with its certificate.
     characters: Range<usize>,
 }
 
-/// One walk's held countries.
 #[derive(Default)]
 struct Held {
-    /// Sorted by political status once the walk finishes.
     entries: Vec<Entry>,
     rows: Vec<LeaderRow>,
     parties: Vec<(usize, Certified)>,
@@ -64,8 +39,6 @@ impl Held {
         (self.entries[index].parties == *parties).then_some(index)
     }
 
-    /// Holds one country; `false` when the storage could not grow, which
-    /// only withholds the certificate.
     fn hold(
         &mut self,
         parties: Parties,
@@ -104,20 +77,16 @@ impl Held {
     }
 }
 
-/// The country being read afresh.
 #[derive(Default)]
 struct Pending {
     token: usize,
     parties: Option<Parties>,
-    /// The carryable held entry.
     held: Option<usize>,
-    /// `false` once a party or character could not be registered.
     certified: bool,
     party_certificates: Vec<(usize, Certified)>,
     characters: Vec<(usize, Certified)>,
 }
 
-/// Rows of the latest complete walk and the walk being made.
 #[derive(Default)]
 pub struct LeaderStore {
     current: Held,
@@ -126,9 +95,7 @@ pub struct LeaderStore {
     planned: usize,
     parties: usize,
     counts: Counts,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walk drops every held row.
     forgotten: bool,
 }
 
@@ -137,13 +104,10 @@ impl LeaderStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next walk reads afresh.
-    /// Allocation-free for the game thread.
     pub fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -153,16 +117,11 @@ impl LeaderStore {
         self.counts
     }
 
-    /// The latest complete walk's held countries, and each listed leader's
-    /// character with the certificate its read took, for a quiet politics
-    /// hour ([`super::politics_hour`]); `None` once forgotten. A quiet hour
-    /// leaves the store as it is, so the next walk carries from it.
     pub(super) fn held(&self) -> Option<(usize, &[(usize, Certified)])> {
         (!self.forgotten).then_some((self.current.entries.len(), &self.current.characters))
     }
 }
 
-/// One walk's view of the store and the observation that certifies reuse.
 pub struct LeaderReuse<'a> {
     store: &'a mut LeaderStore,
     changes: &'a dyn Changes,
@@ -182,14 +141,11 @@ impl<'a> LeaderReuse<'a> {
         Self { store, changes }
     }
 
-    /// Keeps this walk's countries only when every country was read or
-    /// carried completely, and publishes its counts.
     pub fn finish(self, complete: bool) {
         let store = self.store;
         if complete {
             let entries = &mut store.current.entries;
             entries.sort_unstable_by_key(|entry| entry.parties.status);
-            // A status occurring twice names no single held read.
             let mut index = 0;
             while index < entries.len() {
                 let status = entries[index].parties.status;
@@ -214,7 +170,6 @@ impl<'a> LeaderReuse<'a> {
         crate::party_leader_changes::record(&store.counts, complete.then_some(store.parties));
     }
 
-    /// Whether a held entry's parties and characters are all unchanged.
     fn current(&self, index: usize) -> bool {
         let previous = &self.store.previous;
         let entry = &previous.entries[index];
@@ -287,7 +242,6 @@ impl LeaderCarry for LeaderReuse<'_> {
         rows.copy_from_slice(&previous.rows[entry.rows.clone()]);
         counts.reused += 1;
         counts.reused_rows += rows.len() as u64;
-        // A failed hold only withholds the next hour's certificate.
         let _ = current.hold(
             parties,
             rows,

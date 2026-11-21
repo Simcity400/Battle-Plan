@@ -1,6 +1,3 @@
-//! Size attribution of a campaign's recording: every stored byte of the file by what it holds,
-//! each table's units, restores and summary pieces, the blocks' clocks, the index and the game
-//! facts, per recorded hour, beside the file's length.
 
 use replay::campaign::Replay;
 use replay_columnar::envelope::Extent;
@@ -10,16 +7,13 @@ use std::{ffi::OsString, path::Path};
 
 pub const USAGE: &str = "recorder sizes <campaign.battleplan> [--json]";
 
-/// Stored bytes of one recording by what they hold; `blocks` and `restarts` by table.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Sizes {
     pub hours: u64,
     pub pages: u64,
     pub file: u64,
     pub clocks: u64,
-    /// Summary pieces of every level.
     pub summaries: u64,
-    /// Pages, run directories, campaign records and roots.
     pub index: u64,
     pub facts: u64,
     pub blocks: Vec<u64>,
@@ -48,7 +42,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     Ok(())
 }
 
-/// Every stored byte `replay`'s file names, by what it holds.
 pub(crate) fn measure(replay: &Replay) -> std::io::Result<Sizes> {
     let recording = replay.recording();
     let mut sizes = Sizes {
@@ -130,7 +123,6 @@ pub(crate) fn report(sizes: &Sizes) -> Value {
         "summaries": sizes.summaries,
         "index": sizes.index,
         "facts": sizes.facts,
-        // The header, footers and revisions' superseded roots and directories.
         "unnamed": sizes.file.saturating_sub(named),
         "tables": tables,
     })

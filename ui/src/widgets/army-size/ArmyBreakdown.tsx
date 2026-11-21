@@ -42,8 +42,6 @@ import { useHeadHour } from './headHour.ts';
 
 type Roster = { sections: string[]; warnings: string[] };
 const sameSections = (a: Roster, b: Roster) => JSON.stringify(a.sections) === JSON.stringify(b.sections);
-/** The template roster's reply (`template-roster`), asked for an hour or carried by its panel: text that renders,
- * nothing of it painted. */
 export function rosterReply(data: unknown): Roster {
   const reply = data as { sections?: unknown; warnings?: unknown } | null;
   const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
@@ -52,8 +50,6 @@ export function rosterReply(data: unknown): Roster {
 }
 const NO_PAINT = () => {};
 
-/** A pinned breakdown's header chip; following, it renders only when the country it names or that country's name or
- * flag changes, its date painted from the frame. */
 export function BreakdownHeader({ runtime, track, active, countrySlot, live, hour: givenHour, actorAt, error, saved }: {
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; countrySlot: HTMLElement; live: boolean; hour: number;
   actorAt: (hour: number) => string | null; error: Failure | undefined; saved: boolean;
@@ -75,7 +71,6 @@ export function BreakdownHeader({ runtime, track, active, countrySlot, live, hou
       : !actor ? 'Country unavailable at this time.' : null)} />, countrySlot);
 }
 
-/** A chosen country's complete history; following the head, it renders only when its rows change. */
 export default function ArmyBreakdown({ runtime, track, active, options, countrySlot, headerSelection, extent, playhead, tag, hour: givenHour, measure, countFor,
   manifest, following, pinned, originHour, onPick, onFollow, onWarnings }: {
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
@@ -97,14 +92,12 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const identity = track && manifest && tag ? JSON.stringify([track.source.id, track.source.revision,
     track.branch.id, content, tag, measure, countFor]) : null;
   const viewportKey = JSON.stringify([track?.source.id, track?.branch.id, tag, originHour, measure, countFor, extent, options.playback, options.windowDays, options.afterPlayhead]);
-  // The view the chart reports, kept as it moves with playback: only the windows it needs ask, and a reply renders.
   const viewport = useRef<{ key: string; range: Span } | null>(null);
   const windowsCheck = useRef(() => {});
   const onViewChange = useCallback((x: readonly [number, number]) => {
     viewport.current = { key: viewportKey, range: { firstHour: Math.floor(x[0]), lastHour: Math.ceil(x[1]) } };
     windowsCheck.current();
   }, [viewportKey]);
-  // The windows needed at an hour (`required`) and asked (`wanted`: with margins and the next).
   const windowsAt = (at: number) => {
     const seen = viewport.current?.key === viewportKey ? viewport.current.range : { firstHour: at, lastHour: at };
     const until = shownUntil(live ? at : playhead, options.playback as PlaybackMode, options.afterPlayhead === true);
@@ -152,7 +145,6 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     const of = countryDrillTagAt(identitySpans, Math.floor(at) + offset);
     return of ? { key: `${of}|${Math.floor(at)}`, request: rosterAt(Math.floor(at) + offset, of) } : null;
   }, rosterReply, track?.source, sameSections);
-  // A new text moves the structure; nothing else makes a new state.
   const pushedRoster = useMemo(() => {
     const { data, error } = panelReply(followedRoster.entry?.panel, rosterReply);
     return { data, error, retry: () => {} };
@@ -165,7 +157,7 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const model = useMemo(() => selected ? countryValuesModel(selected) : null, [selected]);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: pickScope, model: numbers }),
     [runtime.client, pickScope, numbers]);
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const bands = useMemo(() => selected && tag ? armyDrillBands(selected, tag, measure, range) : null, [selected, tag, measure, range]);
   const parts = useMemo(() => [...(measure === 'battalions' ? data?.types ?? [] : [])
     .map(type => ({ id: type.key, label: typeName(type) })), ARMY_REMAINDER], [data, measure]);
@@ -177,7 +169,6 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     value: value.residual, text: value.residualText, shareText: value.residualShare, raw: value.residualRaw, color: colours.get('') };
   const legendText = (value: ReturnType<typeof valueAt>, part: { id: string }, index: number) =>
     part.id === '' ? value?.residualText ?? 'Not known' : value?.parts[index]?.text ?? 'Not known';
-  // What renders the breakdown: a missing window, the country, its rows, what is not recorded.
   let keyed = { hour: Number.NaN, key: '' };
   structure.current = at => {
     if (keyed.hour === at) return keyed.key;
@@ -187,7 +178,6 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     return keyed.key;
   };
   const at = valueAt(hour);
-  // The head's values, made once an hour: the rows' amounts, the legend's values and the day.
   const head = useMemo(() => {
     if (!live) return null;
     let made: { hour: number; drill: ReturnType<LiveDrillParts['read']>; texts: Map<string, string> } | null = null;
@@ -204,7 +194,7 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
       return () => { for (const stop of stops) stop(); };
     };
     return { drill: { read: () => now(hourNow()).drill, subscribe } as LiveDrillParts, texts: liveTexts(runtime.clock, hourNow, at => now(at).texts) };
-  }, [live, model, tag, measure, identitySpans, colours, parts, runtime.clock, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [live, model, tag, measure, identitySpans, colours, parts, runtime.clock, offset]);
   const error = required.map(index => history.errors.get(index)).find(Boolean);
   const headerShown = !pending && !error && headerSelection?.tag === tag && headerSelection?.hour === originHour
     && !!runAt(incomingData?.series.find(series => series.tag === tag)?.identities ?? [], originHour);

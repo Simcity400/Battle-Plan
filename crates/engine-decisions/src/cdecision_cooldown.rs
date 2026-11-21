@@ -1,13 +1,9 @@
-//! CDecisionCooldown state in CDecisionStatus's re-enable and removal arrays.
 
 use engine_sites::Rva;
 use crate::{Memory, read};
 
-/// CDecisionCooldown primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_85f0);
-/// CDecisionCooldown CDecision pointer.
 pub const DEFINITION: usize = 0x08;
-/// CDecisionCooldown i32 remaining days.
 pub const DAYS: usize = 0x10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,16 +1,3 @@
-//! `subjects`: who was whose subject over one timeline, each overlord-subject relation as runs of
-//! consecutive recorded hours with the subject's level (its autonomy state) through each run and
-//! the engine's own start hour of the relation.
-//!
-//! A relation counts while the political map counts it: not cancelled, and before its recorded
-//! end when it has one (an end not after its start is no end). Two runs of one pair with
-//! different start hours are different relations. The level is the subject's current autonomy
-//! state (`Autonomy.state`), not `Subjects.state` (the relation's initial definition).
-//!
-//! Each run's relations and levels are read once ([`run_subjects`]) and kept while the recording
-//! is open: the relations as runs of one computed cell of `Subjects`, the levels as the history of
-//! each subject's `Autonomy.state`. A reply cuts them to the timeline's stretches and
-//! names their countries by the one identity rule, so its cost follows the relations, not hours.
 
 use super::{
     BranchParams, LoadContext, Product,
@@ -35,30 +22,26 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Subjects' `start_hour`, `end_hour` and `cancel`, as the schema numbers them.
 const START: usize = 0;
 const END: usize = 1;
 const CANCEL: usize = 2;
-/// Autonomy's `state`.
 const STATE: usize = 4;
 
 pub struct Subjects;
 
-/// A subject level (autonomy state) the reply names.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectLevel {
-    /// The autonomy state's id, as recorded.
+    #[doc = " The autonomy state's id, as recorded."]
     pub token: String,
-    /// The game's name for it; null when the localisation has none or is not read.
+    #[doc = " The game's name for it; null when the localisation has none or is not read."]
     pub name: Option<String>,
-    /// Whether the content defines the state and orders it (by its `min_freedom_level`); a level
-    /// it does not is listed after those it does.
+    #[doc = " Whether the content defines the state and orders it (by its `min_freedom_level`); a level"]
+    #[doc = " it does not is listed after those it does."]
     pub ordered: bool,
 }
 
-/// Consecutive hours of a run with one level; `level` is null where it was not recorded.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -68,18 +51,17 @@ pub struct LevelStep {
     pub level: Option<String>,
 }
 
-/// One overlord-subject relation over consecutive recorded hours.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectRun {
     pub overlord: String,
     pub subject: String,
-    /// The hour the relation began, as the engine dates it (may be before the timeline).
+    #[doc = " The hour the relation began, as the engine dates it (may be before the timeline)."]
     pub start_hour: i32,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The subject's level through the run, in hour order, covering every hour of it.
+    #[doc = " The subject's level through the run, in hour order, covering every hour of it."]
     pub steps: Vec<LevelStep>,
 }
 
@@ -88,19 +70,18 @@ pub struct SubjectRun {
 #[serde(rename_all = "camelCase")]
 pub struct SubjectReply {
     pub branch_id: String,
-    /// Every level the runs name, least free first in the content's order.
+    #[doc = " Every level the runs name, least free first in the content's order."]
     pub levels: Vec<SubjectLevel>,
-    /// Every run, by first hour, then overlord, subject and start hour.
+    #[doc = " Every run, by first hour, then overlord, subject and start hour."]
     pub runs: Vec<SubjectRun>,
-    /// Hours inside the timeline whose relations were not observed: a run that ends or starts
-    /// next to one of these is a gap, not an end or a start.
+    #[doc = " Hours inside the timeline whose relations were not observed: a run that ends or starts"]
+    #[doc = " next to one of these is a gap, not an end or a start."]
     pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(SubjectReply);
 
-/// A relation's cell while it holds: its start hour above its end hour; none while cancelled.
 fn relation(cells: &dyn Cells, slot: u32) -> Option<i64> {
     if cells.number(CANCEL, slot)? != 0 {
         return None;
@@ -113,22 +94,16 @@ fn relation_column() -> Column {
     Column::Computed { id: 0, inputs: 1 << START | 1 << END | 1 << CANCEL, value: relation }
 }
 
-/// A relation cell's start and end hours.
 fn split(cell: i64) -> (i32, i32) {
     ((cell >> 32) as i32, cell as i32)
 }
 
-/// One run's subject relations and levels.
 #[derive(Default)]
 pub struct RunSubjects {
-    /// Each (overlord, subject) raw pair's runs of its relation cell ([`relation`]).
     pub(crate) relations: Vec<(u32, u32, read::Runs)>,
-    /// Each subject's level runs, in hour order; none where its level was not recorded.
     pub(crate) levels: HashMap<u32, Vec<(i32, i32, Option<String>)>>,
 }
 
-/// Run `run`'s relations, and its subjects' levels: each subject's autonomy state as the runs of
-/// its recorded text, so a switch between two states with equal bounds is a new level.
 pub fn run_subjects(recording: &Recording, run: u32) -> io::Result<RunSubjects> {
     let held = recording.run(run)?;
     let (first, last) = (held.first_hour, held.first_hour + held.ordinals as i32 - 1);
@@ -151,8 +126,6 @@ pub fn run_subjects(recording: &Recording, run: u32) -> io::Result<RunSubjects> 
     Ok(RunSubjects { relations, levels: level_runs(&history) })
 }
 
-/// Each subject's level runs from its `state` history: a run per recorded text, none where the
-/// row is not shown or its state is not recorded.
 fn level_runs(history: &lanes::History) -> HashMap<u32, Vec<(i32, i32, Option<String>)>> {
     let mut levels = HashMap::new();
     for (key, runs) in history.runs(STATE).unwrap_or_default() {
@@ -169,7 +142,6 @@ fn level_runs(history: &lanes::History) -> HashMap<u32, Vec<(i32, i32, Option<St
     levels
 }
 
-/// Adds `level` over `first..=last` to `steps`, joined to the step before when equal.
 fn push_step(steps: &mut Vec<LevelStep>, first_hour: i32, last_hour: i32, level: Option<String>) {
     match steps.last_mut() {
         Some(held) if held.level == level && i64::from(held.last_hour) + 1 == i64::from(first_hour) => held.last_hour = last_hour,
@@ -177,7 +149,6 @@ fn push_step(steps: &mut Vec<LevelStep>, first_hour: i32, last_hour: i32, level:
     }
 }
 
-/// The steps of `levels` over `first..=last`, every hour covered.
 fn steps(levels: Option<&Vec<(i32, i32, Option<String>)>>, first: i32, last: i32) -> Vec<LevelStep> {
     let mut out = Vec::new();
     let mut at = i64::from(first);
@@ -198,8 +169,6 @@ fn steps(levels: Option<&Vec<(i32, i32, Option<String>)>>, first: i32, last: i32
     out
 }
 
-/// The relations of `stretches` as runs named by tag, and the hours whose relations are not
-/// known: hours a relation's country has no tag, and gaps inside one relation (its row unread).
 pub(crate) fn fold(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunSubjects>, Arc<RunLinks>)>, names: &Names) -> (Vec<SubjectRun>, Vec<HourSpan>) {
     let mut runs: Vec<SubjectRun> = Vec::new();
     let mut unobserved: Vec<HourSpan> = Vec::new();
@@ -263,12 +232,10 @@ pub(crate) fn fold(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunSubjects>,
     (joined, unobserved)
 }
 
-/// Runs in the reply's order: by first hour, then overlord, subject and start hour.
 fn sort_runs(runs: &mut [SubjectRun]) {
     runs.sort_by(|a, b| (a.first_hour, &a.overlord, &a.subject, a.start_hour).cmp(&(b.first_hour, &b.overlord, &b.subject, b.start_hour)));
 }
 
-/// `spans` in hour order, those that meet or touch joined.
 pub(crate) fn settle(mut spans: Vec<HourSpan>) -> Vec<HourSpan> {
     spans.sort_unstable_by_key(|span| span.first_hour);
     let mut out: Vec<HourSpan> = Vec::with_capacity(spans.len());
@@ -281,8 +248,6 @@ pub(crate) fn settle(mut spans: Vec<HourSpan>) -> Vec<HourSpan> {
     out
 }
 
-/// The levels `named`, in the content's order (least free first), then those the content does
-/// not order, by id. Each is named by the localisation of its id.
 pub(crate) fn levels(named: &BTreeSet<&str>, states: Option<&AutonomyStates>, catalogue: Option<&Catalogue>) -> Vec<SubjectLevel> {
     let name = |token: &str| catalogue.and_then(|catalogue| catalogue.localised(token, catalogue::View::Plain));
     let mut result = Vec::new();
@@ -301,7 +266,6 @@ pub(crate) fn levels(named: &BTreeSet<&str>, states: Option<&AutonomyStates>, ca
     result
 }
 
-/// The autonomy states of the source's content, read once per catalogue.
 struct SubjectContent {
     catalogue: Arc<Catalogue>,
     states: AutonomyStates,
@@ -323,8 +287,6 @@ fn subject_content(source: &Source, options: &crate::products::ContentOptions) -
     Ok(loaded)
 }
 
-/// The levels the content names and orders, with the content's warnings; ids in no known order
-/// where the content cannot be read.
 pub(crate) fn named_levels(source: &Source, context: &LoadContext, named: &BTreeSet<&str>, warnings: &mut Vec<String>) -> Vec<SubjectLevel> {
     let content = match context.content.as_ref() {
         Some(options) => match subject_content(source, options) {
@@ -349,7 +311,6 @@ pub(crate) fn named_levels(source: &Source, context: &LoadContext, named: &BTree
     out
 }
 
-/// Each run of `query`'s timeline with its subjects and links, read once per run.
 pub(crate) fn held_runs(source: &Source, query: &dashboard_query::Query<'_>, cancelled: &AtomicBool) -> io::Result<HashMap<u32, (Arc<RunSubjects>, Arc<RunLinks>)>> {
     let mut held = HashMap::new();
     for stretch in &query.timeline.stretches {
@@ -361,7 +322,6 @@ pub(crate) fn held_runs(source: &Source, query: &dashboard_query::Query<'_>, can
     Ok(held)
 }
 
-/// Hours the identity layer or the timeline holds nothing for: unobserved for every relation.
 pub(crate) fn unknown_hours(query: &dashboard_query::Query<'_>) -> Vec<HourSpan> {
     let mut out: Vec<HourSpan> = query.holders.unknown.iter().map(|(first, last, _)| HourSpan { first_hour: *first, last_hour: *last }).collect();
     out.extend(query.timeline.unheld.iter().map(|gap| HourSpan { first_hour: gap.first, last_hour: gap.last }));

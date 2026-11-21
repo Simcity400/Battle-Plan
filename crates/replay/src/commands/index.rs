@@ -154,7 +154,6 @@ impl Counts {
 }
 
 pub struct Timeline {
-    /// The hours of its campaign timeline it counts for, inclusive: a segment's piece of one.
     pub hours: (i32, i32),
     pub session: u64,
     pub capture: u64,

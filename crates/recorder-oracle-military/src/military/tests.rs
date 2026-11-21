@@ -85,7 +85,6 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
             "raw {raw}: {:?}",
             report.differences
         );
-        // The retired field is never consulted, so its absence is no limitation.
         assert!(
             !report
                 .limitations
@@ -103,7 +102,6 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
             );
         }
     }
-    // Unknown words serialize to front_order but cannot match player_order.
     saved
         .divisions
         .get_mut(&id)
@@ -172,7 +170,6 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
                 .any(|difference| difference.contains("source"))
         );
     }
-    // The saved `commandlist` holds one entry per queued order and is omitted when empty.
     for (value, saved_count, differences) in [
         (Recorded::NotRecorded, 0, 0),
         (Recorded::Value(None), 0, 1),
@@ -233,7 +230,6 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         ),
         (
             Recorded::Value(Some(vec![0xff, 0, b'W'])),
-            // The game stops at the first NUL; the suffix is unsaved.
             Some(vec![0xff]),
             0,
         ),
@@ -564,17 +560,11 @@ fn division_status_naming_takes_the_recorded_member_template() {
     };
     let naming_differences =
         |frame: &DecodedFrame, template: Option<u64>| naming_report(frame, template).0;
-    // The recorded member names a template deleted since, which no
-    // recorded template holds: the game shows the stored name.
     assert_eq!(
         naming_report(&frame, Some(deleted)),
         (Vec::<String>::new(), false)
     );
-    // Naming operands without a reference are a recording that does not
-    // record it: its member is named so, and its empty group, the group of a
-    // deleted template, is admitted with the shown override.
     assert_eq!(naming_report(&frame, None), (Vec::<String>::new(), true));
-    // A recorded template with that reference refutes the deletion.
     set(
         &mut frame,
         TableId::DivisionTemplates,
@@ -616,25 +606,18 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
     let value = |disruption| {
         Recorded::Value(Some(DivisionSupplyFooter {
             disruption,
-            // Independent origin acquisition failure does not erase this scalar.
             origins: None,
             ..Default::default()
         }))
     };
-    // (recorded footer, saved disruption, differences)
     for (supply, text, differences) in [
-        // Current recordings hold the printed hundredth, half away from zero
-        // with a nonzero amount kept; the save's word is rounded the same way.
         (value(1_000), Some("0.00001"), 0),
         (value(1_000), Some("0.01499"), 0),
         (value(1_000), Some("0.01500"), 1),
         (value(0), Some("0.00001"), 1),
-        // The save omits nonpositive disruption only.
         (value(0), None, 0),
         (value(-1_000), None, 0),
         (value(1_000), None, 1),
-        // A refused scalar pack differs; an older recording's absence is a
-        // named limitation.
         (Recorded::Value(None), None, 1),
         (Recorded::Value(None), Some("0.00001"), 1),
         (Recorded::NotRecorded, Some("0.00001"), 0),
@@ -698,7 +681,6 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             );
         }
     }
-    // A failed appended scalar does not prevent independent prefix comparison.
     let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
     presentation.dig_in = Some(installed_content_save::Decimal::parse(b"1").unwrap());
     presentation.disrupted_supply = None;
@@ -747,9 +729,6 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
     );
 }
 
-/// A combat movement word belongs only to a division in combat and not
-/// withdrawing; none is valid for every division. A move_flags bit outside the
-/// defined flags is a difference.
 #[test]
 fn division_status_checks_the_combat_movement_branch_and_undefined_move_flags() {
     use replay_data::rows::{DivisionMovementRow, DivisionStatusRow, Recorded};
@@ -810,20 +789,17 @@ fn division_status_checks_the_combat_movement_branch_and_undefined_move_flags() 
             .filter(|line| line.contains(".combat_movement") || line.contains(".move_flags"))
             .collect()
     };
-    // In combat and not withdrawing: a land combat's word or none (naval or unmatched).
     assert_eq!(
         differences(Some(-13_000), all_flags, 2, 0),
         Vec::<String>::new()
     );
     assert_eq!(differences(None, 0, 2, 0), Vec::<String>::new());
-    // Outside combat or withdrawing, only none.
     assert_eq!(differences(None, 0, 0, 1), Vec::<String>::new());
     for (combat_count, withdrawal) in [(0, 0), (2, 1)] {
         let lines = differences(Some(-13_000), 0, combat_count, withdrawal);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains(".combat_movement"), "{lines:?}");
     }
-    // A bit outside the defined flags.
     let lines = differences(None, all_flags | 0x80, 0, 0);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains(".move_flags"), "{lines:?}");
@@ -981,15 +957,12 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
             compare_land_combats(&frame, saved, &membership, &mut report).unwrap();
             report
         };
-    // A division, a railway gun and a task force each keep their own class.
     saved.land_combats.insert(11, combat(vec![task_force]));
     assert_differences(&compare(&saved, vec![task_force], vec![1]), &[]);
-    // A division class recorded for the task force differs.
     assert_differences(
         &compare(&saved, vec![task_force], vec![0]),
         &["type=11 id=0.defender_classes"],
     );
-    // A handle no saved roster holds states no class; a missing class differs.
     saved.land_combats.insert(11, combat(vec![stray]));
     assert_differences(&compare(&saved, vec![stray], vec![13]), &[]);
     assert_differences(
@@ -1293,14 +1266,10 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
     assert!(report.membership_skips.is_empty());
 }
 
-/// One saved ship with 30.00999 experience beside a recorded row holding
-/// `recorded`, compared at its display step.
 fn ship_experience_report(recorded: i64) -> Report {
     ship_report(recorded, Some(0).into(), Some(0))
 }
 
-/// [`ship_experience_report`] with `crew` as both recorded manpower fields
-/// and `saved_crew` as both saved ones.
 fn ship_report(recorded: i64, crew: Recorded<Option<i32>>, saved_crew: Option<i32>) -> Report {
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
@@ -1409,9 +1378,6 @@ fn ship_report(recorded: i64, crew: Recorded<Option<i32>>, saved_crew: Option<i3
     report
 }
 
-/// Ships.experience is recorded at a hundredth truncated toward zero
-/// (`ShipRow::EXPERIENCE_STEP`): the save's exact value is rounded the same
-/// way.
 #[test]
 fn ship_experience_compares_at_its_display_step() {
     let report = ship_experience_report(3_000_000);
@@ -1426,8 +1392,6 @@ fn ship_experience_compares_at_its_display_step() {
     );
 }
 
-/// A crew the frame holds compares with the save's; one the collector could not certify (the
-/// column's refusal `None`) is not recorded, a limitation with its reason, never a difference.
 #[test]
 fn ship_crew_compares_with_the_save_and_a_not_recorded_crew_is_a_limitation_with_its_reason() {
     let equal = ship_report(3_000_000, Some(255).into(), Some(255));
@@ -1615,8 +1579,6 @@ fn manpower_wing_oracle_compares_exile_tags_omission_aliases_and_unavailable_cap
     }
 }
 
-/// One saved wing with `saved` manpower and no exile beside a recorded row holding `manpower`
-/// and `exile`.
 fn wing_report(
     manpower: Recorded<Option<i32>>,
     exile: Recorded<Option<i32>>,
@@ -1682,9 +1644,6 @@ fn wing_report(
     report
 }
 
-/// A wing's manpower the frame holds compares with the save's; a crew read the collector could
-/// not certify (the column's refusal `None`) is not recorded, a limitation with its reason,
-/// never a difference.
 #[test]
 fn wing_manpower_compares_with_the_save_and_a_not_recorded_crew_is_a_limitation_with_its_reason() {
     let equal = wing_report(Some(480).into(), Some(0).into(), Some(480));
@@ -1868,7 +1827,6 @@ fn experience_history_oracle_compares_order_medals_and_refused_roots() {
     let mut report = Report::default();
     division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // The save writes both stored flag bytes as boolean values.
     for medal_count in [0, 1, 2, u8::MAX] {
         for inherit in [0, 1, 2, u8::MAX] {
             let mut flags = rows.clone();
@@ -1934,7 +1892,6 @@ fn experience_history_oracle_compares_order_medals_and_refused_roots() {
         TableId::DivisionHistory,
         TableRows::DivisionHistory(rows.clone()),
     );
-    // Ordinary text saves always emit the stored subject, even when empty.
     saved
         .divisions
         .get_mut(&id)
@@ -1959,7 +1916,6 @@ fn experience_history_oracle_compares_order_medals_and_refused_roots() {
         .unwrap()
         .career[0]
         .name = Some(b"subject".to_vec());
-    // A nonempty custom key is serialized only for the custom event kind.
     saved
         .divisions
         .get_mut(&id)
@@ -2047,7 +2003,6 @@ fn division_panel_stats_checks_its_own_roster_and_every_operand() {
     compare_division_panel_stats(&frame, &save, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("panel_stats[21]"));
-    // An unread suppression word is a difference too.
     row.panel_stats[21] = Some(i64::MIN);
     row.suppression = None.into();
     set(
@@ -2099,7 +2054,6 @@ fn country_template_oracle_checks_selection_and_lock_without_owned_templates() {
     let mut report = Report::default();
     compare_country_template_state(&frame, &save, &countries, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // A retained reference that resolves no template is omitted by the save.
     save.production
         .template_states
         .get_mut(b"GER".as_slice())
@@ -2114,7 +2068,6 @@ fn country_template_oracle_checks_selection_and_lock_without_owned_templates() {
         .get_mut(b"GER".as_slice())
         .unwrap()
         .garrison_priority = Some(1);
-    // The raw word is still retained by the replay row.
     save.production
         .template_states
         .get_mut(b"GER".as_slice())
@@ -2244,8 +2197,6 @@ fn training_stop_oracle_limits_unrecorded_and_rejects_mismatched_demanded_flags(
             pool_ordinal: 0,
         },
     );
-    // No map flags, or flags without the stop flag's present bit, record no
-    // stop flag; a present flag is compared, false against the saved true.
     for (flags, differences, recorded) in [
         (None, 0, false),
         (Some(0), 0, false),
@@ -2318,7 +2269,6 @@ fn acclimatization_categories_compare_their_exact_bytes() {
     let mut report = Report::default();
     compare_acclimatization("division", &row, Some(&saved(0x80)), &tokens, &mut report);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Both decode to the same replacement character, yet name different categories.
     compare_acclimatization("division", &row, Some(&saved(0x81)), &tokens, &mut report);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }

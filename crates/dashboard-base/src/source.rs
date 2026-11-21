@@ -1,4 +1,3 @@
-//! One opened recording shared by every widget and map that reads it.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -27,7 +26,6 @@ use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
 use replay::campaign::SeekResult;
 
-/// Identity of an opened recording revision inside the running service.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceKey {
     pub source_id: String,
@@ -41,39 +39,28 @@ struct StateEntry {
     append: Option<fn(&SharedState) -> SharedState>,
 }
 
-/// The recording's own presentation as last mounted, over the content it was mounted on
-/// ([`Source::recorded_presented`]).
 #[derive(Default)]
 struct RecordedMount(Option<(Weak<ResolvedContent>, Arc<Presented>)>);
 
-/// The content resolved for the folders last asked for, with its read set, and the content of
-/// earlier folders while work still holds it: asked for again, that is reused, so all work on
-/// one folders reads, and reports, one read set.
 #[derive(Default)]
 struct ContentCache {
     bound: Option<(ResolveOptions, Arc<ResolvedContent>)>,
     held: Vec<(ResolveOptions, Weak<ResolvedContent>)>,
-    /// Content a preparation resolves ahead of need ([`Source::resolving_ahead`]), unbound until
-    /// [`Source::content`] asks for it, and released when that preparation ends.
     ahead: Option<ContentAhead>,
 }
 
 struct ContentAhead {
     options: ResolveOptions,
-    /// The preparation that started it, and releases it.
     owner: u64,
     state: AheadState,
 }
 
 enum AheadState {
-    /// `None` once stopped because its preparation ended, not because it was cancelled.
     Resolving(std::sync::mpsc::Receiver<Option<io::Result<ResolvedContent>>>),
-    /// Waited for by [`Source::own_content`], which binds nothing.
     Resolved(Arc<ResolvedContent>),
 }
 
 impl ContentCache {
-    /// The content of these folders work reads now, bound or held, if any.
     fn find(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
         match &self.bound {
             Some((old, content)) if same_folders(old, options) => Some(Arc::clone(content)),
@@ -85,10 +72,6 @@ impl ContentCache {
         }
     }
 
-    /// The content resolved ahead for these folders, waited for while it resolves, its error
-    /// included (`Interrupted` when its preparation was cancelled); taken out of the cache when
-    /// `claim`ed, else kept for whoever asks next. `None` when none is, or its resolution stopped
-    /// as its preparation ended or panicked: it is resolved where asked for.
     fn ahead(
         &mut self,
         options: &ResolveOptions,
@@ -115,7 +98,6 @@ impl ContentCache {
         Some(Ok(content))
     }
 
-    /// Binds `content`, holding what was bound while work still holds it.
     fn bind(&mut self, options: &ResolveOptions, content: &Arc<ResolvedContent>) {
         let _ = content.layers.report_uncovered_reads();
         self.held
@@ -129,7 +111,6 @@ impl ContentCache {
     }
 }
 
-/// Ends a preparation's resolution ahead ([`Source::resolving_ahead`]), even when it unwinds.
 struct ReleaseAhead<'scope> {
     source: &'scope Source,
     resolver: Option<(u64, std::thread::ScopedJoinHandle<'scope, ()>)>,
@@ -140,8 +121,6 @@ impl Drop for ReleaseAhead<'_> {
     fn drop(&mut self) {
         self.finished.store(true, Ordering::Release);
         if let Some((owner, resolver)) = self.resolver.take() {
-            // Joined here, so a resolver that panicked leaves its content to be resolved where
-            // asked for rather than panicking the preparation.
             let _ = resolver.join();
             let mut cache = self
                 .source
@@ -159,7 +138,6 @@ impl Drop for ReleaseAhead<'_> {
     }
 }
 
-/// A recording of an older layout, refused as the reason users see.
 fn refuse_older(error: io::Error) -> io::Error {
     if replay::campaign::is_older_layout(&error) {
         dashboard_core::refused(error.to_string())
@@ -182,27 +160,20 @@ fn block_windows(replay: &Replay) -> HashMap<u64, Vec<crate::span::HourSpan>> {
     windows
 }
 
-/// The held read-only recording, its presentation metadata, resolved game content and
-/// every product's per-source cache. Dropping the last handle releases it all.
 pub struct Source {
     key: SourceKey,
     path: PathBuf,
     replay: Arc<Replay>,
     block_windows: HashMap<u64, Vec<crate::span::HourSpan>>,
     metadata: ResidentMetadata,
-    /// The metadata with country names resolved for the last folders it was asked for.
     named: Mutex<Option<(NamesKey, ResidentMetadata, Diagnostics)>>,
     content: Mutex<ContentCache>,
-    /// The game facts the recording carries, opened once ([`crate::facts::recorded`]).
     facts: std::sync::OnceLock<Result<Arc<installed_content_core::content::facts::Pack>, String>>,
     tables: std::sync::OnceLock<Option<engine_executable::executable_tables::Tables>>,
-    /// What work on this source is bound to now ([`Self::bind`]), swapped in whole, never
-    /// changed in place; `None` until the service binds it.
     binding: Mutex<Option<Arc<Binding>>>,
     state: Mutex<HashMap<TypeId, StateEntry>>,
 }
 
-/// What country names are resolved for: the folders. Their language is the recording's.
 pub(crate) type NamesKey = Option<ContentKey>;
 
 fn country_observation(country: &crate::CountryMetadata) -> (&str, &str, &str, i32) {
@@ -214,7 +185,6 @@ fn country_observation(country: &crate::CountryMetadata) -> (&str, &str, &str, i
     )
 }
 
-/// A recording's facts and the executable tables they carry.
 type Recorded = (
     Result<Arc<installed_content_core::content::facts::Pack>, String>,
     Option<engine_executable::executable_tables::Tables>,
@@ -227,14 +197,11 @@ fn recorded(replay: &Arc<Replay>) -> Recorded {
 }
 
 impl Source {
-    /// Reads the file and its initial country catalogue. Cancellation is
-    /// checked between reads and decoded frames.
     pub fn open(key: SourceKey, path: PathBuf, cancelled: &AtomicBool) -> io::Result<Self> {
         metadata::check_cancel(cancelled)?;
         let replay = Arc::new(Replay::open_timelines(&path).map_err(refuse_older)?);
         metadata::check_cancel(cancelled)?;
         let (facts, tables) = recorded(&replay);
-        // The catalogue is read with the recording's own executable tables.
         engine_executable::executable_tables::scope(tables, || {
             Self::read(key, path, replay, (facts, tables), cancelled)
         })
@@ -295,28 +262,22 @@ impl Source {
         &self.replay
     }
 
-    /// The game facts the recording carries, or why it carries none.
     pub fn facts(&self) -> Result<Arc<installed_content_core::content::facts::Pack>, String> {
         self.facts
             .get_or_init(|| crate::facts::recorded(&self.replay))
             .clone()
     }
 
-    /// The executable tables the recording carries, which every piece of work on it reads in
-    /// its scope ([`Self::in_scope`]); `None` when it carries none.
     pub fn tables(&self) -> Option<engine_executable::executable_tables::Tables> {
         *self
             .tables
             .get_or_init(|| self.facts().ok().and_then(|pack| pack.tables().ok()))
     }
 
-    /// Runs `work` with the recording's executable tables in scope.
     pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
         engine_executable::executable_tables::scope(self.tables(), work)
     }
 
-    /// The recording's content played back over these folders: its own facts and the
-    /// installed art ([`installed_content_core::playback`]).
     fn play(&self, options: &ResolveOptions) -> io::Result<ResolvedContent> {
         installed_content_core::playback(&self.replay.identity, self.facts(), options)
     }
@@ -324,8 +285,6 @@ impl Source {
         self.block_windows.get(&branch).map_or(&[], Vec::as_slice)
     }
 
-    /// The initial observed catalogue, not a census of every campaign hour, with
-    /// country names once [`Self::name_countries`] has run and tags before.
     pub fn metadata(&self) -> Result<ReplayMetadata, metadata::MetadataError> {
         let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
         let mut metadata = match named.as_ref() {
@@ -343,7 +302,6 @@ impl Source {
         Ok(metadata)
     }
 
-    /// Read resident catalogue fields without copying or formatting wire diagnostics.
     pub fn with_metadata<T>(&self, read: impl FnOnce(&ReplayMetadata) -> T) -> T {
         let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
         read(
@@ -356,7 +314,6 @@ impl Source {
         )
     }
 
-    /// Reports this request's reads and the bound content changes.
     pub fn append_content_warnings(&self, warnings: &mut Vec<String>) {
         diagnostics::current().append_to(warnings);
         if let Some((_, content)) = &self
@@ -369,10 +326,6 @@ impl Source {
         }
     }
 
-    /// The content of the folders work admitted under `options` reads: the bound content,
-    /// content of these folders work still holds ([`ContentCache`]), or content resolved ahead
-    /// for them. Resolved again when there is none, but never bound, so a reply's diagnostics
-    /// never rebind what other work reads.
     fn own_content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
         let mut cache = self
             .content
@@ -388,9 +341,6 @@ impl Source {
         Ok(Arc::new(self.play(options)?))
     }
 
-    /// Name the layers that changed since the recording in the content a reply was admitted
-    /// under: its own folders' content, whatever the source has bound since, so a reply never
-    /// names another content's changes nor loses its own.
     pub fn append_changed_warnings(
         &self,
         warnings: &mut Vec<String>,
@@ -401,10 +351,6 @@ impl Source {
         }
     }
 
-    /// What the binding a content reply was admitted under cannot show
-    /// ([`Presented::append_to`]), from the mount its entry resolved, never the source's binding
-    /// now. Work that reads no content or shows no visual mod names nothing, and work cancelled
-    /// while the mount was resolved names nothing either.
     pub fn append_presentation_warnings(
         &self,
         warnings: &mut Vec<String>,
@@ -418,8 +364,6 @@ impl Source {
         }
     }
 
-    /// Resolves the catalogue's names in the recording's language at each
-    /// country's observed hour; without content they stay tags, with a warning.
     pub fn name_countries(&self, content: Option<&ContentOptions>) -> io::Result<()> {
         let key = content_key(content);
         let mut named = self.named.lock().unwrap_or_else(|error| error.into_inner());
@@ -436,7 +380,6 @@ impl Source {
         Ok(())
     }
 
-    /// The catalogue named against `localisation`, or tagged with its warning.
     pub(crate) fn named_metadata(
         &self,
         localisation: Result<Arc<Localisation>, String>,
@@ -555,8 +498,6 @@ impl Source {
         })
     }
 
-    /// The recording's verified game content for the configured folders,
-    /// resolved once and reused until the folders change, and while work holds it after.
     pub fn content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
         loop {
             let (content, rebind) = {
@@ -622,12 +563,6 @@ impl Source {
         }
     }
 
-    /// Runs `work`, a preparation, while these folders' content resolves on a thread beside it at
-    /// the caller's priority, unless it is resolved or being resolved, or `cancelled` is set: the
-    /// [`Self::content`] asked for them meanwhile waits for it and returns what it returned, its
-    /// error included, rather than resolving again. Nothing is bound before then. The resolution
-    /// stops when `cancelled` is set or `work` ends, which waits for it, and a result nothing
-    /// claimed is released then.
     pub fn resolving_ahead<T>(
         &self,
         options: Option<&ResolveOptions>,
@@ -655,7 +590,6 @@ impl Source {
                 let finished = &finished;
                 let caller = job_priority::Caller::current();
                 let cpu = job_priority::accounting::Context::capture();
-                // Not started, it is resolved when asked for.
                 let handle = std::thread::Builder::new()
                     .name("content resolve".into())
                     .spawn_scoped_carried(
@@ -674,8 +608,6 @@ impl Source {
                             } else {
                                 self.play(options)
                             };
-                            // Stopped as the preparation ended: whoever asks still resolves. A
-                            // cancelled preparation's waiters are told so instead of hashing again.
                             let stopped = matches!(&resolved, Err(error)
                             if error.kind() == io::ErrorKind::Interrupted
                                 && !cancelled.load(Ordering::Acquire));
@@ -700,10 +632,6 @@ impl Source {
         })
     }
 
-    /// The content already resolved for these folders, without resolving it or replacing what
-    /// is bound: `None` when the source's content is bound to other folders or to none. Work
-    /// done ahead of a request uses it, so it never rebinds the content every reply reports
-    /// ([`Self::append_content_warnings`]).
     pub fn bound_content(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
         self.content
             .lock()
@@ -714,7 +642,6 @@ impl Source {
             .map(|(_, content)| Arc::clone(content))
     }
 
-    /// What work on this source is bound to now, `None` until the service binds it.
     pub fn binding(&self) -> Option<Arc<Binding>> {
         self.binding
             .lock()
@@ -722,18 +649,12 @@ impl Source {
             .clone()
     }
 
-    /// The visual mods this source's widgets show now. Work reads the binding it was admitted
-    /// under from its `ContentOptions::presentation`, never this, so nothing changed while it
-    /// runs reaches it.
     pub fn presentation(&self) -> Presentation {
         self.binding()
             .map(|binding| binding.presentation.clone())
             .unwrap_or_default()
     }
 
-    /// Makes work on this source bound to `options`, `allow_unverified` and `presentation`, as
-    /// one swap of the whole binding, returning whether anything changed. Unchanged, the current
-    /// binding and its mount are kept. `None` options unbind it.
     pub fn bind(
         &self,
         options: Option<(&ResolveOptions, bool)>,
@@ -763,9 +684,6 @@ impl Source {
         true
     }
 
-    /// Admits work on this source: its current binding, taken whole under one short lock, so
-    /// work never reads one binding's folders with another's mods. `None` until the source is
-    /// bound.
     pub fn admit(&self, work: Work) -> Option<ContentOptions> {
         let binding = self.binding()?;
         let options = binding.options.clone();
@@ -785,9 +703,6 @@ impl Source {
         })
     }
 
-    /// Whether work admitted under `content` still holds the source's current binding: no
-    /// folder, choice or visual mod change has replaced it. Work admitted outside the service
-    /// (the source never bound) holds it while its presentation is the source's.
     pub fn still_admitted(&self, content: &ContentOptions) -> bool {
         match self.binding() {
             Some(current) => Arc::ptr_eq(&current, content.presentation.binding()),
@@ -795,19 +710,12 @@ impl Source {
         }
     }
 
-    /// [`Source::admit`], with the mount the work draws resolved before any of its code runs
-    /// ([`Source::resolve`]): what every entry of work (a product request, a prepared query,
-    /// read-ahead) admits with.
     pub fn admit_resolved(&self, work: Work) -> Option<ContentOptions> {
         let mut content = self.admit(work)?;
         self.resolve(&mut content);
         Some(content)
     }
 
-    /// Resolves the mount work admitted under `content` draws, at its entry and outside every
-    /// lock, so no code of the work, under whatever cache lock, ever mounts: its binding's mount,
-    /// computed once by the first work that needs it, the others waiting on it while watching
-    /// their own cancellation ([`Binding::mount`]). Work showing no visual mod needs none.
     pub fn resolve(&self, content: &mut ContentOptions) {
         if !content.presentation.shows_mods() {
             return;
@@ -830,9 +738,6 @@ impl Source {
         content.presentation.set_mount(&mount);
     }
 
-    /// The mount the art reads of work admitted under `content` draw from, as its entry resolved
-    /// it ([`Source::resolve`]); it never mounts. Recorded-only work and work showing no visual
-    /// mod get the recording's own artwork.
     pub fn presented_for(&self, content: &ContentOptions) -> io::Result<Arc<Presented>> {
         if !content.presentation.shows_mods() {
             return self.recorded_presented(&content.options);
@@ -848,19 +753,12 @@ impl Source {
         })
     }
 
-    /// [`Source::resolve`] at the entry of work done ahead of a request: only over content
-    /// already resolved for its folders, and only while `content` holds the source's current
-    /// binding, so it never mounts over content or for a presentation a request has replaced.
     pub fn resolve_bound(&self, content: &mut ContentOptions) {
         if self.bound_content(&content.options).is_some() && self.still_admitted(content) {
             self.resolve(content);
         }
     }
 
-    /// The mount of work done ahead of a request, as its entry resolved it
-    /// ([`Source::resolve_bound`]), while `content` still holds the source's current binding over
-    /// content already resolved for its folders: it never binds content or a presentation a
-    /// request has replaced. `None` otherwise, or when its entry resolved none.
     pub fn bound_presented_for(&self, content: &ContentOptions) -> Option<Arc<Presented>> {
         self.bound_content(&content.options)?;
         if !self.still_admitted(content) {
@@ -872,14 +770,10 @@ impl Source {
         self.recorded_presented(&content.options).ok()
     }
 
-    /// The recording's own artwork for these folders: no visual mod mounted, for prepared
-    /// families whose stored payloads hold artwork. One mount per recorded content, so what
-    /// artwork keeps by its mount (flag files, cells) lasts across requests.
     pub fn recorded_presented(&self, options: &ResolveOptions) -> io::Result<Arc<Presented>> {
         let recorded = self.content(options)?;
         let state = self.state::<RecordedMount>();
         let mut kept = state.lock().unwrap_or_else(|error| error.into_inner());
-        // The weak handle keeps the content's allocation, so its address names it alone.
         if let Some((content, presented)) = &kept.0
             && std::ptr::eq(content.as_ptr(), Arc::as_ptr(&recorded))
         {
@@ -896,8 +790,6 @@ impl Source {
         Ok(presented)
     }
 
-    /// A product's own cache for this source, created on first use. Requests
-    /// for the same product serialise on it; different products run in parallel.
     pub fn state<T: Default + Send + 'static>(&self) -> Arc<Mutex<T>> {
         let mut states = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = states
@@ -911,8 +803,6 @@ impl Source {
             .expect("state is keyed by its own type")
     }
 
-    /// Opt in to verified append inheritance. Clone must share immutable history
-    /// and give the new revision its own mutable continuation.
     pub fn append_state<T: Default + Clone + Send + 'static>(&self) -> Arc<Mutex<T>> {
         fn fork<T: Clone + Send + 'static>(value: &SharedState) -> SharedState {
             let value = value.downcast_ref::<Mutex<T>>().expect("state type");
@@ -933,8 +823,6 @@ impl Source {
         value
     }
 
-    /// Called outside the service's sources lock. Unused and revision-local
-    /// state needs neither a prefix comparison nor a product lock.
     pub fn inherit_append_states(&self, previous: &Self) {
         let opted: Vec<_> = previous
             .state
@@ -975,8 +863,6 @@ impl Source {
         {
             return false;
         }
-        // A save adds pages to the runs it continues as well as new runs, and timelines to the
-        // ones read before; a changed join takes blocks away.
         let held: std::collections::HashSet<&replay::campaign::BlockIndex> =
             new.index.iter().collect();
         if old.index.iter().any(|block| !held.contains(block)) {
@@ -1008,21 +894,12 @@ impl Source {
     }
 }
 
-/// What work a source admits ([`Source::admit`]).
 pub enum Work {
-    /// Work answering a request, cancelled by the request: its art follows the binding's visual
-    /// mods, and its replies name what their mount cannot show.
     Content(Arc<dyn Cancel>),
-    /// Work done ahead of requests (read-ahead): its art follows the binding's visual mods, and
-    /// it is cancelled once its binding is retired.
     Ahead,
-    /// Work that reads the recording's own artwork whatever its source shows, and that nobody
-    /// cancels: preparation and the store checks it makes, and work that reads no content. It
-    /// never mounts a binding's visual mods.
     Recorded,
 }
 
-/// A dropped source retires its binding, cancelling work still done ahead under it.
 impl Drop for Source {
     fn drop(&mut self) {
         if let Some(binding) = self
@@ -1036,14 +913,12 @@ impl Drop for Source {
     }
 }
 
-/// Whether content resolved for `old` folders is the content of `options`.
 fn same_folders(old: &ResolveOptions, options: &ResolveOptions) -> bool {
     old.game_dir == options.game_dir
         && old.user_dir == options.user_dir
         && old.cache_dir == options.cache_dir
 }
 
-/// Content resolved by a test rather than from the configured folders.
 #[cfg(any(test, feature = "test-support"))]
 impl Source {
     pub fn set_test_content(

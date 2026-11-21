@@ -1,7 +1,3 @@
-//! Filtered graphics-frame delta for this scene. Initialize 32 f32 samples and the cursor to zero.
-//! Replace the cursor sample, advance modulo 32 and sort the retained storage in place. Average
-//! indices 3 through 28, divide by 26, blend equally with the current raw frame time and clamp to
-//! zero through 0.5. Sorted samples, including startup zeros, persist into the next frame.
 
 #[derive(Default)]
 pub struct RenderDelta {
@@ -17,14 +13,11 @@ impl RenderDelta {
             return 0.0;
         };
         if now < previous {
-            // An explicitly restarted presentation clock has a new epoch.
             self.samples.fill(0.0);
             self.next = 0;
             return 0.0;
         }
         if now == previous {
-            // Export/allocation retries at one frozen timestamp do not admit
-            // another graphics frame or consume the smoothing history.
             return 0.0;
         }
         self.admit(now - previous)
@@ -109,8 +102,6 @@ mod tests {
             "second frame replaces sorted slot 1 (2/64), retaining 1/64"
         );
         assert_eq!(delta.samples[1], 3.0 / 64.0);
-        // Sorting only a temporary copy would instead overwrite 1/64, retain
-        // 2/64, and produce a different subsequent trimmed mean.
     }
 
     #[test]
@@ -123,7 +114,6 @@ mod tests {
         assert_eq!(delta.advance(3.0), 0.5);
         assert_eq!(delta.samples[31], 2.0, "store raw stall before clamping");
         assert_eq!(delta.advance(3.125), 0.125, "outlier is trimmed next frame");
-        // The producer clamps negative supplied frame time at zero too.
         let mut negative = RenderDelta::default();
         assert_eq!(negative.admit(-1.0), 0.0);
     }

@@ -23,7 +23,6 @@ fn words(cursor: i32, seed: u32, gates: Option<[u8; 2]>) -> Words {
 
 const CLEAR: Option<[u8; 2]> = Some([0, 0]);
 
-/// The pass the hour's read leaves, with the anchored temperatures.
 fn observe(
     tracker: &mut Tracker,
     hour: i32,
@@ -55,7 +54,6 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
             witness: replay_data::rows::TemperatureWitness::new(witness([0, 10, 20, 30, 40])),
         }
     );
-    // The pass from cursor 4 visits slots 4 and 0 and leaves the cursor at 1.
     let second = states(&[1, 10, 20, 30, 41]);
     let (anchor, pass) = observe(&mut tracker, 101, Some((words(1, 9, CLEAR), &second))).unwrap();
     assert_eq!(anchor, [0, 10, 20, 30, 40]);
@@ -64,7 +62,6 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
         pass.witness,
         replay_data::rows::TemperatureWitness::new(witness([1, 10, 20, 30, 41]))
     );
-    // A suspended hour moves nothing and records no seed.
     let (_, pass) = observe(
         &mut tracker,
         102,
@@ -75,7 +72,6 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
         (pass.anchor, pass.hours.clone()),
         (100, vec![Some(9), None])
     );
-    // A record outside the window from cursor 1 (slots 1, 2) changed: a new anchor.
     let third = states(&[1, 11, 20, 31, 41]);
     let (anchor, pass) = observe(&mut tracker, 103, Some((words(3, 5, CLEAR), &third))).unwrap();
     assert_eq!(anchor, [1, 11, 20, 31, 41]);
@@ -83,13 +79,10 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
         (pass.anchor, pass.cursor, pass.anchor_seed, pass.hours.len()),
         (103, 3, None, 0)
     );
-    // The cursor must move exactly as the window walks it.
     let (_, pass) = observe(&mut tracker, 104, Some((words(4, 6, CLEAR), &third))).unwrap();
     assert_eq!(pass.anchor, 104);
-    // Suspension that moved the seed proves nothing either.
     let (_, pass) = observe(&mut tracker, 105, Some((words(4, 8, Some([0, 1])), &third))).unwrap();
     assert_eq!(pass.anchor, 105);
-    // Unread gates, a missed hour and a refused read each break the run.
     let (_, pass) = observe(&mut tracker, 106, Some((words(4, 8, None), &third))).unwrap();
     assert_eq!(pass.anchor, 106);
     let (_, pass) = observe(&mut tracker, 108, Some((words(1, 2, CLEAR), &third))).unwrap();
@@ -112,7 +105,6 @@ fn an_anchor_lasts_two_keyframe_intervals_and_keeps_its_proven_pass() {
     )
     .unwrap();
     for offset in 1..=ANCHOR_HOURS {
-        // Each pass changes the first slot it visits.
         records[cursor as usize].temperature += 1;
         cursor = (cursor + 2) % 3;
         let (_, pass) = observe(
@@ -122,11 +114,9 @@ fn an_anchor_lasts_two_keyframe_intervals_and_keeps_its_proven_pass() {
         )
         .unwrap();
         if offset < ANCHOR_HOURS {
-            // The keyframe one interval after the anchor repeats its words.
             assert_eq!(pass.anchor, start);
             assert_eq!(pass.hours.len(), offset as usize);
         } else {
-            // A periodic anchor records the seed of its own hour's ordinary pass.
             assert_eq!(pass.anchor, start + offset);
             assert_eq!(pass.anchor_seed, Some(offset as u32));
             assert!(pass.hours.is_empty());
@@ -134,9 +124,6 @@ fn an_anchor_lasts_two_keyframe_intervals_and_keeps_its_proven_pass() {
     }
 }
 
-/// Hours of the game's pass, as the port computes them, read by the tracker and derived again
-/// from what the rows record: every frame reproduces its read witness, across suspended hours,
-/// a reinitialization and periodic anchors.
 #[test]
 fn recorded_passes_derive_every_read_hour_on_playback() {
     use replay_data::{
@@ -203,7 +190,6 @@ fn recorded_passes_derive_every_read_hour_on_playback() {
             game.update(&content, hour, seed).unwrap();
         }
         if offset == 300 {
-            // randomize_weather reinitializes every record outside the window.
             for state in &mut game.states[1..] {
                 state.temperature += 1;
                 state.staged += 1;
@@ -235,6 +221,5 @@ fn recorded_passes_derive_every_read_hour_on_playback() {
         let derived = memo.states(1, hour, &rows, Ok(&content)).unwrap();
         assert_eq!(derived, &game.states[..], "hour {offset}");
     }
-    // The first hour, the reinitialized hour and two keyframe intervals after it.
     assert_eq!(anchors, 3);
 }

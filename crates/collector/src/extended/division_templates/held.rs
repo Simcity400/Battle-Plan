@@ -1,6 +1,3 @@
-//! Immutable extension payloads retained under native writer certificates.
-//! Ordinary hours reuse their allocations and acquire only dirty templates;
-//! a roster move only renumbers the held settings.
 use super::*;
 use crate::template_changes::Changes;
 use std::sync::Arc;
@@ -140,7 +137,6 @@ mod tests {
         assert_eq!(first.names_group.as_deref(), Some(b"OLD".as_slice()));
         assert_eq!(second.names_group.as_deref(), Some(b"NEW".as_slice()));
         assert!(!Arc::ptr_eq(&first, &second));
-        // A roster move renumbers the first-name-match operand without a read.
         store.begin();
         assert!(!store.request(&watches, 1, row.pointer, row.template, 1));
         store.finish(&watches, &[row], &[], &[], &[]);
@@ -271,9 +267,7 @@ pub(super) struct Store {
     payload_bytes: usize,
     requested: bool,
     reordered: bool,
-    /// This walk's settlement replaced a held layout or settings payload.
     changed: bool,
-    /// Each walk visit's entry index ([`hinted`]) and this walk's visits.
     hints: Vec<u32>,
     visits: usize,
 }
@@ -298,12 +292,8 @@ fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Cert
     ])
 }
 
-/// The writer stamps a walk takes before its reads: the current country's and its deployment
-/// status's, then each roster batch's templates'.
 #[derive(Clone, Copy)]
 pub(super) struct Stamps {
-    /// The current country's deployment status, whose clones its templates name, and that
-    /// status's local-definition stamp taken before its roster's reads.
     pub deployment: Option<usize>,
     dependencies: Option<Stamp>,
     owner: Option<Stamp>,
@@ -334,7 +324,6 @@ impl Stamps {
         }
     }
 
-    /// The template's stamp taken before this batch's reads, and its owner's.
     pub fn template(&self, pointer: usize, ordinal: u32) -> Option<Certificate> {
         let (expected, stamp) = self.batch[ordinal as usize % native::READ_BATCH];
         Some([stamp.filter(|_| expected == pointer)?, self.owner?])
@@ -354,14 +343,11 @@ impl Stamps {
     }
 }
 
-/// The walk's policy: a template carries when its extension needs no read
-/// and its held row's certificate stands; every other template is read.
 pub(super) struct Demand<'a> {
     store: &'a mut Store,
     changes: &'a dyn Changes,
     core: &'a mut super::core::Store,
     stamps: Stamps,
-    /// Carried and read occurrences.
     pub counts: [u64; 2],
 }
 impl<'a> Demand<'a> {
@@ -451,12 +437,10 @@ impl Store {
         self.visits = 0;
     }
 
-    /// Whether this walk's settlement published a payload other than the one held.
     pub fn changed(&self) -> bool {
         self.changed
     }
 
-    /// This walk moved a held template within its roster.
     pub fn reordered(&self) -> bool {
         self.reordered
     }
@@ -468,8 +452,6 @@ impl Store {
             + self.hints.capacity() * size_of::<u32>()
     }
 
-    /// Only a complete existing census may retire payloads. Ordinary quiet
-    /// hours do not walk the cache again.
     pub fn prune(&mut self, rows: &[native::IconRow]) {
         if self.entries.len() <= rows.len() {
             return;
@@ -570,8 +552,6 @@ impl Store {
         read
     }
 
-    /// What [`Self::request_certified`] decides for a walk's only occurrence of `template`,
-    /// changing nothing: a range of a split walk decides on the stores the walk began with.
     pub(super) fn decide(
         &self,
         owner: u32,
@@ -592,8 +572,6 @@ impl Store {
         }
     }
 
-    /// Room for an entry for each of `templates` not held yet, so applying a split walk's
-    /// decisions inserts without a refusal its ranges could not have decided on.
     pub(super) fn reserve_new(&mut self, templates: &[u64]) -> bool {
         let new = templates
             .iter()
@@ -606,7 +584,6 @@ impl Store {
         engine_allocation::reserve(&mut self.entries, new).is_ok()
     }
 
-    /// Freezes what this walk read; a writer since its stamps refuses it.
     pub fn certify(&mut self, changes: &dyn Changes, rows: &[native::IconRow]) {
         if !self.requested {
             return;
@@ -653,7 +630,6 @@ impl Store {
         self.settle(rows, counts, variants, bytes);
     }
 
-    /// Certificates are frozen by `certify`; only owned payloads are reached.
     pub fn settle(
         &mut self,
         rows: &[native::IconRow],

@@ -6,7 +6,7 @@ import type { ArmyLossesData } from './armyLossesData';
 import type { LossArmy } from '../../generated/dashboard';
 import { INDEPENDENT, LEDGERS, UNRESOLVED, chartView, monthArmies, monthBars, monthTooltip, monthView, resolveArmyLosses, validateArmyLosses } from './armyLossesData.ts';
 
-const M = 1940 * 12; // January 1940
+const M = 1940 * 12;
 const army = (reference: string, parent: string | null, parentMissing: string | null = null): LossArmy => ({ reference, ordinal: Number(reference),
   name: `Army ${reference}`, nameMissing: null, parent, parentName: parent ? `Group ${parent}` : null, parentMissing });
 const reply = (): ArmyLossesData => ({ hour: firstHourOfMonth(M + 3), tag: 'GER', absent: false,

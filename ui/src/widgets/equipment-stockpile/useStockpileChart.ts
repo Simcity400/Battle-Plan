@@ -15,14 +15,10 @@ import { validateStockpileChart } from './stockpileData';
 import type { StockpileCatalogueReply } from './types';
 import type { StockpileAtReply, StockpileHolder, StockpileMeasure } from '../../generated/dashboard';
 
-/** A chart line to read: its key in the widget, its group's key and what it draws. */
 export interface StockpileLineRequest { key: string; group: string; measure: StockpileMeasure }
 
 const NO_SUMMARIES: ReadonlyMap<string, ChartSummary> = new Map();
 
-/** The view a chart's view is read as: its length grown to a power of two of hours, starting on a quarter of that,
- * and its width scaled to keep the pixels. A view growing or sliding with the playhead is asked again only when its
- * length doubles or it slides a quarter, never a frame at a time; every hour of `view` is inside it. */
 export function askedView(view: StockpileView): StockpileView {
   const length = Math.max(1, Math.floor(view.to) - Math.floor(view.from) + 1);
   const span = 2 ** Math.ceil(Math.log2(length));
@@ -32,8 +28,6 @@ export function askedView(view: StockpileView): StockpileView {
   return { from, to, width: Math.max(1, Math.ceil(Math.max(1, view.width) * (to - from + 1) / length)) };
 }
 
-/** The chart's lines over the view it shows (`equipment-stockpile-chart`), read as `askedView` widens it, and the
- * stockpile at the hour pointed at, over the catalogue, for tooltips and picks: asked only while one is pointed at. */
 export function useStockpileChart(client: DashboardClient, track: BoundTrack, catalogue: StockpileCatalogueReply | undefined,
   holders: readonly StockpileHolder[], included: readonly string[], lines: readonly StockpileLineRequest[], head: number, active: boolean) {
   const scope = JSON.stringify([track.source.id, track.source.revision, track.branch.id, holders, included, lines]);

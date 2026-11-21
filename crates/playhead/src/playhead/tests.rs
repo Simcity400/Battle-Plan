@@ -27,8 +27,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A run's frames; reads overlapping a closed range wait until it opens, counted while they wait,
-/// and fail if it opened failing. Every read is counted.
 struct Gated {
     bytes: Vec<u8>,
     closed: Mutex<(Option<(u64, u64)>, usize, bool)>,
@@ -46,7 +44,6 @@ impl Gated {
         self.opened.notify_all();
     }
 
-    /// Opens the closed range with every read waiting at it failing.
     fn fail(&self) {
         let mut closed = self.closed.lock().unwrap();
         closed.0 = None;
@@ -54,7 +51,6 @@ impl Gated {
         self.opened.notify_all();
     }
 
-    /// Returns once a read waits at the closed range.
     fn wait_blocked(&self) {
         let mut closed = self.closed.lock().unwrap();
         while closed.1 == 0 {
@@ -108,12 +104,10 @@ fn gated(bytes: Vec<u8>) -> Gated {
     Gated { bytes, closed: Mutex::new((None, 0, false)), opened: Condvar::new(), reads: AtomicUsize::new(0) }
 }
 
-/// Runs of `tables` tables, each `(first hour, hours)`, every table [`busy`]; each run's states.
 fn recording(writing: Writing, tables: usize, runs: &[(i32, u32)]) -> (Arc<Runs>, Vec<Vec<Vec<TableState>>>) {
     recording_of(writing, tables, runs, |at, _, changes| busy(at, changes))
 }
 
-/// [`recording`], each hour of each table written by `hour`.
 fn recording_of(writing: Writing, tables: usize, runs: &[(i32, u32)], hour: impl Fn(u32, usize, &mut TableChanges<'_>)) -> (Arc<Runs>, Vec<Vec<Vec<TableState>>>) {
     let mut pages = Runs { extents: Vec::new(), runs: Vec::new(), kinds: vec![KINDS.to_vec(); tables] };
     let mut states = Vec::new();
@@ -126,12 +120,10 @@ fn recording_of(writing: Writing, tables: usize, runs: &[(i32, u32)], hour: impl
     (Arc::new(pages), states)
 }
 
-/// A step a day, one frame a second, two steps read ahead.
 fn settings() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 24.0, rate: 1.0, ..Settings::default() }
 }
 
-/// A reader's state of one table: its columns of every live row by slot, kept from change sets.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Kept {
     columns: Vec<usize>,
@@ -146,7 +138,6 @@ impl Kept {
         Self { columns: columns.to_vec(), rows, head: lane.head() }
     }
 
-    /// A change set, its columns found by index; a reset names no row.
     fn apply(&mut self, changes: &Changes) {
         for (at, &slot) in changes.deleted().slots().iter().enumerate() {
             assert_eq!(self.rows.remove(&slot).map(|(key, _)| key), Some(changes.deleted().keys().expect("keyed")[at]), "a delete names the row held");
@@ -164,7 +155,6 @@ impl Kept {
         self.head = changes.head();
     }
 
-    /// Its rows by key, as [`rows`] gives the recorder's, of its columns.
     fn by_key(&self) -> BTreeMap<u128, Vec<String>> {
         self.rows.values().map(|(key, cells)| (*key, cells.iter().map(|cell| format!("{:?}", cell.value())).collect())).collect()
     }
@@ -175,10 +165,8 @@ impl Kept {
     }
 }
 
-/// Which reader rebuilt which table, in order.
 type Log = Arc<Mutex<Vec<(u64, usize)>>>;
 
-/// A rebuild of [`Kept`] that logs itself as `tag`.
 fn kept(tag: u64, log: &Log) -> Rebuild {
     let log = Arc::clone(log);
     Arc::new(move |lane: &Lane, columns: &[usize]| {
@@ -191,7 +179,6 @@ fn every(tables: &[usize]) -> Vec<Declared> {
     tables.iter().map(|&table| Declared { table, columns: (0..KINDS.len()).collect(), keyed: true, passing: false, hourly: false }).collect()
 }
 
-/// A step taken, with the states its consumer took from it.
 struct Taken {
     step: Arc<Step>,
     states: BTreeMap<usize, Kept>,
@@ -205,7 +192,6 @@ impl Deref for Taken {
     }
 }
 
-/// [`Consumer::take`], each reset table's state taken with its step.
 fn take(consumer: &mut Consumer, head: i32, out: &mut Vec<Taken>) {
     let mut steps = Vec::new();
     consumer.take(head, &mut steps);
@@ -223,10 +209,6 @@ fn start(pages: &Arc<Runs>, settings: Settings, tables: &[usize], log: &Log) -> 
     (playhead, consumer)
 }
 
-/// Plays as frames do: the head moves `every` hours a frame from `from` to `to`, each frame waits
-/// until the playhead has built through its head and takes the steps it reaches (a catch-up step
-/// ends past the head of the frame that asked for it, and a later frame takes it); at the end,
-/// the steps through `to`. Every step taken, in order.
 fn play(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every: i32, taken: &mut Vec<Taken>) {
     let mut head = from;
     loop {
@@ -247,8 +229,6 @@ fn play(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every:
     });
 }
 
-/// Takes steps until every table of the last is at its last hour: a table that stalled is caught
-/// up by a step of no new hours once its parts come.
 fn caught_up(playhead: &Playhead, consumer: &mut Consumer, taken: &mut Vec<Taken>) {
     playhead.wait_until(|| {
         take(consumer, i32::MAX, taken);
@@ -256,8 +236,6 @@ fn caught_up(playhead: &Playhead, consumer: &mut Consumer, taken: &mut Vec<Taken
     });
 }
 
-/// A reader's states kept from the steps it took alone: swapped in at a reset where it was given
-/// one, kept otherwise.
 fn mirrors(steps: &[Taken], mut each: impl FnMut(&Step, &BTreeMap<usize, Kept>)) {
     let mut held: BTreeMap<usize, Kept> = BTreeMap::new();
     for step in steps {
@@ -275,9 +253,6 @@ fn no_rows(step: &Step) -> bool {
     step.tables().iter().filter(|changes| changes.reset()).all(|changes| changes.rows() == 0 && changes.cells() == 0 && changes.texts().is_empty())
 }
 
-/// A part that is not read when its hours are stepped stops its table there: the step records
-/// the table short and stalled and the frame goes on; once read, the next step takes it up, and
-/// a mirror kept from the steps equals the recorder's state wherever the table is not short.
 #[test]
 fn a_missing_part_stalls_its_table_and_the_next_step_takes_it_up() {
     let (pages, states) = recording(Writing { cap: 64, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
@@ -310,8 +285,6 @@ fn a_missing_part_stalls_its_table_and_the_next_step_takes_it_up() {
     assert!(playhead.held().2.stalls > 0);
 }
 
-/// A seek abandons every step built: none of the old epoch is taken after it, and the first step
-/// taken is a reset of every table at the hour sought, whose state equals the recorder's there.
 #[test]
 fn a_seek_abandons_the_ring() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -321,7 +294,6 @@ fn a_seek_abandons_the_ring() {
     play(&playhead, &mut consumer, 0, 96, 24, &mut taken);
     let old = taken.last().unwrap().epoch();
     playhead.advance(400);
-    // The ring holds its size of steps the consumer has not taken: the head at 400 builds no more.
     playhead.wait_until(|| playhead.kept() == 3);
     playhead.seek(1000);
     taken.clear();
@@ -344,9 +316,6 @@ fn a_seek_abandons_the_ring() {
     });
 }
 
-/// A read that fails for a seek a newer seek abandoned is dropped with it: the newer seek, into an
-/// intact run, lands its reset and the playhead goes on. Before, the abandoned read's error was
-/// raised before its epoch was looked at, and the playhead stopped for good.
 #[test]
 fn a_failed_read_for_an_abandoned_seek_does_not_stop_the_playhead() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK)]);
@@ -376,7 +345,6 @@ fn a_failed_read_for_an_abandoned_seek_does_not_stop_the_playhead() {
     });
 }
 
-/// Holds the stepper in its hook once armed, until let go.
 #[derive(Default)]
 struct Hold {
     state: Mutex<(bool, bool)>,
@@ -414,10 +382,6 @@ impl Hold {
     }
 }
 
-/// A table's last reader stops declaring it while its join's read fails: the failure reaches the
-/// stepper with the declaration, and the join is let go with the table, unlooked at. The other
-/// reader plays on. Before, the stepper took the failure before applying the declaration, and the
-/// playhead stopped for good.
 #[test]
 fn a_failed_join_of_a_table_no_reader_declares_any_more_does_not_stop_the_playhead() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -434,7 +398,6 @@ fn a_failed_join_of_a_table_no_reader_declares_any_more_does_not_stop_the_playhe
     pages.extents[0].close(0, u64::MAX);
     let b = playhead.declare(every(&[1]), Some(kept(1, &log))).unwrap();
     pages.extents[0].wait_blocked();
-    // The stepper is held in the hook of its next step, so the declaration and the failure reach it together.
     hold.arm();
     playhead.advance(124);
     take(&mut first.consumer, 124, &mut first.taken);
@@ -453,8 +416,6 @@ fn a_failed_join_of_a_table_no_reader_declares_any_more_does_not_stop_the_playhe
     follows(&first.taken, 0, &states[0][0]);
 }
 
-/// A seek runs each reader's rebuild once for each table it declared and for no other, on the
-/// lane sought; the reset step names no row, and each reader takes its own states and no other's.
 #[test]
 fn a_seek_runs_each_readers_rebuild_once_for_each_table_it_declared() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 3, &[(0, 2 * BLOCK)]);
@@ -492,17 +453,12 @@ fn a_seek_runs_each_readers_rebuild_once_for_each_table_it_declared() {
     }
 }
 
-/// What a change set says of `columns` (its rows, their cells, its head), to compare two byte for
-/// byte.
 fn said(changes: &Changes, columns: &[usize]) -> String {
     let written: Vec<String> = changes.columns().iter().filter(|written| columns.contains(&written.column())).map(|written| format!("{}: {:?}", written.column(), written.values().map(|(slot, value)| (slot, owned(value))).collect::<Vec<_>>())).collect();
     let (gone, born) = (changes.deleted(), changes.inserted());
     format!("{} {:?} {} {:?} {:?} {:?} {:?} {:?} {written:?}", changes.reset(), changes.head(), changes.short(), gone.slots(), gone.keys(), born.slots(), born.keys(), changes.renumber())
 }
 
-/// Every step after the first (a seek's reset) holds hours, follows the one before, and gives
-/// `table` of `columns` as a lane of those columns stepped alone over the same hours does, byte
-/// for byte: no reset and no step it was not built with.
 fn as_stepped_alone(pages: &Arc<Runs>, steps: &[Taken], table: usize, columns: &[usize]) {
     let mut lane = Lane::new(Arc::clone(pages) as Arc<dyn Pages>, 0, table, columns, true).unwrap();
     lane.seek(steps[0].last()).unwrap();
@@ -516,13 +472,6 @@ fn as_stepped_alone(pages: &Arc<Runs>, steps: &[Taken], table: usize, columns: &
     }
 }
 
-/// While playing, a reader that adds columns to a table another reader keeps gets the table at
-/// once, with its own state alone rebuilt, at the hour its consumer has, from a lane of the new
-/// union sought from the file; the lane it replaces steps on meanwhile. The other reader sees none
-/// of it: no reset, no step of no hours, and its columns' cells in every step byte for byte what a
-/// lane of them stepped alone gives, so the state it keeps from the steps alone stays equal. Once
-/// landed, the steps carry the union's columns. Before, the other reader took a reset of the
-/// table, and the new lane joined at the newest step built.
 #[test]
 fn a_reader_adding_columns_gets_its_table_at_once_and_another_reader_of_it_sees_nothing() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK)]);
@@ -566,11 +515,6 @@ fn a_reader_adding_columns_gets_its_table_at_once_and_another_reader_of_it_sees_
     assert_eq!(playhead.held().2.join_held_ns, 0);
 }
 
-/// Two runs as two pieces with hours between them: steps follow each other hour by hour, the
-/// hours between are gap steps holding no table, and the second piece starts with a step of its
-/// first hour carrying each table's crossing — the rows gone, the rows new and the cells that
-/// differ between the two sessions' states — no reset, no reader's state, with a mirror kept from
-/// the steps alone equal to the recorder's state of the piece it is in on both sides of it.
 #[test]
 fn two_pieces_join_with_a_crossing_and_report_the_gap_between() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
@@ -609,9 +553,6 @@ fn two_pieces_join_with_a_crossing_and_report_the_gap_between() {
     assert_eq!(taken.last().unwrap().last(), playhead.timeline().last());
 }
 
-/// A text cell that stands across a boundary with the same string id is written by the crossing,
-/// with the next run's spelling of it: each run numbers its strings anew, so the same id may spell
-/// another text. Before, the cell was left as it stood and readers kept the old run's text.
 #[test]
 fn a_crossing_writes_a_text_cell_whose_id_the_next_run_spells_anew() {
     let named = |at: u32, _: usize, changes: &mut TableChanges<'_>| {
@@ -635,13 +576,6 @@ fn a_crossing_writes_a_text_cell_whose_id_the_next_run_spells_anew() {
     assert!(changes.texts().iter().any(|(id, text)| id == 0 && text == &b"text 1000/0"[..]), "and named as the run after it spells it");
 }
 
-/// A seek is still a jump, wherever it lands: inside a piece, on a boundary's first hour, or back
-/// in the piece before one already crossed, its first step is a whole reset of every table with
-/// every reader's state, and that state is the recorder's of the hour sought. The hours after a
-/// seek backwards cross the boundary again as a step, and a state kept from the steps alone stands
-/// at the recorder's at the boundary's own first hour (what a pause there shows). A pause's own
-/// exactness is the seek it asks for
-/// ([`kept_exact_a_pause_past_the_steps_built_resets_at_the_head_and_builds_nothing_past_it`]).
 #[test]
 fn a_seek_across_a_boundary_resets_whole_and_the_hours_after_it_cross_again() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
@@ -682,7 +616,6 @@ fn a_seek_across_a_boundary_resets_whole_and_the_hours_after_it_cross_again() {
     assert_eq!(playhead.held().2.pieces_crossed, 1, "the hours after the seek back crossed the boundary; no seek of them did");
 }
 
-/// What a state holds when dropped: the thread it was dropped on.
 struct Dropped(Arc<(Mutex<Vec<String>>, Condvar)>);
 
 impl Drop for Dropped {
@@ -693,8 +626,6 @@ impl Drop for Dropped {
     }
 }
 
-/// A state is taken once, by its own reader's consumer only; a state no consumer takes (its
-/// reader's consumer gone) is dropped with its step on a fetcher, off the frame.
 #[test]
 fn a_rebuilt_state_is_taken_once_by_its_reader_and_one_never_taken_is_dropped_on_a_fetcher() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
@@ -730,9 +661,6 @@ fn a_rebuilt_state_is_taken_once_by_its_reader_and_one_never_taken_is_dropped_on
     assert!(dropped[0].starts_with("playhead fetch"), "dropped on {}", dropped[0]);
 }
 
-/// The clock holds the head at a seek's hour however long the seek takes, until a consumer takes
-/// its reset, and runs from that moment; a seek during a seek replaces it, the head holds at the
-/// newer hour, and the first reset taken is the newer one's.
 #[test]
 fn the_clock_holds_at_a_seek_until_its_reset_is_taken_and_a_newer_seek_replaces_it() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -760,10 +688,6 @@ fn the_clock_holds_at_a_seek_until_its_reset_is_taken_and_a_newer_seek_replaces_
     assert!(head >= 900 + 240 - 1 && f64::from(head) <= 900.0 + 240.0 + slack + 1.0, "runs from the moment its reset is taken: {head}");
 }
 
-/// What a publication is prepared for: the hour the head will stand at by the time it is drawn.
-/// Playing, that is the making ahead of the head and follows the speed asked for; a pause, a
-/// speed change, a seek and a seek backwards (a reversal) are answered at once, because nothing
-/// is prepared past a head that stands still.
 #[test]
 fn a_publication_is_prepared_for_the_hour_the_head_will_reach_and_for_nothing_past_a_still_head() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -792,9 +716,6 @@ fn a_publication_is_prepared_for_the_hour_the_head_will_reach_and_for_nothing_pa
     assert_eq!(playhead.head_from(playhead.timeline().last(), making), None, "nothing past the recording's last hour");
 }
 
-/// The clock runs from the frame that shows a seek's reset: a frame that asks the head for its
-/// time and takes the reset shows the hour sought, and a frame one step later shows one step
-/// later, not a step less the moment the take came after the asking.
 #[test]
 fn the_clock_runs_from_the_frame_that_shows_the_reset() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -815,13 +736,6 @@ fn the_clock_runs_from_the_frame_that_shows_the_reset() {
     assert_eq!(playhead.head(frame + Duration::from_secs(10)), 1140);
 }
 
-/// A head run far ahead of every reader (a frame driving its head to the newest step, a clock
-/// running while the only map composes) does not run the stepper with it: the ring holds no more
-/// than its size of steps nobody has taken. With three built and none taken, the head goes to
-/// 600; once one step is taken, the stepper builds the one step that leaves three untaken, to the
-/// head, and no more. Before, room was counted past the head alone: the head at 600 let the
-/// stepper build to 600 and two steps past it with nothing taken, and a head driven to the
-/// newest step chased the stepper to the recording's end.
 #[test]
 fn a_head_run_ahead_of_every_reader_builds_no_more_than_the_ring_past_what_was_taken() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -839,12 +753,6 @@ fn a_head_run_ahead_of_every_reader_builds_no_more_than_the_ring_past_what_was_t
     assert_eq!(playhead.kept(), 3);
 }
 
-/// While nobody takes, the ring builds its size past what was taken; and steps given back are
-/// built again rather than made anew. The whole file is read ahead (no step of no new hours), and
-/// each frame moves the head a step, takes the step it reached and lets it go, then waits for the
-/// ring to fill again, so the order of building and taking is fixed. At most the ring's three steps
-/// not taken, the three a take holds and the one being built are alive at once, and a buffer is
-/// made only when none is free: seven carry every step of the run.
 #[test]
 fn the_ring_holds_its_size_and_recycles_its_steps() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -858,8 +766,6 @@ fn the_ring_holds_its_size_and_recycles_its_steps() {
     let mut made = std::collections::BTreeSet::new();
     let mut steps = 0;
     let mut head = 0;
-    // Inside the first block (a step ends at a block's end, hour 719), the ring three steps past
-    // every hour taken.
     while head + 4 * 24 < BLOCK as i32 {
         head += 24;
         playhead.advance(head);
@@ -874,9 +780,6 @@ fn the_ring_holds_its_size_and_recycles_its_steps() {
     assert!(made.len() <= 7, "{} buffers carried {steps} steps; seven are alive at most", made.len());
 }
 
-/// A second consumer sees every step once, in order, the same step and not a copy. Both take
-/// every step once the stepper has none left to build: the recording's last hour reached with no
-/// table short, so no catch-up step of no new hours can follow.
 #[test]
 fn a_second_consumer_sees_every_step_once() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
@@ -910,8 +813,6 @@ fn a_second_consumer_sees_every_step_once() {
     assert!(seen.windows(2).all(|pair| pair[1].seq() == pair[0].seq() + 1));
 }
 
-/// The head past the timeline's last hour is its last hour: the last step ends there and no step
-/// is built after it.
 #[test]
 fn the_head_past_the_end_stops_at_the_last_hour() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK + 100)]);
@@ -932,7 +833,6 @@ fn the_head_past_the_end_stops_at_the_last_hour() {
     assert_eq!(taken.last().unwrap().table(0).unwrap().head(), Some(last));
 }
 
-/// The hook runs on every step, the reset included, with the lanes at the step's end.
 #[test]
 fn the_hook_sees_every_step_with_the_lanes_at_its_end() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
@@ -960,7 +860,6 @@ fn the_hook_sees_every_step_with_the_lanes_at_its_end() {
     }
 }
 
-/// One run of four blocks of a log of [`LOG`] (table 0), several parts a block.
 fn log_recording() -> Arc<Runs> {
     let (bytes, run, _) = record_log(Writing { cap: 48, ..Writing::at(3) }, 0, 4 * BLOCK);
     Arc::new(Runs { extents: vec![gated(bytes)], runs: vec![run], kinds: vec![LOG.to_vec()] })
@@ -970,8 +869,6 @@ fn log_declared(passing: bool) -> Vec<Declared> {
     vec![Declared { table: 0, columns: (0..LOG.len()).collect(), keyed: true, passing, hourly: false }]
 }
 
-/// Plays frames `every` hours apart from `from` to `to`, each waiting until the playhead has built
-/// through its head; every step taken, in order, through the last that brings the table to `to`.
 fn play_steps(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every: i32, taken: &mut Vec<Arc<Step>>) {
     let mut head = from;
     loop {
@@ -991,10 +888,6 @@ fn play_steps(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, 
     });
 }
 
-/// A seek abandons a log lane's ring like any lane's: nothing of the old epoch is taken after
-/// it; the first step taken is a reset at the hour sought carrying the log's count and rows
-/// listed there and no row, the reader's rebuild takes the live set from the lane, and every step
-/// after hands over what the log's span gives, through hours where the table is short.
 #[test]
 fn a_seek_abandons_a_log_lanes_ring() {
     let pages = log_recording();
@@ -1009,7 +902,6 @@ fn a_seek_abandons_a_log_lanes_ring() {
     play_steps(&playhead, &mut consumer, 0, 96, 24, &mut taken);
     let old = taken.last().unwrap().epoch();
     playhead.advance(400);
-    // The ring holds its size of steps the consumer has not taken: the head at 400 builds no more.
     playhead.wait_until(|| playhead.kept() == 3);
     playhead.seek(1000);
     taken.clear();
@@ -1048,9 +940,6 @@ fn a_seek_abandons_a_log_lanes_ring() {
     assert!(head >= 1500, "the steps reach the last frame's head: {head}");
 }
 
-/// The playhead reads a log table through its log lane alone: the lanes the hook sees at every
-/// step, the reset included, are log lanes that never opened a restore or cursor of a table
-/// holding state.
 #[test]
 fn a_log_is_never_read_with_the_state_cursor() {
     let pages = log_recording();
@@ -1071,8 +960,6 @@ fn a_log_is_never_read_with_the_state_cursor() {
     assert!(seen.iter().all(|&(_, log, state_reads, changes)| log && state_reads == 0 && changes), "{seen:?}");
 }
 
-/// Declaring a log table passing is refused by name, by a new reader and by one changing its
-/// tables.
 #[test]
 fn declaring_a_log_passing_is_refused_by_name() {
     let pages = log_recording();
@@ -1084,8 +971,6 @@ fn declaring_a_log_passing_is_refused_by_name() {
     assert!(refused.contains("Table 0 is a log"), "{refused}");
 }
 
-/// Rows asked of the playhead by ordinal are read on a fetcher and answered owned, equal to the
-/// rows read directly; an ordinal the log never appended is refused by name in the answer.
 #[test]
 fn listed_rows_are_read_on_a_fetcher_by_ordinal() {
     let pages = log_recording();
@@ -1102,7 +987,6 @@ fn listed_rows_are_read_on_a_fetcher_by_ordinal() {
     assert!(refused.contains("holds no row"), "{refused}");
 }
 
-/// One reader's consumer and the steps it took.
 struct Side {
     consumer: Consumer,
     taken: Vec<Taken>,
@@ -1113,26 +997,20 @@ impl Side {
         Self { consumer: playhead.consumer(reader), taken: Vec::new() }
     }
 
-    /// The first step that carried this reader's state of `table`.
     fn joined(&self, table: usize) -> Option<&Taken> {
         self.taken.iter().find(|step| step.states.contains_key(&table))
     }
 }
 
-/// [`settings`] reading the whole run ahead at a seek or a join: no step waits on a read, so
-/// every table is at each step's last hour.
 fn whole_ahead() -> Settings {
     Settings { ahead: 100, ..settings() }
 }
 
-/// Frames as [`play`] plays them, every side taking each frame's steps (the ring moves only once
-/// every consumer took a step).
 fn frames(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
     let mut head = from;
     loop {
         playhead.advance(head);
         playhead.wait_until(|| {
-            // Built through the head before the takes, so each takes the step that reaches it.
             let built = playhead.newest().is_some_and(|newest| newest >= head);
             for side in sides.iter_mut() {
                 take(&mut side.consumer, head, &mut side.taken);
@@ -1146,7 +1024,6 @@ fn frames(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
     }
 }
 
-/// Waits, the head held at `head`, until `side` took its state of every table of `tables`.
 fn arrive(playhead: &Playhead, side: &mut Side, head: i32, tables: &[usize]) {
     playhead.advance(head);
     playhead.wait_until(|| {
@@ -1155,11 +1032,6 @@ fn arrive(playhead: &Playhead, side: &mut Side, head: i32, tables: &[usize]) {
     });
 }
 
-/// From the step that carried its state on, `table` as `side` keeps it from the steps alone:
-/// every step of hours past it holds the table (a step of none may join others alone), each the
-/// hours after the one before and none twice, with the table at the step's last hour, equal to
-/// the recorder's state there. A step of no hours holding it (a landing's catch-up to the hours
-/// the frames passed) brings it no further than the hour taken.
 fn follows(taken: &[Taken], table: usize, states: &[TableState]) {
     let joined = taken.iter().position(|step| step.states.contains_key(&table)).expect("its state");
     let mut kept = taken[joined].states[&table].clone();
@@ -1182,11 +1054,6 @@ fn follows(taken: &[Taken], table: usize, states: &[TableState]) {
     }
 }
 
-/// A table declared while the head is held arrives at once at the last hour a frame there took,
-/// with its reader's rebuilt state, before the steps already built past the head and without the
-/// head moving; no other table is sought again. Played on, the steps built before it arrived and
-/// after carry the table hour after hour, none twice and none missing, and the hook saw its reset
-/// with its lane there and each of those steps' change sets with the lane at their end.
 #[test]
 fn a_table_declared_while_paused_arrives_at_the_heads_hour_and_play_follows_it_hour_by_hour() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -1230,11 +1097,6 @@ fn a_table_declared_while_paused_arrives_at_the_heads_hour_and_play_follows_it_h
     }
 }
 
-/// A consumer looks at the steps built past the head and takes none by looking: what it is lent
-/// is, in order, what its takes then bring, the same steps. Paused, a table another reader
-/// declares lands at the head while the steps lent are still held: the join is not refused for
-/// them, the held steps are left as they were (no table 1), and the steps taken past the join
-/// carry the new table hour after hour.
 #[test]
 fn a_consumer_looks_ahead_without_taking_and_a_join_at_the_head_lands_past_steps_it_holds() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -1254,7 +1116,6 @@ fn a_consumer_looks_ahead_without_taking_and_a_join_at_the_head_lands_past_steps
     let mut again = Vec::new();
     first.consumer.ahead(&mut again);
     assert!(lent.iter().zip(&again).all(|(a, b)| Arc::ptr_eq(a, b)) && again.len() == lent.len(), "looking twice lends the same steps: looking takes none");
-    // A step of no hours (a stalled table's catch-up) may be lent among them; the hours lent are the rest.
     let spans: Vec<(i32, i32)> = lent.iter().filter(|step| step.first() <= step.last()).map(|step| (step.first(), step.last())).collect();
     let b = playhead.declare(every(&[1]), Some(kept(1, &log))).unwrap();
     let mut second = Side::new(&playhead, b);
@@ -1269,9 +1130,6 @@ fn a_consumer_looks_ahead_without_taking_and_a_join_at_the_head_lands_past_steps
     assert_eq!(taken, spans, "the first reader takes the hours it was lent, in order");
 }
 
-/// A declaration that joins no table, made with the ring full and the head held (no step coming),
-/// is shown to the hook at once in a step of no hours after the newest, the lanes there: a reader of
-/// a table already stepped, or of none, is not left waiting for the clock to move.
 #[test]
 fn a_declaration_that_joins_no_table_is_shown_to_the_hook_at_once_while_paused() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -1321,9 +1179,6 @@ fn a_paused_follow_builds_its_lead_and_seeds_a_new_query_at_the_paused_hour() {
     assert_eq!(playhead.head(Instant::now()), 100);
 }
 
-/// Several tables declared at once while paused all arrive at the hour taken, in one step: two
-/// new to the playhead and one another reader keeps, whose new columns re-seek it. Only the declaring
-/// reader rebuilds; the keeper's state, kept from the steps alone, stays equal through play.
 #[test]
 fn several_tables_declared_at_once_while_paused_arrive_together_and_a_keeper_keeps_its_state() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 3, &[(0, 2 * BLOCK)]);
@@ -1367,8 +1222,6 @@ fn several_tables_declared_at_once_while_paused_arrive_together_and_a_keeper_kee
     assert_eq!(kept.head, keeper.taken.last().unwrap().table(0).unwrap().head());
 }
 
-/// A table declared while a seek runs arrives at the hour sought, with the seek's reset or just
-/// after it, and play follows it.
 #[test]
 fn a_table_declared_during_a_seek_arrives_at_the_hour_sought() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -1393,8 +1246,6 @@ fn a_table_declared_during_a_seek_arrives_at_the_hour_sought() {
     assert!(first.taken.iter().any(|step| step.reset() && step.last() == 1000));
 }
 
-/// A table declared while paused and not arrived when a seek comes arrives with the seek, at the
-/// hour sought: nothing of the abandoned join is taken and its reader's rebuild of it runs once.
 #[test]
 fn a_table_declared_while_paused_then_a_seek_before_it_arrives_comes_with_the_seek() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -1424,16 +1275,8 @@ fn a_table_declared_while_paused_then_a_seek_before_it_arrives_comes_with_the_se
     follows(&second.taken, 1, &states[0][1]);
 }
 
-/// Two consumers and a head moving a step a frame; one stands at hour 0 and takes nothing. The other gets every step at
-/// its hour all the same: the stepper builds the ring's size past its head whatever the late one
-/// has not taken. The steps it passed wait for the late one, shared, until they hold more bytes
-/// than the lanes' cells, the state they change; then it lands at the newest step from memory, no
-/// join made, and the ring lets them go: it never keeps more for the late one than that state and
-/// the step that passed it. Taken, the landing holds its state equal to the recorder's at its hour,
-/// and the steps after carry it on exactly. Before, every step was kept for it however far behind.
 #[test]
 fn a_consumer_late_to_take_holds_neither_the_stepper_nor_another_consumer_and_costs_at_most_the_state() {
-    // 512 rows rewritten every hour: the steps the late one misses soon outweigh the state.
     let wide = |at: u32, _: usize, changes: &mut TableChanges<'_>| {
         for slot in 0..512_u32 {
             if at == 0 {
@@ -1503,13 +1346,6 @@ fn a_consumer_late_to_take_holds_neither_the_stepper_nor_another_consumer_and_co
     assert!(seen.windows(2).all(|pair| pair[1].seq() == pair[0].seq() + 1 && pair[1].first() == pair[0].last() + 1), "the early one took every step as built");
 }
 
-/// A reader of a log far behind holds no step past the state either: once its steps outweigh the
-/// lanes' cells it is parked, its steps let go, and its log is read from the file from the hour it
-/// stood at, then stepped in memory to where the other reader stands (the head standing there
-/// meanwhile). Taken, those steps hand over every event of the hours it skipped as a fresh read of
-/// the log gives them, the log's count with them, and the steps built after carry it on, none
-/// twice. The ring never keeps more for it than the state and the step that passed it. Before, a
-/// log reader was never landed: its steps waited for it without limit.
 #[test]
 fn a_log_reader_far_behind_is_caught_up_from_the_file_with_every_row_it_skipped() {
     let pages = log_recording();
@@ -1546,7 +1382,6 @@ fn a_log_reader_far_behind_is_caught_up_from_the_file_with_every_row_it_skipped(
         let ((kept, largest), state) = (playhead.kept_bytes(), playhead.held().0.held.cells);
         assert!(state == 0 || kept <= state + largest, "at hour {head} the ring keeps {kept} bytes, past the lanes' cells of {state} and a step of {largest}");
     }
-    // The head stands while the late one's log is read from the file and caught up.
     playhead.wait_until(|| playhead.held().2.caught_up >= 1);
     let counters = playhead.held().2;
     assert!(counters.landed_behind >= 1 && counters.landings == 0, "caught up from the file, not landed from memory: {counters:?}");
@@ -1577,15 +1412,6 @@ fn a_log_reader_far_behind_is_caught_up_from_the_file_with_every_row_it_skipped(
     assert!(reached >= head, "the late one reaches the other's head: {reached} of {head}");
 }
 
-/// A reader of a log far behind is caught up from the file while the other reader stands at an
-/// hour where the log's lane stood short (no part had come when its steps were built). The catch-up
-/// stops the reader's log where the lane stood there, so the steps after (the one that catches the
-/// lane up among them) carry it on, and every event comes once, as a fresh read gives it: with
-/// steps built past that hour (the head ran on), and with none (it stood there). Before, the
-/// catch-up waited for the lane to be whole at that hour, which steps built past it never bring
-/// back to it: the rows worker stood hundreds of hours behind the asked hour in the war24 equality
-/// runs. And a reader landed short stood as if whole, so its next catch-up read past the hours its
-/// log lacked.
 #[test]
 fn a_reader_caught_up_where_its_lane_stood_short_lands_with_the_head_standing_there() {
     caught_up_where_its_lane_stood_short(true);
@@ -1609,8 +1435,6 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
         !taken.is_empty()
     });
     late.advance(0);
-    // From here no read of the file ends until the gate opens: the steps past what the seek read
-    // stand short, and the late one's catch-up read waits.
     pages.extents[0].close(0, u64::MAX);
     let mut seen: Vec<Arc<Step>> = Vec::new();
     let frame = |early: &mut Consumer, head: i32, seen: &mut Vec<Arc<Step>>| {
@@ -1626,8 +1450,6 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
         frame(&mut early, head, &mut seen);
     }
     assert!(seen.last().and_then(|step| step.table(0)).and_then(Changes::head).is_some_and(|head| head < stand), "the log's lane stands short at {stand}");
-    // Its head runs on while it takes no further: steps are built past 144, short too, so the one
-    // that catches the lane up, once the gate opens, ends past 144.
     if built_past {
         early.advance(stand + 96);
         playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= stand + 96));
@@ -1635,7 +1457,6 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
     playhead.wait_until(|| playhead.held().2.landed_behind >= 1);
     assert_eq!(playhead.held().2.caught_up, 0, "its read waits at the gate");
     pages.extents[0].open();
-    // The other stands at 144, where the lane stood short.
     playhead.wait_until(|| playhead.held().2.caught_up >= 1);
     let mut head = stand;
     while head < stand + 240 {
@@ -1663,10 +1484,6 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
     assert!(reached >= head, "the late one reaches the head: {reached} of {head}");
 }
 
-/// A seek's tables are prepared at once on as many threads as the machine has, not by the stepper
-/// and its fetcher alone: with every read of the file held, as many tables wait in their restore
-/// at once as there are threads for them, and the seek says how many prepared its tables. Before,
-/// at most the stepper, its helpers and the fetchers prepared them: here two.
 #[test]
 fn a_seek_prepares_its_tables_on_threads_lent_to_it() {
     let tables = 8;
@@ -1696,9 +1513,6 @@ fn a_seek_prepares_its_tables_on_threads_lent_to_it() {
     assert!(sought.threads as usize >= expected, "{} threads prepared the seek's tables", sought.threads);
 }
 
-/// A head held past the newest step (a paused clock, a driven head) is reached by the next step:
-/// it ends at the head, not a step past it, so a consumer held there takes it. With one step of
-/// ring and an hour a step, the head is moved five hours on while the ring is full, then held.
 #[test]
 fn a_head_held_past_the_newest_step_is_reached_by_the_next_step() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
@@ -1723,10 +1537,6 @@ fn a_head_held_past_the_newest_step_is_reached_by_the_next_step() {
     mirrors(&taken, |step, held| assert!(held[&0].holds(&states[0][0][step.table(0).unwrap().head().unwrap() as usize])));
 }
 
-/// A table declared while the clock is held joins where the frames are, not where the clock is.
-/// The clock stays paused at the seek's hour while two frame sides advance their own head: one
-/// has taken through hour 120, the other through 96. The join lands at 120, after the step the
-/// second has still to take, and arrives there within a few seconds.
 #[test]
 fn a_table_declared_while_the_clock_is_held_joins_where_the_frames_are_not_where_the_clock_is() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -1758,11 +1568,6 @@ fn a_table_declared_while_the_clock_is_held_joins_where_the_frames_are_not_where
     follows(&late.taken, 1, &states[0][1]);
 }
 
-/// While playing, tables a reader retires and declares again come back at the hour its consumer
-/// has, in a step of no hours with its rebuilt states: declared from the hook as the step ending at
-/// hour 264 is built, and again with the ring full. Table 0, which another reader keeps, comes from
-/// a lane of the new union, and the keeper sees no reset of it; table 1, new to the lanes, is
-/// sought alone. Each is followed from there.
 #[test]
 fn a_table_declared_again_while_playing_arrives_at_the_hour_its_consumer_has() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -1770,8 +1575,6 @@ fn a_table_declared_again_while_playing_arrives_at_the_hour_its_consumer_has() {
     let late: Arc<std::sync::OnceLock<(std::sync::Weak<Playhead>, Reader)>> = Arc::default();
     let declared = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (hooked, declaring) = (Arc::clone(&late), Arc::clone(&declared));
-    // It declares once: a declaration that joins nothing is shown to the hook in a step of no
-    // hours at the newest step, which ends at 264 when that is the newest.
     let hook: super::Hook = Box::new(move |step, _| {
         if step.last() == 264
             && !declaring.load(Ordering::Acquire)
@@ -1792,10 +1595,6 @@ fn a_table_declared_again_while_playing_arrives_at_the_hour_its_consumer_has() {
     playhead.redeclare(reader, Vec::new()).unwrap();
     assert!(playhead.newest().unwrap() < 264, "the step the hook declares in is built after this");
     late.set((Arc::downgrade(&playhead), reader)).ok();
-    // The hook declares as the step ending at 264 is built, up to the ring's three steps past the
-    // frames. The frames play on until it has; then the head stands where they are, and the tables
-    // land there once their lanes are read. A head driven on without waiting outruns the reads:
-    // it reached the recording's end before a lane was prepared.
     let retired = side.taken.len();
     let arrived = |side: &Side, table: usize| side.taken[retired..].iter().position(|step| step.states.contains_key(&table)).map(|at| retired + at);
     let mut head = 120;
@@ -1820,8 +1619,6 @@ fn a_table_declared_again_while_playing_arrives_at_the_hour_its_consumer_has() {
         let at = arrived(&side, table).unwrap();
         let joined = &side.taken[at];
         assert_eq!(joined.first(), joined.last() + 1, "table {table}: a step of no hours at the hour taken");
-        // Its state is where its lane was sought; the steps of no hours that come with it bring it
-        // to the hour taken when the frames moved on while it was read.
         let mut whole = joined.states[&table].clone();
         for step in side.taken[at + 1..].iter().take_while(|step| step.first() > step.last()) {
             if let Some(changes) = step.table(table) {
@@ -1860,9 +1657,6 @@ fn a_table_declared_again_while_playing_arrives_at_the_hour_its_consumer_has() {
     });
 }
 
-/// Waits, the head where the frame left it, for the joins' reads to have had their turn: none under
-/// way, or a landing check made since `since` with every join under way read and no read of one
-/// out ([`super::Counters::ripe_checks`]). Fails by name within 50 s.
 fn reads_turn(playhead: &Playhead, since: u64, head: i32) {
     let deadline = Instant::now() + Duration::from_secs(50);
     playhead.wait_until(|| {
@@ -1875,8 +1669,6 @@ fn reads_turn(playhead: &Playhead, since: u64, head: i32) {
     });
 }
 
-/// Waits, the head where the frame left it, for the stepper to have made the join a declaration
-/// asks: its count past `before`. Fails by name within 50 s.
 fn join_made(playhead: &Playhead, before: u64, head: i32) {
     let deadline = Instant::now() + Duration::from_secs(50);
     playhead.wait_until(|| {
@@ -1889,18 +1681,6 @@ fn join_made(playhead: &Playhead, before: u64, head: i32) {
     });
 }
 
-/// A map mode changed and changed back while playing: the head moves a step a frame and never
-/// stands. A reader retires table 0, which another reader keeps two columns of, and declares it
-/// again whole, the frame after which the head moves on while its lane is read. Between frames
-/// the reads have their turn ([`reads_turn`]), so nothing hangs on which thread wins. The table is
-/// back at the hour the declaring consumer had taken when it landed, at most one step past the
-/// hour it was declared at, and taken at most two frames after it: the join's lane is read whole
-/// at the frames' hour when its prepare starts (`whole_ahead`), so no read of it waits on the
-/// head; the turn after the frame that moved the head on lets that read land at the frames' hour
-/// then; the next take brings it. Its state with the steps of no hours that come with it is the
-/// codec's at that hour, and every step after carries the table hour by hour. The keeper sees none
-/// of it: no state, no step of no hours, its columns byte for byte a lane of them stepped alone,
-/// and its rows the codec's at every step.
 #[test]
 fn a_table_retired_and_declared_again_whole_while_the_head_moves_lands_at_the_consumers_hour() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 4 * BLOCK)]);
@@ -1913,7 +1693,6 @@ fn a_table_retired_and_declared_again_whole_while_the_head_moves_lands_at_the_co
     playhead.seek(0);
     frames(&playhead, &mut [&mut kept_side, &mut side], 0, 240);
     let mut head = 240;
-    // One frame: the head a step on, both consumers taking to it, then (with `turn`) the reads'.
     let frame = |kept_side: &mut Side, side: &mut Side, head: &mut i32, turn: bool| {
         let since = playhead.held().2.ripe_checks;
         *head += 24;
@@ -1924,8 +1703,6 @@ fn a_table_retired_and_declared_again_whole_while_the_head_moves_lands_at_the_co
     };
     log.lock().unwrap().clear();
 
-    // Retired: the lane narrows to the keeper's columns, a join of no reader, landed by the turn
-    // after the next frame.
     let joins = playhead.held().2.joins;
     playhead.redeclare(reader, Vec::new()).unwrap();
     join_made(&playhead, joins, head);
@@ -1934,7 +1711,6 @@ fn a_table_retired_and_declared_again_whole_while_the_head_moves_lands_at_the_co
     assert_eq!(counters.joins_open, 0, "the lane narrowed to the keeper's columns had landed by the turn after the frame at hour {head}: {counters:?}");
     frame(&mut kept_side, &mut side, &mut head, true);
 
-    // Declared again whole: the head moves on at once while the lane is read.
     let declared = head;
     let before = side.taken.len();
     let joins = playhead.held().2.joins;
@@ -1976,13 +1752,6 @@ fn a_table_retired_and_declared_again_whole_while_the_head_moves_lands_at_the_co
     });
 }
 
-/// The unit models' case. A reader declared after a seek's reset was taken, the clock playing and
-/// the head standing at the seek's hour (each frame asks it again) while the ring holds its steps
-/// built ahead: the table the lanes hold for the map (owed, landed from memory at the newest step
-/// built, which this head does not reach) is read for the reader at the hour it stands at, and the
-/// table they do not hold is joined there; both arrive at that hour in a step of no hours with the
-/// reader's state there, and follow hour by hour once the head moves; the map sees none of it.
-/// Before, the owed table waited at the newest step built and held the joined one with it.
 #[test]
 fn a_reader_declared_after_a_seek_with_the_head_standing_there_has_its_tables_at_that_hour() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -2000,7 +1769,6 @@ fn a_reader_declared_after_a_seek_with_the_head_standing_there_has_its_tables_at
     let mut late_side = Side::new(&playhead, late);
     let deadline = Instant::now() + Duration::from_secs(50);
     playhead.wait_until(|| {
-        // A frame at the head it stands at, as the map side makes one: the head stands.
         playhead.advance(0);
         std::thread::yield_now();
         take(&mut map_side.consumer, 0, &mut map_side.taken);
@@ -2027,13 +1795,6 @@ fn a_reader_declared_after_a_seek_with_the_head_standing_there_has_its_tables_at
     assert!(log.lock().unwrap().iter().all(|&(tag, _)| tag == 1), "only the late reader rebuilds");
 }
 
-/// Case 1, the head moving. A table declared again (the reader retired it while another kept it
-/// whole, so the lanes hold it as the reader reads it) while the head moves a step a frame, each
-/// frame a new head: it comes from memory, in a step of no hours at the newest step built, which
-/// the consumer takes when it takes that step, within a step of the newest one at the declaration.
-/// No read is made for it (no join, and the file read no more), the stepper holds no step
-/// (`join_holds` zero), and the other reader takes a step every frame throughout. Then the table
-/// follows hour by hour, and the other reader's columns are byte for byte a lane stepped alone.
 #[test]
 fn a_table_declared_again_with_the_head_moving_lands_from_memory_at_the_newest_step_with_no_read() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -2046,10 +1807,7 @@ fn a_table_declared_again_with_the_head_moving_lands_from_memory_at_the_newest_s
     playhead.seek(0);
     frames(&playhead, &mut [&mut kept_side, &mut side], 0, 120);
     playhead.redeclare(reader, Vec::new()).unwrap();
-    // Every frame a new head: a head asked again stands, and a standing head is read for (case 2).
     frames(&playhead, &mut [&mut kept_side, &mut side], 144, 168);
-    // The ring full, the stepper builds nothing more until the head moves: the newest step at the
-    // declaration is the one read below, not one built while the test reads it.
     playhead.wait_until(|| playhead.ring_len() == 3);
     let (joins, reads) = (playhead.held().2.joins, pages.extents[0].reads.load(Ordering::Relaxed));
     let before = side.taken.len();
@@ -2082,13 +1840,6 @@ fn a_table_declared_again_with_the_head_moving_lands_from_memory_at_the_newest_s
     assert!(kept_side.taken.iter().skip(1).all(|step| step.states.is_empty()), "the other reader is given no state");
 }
 
-/// Case 2 met, then left. A table declared again while the head stands at 168 (each frame asks it
-/// again), the ring full past it: its landing from memory at the newest step built lies past the
-/// head, so a read is made for the reader at the hour it stands at. That read waits at the file
-/// (the test's gate) while the head moves on; the consumer takes the landing from memory when it
-/// takes the newest step, as a moving head does, and the read, unneeded, is let go: its answer,
-/// once the gate opens, is dropped (`standing_dropped`). The table comes once, whole, then hour
-/// by hour; no step is held.
 #[test]
 fn a_table_declared_again_while_the_head_stands_then_moves_takes_the_landing_from_memory_and_drops_the_read() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -2103,8 +1854,6 @@ fn a_table_declared_again_while_the_head_stands_then_moves_takes_the_landing_fro
     playhead.redeclare(reader, Vec::new()).unwrap();
     frames(&playhead, &mut [&mut kept_side, &mut side], 120, 168);
     playhead.wait_until(|| playhead.ring_len() == 3);
-    // The whole run was read at the seek: from here only a read made for the table reads the file,
-    // and it waits at the gate.
     pages.extents[0].close(0, u64::MAX);
     let (reads, dropped) = (playhead.held().2.standing_reads, playhead.held().2.standing_dropped);
     let before = side.taken.len();
@@ -2147,13 +1896,6 @@ fn a_table_declared_again_while_the_head_stands_then_moves_takes_the_landing_fro
     assert!(kept_side.taken.iter().skip(1).all(|step| step.states.is_empty()), "the other reader is given no state");
 }
 
-/// One reader stands while another steps on at the clock's pace. A table the standing reader
-/// declares again, which the lanes hold for the other, lands from memory at the newest step, past
-/// where it stands; a frame of it standing reads the table from the file at its own hour and hands
-/// it a reset there, before the steps it still holds, which then carry the table on hour by hour.
-/// It waits on no other reader, and no join is made. Before, the read was made only while the
-/// furthest head stood short of the landing, and landed where the furthest reader stood: a reader
-/// standing beside one that stepped on never got it (the map's text beside the dashboard's follow).
 #[test]
 fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_hour() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -2165,12 +1907,10 @@ fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_
     playhead.play(24.0);
     playhead.seek(0);
     frames(&playhead, &mut [&mut fast, &mut slow], 0, 96);
-    // The ring full past 96 first, so the landing from memory lies past where the reader stands.
     playhead.wait_until(|| playhead.ring_len() == whole_ahead().ring);
     let joins = playhead.held().2.joins;
     playhead.redeclare(standing, every(&[0, 1])).unwrap();
     let before = slow.taken.len();
-    // The other steps on ten frames past it, then stands there, still ahead; the reader at 96 stands.
     let mut head = 96;
     let stand = |slow: &mut Side| {
         slow.consumer.advance(96);
@@ -2199,7 +1939,6 @@ fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_
     assert!(slow.taken[at].states[&1].holds(&states[0][1][96]), "table 1 at 96 is the recorder's");
     let counters = playhead.held().2;
     assert!(counters.standing_reads >= 1 && counters.joins == joins, "read for the standing reader from the file, no join: {counters:?}");
-    // Let go, it takes the steps it held: they carry table 1 on from 97.
     let mut at_hour = 96;
     while at_hour < head {
         at_hour = (at_hour + 24).min(head);
@@ -2213,8 +1952,6 @@ fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_
     assert!(slow.taken[at..].iter().filter(|step| step.states.contains_key(&1)).count() == 1, "the table came once");
 }
 
-/// A table declared while playing with the head on the recording's last hour, where no step of
-/// hours is built any more, still arrives: as a reset in a step of no hours, at that hour.
 #[test]
 fn a_table_declared_at_the_recordings_end_while_playing_arrives_in_a_step_of_no_hours() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK)]);
@@ -2245,19 +1982,6 @@ fn a_table_declared_at_the_recordings_end_while_playing_arrives_in_a_step_of_no_
     assert!(joined.states[&1].holds(&states[0][1][last as usize]));
 }
 
-/// A table a reader drops and declares again, back to back, so the stepper never applies the
-/// declaration between (a hover closing and the next opening, a layer hidden and shown in one
-/// frame), both declared from the hook as a step is built: once with the stepper between steps,
-/// once with it ahead by the whole ring. The consumer may have let its own state go at the drop,
-/// so the table comes again as a reset. It is given from memory at the newest step built; the head
-/// stands from the declaration on (each frame asks it again), short of that step, so the table is
-/// read at the hour it stands at and lands there when the read answers, the landing from memory
-/// withdrawn. The head standing, the hour is decided, not raced.
-/// Between the declaration and the landing the consumer's steps carry no reset and no state of the
-/// table (only its change sets, which a consumer without the table's state passes over); then one
-/// step of no hours at the hour it had taken, whole, and every step after follows it hour by hour.
-/// The table it kept declared as it was gets no reset. Before, it came from memory at the newest
-/// step built, in the step after it: a head standing short of that step never had it.
 #[test]
 fn a_table_dropped_and_declared_again_before_the_stepper_applies_arrives_as_a_reset_at_the_consumers_hour() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -2284,11 +2008,9 @@ fn a_table_dropped_and_declared_again_before_the_stepper_applies_arrives_as_a_re
     playhead.play(24.0);
     playhead.seek(0);
     frames(&playhead, &mut [&mut side], 0, 120);
-    // With the head standing at `head`, the reset of table 1 the declaration brings, past `before`.
     let landed = |side: &mut Side, before: usize, head: i32, what: &str| -> usize {
         let deadline = Instant::now() + Duration::from_secs(50);
         playhead.wait_until(|| {
-            // A frame at the head it stands at: the head stands.
             playhead.advance(head);
             std::thread::yield_now();
             take(&mut side.consumer, head, &mut side.taken);
@@ -2316,8 +2038,6 @@ fn a_table_dropped_and_declared_again_before_the_stepper_applies_arrives_as_a_re
         at
     };
 
-    // Between steps: declared as the step to 216 is built; the frames move a step at a time until
-    // the hook has run, then stand.
     assert!(playhead.newest().unwrap() < 216);
     let before = side.taken.len();
     at.store(216, Ordering::Relaxed);
@@ -2329,9 +2049,6 @@ fn a_table_dropped_and_declared_again_before_the_stepper_applies_arrives_as_a_re
     }
     let first = landed(&mut side, before, head, "between steps");
 
-    // With the ring full: declared as the step to 432 is built, the head standing at 360, three
-    // steps short of it. The reset is at 360, where the head stands. The hook is armed before the
-    // frames reach 360, as only a head at 360 lets that step be built.
     assert!(playhead.newest().unwrap() < 432);
     let before = side.taken.len();
     at.store(432, Ordering::Relaxed);
@@ -2347,14 +2064,6 @@ fn a_table_dropped_and_declared_again_before_the_stepper_applies_arrives_as_a_re
     assert!(side.taken.iter().all(|step| step.last() <= 120 || !step.states.contains_key(&0)), "the table declared as it was is not joined again");
 }
 
-/// While the clock runs, a step a frame, a table a reader declares is its consumer's at once: with
-/// the head standing still where the consumer has taken, the next take after the table's lane is
-/// read brings a step of no hours at that hour with the reader's state there, equal to the
-/// recorder's; and every step after carries the table hour by hour, equal to it at each hour as a
-/// reader that had it from the start keeps it. The other consumer's steps are as they were built:
-/// no step of no hours, no reset, and its table's cells byte for byte what a lane of it stepped
-/// alone gives. Before, a table declared while playing joined past the steps built ahead of the
-/// head: with the head standing still it never came.
 #[test]
 fn a_table_declared_while_playing_is_the_declaring_consumers_at_the_hour_it_has() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -2391,19 +2100,10 @@ fn a_table_declared_while_playing_is_the_declaring_consumers_at_the_hour_it_has(
     assert_eq!(*log.lock().unwrap(), vec![(0, 0), (1, 1)], "no other table sought again");
 }
 
-/// Rows by key with their cells, as [`rows`] gives the recorder's.
 fn by_key(mirror: &Mirror) -> BTreeMap<u128, Vec<String>> {
     mirror.rows.values().map(|(key, cells)| (*key, cells.iter().map(|cell| format!("{:?}", cell.value())).collect())).collect()
 }
 
-/// A consumer behind the head lands there from memory when it asks ([`Consumer::land`]), before its
-/// steps outweigh the state (which would land it unasked). The whole file was read ahead at the
-/// seek, and no read is made for it. It passes over every step it had not taken;
-/// once the head reaches the newest step built when it asked, its next take is a step of no hours
-/// there with its reader's state of each table, equal to the recorder's, every text cell's string
-/// named though the lane named it long before; and the steps after carry its tables on. The other
-/// consumer takes every step meanwhile as built, the stepper building on, and the ring lets go of
-/// the steps the late one was behind by.
 #[test]
 fn a_consumer_far_behind_lands_at_the_head_from_memory_without_a_read() {
     let named = |at: u32, _: usize, changes: &mut TableChanges<'_>| {
@@ -2453,8 +2153,6 @@ fn a_consumer_far_behind_lands_at_the_head_from_memory_without_a_read() {
     }
     let landing = Arc::clone(&landed[0]);
     let hour = landing.last();
-    // At the newest step built when the stepper landed it: 96 itself when it had built nothing
-    // past the hour the map had taken, later otherwise. Its state is read at its own hour below.
     assert!((landing.first(), landing.reset()) == (hour + 1, false) && hour >= 96, "a step of no hours at or past where it asked, at {hour}");
     assert_eq!(pages.extents[0].reads.load(Ordering::Relaxed), reads, "no read was made for it");
     playhead.wait_until(|| playhead.held().2.steps > built);
@@ -2488,11 +2186,6 @@ fn a_consumer_far_behind_lands_at_the_head_from_memory_without_a_read() {
     assert_eq!(playhead.held().2.join_held_ns, 0);
 }
 
-/// A hundred tables declared at once while the clock runs are read at once, each on a thread of
-/// its own while the machine has one: with every read of the file held, as many of their reads
-/// wait together as there are threads lent to the joins, and the fetcher with no read to do. Let
-/// go, all arrive in one step for their reader at the hour its consumer has, the head standing
-/// still: in the time of their reads, not of the head's walk.
 #[test]
 fn a_hundred_tables_declared_together_are_read_at_once_and_arrive_together_at_the_consumers_hour() {
     let tables = 101;
@@ -2506,7 +2199,6 @@ fn a_hundred_tables_declared_together_are_read_at_once_and_arrive_together_at_th
     frames(&playhead, &mut [&mut first], 0, 120);
     playhead.wait_until(|| playhead.ring_len() == 3);
     let shown = first.taken.last().unwrap().last();
-    // Lent: the machine's threads past the stepper and the fetcher, one at the least; and the fetcher.
     let width = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let expected = (width.saturating_sub(2).max(1) + 1).min(tables - 1);
     let gated = &pages.extents[0];
@@ -2538,15 +2230,10 @@ fn a_hundred_tables_declared_together_are_read_at_once_and_arrive_together_at_th
     assert_eq!(first.taken.last().unwrap().last(), shown, "the head stood still");
 }
 
-/// A 24-hour step a publication at 1,440 hours a second (60 publications a second), eight steps
-/// built ahead, the whole file read ahead.
 fn fast() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 8, speed: 1440.0, rate: 60.0, ..Settings::default() }
 }
 
-/// Moves the head an hour at a time from `from` to `to`, each side taking what each head reaches.
-/// The head moves to an hour only once the steps are built through it: a stepper behind the head
-/// builds a step to the head of its own, and the steps after it end on other hours.
 fn hour_by_hour(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
     for head in from..=to {
         playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= head));
@@ -2563,7 +2250,6 @@ fn hour_by_hour(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32
     });
 }
 
-/// Every step of hours after the first follows the one before, each hour once.
 fn every_hour_once(taken: &[Taken], who: &str) {
     let mut steps = taken.iter().filter(|step| step.first() <= step.last());
     let mut at = steps.next().expect("a reset").last();
@@ -2573,8 +2259,6 @@ fn every_hour_once(taken: &[Taken], who: &str) {
     }
 }
 
-/// A step is the hours of one publication at the rate its host holds: 24 hours at 1,440 hours a
-/// second published 60 times a second, 10 at 144. A rate the playhead already has changes nothing.
 #[test]
 fn a_step_is_the_hours_of_one_publication_at_the_rate_the_host_holds() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -2589,30 +2273,19 @@ fn a_step_is_the_hours_of_one_publication_at_the_rate_the_host_holds() {
         taken[from..].iter().filter(|step| step.first() <= step.last()).map(|step| step.last() - step.first() + 1).collect::<Vec<_>>()
     };
     assert!(lengths(&side.taken, 1).iter().all(|&hours| hours == 24), "60 publications a second: {:?}", lengths(&side.taken, 1));
-    // The ring full past 96 first: a new rate builds again the steps built ahead, and there are some.
     playhead.wait_until(|| playhead.ring_len() == fast().ring);
     let resteps = playhead.held().2.resteps;
     playhead.frame_rate(fast().rate);
     assert_eq!(playhead.held().2.resteps, resteps, "the rate it already has builds no step again");
     playhead.frame_rate(144.0);
     playhead.wait_until(|| playhead.held().2.resteps > resteps);
-    // The ring is filled again at the new size before the head moves on, so the stepper is never
-    // behind it and builds no catch-up step to the head of its own.
     playhead.wait_until(|| playhead.ring_len() == fast().ring);
     let from = side.taken.len();
-    // Ten hours a step from 97 ends one at 196; a take hands no step that ends past the head.
     hour_by_hour(&playhead, &mut [&mut side], 97, 196);
     assert!(lengths(&side.taken, from).iter().all(|&hours| hours == 10), "144 publications a second: {:?}", lengths(&side.taken, from));
     every_hour_once(&side.taken, "the only consumer");
 }
 
-/// When the pace falls from 1,440 to 24 hours a second, a step of 24 hours becomes a step of one,
-/// and the steps built past the hour the frames have taken are built again at that size; no step
-/// a consumer took is touched. Two consumers: the far one took two steps past the near one when
-/// the pace changed. The far one's next steps are an hour each from the hour it had reached; the
-/// near one takes the two 24-hour steps the far one took, the very same, then the hours. Each
-/// takes every hour once, its tables equal to the recorder's at each step. Before, both took the
-/// eight 24-hour steps built ahead first: eight seconds of 24-hour steps at 24 hours a second.
 #[test]
 fn a_slower_pace_builds_the_steps_past_the_frames_again_at_its_size_and_each_consumer_takes_every_hour_once() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
@@ -2623,7 +2296,6 @@ fn a_slower_pace_builds_the_steps_past_the_frames_again_at_its_size_and_each_con
     playhead.play(1440.0);
     playhead.seek(0);
     frames(&playhead, &mut [&mut far, &mut near], 0, 240);
-    // The ring full past 240 first: the head asked next reaches 24-hour steps built ahead of it.
     playhead.wait_until(|| playhead.ring_len() == fast().ring);
     playhead.advance(288);
     playhead.wait_until(|| {
@@ -2655,10 +2327,6 @@ fn a_slower_pace_builds_the_steps_past_the_frames_again_at_its_size_and_each_con
     }
 }
 
-/// Paused, the steps ahead are built for the pace the clock will play. Given a pace of an hour a
-/// step where 24-hour steps were built past the head, they are built again an hour each, and the
-/// head moved an hour at a time takes, each time, one step ending at exactly that hour. Before,
-/// it took nothing until the head reached the 24-hour step's end.
 #[test]
 fn paused_a_new_pace_builds_the_steps_ahead_again_and_each_hour_shows_that_hour() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
@@ -2688,10 +2356,6 @@ fn paused_a_new_pace_builds_the_steps_ahead_again_and_each_hour_shows_that_hour(
     });
 }
 
-/// A declaration keeps the next piece's lanes for every table whose union it leaves alone: only
-/// what it changed is prepared again. Letting the whole piece go on each declaration had a reader
-/// that declares as it opens prepare the piece over and over, which starved the joins that same
-/// reader was waiting for.
 #[test]
 fn a_declaration_keeps_the_next_pieces_lanes_for_the_tables_it_leaves_alone() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
@@ -2711,11 +2375,6 @@ fn a_declaration_keeps_the_next_pieces_lanes_for_the_tables_it_leaves_alone() {
     assert_eq!(playhead.held().2.piece_prepares, prepared, "the piece's lanes stood");
 }
 
-/// A table read hourly carries each hour of a step that wrote it, and only a table read hourly
-/// does. A step that is not a fold of hours carries none and stands for its whole interval as
-/// before: a seek's reset and a piece's crossing. A mirror kept from the hours alone — the resets
-/// and the crossing taken whole — holds the recorder's state at every step on both sides of the
-/// boundary and after a seek back across it.
 #[test]
 fn a_table_read_hourly_carries_its_hours_and_a_reset_or_a_crossing_carries_none() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
@@ -2744,8 +2403,6 @@ fn a_table_read_hourly_carries_its_hours_and_a_reset_or_a_crossing_carries_none(
         held.extend(step.states.clone());
         assert!(step.hours_of(1).is_empty(), "a table read at the step's own grain carries no hour");
         let hours = step.hours_of(0);
-        // A reset, a crossing, and a lane covering more hours than the pace's own step (24 here)
-        // — a catch-up, or a table taking up the hours a stall left — carry no hour.
         let covered = step.last() - held.get(&0).and_then(|kept| kept.head).unwrap_or(step.last());
         let coarse = step.reset() || step.first() == 1000 || covered > 24;
         assert_eq!(hours.is_empty(), coarse || step.table(0).is_none_or(|changes| changes.rows() == 0 && changes.cells() == 0), "step {}..={} reset {} covering {covered}", step.first(), step.last(), step.reset());

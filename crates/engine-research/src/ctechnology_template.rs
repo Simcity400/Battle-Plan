@@ -1,26 +1,14 @@
-//! Separate technology definition objects with indexed identities.
-//! Every declaration has its own template; case-insensitive lexer handles may repeat.
 
-/// Technology template MSVC id string.
 pub const ID: usize = 0x10;
-/// One-based positive i32 database index; the instance slot is this index minus one.
 pub const DATABASE_INDEX: usize = 0x38;
-/// Technology template u32 handle, copied into its instances.
 pub const TECHNOLOGY_HANDLE: usize = 0x3c;
-/// Authored technology year, signed i32.
 pub const YEAR: usize = 0x3d8;
-/// Signed i32 maximum researched level.
 pub const MAX_LEVEL: usize = 0x3dc;
-/// Technology template research cost, i64 fixed5.
 pub const RESEARCH_COST: usize = 0x3e0;
 
 use crate::{Memory, msvc_string, read, walk::Outcome};
 
-/// Raw header spans copied on the game thread with no interpretation.
-/// 32-byte MSVC string object plus 8-byte identity plus 16-byte operands.
 pub const HEADER_BYTES: usize = 56;
-/// Game-thread raw copy of the three fixed template spans in walker order.
-/// Returns address-overflow errors unchanged; short copies mean unreadable.
 pub fn copy_header(
     memory: &impl Memory,
     pointer: usize,
@@ -42,7 +30,6 @@ pub fn copy_header(
     ))
 }
 
-/// Decode-side interpretation of an already-copied header with identical faults.
 pub struct DecodedHeader {
     pub database_index: i32,
     pub year: i32,
@@ -107,7 +94,6 @@ pub struct Row {
     pub id_len: usize,
 }
 
-/// Caller-owned dictionary scratch. Native pointers are acquisition data only.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     pub row: Row,
@@ -115,11 +101,7 @@ pub struct Entry {
     pub copied: bool,
     occupied: bool,
     admitted_handle: u32,
-    // Local acquisition index only; these never enter a replay or survive a
-    // Dictionary::new. A generation separates each country's roster.
     instance_generation: u32,
-    // Independent pointer-index slots share the allocation with the full-key
-    // definition index; growing rehashes both from these owned fields.
     source_pointer: usize,
     source_row: u32,
     source_generation: u32,
@@ -132,11 +114,6 @@ pub struct Admission {
     handle: u32,
 }
 
-/// Every declaration has a unique database index and a case-insensitively
-/// interned handle that may repeat.
-/// One dictionary per callback, shared by every country's walk. Both indexes
-/// compare complete native keys; storage grows on the acquisition worker.
-/// No pointer or membership survives Dictionary::new.
 pub struct Dictionary<'a> {
     pub entries: &'a mut Vec<Entry>,
     pub names: &'a mut Vec<u8>,
@@ -191,7 +168,6 @@ impl<'a> Dictionary<'a> {
         }
     }
 
-    /// Interpret owned admissions; copy each definition once in serial encounter order.
     pub fn merge_attempts(
         &mut self,
         memory: &impl Memory,
@@ -271,8 +247,6 @@ impl<'a> Dictionary<'a> {
             crate::allocation::reserve_exact(&mut grown, size)
                 .map_err(|_| "technology dictionary allocation failed")?;
             grown.resize(size, Entry::default());
-            // Growing changes both hash moduli. Rebuild only from owned values,
-            // including current-country pointer membership installed so far.
             for old in self.entries.iter() {
                 if old.occupied {
                     let slot = Self::index_slot(&grown, old.row.database_index).unwrap();
@@ -412,7 +386,6 @@ impl<'a> Dictionary<'a> {
         Ok(())
     }
 
-    /// Exact native pointer membership in the current country's owned rows.
     pub(crate) fn instance_pointer_row(&self, pointer: usize) -> Option<usize> {
         if self.instance_generation == 0 {
             return None;
@@ -437,8 +410,6 @@ impl<'a> Dictionary<'a> {
             }
             return Ok(());
         }
-        // Failed definitions are attempted only once in this pass. Keep their
-        // template identity installed so another country cannot retry them.
         entry.template_pointer = pointer;
         let mut header = [0; HEADER_BYTES];
         match copy_header(memory, pointer, &mut header) {
@@ -447,7 +418,6 @@ impl<'a> Dictionary<'a> {
             Ok(_) => return Err("technology template fields unreadable"),
         }
         let decoded = decode_header(pointer, &header, handle)?;
-        // The instance slot is database_index - 1.
         if decoded.database_index != database_index {
             return Err("technology template index disagrees with country roster");
         }
@@ -485,8 +455,6 @@ impl<'a> Dictionary<'a> {
             "technology id allocation failed",
         )?;
         self.bytes_len = end;
-        // An unreadable native length must not become deferred arena demand
-        // when the collector later recycles this capture.
         self.required_bytes = end;
         self.copied += 1;
         entry.copied = true;

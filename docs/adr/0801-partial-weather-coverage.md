@@ -1,0 +1,9 @@
+# Carry observed weather and mark incomplete grid cells
+
+A complete weather table observes every province, including provinces it omits. A partial table observes only the rows it contains. The renderer keeps one unknown flag per texel for interior cells with any unobserved province contribution. A permanent-snow pixel can still contribute an unobserved mud byte. Changes to table completeness can change the observed status of omitted provinces even when no held row changes. Missing raw province snow and winter representatives stay unknown.
+
+The grid uses complete four-pixel cells and includes provenance from defined provinces outside the raster. Pixels contribute their province's mud and snow to each cell average, with permanent snow filled. Rows start at world `z = 0`, and each texel stores mud, snow, snow, mud so a reader of either pair sees the same current bytes. Available boundary bytes come from the recording in east-column then north-row order. A boundary the recording never observed draws bare without hatching and is counted explicitly in the status. Ordinary viewing marks incomplete interior weather with the hatch instead of an overlay message.
+
+Winter factors retain content volume order and use bitwise identity, including signed zero. Their parser finishes an unclosed block at end of file as the game does. Raster bounds convert to world coordinates before outward rounding to even pixels. The calculation retains epsilon and NaN-to-zero behavior for a degenerate band, and counts each province once per region. Values present with the wrong shape are refused.
+
+[Weather product](../../crates/map-display-data/src/lib.rs) · [Snow rasterizer](../../crates/map-snow/src/lib.rs) · [Incremental fold](../../crates/map-snow/src/fold.rs) · [Winter factors](../../crates/map-snow/src/winter.rs) · [Hatch rendering](0005-viewer-shader-interfaces.md)

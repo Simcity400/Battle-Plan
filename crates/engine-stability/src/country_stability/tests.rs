@@ -35,12 +35,9 @@ pub(super) fn set_phase(phase: Phase) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CopyCall {
     phase: Phase,
-    /// Attempted operands in order, including the first failure.
     operands: Vec<(usize, usize, bool)>,
 }
 
-/// Counts real guarded calls and records every exact span and its walk phase.
-/// Compound calls retain their native boundary and stop at the failed field.
 struct Copies<'a> {
     source: &'a World,
     calls: std::cell::RefCell<Vec<CopyCall>>,
@@ -199,7 +196,6 @@ const CHILD: usize = 0x51000;
 const ENTRIES: usize = 0x60000;
 const HEAP: usize = 0x70000;
 
-/// A tree child: its sorted entries and display text.
 type ChildSpec<'a> = (&'a [(u32, i64)], &'a [u8]);
 
 #[derive(Default)]
@@ -257,7 +253,6 @@ impl World {
         self.u64(address + msvc_string::LENGTH, value.len() as u64);
         self.u64(address + msvc_string::CAPACITY, capacity);
     }
-    /// A CModifier at `address` with sorted entries and a display string.
     fn modifier(&mut self, address: usize, entries: &[(u32, i64)], display: &[u8]) {
         let data = ENTRIES + self.entries;
         self.entries += 0x200.max(entries.len() * modifier_entry::STRIDE);
@@ -301,12 +296,8 @@ fn keys() -> Keys {
     }
 }
 
-/// Country 1 at an offensive war with country 2. Its tree has, in order: an
-/// idea, the leader, a decision this reader does not replay, an advisor, the
-/// at-war static and a dynamic modifier's constant part.
 fn world() -> World {
     let mut w = World::default();
-    // Countries and links.
     w.array(GS + cgame_state::COUNTRIES, COUNTRIES, 3);
     w.array(GS + cgame_state::COUNTRY_LINKS, LINKS, 3);
     w.u64(COUNTRIES, 0);
@@ -334,14 +325,12 @@ fn world() -> World {
     w.u32(R1 + crelation::FIRST_COUNTRY, 1);
     w.u32(R1 + crelation::SECOND_COUNTRY, 2);
     w.put(R1 + cwar_relation::FIRST_WAS_INSTIGATOR, &[1]);
-    // Scalars.
     w.i64(C1 + ccountry::STABILITY, 50_000);
     w.i64(C1 + ccountry::WAR_SUPPORT, 40_000);
     for (index, value) in [-3277_i64, -1, -2, -3, -4].into_iter().enumerate() {
         w.i64(C1 + PROPAGANDA_STABILITY_PENALTY + index * 8, value);
     }
     w.i64(C1 + COASTAL_PROTECTION_STABILITY, 2_500);
-    // Interception ring: one slot, column 1 = 777.
     w.u64(C1 + AIR_STATISTICS, STATS as u64);
     w.u64(STATS + RING, RING_OBJECT as u64);
     w.put(RING_OBJECT, &[0; 0x29]);
@@ -351,7 +340,6 @@ fn world() -> World {
     w.u64(RING_SLOTS, RING_ROW as u64);
     w.u64(RING_ROW, RING_VALUES as u64);
     w.i64(RING_VALUES + 8, 777);
-    // Root accumulator.
     let data = ENTRIES + 0x8000;
     for (index, (key, value)) in [
         (STABILITY_KEY, 30_000_i64),
@@ -366,7 +354,6 @@ fn world() -> World {
         w.i64(data + index * 16 + 8, value);
     }
     w.array(C1 + ccountry::MODIFIER_ACCUMULATOR, data, 3);
-    // Politics: two ideas, the ruling party, its leader and ideology group.
     w.u64(C1 + ccountry::POLITICAL_STATUS, STATUS as u64);
     w.vtable(STATUS, cpolitical_status::VTABLE_RVA.0);
     w.u64(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
@@ -403,7 +390,6 @@ fn world() -> World {
         w.u32(character + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
         w.u32(character + ccharacter::ID, id);
     }
-    // One appointed advisor.
     w.u64(C1 + ccountry::CHARACTERS, CHARACTERS as u64);
     w.vtable(CHARACTERS, ccountry_characters::VTABLE_RVA.0);
     w.u64(CHARACTERS + ccountry_characters::OWNER, C1 as u64);
@@ -422,7 +408,6 @@ fn world() -> World {
         &[(WAR_SUPPORT_KEY, 10_000)],
         b"Advisor",
     );
-    // One enabled dynamic modifier whose evaluated value is zero.
     let container = C1 + ccountry::DYNAMIC_MODIFIERS;
     w.array(container + cdynamic_modifier_container::ENTRIES, ENTRY, 1);
     w.put(ENTRY, &[0; dynamic_modifier_entry::STRIDE]);
@@ -442,7 +427,6 @@ fn world() -> World {
     w.u32(DEFINITION + cdynamic_modifier::VALUE_COUNT, 1);
     w.u64(DEFINITION + DYNAMIC_VALUE_ROWS, VALUE_ROWS as u64);
     w.u32(VALUE_ROWS, STABILITY_KEY);
-    // Statics: only the at-war slot is bound.
     w.u64(BASE + STATIC_DATABASE_RVA.0, DATABASE as u64);
     for slot in STATIC_SLOTS {
         w.u64(DATABASE + slot.offset, 0);
@@ -451,7 +435,6 @@ fn world() -> World {
     w.vtable(AT_WAR, cstatic_modifier::VTABLE_RVA.0);
     w.modifier(AT_WAR, &[(STABILITY_KEY, 5_000)], b"At war");
     w.string(AT_WAR + STATIC_NAME, b"country_is_at_war");
-    // Globals: defines, world tension, language, modifier metadata.
     for (index, rva) in DEFINE_RVAS.into_iter().enumerate() {
         w.i64(BASE + rva.0, 1_000 + index as i64);
     }
@@ -535,14 +518,12 @@ fn context_reads_defines_tension_language_and_statics() {
     assert_eq!(context.defines[DEFINES - 1], 1_011);
     assert_eq!(context.world_tension_raw, 12_345);
     assert_eq!(context.language.as_slice(), b"l_english");
-    // A null language root is the getter's null result, not a failure.
     let mut w = world();
     w.u64(BASE + localization_root_layout::SINGLETON_RVA.0, 0);
     assert_eq!(
         Context::read(&w, BASE, GS, keys()).unwrap().language.len(),
         0
     );
-    // A bound static with another vtable is refused.
     let mut w = world();
     w.vtable(AT_WAR, cmodifier::VTABLE_RVA.0);
     assert!(Context::read(&w, BASE, GS, keys()).is_err());
@@ -572,7 +553,6 @@ fn inputs_copy_every_operand_exactly() {
     assert_eq!(input.coastal_protection_stability_raw, 2_500);
     assert_eq!(input.interception_sum_raw, 777);
     assert_eq!(input.children, 6);
-    // max_command_power's total (600) is CountryCommandPower's: not recorded here.
     let mut totals = [None; TOTALS];
     totals[0] = Some(30_000);
     totals[5] = Some(12_000);
@@ -667,7 +647,6 @@ fn children_pair_with_their_sources_and_the_rest_keep_their_text() {
             ),
         ]
     );
-    // The lines of each tracked key sum to its root total.
     for (key, total) in [
         (STABILITY_KEY, 30_000),
         (WAR_SUPPORT_KEY, 12_000),
@@ -685,8 +664,6 @@ fn children_pair_with_their_sources_and_the_rest_keep_their_text() {
 #[test]
 fn equal_sources_that_could_each_be_the_child_leave_it_unpaired() {
     let mut w = world();
-    // Idea B now carries the same entries as idea A: the one idea child
-    // could be either, so it keeps its text.
     let data = ENTRIES + 0x9000;
     w.u32(data, STABILITY_KEY);
     w.u32(data + 4, 0);
@@ -697,16 +674,12 @@ fn equal_sources_that_could_each_be_the_child_leave_it_unpaired() {
     assert_eq!(walked.lines[0].line, 0);
     assert_eq!(walked.lines[0].kind, Kind::Unpaired);
     assert_eq!(text(&walked, walked.lines[0].text), b"Politics: Idea A");
-    // The leader still pairs: its display text proves it.
     assert_eq!(walked.lines[1].kind, Kind::CountryLeader);
 }
 
 #[test]
 fn children_and_sources_without_tracked_values_do_not_move_the_pairing() {
     let mut w = world();
-    // Idea B has no entries (a tooltip-only or equipment-only idea), and an
-    // unreplayed source (a faction child) adds a child with none either. Paired
-    // with each other they moved the backward bound below the leader.
     w.array(
         IDEA_B + IDEA_MODIFIER + cmodifier::ACCUMULATOR,
         ENTRIES + 0x9000,
@@ -747,10 +720,8 @@ fn children_and_sources_without_tracked_values_do_not_move_the_pairing() {
 #[test]
 fn a_display_mismatch_or_changed_value_is_not_paired() {
     let mut w = world();
-    // The advisor's source value moved after the recalculation.
     let entries = Array::read(&w, ADVISOR + ADVISOR_MODIFIER + cmodifier::ACCUMULATOR, 16).unwrap();
     w.i64(entries.data + 8, 9_999);
-    // The leader's display differs.
     w.string(
         LEADER + LEADER_MODIFIER + cmodifier::DISPLAY_NAME,
         b"Other Name",
@@ -781,16 +752,12 @@ fn every_short_read_fails_the_country() {
         w.bytes.remove(&address);
         assert!(walk(&w, 16).result.is_err(), "{address:#x}");
     }
-    // Unsorted child entries are not a layout this reader knows.
     let mut w = world();
     w.children(&[(&[(7, 1), (5, 1)], b"x")]);
     w.array(C1 + MODIFIER_CHILDREN, CHILDREN, 1);
     assert!(walk(&w, 16).result.is_err());
 }
 
-/// The children's heads are one guarded gather per page: the old walk made
-/// one scattered copy per child. A child whose head does not read refuses
-/// after every earlier child, with the old reason.
 #[test]
 fn child_heads_are_gathered_one_page_at_a_time() {
     let w = world();
@@ -806,12 +773,8 @@ fn child_heads_are_gathered_one_page_at_a_time() {
     let memory = Observed::new(&census, &mut local, &mut shared);
     let children = read_children(&memory, BASE, country.pointer, &context, &mut scratch).unwrap();
     assert_eq!(children, 6);
-    // The children header, the pointer page and one gather of six heads
-    // plus one batch for the entries and heap display terminator/payload.
     assert_eq!(census.calls(), 4);
     assert!(walked.result.is_ok());
-    // The third child's head does not read: the first two payloads are
-    // gathered together and visited, then the third refuses.
     let mut w = world();
     w.bytes
         .remove(&(CHILD + 2 * 0x100 + cmodifier::ACCUMULATOR));
@@ -851,8 +814,6 @@ fn a_dynamic_modifiers_evaluated_values_pair_as_their_own_line() {
         (6, Kind::DynamicModifierValues, 1, 250)
     );
     assert_eq!(text(&walked, last.identity), b"dyn_mod");
-    // Another source's child with the same value but its own label (a
-    // landmark) never takes the evaluated part.
     w.children(&[
         (&[(STABILITY_KEY, 10_000)], b"Politics: Idea A"),
         (&[(WAR_SUPPORT_KEY, 2_000)], b"Leader Name"),
@@ -875,7 +836,6 @@ fn a_dynamic_modifiers_evaluated_values_pair_as_their_own_line() {
     assert_eq!(kinds[5], (4, Kind::Unpaired));
     assert_eq!(kinds[6], (5, Kind::Static));
     assert_eq!(kinds[8], (7, Kind::DynamicModifierValues));
-    // A value row key that is unreadable fails once the value is nonzero.
     w.bytes.remove(&VALUE_ROWS);
     assert!(walk(&w, 16).result.is_err());
 }
@@ -883,8 +843,6 @@ fn a_dynamic_modifiers_evaluated_values_pair_as_their_own_line() {
 #[test]
 fn defensive_wars_and_hosted_counterparts_follow_the_engine_predicates() {
     let mut w = world();
-    // Country two instigated, so this country defends. The counterpart hosts the war (the diplomacy
-    // status's hosted-war count is at least one), leaving the mode-one at-war predicate false.
     w.put(R1 + cwar_relation::FIRST_WAS_INSTIGATOR, &[0]);
     w.u32(D2 + DIPLOMACY_HOSTING, 1);
     let walked = walk(&w, 16);
@@ -901,7 +859,6 @@ fn long_display_names_pair_only_after_exact_payload_comparison() {
     let walked = walk(&w, 16);
     assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 7 });
     assert_eq!(walked.lines[1].kind, Kind::CountryLeader);
-    // Even a forced digest collision cannot replace exact comparison.
     let address = LEADER + LEADER_MODIFIER + cmodifier::DISPLAY_NAME;
     let header = read::<[u8; 32]>(&w, address).unwrap();
     let (len, digest) = display_digest(&w, address, header).unwrap();
@@ -980,8 +937,6 @@ fn scaled_static_pairing_has_no_nonzero_key_population_cap() {
     );
 }
 
-/// Setup acquisitions are outside the per-country census/fault window, just
-/// as the collector reads Context before walking its selected countries.
 fn observed_walk(
     copies: &Copies<'_>,
     old: bool,
@@ -1055,7 +1010,6 @@ fn assert_same_walk(old: &Walked, new: &Walked) {
     assert_eq!(new.bytes, old.bytes);
 }
 
-/// More live source operands, without importing any installed content.
 fn scaled_world() -> World {
     let mut w = world();
     const SCALED: usize = 0x6100_0000;
@@ -1093,8 +1047,6 @@ fn secondary_idea_world() -> World {
     w
 }
 
-/// Three pointer pages of distinct objects, with repeated character and
-/// definition pointers, every bound static slot and heap display strings.
 const PAGED_COUNT: u32 = 130;
 const PAGED_DYNAMIC_ENTRIES: usize = 0x6500_2000;
 const PAGED_OBJECTS: usize = 0x6600_0000;
@@ -1175,8 +1127,6 @@ fn stability_batched_source_pages_keep_aliases_and_every_static_slot() {
         &observed_walk(&serial, true, &mut Memo::default(), 16, None),
         &observed_walk(&batched, false, &mut Memo::default(), 16, None),
     );
-    // Distinct object heads and modifier blocks share bounded guarded chunks
-    // across each pointer page. Dynamic definitions alias one allocation.
     for phase in [
         Phase::Ideas,
         Phase::Advisors,
@@ -1189,9 +1139,6 @@ fn stability_batched_source_pages_keep_aliases_and_every_static_slot() {
             "{phase:?} was not batched"
         );
     }
-    // Each object head is gathered exactly once. Heads are named by address:
-    // the phase also reads other spans of the same length serially (the
-    // ideas phase starts with the political status pointer).
     type HeadSpan = fn(usize) -> (usize, usize);
     let heads: [(Phase, HeadSpan, usize); 3] = [
         (
@@ -1250,8 +1197,6 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
         } else {
             IDEA_MODIFIER
         };
-        // A null in the first slot of page two still visits all 64 valid
-        // earlier slots, preserving an earlier invalid object's reason.
         for invalid_prefix in [false, true] {
             let mut w = paged_sources_world();
             w.u64(slots + 64 * 8, 0);
@@ -1267,8 +1212,6 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
         for duplicate in [false, true] {
             for null in [false, true] {
                 let mut w = paged_sources_world();
-                // The same object occurs in both pages, and remains a visit,
-                // not a deduplicated source. Slot 65 stays distinct for faults.
                 if duplicate {
                     w.u64(slots + 64 * 8, (OBJECTS + offset) as u64);
                 }
@@ -1300,9 +1243,6 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
                         );
                     }
                 }
-                // A fault in the second page must not discard the valid first
-                // page, change the first reason before a null, or restart
-                // speculation on the third page after a one-shot recovers.
                 let head = OBJECTS + 65 * 0x1000 + offset + modifier + cmodifier::ACCUMULATOR;
                 for address in head..head + 16 {
                     for persistent in [false, true] {
@@ -1322,8 +1262,6 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
                         if persistent {
                             assert_same_walk(&old, &new);
                         } else {
-                            // Recovery may still reach the later null; it has
-                            // exactly the healthy walk's complete buffers/reason.
                             assert!(old.result.is_err());
                             assert_same_walk(&baseline, &new);
                         }
@@ -1340,8 +1278,6 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
                     }
                 }
                 if null {
-                    // An earlier invalid object wins over the later null,
-                    // including when it is in the validated page prefix.
                     w.u64(OBJECTS + 63 * 0x1000 + offset, 0);
                     assert_same_walk(
                         &observed_walk(&Copies::new(&w), true, &mut Memo::default(), 16, None),
@@ -1379,8 +1315,6 @@ fn stability_failed_source_preparation_acquires_no_missing_scalars() {
 
 #[test]
 fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
-    // Guarded calls in Phase order, excluding Context and roster setup.
-    // Totals includes the independent recruitment-ratio and non-exile-host reads.
     let expected = [
         (
             [1, 16, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
@@ -1483,8 +1417,6 @@ fn stability_copy_faults_at_every_old_operand_byte_keep_the_old_outcome_and_reas
                 if persistent || old.result.is_ok() {
                     assert_same_walk(&old, &new);
                 } else if new.result.is_ok() {
-                    // A failed speculative batch may recover the serial row;
-                    // recovered bytes must be the complete healthy result.
                     assert_same_walk(&walked, &new);
                 } else {
                     assert!(
@@ -1494,7 +1426,6 @@ fn stability_copy_faults_at_every_old_operand_byte_keep_the_old_outcome_and_reas
                 }
             }
         }
-        // Row shortage preserves the sizing-only emission protocol too.
         for capacity in [0, 3] {
             assert_same_walk(
                 &observed_walk(&Copies::new(&w), true, &mut Memo::default(), capacity, None),
@@ -1541,8 +1472,6 @@ fn stability_shared_static_observations_expire_with_each_hour() {
     let next_walk = observed_walk(&next, false, &mut memo, 16, None);
     assert_same_walk(&first_walk, &next_walk);
     assert!(next.calls.borrow().len() < first.calls.borrow().len());
-    // A changed bound static's name is observed next hour, at emission's
-    // original first read, even when the Context's pointers did not change.
     w.string(AT_WAR + STATIC_NAME, b"changed_static_name");
     memo.clear();
     let next_hour = Copies::new(&w);
@@ -1594,7 +1523,6 @@ fn stability_batched_failure_falls_back_once_without_installing_a_partial_prefix
         memory.gather([(first, 16), (second, 16)], false);
         assert_eq!(copies.calls.borrow().len(), 1);
         let mut bytes = [0; 16];
-        // The failed batch installed neither its success nor partial failure.
         assert!(memory.copy(first, &mut bytes));
         assert_eq!(memory.copy(second, &mut bytes), !persistent);
         assert_eq!(copies.calls.borrow().len(), 3);
@@ -1606,8 +1534,6 @@ fn stability_batched_failure_falls_back_once_without_installing_a_partial_prefix
     }
 }
 
-/// [`scaled_world`] with `count` countries, each with its own country,
-/// diplomacy and character objects and every static shared.
 fn scaled_countries(count: u32) -> World {
     let mut w = scaled_world();
     const COUNTRY_OBJECTS: usize = 0x1000_0000;
@@ -1783,9 +1709,6 @@ fn stability_copy_memo_preserves_the_changed_children_consistency_reread() {
     }
 }
 
-/// One country's walk of [`scaled_countries`]: the old reference walk
-/// without a memo, or the new one with the hour's `memo`. The census and
-/// context are read before `fault` is armed.
 fn country_walk(
     copies: &Copies<'_>,
     memo: Option<&mut Memo>,
@@ -1840,11 +1763,6 @@ fn operand_spans(copies: &Copies<'_>) -> std::collections::BTreeSet<(usize, usiz
         .collect()
 }
 
-/// A fault at each span a later country takes from the hour's shared
-/// observations. Persistent, every country meets the old walk's outcome. A
-/// one-shot fault fails the first country as the old walk does, and that
-/// failed observation is kept for the hour: a later country meets the same
-/// failure without reading the span again, never retrying it into success.
 #[test]
 fn stability_shared_static_faults_match_the_old_walk_and_are_never_retried() {
     let w = scaled_countries(3);
@@ -1900,7 +1818,6 @@ fn stability_shared_static_faults_match_the_old_walk_and_are_never_retried() {
             .filter(|operand| !operand.2)
             .collect();
         if failed != [(address, len, false)] {
-            // An earlier country-local span met the fault first.
             continue;
         }
         retained += 1;
@@ -1922,7 +1839,6 @@ fn stability_shared_static_faults_match_the_old_walk_and_are_never_retried() {
     assert!(retained != 0, "a shared failure was retained");
 }
 
-/// Memory that counts copies without allocating.
 #[cfg(feature = "alloc-fault-injection")]
 struct Counted<'a> {
     source: &'a World,
@@ -1937,9 +1853,6 @@ impl Memory for Counted<'_> {
     }
 }
 
-/// Retention is optional storage: when it cannot allocate, the acquired
-/// read stands and nothing is kept, so a later use reads the span again as
-/// the walk without the memo did.
 #[cfg(feature = "alloc-fault-injection")]
 #[test]
 #[ignore = "run alone: allocation hooks are process-global"]

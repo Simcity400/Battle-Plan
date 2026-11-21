@@ -1,11 +1,7 @@
-//! Wing raid-reference and pointed-object lifetime certificates. No periodic
-//! registry probes: absent old identities cannot be minted again in this epoch.
 use engine_allocation as allocation;
 use engine_mutations::air_wing_equipment_mutations as sites;
 use engine_native::{Memory, cair_wing, craid_instance};
 
-// Every pool-backed wing can be selected for transfer feedback, independently
-// of mission eligibility. The feedback checks the stored raid source first.
 fn demanded(row: &cair_wing::Row) -> bool {
     row.air_base != 0
 }
@@ -14,8 +10,6 @@ fn demanded(row: &cair_wing::Row) -> bool {
 struct Entry {
     pointer: usize,
     wing: u64,
-    /// `None`: read between two quiet tokens with no receiver certified, so
-    /// it carries nothing into the next census.
     certificate: Option<(u64, u64)>,
     raw: Option<u64>,
     lifetime: Option<(usize, (u64, u64))>,
@@ -27,8 +21,6 @@ pub(crate) struct Store {
     current: Vec<Entry>,
 }
 impl Store {
-    /// The immediately preceding accepted observation already owns this raw
-    /// identity and liveness. Exporting it adds no registry or object read.
     pub fn reference(
         &self,
         pointer: usize,
@@ -163,8 +155,6 @@ impl Store {
             Some(raw) => match resolve(raw) {
                 None => (None, None),
                 Some(None) => (Some(false), None),
-                // Uncertified, the quiet token alone covers the raid's
-                // retirement across this read.
                 Some(Some(_)) if certificate.is_none() => (Some(true), None),
                 Some(Some(pointer)) => match pointer
                     .checked_add(sites::RAID_LIFETIME_KEY)
@@ -369,9 +359,6 @@ mod tests {
         );
         assert!(store.current.is_empty());
     }
-    /// The attach hour: the wing writers are observed, but the registry has
-    /// no table until the first walk's offer installs, so no receiver is
-    /// certified. The game holds the reference.
     #[test]
     fn an_observed_registry_without_a_table_reads_references_between_quiet_tokens() {
         let registry = crate::watch_registry::WatchRegistry::new();

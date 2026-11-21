@@ -1,14 +1,3 @@
-//! Combat-template content and attachment selection.
-//!
-//! The game starts both names empty, both scales and random start time at
-//! 1.0, death time at 10.0, and four empty effect arrays. Strings/floats
-//! overwrite in reader order; effect lists append. Keeping the
-//! stored bytes until a caller projects them lets an unsupported combat-only
-//! field refuse combat without changing the ordinary formation reader.
-//!
-//! Attachments retain names only. The shared native source owns the ordered
-//! bindings; the caller bakes the template through ModelLibrary and samples
-//! its Rig/Player each frame without freezing animated joints.
 
 use std::{collections::BTreeMap, io};
 
@@ -44,7 +33,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// One mode-0 persistent native read of the complete naval gfx options.
     pub(super) fn read(bytes: &[u8], warnings: &mut Vec<Diagnostic>) -> Self {
         let mut config = Self::default();
         let mut reports = BTreeMap::<Diagnostic, usize>::new();
@@ -123,8 +111,6 @@ impl Config {
             else {
                 continue;
             };
-            // Shape::List stores resolved raw tokens; appended entries then
-            // pass through the ordinary string reader.
             for entry in item.value.items().into_iter().flatten() {
                 if let Some(raw) = entry.value.scalar() {
                     if parser::c_string(raw).contains(&b'\n') {
@@ -155,7 +141,6 @@ impl Config {
         config
     }
 
-    /// The unchanged ordinary formation projection and refusal names.
     pub(super) fn formation(&self) -> io::Result<(String, f32)> {
         let formation = text(&self.formation, "naval_formation")?;
         finite(self.formation_scale, "naval_formation_scale")?;
@@ -196,20 +181,16 @@ fn finite(value: f32, field: &str) -> io::Result<()> {
     }
 }
 
-/// Authored options independent of the template's lazily baked animation rig.
 #[derive(Debug, Clone)]
 pub(super) struct CombatAssets {
     pub template_entity: String,
     pub scale: f32,
     pub death_time: f32,
     pub random_start_time: f32,
-    /// Hit big, hit small, miss big, miss small, in native array order.
     pub effects: [Vec<String>; 4],
 }
 
 impl CombatAssets {
-    /// Resolves only the native entity registry. The caller bakes that entity
-    /// through its existing verified layers and ModelLibrary.
     pub(super) fn load(descriptors: &mesh::Descriptors, config: &Config) -> io::Result<Self> {
         let template_entity = text(&config.combat_formation, "naval_combat_formation")?;
         for (value, field) in [
@@ -219,8 +200,6 @@ impl CombatAssets {
         ] {
             finite(value, field)?;
         }
-        // Entity-definition lookup accepts registered entities,
-        // including meshless rigs; a bare pdxmesh is not that lookup.
         if !descriptors.entities.contains_key(&template_entity) {
             return Err(invalid(format!(
                 "{NAVAL_COMBAT_FILE}: 1 refused naval_combat_formation: entity {template_entity:?} is not registered"
@@ -242,7 +221,6 @@ impl CombatAssets {
     }
 }
 
-/// The retained attachment name; the placed actor resolves its current pose.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Attachment {
     pub name: String,
@@ -255,9 +233,6 @@ pub(super) struct SideLocators {
 }
 
 impl SideLocators {
-    /// The game copies the capital position, then samples three supports
-    /// without replacement, removing each by swapping in the final index.
-    /// The renderer supplies its viewer-owned native mixer draws.
     pub(super) fn choose(
         &self,
         random: &mut impl FnMut() -> u32,
@@ -279,8 +254,6 @@ impl SideLocators {
     }
 }
 
-/// Defending side first, attacking side second. Only the first
-/// existing big 1..9 is retained; all existing small 1..9 survive holes.
 pub(super) fn select_locators(rig: &Rig) -> io::Result<[SideLocators; 2]> {
     let root = rig.nodes.first().ok_or_else(|| {
         invalid("naval_combat_formation: 1 refused template: baked rig has no root actor")
@@ -289,8 +262,6 @@ pub(super) fn select_locators(rig: &Rig) -> io::Result<[SideLocators; 2]> {
         invalid("naval_combat_formation: 1 refused template: root actor source is unavailable")
     })?;
     let attachment = |name: &str| -> io::Result<Option<Attachment>> {
-        // First resolve an entity-file locator, then
-        // resolves a binary-mesh locator before its skeleton joint.
         let binding = mesh_pose::lookup(source, name, mesh_pose::LookupMode::Naval);
         if let Some(mesh_pose::Binding::Locator(locator)) = binding
             && let Some(why) = &locator.error

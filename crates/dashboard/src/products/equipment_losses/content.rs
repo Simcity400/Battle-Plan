@@ -1,6 +1,3 @@
-//! What the equipment-loss reply reads of the recorded content: cause names (the game's
-//! localisation keys where it names one, else the key the content's interface declares for the
-//! text shown), equipment types and their arm, design names, and the Combat Log's retention.
 
 use super::{Cause, LandSource, LossDesign, LossDesignName, LossDomain, LossName, LossSource};
 use crate::{
@@ -23,7 +20,6 @@ const NAVAL_LOSSES_WINDOW: &str = "navallosseswindow";
 const NAVAL_LOSSES_TOTAL: [(&str, &str); 1] = [("total_ships", "pdx_tooltip")];
 const RETENTION_UNREAD: &str = "NGame.COMBAT_LOG_MAX_MONTHS is not known from the recorded content, so whether the game deleted Combat Log entries that were still changing is unknown and no land total can be kept.";
 
-/// The cause names only the content's interface files author.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InterfaceKeys {
     pub combat: Option<String>,
@@ -49,7 +45,6 @@ impl InterfaceKeys {
     }
 }
 
-/// App labels for causes whose game text is a sentence or a template rather than a name.
 fn app_label(source: LossSource) -> Option<&'static str> {
     match source {
         LossSource::SunkShips => Some("Sunk ships"),
@@ -63,7 +58,6 @@ fn app_label(source: LossSource) -> Option<&'static str> {
     }
 }
 
-/// App text for writer classifications the recorded content does not name.
 pub fn destruction_label(cause: EquipmentDestructionCause) -> &'static str {
     use EquipmentDestructionCause::*;
     match cause {
@@ -114,8 +108,6 @@ fn cause_key(source: LossSource, keys: &InterfaceKeys) -> Option<&str> {
     }
 }
 
-/// A key's localisation: its text without colour codes, and the text when it resolves without
-/// substitution.
 fn name(catalogue: Option<&Catalogue>, key: Option<&str>) -> LossName {
     let (Some(catalogue), Some(key)) = (catalogue, key) else { return LossName { key: key.map(str::to_owned), ..LossName::default() } };
     let template = catalogue.localisation.get(key).and_then(|text| catalogue::plain_text(text).inspect_err(|reason| catalogue.refuse(reason, key)).ok());
@@ -123,13 +115,10 @@ fn name(catalogue: Option<&Catalogue>, key: Option<&str>) -> LossName {
     LossName { key: Some(key.to_owned()), template, text }
 }
 
-/// Why land totals cannot be kept under a retention of `months` below 1: the daily prune then
-/// deletes every entry, the current month's included, with the losses written after its last read.
 fn retention_unknown(months: i32) -> String {
     format!("NGame.COMBAT_LOG_MAX_MONTHS is {months}: the game deletes every Combat Log entry each day, the current month's included, so land losses written after an entry's last read are lost and no total can be kept.")
 }
 
-/// What the reply reads of the content, or why each part is missing.
 pub struct Content {
     pub catalogue: Option<Arc<Catalogue>>,
     pub keys: InterfaceKeys,
@@ -177,7 +166,6 @@ impl Content {
         name(self.catalogue.as_deref(), self.keys.attrition.as_deref())
     }
 
-    /// Why Combat Log land totals cannot be kept, when the retention the content gives forbids it.
     pub fn retention_refusal(&self) -> Option<String> {
         match self.retained_months {
             Some(months) if months < 1 => Some(retention_unknown(months)),
@@ -186,7 +174,6 @@ impl Content {
         }
     }
 
-    /// The arm of an equipment archetype, from the engine's own classifiers of its category.
     pub fn domain(&self, archetype: &str) -> Option<LossDomain> {
         let units = self.units.as_ref()?;
         let category = units.category(units.named(archetype)?);
@@ -199,7 +186,6 @@ impl Content {
         })
     }
 
-    /// Each variant's names at `hour` (its definition then), its equipment and archetype.
     pub fn designs(&self, query: &Query<'_>, hour: i32, variants: &BTreeSet<u32>, warnings: &mut Vec<String>) -> io::Result<BTreeMap<u32, LossDesign>> {
         if variants.is_empty() {
             return Ok(BTreeMap::new());

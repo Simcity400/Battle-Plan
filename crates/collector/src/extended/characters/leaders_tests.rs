@@ -1,12 +1,9 @@
-//! CountryLeaderRoles carried per character ([`super::leaders::LeaderCache`])
-//! over the census test world, against the typed roster walk.
 
 use super::census_tests::{Counting, GAME_STATE, MODULE, World, capacities, context};
 use super::leaders::LeaderCache;
 use super::*;
 use crate::character_changes::{Changes, Counting as Lookups, Watches};
 
-/// The roster job's admitted census of this world.
 fn census_of(world: &World) -> CharactersJob {
     let mut job = CharactersJob::new_part(0);
     for _ in 0..16 {
@@ -48,7 +45,6 @@ fn hour(
     captured
 }
 
-/// The typed roster walk's CountryLeaderRoles.
 fn expected(world: &World) -> TableView {
     let mut captured = Captured::with_capacities(&capacities());
     let results = walk_family(
@@ -98,15 +94,12 @@ fn a_dirty_leader_alone_is_read_and_the_country_follows_the_census() {
     let watches = Watches::enabled(world.characters);
     let mut cache = LeaderCache::default();
     hour(&mut cache, &world, &world, &watches);
-    // A hooked writer touched character 10's role; its current ideology now
-    // fails to read.
     let leader = World::character(10);
     world.patch(
         leader_role(10) + ccountry_leader::CURRENT_IDEOLOGY,
         &0x10_u64.to_le_bytes(),
     );
     drop(watches.notify(Some(leader), 0));
-    // Character 20's country changed: the census supplies it.
     world.patch(
         World::character(20) + ccharacter::COUNTRY,
         &99_u32.to_le_bytes(),
@@ -127,7 +120,6 @@ fn set_ideology_and_invalidation_read_every_leader() {
     let watches = Watches::enabled(world.characters);
     let mut cache = LeaderCache::default();
     hour(&mut cache, &world, &world, &watches);
-    // set_country_leader_ideology names no character.
     drop(watches.notify(
         None,
         engine_mutations::character_role_mutations::COUNTRY_LEADER_IDEOLOGY,
@@ -159,7 +151,6 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
     let mut cache = LeaderCache::default();
     hour(&mut cache, &world, &world, &domain);
     assert_eq!(domain.lookups(), characters);
-    // Nothing ran since: no lookup, no read, the same rows.
     let counting = Counting::new(&world);
     let quiet = hour(&mut cache, &counting, &world, &domain);
     assert_eq!(domain.lookups(), 0, "a quiet hour looks up no character");
@@ -171,7 +162,6 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
     assert!(cache.counts.quiet);
     assert_eq!((cache.counts.read, cache.counts.reused), (0, characters));
     assert_eq!(quiet.tables()[1], expected(&world));
-    // A hooked writer: the hour looks up every character, reads the one.
     drop(domain.watches.notify(Some(World::character(10)), 0));
     hour(&mut cache, &world, &world, &domain);
     assert_eq!(domain.lookups(), characters);
@@ -179,8 +169,6 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
     assert_eq!(cache.counts.read, 1);
     hour(&mut cache, &world, &world, &domain);
     assert_eq!(domain.lookups(), 0);
-    // A changed census (a country the census supplies): every character is
-    // certified again, and the table follows the census.
     world.patch(
         World::character(20) + ccharacter::COUNTRY,
         &99_u32.to_le_bytes(),
@@ -191,12 +179,10 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
     assert_eq!(moved.tables()[1], expected(&world));
     hour(&mut cache, &world, &world, &domain);
     assert_eq!(domain.lookups(), 0);
-    // A load, gap or recovery reads every character.
     domain.watches.boundary(true);
     hour(&mut cache, &world, &world, &domain);
     assert_eq!(domain.lookups(), characters);
     assert_eq!(cache.counts.read, characters);
-    // A failed or censusless job forgets the held rows.
     cache.forget();
     hour(&mut cache, &world, &world, &domain);
     assert_eq!(
@@ -205,8 +191,6 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
     );
 }
 
-/// A leader role job that carried its rows from the census copied no raw
-/// log; recycling keeps it, and a pool miss starts one with its cache.
 #[test]
 fn recycling_keeps_a_leader_job_that_carried_from_the_census() {
     let _globals = crate::extended::characters::test_globals();

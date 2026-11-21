@@ -1,4 +1,3 @@
-//! Multi-hour retained membership oracle against the CPU field and both texture channels.
 use super::*;
 
 type MembershipStep = ([u32; 6], &'static [(u32, u64)]);
@@ -28,8 +27,6 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
     let blank = |_| [0; 3];
     let initial = Layer::new(LayerKind::Country, &[0; 6], &blank, &field);
     let mut gpu = PoliticalGpu::new(&harness.device, map, &initial).unwrap();
-    // Province 2 has no bitmap pixels but its nonzero membership must survive.
-    // The sixth source word is outside the map's extent and must be ignored.
     let steps: [MembershipStep; 11] = [
         ([0; 6], &[]),
         (
@@ -50,7 +47,6 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
         ([0; 6], &[]),
     ];
     for (hour, (keys, expected)) in steps.iter().enumerate() {
-        // Step 8 repeats every operand, exercising the unchanged fast path.
         let epoch = if hour == 8 { 7 } else { hour } as u32;
         let color = |key: u32| [key as u8, (epoch * 23) as u8, 173];
         let attributes = |key| gradient::Attributes {
@@ -104,7 +100,6 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
                 )
             );
         }
-        // A refused shorter extent must not disturb a pending or displayed update.
         let source = gpu.source_keys.clone();
         let mapping = gpu.mapping.clone();
         let areas = gpu.areas.clone();
@@ -131,7 +126,7 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
         assert_eq!(gpu.pending, pending);
         if hour == 3 {
             assert!(gpu.pending);
-            continue; // The next same-membership metadata update arrives before encoding.
+            continue;
         }
         let expected_pixels = gradient::build_layer(&map, &layer).unwrap();
         let mut encoder = harness.device.create_command_encoder(&Default::default());

@@ -1,13 +1,9 @@
-//! Peace bidding turn owned by one conference history node until destruction.
 
 use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
 
-/// Bidding-turn primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_aec0);
-/// Serialized raw country reference.
 pub const COUNTRY: usize = 0x08;
-/// Ordered owning action-pointer array, serialized before destruction.
 pub const ACTIONS: usize = 0x10;
 
 pub fn copy(

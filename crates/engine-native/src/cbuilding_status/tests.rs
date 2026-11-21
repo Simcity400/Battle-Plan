@@ -220,9 +220,6 @@ fn signed_building_fields_and_sea_province_membership_survive_exactly() {
 
 #[test]
 fn building_growth_follows_readable_rows_instead_of_native_count() {
-    // Large enough to expose eager allocation without making a regression
-    // in this test itself exhaust the process. Header geometry remains
-    // valid, but only the prefix before the blocked pointer is readable.
     const LARGE_COUNT: i32 = 32_768;
     for readable in [0, 1] {
         let mut expected_trace = None;
@@ -556,8 +553,6 @@ fn building_batches_preserve_full_values_and_earlier_dependent_faults() {
             cbuilding::read_rows(&memory, 0x1000, &staged, &mut rows),
             Ok(())
         );
-        // Sixty-five buildings fill one full batch and a remainder, so the
-        // four dependent stages cross the guarded boundary eight times.
         assert_eq!(memory.calls.get(), 8);
         for (slot, row) in rows.iter().enumerate() {
             assert_eq!(
@@ -573,7 +568,6 @@ fn building_batches_preserve_full_values_and_earlier_dependent_faults() {
             );
         }
     }
-    // A later unreadable pointer must not hide an earlier row's bad index.
     put(&mut bytes, 0x400 + 2 * 4, (-1_i32).to_le_bytes());
     let memory = TracedMemory {
         inner: SliceMemory {
@@ -605,14 +599,6 @@ fn building_batches_preserve_full_values_and_earlier_dependent_faults() {
     );
 }
 
-/// Deterministic cost proxy at map scale. Provinces dominate this walk, so
-/// its old shape cost, per province, one scattered copy for the state
-/// vtable and id plus one read of the state table slot, and then four
-/// dependent stages for that province's own buildings alone. The batched
-/// shape pays two guarded rounds per 64 provinces for the same
-/// authentication and four stages per 64 buildings drawn from as many
-/// provinces as it takes to fill. At the live 13,414-province, 5,185-row
-/// table that is 26,828 + about 8,000 crossings before and 420 + 328 after.
 #[test]
 fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
     const PROVINCES: usize = 130;
@@ -791,19 +777,11 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
             active: false,
         }
     );
-    // One state-array header, one province-array header, one pointer scatter
-    // and one header gather per 64 locations, two authentication rounds per
-    // 64 provinces, and four stages per 64 buildings.
     let batches = PROVINCES.div_ceil(64);
     let expected =
         2 + 2 * STATES.div_ceil(64) + 4 * batches + 4 * (PROVINCES * PER_PROVINCE).div_ceil(64);
     assert_eq!(census.calls(), expected);
     assert_eq!(census.calls(), 36);
-    // Only declared spans are copied, and batching copies no more of them:
-    // two array headers, then per location one 8-byte slot pointer and its
-    // record (80 bytes for a state, 88 for a province), per province 12
-    // authentication bytes and its 8-byte state-table slot, and per
-    // building 8 + 40 + 8 + 4 bytes across the four dependent stages.
     assert_eq!(
         census.bytes(),
         32 + STATES * (8 + 80)
@@ -813,8 +791,6 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
     assert_eq!(census.bytes(), 30_976);
 }
 
-/// A batch that spans locations must keep each location's own status
-/// backlink, index vector, native ordinals and duplicate-type scope.
 #[test]
 fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
     const LOCATIONS: usize = 3;
@@ -904,7 +880,6 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
         cbuilding::read_rows(&memory, 0x1000, &staged, &mut rows),
         Ok(())
     );
-    // Twelve buildings across three locations share one batch of stages.
     assert_eq!(memory.calls.get(), 4);
     for location in 0..LOCATIONS {
         for slot in 0..PER_LOCATION {
@@ -921,8 +896,6 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
         }
     }
     drop(memory);
-    // The second location's active vector lists its second and fourth
-    // buildings; entries are matched by pointer and in native order.
     let building = |location: usize, slot: usize| {
         0x1000 + 0x2000 + (location * PER_LOCATION + slot) as u64 * 0x100
     };
@@ -944,7 +917,6 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
         Ok(())
     );
     assert_eq!(listed(&rows), [PER_LOCATION + 1, PER_LOCATION + 3]);
-    // Out of order, from another location, or longer than the buildings.
     put(&mut bytes, 0x8000, building(1, 3).to_le_bytes());
     put(&mut bytes, 0x8008, building(1, 1).to_le_bytes());
     let unlisted = Err("active building vector is not an ordered subset of the building vector");
@@ -972,7 +944,6 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
         Err("active building vector exceeds building vector")
     );
     staged[1].active = Array::default();
-    // The second location's backlink must not be satisfied by the first.
     put(
         &mut bytes,
         0x2000 + PER_LOCATION * 0x100 + cbuilding::BUILDING_STATUS,
@@ -991,8 +962,6 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
         0x2000 + PER_LOCATION * 0x100 + cbuilding::BUILDING_STATUS,
         (0xd0000_u64 + 1).to_le_bytes(),
     );
-    // A repeated type inside one location still fails, and the identical
-    // type in the next location still does not.
     put(
         &mut bytes,
         0x6000 + (PER_LOCATION + 1) * 0x40 + cbuilding_template::TYPE_ID,
@@ -1028,7 +997,6 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
     );
 }
 
-/// Records every planned location and carries nothing.
 #[derive(Default)]
 struct Held(Vec<Location>);
 
@@ -1053,7 +1021,6 @@ fn traced(bytes: &[u8], blocked: Option<usize>) -> TracedMemory<'_> {
     }
 }
 
-/// The two location tables' headers are gathered in one guarded round.
 #[test]
 fn roots_are_the_two_location_table_headers() {
     let bytes = fixture();
@@ -1066,9 +1033,6 @@ fn roots_are_the_two_location_table_headers() {
     assert_eq!(roots(&blocked, 0x1000), None);
 }
 
-/// A touched status reads its rows afresh from the status alone, equal to the
-/// walk's rows and in the order asked, without reading a location, slot or
-/// location table.
 #[test]
 fn a_touched_status_refreshes_its_rows_from_the_status_alone() {
     let mut bytes = fixture();
@@ -1107,7 +1071,6 @@ fn a_touched_status_refreshes_its_rows_from_the_status_alone() {
     );
     assert_eq!(fresh, [second, state, first]);
     assert_eq!(output, [provinces[1], states[0], provinces[0]]);
-    // One status gather and the four building stages of the walk's batch.
     assert_eq!(memory.calls.get(), 5);
     let locations = [
         (0x1500, cstate::BUILDING_STATUS),
@@ -1123,12 +1086,10 @@ fn a_touched_status_refreshes_its_rows_from_the_status_alone() {
             "{address:#x}"
         );
     }
-    // Nothing held: nothing read.
     assert_eq!(refresh(&memory, 0x1000, &[], &mut [], &mut output), Ok(0));
     assert!(memory.spans.take().is_empty());
     drop(memory);
 
-    // A building write the status does not show is read as written.
     put(&mut bytes, 0x1c00 + cbuilding::LEVEL, 3_i16.to_le_bytes());
     let memory = traced(&bytes, None);
     assert_eq!(
@@ -1137,7 +1098,6 @@ fn a_touched_status_refreshes_its_rows_from_the_status_alone() {
     );
     assert_eq!(output[0].level, 3);
     assert_ne!(output[0], provinces[1]);
-    // An unreadable building fails the whole call.
     let blocked = traced(&bytes, Some(0x1000 + 0x1c00 + cbuilding::LEVEL));
     assert_eq!(
         refresh(
@@ -1151,7 +1111,6 @@ fn a_touched_status_refreshes_its_rows_from_the_status_alone() {
     );
     drop(memory);
 
-    // A status whose identity changed is not its held read.
     let mut changed = bytes.clone();
     put(&mut changed, 0x1490 + COUNTRY, 7_u32.to_le_bytes());
     let memory = traced(&changed, None);

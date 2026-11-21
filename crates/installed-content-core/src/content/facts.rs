@@ -1,15 +1,3 @@
-//! The game facts a recording carries: every covered file that is not art, deduplicated by
-//! digest, as one byte stream cut into independently compressed chunks, with each recorded
-//! layer's file list, mount order and `replace_path`s. Playback reads facts only from here;
-//! art comes from the installed game ([`is_art`]).
-//!
-//! A pack is `H4FP`, its version, the compressed manifest's length and raw length, the
-//! manifest, then the chunks. Localisation is carried for the recorded language only: a file
-//! is left out when every language header it has names another language, unless a file at the
-//! same path in another layer is carried, so a left-out file never uncovers one below it.
-//! From version 2 the manifest ends with the [`equipment`] fact, each sub-unit's need per
-//! archetype: a file of the stream computed from the pack's own facts as it is written, or why it
-//! carries none.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -30,20 +18,13 @@ pub mod equipment;
 
 const MAGIC: &[u8; 4] = b"H4FP";
 const VERSION: u16 = 2;
-/// The version before the equipment facts, still read: it carries none.
 const UNEQUIPPED: u16 = 1;
-/// The art rule [`is_art`] applies; a pack names the one it was written under.
 const ART_POLICY: u32 = 1;
 const CHUNK_BYTES: usize = 2 << 20;
 const LEVEL: i32 = 19;
-/// Decompressed chunks kept for later reads.
 const KEPT_CHUNKS: usize = 24;
-/// What a manifest may inflate to: its paths and digests, far above any game's.
 const MAX_MANIFEST: usize = 1 << 30;
 
-/// Whether a covered path is art under the current rule: textures, meshes, fonts, shaders,
-/// sounds and cursors anywhere, everything below `gfx` but its descriptors and scripts, and
-/// the terrain textures and world normal map below `map`.
 pub fn is_art(path: &[u8]) -> bool {
     is_art_under(ART_POLICY, path)
 }
@@ -90,16 +71,12 @@ fn is_art_under(_policy: u32, path: &[u8]) -> bool {
     )
 }
 
-/// What one recorded layer's facts are in a pack.
 #[derive(Debug)]
 pub enum LayerFacts {
-    /// Each carried path and its file; and for a folder layer, each path by its ASCII
-    /// lower case, as a folder lookup ignores case.
     Carried {
         files: BTreeMap<LayerPath, u32>,
         folded: BTreeMap<LayerPath, LayerPath>,
     },
-    /// No install matching the recorded layer was found when the facts were gathered.
     Withheld(String),
 }
 
@@ -107,17 +84,14 @@ pub enum LayerFacts {
 pub struct PackLayer {
     pub role: LayerRole,
     pub id: String,
-    /// Its recorded source was an archive: lookups are exact, never case-folded.
     pub archive: bool,
     pub hash: [u8; 32],
     pub replace_paths: Vec<LayerPath>,
-    /// A DLC descriptor's `name`, which `has_dlc` tests.
     pub dlc_name: Option<String>,
     pub facts: LayerFacts,
 }
 
 impl PackLayer {
-    /// The carried file a lookup of `path` finds in this layer, by its recorded spelling.
     pub(super) fn find(&self, path: &[u8]) -> io::Result<Option<(&LayerPath, u32)>> {
         match &self.facts {
             LayerFacts::Withheld(reason) => Err(withheld(&self.id, reason)),
@@ -132,7 +106,6 @@ impl PackLayer {
         }
     }
 
-    /// Every carried path, or why there are none.
     pub(super) fn paths(&self) -> io::Result<impl Iterator<Item = &LayerPath>> {
         match &self.facts {
             LayerFacts::Withheld(reason) => Err(withheld(&self.id, reason)),
@@ -161,15 +134,12 @@ struct FileEntry {
 
 #[derive(Clone, Copy, Debug)]
 struct Chunk {
-    /// From the pack's first byte.
     at: u64,
     compressed: u32,
     raw: u32,
-    /// The stream offset of its first byte.
     start: u64,
 }
 
-/// Where a pack's bytes are read from: the recording, resident or on disk.
 pub trait PackSource: Send + Sync {
     fn read_at(&self, offset: u64, out: &mut [u8]) -> io::Result<()>;
 }
@@ -186,25 +156,19 @@ impl PackSource for Vec<u8> {
     }
 }
 
-/// The facts a recording carries.
 pub struct Pack {
     pub language: String,
     pub exe_hash: [u8; 32],
     pub vanilla_hash: [u8; 32],
     pub layers: Vec<PackLayer>,
-    /// The executable's tables as their owner encodes them, or why they are withheld.
     pub executable: Result<Vec<u8>, String>,
-    /// The file holding the [`equipment`] fact, the sub-unit needs, or why it
-    /// carries none this build reads.
     equipment: Result<u32, String>,
-    /// The pack's size in the recording.
     pub bytes: u64,
     art_policy: u32,
     files: Vec<FileEntry>,
     chunks: Vec<Chunk>,
     source: Arc<dyn PackSource>,
     kept: Mutex<Vec<(usize, Arc<Vec<u8>>)>>,
-    /// Decompressed chunks kept at most.
     keeps: usize,
     tables: std::sync::OnceLock<Result<engine_executable::executable_tables::Tables, String>>,
 }
@@ -222,7 +186,6 @@ impl std::fmt::Debug for Pack {
 }
 
 impl Pack {
-    /// The pack of `length` bytes at `offset` in `source`.
     pub fn open(source: Arc<dyn PackSource>, offset: u64, length: u64) -> io::Result<Self> {
         let mut prefix = [0; 14];
         source.read_at(offset, &mut prefix)?;
@@ -374,8 +337,6 @@ impl Pack {
         })
     }
 
-    /// A pack withholding every fact of `identity`'s layers for `reason`; `builtins` are the
-    /// built-in roots the installed game mounts, whose art is still shown.
     pub fn withheld(identity: &Identity, reason: &str, builtins: Vec<(LayerRole, String)>) -> Self {
         let layer = |role, id: &str, hash| PackLayer {
             role,
@@ -420,8 +381,6 @@ impl Pack {
         }
     }
 
-    /// Why this pack is not `identity`'s facts, or `None` when it is: the same executable,
-    /// base game, and DLC and mods in the same order with the same hashes.
     pub fn binding_differs(&self, identity: &Identity) -> Option<String> {
         if self.exe_hash != identity.exe_hash || self.vanilla_hash != identity.vanilla_hash {
             return Some("the recording's facts belong to another game build or base game".to_owned());
@@ -445,15 +404,11 @@ impl Pack {
         None
     }
 
-    /// The pack keeping at most `chunks` decompressed chunks for later reads, for a reader whose
-    /// memory is bounded.
     pub fn keeping(mut self, chunks: usize) -> Self {
         self.keeps = chunks;
         self
     }
 
-    /// The executable's tables this pack carries, kept with every other build's for work on
-    /// its recording to read in its scope ([`engine_executable::executable_tables::scope`]).
     pub fn tables(&self) -> Result<engine_executable::executable_tables::Tables, String> {
         self.tables
             .get_or_init(|| {
@@ -468,17 +423,14 @@ impl Pack {
             .clone()
     }
 
-    /// Whether this pack's art rule calls a covered path art.
     pub fn is_art(&self, path: &[u8]) -> bool {
         is_art_under(self.art_policy, path)
     }
 
-    /// The recorded language's name without its `l_`.
     pub fn language_name(&self) -> &str {
         self.language.strip_prefix("l_").unwrap_or(&self.language)
     }
 
-    /// The bytes of a carried file, checked against its recorded digest.
     pub(super) fn read_payload(&self, file: u32) -> io::Result<(Vec<u8>, super::ReadPayload)> {
         let entry = *self
             .files
@@ -505,8 +457,6 @@ impl Pack {
         Ok((bytes, super::ReadPayload { length: entry.length, digest }))
     }
 
-    /// The bytes of a carried file handed to `piece` a chunk at a time, none kept, then checked
-    /// against its recorded digest: a refusal after pieces were handed voids them.
     pub(super) fn read_pieces(&self, file: u32, piece: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let entry = *self
             .files
@@ -540,7 +490,6 @@ impl Pack {
         self.decompressed(index, chunk, true)
     }
 
-    /// Chunk `index`'s raw bytes: a kept one, else decompressed and, with `keep`, kept.
     fn decompressed(&self, index: usize, chunk: Chunk, keep: bool) -> io::Result<Arc<Vec<u8>>> {
         {
             let mut kept = self.kept.lock().unwrap_or_else(|error| error.into_inner());
@@ -571,8 +520,6 @@ impl Pack {
         Ok(raw)
     }
 
-    /// Each sub-unit's equipment need per archetype, as the pack's writer computed it; why
-    /// not, by name, when the pack carries none this build reads.
     pub fn sub_unit_needs(&self) -> Result<crate::unit_leader::needs::SubUnitNeeds, String> {
         let file = *self.equipment.as_ref().map_err(Clone::clone)?;
         let length = self.files.get(file as usize).map_or(0, |entry| entry.length as usize);
@@ -585,7 +532,6 @@ impl Pack {
         equipment::decode_needs(&bytes).map_err(|error| format!("the recording's sub-unit needs cannot be read: {error}"))
     }
 
-    /// Carried files and their raw bytes, for reporting.
     pub fn stats(&self) -> (usize, u64) {
         (
             self.files.len(),
@@ -594,7 +540,6 @@ impl Pack {
     }
 }
 
-/// What [`write`] gathered.
 #[derive(Clone, Debug, Default)]
 pub struct WriteStats {
     pub files: usize,
@@ -604,16 +549,11 @@ pub struct WriteStats {
     pub chunks: usize,
 }
 
-/// One layer of facts to write: its place in `layers`, or why its facts are withheld.
 pub struct Source<'a> {
     pub layers: &'a ResolvedLayers,
-    /// Layers of `layers` whose facts cannot be proven, by index, with why.
     pub withheld: BTreeMap<usize, String>,
 }
 
-/// A pack of `source`'s facts for a recording of `identity`. Every fact file is read again from
-/// its layer and must still have the digest its layer was hashed with. Compressed chunks are
-/// kept in `cache_dir` and reused by any later pack that holds the same bytes.
 pub fn write(
     source: &Source<'_>,
     identity: &Identity,
@@ -644,7 +584,6 @@ pub fn write(
             files,
         });
     }
-    // Every distinct fact file's bytes, read once from the first layer holding it.
     let mut wanted: Vec<(usize, LayerPath, [u8; 32])> = Vec::new();
     let mut seen = BTreeSet::new();
     for (position, plan) in planned.iter().enumerate() {
@@ -687,7 +626,6 @@ pub fn write(
             }
         }
     }
-    // A layer holding a file no layer could read is withheld with the first failure.
     for plan in &planned {
         if source.withheld.contains_key(&plan.index) || failed.contains_key(&plan.index) {
             continue;
@@ -705,7 +643,6 @@ pub fn write(
         let lower = path.to_ascii_lowercase();
         below(&lower, b"localisation") && lower.ends_with(b".yml")
     };
-    // Localisation of other languages is left out, unless a file at its path is carried.
     let dropped: BTreeSet<[u8; 32]> = planned
         .iter()
         .flat_map(|plan| &plan.files)
@@ -728,7 +665,6 @@ pub fn write(
     let carries = |path: &LayerPath, digest: &[u8; 32]| {
         !(localisation(path) && dropped.contains(digest) && !carried_paths.contains(&path.to_ascii_lowercase()))
     };
-    // The stream: each carried file once, in first-use order.
     let mut index_of: HashMap<[u8; 32], u32> = HashMap::new();
     let mut files: Vec<FileEntry> = Vec::new();
     let mut stream_order: Vec<[u8; 32]> = Vec::new();
@@ -768,7 +704,6 @@ pub fn write(
         }
         layer_files.push(Ok(carried));
     }
-    // Cut the stream into chunks.
     let mut chunk_ranges: Vec<Vec<(usize, usize, usize)>> = Vec::new();
     let mut current: Vec<(usize, usize, usize)> = Vec::new();
     let mut filled = 0;
@@ -822,7 +757,6 @@ pub fn write(
     let cached_chunks = compressed.iter().filter(|(_, _, cached)| *cached).count();
     let mut chunks: Vec<(usize, Vec<u8>)> = compressed.into_iter().map(|(raw, bytes, _)| (raw, bytes)).collect();
     drop(contents);
-    // The manifest's head: what the equipment facts leave as it is.
     let mut head = Vec::new();
     put_u32(&mut head, ART_POLICY);
     head.extend_from_slice(&identity.exe_hash);
@@ -861,7 +795,6 @@ pub fn write(
             }
         }
     }
-    // The sub-unit needs, from the facts this pack carries and nothing else.
     let unequipped = assemble(&head, &files, &chunks, &executable, &Err("they are being gathered".to_owned()), 1)?;
     let equipment = match gather_equipment(unequipped, identity) {
         Ok(gathered) => {
@@ -893,8 +826,6 @@ pub fn write(
     Ok((pack, stats))
 }
 
-/// A pack of the manifest's `head`, the stream's `files` and `chunks`, the executable's tables
-/// and the sub-unit needs fact, its manifest compressed at `level`.
 fn assemble(
     head: &[u8],
     files: &[FileEntry],
@@ -949,13 +880,10 @@ fn assemble(
     Ok(pack)
 }
 
-/// The [`equipment`] fact of `unequipped`, a pack carrying none yet: read through its own facts
-/// alone, as playback mounts them, with its executable's tables in scope; why not, by name.
 fn gather_equipment(unequipped: Vec<u8>, identity: &Identity) -> Result<Vec<u8>, String> {
     let length = unequipped.len() as u64;
     let pack = Pack::open(Arc::new(unequipped), 0, length).map_err(|error| format!("the pack being written cannot be read back: {error}"))?;
     let tables = pack.tables().map_err(|why| format!("the equipment database needs the executable's tables: {why}"))?;
-    // No folder: nothing is read but the pack's facts.
     let options = ResolveOptions { game_dir: PathBuf::new(), user_dir: PathBuf::new(), cache_dir: PathBuf::new() };
     let content = super::playback(identity, Ok(Arc::new(pack)), &options).map_err(|error| format!("the pack being written cannot be mounted: {error}"))?;
     engine_executable::executable_tables::scope(Some(tables), || {
@@ -966,8 +894,6 @@ fn gather_equipment(unequipped: Vec<u8>, identity: &Identity) -> Result<Vec<u8>,
     })
 }
 
-/// The hash a layer has in the recording's identity: a DLC's or mod's own, or for the base
-/// game and its built-in roots, which the identity hashes together, each root's own.
 fn layer_identity_hash(layer: &ResolvedLayer, identity: &Identity) -> io::Result<[u8; 32]> {
     Ok(match layer.role {
         LayerRole::Dlc => identity
@@ -986,7 +912,6 @@ fn layer_identity_hash(layer: &ResolvedLayer, identity: &Identity) -> io::Result
     })
 }
 
-/// A file's bytes as its layer holds them: a folder file, or an archive record's content.
 fn read_layer_file(layer: &ResolvedLayer, path: &[u8]) -> io::Result<Vec<u8>> {
     match &layer.source {
         LayerSource::Folder(root) => std::fs::read(root.join(super::folder_text(path)?)),
@@ -1008,7 +933,6 @@ fn read_layer_file(layer: &ResolvedLayer, path: &[u8]) -> io::Result<Vec<u8>> {
     }
 }
 
-/// Whether a localisation file holds language tables and none of them is `language`'s.
 fn other_language_only(bytes: &[u8], language: &str) -> bool {
     let text = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     let mut headers = 0;
@@ -1039,7 +963,6 @@ fn other_language_only(bytes: &[u8], language: &str) -> bool {
     headers > 0
 }
 
-/// Keeps the chunk cache to its most recently written gigabyte.
 fn trim_cache(cache: &Path) {
     const KEEP: u64 = 1 << 30;
     let Ok(entries) = std::fs::read_dir(cache) else {
@@ -1147,8 +1070,6 @@ mod tests {
         assert!(other_language_only(b"l_german:0 # note\n A:0 \"x\"\n", "english"));
     }
 
-    /// A pack of `raws` as its chunks and one file of the stream's bytes `from..to`, its digest
-    /// `digest` or its own.
     fn pack(raws: &[&[u8]], from: u64, to: u64, digest: Option<[u8; 32]>) -> Pack {
         let (mut bytes, mut chunks, mut stream) = (Vec::new(), Vec::new(), Vec::new());
         for raw in raws {
@@ -1180,7 +1101,6 @@ mod tests {
         support_equipment = { is_archetype = yes } support_equipment_1 = { archetype = support_equipment } }";
     const UNITS: &str = "sub_units = { infantry = { need = { infantry_equipment_1 = 100 support_equipment_1 = 0.5 ghost = 1 } } engineer = { need = { support_equipment_1 = 10 } } }";
 
-    /// A content folder of one mod layer, the identity recording it, and its layers resolved.
     struct Fixture {
         root: PathBuf,
         cache: PathBuf,
@@ -1231,8 +1151,6 @@ mod tests {
         Pack::open(Arc::new(bytes), 0, length).unwrap()
     }
 
-    /// `pack` with its manifest's equipment section, the last part, replaced by `section`, at
-    /// pack version `version`.
     fn reworked(pack: &[u8], cut: usize, section: &[u8], version: u16) -> Vec<u8> {
         let compressed = u32::from_le_bytes(pack[6..10].try_into().unwrap()) as usize;
         let raw = u32::from_le_bytes(pack[10..14].try_into().unwrap()) as usize;
@@ -1249,9 +1167,6 @@ mod tests {
         out
     }
 
-    /// The same content packs the same bytes; a pack whose executable's tables are withheld
-    /// carries no equipment facts and says why; a pack of the version before them, or carrying
-    /// them under another version, is read and refuses them by name.
     #[test]
     fn a_pack_built_twice_is_the_same_bytes_and_one_without_equipment_facts_says_why() {
         let fixture = Fixture::new("withheld", [1; 32]);
@@ -1260,7 +1175,6 @@ mod tests {
         let pack = opened(first.clone());
         let why = pack.sub_unit_needs().unwrap_err();
         assert_eq!(why, "the equipment database needs the executable's tables: no executable here");
-        // The absent section is its tag, the reason's length and the reason.
         let cut = 1 + 4 + why.len();
         let older = opened(reworked(&first, cut, &[], UNEQUIPPED));
         assert!(older.sub_unit_needs().unwrap_err().contains("packed before they carried equipment facts"));
@@ -1272,9 +1186,6 @@ mod tests {
         assert!(refused.contains("version 99") && refused.contains(&format!("version {}", equipment::VERSION)), "{refused}");
     }
 
-    /// The sub-unit needs a pack carries are what the equipment database gives for the same
-    /// content, and the pack built twice is the same bytes. Needs `BATTLE_PLAN_GAME_DIR` (a supported
-    /// installation) for the executable's tables the database reads.
     #[test]
     fn a_packs_equipment_facts_are_what_the_equipment_database_gives() {
         let tables = engine_executable::executable_tables::initialize_for_tests().expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
@@ -1292,9 +1203,6 @@ mod tests {
         assert_eq!(needs.dropped, ["sub-unit infantry needs ghost, which is no equipment"]);
     }
 
-    /// A recording made under an older coverage policy never takes a fact that policy left out
-    /// from the installed game, by an uncovered read or a probe: both refuse it by name. Installed
-    /// art outside the coverage still reads.
     #[test]
     fn a_fact_an_older_policy_never_hashed_is_never_read_from_the_installed_game() {
         let root = std::env::temp_dir().join(format!("hoi4_facts_unhashed_{}", std::process::id()));
@@ -1329,8 +1237,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A fact read in pieces is the fact read whole, a chunk at a time and none kept; a damaged
-    /// one is refused after its pieces; a pack keeping no chunk keeps none on whole reads either.
     #[test]
     fn a_fact_read_in_pieces_is_the_fact_read_whole_and_keeps_no_chunk() {
         let raws: [&[u8]; 3] = [b"0123456789", b"abcdefghij", b"KLMNOPQRST"];

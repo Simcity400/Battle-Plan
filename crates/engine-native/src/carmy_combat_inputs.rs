@@ -1,17 +1,10 @@
-//! Raw army operands for combatant updates and modifier icons.
-//! No displayed statistic is composed here.
 
 use crate::{Memory, carmy, cpdx_array::Array, csub_unit_definition, cunit, read, read_slice};
 
-/// Armour and piercing operands consumed together by modifier icons.
 pub const ARMOUR: usize = 0x298;
-/// Anti-air operand consumed by modifier icons.
 pub const AIR_ATTACK: usize = 0x220;
-/// Generated division-name member used by committed and reserve entries.
 pub const NAME_GROUP_MEMBER: usize = 0x340;
-/// Positive values group attacking units into one direction.
 pub const DIRECTION_GROUP: usize = 0x4a8;
-/// Raw contextual keys requested by width and reinforcement consumers.
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [
     crate::modifier_keys::LAND_REINFORCE_RATE,
     crate::modifier_keys::COMBAT_WIDTH_FACTOR,
@@ -34,24 +27,14 @@ pub struct ContextModifier {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
     pub template: u64,
-    /// Selected context source: zero is absent, one uses the leader's movement modifier, and two
-    /// uses its separate-HQ movement modifier.
     pub leader_modifier_kind: u8,
     pub country_modifiers: [ContextModifier; 3],
     pub leader_modifiers: [ContextModifier; 3],
-    /// Per-key raw flags and feature selector, in CONTEXT_MODIFIER_KEYS order.
     pub modifier_metadata: [[u32; 2]; 3],
     pub feature_flags: u32,
-    /// Zero means a null eligibility callback; one means the authenticated flags getter.
     pub eligibility_callback: u8,
-    /// Cached movement speed operand; reinforcement applies current terrain etc.
     pub base_speed: i64,
     pub width_term_count: usize,
-    /// The selected country (positive expeditionary owner, else roster
-    /// owner) as its raw reference, its modifier accumulator and the
-    /// contextual leader's selected accumulator (zero without one): the
-    /// reserve chance's source tree identities and acquisition pointers. The
-    /// pointers are never projected.
     pub owner: u32,
     pub country_accumulator: usize,
     pub leader_accumulator: usize,
@@ -67,32 +50,18 @@ pub struct Modifier {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub division: u64,
-    /// Spans index the caller's name arena. `None`: a player's name or group
-    /// key did not fit it; its bytes were counted for growth and the division
-    /// is omitted this hour.
     pub naming: Option<crate::cname_group_member::Inputs>,
-    /// Committed strength bars multiply the raw [`carmy::STRENGTH_FACTOR`].
     pub strength_combat_factor: i64,
-    /// Fuel-icon raw fixed5 operands; its define comes from effective content.
     pub fuel_inputs: [i64; 2],
-    /// Defense, breakthrough, hardness, soft attack, hard attack; all raw fixed5.
     pub stat_values: [i64; 5],
     pub armour: i64,
     pub piercing: i64,
     pub air_attack: i64,
-    /// Direct stat-block initiative operand.
     pub reconnaissance: i64,
-    /// Initiative operand used by reinforcement.
     pub initiative: i64,
-    /// Full direct formation leader handle; zero if unit has no group/leader.
     pub commander: u64,
-    /// Attack accumulator, defense accumulator, attack base, defense base.
     pub scales: [i64; 4],
-    /// Raw CUnit latch word (`DIRECTION_GROUP`) for the direction count.
     pub direction_group: i32,
-    /// Stored equipment-category mask of the unit stat block. Category triggers
-    /// intersect it with their mask for each combatant unit. A division owns its
-    /// block, so capture the stored value rather than derive it from content.
     pub categories: u64,
 }
 
@@ -123,8 +92,6 @@ fn values<const N: usize>(source: &[u8]) -> [i64; N] {
     })
 }
 
-/// Keep checked-address errors at their original ordinal, after every readable
-/// prefix span. No failed scatter is retried, including a partially copied field.
 fn copy_input_spans<const N: usize>(
     memory: &impl Memory,
     addresses: [Result<usize, &'static str>; N],
@@ -141,14 +108,6 @@ fn copy_input_spans<const N: usize>(
 }
 
 
-/// The caller supplies the authenticated combat/side/role membership.
-/// CArmy, stat-block and formation leader identities are authenticated on entry.
-/// Strength, organisation and their maxima are the Divisions and DivisionStatus
-/// values and are not read again here.
-///
-/// On success the division, its handle and its stat block are recorded in
-/// `sources`, so the same division's later readers in the pass skip those
-/// identity reads.
 pub fn capture_stats(
     memory: &impl Memory,
     base: usize,
@@ -180,8 +139,6 @@ pub fn capture_stats(
         return Err("land combat division stat identity mismatch");
     }
     sources.verified = None;
-    // Every remaining CArmy and stat-block operand in one guarded scatter; the
-    // commander and name reads depend only on its group and member pointers.
     let (mut armour, mut group_pointer, mut member_pointer) = ([0; 16], [0; 8], [0; 8]);
     let (mut strength_factor, mut fuel, mut fuel_capacity, mut stats, mut air_attack) =
         ([0; 8], [0; 8], [0; 8], [0; 40], [0; 8]);
@@ -273,46 +230,28 @@ fn naming(
     )
 }
 
-/// Saved template origin type: zero master host, one subject, two exile.
-/// Only exactly two means exiled.
 pub const TEMPLATE_ORIGIN_TYPE: usize = 0x1f8;
-/// Template origin value selecting the exile path.
 pub const EXILE_ORIGIN: i32 = 2;
-/// Positive template country wins over the fallback country.
 pub const TEMPLATE_COUNTRY: usize = 0x1f4;
 pub const TEMPLATE_COUNTRY_FALLBACK: usize = 0x1ec;
-/// Raw country-reference occupier set in the exile country's diplomacy status.
 pub const OCCUPIER_SET: usize = 0x140;
 
-/// Exile-frame operands for a committed division with [`EXILE_ORIGIN`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ExileRow {
     pub origin_type: i32,
     pub country: i32,
     pub country_fallback: i32,
-    /// Spans of the caller's tag destination: the location state's cores, then
-    /// the exile country's occupier set.
     pub cores: (usize, usize),
     pub occupiers: (usize, usize),
 }
 
-/// One committed division's exile acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exile {
-    /// No template, or a template whose origin differs from [`EXILE_ORIGIN`].
     Absent,
-    /// Spans index the destination slice the caller supplied.
     Row(ExileRow),
-    /// Both lists are valid and within their bound, but together need
-    /// `required` tag slots; nothing was copied. The caller grows its arena
-    /// from this count off the game thread and omits the division meanwhile.
     DoesNotFit { required: usize },
 }
 
-/// A counted `CPdxArray<u32>` of country tags; a nonpositive signed count holds
-/// no entries, as the native loops test `0 < count`. Tags name countries, so a
-/// list longer than the live country table (sentinel included) is refused
-/// before any entry is copied or any destination is sized from it.
 fn country_list(memory: &impl Memory, address: usize, limit: usize) -> Result<Array, &'static str> {
     let header = read::<[u8; 16]>(memory, address).ok_or("exile country list unreadable")?;
     if i32::from_le_bytes(header[12..16].try_into().unwrap()) <= 0 {
@@ -325,7 +264,6 @@ fn country_list(memory: &impl Memory, address: usize, limit: usize) -> Result<Ar
     Ok(list)
 }
 
-/// Copies a validated list in 64-tag guarded batches.
 fn copy_tags(memory: &impl Memory, list: Array, tags: &mut [u32]) -> Result<(), &'static str> {
     let mut batch = [0_u8; 64 * 4];
     for (index, tags) in tags.chunks_mut(64).enumerate() {
@@ -344,8 +282,6 @@ fn copy_tags(memory: &impl Memory, list: Array, tags: &mut [u32]) -> Result<(), 
     Ok(())
 }
 
-/// Consumers use the full occupier lists. Workers reserve from original
-/// headers before copying either payload.
 #[cfg(test)]
 pub(crate) fn capture_exile(memory: &impl Memory, countries: &crate::ccountry::Reader<'_, impl Memory>, pointer: usize, tags: &mut Vec<u32>) -> Result<Exile, &'static str> {
     capture_exile_buffer(memory, countries, pointer, crate::walk::Buffer::Growing(tags))
@@ -362,7 +298,6 @@ pub fn capture_exile_buffer(
     if template == 0 {
         return Ok(Exile::Absent);
     }
-    // The fallback country, a padding word, the primary country and the origin type.
     let operands = bytes::<16>(memory, template, TEMPLATE_COUNTRY_FALLBACK)?;
     let word = |at: usize| i32::from_le_bytes(operands[at..at + 4].try_into().unwrap());
     let mut row = ExileRow {
@@ -371,8 +306,6 @@ pub fn capture_exile_buffer(
         origin_type: word(TEMPLATE_ORIGIN_TYPE - TEMPLATE_COUNTRY_FALLBACK),
         ..ExileRow::default()
     };
-    // A nonnull template is exiled exactly when its origin is two; every
-    // other value takes the ordinary-owner path.
     if row.origin_type != EXILE_ORIGIN {
         return Ok(Exile::Absent);
     }
@@ -399,9 +332,6 @@ pub fn capture_exile_buffer(
             limit,
         )?
     };
-    // An exiled division's country resolves before its diplomacy status is
-    // read in the game. Resolution or identity failure therefore fails the
-    // division with its reason, rather than supplying an empty set.
     let object = countries.resolve(country)?;
     let status = u64::from_le_bytes(bytes::<8>(
         memory,
@@ -430,8 +360,6 @@ pub fn capture_exile_buffer(
     Ok(Exile::Row(row))
 }
 
-/// Traverse the complete modifier vector. Its acquired signed count sizes
-/// worker storage without a chosen modifier limit.
 pub fn capture_modifiers_buffer(
     memory: &impl Memory,
     base: usize,
@@ -597,8 +525,6 @@ pub fn capture_context_buffer(
     })
 }
 
-/// The pass's modifier definition operands for [`CONTEXT_MODIFIER_KEYS`], the
-/// eligibility callback and the feature flags: module data, read once a pass.
 fn context_metadata(memory: &impl Memory, base: usize) -> Result<ContextMetadata, &'static str> {
     use crate::modifier_definition as metadata;
     let table = u64::from_le_bytes(global_bytes(memory, base, metadata::TABLE_RVA)?) as usize;
@@ -651,9 +577,6 @@ fn context_metadata(memory: &impl Memory, base: usize) -> Result<ContextMetadata
     })
 }
 
-/// One template's width composition: its handle and term count, then its
-/// terms in native order into the pass's arena, or the read that stopped them.
-/// Each division checks its own arena between the two, as main does.
 fn template_width(
     memory: &impl Memory,
     base: usize,
@@ -678,8 +601,6 @@ fn template_width(
     let start = arena.len();
     let terms = (|| {
         crate::allocation::reserve_push_batch(arena, count).map_err(|_| "allocation failed")?;
-        // Visit every template subunit entry. Copy batches bound stack use,
-        // without limiting occurrence count.
         let mut packed = [0; 64 * 16];
         for first in (0..count).step_by(64) {
             let batch = (count - first).min(64);
@@ -715,7 +636,6 @@ fn template_width(
     })
 }
 
-/// Per-pass shared context operands ([`crate::combat_sources`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContextMetadata {
     modifier_metadata: [[u32; 2]; 3],
@@ -730,7 +650,6 @@ pub(crate) struct TemplateWidth {
     terms: Result<crate::combat_sources::Run, &'static str>,
 }
 
-/// Search the complete signed modifier count in 64-entry copies.
 fn context_modifiers(
     memory: &impl Memory,
     pointer: usize,
@@ -774,8 +693,6 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     if group == 0 {
         return Ok(0);
     }
-    // The identity and leader pointer share one guarded scatter; an identity
-    // mismatch still takes precedence over an unreadable leader word.
     let (mut group_identity, mut leader) = ([0_u8; 16], [0_u8; 8]);
     let copied = memory.copy_scattered_prefetched(
         [

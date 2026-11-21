@@ -4,7 +4,7 @@ usage: python tools/check_changed.py [--base REF] [--dry-run]
 
 Compares the working tree, uncommitted and untracked files included, with its merge base with
 REF (default origin/main) and runs, from inside your worktree:
-- always: the machine-path check and the agent-context budget;
+- always: the machine-path check, agent-context budget and comment ratchet;
 - Rust changed: the suppression-reason check and the citation scan;
 - a Cargo manifest changed: the three dependency checks;
 - crates changed: `tools/boat.py check --all-targets -p <those crates>`, never their dependents
@@ -62,6 +62,7 @@ def plan(files, base, package_of, python, npm):
     steps = [
         ("Machine paths", tool("check-machine-paths.py")),
         ("Agent context", tool("check-agent-context.py", "--against", base)),
+        ("Comments", tool("check-comments.py", "--against", base)),
     ]
     if rust:
         steps.append(("Suppression reasons", tool("check-suppressions.py", "--against", base)))
@@ -89,7 +90,6 @@ def merge_base(ref):
 
 
 def changed_files(base):
-    # NUL-delimited: git quotes names with unusual characters otherwise.
     names = set(git("diff", "--name-only", "-z", base).stdout.split("\0"))
     names |= set(git("ls-files", "-z", "--others", "--exclude-standard").stdout.split("\0"))
     return sorted(names - {""})

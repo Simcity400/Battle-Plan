@@ -64,13 +64,8 @@ import time
 import uuid
 
 TOOLS = Path(__file__).resolve().parent
-# The image pool VMs are cloned from: the record-once lane's own until it lands, then hoi4-check again.
 SNAPSHOT = "hoi4-record-once"
-# What `snapshot` starts from until SNAPSHOT exists.
 BASE_SNAPSHOT = "hoi4-check"
-# What `snapshot` compiles, as builders send it: the UI, the checks, the most built release binaries, then
-# (`frequent_tests`) the test builds run most. A branch mid-change may not compile whole, so Cargo compiles all
-# it can (--keep-going, which test spells --no-fail-fast).
 WARM = [
     ("ui", []),
     ("check", ["check", "--keep-going", "--workspace", "--all-targets"]),
@@ -79,9 +74,7 @@ WARM = [
     ("build", ["build", "--keep-going", "--release", "-p", "replay", "--bin", "journal-encode", "--bin", "change-digest", "--bin", "direct-read", "--features", "memory-labels,multiplied"]),
     ("build", ["build", "--keep-going", "--release", "-p", "playhead", "--features", "bench", "--bin", "playhead-bench"]),
 ]
-# Cargo's exit for compile errors.
 COMPILE_ERRORS = 101
-# `test --workspace` resolved other features than `test -p` for 32 of viewer's crates (12 Nov), so each test build is warmed as sent.
 WARM_TESTS = 30
 WARM_TEST_HOURS = 24
 
@@ -109,11 +102,8 @@ TARGET = "x86_64-pc-windows-msvc"
 RUN_SH = b'#!/usr/bin/env bash\nset -euo pipefail\nsource /home/user/hoi4/env.sh\nexec python3 /home/user/hoi4/remote.py "$@"'
 LEASE_SECONDS = 900
 RENEW_SECONDS = 240
-# Warm 5 min after a run, skipping the next run's multi-minute resume (27 Oct: 86% of reuses came within 5 min).
 IDLE_SECONDS = 300
-# Boat gives up on a resume after 360 s ("Resume degraded"); a VM not running by then is passed by.
 START_SECONDS = 420
-# Hydration that moves is waited for up to 30 min; one that stops moving has stalled (19 Nov: clones too, for hours).
 HYDRATION_SECONDS = 1800
 STALL_SECONDS = 180
 POLL_SECONDS = 10
@@ -122,26 +112,17 @@ COOLDOWN_SECONDS = 1800
 CREATE_SPACING_SECONDS = 5.1
 UNAVAILABLE = 75
 USABLE = {"ready", "idle", "running", "stopped"}
-# The runner refuses to start on a VM holding another run's claim.
 REMOTE_CLAIMED = 73
-# Waits between attempts when the Boat API drops a connection (bursts of TLS handshake failures, 26 Oct).
 RETRY_SECONDS = (2, 5, 10, 20, 40, 60)
-# STATUS_DLL_INIT_FAILED: Windows could not start boat.exe, so nothing reached Boat.
 LAUNCH_FAILED = 0xC0000142
-# Each child gets a hidden console of its own: one inherited from an agent session that has since ended fails every launch.
 NO_CONSOLE = subprocess.CREATE_NO_WINDOW
 IDEMPOTENT = {"list", "info", "extend", "scp", "push"}
-# Uploads go as base64 command arguments, inside Windows' 32 767-character command line.
 CHUNK_CHARS = 24000
-# Up to about 560 KB compressed goes up in commands; more goes up with one `boat push`.
 UPLOAD_CHUNKS = 32
 UPLOAD_WORKERS = 8
-# 4 MiB parts download as base64 command output; a `boat scp` part cost about 13 s before moving a byte.
 DOWNLOAD_BYTES = 4 * 1024 * 1024
 DOWNLOAD_WORKERS = 8
-# The remote job's exit when the source could not be synchronized.
 SYNC_FAILED = 79
-# The runner's exits when asked for the outcome of a job that still runs, or that has not started.
 STILL_RUNNING = 74
 NOT_STARTED = 78
 OUTCOME_SECONDS = 15
@@ -212,7 +193,6 @@ def parse_events(stdout):
 
 
 def transient(result, idempotent):
-    # Nothing shows whether a failed create, resume, exec or snapshot took effect, so only those that never ran repeat.
     if result.returncode & 0xFFFFFFFF == LAUNCH_FAILED:
         return True
     text = result.stdout + result.stderr
@@ -241,7 +221,6 @@ class Held:
 
 def boat(*args, check=True, idempotent=None, shielded=False):
     idempotent = args[0] in IDEMPOTENT if idempotent is None else idempotent
-    # A shielded call runs in its own process group, so the console's Ctrl-C cannot cut its request short.
     flags = NO_CONSOLE | (subprocess.CREATE_NEW_PROCESS_GROUP if shielded else 0)
     for wait in (*RETRY_SECONDS, None):
         result = subprocess.run([boat_exe(), "--json", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=flags)
@@ -277,7 +256,6 @@ def attach(vmid, pid, seen):
                 continue
             kind = event.get("type")
             if kind == "attached":
-                # The CLI reconnects on its own with a header at the current offsets.
                 start = {"stdout": event.get("stdoutOffset", 0), "stderr": event.get("stderrOffset", 0)}
             elif kind in seen:
                 text, end = event.get("data", ""), event["nextOffset"]
@@ -289,7 +267,6 @@ def attach(vmid, pid, seen):
                     if len(raw) == end - begin:
                         text = raw[seen[kind] - begin:].decode("utf-8", errors="replace")
                     else:
-                        # The CLI replaced undecodable bytes, so the overlap cannot be cut exactly: repeat it, never drop it.
                         say(f"Boat attach: up to {seen[kind] - begin} bytes of {kind} repeat below")
                 seen[kind] = end
                 print(text, end="", file=sys.stderr if kind == "stderr" else sys.stdout, flush=True)
@@ -309,7 +286,6 @@ def attach(vmid, pid, seen):
 
 
 def stop(vmid, pid):
-    # A detached job outlives Ctrl-C; the foreground exec it replaced died with its caller, so end it the same way.
     with Held():
         boat("exec", vmid, "--kill", str(pid), check=False, idempotent=True, shielded=True)
         for wait in (*RETRY_SECONDS, None):
@@ -324,8 +300,6 @@ def stop(vmid, pid):
 
 def remote(vmid, mode, token, *args):
     """Runs a runner job, showing its output; returns its exit code, read from the VM if Boat loses the job, and the job's id."""
-    # Detached, the job outlives a dropped connection; each attach replays from the start, so offsets skip what was seen.
-    # Detached exec takes --cwd relative to the sandbox's work directory, so the job changes directory itself.
     job, pid, seen, exit_code = uuid.uuid4().hex, None, {"stdout": 0, "stderr": 0}, None
     try:
         with Held() as held:
@@ -429,7 +403,6 @@ class State:
             return {}
 
     def update(self, vmid, **fields):
-        # Only the holder of the VM's lock writes its entry.
         if (self.pool / (vmid + ".json")).exists():
             atomic_json(self.pool / (vmid + ".json"), {**self.entry(vmid), **fields})
 
@@ -439,19 +412,15 @@ def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuil
     ranked = []
     for vmid in registered:
         vm = states.get(vmid)
-        # A stopping VM can take minutes to become resumable; another VM or a clone is quicker.
         if not vm or vm.get("state") not in USABLE or cooling(vmid):
             continue
         stopped = vm["state"] == "stopped"
         if size == "large" and vm.get("type") != "large" and not stopped:
             continue
-        # Another lane's VM holds that lane's build cache: take the one whose lane has been away longest.
-        # A stopped VM hydrates anew whatever its last run left.
         ranked.append((stopped, not stopped and vm.get("hydrated") is False, rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
     return [row[-1] for row in sorted(ranked)]
 
 
-# Files outside crates/ that every crate's build reads.
 SHARED_FILES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
 SHARED_DIRS = {".cargo", "vendor"}
 
@@ -551,17 +520,13 @@ class Plan:
     """The workspace crates a run compiles, and how many of them a VM compiles again after its last build of the profile."""
 
     def __init__(self, worktree, manifest, cargo):
-        # A check's metadata and a build's code are kept apart, per profile; tests build in a target of their
-        # own, which older helpers' tests (`tree_test_*`) never touched.
         kind = "tests" if cargo[0] == "test" else cargo[0]
         self.key = f"tree_{kind}_{profile(cargo)}"
-        # Workspace crates come back from the compile cache in builds and tests, except the dev profile's: they compile incrementally.
         self.cache = f"cache_{kind}_{profile(cargo)}" if cargo[0] == "build" or (cargo[0] == "test" and profile(cargo) != "dev") else None
         self.trees = trees(manifest)
         self.dirs, needs, tests, _ = workspace(worktree)
         named = selected(cargo)
         roots = set(self.dirs) if "--workspace" in cargo or not named else named & self.dirs.keys()
-        # Any test, bench or example target compiles the named crates' dev-dependencies.
         tested = cargo[0] == "test" or any(arg in {"--all-targets", "--tests", "--benches", "--examples", "--test", "--bench", "--example"} or arg.startswith(("--test=", "--bench=", "--example=")) for arg in cargo)
         self.compiled, pending = set(), [dep for root in roots for dep in (needs.get(root, set()) | (tests.get(root, set()) if tested else set()))] + list(roots)
         while pending:
@@ -569,8 +534,6 @@ class Plan:
             if crate not in self.compiled:
                 self.compiled.add(crate)
                 pending.extend(needs.get(crate, ()))
-        # Each crate's inputs, as Cargo and the compile cache tell its builds apart: its files, the
-        # files every build reads and its dependencies' inputs; a tested crate's, its dev-dependencies' too.
         self.inputs = {}
 
         def inputs(crate):
@@ -582,13 +545,11 @@ class Plan:
         for crate in sorted(self.compiled):
             inputs(crate)
         if tested:
-            # After their dependants', which build against the library alone.
             for root in sorted(roots & self.compiled):
                 self.inputs[root] = digest([self.inputs[root], sorted(self.inputs[dev] for dev in tests.get(root, set()) & self.compiled)])
 
     def rebuilds(self, entry):
         """The crates a VM compiles anew, then those its compile cache gives back."""
-        # A tree stands only while no run has used the VM since it was recorded; older helpers record none.
         tree = (entry.get(self.key) if entry.get(self.key + "_used") == entry.get("used") else None) or {}
         cached = (entry.get(self.cache) or {}) if self.cache else {}
         stale = [crate for crate in self.compiled if tree.get(crate) != self.inputs[crate]]
@@ -614,7 +575,6 @@ class Plan:
         return cached
 
 
-# The inputs of a crate the compile cache is taken to keep: a few lanes' worth, well inside its 16 GB.
 CACHED_INPUTS = 8
 
 
@@ -637,7 +597,6 @@ def left_trees(entry, changed, now):
 
 
 def resume_type(current, size):
-    # Boat refuses to shrink a VM whose data does not fit, so only ever grow one.
     return "large" if size == "large" and current != "large" else None
 
 
@@ -714,7 +673,6 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
         vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
         if creation.returncode or not vmid:
             if vmid:
-                # Shorten before publishing: a run that acquires it afterwards keeps its own full lease.
                 boat("extend", vmid, "--ttl", str(IDLE_SECONDS), check=False)
                 atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
             raise Failure(f"Boat could not clone {SNAPSHOT} ({creation.returncode}), sandbox {vmid}: {creation.stderr.strip()}")
@@ -727,7 +685,6 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
 
 def wait_ready(vmid, clock=time.monotonic, pause=time.sleep):
     """Waits until the VM runs and holds all its files; Failure once it stops getting there."""
-    # Restoring cached mtimes waits on each file's content, so it cannot start before hydration ends.
     started = running = moved = clock()
     progress = None
     while True:
@@ -765,18 +722,15 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
             try:
                 if vm["state"] == "stopped":
                     grow = resume_type(vm.get("type"), size)
-                    # Boat's own wait holds the run up to 30 minutes on a resume that will not finish.
                     boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []))
                     record["resumed"] = True
                 elif not created:
                     boat("extend", vmid, "--ttl", str(LEASE_SECONDS))
                 lease = Lease(vmid)
-                # A running VM the listing shows hydrated stays so; a resumed or cloned one hydrates again.
                 if vm["state"] == "stopped" or created or vm.get("hydrated") is False:
                     waited = True
                     wait_ready(vmid)
             except Failure as error:
-                # A refused call may be the account's start limit, not this VM: only a VM that failed to get ready cools.
                 if waited:
                     state.cool(vmid, str(error))
                 passed.add(vmid)
@@ -787,7 +741,6 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
                 lock.close()
                 continue
             record["ready_seconds"] = round(time.monotonic() - started, 2)
-            # Before the claim, so every VM decides claims by this runner's rules.
             install_runner(state, vmid)
             status, manifest = quick(vmid, "acquire", token)
             if status == 0:
@@ -818,7 +771,6 @@ def source_manifest(worktree, cache=None):
         known = json.loads(cache.read_text()) if cache else {}
     except (FileNotFoundError, ValueError):
         known = {}
-    # As Git does, a hash is kept only for a file last written well before it was hashed, so a rewrite within one timestamp tick is seen.
     settled = time.time_ns() - 2_000_000_000
     files, kept = {}, {}
     safe_dirs = {worktree}
@@ -849,7 +801,6 @@ def source_manifest(worktree, cache=None):
 
 
 def remove_stage(state, path):
-    # Refuse links: the staging tree must never let removal reach outside jobs/.
     root = state.jobs.resolve()
     target = path.resolve()
     if root not in target.parents:
@@ -891,10 +842,8 @@ def install_runner(state, vmid):
         return
     steps = []
     for name, data in files.items():
-        # Exactly this upload's parts: an interrupted earlier one may have left more of them.
         parts = upload(vmid, "runner-" + name, data)
         steps.append(f'cat {" ".join(parts)} | base64 -d > {name}.new && echo "{hashlib.sha256(data).hexdigest()}  {name}.new" | sha256sum -c --quiet && mv {name}.new {name}')
-    # The parts go whether or not the runner installed, so a failure leaves nothing for the next try.
     script = f"cd {REMOTE} || exit; {{ {' && '.join(steps)}; }}; status=$?; rm -f runner-*.b64-* {' '.join(name + '.new' for name in files)}; exit $status"
     boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", script, idempotent=True)
     state.update(vmid, runner_hash=digest)
@@ -909,7 +858,6 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     with tarfile.open(fileobj=bundle, mode="w:xz", preset=2) as archive:
         for name in changed:
             data = (worktree / name).read_bytes()
-            # A file edited since it was hashed is sent as read, so the remote checksums always match.
             manifest[name] = hashlib.sha256(data).hexdigest()
             entry = tarfile.TarInfo("files/" + name)
             entry.size = len(data)
@@ -921,14 +869,12 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     data = bundle.getvalue()
     digest = hashlib.sha256(data).hexdigest()
     name = f"incoming-{token}.tar.xz"
-    # Each `boat push` or `scp` costs 13-17 s however small; a few kilobytes per exec go up in parallel in about two.
     if len(data) * 4 // 3 <= UPLOAD_CHUNKS * CHUNK_CHARS:
         upload(vmid, name, data)
         return f"parts:{name}:{digest}"
     folder = stage / "upload"
     folder.mkdir()
     (folder / name).write_bytes(data)
-    # captures/ is ignored, and boat push sends only what Git would; give the upload its own index.
     subprocess.run(["git", "-c", "core.hideDotFiles=false", "init", "--quiet", str(folder)], check=True, creationflags=NO_CONSOLE)
     index = b"100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\t" + os.fsencode(name) + b"\0"
     subprocess.run(["git", "-C", str(folder), "update-index", "--add", "--info-only", "-z", "--index-info"], input=index, check=True, creationflags=NO_CONSOLE)
@@ -944,7 +890,6 @@ def manifest_digest(manifest):
 
 def outcome(vmid, job):
     """What a job left on the VM once it ended: its exit code, and a build's artifacts and their bundle."""
-    # A job Boat lost as it started may not have reached the runner yet.
     waits = iter(RETRY_SECONDS)
     while True:
         status, text = quick(vmid, "outcome", job)
@@ -966,7 +911,6 @@ def deliver(vmid, job, outdir):
     bundle = job["bundle"]
 
     def fetch(index):
-        # An exec returns at most 8 MiB of output: a part's base64 stays under it.
         _, events = boat("exec", vmid, "--timeout", "120", "--", "sh", "-c", 'dd if="$0" bs="$1" skip="$2" count=1 status=none | base64 -w0', bundle["path"], str(DOWNLOAD_BYTES), str(index), idempotent=True)
         data = base64.b64decode("".join(event.get("stdout", "") for event in events))
         if len(data) != min(DOWNLOAD_BYTES, bundle["size"] - index * DOWNLOAD_BYTES):
@@ -1009,7 +953,6 @@ def linked(path):
     return path.is_symlink() or bool(getattr(path.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-# Held by the run whose programs a folder holds, from its start until they have run.
 TEST_LOCK = ".boat-test.lock"
 
 
@@ -1039,7 +982,6 @@ def test_folder(worktree, outdir):
                     ours = json.loads((folder / "boat-artifacts.json").read_text())["cargo_arguments"][0] == "test"
                 except (OSError, ValueError, KeyError, IndexError):
                     ours = False
-                # Each run replaces what the folder holds, so it must be one only test runs wrote.
                 if not ours:
                     raise Refused(f"--out {folder} holds files no earlier `boat.py test` left; name an empty or new folder")
     folder.mkdir(parents=True, exist_ok=True)
@@ -1086,7 +1028,6 @@ def compiled_paths(worktree, cargo):
         text = path.read_text(encoding="utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), 1):
             for name in COMPILED_PATH.findall(line):
-                # include_bytes!/include_str! read the file where it compiles, which is right.
                 if "include" not in line and not re.search(r'var(_os)?\(\s*"' + re.escape(name) + '"', text):
                     found.append(f'{path.relative_to(worktree).as_posix()}:{number}: env!("{name}")')
     return found
@@ -1110,7 +1051,6 @@ def test_environment(base, worktree, folder, program, binaries):
         "CARGO_PKG_AUTHORS": ":".join(package.get("authors") or []),
         **{f"CARGO_PKG_{key.upper()}": package.get(key) or "" for key in ("description", "homepage", "repository", "license", "license_file", "rust_version", "readme")},
     })
-    # Integration tests and benches get these at compile time, which on Boat names the VM's paths; this run sets them too.
     if {"test", "bench"} & set(program["kind"]):
         env["CARGO_TARGET_TMPDIR"] = str(folder / "tmp")
         for binary in binaries:
@@ -1124,7 +1064,6 @@ def test_environment(base, worktree, folder, program, binaries):
 KIND_ORDER = {"bin": 1, "test": 2, "bench": 3, "example": 4}
 RUNNING = re.compile(r"^running (\d+) tests?$")
 FILTERED = re.compile(r"^test result: .*; (\d+) filtered out")
-# STATUS_DLL_NOT_FOUND
 DLL_MISSING = 0xC0000135
 
 
@@ -1154,9 +1093,7 @@ def shown(code):
     return str(code) if code < 256 else hex(code)
 
 
-# The pinned DXC a program loads from beside itself (shader-pipeline's `Compiler::discover`).
 SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
-# The built programs that draw the map, so a build puts the pinned DXC beside them as a test run does.
 MAP_PROGRAMS = {"viewer.exe", "replay-desktop.exe"}
 
 
@@ -1197,13 +1134,11 @@ def run_tests(worktree, folder, delivered, run, started):
         say("No test programs: the selection holds no test targets")
     elif counted and ran == 0 and not worst and "--list" not in run.program:
         if filtered:
-            # cargo test exits 0 here; a misspelt name must not read as a pass.
             say(f"No test matched {' '.join(run.program)}: {filtered} filtered out in {done} programs; exit 1 where cargo test exits 0")
             worst = 1
         else:
             say("No tests ran: the selected programs hold none")
     say(f"Tests: {done} of {len(programs)} programs run, {ran if counted else 'unknown'} tests ran; exit {shown(worst)}; {time.monotonic() - started:.2f} s from command start")
-    # Windows exit codes are unsigned 32-bit; sys.exit takes them as a signed int.
     return worst - 2 ** 32 if worst >= 2 ** 31 else worst
 
 
@@ -1243,7 +1178,6 @@ def make_snapshot(state, worktree, revision):
                 say("WARNING: the tree does not compile whole; the image keeps what did")
             elif status:
                 raise Failure(f"{mode} {' '.join(args)} failed ({status}); {SNAPSHOT} was not saved")
-        # The last claim clears the jobs' leftovers out of the image.
         if quick(vmid, "acquire", token)[0] or quick(vmid, "release", token)[0]:
             raise Failure(f"Could not clear {vmid} before saving the image")
         status, _ = remote(vmid, "provenance", token)
@@ -1255,7 +1189,6 @@ def make_snapshot(state, worktree, revision):
     finally:
         if stage:
             remove_stage(state, stage)
-        # It stops at the end of its idle tail, as tools/boat_setup.sh leaves the base image's VM.
         lease.end()
     return 0
 
@@ -1271,7 +1204,6 @@ class TestRun:
         self.program, self.fail_fast, self.pdb = program, fail_fast, pdb
 
 
-# `cargo test` options that take a value, so the word after one is not a test name.
 VALUE_OPTIONS = {"-p", "--package", "--test", "--bench", "--bin", "--example", "--features", "-F", "--exclude", "--profile", "--manifest-path", "--color", "--config", "-Z", "--lockfile-path", "--artifact-dir"}
 TEST_REFUSED = {
     "--no-run": "boat.py test builds and then runs; for a compile alone use `boat.py check --all-targets`",
@@ -1304,7 +1236,6 @@ def parse_test(rest):
         elif arg.startswith("-"):
             cargo.append(arg)
         else:
-            # Cargo's TESTNAME; any number of them filter as they would after --.
             names.append(arg)
     if not selected(cargo):
         raise Refused("name the crate with -p <crate>")
@@ -1330,7 +1261,6 @@ def parse(argv):
                 raise Failure("--out needs a directory")
             outdir = Path(rest[1])
             del rest[:2]
-        # Release builds only: an optimised profile such as release-lto inherits release.
         if outdir is None or profile(rest) in {"dev", "test"}:
             raise Failure("build needs --out <dir> and --release or --profile <optimised profile>")
     for arg in rest:
@@ -1377,7 +1307,6 @@ def run(argv):
     manifest = source_manifest(worktree, state.root / "hashes" / (lane + ".json"))
     source_digest = manifest_digest(manifest)
     if mode == "test":
-        # After the hashing, which a held lock file in an unignored folder would fail.
         outdir, claim = test_folder(worktree, outdir)
     token = uuid.uuid4().hex
     record = {"helper": "tools/boat.py", "mode": mode, "worktree": str(worktree), "revision": revision, "source_sha256": source_digest, "args": cargo, "vm": None, "phases": {}}
@@ -1410,7 +1339,6 @@ def run(argv):
         running = True
         if plan:
             changed[plan.key] = None
-        # The job synchronizes the tree first; it releases its claim whether that or Cargo fails.
         status, job = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else [*runner, *cargo]))
         claimed = False
         if status == SYNC_FAILED:
@@ -1442,7 +1370,6 @@ def run(argv):
             claim.close()
         raise
     finally:
-        # A job whose result was lost may still run, so it keeps the claim.
         if vmid and claimed and not running:
             try:
                 quick(vmid, "release", token)
@@ -1466,7 +1393,6 @@ def run(argv):
         with (state.logs / "timings.jsonl").open("a", encoding="utf-8") as log:
             log.write(json.dumps(record) + "\n")
         say(f"Boat wall time {elapsed:.2f} s; cargo exit {cargo_exit}; VM {vmid or 'not allocated'}")
-    # The VM is free again before the programs run here.
     try:
         return cargo_exit if delivered is None else run_tests(worktree, outdir, delivered, tests, started)
     finally:

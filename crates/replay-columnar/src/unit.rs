@@ -1,40 +1,3 @@
-//! A table's unit of a block: its parts in hour order, each a time slice from one close to the
-//! next, written entity by entity, one stream per column ([`crate::store`] feeds it).
-//!
-//! **Pending.** While a table's part is open, each column holds its events in arrival order:
-//! hour groups of `(slot gap, payload)`; a group starts with `0, hour`, each event is
-//! `slot - previous + 1` then its payload, an event out of slot order starts a new group. A
-//! numeric payload is its code (`zigzag(new - old) << 1`, the held cell counting as zero when
-//! missing or unrecorded; `1` missing; `3` unrecorded); in a column's first part of a run each
-//! event also carries its value's code, so the part can choose raw values, and that choice stands
-//! for the run. A list payload is a form ([`lists`]); a literal is a reference into the part's
-//! literal arena, where each distinct literal is held once. Rows inserted in the part give their
-//! final cells of their insert hour as the column's inserted values, in insert order.
-//!
-//! **Closing.** A table's part closes when a column's pending reaches the cap, when all pending and
-//! the previous parts kept for chaining pass the budget (the table holding most first), or at the
-//! block's last hour. Each column's events are sorted by slot (stably), cut into tracks at the
-//! hours rows were inserted, written as:
-//!
-//! `model | tracks | directory bytes | pool bytes | inserted bytes | directory | pool | inserted |
-//! events`; per track in the directory: slot gap, events (or runs) `<< 1 | born`, the hours from
-//! the part's first to the insert when born, its bytes. A numeric event is `hours since the
-//! track's previous event | code` (model 0 differences, 2 raw values, 3 second differences), or
-//! with `| repeats` in model 1 (runs). A list event is `hours | form | ...`; a literal named more
-//! than once in the part is pooled. A list column's inserted value is `head` and, unless pooled,
-//! the literal's bytes: `head` is `length << 2 | unrecorded`, or `pooled index << 2 | 2 |
-//! unrecorded` (bit 1 pooled, bit 0 the cell not recorded).
-//!
-//! Lifetimes: `hours since the last such hour | deleted | inserted | deleted slots as gaps |
-//! inserted slots as gaps | inserted keys, each its difference from the inserted key before`.
-//! Strings: ids first named since the table's last restore of any kind, by a text cell or a status's
-//! refusal, `count | id gap | length | bytes`. Rows read (a table read in part) and touched rows are streams of tracks without
-//! payload.
-//!
-//! **Frames.** A stream is compressed alone with the same stream of the table's previous part in
-//! the block as the compressor's prefix (chained); a stream under the small size joins the part's
-//! one frame of small streams (`count | per stream: id | length`, then their bytes). Compression
-//! runs on its own thread, frames reach the sink in closing order.
 
 use crate::{
     invalid,
@@ -123,10 +86,8 @@ pub(crate) fn unzig_wide(value: u128) -> i128 {
     (value >> 1) as i128 ^ -((value & 1) as i128)
 }
 
-/// Hours in a block.
 pub const BLOCK: u32 = 720;
 
-/// A part's streams other than its columns' (whose ids are [`column_stream`]).
 pub const LIFETIMES: u32 = 0;
 pub const STRINGS: u32 = 1;
 pub const READ: u32 = 2;
@@ -136,38 +97,26 @@ pub const fn column_stream(column: usize) -> u32 {
     column as u32 + 4
 }
 
-/// Numeric stream models.
 pub const DIFFERENCES: u8 = 0;
 pub const RUNS: u8 = 1;
 pub const RAW: u8 = 2;
 pub const SECOND: u8 = 3;
 
-/// A numeric event's code for a cell turning missing or unrecorded.
 pub const MISSING: u128 = 1;
 pub const UNRECORDED: u128 = 3;
 
-/// How the unit is written.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub level: i32,
-    /// A column's pending bytes that close its table's part.
     pub cap: usize,
-    /// When to write, not a limit: once all tables' pending bytes and previous parts kept pass it,
-    /// the table holding the most pending bytes closes its part. Nothing is dropped.
     pub budget: usize,
-    /// A stream under this many raw bytes joins its part's frame of small streams.
     pub small: usize,
     pub window_log: u32,
-    /// Raw bytes of closed parts waiting for the compression thread.
     pub queue: usize,
-    /// Runs are a part's model when its column averages this many events a run or more.
     pub runs: u64,
-    /// A table is restored at a block's end once this many events passed since its last restore,
-    /// or this many blocks; every `whole_every`th restore is whole.
     pub restore_events: u64,
     pub restore_blocks: u32,
     pub whole_every: u32,
-    /// A whole restore packs a table whose slots pass twice its live rows by more than this.
     pub pack_margin: u32,
 }
 
@@ -189,9 +138,6 @@ impl Settings {
     }
 }
 
-/// One restore stream's chunks as the table's last whole restore cut them: each one's first slot
-/// and frame, and a bit for each that its slots were written since (a cell, or a row born or
-/// deleted there).
 #[derive(Clone, Debug, Default)]
 struct Chunks {
     cuts: Vec<u32>,
@@ -218,75 +164,52 @@ impl Chunks {
         self.written.get(index / 64).is_some_and(|word| word >> (index % 64) & 1 == 0)
     }
 
-    /// The slots chunk `index` held at the whole restore, as a reader of it counts them.
     fn whole_range(&self, index: usize, slots: u32) -> (u32, u32) {
         let from = self.cuts[index];
         (from, self.cuts.get(index + 1).copied().unwrap_or(slots).min(slots).max(from))
     }
 }
 
-/// When a table was last restored, and what its last whole restore fixed.
 #[derive(Clone, Debug, Default)]
 struct Rule {
     events: u64,
     blocks: u32,
     since_whole: u32,
     restored: bool,
-    /// Per restore stream (rows, meta, then each column's), its chunks as the last whole restore
-    /// cut them.
     chunks: Vec<Chunks>,
-    /// The table's slots at its last whole restore.
     whole_slots: u32,
-    /// The last restore, named again by a block whose end finds the table unchanged.
     last: Option<restore::RestoreEntry>,
-    /// The strings the last whole restore lists: the others list only those it does not.
     whole_strings: HashSet<u32, foldhash::fast::FixedState>,
     status: Option<(Status, Option<i32>)>,
 }
 
-/// One frame of a part: the streams it holds, where it lies, its sizes and digest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameEntry {
     pub streams: Vec<u32>,
     pub offset: u64,
     pub stored: u32,
     pub raw: u32,
-    /// The first 16 bytes of the stored frame's BLAKE3.
     pub digest: [u8; 16],
-    /// Compressed with the same stream of the table's previous part in the block as its prefix.
     pub chained: bool,
-    /// A frame of small streams: `count | per stream: id | length`, then their bytes.
     pub small: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartEntry {
-    /// Its first hour in the block.
     pub first: u16,
     pub frames: Vec<FrameEntry>,
-    /// A log's ordinal of the first row the part appends: the table's rows before it. 0 for a
-    /// table holding state.
     pub ordinal: u64,
-    /// The part is a log's: its table entry's class, not written apart in the page.
     pub log: bool,
 }
 
-/// A table's entry in a block's page.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TableEntry {
     pub parts: Vec<PartEntry>,
-    /// Status, read and sample hour as runs over the block's hours.
     pub status: Vec<u8>,
-    /// The run's first restore, after its first hour: in its first block's page only.
     pub first: Option<restore::RestoreEntry>,
-    /// The table's restore at the block's end, when the rule made one.
     pub restore: Option<restore::RestoreEntry>,
-    /// The table's live rows moved to slots `0..live` in slot order at the block's end.
     pub packed: bool,
-    /// The table is a log: its parts append and forget rows by ordinal, its restores are its
-    /// count and live set.
     pub log: bool,
-    /// A log's rows appended before the block's first hour.
     pub count: u64,
 }
 
@@ -380,7 +303,6 @@ fn get_restore(bytes: &[u8], at: &mut usize, previous: &mut u64) -> io::Result<r
 }
 
 impl TableEntry {
-    /// Its bytes in a page, frame offsets as differences within it.
     pub fn write(&self, out: &mut Vec<u8>) {
         put_varint(out, self.parts.len() as u64);
         let mut previous = 0_u64;
@@ -407,7 +329,6 @@ impl TableEntry {
         }
     }
 
-    /// The entry [`Self::write`] wrote at `at` of `bytes`.
     pub fn read(bytes: &[u8], at: &mut usize) -> io::Result<Self> {
         let parts = get_varint(bytes, at)? as usize;
         if parts > bytes.len() {
@@ -462,7 +383,6 @@ impl TableEntry {
     }
 }
 
-/// What a block's page says of its tables' units.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockPage {
     pub block: u32,
@@ -495,18 +415,12 @@ impl BlockPage {
     }
 }
 
-/// Where a unit's frames and pages go: the recording's file.
 pub trait PartSink {
-    /// Writes `stored`, one frame; where it lies.
     fn frame(&mut self, stored: &[u8]) -> io::Result<u64>;
-    /// A block's page, once every part of it is written.
     fn block(&mut self, page: BlockPage) -> io::Result<()>;
-    /// The `stored` bytes of a frame written before, at `offset`: a whole restore's chunk read
-    /// back as the next restore's prefix.
     fn read_back(&mut self, offset: u64, stored: u32, out: &mut Vec<u8>) -> io::Result<()>;
 }
 
-/// A sink that keeps nothing: the store filled with no unit written.
 pub struct Discard;
 
 impl PartSink for Discard {
@@ -527,7 +441,6 @@ fn digest(bytes: &[u8]) -> [u8; 16] {
     blake3::hash(bytes).as_bytes()[..16].try_into().expect("sixteen bytes")
 }
 
-/// Status runs: `count | per run: hours since the last run's first | status | read | sample`.
 fn put_status(out: &mut Vec<u8>, status: Status) {
     match status {
         Status::NotRecorded => out.push(0),
@@ -555,7 +468,6 @@ pub(crate) fn get_status(bytes: &[u8], at: &mut usize) -> io::Result<Status> {
     })
 }
 
-/// A table's status of one hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HourStatus {
     pub status: Status,
@@ -563,8 +475,6 @@ pub struct HourStatus {
     pub sampled: Option<i32>,
 }
 
-/// A status run's sample hour: none, the hour itself (a table read every hour stays one run), or
-/// another hour, as `0`, `1`, or its zigzag plus 2.
 fn sample_code(sampled: Option<i32>, hour: i32) -> u64 {
     match sampled {
         None => 0,
@@ -573,8 +483,6 @@ fn sample_code(sampled: Option<i32>, hour: i32) -> u64 {
     }
 }
 
-/// A table's status over a block's hours: `count | per run: hours since the last run's first |
-/// status | read | sample code`.
 fn status_runs(runs: &[(u16, Status, bool, u64)]) -> Vec<u8> {
     let mut out = Vec::new();
     put_varint(&mut out, runs.len() as u64);
@@ -589,14 +497,12 @@ fn status_runs(runs: &[(u16, Status, bool, u64)]) -> Vec<u8> {
     out
 }
 
-/// One column's pending events of a part.
 #[derive(Default)]
 struct Pending {
     buffer: Vec<u8>,
     hour: u32,
     next: u32,
     events: u64,
-    /// A list column's literals of the part, each held once, where each lies, by digest.
     literals: Vec<u8>,
     places: Vec<(u32, u32)>,
     by_digest: HashMap<u64, Vec<u32>, foldhash::fast::FixedState>,
@@ -650,7 +556,6 @@ impl Pending {
     }
 }
 
-/// A column's raw-or-difference choice for the run, made in its first part with events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Choice {
     Trying,
@@ -661,14 +566,11 @@ enum Choice {
 struct Column {
     list: bool,
     pending: Pending,
-    /// A numeric column's inserted values' codes, in insert order.
     inserts: Vec<u8>,
-    /// A list column's inserted values: its literal's id doubled, plus one when unrecorded.
     insert_ids: Vec<u32>,
     choice: Choice,
 }
 
-/// One table's part under way.
 struct Open {
     columns: Vec<Column>,
     touched: Pending,
@@ -676,32 +578,22 @@ struct Open {
     lifetimes: Vec<u8>,
     life_hour: u16,
     previous_key: u128,
-    /// Rows inserted in the part, (slot, hour).
     births: Vec<(u32, u16)>,
-    /// Ids first named in the part since the table's last restore.
     strings: Vec<u32>,
-    /// Ids named since the table's last restore, those it lists included.
     named: HashSet<u32, foldhash::fast::FixedState>,
     first: u16,
-    /// The part holds an event, an insert, a delete, a touch or a read.
     used: bool,
     bytes: usize,
-    /// Each stream of the part before this one in the block, raw.
     previous: HashMap<u32, Arc<Vec<u8>>, foldhash::fast::FixedState>,
     status: Vec<(u16, Status, bool, u64)>,
     held_status: Option<(Status, bool, u64)>,
     entry: TableEntry,
     rule: Rule,
-    /// A restore whose chunks are on their way: whether it is the run's first, and its entry.
     restoring: Option<(bool, restore::RestoreEntry)>,
-    /// A log table, and what its hour under way appended (first ordinal, count) and forgot; the
-    /// appended keys as the lifetimes stream holds them.
     log: bool,
     log_hour: Option<(u64, u64)>,
     log_keys: Vec<u8>,
-    /// Runs forgotten, (first, count), in the order given.
     forgets: Vec<(u64, u64)>,
-    /// A log's rows appended in the block before the part under way, and in the block.
     part_appends: u64,
     block_appends: u64,
 }
@@ -761,7 +653,6 @@ impl Open {
         self.bytes
     }
 
-    /// A log's columns are their inserted values, and its lifetimes may pass them.
     fn largest_column(&self) -> usize {
         if self.log {
             let values = self.columns.iter().map(|column| column.inserts.len() + column.pending.literals.len() + column.insert_ids.len()).max().unwrap_or(0);
@@ -775,7 +666,6 @@ impl Open {
     }
 }
 
-/// What the unit wrote, by kind of stream.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Written {
     pub parts: u64,
@@ -786,7 +676,6 @@ pub struct Written {
     pub lifetimes: (u64, u64),
     pub strings: (u64, u64),
     pub marks: (u64, u64),
-    /// Small frames: stored and raw, of the streams the sizes above count raw only.
     pub small: (u64, u64),
     pub directory_raw: u64,
     pub inserted_raw: u64,
@@ -797,33 +686,25 @@ pub struct Written {
     pub closes_cap: u64,
     pub closes_budget: u64,
     pub closes_block: u64,
-    /// Restores: stored and raw, those whole and the others, chunks, those named again, tables packed.
     pub restores: (u64, u64),
     pub whole_restores: u64,
     pub based_restores: u64,
     pub repeated_restores: u64,
     pub restore_chunks: u64,
-    /// Chunks of restores that are not whole that name their whole one's frame again.
     pub named_chunks: u64,
-    /// The most events any block's end had since each table's last restore: what a seek to the
-    /// end of that block replays at worst.
     pub worst_replay: u64,
     pub largest_chunk: u64,
     pub packed: u64,
-    /// Bytes of a whole restore's chunk read back for a restore's prefix.
     pub read_back: u64,
-    /// Restores' stored bytes: chunks without a prefix, then with one; each rows, meta, columns.
     pub restore_parts: [[u64; 3]; 2],
 }
 
 impl Written {
-    /// The units' stored bytes, restores apart.
     pub fn stored(&self) -> u64 {
         self.numeric.0 + self.list.0 + self.lifetimes.0 + self.strings.0 + self.marks.0 + self.small.0
     }
 }
 
-/// What the encoder held at its most, by part.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Held {
     pub pending: usize,
@@ -832,33 +713,23 @@ pub struct Held {
     pub closing: usize,
     pub queued: usize,
     pub context: usize,
-    /// A restore's chunk and its prefix, on their way to the compression thread.
     pub restoring: usize,
 }
 
-/// Where the encoder's time went, when it is timed ([`Encoder::time`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timings {
-    /// Events, lifetimes, inserted values and statuses appended to pending, and the calls timed.
     pub appending: std::time::Duration,
     pub appends: u64,
-    /// Parts closed: events found, sorted, laid out as tracks, models chosen.
     pub closing: std::time::Duration,
-    /// Restores' bytes made: chunks laid out, rows compared with their whole one's.
     pub restoring: std::time::Duration,
-    /// Whole restores' chunks read back from the file, checked and decompressed as prefixes.
     pub reading_back: std::time::Duration,
-    /// On the compression thread.
     pub compressing_parts: std::time::Duration,
     pub compressing_restores: std::time::Duration,
-    /// Frames' digests taken, and frames handed to the sink.
     pub digesting: std::time::Duration,
     pub writing: std::time::Duration,
-    /// Waiting for the compression thread.
     pub waiting: std::time::Duration,
 }
 
-/// A part's raw streams on their way to the compression thread.
 struct Job {
     table: usize,
     first: u16,
@@ -869,13 +740,11 @@ struct Job {
     restore: Option<RestoreJob>,
 }
 
-/// A restore chunk's place: the stream and first slot, and its prefix's frame.
 #[derive(Clone, Debug)]
 struct RestoreJob {
     stream: u32,
     slot: u32,
     prefix: Option<FrameEntry>,
-    /// A chunk nothing touched since the whole restore: that one's frame, named again.
     named: Option<FrameEntry>,
 }
 
@@ -895,7 +764,6 @@ struct Done {
     ordinal: u64,
     restore: Option<RestoreJob>,
     spent: std::time::Duration,
-    /// Each frame: its streams, stored bytes, raw length, chained, small, and the kinds it holds.
     frames: Vec<(Vec<u32>, Vec<u8>, u32, bool, bool, Vec<StreamKind>)>,
 }
 
@@ -906,23 +774,18 @@ fn label(name: &str) -> engine_allocation::labels::Scope {
     labels::enter(labels::owner(name), labels::Kind::Operator)
 }
 
-/// What the compression thread is given: a part, whose frames come out in order; one frame of
-/// the file's own, answered on its own channel; or the end.
 enum Work {
     Part(Job),
     Frame(Vec<u8>, mpsc::Sender<io::Result<Vec<u8>>>),
     Stop,
 }
 
-/// Frames of the file's own (pages, strings, clock, summaries) compressed on the unit's
-/// compression thread, by its one context.
 #[derive(Clone)]
 pub struct FrameCompressor {
     work: mpsc::Sender<Work>,
 }
 
 impl FrameCompressor {
-    /// `raw` as one frame, once the parts sent before it are compressed.
     pub fn compress(&self, raw: &[u8]) -> io::Result<Vec<u8>> {
         let stopped = || invalid("The unit's compression thread stopped");
         let (reply, answer) = mpsc::channel();
@@ -931,12 +794,10 @@ impl FrameCompressor {
     }
 }
 
-/// The compression thread: parts in, frames out, in order.
 struct Compression {
     jobs: Option<mpsc::Sender<Work>>,
     done: mpsc::Receiver<io::Result<Done>>,
     thread: Option<std::thread::JoinHandle<()>>,
-    /// Raw bytes of each job sent and not yet done, oldest first.
     queued: VecDeque<usize>,
     context: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -1029,7 +890,6 @@ fn compress(compressor: &mut Compressor, job: Job, settings: Settings) -> io::Re
     Ok(Done { table: job.table, first: job.first, ordinal: job.ordinal, restore: job.restore, frames, spent: started.elapsed() })
 }
 
-/// One event found again in a column's pending bytes.
 #[derive(Clone, Copy)]
 struct Found {
     slot: u32,
@@ -1038,7 +898,6 @@ struct Found {
     end: u32,
 }
 
-/// What closing a column takes, kept between columns.
 #[derive(Default)]
 struct Scratch {
     found: Vec<Found>,
@@ -1055,14 +914,11 @@ struct Scratch {
     uses: Vec<u32>,
     inserted: Vec<u8>,
     births: Vec<(u32, u16)>,
-    /// A marks stream's events counted by slot, then each slot's end in `hours`.
     counts: Vec<u32>,
-    /// A marks stream's hours in slot order.
     hours: Vec<u16>,
     peak: usize,
 }
 
-/// The closing scratch's room kept between parts; a part that needed more lets it go after.
 const SCRATCH_KEPT: usize = 4 << 20;
 
 impl Scratch {
@@ -1078,20 +934,16 @@ impl Scratch {
     }
 }
 
-/// The encoder: every table's part under way, closed into frames for a [`PartSink`].
 pub struct Encoder {
     settings: Settings,
     tables: Vec<Open>,
-    /// The run's first hour; the hour under way.
     run_first: i32,
     hour: i32,
-    /// Events are taken: off for a run's first hour, which is its first restore.
     on: bool,
     scratch: Scratch,
     payload: Vec<u8>,
     matcher: lists::Matcher,
     compression: Compression,
-    /// Tables changed since the budget was last checked.
     changed: Vec<usize>,
     changed_marks: Vec<bool>,
     pending_total: usize,
@@ -1099,7 +951,6 @@ pub struct Encoder {
     pub written: Written,
     pub held: Held,
     decompressor: engine_allocation::zstd::Decompressor,
-    /// Tables packed since last asked, each old slot's new one.
     moves: Vec<(usize, Vec<Option<u32>>)>,
     timed: bool,
     pub timings: Timings,
@@ -1131,7 +982,6 @@ impl Encoder {
         })
     }
 
-    /// Times where its work goes ([`Self::timings`]); appending is timed a call at a time.
     pub fn time(&mut self, timed: bool) {
         self.timed = timed;
     }
@@ -1151,13 +1001,10 @@ impl Encoder {
         self.settings
     }
 
-    /// The tables packed since last asked, each with every old slot's new one.
     pub fn take_moves(&mut self) -> Vec<(usize, Vec<Option<u32>>)> {
         std::mem::take(&mut self.moves)
     }
 
-    /// A new run starting at `first_hour`: its first hour is taken by no event, and its end
-    /// writes the run's first restore.
     pub fn begin_run(&mut self, first_hour: i32) {
         self.on = false;
         for open in &mut self.tables {
@@ -1173,8 +1020,6 @@ impl Encoder {
         self.run_first = first_hour;
     }
 
-    /// The hour under way.
-    /// Its compression thread, for the file's own frames.
     pub fn frames(&self) -> FrameCompressor {
         FrameCompressor { work: self.compression.jobs.clone().expect("a running thread") }
     }
@@ -1192,7 +1037,6 @@ impl Encoder {
         (self.hour - self.run_first) as u32 / BLOCK
     }
 
-    /// The hour under way is its block's last: its end closes every part.
     pub fn ends_block(&self) -> bool {
         u32::from(self.block_hour()) == BLOCK - 1
     }
@@ -1208,21 +1052,18 @@ impl Encoder {
         }
     }
 
-    /// The table's status of the hour under way.
     pub fn status(&mut self, table: usize, held: HourStatus) {
         let started = self.started();
         let hour = self.block_hour();
         let run = (held.status, held.read, sample_code(held.sampled, self.hour));
         let open = &mut self.tables[table];
         if open.held_status != Some(run) || open.status.is_empty() {
-            // A status given again in its hour (a table refused after the hour began) replaces it.
             match open.status.last_mut() {
                 Some(last) if last.0 == hour => *last = (hour, run.0, run.1, run.2),
                 _ => open.status.push((hour, run.0, run.1, run.2)),
             }
             open.held_status = Some(run);
         }
-        // A refusal's reason is a string the part names, as a text cell's is.
         if let Status::Unavailable { reason } = held.status
             && self.on
             && !self.tables[table].named.contains(&reason)
@@ -1242,7 +1083,6 @@ impl Encoder {
         }
     }
 
-    /// An older row's numeric cell going from `old` to `new`.
     pub fn number(&mut self, table: usize, column: usize, slot: u32, old: Value<'_>, new: Value<'_>) {
         if !self.on {
             return;
@@ -1285,7 +1125,6 @@ impl Encoder {
         self.appended(started);
     }
 
-    /// An older row's list cell going from `old` to `new`.
     pub fn list(&mut self, table: usize, column: usize, slot: u32, old: Value<'_>, new: Value<'_>) {
         if !self.on {
             return;
@@ -1318,15 +1157,12 @@ impl Encoder {
         self.appended(started);
     }
 
-    /// Which tables are logs, by table.
     pub fn declare_logs(&mut self, logs: &[bool]) {
         for (open, &log) in self.tables.iter_mut().zip(logs) {
             open.log = log;
         }
     }
 
-    /// A log's row appended at `ordinal`, its cells to follow through [`Self::inserted`]: taken in
-    /// a run's first hour too, whose part then starts at that hour.
     pub fn append_row(&mut self, table: usize, ordinal: u64, key: u128) -> io::Result<()> {
         let started = self.started();
         let _label = label("pending");
@@ -1353,7 +1189,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// A log's rows `first..first + count` the game no longer lists, forgotten at this hour.
     pub fn forget_rows(&mut self, table: usize, first: u64, count: u64) {
         let _label = label("pending");
         let first_hour = self.hour == self.run_first;
@@ -1367,8 +1202,6 @@ impl Encoder {
         self.mark(table);
     }
 
-    /// A log's hour into its lifetimes: its appends as inserts at consecutive ordinals with their
-    /// keys, its forgets as deletes. A reader of a log takes an hour's appends before its forgets.
     fn log_lives(&mut self, table: usize) {
         let hour = self.block_hour();
         let open = &mut self.tables[table];
@@ -1412,7 +1245,6 @@ impl Encoder {
         self.mark(table);
     }
 
-    /// A table read in part: the rows its hour read.
     pub fn read_rows(&mut self, table: usize, slots: &[u32]) {
         if !self.on {
             return;
@@ -1426,7 +1258,6 @@ impl Encoder {
         self.mark(table);
     }
 
-    /// An hour's rows deleted and inserted, each by ascending slot.
     pub fn lives(&mut self, table: usize, deleted: &[(u32, u128)], inserted: &[u32], key: impl Fn(u32) -> u128) {
         if !self.on || deleted.is_empty() && inserted.is_empty() {
             return;
@@ -1469,8 +1300,6 @@ impl Encoder {
         self.appended(started);
     }
 
-    /// A row inserted this hour: its cell of `column` as the hour left it, in insert order; a
-    /// log's row as it is appended, in a run's first hour too.
     pub fn inserted(&mut self, table: usize, column: usize, value: Value<'_>) {
         if !self.on && !self.tables[table].log {
             return;
@@ -1500,8 +1329,6 @@ impl Encoder {
         self.appended(started);
     }
 
-    /// The hour's end: parts due by cap or budget closed, every part at the block's last hour, and
-    /// then the restores the rule asks; after a run's first hour, every table's first restore.
     pub fn end_hour(&mut self, tables: &mut [crate::store::TableState], strings: &Strings, sink: &mut dyn PartSink) -> io::Result<()> {
         for at in 0..self.changed.len() {
             let table = self.changed[at];
@@ -1555,8 +1382,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// Ends the run after hour `self.hour`: a short last block closes, with the restores the rule
-    /// asks.
     pub fn end_run(&mut self, tables: &mut [crate::store::TableState], strings: &Strings, sink: &mut dyn PartSink) -> io::Result<()> {
         let hour = self.block_hour();
         if u32::from(hour) != BLOCK - 1 {
@@ -1569,9 +1394,6 @@ impl Encoder {
         self.drain(sink, true)
     }
 
-    /// At a block's end: each table the rule asks restored, whole every so often (and packed then
-    /// when its slots pass twice its live rows by the margin); one unchanged since its last restore
-    /// names that one again.
     fn restores(&mut self, tables: &mut [crate::store::TableState], strings: &Strings, sink: &mut dyn PartSink) -> io::Result<()> {
         let settings = self.settings;
         let since: u64 = self.tables.iter().map(|open| open.rule.events).sum();
@@ -1603,8 +1425,6 @@ impl Encoder {
         self.settle_restores(sink)
     }
 
-    /// Every restore on its way written: each into its table's entry, a whole one's chunks kept
-    /// as the next restores' prefixes.
     fn settle_restores(&mut self, sink: &mut dyn PartSink) -> io::Result<()> {
         self.drain(sink, true)?;
         for open in &mut self.tables {
@@ -1625,8 +1445,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// Writes `table`'s restore from `state`: whole, or against its last whole one's chunks, a
-    /// chunk nothing touched since naming that one's frame again.
     fn write_restore(&mut self, table: usize, state: &crate::store::TableState, strings: &Strings, whole: bool, first: bool, sink: &mut dyn PartSink) -> io::Result<()> {
         let _label = label("restoring");
         let started = std::time::Instant::now();
@@ -1655,13 +1473,10 @@ impl Encoder {
             rule.whole_strings = listed.iter().copied().collect();
             rule.chunks[restore::META as usize].cut(vec![0]);
         }
-        // A reader starting here holds exactly the strings this restore and its whole one list:
-        // the table's parts name every other string afresh.
         let open = &mut self.tables[table];
         open.named.clear();
         open.named.extend(open.rule.whole_strings.iter().copied());
         open.named.extend(listed);
-        // A log's part under way across its run's first restore lists its strings already.
         open.named.extend(open.strings.iter().copied());
         self.restore_chunk(table, restore::META, 0, 0, raw, whole, sink)?;
         if log {
@@ -1677,7 +1492,6 @@ impl Encoder {
         if rows.is_empty() {
             rows.push(0);
         }
-        // Rows a table grew by past its whole restore's chunks take chunks of their own.
         while let Some(&last) = rows.last()
             && last + restore::ROWS_CHUNK < slots
         {
@@ -1744,8 +1558,6 @@ impl Encoder {
                     self.restore_chunk(table, stream, index, from, raw, whole, sink)?;
                     continue;
                 }
-                // The last chunk, and what the table grew by: cut again at the chunk size,
-                // the new chunks without a prefix.
                 let (mut index, mut from, mut raw) = (index, from, Vec::new());
                 for slot in from..slots {
                     restore::column_chunk(state, column, slot, slot + 1, &mut raw);
@@ -1766,9 +1578,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// Chunk `index` of restore stream `stream`, slots `from` to `next` (or the table's end),
-    /// named again when nothing touched its slots since the whole restore and it spans the slots
-    /// that one's did: whether it was.
     #[allow(clippy::too_many_arguments, reason = "a chunk's place in its restore, given whole")]
     fn name_again(&mut self, table: usize, stream: u32, index: usize, from: u32, next: Option<u32>, slots: u32, sink: &mut dyn PartSink) -> io::Result<bool> {
         let rule = &self.tables[table].rule;
@@ -1793,8 +1602,6 @@ impl Encoder {
         Ok(true)
     }
 
-    /// The same chunk of the table's last whole restore, read back from the file: its frame and
-    /// raw bytes.
     fn read_whole(&mut self, table: usize, stream: u32, index: usize, sink: &mut dyn PartSink) -> io::Result<Option<(FrameEntry, Arc<Vec<u8>>)>> {
         let Some(frame) = self.tables[table].rule.chunks.get(stream as usize).and_then(|chunks| chunks.whole.get(index)).cloned() else {
             return Ok(None);
@@ -1815,8 +1622,6 @@ impl Encoder {
         Ok(Some((frame, Arc::new(bytes))))
     }
 
-    /// One restore chunk to the compression thread, with the same chunk of the table's last
-    /// whole restore read back as its prefix when it is not whole.
     #[allow(clippy::too_many_arguments, reason = "a chunk's place in its restore, given whole")]
     fn restore_chunk(&mut self, table: usize, stream: u32, index: usize, slot: u32, raw: Vec<u8>, whole: bool, sink: &mut dyn PartSink) -> io::Result<()> {
         let prefix = if whole { None } else { self.read_whole(table, stream, index, sink)? };
@@ -1873,8 +1678,6 @@ impl Encoder {
         sink.block(page)
     }
 
-    /// Takes finished frames to the sink; all of them when `all`, else those done and enough to
-    /// keep the queue within its bound.
     fn drain(&mut self, sink: &mut dyn PartSink, all: bool) -> io::Result<()> {
         loop {
             let must = all && !self.compression.queued.is_empty() || self.compression.queued() > self.settings.queue;
@@ -1956,8 +1759,6 @@ impl Encoder {
         }
     }
 
-    /// Closes `table`'s part, which ends with hour `last`; its streams are kept for the next part
-    /// to chain to when `chained`, that is when a part of the same block may follow it.
     fn close(&mut self, table: usize, last: u16, chained: bool, strings: &Strings, sink: &mut dyn PartSink) -> io::Result<()> {
         let open = &mut self.tables[table];
         if !open.used {
@@ -1980,7 +1781,6 @@ impl Encoder {
         let mut small: Vec<(u32, Vec<u8>)> = Vec::new();
         let mut large_kinds = Vec::new();
         let mut small_kinds = Vec::new();
-        // The next part is chained to this one's streams alone.
         let mut kept: HashMap<u32, Arc<Vec<u8>>, foldhash::fast::FixedState> = HashMap::default();
         let mut place = |id: u32, bytes: Vec<u8>, kind: StreamKind, open: &mut Open, written: &mut Written| {
             written.largest_stream = written.largest_stream.max(bytes.len() as u64);
@@ -2079,8 +1879,6 @@ impl Encoder {
         open.touched.clear();
         open.read.clear();
         open.lifetimes = Vec::new();
-        // A log's hour buffers count toward its pending bytes: kept past the part, a writer taken
-        // up at a block's end would count otherwise and close its budget's parts elsewhere.
         open.log_keys = Vec::new();
         open.forgets = Vec::new();
         open.previous_key = 0;
@@ -2097,7 +1895,6 @@ impl Encoder {
     }
 }
 
-/// A store cell's bits and what it is.
 fn bits(value: Value<'_>) -> (u64, Value<'_>) {
     match value {
         Value::Number(bits) => (bits, value),
@@ -2107,7 +1904,6 @@ fn bits(value: Value<'_>) -> (u64, Value<'_>) {
     }
 }
 
-/// `pending`'s events, each found, sorted by slot.
 fn find(pending: &Pending, found: &mut Vec<Found>, payload: impl Fn(&[u8], &mut usize) -> io::Result<()>) -> io::Result<()> {
     found.clear();
     found.reserve_exact(pending.events as usize);
@@ -2125,12 +1921,10 @@ fn find(pending: &Pending, found: &mut Vec<Found>, payload: impl Fn(&[u8], &mut 
         payload(bytes, &mut at)?;
         found.push(Found { slot, hour, at: start as u32, end: at as u32 });
     }
-    // The stable order by slot, sorted in place: `at` rises with the buffer.
     found.sort_unstable_by_key(|event| (event.slot, event.at));
     Ok(())
 }
 
-/// Each mark in `bytes`, a pending buffer without payloads: its slot and hour, in the order held.
 fn each_mark(bytes: &[u8], mut each: impl FnMut(u32, u16)) -> io::Result<()> {
     let (mut at, mut hour, mut slot) = (0_usize, 0_u16, 0_u32);
     while at < bytes.len() {
@@ -2146,8 +1940,6 @@ fn each_mark(bytes: &[u8], mut each: impl FnMut(u32, u16)) -> io::Result<()> {
     Ok(())
 }
 
-/// Each track of marks held in slot order, `ends` each slot's end in `hours`: its slot, its
-/// hours and its row's birth, cut as [`tracks_of`] cuts them.
 fn mark_tracks(ends: &[u32], hours: &[u16], births: &[(u32, u16)], mut each: impl FnMut(u32, &[u16], Option<u16>)) {
     let mut start = 0;
     for (slot, &end) in ends.iter().enumerate() {
@@ -2182,7 +1974,6 @@ fn varint_len(value: u64) -> usize {
     (64 - value.leading_zeros() as usize).div_ceil(7).max(1)
 }
 
-/// What `directory` and `events` store as, roughly.
 fn estimate(directory: &[u8], events: &[u8]) -> usize {
     let mut joined = Vec::with_capacity(directory.len() + events.len());
     joined.extend_from_slice(directory);
@@ -2190,7 +1981,6 @@ fn estimate(directory: &[u8], events: &[u8]) -> usize {
     zstd::bulk::compress(&joined, 1).map_or(usize::MAX, |stored| stored.len())
 }
 
-/// The track cuts of one slot's sorted events: each (start, stop, born hour or none).
 fn tracks_of(found: &[Found], at: usize, end: usize, births: &[(u32, u16)], mut each: impl FnMut(usize, usize, Option<u16>) -> io::Result<()>) -> io::Result<()> {
     let slot = found[at].slot;
     let from = births.partition_point(|&(held, _)| held < slot);
@@ -2224,7 +2014,6 @@ fn put_track(directory: &mut Vec<u8>, slot_gap: u32, count: u64, born: Option<u1
     put_varint(directory, bytes as u64);
 }
 
-/// A column's part as its stream, with the model it chose and whether raw values won.
 fn stream(column: &Column, births: &[(u32, u16)], first: u16, settings: Settings, scratch: &mut Scratch) -> io::Result<(Vec<u8>, u8, bool)> {
     let pending = &column.pending;
     let dual = !column.list && column.choice == Choice::Trying;
@@ -2431,8 +2220,6 @@ fn stream(column: &Column, births: &[(u32, u16)], first: u16, settings: Settings
     Ok((bytes, model, raw_won))
 }
 
-/// A marks stream (rows read, touched): tracks of hours, no payload. The marks are put in slot
-/// order by counting them, two bytes a mark and four a slot, and the stream is written once.
 fn marks(pending: &Pending, births: &[(u32, u16)], first: u16, scratch: &mut Scratch) -> io::Result<Vec<u8>> {
     if pending.events > u64::from(u32::MAX) {
         return Err(invalid("A part holds more marks than a marks stream counts"));
@@ -2526,10 +2313,6 @@ fn get_option_status(bytes: &[u8], at: &mut usize) -> io::Result<Option<(Status,
 }
 
 impl Encoder {
-    /// What taking the run up again at a block's end needs of the encoder, which holds nothing
-    /// pending there: each table's restore rule and what its last whole restore fixed, each
-    /// column's raw-or-difference choice, the strings named since the last restore, and the
-    /// status the next block's runs start from.
     pub fn save(&self) -> Vec<u8> {
         let mut out = Vec::new();
         put_varint(&mut out, u64::from(((self.run_first << 1) ^ (self.run_first >> 31)) as u32));
@@ -2595,7 +2378,6 @@ impl Encoder {
         out
     }
 
-    /// Takes up a run at a block's end from [`Self::save`]'s bytes.
     pub fn load(&mut self, bytes: &[u8]) -> io::Result<()> {
         let mut at = 0;
         let run_first = get_varint(bytes, &mut at)? as u32;

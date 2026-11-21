@@ -1,4 +1,3 @@
-//! One hour's entries, states and anchors for the viewing country.
 
 use super::values::{self, ONE};
 use super::*;
@@ -11,15 +10,11 @@ use replay_data::{
 use viewer_foundation::map::{color_inheritance::active_subject, directed_wars};
 use viewer_foundation::tooltip_text::localise;
 
-/// The operative portrait role of a character's portrait holder.
 const OPERATIVE_PORTRAIT_ROLE: u32 = 4;
-/// The operative leader category of a character's unit-leader reference.
 const OPERATIVE_CATEGORY: i32 = 3;
-/// The assignments: a mission, and the cooldown an operative relocating serves.
 const ON_MISSION: u32 = 3;
 const COOLDOWN: u32 = 1;
 
-/// The mission variants.
 pub(super) const BUILD_NETWORK: u32 = 1;
 pub(super) const QUIET_NETWORK: u32 = 2;
 pub(super) const COUNTER_INTELLIGENCE: u32 = 3;
@@ -29,7 +24,6 @@ pub(super) const CONTROL_TRADE: u32 = 6;
 pub(super) const DIPLOMATIC_PRESSURE: u32 = 7;
 pub(super) const PROPAGANDA: u32 = 8;
 
-/// The hour's inputs and the content they are read with.
 pub(super) struct Hour<'h, 'f> {
     pub frame: &'f DecodedFrame,
     pub world: &'h World<'f>,
@@ -41,7 +35,6 @@ pub(super) struct Hour<'h, 'f> {
     pub language: &'h str,
 }
 
-/// An entry before its names are read.
 #[derive(Clone, Copy)]
 enum Item<'f> {
     Shield(u32),
@@ -50,7 +43,6 @@ enum Item<'f> {
     Offer(&'f replay_data::rows::AgencyBufferedOffer),
 }
 
-/// One state's entries before they are sorted, and whether it holds a More entry.
 #[derive(Default)]
 struct Gathered<'f> {
     items: Vec<Item<'f>>,
@@ -58,20 +50,15 @@ struct Gathered<'f> {
     more: bool,
 }
 
-/// What an entry sorts by: its group, then its name's bytes, then a number, then a token.
 type SortKey = (u8, Vec<u8>, i64, u32);
 
-/// Root-out efficiencies after stacking, by owner slot and state.
 type RootOutStacks = BTreeMap<(u32, i32), Result<Vec<(u64, i64)>, String>>;
 
-/// The hour's reads every entry shares.
 pub(super) struct Shared<'h, 'f> {
     pub tables: Tables<'f>,
     pub missions: super::missions::Inputs<'f>,
     pub names: CountryNames<'h>,
-    /// Each province's state and signed victory points.
     provinces: HashMap<u32, &'f ProvinceRow>,
-    /// Root-out efficiencies after stacking, by owner slot and state.
     root_out: RootOutStacks,
 }
 
@@ -114,7 +101,6 @@ impl<'h, 'f> Hour<'h, 'f> {
                 .filter(|&&state| state > 0)
                 .map(|&state| state as u32))
         };
-        // A shield stands on a state its controller holds as its current capital.
         let controllers: Result<HashMap<u32, Option<u32>>, String> =
             complete::<tables::States>(frame, "States").map(|rows| {
                 rows.iter()
@@ -128,7 +114,6 @@ impl<'h, 'f> Hour<'h, 'f> {
             let controllers = controllers.as_ref().map_err(Clone::clone)?;
             Ok((controllers.get(&state).copied().flatten() == Some(slot)).then_some(state))
         };
-        // Shields.
         for slot in self.friends(&raw_by_slot, report) {
             match held_capital(slot) {
                 Ok(Some(state)) => {
@@ -145,7 +130,6 @@ impl<'h, 'f> Hour<'h, 'f> {
                 Err(why) => report.note(format!("a shield's capital is unknown: {why}")),
             }
         }
-        // Operatives.
         match &tables.missions {
             Ok(rows) => {
                 let rows: &'f [OperativeMissionRow] = rows;
@@ -173,9 +157,6 @@ impl<'h, 'f> Hour<'h, 'f> {
             }
             Err(why) => report.note(format!("operative icons are not drawn: {why}")),
         }
-        // Admission is the retained client UI buffer, not the saved instance roster.
-        // Visit all four buckets before sorting the entries for display. Only the
-        // recording client's buffer is recorded: another viewpoint's is not known.
         let withheld = match frame.complete::<tables::LocalPlayer>() {
             Ok([player]) if player.viewing_country().and_then(|raw| self.slot(raw)) == Some(self.ours) => None,
             Ok([_]) => Some("operation and offer entries are withheld: AgencyOperationBuffers holds only the recording client's buffer, and the map is viewed as another country".to_owned()),
@@ -268,9 +249,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// The viewer, then each country sharing its non-null faction or in a subject relation with
-    /// it either way that no active war between them vetoes, in slot order. A related country
-    /// whose war or link is unknown is left out and counted.
     fn friends(&self, raw_by_slot: &RawBySlot, report: &mut IntelReport) -> Vec<u32> {
         let frame = self.frame;
         let mut out = vec![self.ours];
@@ -308,7 +286,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         out
     }
 
-    /// The countries sharing the viewer's non-null faction or in a subject relation with it.
     fn related(&self) -> Result<BTreeSet<u32>, String> {
         let frame = self.frame;
         let members = complete::<tables::FactionMembers>(frame, "FactionMembers")?;
@@ -342,8 +319,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         Ok(related)
     }
 
-    /// An operative's state: none when it is neither on a mission nor relocating with a pending
-    /// targeted mission.
     fn operative_state(
         &self,
         row: &OperativeMissionRow,
@@ -375,8 +350,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// The state's first province with the greatest positive victory points, else its
-    /// bounding centre at height zero.
     fn anchor(&self, state: u32, provinces: &HashMap<u32, &ProvinceRow>) -> Result<Anchor, String> {
         let order = self
             .world
@@ -405,7 +378,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// Each owner's root-out operatives in each state, stacked.
     fn root_out_stacks(&self, tables: &Tables<'f>) -> RootOutStacks {
         let Ok(rows) = tables.missions.clone() else {
             return BTreeMap::new();
@@ -519,7 +491,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// The country's strategic row, by its raw reference's slot.
     fn strategic(
         &self,
         shared: &Shared<'h, 'f>,
@@ -576,7 +547,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// The country's agency defense: its counterintelligence rating's defense.
     fn agency_defense(&self, slot: u32, shared: &Shared<'h, 'f>) -> Result<i64, String> {
         let defines = self.defines.counter.as_ref().map_err(Clone::clone)?;
         let row = shared
@@ -668,7 +638,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// The linked character's large operative portrait, else the operative's own sprite.
     fn portrait(
         &self,
         row: &OperativeMissionRow,
@@ -698,7 +667,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         Ok(row.portrait.clone())
     }
 
-    /// The viewer's network row for the operative's target state.
     pub(super) fn network(
         &self,
         row: &OperativeMissionRow,
@@ -717,7 +685,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }))
     }
 
-    /// The mission's progress text.
     fn progress(
         &self,
         row: &OperativeMissionRow,
@@ -885,7 +852,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         }
     }
 
-    /// The operation's entry and the priority it sorts by.
     fn operation(&self, row: &'f OperationRow) -> (Entry, i32) {
         let hour = self.frame.hour;
         let state = values::operation_state(row, hour);
@@ -903,7 +869,6 @@ impl<'h, 'f> Hour<'h, 'f> {
             .as_ref()
             .map(|definition| definition.map_icon.as_bytes().to_vec());
         let mut writes = Vec::new();
-        // The operation's own icon, at frame 1, shows once it runs.
         if matches!(state, OperationState::Preparing) {
             writes.push(Write::Shown("operation_icon", false));
         } else {
@@ -1024,7 +989,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         (entry, priority)
     }
 
-    /// The operation's definition through its token's spelling.
     pub fn definition(
         &self,
         row: &OperationRow,
@@ -1036,7 +1000,6 @@ impl<'h, 'f> Hour<'h, 'f> {
             .ok_or_else(|| format!("operation {spelling} is not in the content"))
     }
 
-    /// The running operation's current phase's map sprite, or none.
     fn phase_sprite(&self, row: &OperationRow) -> Result<Option<Vec<u8>>, String> {
         let Some(index) = values::current_phase(row, self.frame.hour) else {
             return Ok(None);
@@ -1053,7 +1016,6 @@ impl<'h, 'f> Hour<'h, 'f> {
         Ok(Some(phase.map_sprite().as_bytes().to_vec()))
     }
 
-    /// The display name of a state, as the game names it.
     pub fn state_name(&self, shared: &Shared<'h, 'f>, state: u32) -> Result<String, String> {
         let row = shared
             .tables
@@ -1084,8 +1046,6 @@ impl<'h, 'f> Hour<'h, 'f> {
     }
 }
 
-/// The running entry substitutes a green number as text. The content keeps
-/// control of the surrounding unit and colour; substitution names are case-sensitive.
 pub(super) fn running_duration_text(
     localisation: &installed_content_localisation::localisation::Localisation,
     remaining: i32,

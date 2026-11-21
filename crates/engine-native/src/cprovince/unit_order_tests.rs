@@ -105,7 +105,7 @@ impl Memory for Observed<'_> {
         let ordinal = self.reads.borrow().len();
         self.reads.borrow_mut().push((address, output.len()));
         if self.fault_at == Some(ordinal) {
-            output.fill(0xee); // A partial failed copy must not become a handle.
+            output.fill(0xee);
             return false;
         }
         if address == registry::HIGH_ROOT_RVA.0 && output.len() == 8 {
@@ -127,8 +127,6 @@ impl Memory for Observed<'_> {
     }
 }
 
-// Primary unit authentication for every native occurrence, sharing only
-// the first complete registry header within the 64-pointer payload batches.
 fn trace(counts: [usize; 2]) -> Vec<(usize, usize, &'static str)> {
     let mut reads = vec![
         (ROOT, 16, "province order root unreadable"),
@@ -317,7 +315,6 @@ fn unit_order_empty_headers_keep_capacity_pointer_and_identity_validation() {
             }
         }
     }
-    // Empty headers must not bypass either identity field or a failed copy.
     let bytes = fixture([0, 0]);
     for fault_at in 0..expected.len() {
         let memory = Observed {
@@ -533,8 +530,6 @@ fn unit_order_lookahead_retains_class_registry_and_backlink_short_circuits() {
         assert_eq!(result.outcome, Outcome::Unavailable { reason });
         assert_eq!(*memory.reads.borrow(), addresses[..=last]);
     }
-    // A valid class-0 identity in the naval lane still resolves through its
-    // registry, but the lane gate must suppress its backlink observation.
     let mut wrong_class = bytes.clone();
     put(
         &mut wrong_class,
@@ -568,8 +563,6 @@ fn unit_order_lookahead_retains_class_registry_and_backlink_short_circuits() {
     assert_eq!(*memory.reads.borrow(), addresses[..=identities[67] + 1]);
     assert_eq!(result.len, 67);
 
-    // Pending null/overflowing pointers may be hinted but cannot cause a
-    // value read ahead of the earlier unit's semantic failure.
     let mut invalid_pending = bytes;
     put(&mut invalid_pending, LANES[0] + 8, &u64::MAX.to_le_bytes());
     put(&mut invalid_pending, LANES[0] + 16, &0u64.to_le_bytes());
@@ -660,10 +653,6 @@ fn worker_province_order_population_jump_grows_from_original_headers() {
     assert_eq!(*grown.reads.borrow(), *fixed.reads.borrow());
 }
 
-/// An occupant the census holds takes its handle and backlink from there:
-/// rows, handles, demand and land visits equal the plain walk's, and its
-/// object, registry bucket and backlink are never read. The other occupants
-/// read as before.
 #[test]
 fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
     fn observed(bytes: &[u8]) -> Observed<'_> {
@@ -733,13 +722,10 @@ fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
             .all(|read| plain.reads.borrow().contains(read))
     );
     assert!(skipped.iter().all(|read| !reads.contains(read)));
-    // The registry header now follows the first occupant the census lacks.
     remaining.sort_unstable();
     reads.sort_unstable();
     assert_eq!(reads, remaining);
 
-    // A census division whose census location is elsewhere, or that sits in
-    // the naval lane, is the walk's backlink refusal, without reading it.
     for (unit, location) in [(UNITS[0], PROVINCE + 8), (UNITS[1], PROVINCE)] {
         let census = observed(&bytes);
         let refused = walk_unit_order_with_known(
@@ -775,8 +761,6 @@ fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
 #[test]
 fn province_order_demand_has_no_chosen_occupant_or_aggregate_ceiling() {
     let mut bytes = fixture([0, 0]);
-    // Sizing does not follow a unit pointer when no output row fits. This
-    // native count can exceed both the former 65536 and 1048576 guards.
     let count = 1_100_000u32;
     put(&mut bytes, PROVINCE + OCCUPANTS + 8, &count.to_le_bytes());
     put(&mut bytes, PROVINCE + OCCUPANTS + 12, &count.to_le_bytes());
@@ -795,9 +779,6 @@ fn province_order_demand_has_no_chosen_occupant_or_aggregate_ceiling() {
     );
 }
 
-/// A listed walk gives each listed province the plain walk's row, handles,
-/// demand and land visits, and reads no unlisted slot; an empty list reads
-/// only the array header, and an id outside the census refuses the walk.
 #[test]
 fn listed_provinces_read_only_their_slots() {
     fn observed(bytes: &[u8]) -> Observed<'_> {

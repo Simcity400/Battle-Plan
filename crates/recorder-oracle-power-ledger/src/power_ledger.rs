@@ -1,5 +1,3 @@
-//! A fresh save certifies current endpoints; it does not serialize historical
-//! charges, daily evaluated rates/components or execution provenance.
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content_save::Save;
 use replay_data::rows::*;

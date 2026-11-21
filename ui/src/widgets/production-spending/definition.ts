@@ -5,8 +5,6 @@ import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOpt
 import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
 
-/** Which factories' IC a chart shows: military factories build land and air equipment
- * (and a mod's rocket factories theirs), dockyards build naval equipment. */
 export const FACTORY_KINDS = [{ value: 'military', label: 'Military factories' }, { value: 'dockyards', label: 'Dockyards' }] as const;
 export type FactoryKind = typeof FACTORY_KINDS[number]['value'];
 

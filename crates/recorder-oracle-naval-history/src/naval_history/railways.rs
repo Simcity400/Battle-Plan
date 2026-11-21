@@ -6,8 +6,6 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, equal, invalid};
 
-/// The rail-info's selected building is a runtime pointer, while a present
-/// object's exact health scalars are independently written by CBuilding.
 pub fn compare_railway_buildings(
     frame: &DecodedFrame,
     saved: &installed_content_save::construction::Pack,
@@ -38,8 +36,6 @@ pub fn compare_railway_buildings(
             report.limitation("the rail-info's observed null selected-building pointer is runtime state; independently saved status buildings do not certify this cache's null-to-absence equivalence", &label);
             continue;
         };
-        // The game selects the database's railway template.
-        // Resolve its token through the recording, never a vanilla name.
         let name = *names
             .get(&engine_native::cbuilding_template::RAIL_WAY_TOKEN)
             .ok_or_else(|| invalid("railway building token has no recorded spelling"))?;
@@ -242,7 +238,6 @@ pub fn compare_rail_edges(
                 equal(report, format!("{label}.level"), actual, level);
                 compared += 1;
             } else if level > 0 {
-                // Railway loading reconstructs every positive entry in the sorted pairs.
                 report.difference(label, "absent", level);
             }
             if level <= 0 {
@@ -259,9 +254,6 @@ pub fn compare_rail_edges(
     }
     report.compared("RailEdges", compared);
     if nonpositive != 0 {
-        // Railway loading loads only positive pairs, while railway editing can insert a pair
-        // after a signed max/clamp produces zero. The serialized indexed array
-        // therefore does not encode the presence of every nonpositive pair.
         report.limitation("saved nonpositive railway levels do not uniquely encode sorted-pair presence; present recorded pairs compare their exact signed level, and every positive saved edge is required", format!("RailEdges: {nonpositive} nonpositive saved neighbor positions"));
     }
     Ok(())

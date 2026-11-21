@@ -1,4 +1,3 @@
-//! The active naval window's fresh screen and capital-screen calculations.
 use super::keyed::Keyed;
 use installed_content_naval_combat_defines::naval_combat_defines::Defines;
 use replay_data::{
@@ -10,12 +9,8 @@ const ONE: i64 = 100_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Screening {
-    /// Screens protecting capitals and convoys (the capital GUI percentage).
     pub capital: i64,
-    /// Capitals protecting carriers and convoys (the carrier GUI percentage).
     pub carrier: i64,
-    /// The zero-screen country correction was positive. the game appends
-    /// its 0x1B3 breakdown even when this is false and the branch ran.
     pub country_bonus_applied: bool,
 }
 
@@ -28,8 +23,6 @@ pub(super) struct Census {
     pub eligible_submarines: i64,
 }
 
-// absent or feature-ineligible modifiers contribute zero. Metadata
-// bit 4 clamps the individual value, before the four source values are added.
 fn modifier(summary: &NavalCombatSummaryInputs, source: usize, key: usize) -> Option<i64> {
     let value = &summary.modifiers[source][key];
     if value.present == 0 {
@@ -51,16 +44,10 @@ fn modifier(summary: &NavalCombatSummaryInputs, source: usize, key: usize) -> Op
     })
 }
 
-// the game divides signed fixed5 by ONE and rounds upward only when a
-// positive remainder was truncated. Thus negative fractional demand rounds
-// toward zero, as the native routine does.
 pub(super) fn ceil_fixed(value: i64) -> i64 {
     value / ONE + i64::from(value > 0 && value % ONE != 0)
 }
 
-// The native fixed divider uses 0xffffffff on a zero denominator or its
-// signed-overflow guard. Category counts and authored ratios have much
-// narrower valid ranges, but keep the sentinel for malformed operands too.
 fn fixed_ratio(count: i64, demand: i64) -> i64 {
     let Some(denominator) = demand.checked_mul(ONE) else {
         return 0xffff_ffff;
@@ -82,17 +69,12 @@ fn efficiency(count: i64, demand: i64, factor: i64) -> i64 {
     if count == 0 && demand == 0 {
         return ONE;
     }
-    // the game first divides count by the rounded demand, then multiplies
-    // by the positioning factor; the truncation between those stages matters.
     fixed_ratio(count, demand)
         .wrapping_mul(factor)
         .wrapping_div(ONE)
         .clamp(0, ONE)
 }
 
-/// Count categories using state mask 0xB, bypassing detection filtering.
-/// Only registered forward groups enter either census. Live ship and convoy
-/// references are tested separately.
 pub(super) fn census(
     combat: u64,
     side: u8,
@@ -108,8 +90,6 @@ pub(super) fn census(
     }) {
         if row.live_ship != 0 {
             let flags = row.formation_flags;
-            // the game uses the whole forward list, including states
-            // outside the category census. It excludes 4, 16 and 32.
             if row.state & 0x34 == 0 && flags & (1 << 7) != 0 {
                 counts.eligible_submarines = counts.eligible_submarines.wrapping_add(1);
             }
@@ -143,8 +123,6 @@ pub(super) fn census(
     Ok(counts)
 }
 
-/// Recompute screening before the fresh positioning header, using stored
-/// positioning rather than later displayed positioning or stored screening.
 pub(super) fn calculate(
     combat: u64,
     side: u8,
@@ -185,7 +163,6 @@ pub(super) fn calculate(
         let bonus =
             modifier(summary, 0, 3).ok_or("convoy screening modifier callback is unsupported")?;
         if bonus > 0 {
-            // Native applies this after the first clamp, with no second cap.
             capital = capital.wrapping_add(bonus);
             country_bonus_applied = true;
         }

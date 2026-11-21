@@ -100,19 +100,16 @@ fn warm_memo_keeps_fixed_bytes_errors_loads_reports_and_changed_stack_checks() {
                 loads.push(LOADS.with(std::cell::Cell::get) - first);
             }
         }
-        // A stale hit must still rescan; a memoized miss still verifies above it.
         fs::remove_file(base.join("gfx/world/fallback.mesh")).unwrap();
         out.push(answer(layers.read_uncovered("gfx/world/fallback.mesh")));
         fs::write(base.join("gfx/world/fallback.mesh"), b"fallback").unwrap();
         fs::write(base.join("map/covered.txt"), b"changed").unwrap();
         out.push(answer(layers.read("map/covered.txt")));
         fs::write(base.join("map/covered.txt"), b"covered").unwrap();
-        // A different held mount roster cannot answer from the old memo.
         let higher = layers.layers.remove(1);
         out.push(answer(layers.read_uncovered("gfx/world/Case.mesh")));
         layers.layers.insert(1, higher);
         out.push(answer(layers.read_uncovered("gfx/world/Case.mesh")));
-        // Covered central-directory changes are not waived by a warm memo.
         fs::write(&archive, raw_zip(&[(b"map/changed.txt", 0, b"changed")])).unwrap();
         out.push(answer(layers.read_uncovered("gfx/world/stored.mesh")));
         fs::write(&archive, &bytes).unwrap();

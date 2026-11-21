@@ -1,7 +1,3 @@
-//! Hourly COrdersGroup withdrawing byte over its own bounded registry census, and each group's
-//! direct commander's attack operands (`corders_group::LEADER`,
-//! `engine_native::carmy_leader::attack_stats`), which the selected army's attack list reads through its
-//! direct commander lookup.
 use crate::{
     sampling::qpc,
     spooling::table,
@@ -54,8 +50,6 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<corders_group::CounterInputsRow>,
     roots: Vec<corders_group::Root>,
-    /// Each row's direct commander's attack operands by group handle:
-    /// `Some(None)` without a commander, `None` for a read refusal.
     commanders: Vec<(u64, Option<Option<carmy_leader::AttackStats>>)>,
     required: usize,
     templates: templates::Store,
@@ -63,8 +57,6 @@ pub struct Captured {
     owned_pending: bool,
 }
 
-/// The direct commander lookup for a group and its
-/// attack operands.
 fn commander(
     memory: &impl Memory,
     base: usize,
@@ -100,7 +92,6 @@ fn recorded_movement(commander: &carmy_leader::AttackStats) -> CommanderMovement
     }
 }
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0 })
     }
@@ -117,7 +108,6 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
-        // Preserve completed native-walk diagnostics even if a sibling failed.
         self.decode_owned();
         self.rows.reset();
         self.roots.fill(Default::default());
@@ -175,8 +165,6 @@ impl Captured {
         [qpc().saturating_sub(begin).max(0) as u64]
     }
 
-    /// Native observations and receiver admission only. The frame owns the
-    /// unsorted commander observations until its FIFO publication tail.
     pub(crate) fn acquire(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
@@ -184,7 +172,6 @@ impl Captured {
             self.templates.forget();
         }
         self.rows.outcome = self.read(memory, base, state);
-        // The census rows follow the roots one for one.
         self.commanders.clear();
         let len = self.rows.outcome.len();
         crate::template_changes::record_hq_groups(len);
@@ -196,20 +183,17 @@ impl Captured {
                 .push((row.group, commander(memory, base, *root)));
         }
         if matches!(self.rows.outcome, Outcome::Rows { .. }) {
-            // Pruning unregisters held receivers; keep it before resume.
             self.templates.prune(&self.roots[..len]);
         }
         self.owned_pending = true;
         [qpc().saturating_sub(begin).max(0) as u64]
     }
 
-    /// No Memory capability: sorting and diagnostic scans use this cut's rows.
     pub(crate) fn decode_owned(&mut self) {
         if !std::mem::take(&mut self.owned_pending) {
             return;
         }
         self.commanders.sort_unstable_by_key(|(group, _)| *group);
-        // No later consumer borrows the root controls.
         self.roots.fill(Default::default());
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -244,7 +228,6 @@ impl Captured {
             &self.rows.rows,
             |r| OrdersGroupCounterInputRow {
                 group: r.group,
-                // No commander operand is witnessed; current writers leave it empty.
                 attack: Recorded::Value(Witnessed(None)),
                 commander_attack: Recorded::Value(self.commander_attack(r.group)),
                 commander_movement: Recorded::Value(self.commander_movement(r.group)),
@@ -298,11 +281,9 @@ mod tests {
         assert_eq!(rows[0].border_war_presence, Recorded::Value(Some(1)));
         assert_eq!(rows[0].invasion_source_distance, Recorded::Value(Some(-17)));
         assert_eq!(rows[0].hq_nearest_front, Recorded::Value(Some(99)));
-        // No commander was read: the operands are refused, never zero.
         assert_eq!(rows[0].attack, Recorded::Value(Witnessed(None)));
         assert_eq!(rows[0].commander_attack, Recorded::Value(None));
         assert_eq!(rows[0].commander_movement, Recorded::Value(None));
-        // A read commander publishes its terrain movement beside its attack.
         capture.commanders = vec![(
             (5 << 32) | 53,
             Some(Some(carmy_leader::AttackStats {

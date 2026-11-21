@@ -1,5 +1,3 @@
-//! Retained pending, delayed and fired-once event serializer output. Native
-//! occurrence history and pending originators have no counterpart in a save.
 use super::{GameDate, block, bytes, field, integer, invalid, null_permitted_handle, scalar};
 use installed_content_core::parser::{Item, Value};
 use std::{collections::BTreeMap, io};
@@ -24,11 +22,9 @@ pub enum Definition {
 pub struct Scope {
     pub country: Option<Vec<u8>>,
     pub state: Option<i32>,
-    /// Text order, which is second then first native random word.
     pub random: Option<[u32; 2]>,
     pub references: [Option<u64>; 9],
     pub strategic_region: Option<i32>,
-    /// ROOT/FROM/PREV child IDs. Omission is distinct from an empty object.
     pub bindings: [Option<usize>; 3],
     pub saved_targets: Vec<super::saved_event_targets::Target>,
     pub extra_keys: Vec<Vec<u8>>,
@@ -55,11 +51,8 @@ pub struct Delayed {
     pub scope: Option<ScopeGraph>,
     pub extra_keys: Vec<Vec<u8>>,
 }
-/// Each registry and each country's delayed queue is read on its own: an
-/// unreadable one carries its reason and never hides the others.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pack {
-    /// Both global blocks are unconditional in an ordinary native save.
     pub pending: Result<Option<Vec<Pending>>, String>,
     pub fired: Result<Option<Vec<Vec<u8>>>, String>,
     pub delayed: BTreeMap<Vec<u8>, Result<Vec<Delayed>, String>>,
@@ -231,8 +224,6 @@ fn delayed(country: &Value) -> io::Result<Vec<Delayed>> {
     }
     Ok(rows)
 }
-/// Fails as a whole only when a country cannot be named; every registry and
-/// queue otherwise carries its own result.
 pub fn parse(root: &[Item], countries: &[&Item]) -> io::Result<Pack> {
     let mut output = Pack::default();
     output.pending = pending(root, &mut output).map_err(|error| error.to_string());

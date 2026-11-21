@@ -34,13 +34,10 @@ export function validatePeople(value: unknown): PeopleReply {
   return reply;
 }
 
-/** Each fact's shown text, by label: what a followed reply paints. */
 export function factTexts(facts: readonly PeopleFact[]): Map<string, string> {
   return new Map(facts.map(fact => [fact.label, peopleValue(fact)]));
 }
 
-/** What a followed view renders: its facts' labels and units, and the lists beneath them (state pools for manpower,
- * exiles for both); the facts' values are painted between renders. */
 export function peopleStructure(reply: PeopleReply, view: 'manpower' | 'politics'): string {
   return JSON.stringify([reply.tag, reply.branchId, reply[view].map(fact => [fact.label, fact.unit]), view === 'manpower' ? [reply.states, reply.readHour === reply.hour] : null,
     reply.exiles, reply.warnings]);

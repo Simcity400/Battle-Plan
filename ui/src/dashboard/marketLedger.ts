@@ -1,5 +1,3 @@
-// The market's occurrences as the market ledger and the market drill's deliveries read them: rows of `market-ledger`
-// (pages of the declared log `market-events`, parties and equipment named at each row's hour).
 import { countryFromKey } from './countryKey.ts';
 import type { LogRow } from '../charts/log/logData';
 import type { LogReplyRow } from '../charts/log/logSource';
@@ -9,7 +7,6 @@ import { FUEL_QUANTITY, fixedText } from './market.ts';
 export const MARKET_LOG = 'market-events';
 export const MARKET_LEDGER = 'market-ledger';
 
-/** The ledger's toggles, as the game's market records each occurrence. */
 export const KINDS = [
   { kind: 11, key: 'contracts', label: 'New contracts' },
   { kind: 10, key: 'requests', label: 'Requests posted' },
@@ -19,23 +16,18 @@ export const KINDS = [
 ] as const;
 export type KindKey = typeof KINDS[number]['key'];
 
-/** A drill's delivery changes: lend-lease delivered, lost, fuel and ended, purchase deliveries and payments, and the
- * deliveries whose amount the recording names unavailable. */
 export const DELIVERY_KINDS = [3, 4, 5, 6, 20, 21, 34] as const;
 
-/** One occurrence with its parties' tags and its equipment named at its hour. */
 export interface LedgerItem {
   id: string;
   kind: number;
   mode: number | null;
-  /** The contract's or agreement's handle, hexadecimal. */
   contract: string;
   seller: string | null;
   buyer: string | null;
   variant: string;
   equipment: string | null;
   equipmentMissing: string | null;
-  /** Null where the recording names the amount unavailable (`reason`). */
   amountRaw: string | null;
   auxiliaryRaw: string | null;
   totalRaw: string | null;
@@ -56,24 +48,20 @@ export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
   } };
 }
 
-/** The facets a page asks: the kinds shown, and the chosen countries as either side; every country with `tags` null. */
 export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null): FacetFilter[] {
   const facets: FacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
   if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
   return facets;
 }
 
-/** The kinds a ledger's toggles leave on; the unavailable-amount occurrences follow deliveries. */
 export function shownKinds(enabled: (key: KindKey) => boolean): number[] {
   const kinds: number[] = KINDS.filter(kind => enabled(kind.key)).map(kind => kind.kind);
   if (enabled('deliveries')) kinds.push(34);
   return kinds.sort((a, b) => a - b);
 }
 
-/** Whether a row is a lend-lease occurrence (an agreement's), not a market contract's. */
 const lease = (item: LedgerItem) => item.kind <= 6 || item.kind === 34 && item.mode !== 20;
 
-/** The row's title, with the counterpart named from the seller's side. */
 export function ledgerTitle(item: LedgerItem, name: (tag: string | null) => string): string {
   switch (item.kind) {
     case 3: return `Lend-lease delivered to ${name(item.buyer)}`;
@@ -89,7 +77,6 @@ export function ledgerTitle(item: LedgerItem, name: (tag: string | null) => stri
   }
 }
 
-/** The right-aligned figure: units, CIC or fuel, the refusal of an unavailable amount, or nothing. */
 export function ledgerFigure(item: LedgerItem): { text: string; negative: boolean } | null {
   if (item.kind === 34 || (item.amountRaw === null && item.reason !== null)) return { text: 'Amount unavailable', negative: false };
   if (item.amountRaw === null) return null;
@@ -103,8 +90,6 @@ export function ledgerFigure(item: LedgerItem): { text: string; negative: boolea
 export const ledgerIcon = (kind: number) => kind === 21 ? 'chart-bars' : kind === 3 || kind === 4 || kind === 5 || kind === 20 || kind === 34 ? 'anchor'
   : kind === 6 || kind === 12 ? 'close' : kind === 10 ? 'search' : 'handshake';
 
-/** The drill a row opens: the contract (or request) or agreement it is of, as Trade flows' market view keys it. */
 export const ledgerSelection = (item: LedgerItem) => lease(item) ? `agreement:${item.contract}` : `contract:${item.kind === 10}:${item.contract}`;
 
-/** Why an empty list is empty: still loading, or nothing matches. */
 export const LEDGER_EMPTY = 'No market activity matches these settings.';

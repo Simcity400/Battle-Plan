@@ -7,14 +7,8 @@ import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentatio
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
 
-/** A flag to draw: its picture's URL, as a flag reply carries it, or straight-alpha RGBA, as the
- * recorder's status carries it. */
 export type FlagImage = { width: number; height: number } & ({ png: string } | { pixels: ArrayLike<number> });
 
-/** Content flags are small (82x52 in vanilla): each is drawn from its picture at its shown
- * size and screen density with smoothing, so a stretched flag blends rather than shows its
- * pixels. One observer serves every flag shown, after layout, when it appears and whenever it
- * resizes. */
 const shown = new WeakMap<Element, { picture: CanvasImageSource; width: number; height: number }>();
 let resized: ResizeObserver | undefined;
 function drawFlags(entries: readonly ResizeObserverEntry[]) {
@@ -32,9 +26,6 @@ function drawFlags(entries: readonly ResizeObserverEntry[]) {
   }
 }
 
-/** Shows `image` on `element` from now on, until the returned stop: the flag it showed is
- * cleared at once, so a picture that cannot be decoded leaves an empty frame, never the flag
- * it replaces. */
 export function showFlag(element: HTMLCanvasElement, image: FlagImage): () => void {
   let live = true;
   element.getContext('2d')?.clearRect(0, 0, element.width, element.height);
@@ -47,7 +38,6 @@ export function showFlag(element: HTMLCanvasElement, image: FlagImage): () => vo
   if ('png' in image) {
     const picture = new Image();
     picture.src = image.png;
-    // Decoded off the main thread, the flag is drawn once its picture is ready.
     void picture.decode().then(() => show(picture), () => {});
   } else {
     const pixels = image.pixels instanceof Uint8ClampedArray ? image.pixels : Uint8ClampedArray.from(image.pixels);
@@ -71,10 +61,8 @@ export function CountryFlag({ image }: { image?: FlagImage }) {
     : <span className="country-flag country-flag-unavailable" aria-hidden="true" />;
 }
 
-/** Dated row flags retain loading and unavailable reasons in the shared presentation. */
 export function CountryFlagUrl({ url, reason, detail, pending, className = '' }: {
   url?: string; reason?: string; detail?: string; pending?: boolean; className?: string;
-  /** The caller's slot keeps available and unavailable flags at identical dimensions. */
   fixedSize?: boolean;
 }) {
   const [failed, setFailed] = useState<string>();
@@ -84,10 +72,6 @@ export function CountryFlagUrl({ url, reason, detail, pending, className = '' }:
 }
 
 
-/** A country's flag from a recording's own installed content, at the hour the country was observed, as
- * preparation chose it. Without a readable flag it shows an empty frame, never a substitute.
- * The default `panel` size is app styling: the native shield with its overlay's edge shading
- * evened out. */
 export function SourceFlag({ client, source, tag, size = 'panel' }: { client: DashboardClient; source: DashboardSource; tag: string | null; size?: CountryFlagSize }) {
   const country = tag ? source.metadata.countries.find(item => item.tag === tag) : undefined;
   const branch = source.metadata.branches.find(item => item.id === country?.observedBranchId) ?? source.metadata.branches[0];

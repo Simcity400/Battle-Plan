@@ -1,17 +1,3 @@
-//! `NavyTotals` and `NavyClasses`: each country's ships by canonical slot, every ship counted
-//! for its task force's roster owner and for its logical owner. Ships count; hull HP sums each
-//! ship's current strength (fixed5); maximum hull HP sums each ship's model counter maximum,
-//! clamped below at 100 (fixed5); by class token, ships and hull HP.
-//!
-//! What is not known is not recorded, never zero: while some ship of an attribution has an owner
-//! no link resolves, or a task force the table does not hold, every country's cells of that
-//! attribution, and its class rows are deleted; while a counted ship's hull HP is negative, its
-//! country's hull HP (and its class's); while ShipModels is not complete or a counted ship has no
-//! model counter, maximum hull HP. Every live country's slot has a totals row.
-//!
-//! State is the tables: each hour applies the ships, task forces and models the hour changed; a
-//! fresh hour, a resume, or a change of links, country slots or ShipModels' completeness rebuilds
-//! every count from the current tables.
 
 use crate::{
     forces::{self, Owners, exact, invalid, number, written},
@@ -31,10 +17,8 @@ const SHIP_COLUMNS: [usize; 3] = columns::<ShipRow, 3>(["task_force", "strength"
 const FORCE_COLUMNS: [usize; 2] = columns::<TaskForceRow, 2>(["roster_owner", "logical_owner"]);
 const MODEL_COLUMNS: [usize; 1] = columns::<ShipModelRow, 1>(["counter"]);
 
-/// The least maximum hull HP a model counter gives, fixed5.
 const LEAST_MAXIMUM: i64 = 100;
 
-/// Roster owner, then logical owner.
 const SIDES: usize = 2;
 
 const READS: &[Read] = &[
@@ -45,15 +29,11 @@ const READS: &[Read] = &[
     Read { table: TableId::CountryLinks, columns: Columns::These(&[0]), watch: Watch::Changed, required: true },
 ];
 
-/// A ship as the totals count it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Ship {
     force: u64,
-    /// The slots it counts for; none where unattributed.
     owners: [Option<u32>; SIDES],
-    /// Fixed5; none when negative.
     hp: Option<i64>,
-    /// Fixed5; none without a model counter.
     maximum: Option<i64>,
     class: u32,
 }
@@ -65,7 +45,6 @@ struct Class {
     negative: i64,
 }
 
-/// One country's ships under one attribution.
 #[derive(Default)]
 struct Side {
     ships: i64,
@@ -78,18 +57,13 @@ struct Side {
 
 #[derive(Default)]
 pub struct Navy {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     owners: Owners,
-    /// Each task force's raw roster and logical owner.
     forces: HashMap<u64, [u32; SIDES]>,
-    /// Each task force's ships.
     fleets: HashMap<u64, Vec<u64>>,
-    /// Each ship's maximum hull HP by its model; none while ShipModels is not complete.
     maxima: Option<HashMap<u64, Option<i64>>>,
     ships: HashMap<u64, Ship>,
     sides: HashMap<(u32, usize), Side>,
-    /// Ships of each attribution no slot is found for.
     unresolved: [i64; SIDES],
     dirty: HashSet<u32>,
     dirty_classes: HashSet<(u32, usize, u32)>,
@@ -107,7 +81,6 @@ fn class_of(key: u128) -> (u32, usize, u32) {
     ((key >> 40) as u32, ((key >> 32) & 0xff) as usize, key as u32)
 }
 
-/// The model at ShipModels `slot`: its ship and maximum hull HP, none without a counter.
 fn model(view: &TableView<'_>, slot: u32) -> io::Result<(u64, Option<i64>)> {
     let key = view.key(slot).ok_or_else(|| invalid(format!("ShipModels slot {slot} holds no row")))?;
     let format = FormatVersion::CURRENT.version();
@@ -147,7 +120,6 @@ impl Navy {
         }
     }
 
-    /// Ship `id` holds `ship` (none: it is gone), counted again where it moved.
     fn set(&mut self, id: u64, ship: Option<Ship>) {
         let old = self.ships.get(&id).copied();
         if old == ship {
@@ -179,7 +151,6 @@ impl Navy {
         };
     }
 
-    /// The ship at Ships `slot` as counted now.
     fn ship(&self, view: &TableView<'_>, slot: u32) -> io::Result<(u64, Ship)> {
         let table = TableId::Ships;
         let id = view.key(slot).ok_or_else(|| invalid(format!("Ships slot {slot} holds no row")))? as u64;
@@ -191,7 +162,6 @@ impl Navy {
         Ok((id, Ship { force, owners, hp: (strength >= 0).then_some(strength), maximum, class }))
     }
 
-    /// The task force at TaskForces `slot`: its id and raw owners.
     fn force(view: &TableView<'_>, slot: u32) -> io::Result<(u64, [u32; SIDES])> {
         let table = TableId::TaskForces;
         let id = view.key(slot).ok_or_else(|| invalid(format!("TaskForces slot {slot} holds no row")))? as u64;
@@ -231,7 +201,6 @@ impl Navy {
         Ok(())
     }
 
-    /// Applies the ships, task forces and models the hour changed; false when it must rebuild.
     fn apply(&mut self, hour: &Hour<'_>) -> io::Result<bool> {
         if forces::links_moved(hour) || forces::countries_moved(hour) || hour.complete(TableId::ShipModels) != self.maxima.is_some() {
             return Ok(false);
@@ -282,7 +251,6 @@ impl Navy {
         Ok(true)
     }
 
-    /// The totals row of `slot`; none for a slot that is no live country's and holds no ship.
     fn row(&self, slot: u32) -> Option<Vec<Value>> {
         let held = [self.sides.get(&(slot, 0)), self.sides.get(&(slot, 1))];
         if !self.owners.countries().contains(&slot) && held.iter().all(Option::is_none) {
@@ -358,7 +326,6 @@ impl Writer for Navy {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every count from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

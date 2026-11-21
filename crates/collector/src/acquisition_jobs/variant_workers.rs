@@ -11,7 +11,6 @@ pub(crate) enum Work {
     Probe(Arc<std::sync::atomic::AtomicUsize>),
     Context(production::DesignContextPart),
     Setup(production::ColdSetupPart),
-    /// Speculative full-decode walks over copied spans; reads no native memory.
     Snapshots(production::SnapshotPart),
     Storage {
         part: production::ColdStorage,
@@ -23,9 +22,7 @@ pub(crate) enum Work {
         game_state: usize,
     },
     TemplateWalk(crate::extended::division_templates::WalkPart),
-    /// The projects family's walks after its projects, beside them.
     ProjectsRest(Box<projects::Rest>),
-    /// The governance job's buildings, beside its technology lanes.
     Buildings(Box<super::BuildingsPart>),
 }
 impl Work {
@@ -77,7 +74,6 @@ impl Dispatch {
         self.calibration = Some(Arc::clone(&pool.calibration));
         self.workers = pool.worker_count;
     }
-    /// [`Self::arm`] with its parts claimed at `priority`, behind the critical chains.
     pub(super) fn arm_at(&mut self, pool: &Pool, priority: u8) {
         self.arm(pool);
         self.priority = priority;
@@ -87,7 +83,6 @@ impl Dispatch {
             executor: self.executor.clone(),
             calibration: self.calibration.clone(),
             workers: self.workers,
-            // Owned warmup must not get ahead of queued native critical-path parts.
             priority: 2,
             ..Default::default()
         }
@@ -132,7 +127,6 @@ impl Dispatch {
                 base,
                 part: work,
             }));
-            // SAFETY: this parent drains the storage child before returning its live lease.
             match unsafe { executor.submit_with_priority(&mut request, 2, true, true) } {
                 Ok(ticket) => {
                     pending.tickets.push(Some(ticket));
@@ -155,9 +149,6 @@ impl Dispatch {
         work.capture(memory, base);
         run();
     }
-    /// `work` on a worker while `run` runs here, both done before it returns; `wait` names the
-    /// time this thread then waits for the worker. The work comes back, or `None` when its
-    /// worker did not return it.
     pub(super) fn beside(
         &self,
         mut work: Work,
@@ -180,7 +171,6 @@ impl Dispatch {
             };
             let role = work.role();
             let mut request = Some(Job::VariantPart(Request { base, part: work }));
-            // SAFETY: this parent drains the child before returning its live lease.
             let submitted =
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
             note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
@@ -215,7 +205,6 @@ impl Dispatch {
     pub(crate) fn lanes(&self) -> usize {
         self.workers.max(1)
     }
-    /// The priority its parts are claimed at.
     #[cfg(test)]
     pub(crate) fn priority(&self) -> u8 {
         self.priority
@@ -314,8 +303,6 @@ impl Dispatch {
         }))
         .map_err(|_| "template walk worker result allocation failed")
     }
-    /// A burst's speculative walks, only where they can run beside the parent: without
-    /// lanes the ordered pass decodes inline as before.
     pub(super) fn snapshots(
         &self,
         parts: Vec<production::SnapshotPart>,
@@ -391,7 +378,6 @@ impl Dispatch {
                 base,
                 part,
             }));
-            // SAFETY: the worker parent drains every child before returning its live lease.
             let submitted =
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
             note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
@@ -413,7 +399,6 @@ impl Dispatch {
             local.capture(memory, base);
             output.push(local);
         }
-        // Parts no worker has started yet run here rather than wait behind busier jobs.
         for ticket in pending.tickets.iter().flatten() {
             executor.run_unclaimed_child(*ticket);
         }
@@ -443,7 +428,6 @@ impl Dispatch {
 struct Fanout<'a>(&'a std::sync::atomic::AtomicUsize);
 impl<'a> Fanout<'a> {
     fn enter(active: &'a std::sync::atomic::AtomicUsize, workers: usize) -> Option<Self> {
-        // At least one worker must remain free of parents waiting for children.
         active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < workers.saturating_sub(1)).then_some(count + 1)
@@ -554,8 +538,6 @@ mod overlap_tests {
             assert_eq!(pool.calibration.cold_parents.load(Ordering::Acquire), 0);
         }
     }
-    /// A parent's work after its lanes runs on a worker while the parent runs its own, and comes
-    /// back once both are done; with no worker to give it, the parent runs it itself.
     #[test]
     fn work_beside_the_parent_runs_on_a_worker_meanwhile_and_comes_back() {
         let (started, start) = mpsc::channel();
@@ -588,7 +570,6 @@ mod overlap_tests {
             0,
             crate::hour_stages::Part::ProjectsRestWait,
             &mut || {
-                // The work has started elsewhere and waits for the parent's own.
                 start.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
                 assert_eq!(calls.load(Ordering::Acquire), 0);
                 parent += 1;
@@ -599,7 +580,6 @@ mod overlap_tests {
         assert_eq!((parent, calls.load(Ordering::Acquire)), (1, 1));
         assert_eq!(pool.calibration().executor.uncollected, 0);
         assert_eq!(pool.calibration.cold_parents.load(Ordering::Acquire), 0);
-        // One worker: no lane to give, so the parent runs the work and then its own.
         let single = Pool::with_test_runner(1, |_| unreachable!());
         let mut alone = Dispatch::default();
         alone.arm(&single);

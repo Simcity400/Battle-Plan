@@ -1,4 +1,3 @@
-//! Binary encoding, matching the parent module and tools/worker_profile.py.
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -41,8 +40,6 @@ pub(super) struct Header {
 impl Header {
     pub(super) fn current(interval_us: u32, qpc_hz: u64) -> Result<Self, String> {
         let mut module = ptr::null_mut();
-        // This static is inside collector.dll. UNCHANGED_REFCOUNT avoids a
-        // permanent extra load reference; the sampler joins before DLL unload.
         if unsafe {
             GetModuleHandleExW(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
@@ -55,8 +52,6 @@ impl Header {
             return Err("worker_sampler cannot locate collector image".into());
         }
         let base = module as usize;
-        // The loader authenticated and mapped our own PE. All subsequent RVAs
-        // and lengths are checked against SizeOfImage before making slices.
         let dos = unsafe { std::slice::from_raw_parts(base as *const u8, 64) };
         if &dos[..2] != b"MZ" {
             return Err("worker_sampler collector DOS header invalid".into());
@@ -169,8 +164,6 @@ impl Record {
         bytes
     }
 }
-/// Fixed allocation: a full chunk rejects an append and counts the loss. The
-/// writer borrows its bytes and releases the same allocation after handoff.
 pub(super) struct Chunk {
     records: Vec<[u8; RECORD_SIZE]>,
     used: usize,
@@ -407,7 +400,6 @@ mod tests {
         let parsed: Trailer = serde_json::from_slice(&bytes[offset..end]).unwrap();
         assert_eq!(parsed.record_count, 1);
         assert_eq!(parsed.threads, trailer.threads);
-        // Independently parse complete records from a prefix, without footer.
         std::fs::write(&path, &bytes[..start + RECORD_SIZE + 17]).unwrap();
         let truncated = std::fs::read(&path).unwrap();
         assert_eq!((truncated.len() - start) / RECORD_SIZE, 1);

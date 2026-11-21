@@ -28,10 +28,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CARGO = ROOT / "Cargo.toml"
-# The one updater public key: both apps verify with it, the Tauri CLI signs for it.
 PUBLIC_KEY = ROOT / "crates" / "app-update" / "updater.pub"
 STABLE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-# The workspace version line inside [workspace.package].
 VERSION_LINE = re.compile(r'(?ms)^(\[workspace\.package\]\s*?\n(?:(?!\[).*\n)*?version = ")([^"]+)(")')
 MERGE = re.compile(r"^Merge pull request #(\d+) from ")
 SQUASHED = re.compile(r"\(#(\d+)\)$")
@@ -117,7 +115,6 @@ def notes(args):
         if unmerged:
             shown.append(f"- And {unmerged} {'change' if unmerged == 1 else 'changes'} made without a pull request.")
         body = "\n".join(shown) + "\n" if shown else "No changes since the last release.\n"
-    # Not printed: the leak gate reads it before any log or artifact may.
     Path(args.output).write_text(body, encoding="utf-8", newline="\n")
     print(f"Wrote {args.output}.")
 
@@ -163,7 +160,6 @@ def verify(args):
         fail("The installer was signed with another key than the apps carry; the signing secret does not match.")
     public = Ed25519PublicKey.from_public_bytes(key[10:42])
     data = Path(args.installer).read_bytes()
-    # "ED" signs the BLAKE2b-512 of the file; "Ed" the file itself.
     message = hashlib.blake2b(data, digest_size=64).digest() if signature[:2] == b"ED" else data
     try:
         public.verify(signature[10:74], message)
@@ -212,7 +208,6 @@ def prune(args):
 
 
 def main():
-    # Notes carry any character a commit does; Windows consoles default to a narrower code page.
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)

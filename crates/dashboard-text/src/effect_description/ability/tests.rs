@@ -28,7 +28,6 @@ fn fixture() -> Fixture {
             )
             .collect(),
     );
-    // These synthetic stored strings were recorded in this declared language.
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         fixture.catalogue.recorded_language.clone();
     fixture
@@ -56,8 +55,6 @@ fn ability_body_order_and_raw_modifier_text_match_calls() {
     let result = render(&fixture(), &definition);
     assert_eq!(
         result.text,
-        // Ability descriptions append effect text directly. Only the accumulator and
-        // heading calls add a newline; effect does not add one to `tip`.
         "\nRaw [Root.GetTag]\ntip\ntipHourly\ntipDaily\ntip"
     );
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);

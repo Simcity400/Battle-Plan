@@ -6,9 +6,6 @@ import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { researchGrants } from '../active-research/researchGrants.ts';
 import type { ResearchData, ResearchHistory, ResearchSlotHistory } from './types';
 
-/** Playback never exposes future outcomes, assignments, or slot additions.
- * History up to `hour` stays known when that hour itself has no read: only
- * the slot states looked up at the hour are then missing. */
 export function researchAt(history: ResearchHistory, hour: number): ResearchSlotHistory[] {
   return history.slots.filter(s => s.availability[0]?.firstHour <= hour).map(slot => ({
     ...slot,
@@ -25,8 +22,6 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
   }));
 }
 
-/** `slots` with the slot reads of `now` joined: each slot's state and progress at the hour shown. A slot the reads
- * name that the history has not listed yet is left out. */
 export function withSlotReads(slots: readonly ResearchSlotHistory[], now: ResearchSlotsReply | undefined): ResearchSlotHistory[] {
   if (!now) return [...slots];
   const reads = new Map(now.slots.map(slot => [slot.index, slot]));
@@ -36,7 +31,6 @@ export function withSlotReads(slots: readonly ResearchSlotHistory[], now: Resear
   });
 }
 
-/** `slots` with each breakdown part's reads joined to its slot. */
 export function withBreakdown(slots: readonly ResearchSlotHistory[], breakdown: ResearchBreakdownReply | undefined): ResearchSlotHistory[] {
   if (!breakdown) return [...slots];
   return slots.map(slot => {
@@ -48,7 +42,6 @@ export function withBreakdown(slots: readonly ResearchSlotHistory[], breakdown: 
   });
 }
 
-/** Resolve one assignment without visiting the slot's full history. */
 export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number) {
   let low = 0, high = slot.entries.length;
   while (low < high) { const mid = (low + high) >>> 1; if (slot.entries[mid].firstObservedHour < (state.entryFirstObservedHour ?? -Infinity)) low = mid + 1; else high = mid; }
@@ -60,8 +53,6 @@ export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotSt
   return null;
 }
 
-/** A slot state naming a technology that no assignment joins (one the slot holds already completed, say): it is
- * shown, but its progress and completion stay unknown. */
 export function isUnjoinedResearch(state: ResearchSlotState | null): state is ResearchSlotState & { token: string } {
   return !!state?.token && state.entryFirstObservedHour === null;
 }
@@ -76,9 +67,6 @@ export function researchStateAt(slot: ResearchSlotHistory, hour: number): Resear
   } };
 }
 
-/** Recorded progress toward an assignment's current base cost at `hour`, as a
- * 0-1 fraction. Null without a sample at that hour or a known positive cost;
- * never carried across hours that were not recorded. */
 export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
   if (Number.isNaN(hour)) return null;
   const sample = runAt(slot.progress, hour);
@@ -88,7 +76,6 @@ export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObserved
   return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
 }
 
-/** Integer research rate with the selected hour's ahead-of-time penalty. */
 export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {
   const modifiers = state.details?.modifiers;
   if (!modifiers || state.aheadReductionYearsRaw === null) return null;
@@ -102,8 +89,6 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
 }
 
-/** The latest recorded progress of the assignment `state` joins, at or before `hour`, with the hour of the read it
- * came from. Never interpolated or taken from another assignment; null without a sample or a known positive cost. */
 export function researchLatestProgress(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number): { fraction: number; hour: number } | null {
   if (state.entryFirstObservedHour === null) return null;
   const samples = slot.progress.filter(sample => sample.entryFirstObservedHour === state.entryFirstObservedHour);
@@ -116,18 +101,13 @@ export function researchLatestProgress(slot: ResearchSlotHistory, state: Researc
   return { fraction: done >= base ? 1 : Number(done * 10_000n / base) / 10_000, hour: Math.min(sample.lastHour, hour) };
 }
 
-/** A technology's research folder, named and coloured; `order` is its place
- * among the folders shown, in content order. */
 export interface ResearchFolderLook { key: string; name: string; colour: string; order: number }
 
-/** Keep token and index separate: quoted technology tokens can contain any character. */
 export type ResearchUse = string | readonly [token: string, databaseIndex: number];
 
-/** Separate token and definition lookups to avoid collisions. */
 export type ResearchFolderLooks = ReadonlyMap<string, ResearchFolderLook>
   & { readonly definitions?: ReadonlyMap<string, ReadonlyMap<number, ResearchFolderLook>> };
 
-/** Use the whole history to keep folder colours stable through playback. */
 export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'technologyFolders'>, tokens: Iterable<ResearchUse>,
   palette: readonly string[]): Map<string, ResearchFolderLook> & { definitions: Map<string, Map<number, ResearchFolderLook>> } {
   const byToken = new Map<string, string | null>(), byDefinition = new Map<string, Map<number, string | null>>();
@@ -162,7 +142,6 @@ export function researchFolderAt(looks: ResearchFolderLooks, token: string,
   return databaseIndex == null ? looks.get(token) : looks.definitions?.get(token)?.get(databaseIndex);
 }
 
-/** Separate token and definition text lookups to avoid collisions. */
 export type ResearchArtwork = Map<string, Artwork> & { readonly definitions: ReadonlyMap<string, ReadonlyMap<number, Artwork>> };
 
 export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definitions'> | null | undefined,
@@ -178,7 +157,6 @@ export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definiti
   return Object.assign(artwork, { definitions });
 }
 
-/** Each technology's recorded template indices, ascending. */
 export function researchRecordedTemplates(history: ResearchHistory | null | undefined): Map<string, (number | null)[]> {
   const recorded = new Map<string, Set<number>>();
   for (const slot of history?.slots ?? []) for (const entry of slot.entries)
@@ -186,12 +164,10 @@ export function researchRecordedTemplates(history: ResearchHistory | null | unde
   return new Map([...recorded].map(([token, uses]) => [token, [...uses].sort((a, b) => a - b)]));
 }
 
-/** Without a recorded index, conflicting technology definitions must stay refused by name. */
 export function researchArt(artwork: ResearchArtwork, token: string, databaseIndex?: number | null): Artwork | undefined {
   return (databaseIndex == null ? undefined : artwork.definitions.get(token)?.get(databaseIndex)) ?? artwork.get(token);
 }
 
-/** Includes recorded definitions and preserves content order. */
 export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLook[] {
   const seen = new Map<string, ResearchFolderLook>();
   const all = [...looks.values(), ...[...looks.definitions?.values() ?? []].flatMap(byIndex => [...byIndex.values()])];
@@ -199,8 +175,6 @@ export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLo
   return [...seen.values()].sort((a, b) => a.order - b.order);
 }
 
-/** Images for the cards displayed at this hour: current assignments first,
- * then completed rows in column order. Repeated technologies share one image. */
 export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | null, hour: number | undefined, moment: boolean): string[] {
   if (!slots || hour === undefined) return [];
   const ordered = [...slots].sort((a, b) => a.index - b.index), tokens: string[] = [];
@@ -218,10 +192,8 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
 const hour = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= -2147483648 && (n as number) <= 2147483647;
 const fixed = (value: unknown): value is string => typeof value === 'string' && /^-?\d{1,19}$/.test(value)
   && BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
-/** A recorded template index: one past its place in the technology database, after the null template. */
 const templateIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 4294967295;
 const text = (value: unknown, limit = 4096) => value === null || (typeof value === 'string' && value.length <= limit);
-/** Any number of spans: a long modded campaign is bounded only by the reply's own budget. */
 const intervals = (spans: ResearchCoverage[]) => {
   let last = -Infinity;
   return Array.isArray(spans) && spans.every(s => {
@@ -257,13 +229,11 @@ const validProgress = (sample: { firstHour: number; lastHour: number; entryFirst
   && (sample.entryFirstObservedHour === null || hour(sample.entryFirstObservedHour))
   && fixed(sample.progressRaw) && (sample.baseDaysRaw === null || (fixed(sample.baseDaysRaw) && BigInt(sample.baseDaysRaw) > 0n));
 
-/** Shape checks on the history reply, its slots made ready to join reads to; identity is checked by the transport. */
 export function validateResearchReply(input: unknown): ResearchData {
   const reply = input as ResearchReply;
   let index = -1;
   const valid = !!reply && typeof reply === 'object' && Array.isArray(reply.artwork) && Array.isArray(reply.history?.slots)
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
-    // Any number of slots: content and effects set how many a country has.
     && intervals(reply.history.coverage) && reply.history.slots.every(s => {
       let last = -Infinity;
       const valid = Number.isInteger(s.index) && s.index > index && s.availability.length > 0 && intervals(s.availability)
@@ -282,7 +252,6 @@ export function validateResearchReply(input: unknown): ResearchData {
         });
       index = s.index;
       return valid;
-    // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
     }) && reply.artwork.every(artworkEntry)
     && Array.isArray(reply.folders) && reply.folders.every(folder => typeof folder?.key === 'string' && folder.key.length > 0 && text(folder.name))
     && Array.isArray(reply.technologyFolders) && reply.technologyFolders.every(item => typeof item?.token === 'string' && item.token.length > 0
@@ -296,7 +265,6 @@ export function validateResearchReply(input: unknown): ResearchData {
   return { ...reply, history: { coverage: reply.history.coverage, slots: reply.history.slots.map(slot => ({ ...slot, states: [], progress: [] })) } };
 }
 
-/** Shape checks on a reply of the slots at an hour. */
 export function validateResearchSlots(input: unknown): ResearchSlotsReply {
   const reply = input as ResearchSlotsReply;
   const valid = !!reply && typeof reply.tag === 'string' && (reply.readHour === null || hour(reply.readHour))
@@ -308,7 +276,6 @@ export function validateResearchSlots(input: unknown): ResearchSlotsReply {
   return { ...reply, grants: researchGrants(reply.grants) };
 }
 
-/** Shape checks on a reply of an assignment's reads. */
 export function validateResearchBreakdown(input: unknown): ResearchBreakdownReply {
   const reply = input as ResearchBreakdownReply;
   const valid = !!reply && Array.isArray(reply.parts) && reply.parts.every(part => Number.isInteger(part.slot) && hour(part.firstObservedHour)

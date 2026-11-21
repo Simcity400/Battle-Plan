@@ -3,7 +3,6 @@ import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
-/** Most wings first; mission columns come from the recording. */
 export const DEFAULT_SORT = { column: 'wings', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
   { key: 'theatres', section: 'options', label: 'Air theatres', kind: 'content-set', automatic: 'All recorded theatres', default: '' },

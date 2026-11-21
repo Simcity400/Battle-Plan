@@ -1,4 +1,3 @@
-//! GUI submission compared with independently populated installed-program draws.
 use super::*;
 use crate::map::{native_gui as gui, sprites};
 use eframe::wgpu;
@@ -235,8 +234,6 @@ fn compiled_parts_fan_animation_and_text_bake() {
         equal(&format!("fan-{n}"), &actual, &expected);
     }
 
-    // The effect census covers the type, operation and clock cases. These draws exercise
-    // variant selection, animation constants and slots 1 through 4 in sorted submission.
     for count in 1..=2 {
         for technique in ["Up", "Down", "Over", "Disable"] {
             let records: Vec<_> = (0..count)
@@ -518,8 +515,6 @@ fn compiled_parts_fan_animation_and_text_bake() {
         equal(&format!("text-bake-frame-{frame}"), &actual, &expected);
     }
 
-    // An undeclared selection retains the preceding program and input declaration, while
-    // replacing blend, constants and texture binds independently.
     let first = models::part(
         gui::PartKind::Sprite {
             sprite: b"retained".to_vec(),

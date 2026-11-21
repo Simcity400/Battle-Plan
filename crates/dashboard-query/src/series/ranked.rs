@@ -1,7 +1,3 @@
-//! A declared measure ranked across countries, for any series without parts: the view's top N in
-//! each bin from the summaries' ranks ([`Line::ranked`]), the top N at an hour ([`Line::rank_at`])
-//! with their states, and the next change of the countries ranking first at the cursor. No reply
-//! reads a chart of every country.
 
 use super::{Line, MissingSpan, NavigationKey, SeriesRead, SeriesState, hour_of, invalid};
 use crate::{chart::ChartSummary, tile::TilePart};
@@ -9,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use ts_rs::TS;
 
-/// Hours a ranked line is drawn over: the bins it ranked in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RankedSpan {
@@ -21,14 +16,13 @@ pub struct RankedSpan {
 #[serde(rename_all = "camelCase")]
 pub struct SeriesRankedLine {
     pub tag: String,
-    /// Its holders over the view.
+    #[doc = " Its holders over the view."]
     pub parts: Vec<TilePart>,
     pub summary: ChartSummary,
     pub membership: Vec<RankedSpan>,
     pub missing: Vec<MissingSpan>,
 }
 
-/// The view's ranked lines, greatest at the view's end first.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesRankedReply {
@@ -38,10 +32,8 @@ pub struct SeriesRankedReply {
     pub lines: Vec<SeriesRankedLine>,
 }
 
-/// The widest view a ranked chart draws.
 const WIDTH: u32 = 8192;
 
-/// The top `n` of a series without parts.
 pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<usize>> {
     match (top, line.series.parts) {
         (None, _) => Ok(None),
@@ -51,14 +43,12 @@ pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<us
     }
 }
 
-/// The `n` countries greatest at `hour` and each one's state there, greatest first.
 pub(super) fn states(line: &Line<'_, '_>, hour: Option<f64>, n: usize) -> io::Result<Vec<SeriesState>> {
     let hour = hour_of(hour, "hour")?;
     let reads: Vec<SeriesRead> = line.rank_at(hour, n)?.into_iter().map(|tag| SeriesRead { country: tag.into(), hour, part: None }).collect();
     line.states(&reads, None)
 }
 
-/// The view's top `n` per bin, each line drawn over its member bins.
 pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, to: Option<f64>, width: Option<u32>, n: usize) -> io::Result<SeriesRankedReply> {
     let (from, to) = (hour_of(from, "from")?, hour_of(to, "to")?);
     if from > to {
@@ -83,8 +73,6 @@ pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, t
     Ok(SeriesRankedReply { branch_id: branch_id.to_owned(), measure: line.measure_name().to_owned(), decimals: line.decimals(), lines })
 }
 
-/// The countries a ranked view's keyboard steps through: the top `n` at the cursor (the view's first or last hour
-/// without one), exact to the hour.
 pub(super) fn stepped(line: &Line<'_, '_>, origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), n: usize) -> io::Result<Vec<String>> {
     let at = match (origin, key) {
         (Some(origin), _) => origin.clamp(bounds.0, bounds.1),

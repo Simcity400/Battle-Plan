@@ -71,7 +71,6 @@ fn camera(center: [f32; 2], height: f32) -> Camera {
     .on(MapSize::TEST, MapDefines::test())
 }
 
-/// Every drawn entity after one frame at `height` over the origin.
 fn at(history: &mut BuildingHistory, height: f32, time: f32) -> Vec<Placed> {
     let _ = history.update(camera([0.0, 0.0], height), [1024, 768], time, true);
     history.collect(None, 0.0)
@@ -203,7 +202,6 @@ fn budget_units(
 #[test]
 fn mixed_budget_is_shared_in_province_order_and_retries_on_unchanged_frames() {
     use {super::super::unit_history::Kind, super::super::unit_history::test_support::target};
-    // Input order and identity order deliberately differ from native slot order.
     let targets = vec![
         super::super::unit_history::Target {
             mesh: 3,
@@ -242,8 +240,6 @@ fn mixed_budget_is_shared_in_province_order_and_retries_on_unchanged_frames() {
     );
     let mut units = budget_units(targets, false);
     let mut buildings = budget_buildings(&[(10, 1), (40, 1)]);
-    // Early building, two hulls, one queued figure; the later building
-    // consumes the remaining inline slot before that figure creates.
     assert_eq!(
         mixed_frame(&mut units, &mut buildings, 4, 0.0),
         [1, 10, 11, 100, 101]
@@ -252,7 +248,6 @@ fn mixed_budget_is_shared_in_province_order_and_retries_on_unchanged_frames() {
         mixed_frame(&mut units, &mut buildings, 4, 0.1),
         [1, 2, 3, 10, 11, 100, 101]
     );
-    // A fresh frame with N=3 fills only the building and both hulls.
     units.restart_live();
     buildings.restart_live();
     assert_eq!(
@@ -370,7 +365,7 @@ fn damaged_pose_switch_does_not_consume_an_entity_creation() {
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
     let entity = next.slots.get_mut(0).entity_mut();
-    entity.healthy.mesh = 200; // Renderer-only posed copy of the same definition.
+    entity.healthy.mesh = 200;
     entity.damaged = true;
     buildings.set(next, true);
     assert_eq!(mixed_frame(&mut units, &mut buildings, 0, 1.1), [200]);
@@ -459,7 +454,6 @@ fn a_forward_skip_advances_through_the_skipped_hours() {
     let mut history = BuildingHistory::default();
     history.set(prepared(10, 10_000_000, false), true);
     assert_eq!(at(&mut history, 50.0, 0.0)[0].0, 1);
-    // Hour 11 was skipped by a slow frame; bombing destroyed the building.
     history.advance(&prepared(11, 0, false));
     assert!(!history.set(prepared(14, 7_000_000, false), true));
     assert_eq!(
@@ -602,8 +596,6 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
     assert_ne!(after[0].1.animation_epoch, before);
 }
 
-/// A province's buildings are created while the camera admits its box,
-/// ten units past the view's side planes included.
 #[test]
 fn buildings_just_past_the_view_edge_are_created() {
     let mut input = prepared(10, 10_000_000, true);
@@ -703,9 +695,6 @@ fn a_hub_slot_is_left_to_another_layer_on_a_naval_base_or_city_terrain() {
     );
 }
 
-/// The fog loop: below fifty hides, fifty draws, no byte keeps the building.
-/// The one-slot fixture: an `arms_factory` state slot at [`ONE_STATE`]
-/// over [`ONE_PROVINCE`], its rows named by token [`ONE_TOKEN`].
 const ONE_STATE: u32 = 7;
 const ONE_PROVINCE: u32 = 9;
 const ONE_TOKEN: u32 = 77;
@@ -744,8 +733,6 @@ fn one_slot_assets(
     )
 }
 
-/// An hour whose one building row is `row` at the fixture's state, seen by
-/// a player whose fog byte over the fixture's province is `byte`.
 fn one_row_frame(row: BuildingRow, byte: Option<u8>) -> (DecodedFrame, Vision) {
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for one slot".into(),
@@ -823,8 +810,6 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
     let (low, high) = (entity(2), entity(14));
     assert!(low.destroyed && high.destroyed);
     assert_eq!((low.healthy.variant, high.healthy.variant), (0, 1));
-    // The game passes selector 0 for this ruin whatever its level, so a
-    // level change neither recreates it nor spends the creation allowance.
     assert_eq!(low.ruined, high.ruined);
     assert_eq!((low.ruined.variant, low.ruined.definition), (0, 2));
 }
@@ -853,8 +838,6 @@ fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
         assert_eq!(summary.fogged, fogged, "{byte:?}");
         assert_eq!(cold_instances(field).len(), drawn, "{byte:?}");
     }
-    // The kept token map follows the hour's LexicalTokens: once the token
-    // names something else, the row names no building and says so.
     let (mut frame, vision) = frame_with(Some(50));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -888,9 +871,6 @@ fn the_level_uses_the_content_denominator() {
     assert_eq!(slots_for_level(&types.types["uncapped"], 9, 15), 3);
 }
 
-/// A foreign `need_detection` building needs the viewer's bit in its own
-/// building target status; its own never does, and an incomplete table
-/// cannot decide a foreign one.
 #[test]
 fn foreign_detection_needs_the_viewers_bit() {
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
@@ -910,8 +890,6 @@ fn foreign_detection_needs_the_viewers_bit() {
                 },
                 detected: vec![0b100],
             },
-            // A province target at the same location detected by everyone
-            // names no building, so it cannot reveal one.
             RaidTargetStatusRow {
                 ordinal: 1,
                 valid: 1,
@@ -988,8 +966,6 @@ fn tokens_name_building_types_under_the_lexers_fold() {
         building("Bunker"),
     ]);
     let types = token_types(&frame, &assets.facts.keys, &assets.facts.index).unwrap();
-    // Token 0 names no one key; case folds; two keys under one fold are
-    // refused; a token naming no type is left for the rows to word.
     assert!(types.get(&0).is_none());
     assert_eq!(types.get(&3), Some(&Ok(0)));
     assert_eq!(
@@ -1001,7 +977,6 @@ fn tokens_name_building_types_under_the_lexers_fold() {
     assert!(types.get(&5).is_none());
 }
 
-/// Assets over `ordered`, in that declaration order, with no slots.
 fn assets_of(ordered: Vec<BuildingType>) -> MapBuildingAssets {
     let types = Buildings {
         declaration_order: ordered.iter().map(|b| b.name.clone()).collect(),
@@ -1064,8 +1039,6 @@ fn province_sites_are_indexed_and_ambiguous_facility_tokens_are_refused() {
     assert_eq!(assets.facts.is_facility("FACILITY"), Ok(true));
 }
 
-/// A frame of `StateBuildings` rows of one country, the recorded player,
-/// over `tokens` as the hour's `LexicalTokens`.
 fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for the token rows".into(),
@@ -1115,9 +1088,6 @@ fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {
     (frame, vision)
 }
 
-/// A row's token that names no building type is refused by reason:
-/// absent, among the missing rows, not text, or spelled but not authored.
-/// Type 0 is none, so it is neither drawn nor refused.
 #[test]
 fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1160,7 +1130,6 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
         summary.warnings()[0],
         "Map buildings: 1 rows not drawn, refused type token: token 78 is not in lexical tokens."
     );
-    // A truncated table cannot say the token does not exist.
     let (frame, vision) = buildings_frame(TableView::Truncated { rows, missing: 4 }, &[0, 78]);
     let (_, summary) = assets.field(&frame, &vision, &no_city()).unwrap();
     assert_eq!(summary.unnamed_tokens, 1);
@@ -1171,7 +1140,6 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
             1
         )])
     );
-    // Only type 0: nothing drawn, nothing refused.
     let (mut frame, vision) = buildings_frame(
         TableView::Complete(TableRows::LexicalTokens(Vec::new())),
         &[0],
@@ -1221,13 +1189,10 @@ fn health_thresholds_come_from_the_content() {
 #[test]
 fn health_state_preserves_native_wrapping_and_exceptional_words() {
     let defines = defines();
-    // The partial multiplication wraps to -400,000, whose
-    // truncating division is zero. Widening it would incorrectly choose idle.
     assert_eq!(
         health_state(1, 0, i64::MAX - 3, &defines),
         (false, true, false)
     );
-    // Adding a healthy level crosses the signed 64-bit boundary.
     assert_eq!(health_state(2, 1, i64::MAX, &defines), (true, false, false));
     let sentinel = Defines {
         damaged: 0xffff_ffff + 1,
@@ -1246,7 +1211,6 @@ fn health_state_preserves_native_wrapping_and_exceptional_words() {
 
 #[test]
 fn slots_are_looked_up_by_their_truncated_position() {
-    // A 4 x 3 map: world z is `height - 1 - row`, so row 0 is z = 2.
     let ids = [1, 1, 2, 2, 1, 1, 2, 0, 3, 3, 3, 3];
     let map = ProvinceMap {
         width: 4,
@@ -1283,8 +1247,6 @@ fn the_update_cutoff_is_water_relative() {
     assert!(!draws_map_buildings(189.6, 180.0));
 }
 
-/// Undecided floating harbours reach the diagnostics by reason with the refused tokens,
-/// through the summary the hour builder hands the window, a capture and map details.
 #[test]
 fn undecided_floating_harbours_are_listed_by_reason() {
     let summary = MapBuildingSummary {
@@ -1401,7 +1363,6 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
         next.popup_speed = -1.;
         history.set(next, true);
     }
-    // A negative authored speed can leave full scale at zero delta, then shrink.
     for frame in 160..164 {
         let camera = camera([frame as f32 * 0.01, 0.], 50.);
         let time = (frame - 1) as f32 / 60.;
@@ -1414,7 +1375,6 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
         assert_eq!(cached.collect(None, 0.), reference.collect(None, 0.));
     }
 }
-/// Repeated positions in one authored bucket, retaining the ordinary field path.
 fn repeated_slot_assets(types: &Buildings) -> MapBuildingAssets {
     let mut assets = one_slot_assets(types, BTreeMap::new());
     let slots = assets
@@ -1444,8 +1404,6 @@ fn missing_building_meshes_are_counted_per_reached_slot() {
         .unwrap()
         .show_on_map_meshes = 2;
     let assets = repeated_slot_assets(&types);
-    // An entirely missing mesh/definition still counts every reached slot in
-    // each hour; fog runs first and suppresses that refusal for hidden slots.
     for (step, (byte, unresolved, fogged)) in [
         (Some(50), 8, 0),
         (Some(49), 0, 8),
@@ -1496,8 +1454,6 @@ fn damaged_only_building_meshes_supply_definition_fallback_per_slot() {
     building.has_destroyed_mesh = true;
     let mut assets = repeated_slot_assets(&types);
     let index = assets.facts.index["arms_factory"];
-    // No ordinary definition exists. The normal damaged mesh supplies the
-    // definition fallback even for the separately drawn destroyed mesh.
     assets.damaged_entities.insert((index, 1), 21);
     assets.damaged_entities.insert((index, usize::MAX), 23);
     let (frame, vision) = one_row_frame(
@@ -1867,9 +1823,6 @@ fn symbolic_buildings_validate_authored_group_order_not_bucket_slot_ids() {
     }
 }
 
-/// A layer's slots handed to the scene as pages install exactly those slots through today's
-/// install, which shares the pages instead of converting them; pages patched by their changed
-/// chunks keep every untouched page shared.
 #[test]
 fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
     let kind = BuildingType { name: "infrastructure".into(), show_on_map: Some(1), show_on_map_meshes: 1, ..Default::default() };
@@ -1897,8 +1850,6 @@ fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
     let installed = history.install_display(&product, &assets).unwrap();
     assert!((0..150).all(|id| installed.slots[id] == slots[id]), "the install takes the layer's slots as they are");
     assert!(installed.slots.ptr_eq(&patched.0), "the install shares the pages, converting nothing");
-    // The province boxes are the content's own: a product made with no product before it, as a
-    // compose makes one, shares them rather than laying them out again.
     assert!(Arc::ptr_eq(&groups, &product.groups), "every product shares one set of province boxes");
     assert!(Arc::ptr_eq(&groups, &assets.shared_product(&first, [7; 32], hour(3)).unwrap().groups));
 }

@@ -1,7 +1,3 @@
-//! AirRegionCombat, the retained regional air-combat holders, captured by the
-//! FinalInputs job from the store [`crate::air_record_changes`] keeps across
-//! hours. The table is published shared with that store, so an hour that
-//! changed no held row hands the encoder the same rows again.
 use crate::{air_record_changes as family, clock::qpc, table_conversion::unavailable};
 use engine_native::{Memory, walk::Outcome};
 use replay_data::{rows::TableId, rows::TableRows};
@@ -10,7 +6,6 @@ use std::sync::Arc;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::AirRegionCombat];
-/// The rows live in the family's store, sized from the holders it reads.
 pub type Capacities = ();
 
 const NOT_CAPTURED: &str = "air region combat holders not captured";
@@ -35,7 +30,6 @@ impl Captured {
     pub fn reset(&mut self) {
         *self = Self::vacant();
     }
-    /// The shared rows belong to the family's store.
     pub fn allocated_bytes(&self) -> usize {
         0
     }

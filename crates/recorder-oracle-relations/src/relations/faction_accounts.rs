@@ -1,4 +1,3 @@
-//! Account save admission follows current membership or retained goal history.
 use super::*;
 pub fn compare(
     frame: &DecodedFrame,

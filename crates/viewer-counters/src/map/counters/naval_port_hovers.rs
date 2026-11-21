@@ -1,4 +1,3 @@
-//! Explicit port-item hover observers from the actual retained draw.
 
 use super::*;
 use viewer_foundation::map::counter_hovers::gui_authored::Authored;
@@ -39,9 +38,6 @@ fn control(window: &native::Element, element: &native::Element) -> Option<Contro
         {
             return Some(Control::Spotting);
         }
-        // The game propagates the container's handler to
-        // every descendant. An additional observed object reaches the generic
-        // arm, not the spotting branch's exact object-identity comparisons.
         let mut pending: Vec<_> = spotting.children.iter().collect();
         while let Some(child) = pending.pop() {
             if std::ptr::eq(child, element) {
@@ -84,9 +80,6 @@ pub(super) fn presented(
         .filter_map(|region| {
             let element = gui_windows::find_path(window, &region.path)?;
             let bound = control(window, element);
-            // Every admitted opaque object wins its native hit, even without a
-            // mission handler. Exact shape/transparent admission belongs to the
-            // shared native hit helper, including bound container wrappers.
             let hit =
                 gui_windows::native_hit_rectangle(element, &placed, origin, resources, notes)?;
             Some(Hover {

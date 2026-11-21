@@ -2,7 +2,6 @@ use super::*;
 use replay_data::rows::{DoctrineTrackRow, LexicalTokenRow, TableRows};
 use replay_frame::frame::{Metrics, TableView};
 
-/// A frame of every table a description reads, the given rows laid over empty ones.
 fn frame(rows: Vec<TableRows>) -> DecodedFrame {
     let read = tables();
     let mut frame = DecodedFrame {

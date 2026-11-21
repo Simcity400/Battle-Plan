@@ -28,8 +28,6 @@ fn fixture() -> DecodedFrame {
 fn dynamic_modifier_synthetic_channel_scope() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Independently authored channel-style rules exercise a direct state
-    // condition and a state condition inside an OR with absent flag branches.
     let mut f = frame(&[(701, 17, "QXZ", 1, "QXZ", "")], &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         [117, 229]
@@ -79,7 +77,6 @@ fn dynamic_modifier_state_container_scans_targets_in_container_order() {
         canonical_slot: 11,
     });
     *f.tables[TableId::StateDynamicModifiers.index()] =
-        // Keyed by (state, ordinal), the container's order, as a recording holds the rows.
         TableView::Complete(TableRows::StateDynamicModifiers(vec![
             StateDynamicModifierRow {
                 state: 58,
@@ -114,9 +111,6 @@ fn dynamic_modifier_state_container_scans_targets_in_container_order() {
             format!("58 = {{ has_dynamic_modifier = {{ modifier = custom scope = {operand} }} }}");
         assert_eq!(check(&f, "", 11, &trigger), expected, "{trigger}");
     }
-    // No target: stop at the first definition match, even though a later
-    // entry has no target. Country targets ignore scope_state; state targets
-    // ignore scope_country.
     assert_eq!(
         check(&f, "", 11, "58 = { has_dynamic_modifier = custom }"),
         Eval::False
@@ -226,8 +220,6 @@ fn dynamic_modifier_country_container_uses_aliases_and_variable_targets() {
         ),
         Eval::False
     );
-    // A later proven match wins over an earlier unresolved alias. Without
-    // a match, the missing alias remains unknown, never a guessed false.
     let why = check(
         &f,
         "",
@@ -262,8 +254,6 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
             scope_country: u32::MAX,
             ..Default::default()
         }]));
-    // Accept a scalar or read just modifier and scope from a block;
-    // later modifier strings replace earlier ones; no scope defaults to 0.
     for trigger in [
         "has_dynamic_modifier = custom",
         "has_dynamic_modifier = { modifier = custom }",
@@ -273,8 +263,6 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
         "has_dynamic_modifier = { modifier = custom scope = absent_variable }",
         "has_dynamic_modifier = { modifier = custom scope = 1.5 }",
         "has_dynamic_modifier = { modifier = custom scope = ROOT scope = 0 }",
-        // Decode the tagged value as a character:
-        // the fresh auxiliary scope carries neither country nor state.
         "has_dynamic_modifier = { modifier = custom scope = 5368.70932 }",
     ] {
         assert_eq!(check(&f, "", 11, trigger), Eval::True, "{trigger}");
@@ -287,8 +275,6 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
     ] {
         assert_eq!(check(&f, "", 11, trigger), Eval::False, "{trigger}");
     }
-    // A repeated nonliteral scoped-variable read retains earlier fields;
-    // this zero-reach form stays a named refusal, rather than last-wins.
     let why = check(
         &f,
         "",

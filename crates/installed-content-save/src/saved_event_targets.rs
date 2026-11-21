@@ -1,5 +1,3 @@
-//! Every saved event-target record is emitted in order.
-//! No block means an empty registry.
 use super::{block, bytes, field, integer, invalid, null_permitted_handle, scalar};
 use installed_content_core::parser::Item;
 use replay_data::rows::GlobalSavedEventTargetRow as Row;
@@ -10,7 +8,6 @@ pub struct Target {
     pub state: i32,
     pub country: Option<Vec<u8>>,
     pub character: u32,
-    /// Keys emitted for the nine reference kinds, then strategic_region.
     pub present: u16,
     pub extra_keys: Vec<Vec<u8>>,
 }

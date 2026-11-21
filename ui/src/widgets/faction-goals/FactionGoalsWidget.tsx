@@ -26,8 +26,6 @@ const rowKey = (row: GoalRow) => row.key;
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: GoalRow[] = [];
 
-/** A faction's goals at the shown hour: one pushed panel while following, the progress of each held goal painted
- * from its live cell, so the table renders only when the goals themselves change. */
 export default function FactionGoalsWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   useChartTokens();

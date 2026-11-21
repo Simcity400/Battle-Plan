@@ -1,7 +1,6 @@
 use super::*;
 use crate::{Query, chart::ChartRun, fixture::*, identity::{Country, Holder, HolderRun}, series::grid};
 
-/// The lines of a series without parts.
 fn whole(tags: &[&str]) -> Vec<Ask> {
     tags.iter().map(|tag| Ask::whole(*tag)).collect()
 }
@@ -11,7 +10,6 @@ fn line<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
     Line::new(query, series, series.measure("politicalPower").unwrap()).unwrap()
 }
 
-/// The tile's bins as the wire carries them, by tag.
 fn wire(line: &Line<'_, '_>, bin_hours: i64, index: i64) -> (SeriesTileReply, Vec<Vec<Option<ChartBucket>>>) {
     let tags = whole(&TAGS);
     let reply = tile(line, "1", &tags, None, bin_hours, index, false).unwrap();
@@ -31,9 +29,6 @@ fn joined(spans: impl IntoIterator<Item = MissingSpan>) -> Vec<MissingSpan> {
     out
 }
 
-/// Tiles of every level, walked bins included, side by side equal one view of their hours drawn
-/// with the same bins: their seams join the line as the view does, and their hours not recorded
-/// join into the view's.
 #[test]
 fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
     let query = query();
@@ -43,7 +38,6 @@ fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
         let span = BINS as i64 * bin_hours;
         let (first_tile, last_tile) = (i64::from(FIRST).div_euclid(span), i64::from(LAST).div_euclid(span));
         let (first, last) = (first_tile * span, (last_tile + 1) * span - 1);
-        // One view from the bin before the first tile, so its first tile's first bin is not the view's.
         let from = first - bin_hours;
         let width = ((last - from + 1) / bin_hours) as u32;
         assert_eq!(grid(last - from + 1, width).1, bin_hours);
@@ -71,8 +65,6 @@ fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
     assert!(compared > 1_000, "{compared} bins compared");
 }
 
-/// A tile across the hours between the two runs holds no bin wholly inside them, and names those
-/// hours not recorded with the timeline's reason.
 #[test]
 fn a_tile_across_a_gap_marks_its_bins_not_recorded() {
     let query = query();
@@ -100,8 +92,6 @@ fn a_tile_across_a_gap_marks_its_bins_not_recorded() {
     assert!(tiles[0].iter().any(Option::is_some) && tiles[0].iter().any(Option::is_none));
 }
 
-/// The tile holding the timeline's last hour may still change and says how far it is filled;
-/// one wholly before it never changes; one after it holds nothing.
 #[test]
 fn the_last_tile_says_how_far_it_is_filled_and_is_not_immutable() {
     let query = query();
@@ -128,8 +118,6 @@ fn a_tile_of_a_tag_the_recording_lacks_is_refused_by_name() {
     assert!(error.to_string().contains("XYZ"), "{error}");
 }
 
-/// Values a 32-bit raw word cannot carry exactly go as floats, hours in the bytes a bin needs, and
-/// a level bin as one value.
 #[test]
 fn bins_round_trip_through_every_width() {
     let bucket = |value: f64| ChartBucket {
@@ -189,9 +177,6 @@ fn bins_of_no_view_are_refused() {
     assert_eq!(level_of(96 * 15).unwrap(), 1);
 }
 
-/// A tile asked with marks carries each line's drops per bin, walked bins and summary bins alike,
-/// and how many it dropped on the timeline before the tile, against the drops the fixture's own
-/// values make.
 #[test]
 fn a_tile_carries_its_drops_per_bin_and_the_drops_before_it() {
     let query = query();
@@ -227,9 +212,6 @@ fn a_tile_carries_its_drops_per_bin_and_the_drops_before_it() {
     assert!(plain.lines[0].marks.is_none(), "marks only when asked");
 }
 
-/// Hourly tiles' runs, joined across their seams and cut to a view, equal today's hourly reply for
-/// that view, its runs and its bins: at a segment's start, inside one, across a tile's seam, across
-/// the hours the timeline does not hold, where a tag starts to exist, and at the timeline's end.
 #[test]
 fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
     let query = query();
@@ -294,11 +276,6 @@ fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
     assert!(runs_compared > 20, "{runs_compared} runs compared");
 }
 
-/// A view assembled from its tiles as the UI does, asked through the tile product's own requests in
-/// groups of keys and read back from the wire, holds the chart read for the view widened to whole
-/// bins (an hourly view: its runs and bins), its hours not recorded and its drops per bin with the
-/// drops before each: walked bins and every level, off every grid, across the gap, where a tag
-/// starts, at the timeline's end, and with more keys than one request names.
 #[test]
 fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
     let query = query();
@@ -395,7 +372,6 @@ fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
     assert!(bins_compared > 5_000 && runs_compared > 20 && marks_compared > 100, "{bins_compared} bins, {runs_compared} runs, {marks_compared} marks");
 }
 
-/// Each line's bins of `tags` asked together in one tile, from `query`.
 fn together(query: &Query<'static>, tags: &[&str], bin_hours: i64, index: i64) -> Vec<Vec<Option<ChartBucket>>> {
     let line = line(query);
     let reply = tile(&line, "1", &whole(tags), None, bin_hours, index, false).unwrap();
@@ -403,9 +379,6 @@ fn together(query: &Query<'static>, tags: &[&str], bin_hours: i64, index: i64) -
     buckets.chunks(BINS).map(<[_]>::to_vec).collect()
 }
 
-/// Tags whose holders start at other hours share one chart read a run, and each line's bins are
-/// those it has asked alone: also where one country holds two tags asked together, so its row
-/// before the change is the first tag's and after it the second's, in the bin the change falls in.
 #[test]
 fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
     let mut renamed = query();
@@ -423,7 +396,6 @@ fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
             for (at, tag) in tags.iter().enumerate() {
                 let alone = together(&query, &[tag], bin_hours, index).remove(0);
                 assert_eq!(both[at], alone, "{tag} beside {tags:?}, bins of {bin_hours} hours");
-                // Hours are to the bucket of the bin's level: a bin of one bucket has its extremes at its first hour.
                 if level_of(bin_hours).unwrap() != replay::lanes::WALKED && bucket_hours(level_of(bin_hours).unwrap()) == bin_hours {
                     for bucket in alone.iter().flatten() {
                         assert_eq!((bucket.min_hour, bucket.max_hour), (bucket.first_hour, bucket.first_hour), "{tag}'s extremes in a bin of {bin_hours} hours");

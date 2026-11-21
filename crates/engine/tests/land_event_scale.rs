@@ -1,4 +1,3 @@
-//! Owned allocation only: guarded event reads without an executable or process.
 use engine_land_inputs::{cstats_observer as stats, land_events as native};
 use engine_native::{
     carmy, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool, cgame_state,
@@ -139,9 +138,6 @@ fn land_event_snapshot_scale() {
             const SAMPLES: usize = 201;
             let mut times = Vec::with_capacity(SAMPLES);
             let mut words = 0usize;
-            // One result + post-flush losses/history + destruction per iteration.
-            // The same small native shapes are reused to isolate acquisition,
-            // not an assertion that every country ends a combat each hour.
             for _ in 0..SAMPLES {
                 let start = std::time::Instant::now();
                 for _ in 0..countries {
@@ -164,9 +160,7 @@ fn land_event_snapshot_scale() {
                                 std::hint::black_box(word);
                             })
                             .unwrap();
-                        dispatch_words = participants.words + 6; // paired native commanders record
-                        // Finalization acquires a fresh snapshot after
-                        // dispatch; include that second native read here.
+                        dispatch_words = participants.words + 6;
                         native::ResultPlan::read(&memory, f.base, f.base + 0x7000, None)
                             .unwrap()
                             .without_candidates()

@@ -6,9 +6,6 @@ use crate::{
 use replay_columnar::{manifest::Status, store::Store};
 use replay_data::rows::{CountryLinkRow, CountryRow, FactionMemberRow, Recorded, SubjectRow, WarRelationRow};
 
-/// One hour of the rule's inputs: the currents (region, raw country, current), whether 101 and
-/// 103 are at war. Countries 101 to 104 are slots 1 to 4; 101 and 102 share faction 9; raw 105
-/// has no link. NavalSupremacy is read only when `currents` is given.
 fn feed(store: &mut Store, hour: i32, currents: Option<&[(u32, u32, i64)]>, war: bool) {
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     if let Some(currents) = currents {
@@ -37,10 +34,8 @@ const DAY0: &[(u32, u32, i64)] = &[(7, 101, 10), (7, 102, 5), (7, 103, 7), (8, 1
 const MOVED: &[(u32, u32, i64)] = &[(7, 101, 10), (7, 102, 6), (7, 103, 7), (8, 104, 0)];
 const UNLINKED: &[(u32, u32, i64)] = &[(7, 101, 10), (7, 102, 6), (7, 103, 7), (8, 104, 0), (9, 105, 4)];
 
-/// The hours: (hour, currents read, at war).
 const HOURS: &[(i32, Option<&[(u32, u32, i64)]>, bool)] = &[(0, Some(DAY0), true), (1, Some(MOVED), true), (2, None, false), (3, Some(UNLINKED), false), (24, None, false), (25, Some(UNLINKED), false)];
 
-/// Each row: (viewer, region) and its five operands, none where not recorded.
 fn table(store: &Store) -> Vec<((u32, u32), Vec<Option<i64>>)> {
     let view = store.view(TableId::NavalRegionControl.index());
     let mut out: Vec<_> = view.rows().map(|slot| {
@@ -55,12 +50,6 @@ fn known(values: [i64; 5]) -> Vec<Option<i64>> {
     values.map(Some).to_vec()
 }
 
-/// A region's rows are the rule's operands for each viewer its currents concern: the family's
-/// currents friendly, those of countries at war enemy, the share's group and the viewer's own
-/// current; an uninvolved viewer and a region without currents hold none. A moved current
-/// recomputes its region and a war's end every region; an owner without a link refuses every
-/// viewer, held once as the region's every-viewer row; a day whose NavalSupremacy was not read
-/// withholds the table by name.
 #[test]
 fn each_viewer_holds_the_rules_operands_where_the_currents_concern_it() {
     let mut store = store();
@@ -101,7 +90,6 @@ fn each_viewer_holds_the_rules_operands_where_the_currents_concern_it() {
     }
 }
 
-/// A resume recomputes every region: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {
@@ -126,8 +114,6 @@ fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     }
 }
 
-/// The reserved slot as a viewer (raw 100 links to slot 0; its faction is 101's and 102's, so their currents are its
-/// family's), its naming's status complete or refused, no row moving.
 fn feed_reserved(store: &mut Store, hour: i32, naming: Status) {
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     put(store, hour, TableId::NavalSupremacy, &[NavalSupremacyRow { region: 7, country: 101, current: 10, ..Default::default() }, NavalSupremacyRow { region: 7, country: 102, current: 5, ..Default::default() }], Status::Complete);
@@ -140,13 +126,10 @@ fn feed_reserved(store: &mut Store, hour: i32, naming: Status) {
     put::<replay_data::rows::RelationTupleRow>(store, hour, TableId::RelationTuples, &[], Status::Complete);
     put::<AirCountryRelationRow>(store, hour, TableId::AirCountryRelations, &[], Status::Complete);
     let named = [ReservedCountryNamingRow { faction: Recorded::Value(Some(9)), ..Default::default() }];
-    // Refused or not, the row stands: only the status moves.
     put(store, hour, TableId::ReservedCountryNaming, &named, naming);
     store.settle();
 }
 
-/// A reserved input refused with no row moving withholds the reserved viewer's control operands it held, and its
-/// return computes them again.
 #[test]
 fn a_reserved_input_refused_or_back_without_a_row_moving_recomputes_the_regions() {
     let mut store = store();

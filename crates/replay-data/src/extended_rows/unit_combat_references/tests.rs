@@ -1,4 +1,3 @@
-//! Authored, unrun codec/admission fixtures.
 use super::*;
 use crate::value::Value;
 
@@ -49,7 +48,6 @@ fn a_packet_is_exactly_its_count_and_references_and_nothing_follows_them() {
         expected.push(entry.kind);
     }
     assert_eq!(bytes, expected);
-    // The retired diagnostic speed sample is no longer part of the packet.
     for sample in [vec![0], vec![1, 0x71, 0x31, 0, 0, 0, 0, 0, 0]] {
         let mut longer = vec![1];
         longer.extend_from_slice(&bytes);
@@ -99,8 +97,6 @@ fn malformed_tags_handles_kinds_counts_and_truncation_refuse() {
 #[test]
 fn frame_hour_count_and_kind_admission_are_exact() {
     let packet = packet();
-    // A host packet was read with its hourly row; a historical stamp binds
-    // its own hour.
     assert!(packet.valid_at(i32::MIN, 3));
     assert!(packet.valid_at(i32::MAX, 3));
     assert!(!packet.valid_at(i32::MIN, 2));

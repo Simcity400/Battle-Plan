@@ -24,10 +24,7 @@ use viewer_foundation::map::test_support::gui;
 use viewer_foundation::parallel::Workers;
 use viewer_foundation::table_access::Refusals;
 
-// Tokens.
 
-/// The scripted triggers `text` defines, read as the game reads a file of
-/// the directory.
 fn scripted(assets: &mut RaidAssets, text: &str) {
     let mut triggers = (*assets.trigger_content.triggers).clone();
     triggers.scripted = installed_content_core::scripted_triggers::ScriptedTriggers::parse(
@@ -40,16 +37,12 @@ fn scripted(assets: &mut RaidAssets, text: &str) {
 #[test]
 fn the_raid_priority_is_the_define_as_a_signed_byte() {
     assert_eq!(map_icon_priority(30.0), Ok(30));
-    // The byte table keeps the low byte: 286 is 30.
     assert_eq!(map_icon_priority(286.0), Ok(30));
-    // A byte above 127 is negative, and sorts below zero.
     assert_eq!(map_icon_priority(200.0), Ok(-56));
     assert_eq!(map_icon_priority(-1.0), Ok(-1));
     assert!(map_icon_priority(30.5).is_err());
 }
 
-/// The integer loader uses zero for a missing or non-number value, then
-/// raises every value below one to one.
 #[test]
 fn the_target_batch_is_at_least_one() {
     let batch = |source: &str| {
@@ -76,7 +69,6 @@ fn the_target_batch_is_at_least_one() {
             Ok(1)
         );
     }
-    // A section the reader cannot reach is still a refusal, not a clamp.
     assert!(batch("NDefines = {}").is_err());
 }
 
@@ -84,8 +76,6 @@ fn the_target_batch_is_at_least_one() {
 fn membership_follows_ownership_detection_and_show_for() {
     let assets = assets();
     let mut frame = frame();
-    // GER raids ENG's province 3; ENG raids GER's 1 undetected and 2 detected;
-    // an ended ENG raid on 4 is shown to GER and another is cancelled.
     put::<tables::Raids>(
         &mut frame,
         vec![
@@ -114,12 +104,9 @@ fn membership_follows_ownership_detection_and_show_for() {
         .iter()
         .map(|icon| (icon.province, icon.frame))
         .collect();
-    // Ours on 3, the detected incoming on 2; the undetected one draws nothing.
     assert_eq!(by_province.get(&3), Some(&2));
     assert_eq!(by_province.get(&2), Some(&4));
     assert!(!by_province.contains_key(&1));
-    // An ended raid shown to us draws the ended frame; ENG's own raid on 4 is
-    // its own, so as ENG it is an ended own raid only if shown to ENG.
     assert_eq!(by_province.get(&4), None, "the target is ENG's, not ours");
     let as_eng = icons_for(&assets, &frame, 1);
     assert_eq!(as_eng.get(&1), Some(&2), "ENG's active raid on 1");
@@ -164,7 +151,6 @@ fn an_ended_raid_needs_show_for_and_an_uncancelled_outcome() {
 fn incoming_wins_and_the_first_registered_raid_binds() {
     let assets = assets();
     let mut frame = frame();
-    // Both on province 1: GER's own ended raid and ENG's detected active one.
     put::<tables::Raids>(
         &mut frame,
         vec![
@@ -204,8 +190,6 @@ fn offers_need_a_valid_foreign_target_an_unlocked_type_and_show_target() {
         .iter()
         .map(|icon| (icon.province, icon))
         .collect();
-    // Province 1 is ours; 3 has oilfield and commando (two glyphs collapse to
-    // other_raid, with the plus); 4 has oilfield only.
     assert!(!offers.contains_key(&1));
     assert_eq!(offers[&3].glyph.as_deref(), Some(OTHER_GLYPH));
     assert!(offers[&3].plus);
@@ -215,10 +199,8 @@ fn offers_need_a_valid_foreign_target_an_unlocked_type_and_show_target() {
     );
     assert!(!offers[&4].plus);
     assert_eq!(offers[&4].frame, 0);
-    // No unit requirement admits a unit, so no offer is launchable.
     assert!(!offers[&4].enabled);
     assert_eq!(icons.report.unverified_tint, 0);
-    // A faction partner's targets are not shown.
     put::<tables::FactionMembers>(
         &mut frame,
         vec![
@@ -253,7 +235,6 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
             used_types: vec![COMMANDO],
         }],
     );
-    // GER is the player cache's country, and its list holds the commando only.
     put::<tables::RaidPlayerAllowedTypes>(
         &mut used,
         vec![RaidPlayerAllowedTypeRow {
@@ -262,7 +243,6 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
         }],
     );
     assert!(icons_for(&assets, &used, 0).is_empty());
-    // A dam needs detection; a cooldown then proves the offer grey.
     let dam = RaidTargetStatusRow {
         scope: RaidScope {
             building_type: DAM,
@@ -306,17 +286,13 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
         icons.report.unverified_tint, 0,
         "the cooldown proves it grey"
     );
-    // A locked category offers nothing.
     assets.trigger_content.dlcs.clear();
     assert!(icons_for(&assets, &frame, 0).is_empty());
 }
 
-/// A glyph no interface file declares is counted: the game would keep the
-/// button's previous sprite. A target with no province is counted too.
 #[test]
 fn undeclared_glyphs_and_unresolved_targets_are_counted() {
     let mut assets = assets();
-    // An undeclared type glyph falls back to the unknown glyph, itself undeclared.
     assets.glyphs.remove("GFX_raid_type_icon_oilfield");
     assets.glyphs.remove(UNKNOWN_GLYPH);
     let mut frame = frame();
@@ -341,7 +317,6 @@ fn undeclared_glyphs_and_unresolved_targets_are_counted() {
     );
 }
 
-/// The hour's offers for `ours` with every target evaluated.
 fn all_offers(
     assets: &RaidAssets,
     frame: &DecodedFrame,
@@ -358,7 +333,6 @@ fn all_offers(
     cycle.offers()
 }
 
-/// The shown offers' raid types for GER at province 4.
 fn offered(assets: &RaidAssets, frame: &DecodedFrame) -> (Vec<String>, RaidReport) {
     let icons = icons(assets, frame, 0, &launch::Unreconstructed);
     let offers = all_offers(assets, frame, 0, &launch::Unreconstructed);
@@ -376,16 +350,11 @@ fn offered(assets: &RaidAssets, frame: &DecodedFrame) -> (Vec<String>, RaidRepor
     (names, icons.report)
 }
 
-/// The player cache's own raw country is offered the recorded list,
-/// `allowed` as of the load or last player switch; every other country,
-/// and the same tag held by another country after a switch, evaluates each
-/// type's `allowed` at the shown hour.
 #[test]
 fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut assets = assets();
-    // Oilfield is not allowed now; the cache still lists it from the load.
     assets.catalog.types[0].allowed = parse("always = no");
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 4)]);
@@ -397,7 +366,6 @@ fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
         }],
     );
     assert_eq!(offered(&assets, &frame).0, ["oilfield"]);
-    // Another country: allowed at this hour, which the oilfield fails.
     put::<tables::RaidPlayerAllowedTypes>(
         &mut frame,
         vec![RaidPlayerAllowedTypeRow {
@@ -406,8 +374,6 @@ fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
         }],
     );
     assert!(offered(&assets, &frame).0.is_empty());
-    // GER's tag now held by another country (raw 12): the cache's raw 10
-    // is not it, so it is evaluated too.
     let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
     countries[0].id = 12;
     put::<tables::Countries>(&mut frame, countries);
@@ -433,8 +399,6 @@ fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
     );
 }
 
-/// An `allowed` the evaluator cannot decide (a coded trigger it does not
-/// reproduce) draws the offer grey and counts it, never a proved tint.
 #[test]
 fn an_undecided_allowed_draws_the_offer_grey_and_counts_it() {
     let mut assets = assets();
@@ -472,9 +436,6 @@ fn an_unsupported_trigger_withholds_the_province_and_names_itself() {
     );
 }
 
-/// A state building stands on the first province of the state's runtime
-/// list with a site for it; that list keeps the content's order only while
-/// its membership equals the content's.
 #[test]
 fn a_state_building_anchors_in_content_order_only_while_membership_matches() {
     let mut assets = assets();
@@ -504,7 +465,6 @@ fn a_state_building_anchors_in_content_order_only_while_membership_matches() {
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert_eq!(assets.anchor_province(&world, &scope), Ok(Some(3)));
     drop(world);
-    // Province 2 moved into state 20: the native order is unknown.
     let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
     provinces[1].state = 20;
     put::<tables::Provinces>(&mut frame, provinces);
@@ -512,9 +472,6 @@ fn a_state_building_anchors_in_content_order_only_while_membership_matches() {
     assert!(assets.anchor_province(&world, &scope).is_err());
 }
 
-/// A kept offer icon on a state building is laid out again when its
-/// state's province order changes, though its offer is unchanged; kept
-/// icons equal icons laid out afresh.
 #[test]
 fn a_kept_state_building_icon_follows_its_states_order() {
     let mut assets = assets();
@@ -554,7 +511,6 @@ fn a_kept_state_building_icon_follows_its_states_order() {
     put::<tables::RaidTargetStatuses>(&mut frame, vec![airfield, status(1, 1)]);
     let mut cycle = cycle::Cycle::new(frame.branch, 0);
     let mut kept = IconCache::default();
-    // Each hour evaluates one row: the airfield, then the other target.
     let mut hour = |frame: &DecodedFrame, cycle: &mut cycle::Cycle| {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
         let layer = HourLayer::new(&assets, &world, 0, &launch::Unreconstructed);
@@ -580,7 +536,6 @@ fn a_kept_state_building_icon_follows_its_states_order() {
             .collect::<Vec<_>>(),
         [3]
     );
-    // Province 2 moved into state 20: the native order is unknown.
     frame.hour += 1;
     let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
     provinces[1].state = 20;
@@ -590,9 +545,6 @@ fn a_kept_state_building_icon_follows_its_states_order() {
     assert_eq!(second.report.withheld, 1);
 }
 
-/// A paused hour evaluated again continues its cycle and a complete one stays complete: only the
-/// next hour's rebuild marks every row pending. A saved window frame whose step evaluated its hour
-/// once more otherwise showed a batch of a cycle it had finished, and waited on it forever.
 #[test]
 fn an_hour_evaluated_again_keeps_the_rows_it_evaluated() {
     let mut assets = assets();
@@ -621,7 +573,6 @@ fn a_state_target_resolves_to_the_province_nearest_its_centre() {
         state: 20,
         ..Default::default()
     };
-    // State 20 spans x 2..4; the centre x 3 is province 4's pixel.
     assert_eq!(assets.province(&scope), Some(4));
 }
 
@@ -685,7 +636,6 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
             .iter()
             .all(|quad| sprites::layer_priority(quad.layer) == i64::from(assets().priority))
     );
-    // The eye leans south, so province 1 is nearer and draws last.
     let frame_texture = native_gui::Sheets::sheet(&draw_resources(), FRAME_SPRITE)
         .unwrap()
         .texture;
@@ -709,8 +659,6 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
     );
 }
 
-/// Until an hour's raid icons are built the window draws none, never
-/// another hour's (`Hour::hour_tables_with_raids`, owner decision).
 #[test]
 fn only_the_hours_own_raid_icons_are_drawn() {
     use std::sync::Arc;
@@ -730,7 +678,6 @@ fn only_the_hours_own_raid_icons_are_drawn() {
     let same = RaidIcons::carried(Arc::clone(&icons), 1, 40, 7);
     assert!(Arc::ptr_eq(&same, &icons), "this hour's own icons");
     assert!(same.report.warnings().is_empty());
-    // Another hour, branch or country draws nothing until its own are built.
     for (branch, hour, ours) in [(1, 41, 7), (1, 39, 7), (1, 40, 8), (2, 40, 7)] {
         let other = RaidIcons::carried(Arc::clone(&icons), branch, hour, ours);
         assert!(other.icons.is_empty());
@@ -740,15 +687,11 @@ fn only_the_hours_own_raid_icons_are_drawn() {
     assert!(RaidIcons::carried(Arc::default(), 1, 40, 7).report.pending);
 }
 
-/// A raid type the port cannot use (declared twice, or unreadable) is still
-/// in the game's database: a target it may match has its offers withheld,
-/// naming the type, rather than missing.
 #[test]
 fn a_type_the_port_cannot_use_leaves_its_targets_undecided_by_name() {
     let mut assets = assets();
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 3), status(1, 4)]);
-    // Oilfield only on province 3 now; the uncertain type on 4 alone.
     assets.catalog.types[0].target_types = vec![TargetType::Provinces(vec![3])];
     assets.catalog.types.truncate(1);
     let declaration = kind("mine", TargetType::Provinces(vec![4]));
@@ -769,22 +712,17 @@ fn a_type_the_port_cannot_use_leaves_its_targets_undecided_by_name() {
             .keys()
             .any(|reason| reason.contains("raid type mine") && reason.contains("more than once"))
     );
-    // An unreadable type may match anything.
     assets.catalog.uncertain[0].declarations.clear();
     assert!(
         icons_for(&assets, &frame, 0).is_empty(),
         "both provinces are undecided"
     );
-    // A target no declaration matches is decided without it.
     assets.catalog.uncertain[0].declarations = vec![kind("mine", TargetType::Provinces(vec![9]))];
     let decided = icons(&assets, &frame, 0, &launch::Unreconstructed);
     assert_eq!(decided.icons.len(), 1);
     assert_eq!(decided.report.withheld, 0);
 }
 
-/// Without the player cache the viewing country may be the cache's own,
-/// whose list holds `allowed` as of the load: a type not allowed now is
-/// undecided, drawn grey and counted, not dropped.
 #[test]
 fn without_the_player_cache_a_type_not_allowed_now_is_undecided() {
     let mut assets = assets();
@@ -811,7 +749,6 @@ fn without_the_player_cache_a_type_not_allowed_now_is_undecided() {
     );
 }
 
-/// A viewing country with no raid status has no offers.
 #[test]
 fn a_country_without_a_raid_status_evaluates_to_no_offers() {
     let assets = assets();
@@ -823,8 +760,6 @@ fn a_country_without_a_raid_status_evaluates_to_no_offers() {
     assert!(icons.report.cycle_complete());
 }
 
-/// An incoming raid of a type not in the content draws the unknown glyph
-/// where the game draws the type's own: counted and named.
 #[test]
 fn an_incoming_raid_of_an_unknown_type_counts_its_stand_in_glyph() {
     let assets = assets();
@@ -846,8 +781,6 @@ fn an_incoming_raid_of_an_unknown_type_counts_its_stand_in_glyph() {
     );
 }
 
-/// Scripted booleans read yes or no alone. Other values, including parameter
-/// blocks, load as no; `$PARAM$` is not substituted.
 #[test]
 fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -864,8 +797,6 @@ fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
     assert_eq!(eval("is_germany = no"), script::Eval::False);
     assert_eq!(eval("is_germany = { who = GER }"), script::Eval::False);
     assert_eq!(eval("no_param = { who = GER }"), script::Eval::False);
-    // Unsubstituted `$who$` is not a tag: the operand reader treats it as a
-    // variable whose store this frame does not record.
     match eval("is_param = { who = GER }") {
         script::Eval::Unknown(reasons) => {
             assert!(
@@ -879,8 +810,6 @@ fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
     }
 }
 
-/// A completed technology without a recorded definition name could be the
-/// one asked for: only a named match is True, and False needs every row named.
 #[test]
 fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -912,7 +841,6 @@ fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
     put::<tables::ResearchTechnologies>(&mut frame, vec![completed(1)]);
     assert_eq!(eval(&frame, "has_tech = radar"), script::Eval::True);
     assert_eq!(eval(&frame, "has_tech = sonar"), script::Eval::False);
-    // Handle 2 has no definition row: it may be sonar.
     put::<tables::ResearchTechnologies>(&mut frame, vec![completed(1), completed(2)]);
     assert_eq!(eval(&frame, "has_tech = radar"), script::Eval::True);
     assert!(matches!(
@@ -976,11 +904,8 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
             script::Eval::Unknown(_)
         )
     };
-    // No Nukes row for the country.
     assert!(unknown(&frame, "num_of_nukes > 0"));
-    // No focus named.
     assert!(unknown(&frame, "has_completed_focus = { }"));
-    // A faction row whose country links to no slot may be ours.
     put::<tables::FactionMembers>(
         &mut frame,
         vec![replay_data::rows::FactionMemberRow {
@@ -990,7 +915,6 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
         }],
     );
     assert!(unknown(&frame, "is_in_faction_with = ENG"));
-    // A war row between unlinked countries likewise.
     put::<tables::FactionMembers>(&mut frame, Vec::new());
     put::<tables::WarRelations>(
         &mut frame,
@@ -1006,8 +930,6 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
     assert!(!unknown(&frame, "has_war_with = ENG"));
 }
 
-/// Military access reads `RelationLinks` for the owner asked by binary
-/// search; a row of an unlinked country leaves an absent answer unknown.
 #[test]
 fn military_access_reads_only_the_owner_asked() {
     use installed_content_unit_path::unit_path::MoveWorld;
@@ -1043,12 +965,9 @@ fn military_access_reads_only_the_owner_asked() {
     assert_eq!(moves.military_access(0, 1), Ok(true));
     assert_eq!(moves.military_access(1, 0), Ok(false));
     assert_eq!(moves.military_access(1, 1), Ok(false));
-    // An unlinked country's row toward slot 0 may be anyone's.
     assert!(moves.military_access(0, 0).is_err());
 }
 
-/// Incomplete raid tables withhold the hour's offers, by name: nothing is
-/// left to evaluate at that hour.
 #[test]
 fn incomplete_raid_tables_withhold_the_hours_offers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1070,8 +989,6 @@ fn incomplete_raid_tables_withhold_the_hours_offers() {
     );
 }
 
-/// Rows whose country links to no slot leave the triggers that read them
-/// unknown where they could hold the answer.
 #[test]
 fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1217,8 +1134,6 @@ fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
     );
 }
 
-/// A used type or a player-cache type whose token has no literal may be any
-/// type: the types it could be are undecided rather than dropped.
 #[test]
 fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1226,7 +1141,6 @@ fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
     let assets = assets();
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 3)]);
-    // Commando is fire_only_once; an unnamed used token may be it.
     let mut used = frame.clone();
     put::<tables::RaidCountries>(
         &mut used,
@@ -1239,8 +1153,6 @@ fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
     );
     let offers = all_offers(&assets, &used, 0, &launch::Unreconstructed);
     assert!(offers.withheld.contains(&3));
-    // GER's recorded cache lists only an unnamed token: any type may be
-    // allowed, so the province's offers are undecided, never dropped.
     put::<tables::RaidPlayerAllowedTypes>(
         &mut frame,
         vec![RaidPlayerAllowedTypeRow {
@@ -1254,7 +1166,6 @@ fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
     assert!(icons.report.unverified_tint > 0);
 }
 
-/// Unverified tints and withheld icons are listed for diagnostics mode.
 #[test]
 fn the_report_lists_unverified_and_withheld_icons_with_their_reasons() {
     let mut report = RaidReport {
@@ -1270,12 +1181,10 @@ fn the_report_lists_unverified_and_withheld_icons_with_their_reasons() {
     assert!(RaidReport::default().warnings().is_empty());
 }
 
-/// Two icons drawn with `ui_scale` at `height` over a viewport of `viewport`.
 fn drawn(height: f32, viewport: [u32; 2], ui_scale: f32) -> (usize, Batch) {
     drawn_in(Some(RaidReach::Normal), height, viewport, ui_scale)
 }
 
-/// [`drawn`] in a map mode with raid icon `reach`.
 fn drawn_in(
     reach: Option<RaidReach>,
     height: f32,
@@ -1318,22 +1227,17 @@ fn drawn_in(
     (count, batch)
 }
 
-/// Hide icons only below `RAID_MAP_ICON_DRAW_DISTANCE_MIN` or above
-/// `..._MAX` (10 and 500 in these test defines); both edges draw.
 #[test]
 fn the_camera_band_includes_both_edges() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let viewport = [2048, 1152];
-    // Near the ground one anchor leaves the view; inside the band some draw.
     assert!(drawn(10.0, viewport, 1.0).0 > 0);
     assert_eq!(drawn(500.0, viewport, 1.0).0, 2);
     assert_eq!(drawn(9.99, viewport, 1.0).0, 0);
     assert_eq!(drawn(500.01, viewport, 1.0).0, 0);
 }
 
-/// The raids map mode reaches up to `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE` (1600
-/// in these test defines); the modes without raid icons draw none at any height.
 #[test]
 fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1344,9 +1248,6 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
     assert_eq!(drawn_in(raids, 1600.01, viewport, 1.0).0, 0);
     assert_eq!(drawn_in(raids, 9.99, viewport, 1.0).0, 0);
     assert_eq!(drawn(1600.0, viewport, 1.0).0, 0);
-    // The game releases a raid icon in a mode without them through the same path as a camera
-    // outside the band, and makes it again on return: a mode round trip lays out exactly as a
-    // camera leaving the band and coming back.
     let outside = drawn(500.01, viewport, 1.0);
     for height in [10.0, 300.0, 500.0] {
         let hidden = drawn_in(None, height, viewport, 1.0);
@@ -1361,8 +1262,6 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
     }
 }
 
-/// Icons are laid out in interface pixels: doubling the UI scale over a
-/// viewport of twice the device pixels places and sizes them the same.
 #[test]
 fn icons_lay_out_in_interface_pixels_at_any_ui_scale() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1389,12 +1288,10 @@ fn icons_lay_out_in_interface_pixels_at_any_ui_scale() {
             }
         }
     }
-    // At 1.5 the same device viewport holds fewer interface pixels.
     let (_, scaled) = drawn(300.0, [2048, 1152], 1.5);
     assert!(rects(&scaled)[0][0][0] < a[0][0][0]);
 }
 
-/// An ended incoming raid shown to us draws frame 5.
 #[test]
 fn an_ended_incoming_raid_draws_frame_5() {
     let assets = assets();
@@ -1415,8 +1312,6 @@ const OIL: u32 = 300;
 const REFINERY: u32 = 301;
 const DAMAGED: u32 = 302;
 
-/// State 10 (GER) holds oil: template 20, pool 3, a refinery at healthy
-/// level 2 granting 2 each, an origin with infrastructure 3 and a route.
 fn resource_frame() -> DecodedFrame {
     let mut frame = frame();
     let mut tokens = match &*frame.tables[TableId::LexicalTokens.index()] {
@@ -1458,7 +1353,6 @@ fn resource_frame() -> DecodedFrame {
             infrastructure_level: Some(3),
             infrastructure_modifier: 0,
             supply_route: 1,
-            // Read at the frame's hour.
         }],
     );
     put::<tables::StateResources>(
@@ -1517,7 +1411,6 @@ fn oil_and_the_damaged_modifier_decide_the_state_selector() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = resource_assets();
     let mut frame = resource_frame();
-    // (20 + 3) * 1.45 * 1.2 + 2 * 2 = 44.02
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert_eq!(world.state_resource(10, OIL), Ok(4_402_000));
     drop(world);
@@ -1525,7 +1418,6 @@ fn oil_and_the_damaged_modifier_decide_the_state_selector() {
         "oil > 44 NOT = { has_dynamic_modifier = { modifier = refinery_damaged_modifier } }";
     assert_eq!(on_state(&assets, &frame, selector), script::Eval::False);
     assert_eq!(on_state(&assets, &frame, "oil > 43"), script::Eval::True);
-    // Only the first entry of a definition counts, and only unscoped.
     put::<tables::StateDynamicModifiers>(
         &mut frame,
         vec![
@@ -1573,12 +1465,10 @@ fn controller_overrides_replace_building_grants_by_their_first_entry() {
         resource: if count == 0 { 0 } else { OIL },
         amount,
     };
-    // An override of -3 leaves 2 - 3 < 0: the refinery grants nothing.
     put::<tables::CountryBuildingResources>(&mut frame, vec![override_row(0, 0, 1, -300_000)]);
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert_eq!(world.state_resource(10, OIL), Ok(4_002_000));
     drop(world);
-    // An empty first entry means no override, whatever later entries hold.
     put::<tables::CountryBuildingResources>(
         &mut frame,
         vec![override_row(0, 0, 0, 0), override_row(1, 1, 1, -300_000)],
@@ -1604,7 +1494,6 @@ fn missing_inputs_and_unsupported_forms_stay_unknown() {
         on_state(&assets, &frame, "oil > 3"),
         script::Eval::Unknown(_)
     ));
-    // A state with no inputs row is not decided either.
     let frame = resource_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert!(
@@ -1614,10 +1503,6 @@ fn missing_inputs_and_unsupported_forms_stay_unknown() {
     );
 }
 
-/// Each content building type becomes a count trigger. A state building
-/// reads its state level; a provincial building sums levels over recorded
-/// state provinces, including damage. Refuse an unknown name rather than
-/// reading it as zero.
 #[test]
 fn every_content_building_type_is_a_count_trigger() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1651,16 +1536,13 @@ fn every_content_building_type_is_a_count_trigger() {
             })
             .into(),
     );
-    // Provinces 1 and 2 are state 10's: 2 + 3 levels, damaged ones included.
     assert_eq!(on_state(&assets, &frame, "dock > 4"), script::Eval::True);
     assert_eq!(on_state(&assets, &frame, "dock > 5"), script::Eval::False);
     assert_eq!(on_state(&assets, &frame, "dock = 5"), script::Eval::True);
-    // The refinery is a state building: level 3.
     assert_eq!(
         on_state(&assets, &frame, "refinery < 4"),
         script::Eval::True
     );
-    // Country scope sums over what the country owns.
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert_eq!(
         world.evaluate(&parse("dock = 5"), Scopes::of(Scope::Country(0))),
@@ -1671,13 +1553,9 @@ fn every_content_building_type_is_a_count_trigger() {
         script::Eval::True
     );
     drop(world);
-    // Without the building in content, the name is not a count trigger. If it
-    // names nothing else it is invalid and adds no child, so the block holds.
     assets.trigger_content.buildings.types.remove("dock");
     set_counts(&mut assets);
     assert_eq!(on_state(&assets, &frame, "dock > 4"), script::Eval::True);
-    // A registered trigger wins over a scripted one of the same name, and a
-    // building type over a scripted trigger.
     scripted(
         &mut assets,
         "refinery = { always = no } is_coastal = { always = yes }",
@@ -1686,14 +1564,12 @@ fn every_content_building_type_is_a_count_trigger() {
         on_state(&assets, &frame, "refinery < 4"),
         script::Eval::True
     );
-    // The registered trigger reads the content map, absent here.
     assert!(matches!(
         on_state(&assets, &frame, "is_coastal = yes"),
         script::Eval::Unknown(_)
     ));
 }
 
-/// Existence uses owned state count; a Countries row alone does not exist.
 #[test]
 fn exists_reads_the_owned_state_count() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1728,8 +1604,6 @@ fn exists_reads_the_owned_state_count() {
     assert_eq!(exists(&frame, 1), script::Eval::False);
 }
 
-/// A daily fact decides from its latest recorded rows, whatever hour they
-/// were read at.
 #[test]
 fn a_daily_fact_decides_from_its_latest_recorded_rows() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1754,8 +1628,6 @@ fn a_daily_fact_decides_from_its_latest_recorded_rows() {
     assert_eq!(eval(&frame), script::Eval::True);
 }
 
-/// A memo row searched outward from any hint is the one a binary search
-/// finds, and a target the rows lack is none.
 #[test]
 fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
     let rows: Vec<replay_data::rows::RaidPathDistanceRow> = (1..=20)
@@ -1779,9 +1651,6 @@ fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
     assert_eq!(launch::target_row(&[], 4, 0), None);
 }
 
-/// An IF with its ELSE_IF and ELSE is one trigger: the first branch whose
-/// limit holds decides, and an unknown limit leaves it unknown unless every
-/// branch it could take agrees.
 #[test]
 fn if_else_chains_take_the_first_branch_whose_limit_holds() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1816,8 +1685,6 @@ fn if_else_chains_take_the_first_branch_whose_limit_holds() {
     );
 }
 
-/// FROM is the target country and PREV the scope before the last change;
-/// an absent scope is false, as in the game.
 #[test]
 fn from_and_prev_follow_the_scope_chain() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1867,9 +1734,7 @@ fn a_state_scope_from_resolves_to_the_state_owner() {
     );
 }
 
-// --- Launch gate --------------------------------------------------------
 
-/// Frame [`frame`] with the lexer's literal of `token` replaced.
 fn spelled(token: u32, literal: &str) -> DecodedFrame {
     let mut frame = frame();
     let mut rows = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
@@ -1883,19 +1748,15 @@ fn spelled(token: u32, literal: &str) -> DecodedFrame {
     frame
 }
 
-/// Raid type tokens match the content's type names under the lexer's fold,
-/// ASCII A-Z only, as the game finds one token per folded key.
 #[test]
 fn raid_type_tokens_match_under_the_lexers_fold() {
     let assets = assets();
     let frame = spelled(OILFIELD, "OilField");
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert_eq!(assets.raid_type(&world, OILFIELD), Ok(TypeToken::Type(0)));
-    // A non-ASCII letter does not fold.
     let frame = spelled(OILFIELD, "oilfiEld\u{130}");
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     assert!(assets.raid_type(&world, OILFIELD).is_err());
-    // An own raid of a folded spelling draws its type's glyph.
     let mut frame = spelled(OILFIELD, "OILFIELD");
     put::<tables::Raids>(&mut frame, vec![raid(1, 0, 0, 2)]);
     put::<tables::RaidTargets>(&mut frame, vec![target(1, 3, 0)]);
@@ -1907,9 +1768,6 @@ fn raid_type_tokens_match_under_the_lexers_fold() {
     assert!(drawn.report.refused_tokens.is_empty());
 }
 
-/// A spelling two content types share under the fold, a name the content
-/// lacks and a token with no literal are refused by name and counted, and
-/// what depends on them is undecided rather than dropped.
 #[test]
 fn ambiguous_and_unknown_raid_tokens_are_refused_and_counted() {
     let mut assets = assets();
@@ -1937,7 +1795,6 @@ fn ambiguous_and_unknown_raid_tokens_are_refused_and_counted() {
             .unwrap_err()
             .contains("has no recorded literal")
     );
-    // An own raid of an unknown type is withheld and counted as refused.
     let mut frame = spelled(OILFIELD, "no_such_raid");
     put::<tables::Raids>(&mut frame, vec![raid(1, 0, 0, 2), raid(2, 0, 1, 2)]);
     put::<tables::RaidTargets>(&mut frame, vec![target(1, 3, 0), target(2, 4, 0)]);
@@ -1952,8 +1809,6 @@ fn ambiguous_and_unknown_raid_tokens_are_refused_and_counted() {
         == "Raid icons: 2 refused tokens: raid type no_such_raid is not in the content."));
 }
 
-/// A used type whose token is refused may be any type: a `fire_only_once`
-/// type's offers are undecided by name, not shown as unused.
 #[test]
 fn a_refused_used_type_leaves_fire_only_once_types_undecided() {
     let mut assets = assets();
@@ -1971,8 +1826,6 @@ fn a_refused_used_type_leaves_fire_only_once_types_undecided() {
     }));
 }
 
-/// Building template tokens match the content's building keys under the
-/// fold; an unknown template leaves its target undecided by name.
 #[test]
 fn building_template_tokens_match_under_the_fold_or_are_refused() {
     let mut assets = assets();
@@ -1993,7 +1846,6 @@ fn building_template_tokens_match_under_the_fold_or_are_refused() {
                     building_flags: 1,
                     ..Default::default()
                 },
-                // A dam needs detection: ours.
                 detected: vec![1],
                 ..status(0, 0)
             }],
@@ -2055,7 +1907,6 @@ mod launch_gate {
         assets
     }
 
-    /// A bomber raid on provinces 3 and 4 from GER's air base in province 1.
     fn bomber() -> Kind {
         Kind {
             command_power_raw: 20 * 100_000,
@@ -2160,7 +2011,6 @@ mod launch_gate {
                 owner: 10,
                 air_base: BASE,
                 planes: 50,
-                // 1000 km.
                 base_range_raw: 1000 * 100_000,
                 ..Default::default()
             }],
@@ -2195,7 +2045,6 @@ mod launch_gate {
         launcher.launchable(kind, &scope, Scopes::of(script::Scope::Country(0)))
     }
 
-    /// Answers every army reach true and no path search.
     struct Reaching;
 
     impl launch::RaidPaths for Reaching {
@@ -2219,9 +2068,6 @@ mod launch_gate {
         }
     }
 
-    /// A paratrooper raid from GER's air base on 1 against province 3,
-    /// ranged by the best stockpiled transport plane: its variant stats'
-    /// `values`.
     fn airborne(values: [i64; 10]) -> Eval {
         use replay_data::{
             rows::StockpileArchetypeRow, rows::StockpileRow, rows::VariantDefinitionRow,
@@ -2330,8 +2176,6 @@ mod launch_gate {
         launcher.launchable(&kind, &scope, Scopes::of(script::Scope::Country(0)))
     }
 
-    /// Read the first stat: 100 km of range reaches province 3. The second
-    /// stat's range of 0.00001 km cannot stand in for it, or vice versa.
     #[test]
     fn transport_range_reads_the_first_variant_stat() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2344,8 +2188,6 @@ mod launch_gate {
         assert_eq!(airborne(long_second), Eval::False);
     }
 
-    /// Past an equipment database loss, each query that reads equipment is
-    /// unknown with the loss; the assets and the rest still load.
     #[test]
     fn a_lost_equipment_database_leaves_only_equipment_queries_unknown() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2366,8 +2208,6 @@ mod launch_gate {
         assert!(lines[0].1.as_ref().unwrap_err().contains("followed past x"));
     }
 
-    /// A cooldown whose type token is refused may be of any type: a target
-    /// it covers is undecided by name, one it does not is unaffected.
     #[test]
     fn a_refused_cooldown_type_leaves_its_target_undecided() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2408,9 +2248,6 @@ mod launch_gate {
         );
     }
 
-    /// A requirement naming an equipment group admits the pool through expanded
-    /// members (group name matched without case), then name and category tests.
-    /// A group whose members admit nothing in the pool does not match.
     #[test]
     fn a_requirement_naming_an_equipment_group_admits_through_its_members() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2448,11 +2285,9 @@ mod launch_gate {
         let assets = launch_assets();
         let mut kind = bomber();
         kind.command_power_raw = 60 * 100_000;
-        // Current power 50 is short even with no other input recorded.
         let mut frame = launch_frame();
         put::<tables::CountryCommandPower>(&mut frame, Vec::new());
         assert_eq!(gate(&assets, &frame, &kind, 3), Eval::False);
-        // Capacity (100 + 0) * (1 + 0) - 90 allocated leaves 10 for a cost of 20.
         let mut frame = launch_frame();
         put::<tables::CountryCommandPower>(
             &mut frame,
@@ -2464,8 +2299,6 @@ mod launch_gate {
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::False);
     }
 
-    /// A launch modifier the running game does not register by name is
-    /// unknown, with the name, never zero.
     #[test]
     fn an_unregistered_capacity_modifier_leaves_the_command_power_gate_unknown() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2494,7 +2327,6 @@ mod launch_gate {
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut kind = bomber();
-        // 30 convoys less the priority-1 reservation of 20; priority 2 is kept.
         kind.essential_equipment = vec![("convoy".into(), 10)];
         assert_eq!(gate(&assets, &launch_frame(), &kind, 3), Eval::True);
         kind.essential_equipment = vec![("convoy".into(), 11)];
@@ -2542,7 +2374,6 @@ mod launch_gate {
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
-        // 1 km: 0.14 pixels, a third of which is under the 0.67 to province 3.
         wings[0].base_range_raw = 100_000;
         put::<tables::AirWings>(&mut frame, wings);
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::False);
@@ -2746,8 +2577,6 @@ mod launch_gate {
         kind: &Kind,
         paths: &SourceVisits,
     ) -> Eval {
-        // Deliberately permits unavailable core tables: the reached native
-        // branch, rather than World::new's strict setup, must demand them.
         let world = World::read(frame, assets.trigger_content.facts());
         let launcher = launch::Launcher::new(assets, &world, 0, paths);
         launcher.launchable(
@@ -2964,8 +2793,6 @@ mod launch_gate {
             ]),
             None,
         );
-        // Keep launch_zero's raw10 member: it is the launcher's recorded
-        // holder. Country0 is a separate member providing the tested sources.
         let world = World::read(&frame, assets.trigger_content.facts());
         let paths = SourceVisits {
             usable: Some(2),
@@ -2992,8 +2819,6 @@ mod launch_gate {
             vec![(2, 1), (2, 2), (2, 1), (2, 2)]
         );
         assert_eq!(*paths.reaches.lock().unwrap(), vec![1, 2]);
-        // With every source known unusable, both occurrences of province1
-        // remain in the full walk, followed by the independently empty states.
         let paths = SourceVisits::default();
         assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::False);
         assert_eq!(
@@ -3101,7 +2926,6 @@ mod launch_gate {
             assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::False);
             assert!(paths.distances.lock().unwrap().is_empty());
             assert!(paths.reaches.lock().unwrap().is_empty());
-            // Unknown resources call note_all; a null source still notes no path.
             *frame.tables[TableId::CountryCommandPower.index()] = TableView::Unavailable {
                 reason: "command power refused".into(),
             };
@@ -3381,7 +3205,6 @@ mod launch_gate {
                 Eval::Unknown(reasons) if reasons.iter().any(|reason| reason.contains("ReservedCountryNaming")))
             );
         }
-        // Fresh count0 does not ask the historical packet or building joins.
         let mut rows = frame
             .complete::<tables::ReservedCountryNaming>()
             .unwrap()
@@ -3441,16 +3264,12 @@ mod launch_gate {
             rows: tables::Provinces::wrap(provinces),
             missing: 1,
         };
-        // Both provinces of state10 remain readable, while the unrelated
-        // province4 is absent. A selected-state-only check would accept it.
         let paths = SourceVisits::default();
         assert!(matches!(sources_gate(&assets, &frame, &kind, &paths),
             Eval::Unknown(reasons) if reasons.iter().any(|reason| reason.contains("Provinces"))));
         assert!(paths.distances.lock().unwrap().is_empty());
         assert!(paths.reaches.lock().unwrap().is_empty());
 
-        // A known empty reserved loop still demands neither its packet nor
-        // the provider/building census.
         let mut rows = frame
             .complete::<tables::ReservedCountryNaming>()
             .unwrap()
@@ -3543,7 +3362,6 @@ mod launch_gate {
                 Scopes::of(script::Scope::Country(0)),
             )
         };
-        // The base in province 1 is 0.33 from province 2 and 0.67 from 3.
         let named = |name: &str, max_distance: i64| Kind {
             name: name.into(),
             max_distance_raw: Some(max_distance),
@@ -3555,11 +3373,9 @@ mod launch_gate {
             named("twin", 70_000),
         );
         assert_eq!(launch(&far, 3), Eval::True);
-        // The same sources and units, but not the same range.
         assert_eq!(launch(&near, 3), Eval::False);
         assert_eq!(launch(&twin, 3), Eval::True);
         assert_eq!(launch(&near, 2), Eval::True);
-        // A target without a map centroid may be in range of every site.
         match launch(&near, 9) {
             Eval::Unknown(reasons) => {
                 assert!(
@@ -3588,7 +3404,6 @@ mod launch_gate {
         );
         let mut naval = bomber();
         naval.starting_point.types = vec![SourceKind::NavalBase];
-        // Only the wing matches, and a wing has no air base at a naval base.
         assert_eq!(gate(&assets, &frame, &naval, 3), Eval::False);
         naval.unit_requirements = vec![UnitRequirement {
             battalions: vec![installed_content_raids::raids::BattalionRequirement {
@@ -3621,7 +3436,6 @@ mod launch_gate {
             }],
         );
         assert!(matches!(gate(&assets, &frame, &naval, 3), Eval::Unknown(_)));
-        // One marine battalion is short of the minimum.
         put::<tables::DivisionTemplateIcons>(
             &mut frame,
             vec![DivisionTemplateIconRow {
@@ -3637,8 +3451,6 @@ mod launch_gate {
         assert_eq!(gate(&assets, &frame, &naval, 3), Eval::False);
     }
 
-    /// The launch inputs are daily slices, and the gate reads them whatever
-    /// hour their owner was last read at.
     #[test]
     fn launch_inputs_read_before_the_hour_still_decide_the_gate() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -3646,7 +3458,6 @@ mod launch_gate {
         let assets = launch_assets();
         let mut frame = launch_frame();
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::True);
-        // With an ace of a country read before this hour, alive or dead.
         let ace = 0x0000_0009_0000_0047;
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
         wings[0].ace = ace;
@@ -3666,7 +3477,6 @@ mod launch_gate {
             vec![replay_data::rows::AceRangeInputRow { alive: 0, ..row }],
         );
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::True);
-        // A wing whose ace has no row is not guessed.
         put::<tables::AceRangeInputs>(&mut frame, Vec::new());
         assert!(matches!(
             gate(&assets, &frame, &bomber(), 3),
@@ -3691,7 +3501,6 @@ mod launch_gate {
         );
         let mut carrier = bomber();
         carrier.starting_point.types = vec![SourceKind::Carrier];
-        // The ship is gone, so its province is none and the distance zero.
         assert_eq!(gate(&assets, &frame, &carrier, 3), Eval::True);
         put::<tables::Raids>(
             &mut frame,
@@ -3740,7 +3549,6 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
             [moves.path_friendly(1, 0), moves.path_friendly(1, 2)],
             expected.map(Ok)
         );
-        // No capture row for this owner: its operands are unknown, never zero.
         assert!(moves.path_friendly(2, 0).is_err());
     }
 
@@ -3806,8 +3614,6 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
         assert_eq!(moves.path_friendly(1, 2), Ok(true));
     }
 
-    // A positive canonical slot can hold a signed-negative country ID. Active
-    // wars then fail the receiver gate independently of cache truth.
     let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
     countries
         .iter_mut()
@@ -3852,7 +3658,6 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
     use launch::{PathSource, RaidPaths};
     let assets = path_assets();
     let mut frame = frame();
-    // Province 3 has no base; its state 20's first based province is 4.
     put::<tables::NavalBases>(
         &mut frame,
         vec![replay_data::rows::NavalBaseRow {
@@ -3868,7 +3673,6 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
     };
     let source = |kind, province| PathSource { kind, province };
     let paths = paths::HourPaths::new(&assets, &frame);
-    // Naval: sea 1 -> sea 2 -> the target itself, resolved from 3 to 4.
     assert_eq!(
         paths.distance(&world, &source(2, 1), &target(3)),
         Ok(None),
@@ -3878,13 +3682,11 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
         paths.distance(&world, &source(2, 3), &target(4)),
         Ok(Some(50_000))
     );
-    // Land: only land provinces are admitted.
     assert_eq!(
         paths.distance(&world, &source(5, 3), &target(4)),
         Ok(Some(50_000))
     );
     assert_eq!(paths.distance(&world, &source(5, 1), &target(4)), Ok(None));
-    // Each dispatcher answers only its own path kind.
     put::<tables::RaidPathDistances>(
         &mut frame,
         vec![
@@ -3925,7 +3727,6 @@ fn army_reach_reads_the_recorded_hour_and_answers_once_per_source() {
     };
     let assets = path_assets();
     let mut frame = frame();
-    // A division of country 11 (slot 1) in its own province 3.
     put::<tables::Divisions>(
         &mut frame,
         vec![DivisionRow {
@@ -3970,10 +3771,8 @@ fn army_reach_reads_the_recorded_hour_and_answers_once_per_source() {
         first
     };
     assert_eq!(reach(&frame), Eval::True);
-    // A demilitarized state closes its provinces to the army.
     put::<tables::StateFlags>(&mut frame, flags(1));
     assert_eq!(reach(&frame), Eval::False);
-    // An unrecorded division is unknown, never guessed.
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let paths = paths::HourPaths::new(&assets, &frame);
     assert!(matches!(
@@ -3982,8 +3781,6 @@ fn army_reach_reads_the_recorded_hour_and_answers_once_per_source() {
     ));
 }
 
-/// Countries 10..=13 in slots 0..=3; country 10 at war with 11 and 13, and
-/// once with 12 (ended at hour 3).
 fn war_frame() -> DecodedFrame {
     let mut frame = frame();
     put::<tables::CountryLinks>(
@@ -4022,16 +3819,12 @@ fn enemies_of(
     Ok(moves.enemies(slot)?.into_iter().collect())
 }
 
-/// Build the set of other endpoints of active war relations owned by the
-/// country. WarRelations derivation equals the stored vector. Use directly
-/// recorded vectors for civil-war revolters or retired-war owners.
 #[test]
 fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
     let mut frame = war_frame();
     assert_eq!(enemies_of(&frame, 0), Ok(BTreeSet::from([1, 3])));
     assert_eq!(enemies_of(&frame, 3), Ok(BTreeSet::from([0])));
     assert_eq!(enemies_of(&frame, 2), Ok(BTreeSet::new()));
-    // The native vector in its own order, read as the collector reads it.
     let read = |country, enemies: Vec<u32>| replay_data::rows::CountryWarRow {
         country,
         can_occupy_non_war: 1,
@@ -4041,7 +3834,6 @@ fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
     };
     put::<tables::CountryWars>(&mut frame, vec![read(10, vec![13, 11])]);
     assert_eq!(enemies_of(&frame, 0), Ok(BTreeSet::from([1, 3])));
-    // A revolter whose list lags keeps its recorded list.
     put::<tables::CountryWars>(&mut frame, vec![read(12, vec![])]);
     put::<tables::WarRelations>(
         &mut frame,
@@ -4057,8 +3849,6 @@ fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
 }
 
 mod reach_bench;
-/// 1 land, 2 sea, 3 land: the naval search reaches 3 through 2, the land
-/// search cannot.
 fn strait_assets() -> RaidAssets {
     let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
     for (id, next) in [(1, vec![2]), (2, vec![1, 3]), (3, vec![2])] {
@@ -4112,7 +3902,6 @@ mod recorded_paths {
         rows::TemplateSubunit,
     };
 
-    /// The hour's distances, with every division reaching every source.
     struct Reaching<'a>(paths::HourPaths<'a>);
 
     impl RaidPaths for Reaching<'_> {
@@ -4140,13 +3929,10 @@ mod recorded_paths {
 
     const MARINE: u32 = 400;
 
-    /// A naval commando raid from GER's naval base on 1 against province 3,
-    /// with the pair's distance in the recorded memo.
     fn gate(memo: Vec<RaidPathDistanceRow>) -> Eval {
         gate_in(&assets(), &hour_with(memo), 1)
     }
 
-    /// The hour: GER's naval base on 1 and ENG's on 3, the memo as given.
     fn hour_with(memo: Vec<RaidPathDistanceRow>) -> DecodedFrame {
         let mut frame = frame();
         let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
@@ -4239,8 +4025,6 @@ mod recorded_paths {
         }
     }
 
-    /// The gate asked `times` times in one hour: past `INDEX_AFTER` lookups
-    /// the answer comes from the memo index the assets share across hours.
     fn gate_in(assets: &RaidAssets, frame: &DecodedFrame, times: usize) -> Eval {
         let kind = commando();
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
@@ -4258,18 +4042,14 @@ mod recorded_paths {
         answers.remove(0)
     }
 
-    /// The memo index is shared by the hours whose memo table is the same
-    /// allocation, and a changed memo builds its own.
     #[test]
     fn the_memo_index_is_shared_only_while_the_memo_is_unchanged() {
         let assets = assets();
         let near = hour_with(memo(100_000, 1));
         assert_eq!(gate_in(&assets, &near, 70), Eval::True);
-        // The next hour shares the memo table: the same index answers.
         let mut next = near.clone();
         next.hour += 1;
         assert_eq!(gate_in(&assets, &next, 70), Eval::True);
-        // A new memo allocation with the pair beyond range is indexed anew.
         let far = hour_with(memo(100_001, 1));
         assert_eq!(gate_in(&assets, &far, 70), Eval::False);
         assert_eq!(gate_in(&assets, &near, 70), Eval::True);
@@ -4314,9 +4094,6 @@ mod recorded_paths {
         }]
     }
 
-    /// Every path source's distance recorded decides the offer without a
-    /// search; a pair the memo lacks is searched (here without a province
-    /// graph, so it stays unknown).
     #[test]
     fn a_recorded_memo_decides_the_path_sources_without_searching() {
         assert_eq!(gate(memo(100_000, 1)), Eval::True);
@@ -4330,14 +4107,10 @@ mod bench;
 
 mod view_bench;
 
-/// Missing `CountryLinks`: a row whose non-empty country reference links to
-/// no slot may be any country's, so no answer it could change is definite.
 mod unlinked {
     use super::*;
     use replay_data::rows::DynamicModifierRow;
 
-    /// A frame whose province 3 is controlled by country 99, which has no
-    /// `CountryLinks` row.
     fn unlinked_controller() -> DecodedFrame {
         let mut frame = frame();
         let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
@@ -4346,8 +4119,6 @@ mod unlinked {
         frame
     }
 
-    /// An offer target whose controller does not resolve may be ours: its
-    /// offers are withheld by name, not drawn as foreign.
     #[test]
     fn an_unresolved_target_owner_withholds_its_offers() {
         let assets = assets();
@@ -4363,7 +4134,6 @@ mod unlinked {
                 .reasons
                 .contains_key("a raid target's country 99 has no CountryLinks row")
         );
-        // An empty reference is no country: the target is foreign.
         let mut empty = frame.clone();
         let mut provinces = empty.complete::<tables::Provinces>().unwrap().to_vec();
         provinces[2].controller = 0;
@@ -4372,8 +4142,6 @@ mod unlinked {
         assert_eq!(drawn.report.withheld, 0);
     }
 
-    /// A foreign raid whose target controller does not resolve may be
-    /// aimed at us: withheld and counted, not dropped.
     #[test]
     fn an_unresolved_raid_target_owner_is_withheld_not_dropped() {
         let assets = assets();
@@ -4385,8 +4153,6 @@ mod unlinked {
         assert_eq!(drawn.report.withheld, 1);
     }
 
-    /// `has_dynamic_modifier`: a row of an unlinked country with the name
-    /// may be this country's first entry.
     #[test]
     fn an_unlinked_modifier_owner_leaves_the_trigger_undecided() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -4412,9 +4178,6 @@ mod unlinked {
     }
 }
 
-/// GER (raw 10) holds theatre 7 with one regular group whose front order
-/// (type 1, province 1) leads to an unactivated naval invasion (type 3)
-/// through provinces 3 and 4, both in ENG's state 20.
 fn invasion_frame(army_group: u8) -> DecodedFrame {
     use replay_data::{
         rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::LandTheatreRow, rows::OrdersGroupPlanRow,
@@ -4470,10 +4233,6 @@ fn invasion_frame(army_group: u8) -> DecodedFrame {
     frame
 }
 
-/// `has_naval_invasion_against_state` finds type-3 orders through the
-/// successor graph of a regular group's roots, by path province state; the
-/// army-group roster is not read, and a preparation bound stays unknown
-/// only when some order touches the state.
 #[test]
 fn naval_invasions_are_found_through_the_successor_graph() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4488,11 +4247,9 @@ fn naval_invasions_are_found_through_the_successor_graph() {
     let frame = invasion_frame(0);
     let simple = "has_naval_invasion_against_state = var:target_state";
     assert_eq!(eval(&frame, simple, 20), script::Eval::True);
-    // The front order's own province is in state 10, but it is not type 3.
     assert_eq!(eval(&frame, simple, 10), script::Eval::False);
     let numbered = "has_naval_invasion_against_state = 20";
     assert_eq!(eval(&frame, numbered, 0), script::Eval::True);
-    // A state that does not exist is false, as the native log-and-return.
     let absent = "has_naval_invasion_against_state = 99";
     assert_eq!(eval(&frame, absent, 0), script::Eval::False);
     let activated =
@@ -4505,17 +4262,13 @@ fn naval_invasions_are_found_through_the_successor_graph() {
         script::Eval::Unknown(_)
     ));
     assert_eq!(eval(&frame, prepared, 10), script::Eval::False);
-    // ENG has no theatre.
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let mut scopes = Scopes::of(Scope::Country(1));
     scopes.target_state = Some(20);
     assert_eq!(world.evaluate(&parse(simple), scopes), script::Eval::False);
-    // The same group on the army-group roster is not read.
     assert_eq!(eval(&invasion_frame(1), simple, 20), script::Eval::False);
 }
 
-/// `is_ally_with` needs both countries to own a state, then the same
-/// country, or a faction or direct subject relation without an active war.
 #[test]
 fn is_ally_with_follows_the_friend_relation() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4578,10 +4331,7 @@ fn is_ally_with_follows_the_friend_relation() {
         }],
     );
     assert_eq!(eval(&frame, "is_ally_with = ENG"), script::Eval::True);
-    // A country that owns no state is nobody's ally.
     put::<tables::CountryCounterInputs>(&mut frame, owned(0));
-    // Static ENG resolution now asks its native original-tag bucket. An
-    // unrecorded cache cannot establish that no owning substitute exists.
     assert!(matches!(
         eval(&frame, "is_ally_with = ENG"),
         script::Eval::Unknown(reasons)
@@ -4597,8 +4347,6 @@ fn is_ally_with_follows_the_friend_relation() {
     assert_eq!(eval(&frame, "is_ally_with = ENG"), script::Eval::False);
 }
 
-/// `any_state_in` reads a global array's `^num` and `^<i>` entries, in the
-/// scoped state encoding or as whole fixed5 ids, and needs `count` passes.
 #[test]
 fn any_state_in_reads_a_global_array() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4641,21 +4389,16 @@ fn any_state_in_reads_a_global_array() {
     assert_eq!(eval(&frame, german), script::Eval::True);
     let both = "any_state_in = { array = global.wall count = 2 is_owned_by = ENG }";
     assert_eq!(eval(&frame, both), script::Eval::False);
-    // In a real state the scripted trigger's body runs.
     let helper = |value: &str| format!("any_state_in = {{ array = global.wall helper = {value} }}");
     assert_eq!(eval(&frame, &helper("yes")), script::Eval::True);
     assert_eq!(eval(&frame, &helper("no")), script::Eval::False);
-    // An absent array is empty.
     assert_eq!(eval(&array(&[]), english), script::Eval::False);
-    // Only the first entry is read when ^num is 1.
     let one = array(&[
         ("wall^num", 100_000),
         ("wall^0", encoded),
         ("wall^1", 2_000_000),
     ]);
     assert_eq!(eval(&one, english), script::Eval::False);
-    // An entry naming no state is the null state: every trigger with a
-    // scope mask is false there, a mask-0 one evaluates.
     for raw in [0, 9_900_000, -100_000] {
         let null = array(&[("wall^num", 100_000), ("wall^0", raw)]);
         assert_eq!(eval(&null, english), script::Eval::False, "{raw}");
@@ -4676,12 +4419,9 @@ fn any_state_in_reads_a_global_array() {
         }
         let two = "any_state_in = { array = global.wall count = 2 always = yes }";
         assert_eq!(eval(&null, two), script::Eval::False);
-        // A scripted trigger's template check (mask 0x3FFE) fails in the
-        // null state before its body runs.
         assert_eq!(eval(&null, &body("helper = yes")), script::Eval::False);
         assert_eq!(eval(&null, &body("helper = no")), script::Eval::True);
     }
-    // A state the content has but the recording lacks is unknown.
     let mut gapped = super::test_support::assets();
     gapped.trigger_content.state_provinces.insert(99, vec![1]);
     let missing = array(&[("wall^num", 100_000), ("wall^0", 9_900_000)]);
@@ -4690,15 +4430,10 @@ fn any_state_in_reads_a_global_array() {
         world.evaluate(&parse(english), Scopes::of(Scope::Country(2))),
         script::Eval::Unknown(_)
     ));
-    // A scope's own array is unknown.
     let local = "any_state_in = { array = wall is_owned_by = ENG }";
     assert!(matches!(eval(&frame, local), script::Eval::Unknown(_)));
 }
 
-/// `any_neighbor_state` and `all_neighbor_state` walk the scope state's
-/// content neighbours in state scope: `any` needs `count` passes, `all` fails
-/// at the first failure, and a list the content or the recording cannot give
-/// is unknown.
 #[test]
 fn neighbour_state_triggers_walk_the_content_neighbours() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4721,11 +4456,8 @@ fn neighbour_state_triggers_walk_the_content_neighbours() {
     );
     let two = "any_neighbor_state = { count = 2 is_owned_by = ENG }";
     assert_eq!(eval(&base, german, two), script::Eval::False);
-    // A count below one is met by the first neighbour, whatever the body.
     let none = "any_neighbor_state = { count = 0 is_owned_by = GER }";
     assert_eq!(eval(&base, german, none), script::Eval::True);
-    // Outside state scope the class mask 2 fails, giving false; without content
-    // neighbours the result is unknown.
     let country = eval(&base, Scope::Country(2), &any("ENG"));
     assert_eq!(country, script::Eval::False);
     let mut refused = assets();
@@ -4734,7 +4466,6 @@ fn neighbour_state_triggers_walk_the_content_neighbours() {
         eval(&refused, german, &any("ENG")),
         script::Eval::Unknown(_)
     ));
-    // A neighbour the recording lacks is undecided, not a failure.
     let mut unrecorded = assets();
     unrecorded.trigger_content.neighbor_states = Ok(BTreeMap::from([(10, vec![20, 30])]));
     assert_eq!(eval(&unrecorded, german, &any("ENG")), script::Eval::True);
@@ -4746,16 +4477,12 @@ fn neighbour_state_triggers_walk_the_content_neighbours() {
         eval(&unrecorded, german, &all("ENG")),
         script::Eval::Unknown(_)
     ));
-    // A state with no neighbours: none passes, all pass.
     let mut alone = assets();
     alone.trigger_content.neighbor_states = Ok(BTreeMap::from([(10, Vec::new())]));
     assert_eq!(eval(&alone, german, &any("ENG")), script::Eval::False);
     assert_eq!(eval(&alone, german, &all("GER")), script::Eval::True);
 }
 
-/// `custom_trigger_tooltip` and `custom_override_tooltip` are an AND of
-/// every child but their `tooltip` and `not_tooltip` text, and
-/// `is_subject_of` reads the recorded subject relation's overlord.
 #[test]
 fn custom_tooltips_and_is_subject_of() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4798,14 +4525,12 @@ fn custom_tooltips_and_is_subject_of() {
         eval(&frame, &wrapped("is_subject_of = ENG")),
         script::Eval::True
     );
-    // The overlord is not a subject of its subject.
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let english = Scopes::of(Scope::Country(1));
     assert_eq!(
         world.evaluate(&parse("is_subject_of = GER"), english),
         script::Eval::False
     );
-    // An ended relation no longer counts.
     put::<tables::Subjects>(
         &mut frame,
         vec![SubjectRow {
@@ -4819,7 +4544,6 @@ fn custom_tooltips_and_is_subject_of() {
     assert_eq!(eval(&frame, "is_subject_of = ENG"), script::Eval::False);
 }
 
-/// A unit leader row of GER (raw 10) with reference id `id`.
 fn leader_row(id: u32, owner: u32, captured: u8) -> replay_data::rows::UnitLeaderRow {
     replay_data::rows::UnitLeaderRow {
         id,
@@ -4831,10 +4555,6 @@ fn leader_row(id: u32, owner: u32, captured: u8) -> replay_data::rows::UnitLeade
     }
 }
 
-/// `has_any_captured_general`, `is_leader_visible` and `tag` in a unit
-/// leader's scope read the recorded leader owner, captured byte and
-/// visibility inputs; a leader with a visibility choice whose character is
-/// not recorded stays undecided.
 #[test]
 fn captured_general_triggers_read_the_recorded_leaders() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4855,8 +4575,6 @@ fn captured_general_triggers_read_the_recorded_leaders() {
     let rescue = "is_leader_visible = var:target_leader var:target_leader = { tag = ROOT }";
     assert_eq!(eval(&frame, rescue, 0), script::Eval::True);
     assert_eq!(eval(&frame, rescue, 1), script::Eval::False);
-    // A character has one current role. Ambiguous rows cannot choose
-    // an owner from either leader merely by their recording order.
     let mut duplicate = leader_row(6, 11, 1);
     duplicate.character_id = 5;
     put::<tables::UnitLeaders>(&mut frame, vec![leader_row(5, 10, 0), duplicate]);
@@ -4869,25 +4587,20 @@ fn captured_general_triggers_read_the_recorded_leaders() {
             .any(|why| why.contains("more than one UnitLeaders row")),
         "{reasons:?}"
     );
-    // A leader with its own visibility choice and no recorded character is
-    // undecided, captured or not.
     let mut chosen = leader_row(5, 10, 1);
     chosen.visibility_choice = 1;
     put::<tables::UnitLeaders>(&mut frame, vec![chosen]);
     assert!(matches!(eval(&frame, rescue, 0), script::Eval::Unknown(_)));
     assert!(matches!(eval(&frame, any, 0), script::Eval::Unknown(_)));
-    // Another captured and visible leader decides it anyway.
     let mut chosen = leader_row(5, 10, 1);
     chosen.visibility_choice = 1;
     put::<tables::UnitLeaders>(&mut frame, vec![chosen, leader_row(8, 10, 1)]);
     assert_eq!(eval(&frame, any, 0), script::Eval::True);
-    // An unrecorded target leader is no leader.
     put::<tables::UnitLeaders>(&mut frame, Vec::new());
     assert_eq!(
         eval(&frame, "is_leader_visible = var:target_leader", 0),
         script::Eval::False
     );
-    // The native trigger ignores its operand: `= no` reads as `= yes`.
     put::<tables::UnitLeaders>(&mut frame, vec![leader_row(6, 11, 1)]);
     assert_eq!(
         eval(&frame, "has_any_captured_general = no", 1),
@@ -4899,7 +4612,6 @@ fn captured_general_triggers_read_the_recorded_leaders() {
     );
 }
 
-/// `is_core_of` reads the state's recorded cores through CountryLinks.
 #[test]
 fn is_core_of_reads_the_recorded_state_cores() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4911,7 +4623,6 @@ fn is_core_of_reads_the_recorded_state_cores() {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
         world.evaluate(&parse(source), Scopes::of(Scope::State(20)))
     };
-    // No row for the state: undecided.
     assert!(matches!(
         on_state(&frame, "is_core_of = GER"),
         script::Eval::Unknown(_)
@@ -4935,7 +4646,6 @@ fn is_core_of_reads_the_recorded_state_cores() {
         }],
     );
     assert_eq!(on_state(&frame, "is_core_of = GER"), script::Eval::False);
-    // A core that links to no country may be the one asked about.
     put::<tables::StateCores>(
         &mut frame,
         vec![StateCoreRow {
@@ -4950,9 +4660,6 @@ fn is_core_of_reads_the_recorded_state_cores() {
     ));
 }
 
-/// For a prepared GER raid on province 3 (ENG), run triggers in owner raid
-/// scopes and `launchable_from` in the source country's scope. A cooldown
-/// or used-up type blocks launch.
 #[test]
 fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
     let mut assets = assets();
@@ -4968,13 +4675,11 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
         eligibility::launch_triggers(assets, &world, 2, &assets.catalog.types[0], &scope, &source)
     };
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::True);
-    // `launchable` sees the owner as ROOT and the target as FROM.
     assets.catalog.types[0].launchable = parse("tag = GER FROM = { tag = ENG }");
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::True);
     assets.catalog.types[0].launchable = parse("tag = ENG");
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::False);
     assets.catalog.types[0].launchable = Vec::new();
-    // `launchable_from` sees the source's country as ROOT.
     assets.catalog.types[0].launchable_from = parse("tag = ENG");
     assert_eq!(decide(&assets, &frame, Ok(Some(1))), Eval::True);
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::False);
@@ -4983,7 +4688,6 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
         Eval::Unknown(_)
     ));
     assets.catalog.types[0].launchable_from = Vec::new();
-    // `available` then a cooldown on this target and type.
     assets.catalog.types[0].available = parse("always = no");
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::False);
     assets.catalog.types[0].available = Vec::new();
@@ -4999,7 +4703,6 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
     );
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::False);
     put::<tables::RaidCooldowns>(&mut frame, Vec::new());
-    // A used fire-only-once type.
     assets.catalog.types[0].fire_only_once = true;
     let mut used = frame.clone();
     put::<tables::RaidCountries>(
@@ -5015,9 +4718,6 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
     assert_eq!(decide(&assets, &frame, Ok(Some(2))), Eval::True);
 }
 
-/// `is_leader_visible` and `has_any_captured_general` evaluate the role
-/// `visible` of the recorded template the leader's character was built from,
-/// in its owner's scope; without the template columns they are undecided.
 #[test]
 fn leader_visibility_evaluates_the_recorded_template_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5110,30 +4810,23 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
             scopes.target_leader = Some(5_u64 << 32 | 7);
             world.evaluate(&parse("is_leader_visible = var:target_leader"), scopes)
         };
-        // The role's visible in the owner's scope, by either input.
         for (choice, template) in [(1, 1), (0, 1), (1, 0)] {
             let rommel = Some(recorded(501, 2));
             assert_eq!(visible(&leader(10, choice, template), rommel.clone()), True);
             assert_eq!(visible(&leader(11, choice, template), rommel), False);
         }
-        // The recorded instance decides, found by its allowed's closing line
-        // and its tag under the lexer's fold.
         assert_eq!(visible(&leader(11, 1, 1), Some(recorded(502, 4))), True);
         assert_eq!(visible(&leader(10, 1, 1), Some(recorded(502, 4))), False);
-        // An instance without a role leaves the leader visible through the
-        // template alone; with its own choice set it cannot have built it.
         assert_eq!(visible(&leader(10, 0, 1), Some(recorded(502, 5))), True);
         undecided(
             visible(&leader(10, 1, 1), Some(recorded(502, 5))),
             "has no unit leader role",
         );
-        // A role with no visible holds.
         assert_eq!(visible(&leader(11, 1, 1), Some(recorded(507, 8))), True);
         undecided(
             visible(&leader(10, 1, 1), Some(recorded(504, 7))),
             "refused",
         );
-        // A wrong line or tag, another file, a generated template or none.
         undecided(
             visible(&leader(10, 1, 1), Some(recorded(501, 3))),
             "no content character template",
@@ -5160,10 +4853,6 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
         );
         undecided(visible(&leader(10, 1, 1), None), "no template");
     }
-    // Through the triggers, the character's recorded template columns: a
-    // conditioned leader whose character has no template is undecided by
-    // name, one with its template evaluates the role, and an unconditioned
-    // one is visible.
     let reference = (5_u64 << 32) | 7;
     let through_trigger = |frame: &DecodedFrame, source: &str, slot: u32| {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
@@ -5202,7 +4891,6 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
         through_trigger(&frame, "is_leader_visible = var:target_leader", 2),
         True
     );
-    // Unread content leaves every conditioned leader undecided.
     assets.trigger_content.leader_roles = Err("no characters in the test".into());
     let world = World::new(&with_template, assets.trigger_content.facts()).unwrap();
     let mut scopes = Scopes::of(Scope::Country(2));
@@ -5213,11 +4901,6 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
     );
 }
 
-/// The character-scope triggers are false in a scope without a character;
-/// in a unit leader's scope `has_character_flag` reads the character's
-/// recorded flags. `hidden_trigger` is a conjunction, `has_global_flag` reads
-/// the global flags, `OVERLORD` enters the recorded overlord and
-/// `has_cosmetic_tag` compares the recorded cosmetic tag.
 #[test]
 fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5263,8 +4946,6 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
         eval(&frame, "NOT = { has_character_flag = exiled }", country),
         True
     );
-    // Character flags: every complete table holds the character scope, so a
-    // character without a row has none.
     assert_eq!(
         eval(&frame, "has_character_flag = exiled", in_leader),
         False
@@ -5274,14 +4955,12 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
         eval(&frame, "has_character_flag = exiled", in_leader),
         False
     );
-    // Rows in key order (scope kind, scope id, token), as every decoded table holds them.
     put::<tables::ScriptFlags>(&mut frame, vec![flag(0, 0), flag(3, 44)]);
     assert_eq!(eval(&frame, "has_character_flag = exiled", in_leader), True);
     assert!(matches!(
         eval(&frame, "is_country_leader = no", in_leader),
         script::Eval::Unknown(_)
     ));
-    // Global flags in any scope; hidden_trigger is a conjunction.
     assert_eq!(eval(&frame, "has_global_flag = exiled", country), True);
     assert_eq!(eval(&frame, "has_global_flag = other", country), False);
     assert_eq!(
@@ -5300,7 +4979,6 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
         ),
         True
     );
-    // OVERLORD and has_cosmetic_tag read CountryAppearance.
     assert!(matches!(
         eval(&frame, "OVERLORD = { tag = ENG }", country),
         script::Eval::Unknown(_)
@@ -5349,10 +5027,6 @@ fn country_leader_traits() -> installed_content_core::leader_traits::LeaderTrait
     traits
 }
 
-/// `has_country_leader`, `has_country_leader_with_trait`, `has_civil_war`,
-/// `has_idea` and `num_of_controlled_states` over the planned stored values
-/// (the rules; `recorded_political_tables_decide_country_leader_triggers`
-/// reads the same values from the recorded tables).
 #[test]
 fn country_leader_civil_war_and_idea_triggers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5424,9 +5098,6 @@ fn country_leader_civil_war_and_idea_triggers() {
         "has_civil_war = yes",
         "has_idea = idea_a",
     ];
-    // The recorded tables decide every trigger here
-    // (`recorded_political_tables_decide_country_leader_triggers`); an idea
-    // that is no recorded advisor token is an active idea.
     {
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
         assert_eq!(
@@ -5535,8 +5206,6 @@ fn country_leader_civil_war_and_idea_triggers() {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
         world.evaluate(&parse(source), Scopes::of(Scope::Country(slot)))
     };
-    // has_country_leader: the country's first active character of the token
-    // is the ruling party's first leader; without ruling_only any party's.
     assert_eq!(eval(&frame, sources[0], 2), True);
     assert_eq!(
         eval(
@@ -5558,14 +5227,10 @@ fn country_leader_civil_war_and_idea_triggers() {
         eval(&frame, "has_country_leader = { character = GER_otto }", 2),
         True
     );
-    // GER_otto is not among ENG's active characters; a ruling party without
-    // leaders fails first.
     assert_eq!(
         eval(&frame, "has_country_leader = { character = GER_karl }", 1),
         False
     );
-    // `id` matches the recorded leader identity; `name` matches the character's
-    // display name, which an empty one leaves undecided.
     assert_eq!(eval(&frame, "has_country_leader = { id = 12 }", 2), True);
     assert_eq!(
         eval(
@@ -5576,7 +5241,6 @@ fn country_leader_civil_war_and_idea_triggers() {
         False
     );
     assert_eq!(eval(&frame, "has_country_leader = { id = 0 }", 2), False);
-    // An empty display name is what its localised fallback gives again.
     assert_eq!(
         eval(&frame, "has_country_leader = { name = \"Karl\" }", 2),
         False
@@ -5606,19 +5270,14 @@ fn country_leader_civil_war_and_idea_triggers() {
         eval(&named, "has_country_leader = { name = \"Otto\" }", 2),
         True
     );
-    // num_of_controlled_states reads the recorded controlled-state count.
     assert_eq!(eval(&frame, "num_of_controlled_states > 2", 2), True);
     assert_eq!(eval(&frame, "num_of_controlled_states > 3", 2), False);
-    // has_country_leader_with_trait: the first leader's traits; no leader
-    // or an unknown trait is false.
     assert_eq!(eval(&frame, sources[1], 2), True);
     assert_eq!(
         eval(&frame, "has_country_leader_with_trait = other", 2),
         False
     );
     assert_eq!(eval(&frame, sources[1], 1), False);
-    // has_civil_war: ENG's own list names an existing GER, or GER's enemy
-    // ENG lists it.
     let mut counters = frame
         .complete::<tables::CountryCounterInputs>()
         .unwrap()
@@ -5646,20 +5305,12 @@ fn country_leader_civil_war_and_idea_triggers() {
     );
     assert_eq!(eval(&frame, "has_civil_war = yes", 2), True);
     assert_eq!(eval(&frame, "has_civil_war = no", 2), False);
-    // has_idea: an advisor token reads the hired advisors (then the
-    // faction's), anything else the active ideas.
     assert_eq!(eval(&frame, "has_idea = idea_a", 2), True);
     assert_eq!(eval(&frame, "has_idea = idea_a", 1), False);
     assert_eq!(eval(&frame, "has_idea = advisor_a", 1), True);
     assert_eq!(eval(&frame, "has_idea = advisor_a", 2), False);
 }
 
-/// `has_country_leader` and `has_country_leader_with_trait` from the
-/// recorded tables: each country's parties (PoliticalParties, the ruling one
-/// by `is_ruling`) and their leaders (PartyLeaders), its active characters
-/// (CountryCharacters) and its ruling first leader's traits
-/// (CharacterRoleTraits), with the planned values of
-/// `country_leader_civil_war_and_idea_triggers`.
 #[test]
 fn recorded_political_tables_decide_country_leader_triggers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5785,7 +5436,6 @@ fn recorded_political_tables_decide_country_leader_triggers() {
             True,
         ),
         ("has_country_leader = { character = GER_otto }", 2, True),
-        // ENG's ruling party has no leaders.
         ("has_country_leader = { character = GER_karl }", 1, False),
         ("has_country_leader = { id = 12 }", 2, True),
         (
@@ -5794,15 +5444,12 @@ fn recorded_political_tables_decide_country_leader_triggers() {
             False,
         ),
         ("has_country_leader = { id = 0 }", 2, False),
-        // The first leader's traits; no leader or an unknown trait is false.
         ("has_country_leader_with_trait = dictator", 2, True),
         ("has_country_leader_with_trait = other", 2, False),
         ("has_country_leader_with_trait = dictator", 1, False),
     ] {
         assert_eq!(eval(source, slot), expected, "{source} at {slot}");
     }
-    // has_civil_war: ENG's own list (CountryCivilWars, by raw country) names
-    // an existing GER; GER is at war with nobody and lists nobody.
     let mut wars = frame.clone();
     put::<tables::CountryCivilWars>(
         &mut wars,
@@ -5834,8 +5481,6 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     };
     assert_eq!(eval_wars(1), True);
     assert_eq!(eval_wars(2), False);
-    // has_idea: a recorded advisor token reads the hired advisors (then the
-    // faction's), anything else the active ideas.
     let mut ideas = frame.clone();
     put::<tables::AdvisorTokens>(
         &mut ideas,
@@ -5867,9 +5512,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
         world.evaluate(&parse(source), Scopes::of(Scope::Country(slot)))
     };
     assert_eq!(eval_ideas(&ideas, "has_idea = advisor_a", 1), True);
-    // GER's active idea of that name does not count: it is an advisor token.
     assert_eq!(eval_ideas(&ideas, "has_idea = advisor_a", 2), False);
-    // ...but a slot of GER's faction (FactionAdvisors) holding it does.
     let faction = (7_u64 << 32) | 88;
     put::<tables::FactionMembers>(
         &mut ideas,
@@ -5888,7 +5531,6 @@ fn recorded_political_tables_decide_country_leader_triggers() {
         }],
     );
     assert_eq!(eval_ideas(&ideas, "has_idea = advisor_a", 2), True);
-    // num_of_controlled_states reads CountryCounterInputs.controlled_state_count.
     let mut controlled = frame.clone();
     put::<tables::CountryCounterInputs>(
         &mut controlled,
@@ -5908,7 +5550,6 @@ fn recorded_political_tables_decide_country_leader_triggers() {
         eval_ideas(&controlled, "num_of_controlled_states > 3", 2),
         False
     );
-    // A leader of a party the recording does not list is refused by name.
     let mut orphan = frame.clone();
     put::<tables::PartyLeaders>(&mut orphan, vec![leader(9, 0, 1, 11)]);
     let world = World::new(&orphan, assets.trigger_content.facts()).unwrap();
@@ -5926,9 +5567,6 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     }
 }
 
-/// `any_country_with_original_tag` and `all_country_with_original_tag`
-/// visit the recorded native bucket for the checked country's original
-/// reference, then append that selected raw reference.
 #[test]
 fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selected_raw() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5964,8 +5602,6 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
             appearance(12, 10, b"GER"),
         ],
     );
-    // The stored civil-war bucket at GER's canonical index visits raw D01 12,
-    // then appends selected raw GER 10. name_tag cannot reconstruct this list.
     put::<tables::ReservedCountryNaming>(
         &mut frame,
         vec![ReservedCountryNamingRow {
@@ -5998,7 +5634,6 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
     assert_eq!(any("tag = D01"), True);
     assert_eq!(any("tag = GER"), True);
     assert_eq!(any("tag = ENG"), False);
-    // ROOT stays the outer scope.
     assert_eq!(any("tag = D01 ROOT = { tag = ENG }"), True);
     assert_eq!(
         eval("all_country_with_original_tag = { original_tag_to_check = GER original_tag = GER }"),
@@ -6008,19 +5643,14 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
         eval("all_country_with_original_tag = { original_tag_to_check = GER tag = GER }"),
         False
     );
-    // `count`: whole units, down by one per passing country, checked after
-    // each visited one; `tooltip` is text.
     assert_eq!(any("count = 2 original_tag = GER"), True);
     assert_eq!(any("count = 3 original_tag = GER"), False);
     assert_eq!(any("count = 2.9 tooltip = x original_tag = GER"), True);
     assert_eq!(any("count = 0 tag = ENG"), True);
-    // Text not spelling a recorded country tag is read as a variable whose
-    // store this frame does not record.
     assert!(matches!(
         eval("any_country_with_original_tag = { original_tag_to_check = FRA count = 0 }"),
         script::Eval::Unknown(reasons) if reasons.iter().any(|reason| reason.contains("ScriptVariables"))
     ));
-    // Checking a dynamic country checks its original tag.
     assert_eq!(
         eval("any_country_with_original_tag = { original_tag_to_check = D01 tag = GER }"),
         True
@@ -6029,9 +5659,6 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
         eval("any_country_with_original_tag = { original_tag_to_check = ENG tag = D01 }"),
         False
     );
-    // Native snapshots retain bucket order and duplicates independently of
-    // country row order. A selected raw already in the bucket is appended
-    // again, so this snapshot produces four visits, including two D01s.
     let mut repeated = frame.clone();
     put::<tables::ReservedCountryNaming>(
         &mut repeated,
@@ -6067,7 +5694,6 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
             "{inner}"
         );
     }
-    // Historical absence and a captured refusal remain distinct named gaps.
     for (buckets, why) in [
         (Recorded::NotRecorded, "original_tag_buckets not recorded"),
         (
@@ -6094,12 +5720,6 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
     }
 }
 
-/// The preparation form of `has_naval_invasion_against_state` computes the
-/// order's preparation from `InvasionPreparations` and the content define
-/// (60 days in the test assets): the required hours are
-/// `trunc(A * B / 1e10) * 24`, and the leader term counts only when it
-/// applies. A withheld table leaves the bound undecided by name, while the
-/// scalar form still passes on any touching order.
 #[test]
 fn naval_invasion_preparation_reads_the_recorded_operands() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6132,18 +5752,15 @@ fn naval_invasion_preparation_reads_the_recorded_operands() {
         put::<tables::InvasionPreparations>(&mut frame, vec![row]);
         frame
     };
-    // 60 days = 1440 hours required.
     assert_eq!(script::required_invasion_hours(&row(0, None, 0), 60), 1440);
     let full = with(row(1440, None, 0));
     assert_eq!(eval(&full, prepared), script::Eval::True);
     assert_eq!(eval(&full, unprepared), script::Eval::False);
     let half = with(row(720, None, 0));
     assert_eq!(eval(&half, prepared), script::Eval::False);
-    // 720 hours is exactly 0.5, which `<` does not pass.
     assert_eq!(eval(&half, unprepared), script::Eval::False);
     let early = with(row(100, None, 0));
     assert_eq!(eval(&early, unprepared), script::Eval::True);
-    // A leader term of -0.5 halves the required hours only when it applies.
     assert_eq!(
         script::required_invasion_hours(&row(0, Some(-50_000), 1), 60),
         720
@@ -6160,15 +5777,12 @@ fn naval_invasion_preparation_reads_the_recorded_operands() {
         eval(&with(row(720, Some(-50_000), 0)), prepared),
         script::Eval::False
     );
-    // Absent relation terms add nothing; present ones add to the factor.
     let mut terms = row(0, None, 0);
     terms.country_term = 10_000;
     terms.relation_term = Some(10_000);
     terms.relation_bonus = Some(-40_000);
     terms.days_term = 1_000_000;
-    // (1e5 - 20000) * (60e5 + 1e6) / 1e10 = 56, times 24.
     assert_eq!(script::required_invasion_hours(&terms, 60), 56 * 24);
-    // A withheld table: the bound is undecided, the scalar form passes.
     let mut withheld = invasion_frame(0);
     *withheld.tables[tables::InvasionPreparations::ID.index()] = TableView::Unavailable {
         reason: "fixed-key refusal: invasion preparation".into(),
@@ -6184,7 +5798,6 @@ fn naval_invasion_preparation_reads_the_recorded_operands() {
         ),
         script::Eval::True
     );
-    // An order the table lacks is undecided for a bound.
     let mut missing = invasion_frame(0);
     put::<tables::InvasionPreparations>(&mut missing, Vec::new());
     assert!(matches!(eval(&missing, prepared), script::Eval::Unknown(_)));

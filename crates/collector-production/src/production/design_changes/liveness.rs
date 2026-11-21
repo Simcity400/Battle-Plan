@@ -1,4 +1,3 @@
-//! Raw author handles and frozen bonuses are independent of registry liveness.
 use super::*;
 use collector_hooks::hook::Hook;
 use engine_production::nindustrial_organisation_corganisation as organisation;
@@ -87,7 +86,6 @@ pub(super) fn seed(
     }
     Ok(())
 }
-/// [`seed`] for one design read on its own.
 pub(super) fn seed_one(
     row: &native::DefinitionRow<Arc<rows::VariantDesignState>>,
     interests: &mut sources::Interests,
@@ -254,8 +252,6 @@ pub(super) fn refresh_context(
     base: usize,
     events: &[Event],
 ) -> Result<(), &'static str> {
-    // Keep every logged liveness occurrence, but derive country demand from
-    // the terminal live reference, not a possibly retired event pointer.
     let mut handles = std::collections::HashSet::new();
     for event in events {
         if matches!(event.kind, Kind::Organisation(_)) {
@@ -315,7 +311,6 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
     scope.complete = true;
     result
 }
-// Reconciliation receives its owning organisation array in the fifth slot.
 unsafe extern "system-unwind" fn reconcile(
     a: usize,
     b: usize,

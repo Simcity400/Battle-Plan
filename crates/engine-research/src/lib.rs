@@ -1,4 +1,3 @@
-//! Native research readers and their operands, layouts and synthetic tests.
 
 use engine_characters::cscientist;
 use engine_executable::modifier_keys;

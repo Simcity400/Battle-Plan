@@ -1,10 +1,3 @@
-//! One coalescing worker for a window part's reads of a frame of rows (the combat window's model,
-//! made by the map's side, and a marker's tooltip), so the thread that asks only asks and takes
-//! results, or waits a bounded time for one ([`Reads::wait`]). The newest job asked
-//! runs next, replacing one queued; a job asked again under the same key is not queued twice. A
-//! read that touched a table its rows at the head did not declare keeps no result and names the
-//! table ([`Reads::take_missed`]). The worker ends when its owner drops it, and holds no job or
-//! frame between asks once its queue is empty.
 
 use job_priority::SpawnCarried;
 use replay_data::rows::TableId;
@@ -22,9 +15,7 @@ struct State<K, T> {
     running: Option<K>,
     done: Option<(K, T)>,
     missed: Vec<TableId>,
-    /// Each job's nanoseconds on the worker, while timing.
     timing: Option<Vec<u64>>,
-    /// What the owner let go of, freed on the worker.
     trash: Vec<Trash>,
     stop: bool,
 }
@@ -42,14 +33,11 @@ pub struct Reads<K, T> {
 }
 
 impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
-    /// A worker thread named `name`, started on the first ask.
     pub fn new(name: &'static str) -> Self {
         let state = State { queued: None, running: None, done: None, missed: Vec::new(), timing: None, trash: Vec::new(), stop: false };
         Self { shared: Arc::new((Mutex::new(state), Condvar::new())), worker: None, name }
     }
 
-    /// Asks for `key`'s result, made by `job` on the worker unless it is made, being made or
-    /// queued already; `wake` is called on the worker when a result is in.
     pub fn ask(&mut self, key: K, job: impl FnOnce() -> T + Send + 'static, wake: impl Fn() + Send + 'static) {
         if self.worker.as_ref().is_some_and(JoinHandle::is_finished)
             && let Some(Err(panic)) = self.worker.take().map(JoinHandle::join)
@@ -58,7 +46,6 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         }
         let mut state = lock(&self.shared);
         let known = |held: Option<&K>| held.is_some_and(|held| *held == key);
-        // A job not run is freed on the worker too: it holds a frame whose rows may be its last.
         if known(state.done.as_ref().map(|(held, _)| held)) || known(state.running.as_ref()) || known(state.queued.as_ref().map(|(held, _)| held)) {
             if self.worker.is_some() {
                 state.trash.push(Box::new(job));
@@ -72,12 +59,10 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         self.shared.1.notify_all();
         if self.worker.is_none() {
             let shared = Arc::clone(&self.shared);
-            // The recording's executable tables go with the work, as the asking thread reads them.
             self.worker = std::thread::Builder::new().name(self.name.into()).spawn_carried(move || run(&shared, wake)).ok();
         }
     }
 
-    /// The newest result, when `keep` takes its key; it stays for the next ask.
     pub fn latest(&self, keep: impl FnOnce(&K) -> bool) -> Option<(K, T)>
     where
         T: Clone,
@@ -85,14 +70,11 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         lock(&self.shared).done.as_ref().filter(|(key, _)| keep(key)).cloned()
     }
 
-    /// The newest result, taken, when `keep` takes its key; a later ask of the same key reads again.
     pub fn take(&mut self, keep: impl FnOnce(&K) -> bool) -> Option<(K, T)> {
         let mut state = lock(&self.shared);
         if state.done.as_ref().is_some_and(|(key, _)| keep(key)) { state.done.take() } else { None }
     }
 
-    /// Waits up to `limit` for a result `keep` takes; false when none came, or none is coming
-    /// because nothing is running or queued.
     pub fn wait(&self, keep: impl Fn(&K) -> bool, limit: Duration) -> bool {
         let until = Instant::now() + limit;
         let mut state = lock(&self.shared);
@@ -108,13 +90,11 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         }
     }
 
-    /// Whether a job is running or queued.
     pub fn busy(&self) -> bool {
         let state = lock(&self.shared);
         state.running.is_some() || state.queued.is_some()
     }
 
-    /// Frees `value` on the worker, or here when it never started.
     pub fn discard(&self, value: impl Send + 'static) {
         if self.worker.is_none() {
             return;
@@ -123,17 +103,14 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         self.shared.1.notify_all();
     }
 
-    /// Times each job from now on ([`Self::times`]).
     pub fn time(&self) {
         lock(&self.shared).timing.get_or_insert_with(Vec::new);
     }
 
-    /// Each job's nanoseconds on the worker since timing began.
     pub fn times(&self) -> Vec<u64> {
         lock(&self.shared).timing.clone().unwrap_or_default()
     }
 
-    /// The tables reads touched undeclared since the last call.
     pub fn take_missed(&mut self) -> Vec<TableId> {
         std::mem::take(&mut lock(&self.shared).missed)
     }

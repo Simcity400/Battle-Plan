@@ -80,7 +80,6 @@ fn gap_research_grants_oracle_compares_counter_unused_uses_and_restrictions() {
     );
 }
 
-/// A report whose frame refreshed ResearchSlots, as a full-refresh hour does.
 fn refreshed_report() -> Report {
     let mut report = Report::default();
     report
@@ -213,8 +212,6 @@ fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
     assert!(gap.is_none());
     let authored = tokens.map(str::as_bytes).collect::<Vec<_>>();
     assert_eq!(authored, [b"mixed".as_slice(), b"Undead"]);
-    // The recorded dictionary witnesses the first spelling registered by any
-    // loader; the idea files alone cannot reconstruct that global load order.
     let report = active_ideas_report(&authored, &[b"MiXeD", b"undead"], &[b"MiXeD", b"undead"]);
     assert!(
         !report
@@ -420,15 +417,10 @@ fn format99_rosters_compare_order_and_exact_values() {
     assert!(compare_decision_random_items(&frame, &pack, &links, &mut Report::default()).is_err());
 }
 
-/// Saved status N is canonical slot N's. Every
-/// census country needs its captured row, empty or not; only a status
-/// whose slot is outside the census may be missing from the recording,
-/// and then only while it holds no unlock.
 #[test]
 fn tactic_unlocks_cover_the_canonical_census() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    // The fixture's AAA is canonical slot 7.
     let pack = |at_seven: saved::DoctrineStatus, stray: Vec<i32>| saved::Pack {
         doctrine: Some(
             (0..8)
@@ -472,7 +464,6 @@ fn tactic_unlocks_cover_the_canonical_census() {
             .flatten()
             .any(|subject| subject.contains("7 empty statuses of slots outside the census"))
     );
-    // Order is native vector order, not a set.
     let (_, report) = compare(vec![row(vec![2, 4])], &pack(aaa(vec![4, 2]), Vec::new()));
     assert!(
         report
@@ -480,12 +471,9 @@ fn tactic_unlocks_cover_the_canonical_census() {
             .iter()
             .any(|difference| difference.contains("AAA.enable_tactic"))
     );
-    // A census country's missing row is a difference even when its
-    // saved status is empty: the collector promises explicit rows.
     let (_, report) = compare(Vec::new(), &pack(aaa(Vec::new()), Vec::new()));
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("no captured row for a census country"));
-    // A status at the census slot must name that country.
     let (_, report) = compare(
         vec![row(Vec::new())],
         &pack(saved::DoctrineStatus::default(), Vec::new()),
@@ -496,11 +484,9 @@ fn tactic_unlocks_cover_the_canonical_census() {
             .iter()
             .any(|difference| difference.contains("AAA.doctrine status country"))
     );
-    // Unlocks on a slot outside the census are a difference.
     let (_, report) = compare(vec![row(vec![4, 2])], &pack(aaa(vec![4, 2]), vec![9]));
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("doctrine status 3.enable_tactic"));
-    // A save without its doctrine block is a failed comparison.
     let (ok, _) = compare(vec![row(vec![4, 2])], &saved::Pack::default());
     assert!(!ok);
 }
@@ -655,9 +641,7 @@ fn party_names_and_tags_compare_by_the_writer_default_rule() {
     *frame.tables[TableId::PoliticalParties.index()] =
         TableView::Complete(TableRows::PoliticalParties(vec![
             party(1, b"communism", 11, 0, b"AAA_red", b"AAA_red_long"),
-            // A default-named party's stored keys are not saved.
             party(2, b"democratic", 11, 1, b"stale", b""),
-            // The canonical slot (7) is not the tag index.
             party(3, b"fascism", 7, 1, b"AAA_black", b"x"),
         ]));
     let mut report = Report::default();
@@ -670,7 +654,6 @@ fn party_names_and_tags_compare_by_the_writer_default_rule() {
     for subject in ["fascism.tag", "fascism.default", "fascism.long_name"] {
         assert!(differences.contains(subject), "{subject}: {differences}");
     }
-    // Keys are compared only where the save wrote them.
     assert!(!differences.contains("communism"), "{differences}");
     assert!(!differences.contains("democratic"), "{differences}");
     assert!(!differences.contains("fascism.name"), "{differences}");
@@ -919,7 +902,6 @@ fn sharing_complete_names_preserve_order_exact_bonuses_and_empty_groups() {
     };
     rows[0].literal = b"first".to_vec();
 
-    // The complete multiset is unchanged, but the saved pair order differs.
     let TableView::Complete(TableRows::TechSharingMembers(rows)) =
         &mut *frame.tables[TableId::TechSharingMembers.index()]
     else {
@@ -1038,7 +1020,6 @@ fn sharing_partial_names_do_not_fabricate_missing_groups_or_hide_known_group_dif
     assert_eq!(report.compared_tables.get("TechSharingGroups"), Some(&1));
     assert_eq!(report.compared_tables.get("TechSharingMembers"), Some(&1));
 
-    // Preserve the aggregate pairs while moving them between native groups.
     let TableView::Complete(TableRows::TechSharingMembers(rows)) =
         &mut *frame.tables[TableId::TechSharingMembers.index()]
     else {
@@ -1307,9 +1288,6 @@ fn scoped_research_technologies_need_a_full_refresh() {
         );
         report
     };
-    // Country 11 has no captured rows: a rowless owner, whose slice was
-    // not read at this hour (only owner 12's read is recorded). Rows
-    // alone would call it current; the scoped oracle carries it.
     *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
@@ -1328,8 +1306,6 @@ fn scoped_research_technologies_need_a_full_refresh() {
             .get("governance ResearchTechnologies (owners not read at this hour)"),
         Some(&Some(-3))
     );
-    // At a full refresh the technologies are compared, and a real
-    // difference (a captured row unlike the save) is kept.
     *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(vec![
             ResearchTechnologyRow {
@@ -1350,7 +1326,6 @@ fn scoped_research_technologies_need_a_full_refresh() {
         full.differences,
         full.failed_comparisons
     );
-    // The same differing row at a non-full hour is carried, not compared.
     let hidden = scoped(&frame, false);
     assert!(hidden.differences.is_empty(), "{:?}", hidden.differences);
 }
@@ -1389,15 +1364,11 @@ fn stale_or_unknown_research_reads_skip_the_research_family() {
             .keys()
             .any(|reason| reason.contains(replay_data::cadence::STAGGER_LIMITATION))
     };
-    // Country 11's roster was read at hour 0, the oracle hour.
     *frame.tables[TableId::SliceReads.index()] = read_at(0);
     assert!(!skipped(&frame, refreshed_report()));
-    // ResearchSlots was not refreshed at this hour.
     assert!(skipped(&frame, Report::default()));
-    // The roster was read before the oracle hour.
     frame.hour = 1;
     assert!(skipped(&frame, refreshed_report()));
-    // The read hours are unknown.
     frame.hour = 0;
     *frame.tables[TableId::SliceReads.index()] = TableView::Unavailable {
         reason: "fixture".into(),

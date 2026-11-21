@@ -1,12 +1,3 @@
-//! Every table's current rows: one typed column per field, indexed by the slot the
-//! writer assigned the row. Runs apply in place, column by column; the writer certifies
-//! each change, so nothing here compares values. An error leaves the table partly
-//! changed: its reader starts again from the next restart.
-//!
-//! Columns, keys and the key index are held in pages shared copy-on-write ([`paged`]): a
-//! table shared from another ([`Table::share`]), as every walk starting at one restart shares
-//! its decoded tables, holds of its own only the pages its hours wrote. Bools are a bit each,
-//! and a list or opaque column one buffer of items per page with each slot's end in it.
 
 use crate::{
     invalid,
@@ -22,7 +13,6 @@ mod tests;
 pub use paged::{Bools, Lists, PAGE, Paged, PagedBits};
 use paged::{WeakLists, WeakPaged};
 
-/// A field's cell type, as the recording's schema names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     U8,
@@ -38,14 +28,12 @@ pub enum Kind {
     OptionalU32,
     OptionalI64,
     OptionalU64,
-    /// A dictionary id.
     Bytes,
     U32List,
     U64List,
     Opaque,
 }
 
-/// Slots, one bit each; bits past the end are clear. Every bit names a `u32` slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bits {
     words: Vec<u64>,
@@ -76,7 +64,6 @@ impl Bits {
             .sum()
     }
 
-    /// The set bits, ascending.
     pub fn ones(&self) -> impl Iterator<Item = u32> + '_ {
         self.words.iter().enumerate().flat_map(|(index, &word)| {
             let mut rest = word;
@@ -116,8 +103,6 @@ impl Bits {
     }
 }
 
-/// One field's values at every slot. An optional field keeps a presence bit per slot,
-/// so a missing value is never read as zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Column {
     U8(Paged<u8>),
@@ -139,7 +124,6 @@ pub enum Column {
     Opaque(Lists<u8>),
 }
 
-/// A [`Column`] whose pages are held weakly.
 #[derive(Debug)]
 enum WeakColumn {
     U8(WeakPaged<u8>),
@@ -161,9 +145,6 @@ enum WeakColumn {
     Opaque(WeakLists<u8>),
 }
 
-/// The values one run carries, in slot order. Optional kinds carry a presence bit per
-/// slot, then values for the present slots only. Lists and opaque cells carry each
-/// cell's end offset into one flat array of items.
 #[derive(Clone, Copy, Debug)]
 pub enum Values<'a> {
     U8(&'a [u8]),
@@ -174,7 +155,6 @@ pub enum Values<'a> {
     I32(&'a [i32]),
     U64(&'a [u64]),
     I64(&'a [i64]),
-    /// One byte per value, 0 or 1.
     Bool(&'a [u8]),
     OptionalI32 {
         present: &'a [u64],
@@ -207,7 +187,6 @@ pub enum Values<'a> {
     },
 }
 
-/// One slot's value of one column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cell<'a> {
     U8(u8),
@@ -343,7 +322,6 @@ macro_rules! wrapping {
 }
 wrapping!(u8, i8, u16, i16, u32, i32, u64, i64);
 
-// The writer encodes an exact difference at the column's width, so wrapping reproduces it.
 fn add_plain<T: Wrapping>(column: &mut Paged<T>, slots: &[u32], deltas: &[T]) -> io::Result<()> {
     same_length(slots, deltas.len())?;
     column.each_mut(slots, past, |index, value| {
@@ -442,7 +420,6 @@ impl Values<'_> {
     }
 }
 
-/// `$body` for each column variant holding one [`Paged`] alone, as `$values`.
 macro_rules! plain_columns {
     ($column:expr, $values:ident => $body:expr, $($rest:tt)*) => {
         match $column {
@@ -505,8 +482,6 @@ impl Column {
         }
     }
 
-    /// The bytes its values hold, list and opaque cells' items included, pages shared with
-    /// other tables too.
     pub fn held_bytes(&self) -> usize {
         plain_columns!(self, values => values.held_bytes(),
             Self::Bool(values) => values.held_bytes(),
@@ -520,7 +495,6 @@ impl Column {
         )
     }
 
-    /// [`Self::held_bytes`] of the pages no other table shares.
     pub fn owned_bytes(&self) -> usize {
         plain_columns!(self, values => values.owned_bytes(),
             Self::Bool(values) => values.owned_bytes(),
@@ -534,7 +508,6 @@ impl Column {
         )
     }
 
-    /// The bytes of the pages only it and `other`, a column of its kind, hold.
     pub fn shared_bytes(&self, other: &Self) -> usize {
         match (self, other) {
             (Self::U8(mine), Self::U8(theirs)) => mine.shared_bytes(theirs),
@@ -566,7 +539,6 @@ impl Column {
         }
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     pub fn common_bytes(&self, other: &Self) -> usize {
         match (self, other) {
             (Self::U8(mine), Self::U8(theirs)) => mine.common_bytes(theirs),
@@ -598,7 +570,6 @@ impl Column {
         }
     }
 
-    /// The value at `slot`, live or not: a freed slot holds the column's default.
     pub fn cell(&self, slot: u32) -> Option<Cell<'_>> {
         let at = slot as usize;
         Some(match self {
@@ -643,7 +614,6 @@ impl Column {
         )
     }
 
-    /// A copy sharing every page.
     pub fn share(&self) -> io::Result<Self> {
         Ok(match self {
             Self::U8(values) => Self::U8(values.share()?),
@@ -733,7 +703,6 @@ impl Column {
         }
     }
 
-    /// Optional columns take deltas of their integer type, for present values only.
     fn add(&mut self, slots: &[u32], deltas: Values<'_>) -> io::Result<()> {
         match (self, deltas) {
             (Self::U8(column), Values::U8(deltas)) => add_plain(column, slots, deltas),
@@ -804,7 +773,6 @@ impl Column {
         }
     }
 
-    /// The values at `slots`, in the layout a run of this column carries.
     pub(crate) fn write(&self, writer: &mut Writer, slots: &[u32]) -> io::Result<()> {
         if slots.last().is_some_and(|&last| self.cell(last).is_none()) {
             return Err(invalid("Column has no value at a written slot"));
@@ -849,8 +817,6 @@ impl Column {
         }
     }
 
-    /// Deleted rows' cells, at `slots` (ascending), release what they hold; their optional
-    /// values become missing. A cell holding nothing already leaves its page shared.
     fn release(&mut self, slots: &[u32]) -> io::Result<()> {
         fn zero<T: Copy + Default + PartialEq>(
             values: &mut Paged<T>,
@@ -875,7 +841,6 @@ impl Column {
             Ok(())
         }
         match self {
-            // Restarts omit freed cells; hot walks must leave the same page bases.
             Self::U8(values) => zero(values, slots),
             Self::I8(values) => zero(values, slots),
             Self::U16(values) => zero(values, slots),
@@ -903,7 +868,6 @@ impl Column {
     }
 }
 
-/// The part an upgrade found, or None from the enclosing upgrade when a page is gone.
 macro_rules! some {
     ($upgraded:expr) => {
         match $upgraded {
@@ -1002,8 +966,6 @@ fn write_cells<T: Copy>(
     items_of(writer, &items)
 }
 
-/// Each slot's held cell with its value's hunks applied: kept items, removed items and
-/// inserted items, then the rest of the held cell.
 fn patch_cells<T: Copy + Default>(
     column: &mut Lists<T>,
     slots: &[u32],
@@ -1053,11 +1015,9 @@ fn mismatch(column: Kind, values: Kind) -> io::Error {
     invalid(format!("{values:?} values for a {column:?} column"))
 }
 
-/// A bucket of [`Slots`] holding no slot, and one whose slot was let go.
 const EMPTY: u64 = u64::MAX;
 const GONE: u64 = u64::MAX - 1;
 
-/// `key`'s hash, below the top bit, which only empty and gone buckets set.
 fn tag(key: u128) -> u32 {
     let mut x = (key as u64) ^ ((key >> 64) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x >> 30;
@@ -1068,9 +1028,6 @@ fn tag(key: u128) -> u32 {
     (x as u32) & 0x7FFF_FFFF
 }
 
-/// Each live row's slot by its key: an open-addressed table of slots, each beside its key's
-/// hash, the key itself read from the table's keys. A bucket takes eight bytes, in pages
-/// shared as the table's columns are.
 #[derive(Clone, Debug)]
 pub(crate) struct Slots {
     buckets: Paged<u64>,
@@ -1101,7 +1058,6 @@ impl Slots {
         self.buckets.shared_bytes(&other.buckets)
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     fn common_bytes(&self, other: &Self) -> usize {
         self.buckets.common_bytes(&other.buckets)
     }
@@ -1122,7 +1078,6 @@ impl Slots {
         Ok(())
     }
 
-    /// The slot it holds for `key`, whose row's key `keys` holds at that slot.
     pub(crate) fn get(&self, keys: &Paged<u128>, key: u128) -> Option<u32> {
         if self.buckets.is_empty() {
             return None;
@@ -1144,15 +1099,12 @@ impl Slots {
         }
     }
 
-    /// Room for `additional` more slots without growing. Rebuilding reads only the hashes it
-    /// holds, never the keys.
     pub(crate) fn reserve(&mut self, additional: usize) -> io::Result<()> {
         let used = self
             .len
             .checked_add(self.gone)
             .and_then(|used| used.checked_add(additional))
             .ok_or_else(engine_allocation::oom)?;
-        // At most three quarters used, so a probe meets an empty bucket.
         if used.saturating_mul(4) <= self.buckets.len().saturating_mul(3) {
             return Ok(());
         }
@@ -1160,7 +1112,6 @@ impl Slots {
             .len
             .checked_add(additional)
             .ok_or_else(engine_allocation::oom)?;
-        // Rebuilt at most five eighths full, so the next rebuild is an eighth of it away.
         let mut buckets = 8_usize;
         while buckets.saturating_mul(5) < live.saturating_mul(8) {
             buckets = buckets
@@ -1180,15 +1131,12 @@ impl Slots {
             }
             rebuilt[at] = bucket;
         }
-        // The old buckets go before the new pages are made.
         self.buckets = Paged::filled(0, EMPTY)?;
         self.buckets = Paged::from_slice(&rebuilt, EMPTY)?;
         self.gone = 0;
         Ok(())
     }
 
-    /// Holds `slot` for `key`, in place of the slot it held for `key`, if any; `keys` holds
-    /// the table's keys at the slots it holds.
     pub(crate) fn insert(&mut self, keys: &Paged<u128>, key: u128, slot: u32) -> io::Result<()> {
         self.reserve(1)?;
         let (tag, mask) = (tag(key), self.buckets.len() - 1);
@@ -1219,8 +1167,6 @@ impl Slots {
         Ok(())
     }
 
-    /// Lets go of `slot`, held for `key`, whatever key the table holds there now; nothing when
-    /// it holds `slot` for another key, or none.
     pub(crate) fn remove(&mut self, key: u128, slot: u32) -> io::Result<()> {
         if self.buckets.is_empty() {
             return Ok(());
@@ -1244,7 +1190,6 @@ impl Slots {
             self.gone += 1;
             return Ok(());
         }
-        // No probe goes past an empty bucket: gone ones just before it are empty too.
         self.put(at, EMPTY)?;
         let mut back = at.wrapping_sub(1) & mask;
         while self.buckets[back] == GONE {
@@ -1263,22 +1208,16 @@ fn ascending(slots: &[u32]) -> io::Result<()> {
     Ok(())
 }
 
-/// One table's live rows: their keys and one column per field, at writer-assigned slots.
 #[derive(Clone, Debug)]
 pub struct Table {
     pub(crate) keys: Paged<u128>,
     pub(crate) live: Bits,
     pub(crate) columns: Vec<Column>,
-    /// Per column, the slots whose cell the recording did not record: unknown, never the
-    /// value the column holds there.
     pub(crate) unrecorded: Vec<Bits>,
     pub(crate) slots: usize,
-    /// Each live row's slot by its key, for joins between tables.
     pub(crate) by_key: Slots,
 }
 
-/// A [`Table`] whose pages are held weakly: its rows again while every page is still held
-/// by a table sharing them, nothing of its own beside.
 #[derive(Debug)]
 pub struct WeakTable {
     keys: WeakPaged<u128>,
@@ -1290,7 +1229,6 @@ pub struct WeakTable {
 }
 
 impl WeakTable {
-    /// The table, sharing its pages, while every one is still held.
     pub fn upgrade(&self) -> io::Result<Option<Table>> {
         let Some(keys) = self.keys.upgrade()? else {
             return Ok(None);
@@ -1323,19 +1261,15 @@ impl WeakTable {
         }))
     }
 
-    /// Whether any of its pages may still be held.
     pub fn alive(&self) -> bool {
         self.keys.alive()
     }
 
-    /// The bytes it holds of its own.
     pub fn held_bytes(&self) -> usize {
         self.live.held_bytes() + self.unrecorded.iter().map(Bits::held_bytes).sum::<usize>()
     }
 }
 
-/// Tables are equal when they hold the same rows at the same slots: what a freed slot
-/// still holds is not part of the table.
 impl PartialEq for Table {
     fn eq(&self, other: &Self) -> bool {
         self.slots == other.slots
@@ -1368,8 +1302,6 @@ impl Table {
         })
     }
 
-    /// A restart's table: `slots` slots, `live` of them holding rows with these keys and
-    /// each column's values for the live slots in slot order.
     pub fn restore(
         kinds: &[Kind],
         slots: usize,
@@ -1388,8 +1320,6 @@ impl Table {
         Ok(table)
     }
 
-    /// A restart's rows before their values: every column's values for the live slots
-    /// follow, one [`Self::set`] per column, before the table is read.
     pub fn with_rows(kinds: &[Kind], slots: usize, live: Bits, keys: &[u128]) -> io::Result<Self> {
         let mut table = Self::new(kinds)?;
         if slots.div_ceil(64) > SLOT_WORDS {
@@ -1419,7 +1349,6 @@ impl Table {
         Ok(table)
     }
 
-    /// A copy sharing every page: either then copies a page it writes, alone.
     pub fn share(&self) -> io::Result<Self> {
         let mut columns = engine_allocation::vec(self.columns.len())?;
         for column in &self.columns {
@@ -1439,7 +1368,6 @@ impl Table {
         })
     }
 
-    /// Its pages held weakly, and a copy of the rest.
     pub fn downgrade(&self) -> io::Result<WeakTable> {
         let mut columns = engine_allocation::vec(self.columns.len())?;
         for column in &self.columns {
@@ -1467,7 +1395,6 @@ impl Table {
         self.columns.iter().map(Column::kind)
     }
 
-    /// `column`'s values at the live slots, in slot order, as a restore carries them.
     pub(crate) fn write_column(&self, column: usize, writer: &mut Writer, live: &[u32]) -> io::Result<()> {
         self.columns
             .get(column)
@@ -1475,13 +1402,10 @@ impl Table {
             .write(writer, live)
     }
 
-    /// One more than the highest slot ever assigned.
     pub fn slots(&self) -> usize {
         self.slots
     }
 
-    /// The bytes its rows hold: keys, bits, every column and the key index, pages it shares
-    /// with other tables too.
     pub fn held_bytes(&self) -> usize {
         self.keys.held_bytes()
             + self.live.held_bytes()
@@ -1490,7 +1414,6 @@ impl Table {
             + self.by_key.held_bytes()
     }
 
-    /// [`Self::held_bytes`] but of the pages no other table shares: what it holds alone.
     pub fn owned_bytes(&self) -> usize {
         self.keys.owned_bytes()
             + self.live.held_bytes()
@@ -1499,8 +1422,6 @@ impl Table {
             + self.by_key.owned_bytes()
     }
 
-    /// The bytes of the pages only it and `other`, a table of its kinds, hold: what one table
-    /// shared from the other holds of it beside [`Self::owned_bytes`].
     pub fn shared_bytes(&self, other: &Self) -> usize {
         self.keys.shared_bytes(&other.keys)
             + self
@@ -1512,7 +1433,6 @@ impl Table {
             + self.by_key.shared_bytes(&other.by_key)
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     pub fn common_bytes(&self, other: &Self) -> usize {
         self.keys.common_bytes(&other.keys)
             + self
@@ -1532,7 +1452,6 @@ impl Table {
         self.live.get(slot).then(|| self.keys[slot as usize])
     }
 
-    /// The slot of the live row with `key`.
     pub fn slot(&self, key: u128) -> Option<u32> {
         self.by_key.get(&self.keys, key)
     }
@@ -1541,7 +1460,6 @@ impl Table {
         self.by_key.reserve(additional)
     }
 
-    /// Holds `slot`, whose key the table's keys hold already, by `key`.
     fn key_slot(&mut self, key: u128, slot: u32) -> io::Result<()> {
         if let Some(held) = self
             .by_key
@@ -1559,16 +1477,12 @@ impl Table {
         self.columns.get(column)
     }
 
-    /// Whether the recording recorded `slot`'s cell in `column`; when it did not, the cell is
-    /// unknown whatever the column holds there.
     pub fn recorded(&self, column: usize, slot: u32) -> bool {
         self.unrecorded
             .get(column)
             .is_some_and(|bits| !bits.get(slot))
     }
 
-    /// Appends columns of `kinds` a recording of fewer columns did not hold: every live row's
-    /// cell in them is unrecorded, as is every row's inserted later ([`Self::unrecord`]).
     pub fn widen(&mut self, kinds: &[Kind]) -> io::Result<()> {
         engine_allocation::reserve(&mut self.columns, kinds.len())?;
         engine_allocation::reserve(&mut self.unrecorded, kinds.len())?;
@@ -1582,7 +1496,6 @@ impl Table {
         Ok(())
     }
 
-    /// The live `slots` whose cell in `column` the recording did not record.
     pub fn unrecord(&mut self, column: usize, slots: &[u32]) -> io::Result<()> {
         self.live_slots(slots)?;
         let bits = self
@@ -1595,19 +1508,16 @@ impl Table {
         Ok(())
     }
 
-    /// `column`'s unrecorded slots, a bit each.
     pub(crate) fn unrecorded_bits(&self, column: usize) -> Option<&Bits> {
         self.unrecorded.get(column)
     }
 
-    /// The live slots whose cell in `column` is unrecorded, ascending.
     pub(crate) fn unrecorded_slots(&self, column: usize) -> impl Iterator<Item = u32> + '_ {
         self.unrecorded[column]
             .ones()
             .filter(|&slot| self.live.get(slot))
     }
 
-    /// A value written to `slots` of `column` is recorded.
     fn recorded_again(&mut self, column: usize, slots: &[u32]) {
         if let Some(bits) = self.unrecorded.get_mut(column) {
             for &slot in slots {
@@ -1644,7 +1554,6 @@ impl Table {
             .ok_or_else(|| invalid(format!("Run names column {column} past the schema")))
     }
 
-    /// New rows at free slots, with their keys and each column's values in slot order.
     pub fn insert(
         &mut self,
         slots: &[u32],
@@ -1661,8 +1570,6 @@ impl Table {
         Ok(())
     }
 
-    /// New rows at free slots with these keys; every column's values for them follow,
-    /// one [`Self::set`] per column, before the table is read.
     pub fn insert_keys(&mut self, slots: &[u32], keys: &[u128]) -> io::Result<()> {
         ascending(slots)?;
         if keys.len() != slots.len() {
@@ -1703,7 +1610,6 @@ impl Table {
         Ok(())
     }
 
-    /// Changed values: each differs from the one it replaces.
     pub fn set(&mut self, column: usize, slots: &[u32], values: Values<'_>) -> io::Result<()> {
         self.live_slots(slots)?;
         self.column_mut(column)?.set(slots, values)?;
@@ -1711,7 +1617,6 @@ impl Table {
         Ok(())
     }
 
-    /// Edits to held list or opaque cells.
     pub fn patch(&mut self, column: usize, slots: &[u32], patches: Patches<'_>) -> io::Result<()> {
         self.live_slots(slots)?;
         self.column_mut(column)?.patch(slots, patches)?;
@@ -1726,8 +1631,6 @@ impl Table {
         Ok(())
     }
 
-    /// One value for every live row but the `except` slots, into `targets` (the slots set,
-    /// ascending).
     pub fn fill(
         &mut self,
         column: usize,

@@ -2,15 +2,11 @@ import { useMemo, useSyncExternalStore } from 'react';
 import { currentCampaignSettings, saveCampaignSettings, setCampaignFlag, useCampaignSettings } from './campaignSettings.ts';
 import type { CampaignSettings } from './campaignSettings.ts';
 
-/** The flag chosen for a campaign in the sidebar, as a recorded tag, by campaign key.
- * The desktop app keeps these in the recorder's shared settings, so Battle Plan Recorder
- * uses the same choice; the browser keeps them with this device's campaign settings. */
 export type CampaignFlags = Record<string, string>;
 type Save = (campaignKey: string, tag: string | null) => Promise<void>;
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 
 let shared: { flags: CampaignFlags; save: Save } | null = null;
-/** Campaigns chosen while the shared flags are read or this device's flags move to them. */
 let migrating: Set<string> | null = null;
 let saving: Promise<unknown> = Promise.resolve();
 const listeners = new Set<() => void>();
@@ -22,7 +18,6 @@ export function settingsFlags(settings: CampaignSettings): CampaignFlags {
   return Object.fromEntries(Object.entries(settings.campaigns).flatMap(([key, entry]) => entry.flag ? [[key, entry.flag]] : []));
 }
 
-/** `save`, each choice reaching the shared settings in the order it was made. */
 function inOrder(save: Save): Save {
   return (campaignKey, tag) => {
     const saved = saving.then(() => save(campaignKey, tag));
@@ -31,10 +26,6 @@ function inOrder(save: Save): Save {
   };
 }
 
-/** Use the recorder's shared settings for flags, once `read` gives them. A flag this
- * device chose fills in a campaign the shared settings lack, once; it then leaves this
- * device's settings. A flag chosen or cleared while they are read is newer and moves
- * over them; once they apply, a flag chosen meanwhile is saved after the move. */
 export async function shareCampaignFlags(read: CampaignFlags | Promise<CampaignFlags>, save: Save, storage?: Storage): Promise<void> {
   const early = new Set<string>();
   migrating = early;
@@ -60,7 +51,6 @@ export async function shareCampaignFlags(read: CampaignFlags | Promise<CampaignF
   try {
     for (const [key, tag] of pending) {
       if (chosen.has(key)) continue;
-      // A flag that cannot move yet applies until the app closes and moves next time.
       try { await ordered(key, tag); } catch { failed.push(key); }
     }
   } finally {
@@ -80,8 +70,6 @@ export function useCampaignFlags(): CampaignFlags {
   return useMemo(() => flags ?? settingsFlags(settings), [flags, settings]);
 }
 
-/** Choose a campaign's flag, or follow the shown country with null. Returns a refusal
- * now; with shared settings the save completes later and `report` hears its outcome. */
 export function saveCampaignFlag(campaignKey: string, tag: string | null, report?: (error: string | null) => void, storage?: Storage): string | null {
   migrating?.add(campaignKey);
   if (shared) {

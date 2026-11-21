@@ -1,4 +1,3 @@
-//! Authored audio definitions and their sample files.
 
 use installed_content_core::{ResolvedLayers, crt, defines, parser};
 

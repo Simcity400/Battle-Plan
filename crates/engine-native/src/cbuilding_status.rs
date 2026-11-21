@@ -1,4 +1,3 @@
-//! CBuildingStatus embedded in CState or CProvince and referenced by each CBuilding.
 
 use crate::{
     Memory, cbuilding, cgame_state,
@@ -10,32 +9,17 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Building-status vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a1_5510);
-/// Signed building-index array keyed by template ordinal.
 pub const BUILDING_INDICES: usize = 0x20;
-/// Building-index count, i32, checked before lookup.
 pub const BUILDING_INDEX_COUNT: usize = 0x2c;
-/// Missing-instance index sentinel.
 pub const NO_BUILDING_INDEX: i32 = -1;
-/// Building-pointer array.
 pub const BUILDINGS: usize = 0x38;
-/// Active-building pointer array rebuilt from BUILDINGS in occurrence order
-/// for positive levels. Every level zero crossing triggers a rebuild. Loading
-/// also rebuilds at the end of each status block, including after unknown
-/// tokens. Capture this stored target-count input rather than recomputing it.
 pub const ACTIVE_BUILDINGS: usize = 0x50;
-/// Flags and location discriminator, u32.
 pub const FLAGS: usize = 0x68;
-/// Location id, i32, resolved as province or state by flags.
 pub const ID: usize = 0x6c;
-/// Raw country reference.
 pub const COUNTRY: usize = 0x70;
-/// Province-location flag.
 pub const PROVINCE_FLAG: u32 = 1;
-/// State-location flag.
 pub const STATE_FLAG: u32 = 2;
-/// Constructor installing arrays and location controls.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x011f_e6b0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,10 +28,6 @@ pub struct Walk {
     pub provinces: Outcome,
 }
 
-/// One authenticated status as the walk staged it: its address, scope, the
-/// gathered identity (flags, id, country) and building, index and active
-/// vector headers, and its building count. A held read of the same status
-/// and bytes, which no hooked writer touched since, has the same rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
     pub province: bool,
@@ -56,22 +36,14 @@ pub struct Location {
     pub buildings: usize,
 }
 
-/// The bytes of [`Location::header`]: identity 12, three vector headers 16.
 pub const HEADER_BYTES: usize = 60;
 
-/// A caller's held rows per status ([`walk_carried`]).
 pub trait Carry {
-    /// Registers an authenticated location before any of its buildings are
-    /// read, returning a plan token and whether its held rows may be carried
-    /// (then exactly `location.buildings` rows).
     fn plan(&mut self, location: &Location) -> (usize, bool);
-    /// Writes a carryable plan's held rows.
     fn carry(&mut self, token: usize, output: &mut [cbuilding::Row]);
-    /// A planned location's rows, read afresh and whole.
     fn read(&mut self, token: usize, rows: &[cbuilding::Row]);
 }
 
-/// No held rows: every location is read.
 pub struct Fresh;
 impl Carry for Fresh {
     fn plan(&mut self, _: &Location) -> (usize, bool) {
@@ -81,9 +53,6 @@ impl Carry for Fresh {
     fn read(&mut self, _: usize, _: &[cbuilding::Row]) {}
 }
 
-/// State and province tables remain independently available. Province state
-/// membership is authenticated by pointer and id; sea provinces retain state 0.
-/// Destinations grow with acquired building rows; callers must permit allocation.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -94,10 +63,6 @@ pub fn walk(
     walk_carried(memory, base, game_state, states, provinces, &mut Fresh)
 }
 
-/// [`walk`] with `carry` supplying the rows of statuses whose held read it
-/// proves current: every location's identity and status headers are still
-/// gathered and authenticated in slot order, and a carried location's
-/// buildings are not read.
 pub fn walk_carried(
     memory: &impl Memory,
     base: usize,
@@ -106,8 +71,6 @@ pub fn walk_carried(
     provinces: &mut Vec<cbuilding::Row>,
     carry: &mut impl Carry,
 ) -> Walk {
-    // Share only this invocation's root. A consistency walk reacquires it, and
-    // a province-root failure cannot invalidate the independently read states.
     let state_root = game_state
         .checked_add(cgame_state::STATES)
         .and_then(|p| Array::read(memory, p, 8))
@@ -203,8 +166,6 @@ fn walk_locations(
         let mut len = 0_usize;
         let mut state_identities = StateIdentities::new();
         visit_locations(memory, locations, |ids, pointers| {
-            // Fixed metadata is shared across the whole batch, not rebuilt for
-            // every location. Only the exact field bytes enter this stack arena.
             let completed =
                 memory.copy_records(RecordSources::Pointers(pointers), &layout, &mut headers);
             let records = LocationRecords {
@@ -214,17 +175,9 @@ fn walk_locations(
                 fields: layout.field_count(),
                 live_len: ids.len(),
             };
-            // Province state authentication is gathered for the whole batch in
-            // two guarded rounds instead of two round trips per province. Only
-            // records that reached their state link are staged, and every check
-            // below still runs in slot order with the same reasons.
             if province_scope {
                 state_identities.gather(memory, states, records);
             }
-            // Location identity is validated in slot order and its buildings
-            // are then read for the batch. A location that fails here keeps the
-            // earlier locations' building reads and their reasons ahead of its
-            // own, exactly as the interleaved per-location read did.
             let mut staged = [cbuilding::LocationBuildings::EMPTY; BATCH];
             let mut tokens = [0_usize; BATCH];
             let mut staged_len = 0;
@@ -248,8 +201,6 @@ fn walk_locations(
                     if copied < 2 || u32::from_le_bytes(id) != location {
                         return Err("building location id differs from slot");
                     }
-                    // The link authenticates this location's building vector.
-                    // Its state ID is already captured by the province census.
                     if province_scope {
                         let state_pointer = (copied >= 3)
                             .then_some(u64::from_le_bytes(state_link))
@@ -363,10 +314,6 @@ fn walk_locations(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The 16-byte headers of the state table (on the game state) and the province table, in that
-/// order, gathered in one guarded round; `None` when either does not read. Outside a load or reset
-/// only nudge mode writes them (`building_mutations`: game-state construction, destruction and
-/// reset, province initialization and nudge entry).
 pub fn roots(memory: &impl Memory, game_state: usize) -> Option<[[u8; 16]; 2]> {
     let mut states = [0_u8; 16];
     let mut provinces = [0_u8; 16];
@@ -380,9 +327,6 @@ pub fn roots(memory: &impl Memory, game_state: usize) -> Option<[[u8; 16]; 2]> {
     (copied == 2).then_some([states, provinces])
 }
 
-/// What [`refresh`] gathers from a held status: its vtable, then the identity
-/// and the building, index and active vector headers in [`Location::header`]
-/// order.
 const HELD_FIELDS: [RecordField; 5] = [
     RecordField {
         source_offset: 0,
@@ -414,15 +358,6 @@ const HELD_BYTES: usize = 8 + HEADER_BYTES;
 const HELD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&HELD_FIELDS, HELD_BYTES).expect("valid record layout");
 
-/// Held statuses a hooked writer touched since their held read, read afresh
-/// without walking their locations. Each status's vtable and identity (flags,
-/// location id, country), which only its constructor writes
-/// (`building_mutations`), must still be those of its held
-/// [`Location`]; its vector headers and building count are taken as they now
-/// read into `fresh` (in `held` order, as [`walk_carried`] would plan them),
-/// and its rows are read exactly as that walk reads a location's buildings,
-/// into `output` from index 0. Returns the number of rows read; the first
-/// status that does not read fails the call.
 pub fn refresh(
     memory: &impl Memory,
     base: usize,
@@ -493,7 +428,6 @@ pub fn refresh(
     Ok(len)
 }
 
-/// Locations gathered per guarded round in the province and building batches.
 const BATCH: usize = 64;
 
 const STATE_IDENTITY_FIELDS: [RecordField; 2] = [
@@ -518,7 +452,6 @@ const STATE_IDENTITY_LAYOUT: RecordLayout<'static> =
 const STATE_SLOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_SLOT_FIELD, 8).expect("valid record layout");
 
-/// One batch of gathered location records and its exact completed prefix.
 #[derive(Clone, Copy)]
 struct LocationRecords<'a> {
     headers: &'a [u8],
@@ -544,12 +477,6 @@ struct StateIdentity {
     table_matched: bool,
 }
 
-/// One batch's province state authentication. Two guarded rounds replace the
-/// two round trips each province used to make: the first reads every staged
-/// state's vtable and id, the second reads the state table slot each id names.
-/// Both rounds keep `copy_records` completed-prefix semantics, so a province
-/// sees exactly the field count, values and failure position its own reads
-/// produced. Only records whose location fields all copied are staged.
 struct StateIdentities {
     entries: [StateIdentity; BATCH],
     pointers: [usize; BATCH],
@@ -573,8 +500,6 @@ impl StateIdentities {
         self.entries = [StateIdentity::default(); BATCH];
         let mut staged = 0;
         for slot in 0..locations.live_len.min(BATCH) {
-            // The state link is the third field; a record that did not reach it
-            // reports its own unreadable pointer, and no later record copied.
             if locations.copied(slot) < 3 {
                 break;
             }
@@ -651,8 +576,6 @@ impl Identity {
     }
 }
 
-/// The pointer vector is copied in ordered bounded spans. A later pointer fault
-/// cannot consume partial bytes or mask an earlier location's validation error.
 fn visit_locations(
     memory: &impl Memory,
     locations: Array,
@@ -699,8 +622,6 @@ fn visit_locations(
     Ok(())
 }
 
-/// Authenticates construction-target status pointers against the actual map
-/// roots. No template-type whitelist is used to guess a target's scope.
 pub struct Locations {
     states: Array,
     provinces: Array,

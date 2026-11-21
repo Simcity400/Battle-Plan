@@ -15,7 +15,6 @@ const at = (wire: ReturnType<typeof validateExiles>, hour = 100) => ({ ...wire, 
 const all = () => true;
 const keyOf = (row: ExileRow) => row.key;
 
-/** Live cells of exiles by id: each cell left out is not recorded. */
 const cells = (rows: Record<string, Partial<Record<'legitimacy' | 'manpower' | 'cap' | 'leaders' | 'deployedAir' | 'readHour', number>>>) =>
   valuesOf(new Map(Object.entries(rows).flatMap(([id, values]) => Object.entries(values).map(([cell, value]) => [liveKey(id, cell), value] as const))),
     'Not recorded at this hour');
@@ -36,7 +35,6 @@ test('each exile at the hour is a row by its id with its host, its numbers live 
   assert.equal(nor.legitimacy, null, 'never zero');
   const tip = exileTooltip(nor, 100, { name: 'Norway' }, null);
   assert.deepEqual(tip.rows.find(row => row.label === 'Deployed air crews')?.value, 'Not recorded at this hour');
-  // The table sorts each numeric column by its cell; missing legitimacy sorts last either way.
   const table = exileTableValues(values);
   assert.equal(table.get(liveKey('7', 'air')), 100, 'the Air crews column reads the deployed air cell');
   assert.equal(sortRows(view.rows, row => table.get(liveKey(row.key, 'legitimacy')), 'descending', keyOf)[0].tag, 'POL');
@@ -62,7 +60,6 @@ test('malformed replies are refused rather than read as no exiles', () => {
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
-/** Humans holding `tags` every hour of 0..200, their group's history not recorded over `gap`. */
 const gapGroups = (tags: readonly string[], gap = { firstHour: 110, lastHour: 120 }): CountryGroupReply => ({ branchId: '1', warnings: [],
   humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })), factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),

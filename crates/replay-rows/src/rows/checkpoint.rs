@@ -1,4 +1,3 @@
-//! Separate prepared codecs for declared row fields.
 use super::*;
 
 pub trait Native: Sized {

@@ -1,13 +1,7 @@
 import './ChipSet.css';
 
-/** One chip. `unavailable` says why clicking it cannot act, pressed or not, such
- * as a name that cannot be saved or the last choice that must stay. */
 export interface Chip { value: string; label: string; icon?: string | null; colour?: string; unavailable?: string; hint?: string }
 
-/** Toggle chips for choosing several things, such as resources. Each chip is a
- * pressed or unpressed button; once `max` are chosen the others are disabled.
- * `full` overrides that count where chosen things are not all listed as chips. A
- * disabled chip always says why, so no click fails silently. */
 export function ChipSet({ label, chips, selected, max, full: atMax, onToggle }: {
   label: string; chips: readonly Chip[]; selected: readonly string[]; max: number; full?: boolean; onToggle: (value: string) => void;
 }) {

@@ -1,6 +1,3 @@
-//! One table read by a lane of its reader's own, outside the playhead: the lane stepped an hour at
-//! a time, and the rows of its selected columns kept key-sorted from each hour's change set (the
-//! engaged index's folds, the air roster history).
 
 pub mod rosters;
 
@@ -21,8 +18,6 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// A cell in the wire form a row's field codec reads, an opaque one at the row format `format` its
-/// pages were written in; a column not selected reads as its kind's empty value, which no fold reads.
 pub fn field<'a>(kind: Kind, value: Option<Value<'a>>, texts: &'a HashMap<u32, Box<[u8]>>, format: u16) -> Field<'a> {
     let Some(value) = value else {
         return match kind {
@@ -73,7 +68,6 @@ pub fn field<'a>(kind: Kind, value: Option<Value<'a>>, texts: &'a HashMap<u32, B
     }
 }
 
-/// One table's lane and the rows the folds read, key-sorted.
 pub trait Kept: Send {
     fn seek(&mut self, hour: Hour) -> io::Result<()>;
     fn step(&mut self, hour: Hour) -> io::Result<()>;
@@ -81,37 +75,27 @@ pub trait Kept: Send {
     fn reason(&self) -> &str;
     fn bytes(&self) -> (usize, playhead::lane::Held);
     fn rows(&self) -> &TableRows;
-    /// Whether the last hour stepped changed a row or the status.
     fn touched(&self) -> bool;
-    /// Hours stepped, and hours the block page let it skip.
     fn steps(&self) -> (u64, u64);
 }
 
 pub struct Table<T: TableSchema> {
     lane: Lane,
-    /// Every column's kind, and each column's place in the lane's selection.
     kinds: Vec<Kind>,
     selected: Vec<Option<usize>>,
-    /// The selected columns as a field mask.
     mask: u64,
-    /// Each opaque column's value in the type's default row, encoded: what a column not selected
-    /// holds in a row made new.
     empty: Vec<Option<Vec<u8>>>,
-    /// `T`'s rows, key-sorted.
     rows: TableRows,
     kind: std::marker::PhantomData<fn() -> T>,
     texts: HashMap<u32, Box<[u8]>>,
     changes: Changes,
     reason: String,
     touched: bool,
-    /// What the block page says of the lane: the run, the streams its rows change through, and
-    /// the block whose busy hours `busy` holds (a hour bit each).
     pages: Arc<dyn Pages>,
     run: usize,
     streams: Vec<u32>,
     block: Option<u32>,
     busy: Vec<u64>,
-    /// Hours stepped and hours the page let it skip.
     stepped: u64,
     skipped: u64,
 }
@@ -120,7 +104,6 @@ impl<T: TableSchema + 'static> Table<T>
 where
     T::Row: Send + Default,
 {
-    /// `reader` names who reads the table, in its refusals.
     pub fn open(pages: &Arc<dyn Pages>, run: usize, fields: Option<&[&str]>, reader: &str) -> io::Result<Self> {
         let table = T::ID;
         let kinds = pages.kinds(table.index()).ok_or_else(|| invalid(format!("{reader} reads {table:?}, which the recording's schema does not hold")))?.to_vec();
@@ -170,9 +153,6 @@ where
         })
     }
 
-    /// Whether run hour `at` may change the lane's rows or status: inside a part that holds its
-    /// lifetimes or a selected column, or where its status changes. A part's tracks would say the
-    /// very hours; the page says the part's span.
     fn busy(&mut self, at: u32) -> io::Result<bool> {
         let block = at / BLOCK;
         if self.block != Some(block) {
@@ -211,8 +191,6 @@ where
         T::borrow_mut(&mut self.rows).expect("a table's own rows")
     }
 
-    /// `slot`'s row: `held` with its selected fields read again when the key holds one, else a
-    /// row whose fields not selected are the type's defaults.
     fn row(&self, slot: u32, held: Option<&T::Row>) -> io::Result<Option<T::Row>> {
         let cells = self.lane.cells();
         let Some(key) = cells.key(slot).filter(|_| cells.live().get(slot)) else { return Ok(None) };
@@ -228,7 +206,6 @@ where
         T::Row::from_wire(key, &mut |index| {
             Ok(match (selected[index], &empty[index]) {
                 (Some(_), _) => read(index),
-                // This build encoded the type's empty value.
                 (None, Some(bytes)) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
                 (None, None) => field(kinds[index], None, texts, format),
             })

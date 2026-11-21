@@ -1,4 +1,3 @@
-//! Native pass hints allocate only off-thread; failed hints retain every floor.
 use engine_native::{Memory, cgame_state, read};
 use engine_production::construction_ic_sites;
 
@@ -13,7 +12,6 @@ pub(super) fn presize(memory: &impl Memory, base: usize) -> Result<(), &'static 
         }
         construction_ic_sites::events_per_pass(memory, base, state)
     })();
-    // Burst pressure can grow even with unchanged content, or a failed hint.
     super::presize(demand.as_ref().copied().unwrap_or(0));
     demand.map(|_| ())
 }

@@ -41,7 +41,6 @@ struct Request {
     pending: bool,
 }
 
-// Pinned buffers belong to the kernel until completion; a mutex serializes submission and retirement.
 unsafe impl Send for Request {}
 
 impl Request {
@@ -170,7 +169,6 @@ impl Owner {
 impl Drop for Owner {
     fn drop(&mut self) {
         self.state.stopping.store(true, Ordering::Release);
-        // IOCP completion status belongs to the worker until it dequeues each cancellation.
         for subscription in self.roots.values() {
             let request = subscription.request.lock().unwrap_or_else(|error| error.into_inner());
             if request.pending {

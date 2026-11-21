@@ -1,13 +1,3 @@
-//! Country flags from the recorded content stack, never launcher state or a tag catalog.
-//!
-//! Preparation chooses each country's flag: the file key each of the game's flag atlases
-//! resolves the country's candidates to in the recording's own layers ([`FlagFolders`]), which
-//! `country-facts` carries. This product draws those choices and reads no recording: through
-//! the source's visual mods, so a mod's restyled file of a chosen key is what is drawn. Files
-//! decode as the engine's `DecodeFlagTga` does, at the cell sizes the content's defines give.
-//! `Shield` draws the flag as the recorded top bar's `player_flag` button draws it, through its
-//! masked shield; `Panel` is app styling: the same draw with the overlay's edge shading evened
-//! out, for flags drawn inside the dashboard's panels.
 
 use super::{LoadContext, Product};
 use crate::{Source, catalogue::Catalogue, content, flag_choices::Chain, invalid};
@@ -32,26 +22,15 @@ pub struct CountryFlags;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum CountryFlagSize {
-    /// `gfx/flags`, 82x52.
     #[default]
     Full,
-    /// `gfx/flags/medium`, 41x26, as the game's lists draw flags.
     Medium,
-    /// `gfx/flags/small`, 10x7.
     Small,
-    /// The flag as the game's top bar draws it through its masked shield
-    /// (`GFX_shield_medium` in vanilla).
     Shield,
-    /// App styling, not a game rendering: the top bar's shield drawn with its
-    /// overlay's broad edge shading evened out to the overlay's centre, keeping
-    /// its texture, for flags drawn inside panels.
     Panel,
 }
 
 impl CountryFlagSize {
-    /// Flag sets drawn from in order; a medium flag a mod omits falls back to the
-    /// same country's large flag rather than to no flag. A shield's descriptor
-    /// chooses its set ([`ShieldStyle::sets`]).
     pub(crate) fn sets(self) -> &'static [FlagSet] {
         match self {
             Self::Full => &[FlagSet::Normal],
@@ -62,20 +41,16 @@ impl CountryFlagSize {
     }
 }
 
-/// What a country's flag is drawn from: the file key each of the game's flag atlases resolves
-/// its candidates to in the recorded mod stack. The atlases are the normal (`gfx/flags/`),
-/// medium and small ones, in that order.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFlagChoice {
-    /// Each atlas's key; null where no candidate gives it a file it draws.
+    #[doc = " Each atlas's key; null where no candidate gives it a file it draws."]
     pub keys: [Option<String>; 3],
-    /// Why each atlas has no key, or what was refused on the way to its key; null when nothing.
+    #[doc = " Why each atlas has no key, or what was refused on the way to its key; null when nothing."]
     pub reasons: [Option<String>; 3],
 }
 
-/// A flag set's place in a choice's keys ([`CountryFlagChoice::keys`]).
 fn atlas(set: FlagSet) -> usize {
     match set {
         FlagSet::Normal => 0,
@@ -84,23 +59,17 @@ fn atlas(set: FlagSet) -> usize {
     }
 }
 
-/// The top bar opens the topbar window from its authored declaration.
 const TOP_BAR: &str = "topbar";
-/// The flag button uses player_flag. Its sprite is content, read from the
-/// top bar's own declaration wherever it is.
 const PLAYER_FLAG: &str = "player_flag";
-/// Longest side of any flag the product returns.
 const MAX_FLAG_EDGE: u32 = 128;
-/// Choices one request draws at most.
 const MAX_FLAGS: usize = 32;
-/// Why an atlas draws nothing, when nothing more is known.
 const UNAVAILABLE: &str = "flag artwork unavailable in the recorded content";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFlagParams {
-    /// The choices to draw, as `country-facts` gives them.
+    #[doc = " The choices to draw, as `country-facts` gives them."]
     pub flags: Vec<CountryFlagChoice>,
     #[serde(default)]
     pub size: CountryFlagSize,
@@ -110,17 +79,17 @@ pub struct CountryFlagParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagImage {
-    /// The choice drawn: its index in the request's `flags`.
+    #[doc = " The choice drawn: its index in the request's `flags`."]
     pub flag: u32,
-    /// The flag file drawn, as the content names it.
+    #[doc = " The flag file drawn, as the content names it."]
     pub asset: String,
-    /// What the flag shows: its file and a digest of its pixels, so two flags share it only
-    /// when they show the same picture (the visual mods' file and the recording's of one path
-    /// are two).
+    #[doc = " What the flag shows: its file and a digest of its pixels, so two flags share it only"]
+    #[doc = " when they show the same picture (the visual mods' file and the recording's of one path"]
+    #[doc = " are two)."]
     pub key: String,
     pub width: u32,
     pub height: u32,
-    /// The flag as its artwork URL, at most 128 pixels on the longer side.
+    #[doc = " The flag as its artwork URL, at most 128 pixels on the longer side."]
     pub png: String,
 }
 
@@ -128,7 +97,7 @@ pub struct CountryFlagImage {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagUnavailable {
-    /// The choice: its index in the request's `flags`.
+    #[doc = " The choice: its index in the request's `flags`."]
     pub flag: u32,
     pub reason: String,
 }
@@ -165,7 +134,6 @@ impl Product for CountryFlags {
         if params.flags.is_empty() || params.flags.len() > MAX_FLAGS {
             return Err("Invalid country flag selection");
         }
-        // Keys come from the request: each must stay below its flag folder.
         if params
             .flags
             .iter()
@@ -185,7 +153,6 @@ impl Product for CountryFlags {
     ) -> io::Result<Self::Reply> {
         let content = context.content()?;
         let presentation = content.presentation.identity().clone();
-        // The binding's mount, resolved in its cancellable cell before any flag lock is taken.
         let presented = source.presented_for(content)?;
         let shared = source.state::<FlagState>();
         let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
@@ -196,10 +163,7 @@ impl Product for CountryFlags {
                 held
             }
             None => {
-                // Flags are drawn through the source's visual mods; preparation chose their keys
-                // in the recorded layers.
                 let resolved = Arc::clone(&presented.content);
-                // The cells and flag files are content facts, read again with new content.
                 let cells = state
                     .held()
                     .find(|cached| Arc::ptr_eq(&cached.content, &resolved))
@@ -210,7 +174,6 @@ impl Product for CountryFlags {
                             Arc::clone(&cached.files),
                         )
                     });
-                // Other requests use the kept contexts while this one reads the content.
                 drop(state);
                 let (cells, cell_fallbacks, files) = match cells {
                     Some(cells) => cells,
@@ -243,7 +206,6 @@ impl Product for CountryFlags {
         };
         context.cell_fallbacks.credit();
         let mut load_shield = || -> io::Result<Arc<ShieldStyle>> {
-            // The catalogue and the flag context are both of the request's admitted presentation.
             let catalogue = crate::catalogue::catalogue(source, content)?;
             cached_shield(&mut state.shield, &catalogue)
         };
@@ -252,7 +214,6 @@ impl Product for CountryFlags {
             CountryFlagSize::Shield | CountryFlagSize::Panel
         )
         .then(|| load_shield().map_err(|error| error.to_string()));
-        // Flag files are read and drawn outside the lock, so other requests run alongside.
         drop(state);
         context.reply(
             params,
@@ -264,8 +225,6 @@ impl Product for CountryFlags {
     }
 }
 
-/// The shield `catalogue` supplies, kept in `slot` by that catalogue's content and decode, so a
-/// shield is never served for a catalogue (a presentation) other than the one it came from.
 fn cached_shield(
     slot: &mut Option<CachedShield>,
     catalogue: &Catalogue,
@@ -297,16 +256,12 @@ fn cached_shield(
 
 #[derive(Default)]
 struct FlagState {
-    /// The context of the latest binding asked for; an earlier one lives only while a request
-    /// draws with it.
     current: Option<Arc<FlagContext>>,
     earlier: Vec<Weak<FlagContext>>,
-    /// The shield read from the catalogue it belongs to; another catalogue rereads it.
     shield: Option<CachedShield>,
 }
 
 impl FlagState {
-    /// The contexts held: the current one first.
     fn held(&self) -> impl Iterator<Item = Arc<FlagContext>> + '_ {
         self.current
             .iter()
@@ -331,26 +286,16 @@ impl FlagState {
     }
 }
 
-/// The shield as last loaded for (the catalogue's content, decode), a refusal included, so a
-/// refused shield is not decoded again on every request.
 type CachedShield = (
     Arc<ResolvedContent>,
     installed_content_image::native::Decode,
     crate::catalogue::Drawn<Result<Arc<ShieldStyle>, String>>,
 );
 
-/// The top bar's `player_flag` sprite as the content declares it (a `maskedShieldType`,
-/// `GFX_shield_medium` in vanilla), drawn as the game draws it: the visual mods' when they
-/// supply one that loads and draws, else the recording's own, named.
 pub(crate) struct ShieldStyle {
     shield: crate::catalogue::MaskedShield,
-    /// The shield as `Panel` draws it: its overlay evened once per content stack.
     panel: crate::catalogue::MaskedShield,
-    /// When the visual mods' shield cannot load or draw, the recording's layers and flag cells
-    /// it and the flags it frames are read from, as the recording draws them. `None` reads the
-    /// presentation of the flag context's content.
     recorded: Option<(installed_content_core::ResolvedLayers, [[u32; 2]; 3])>,
-    /// The flag files read from `recorded`, kept with this shield.
     recorded_files: Arc<FlagFiles>,
     decode: installed_content_image::native::Decode,
     pub(crate) warnings: Vec<String>,
@@ -368,9 +313,6 @@ impl ShieldStyle {
         let (shield, recorded) = if !layers.presentation().shows_visual_mods() {
             (Self::shown(catalogue, decode, &mut warnings)?, None)
         } else {
-            // One transaction, as `catalogue::present` draws: the visual mods' whole choice,
-            // strictly and with its notes kept to itself, then the recording's whole choice
-            // when any stage of theirs fails.
             let (shown, noted) = crate::catalogue::capture_isolated(|| {
                 installed_content_core::content::strict(|| Self::shown(catalogue, decode, &mut warnings))
             });
@@ -380,7 +322,6 @@ impl ShieldStyle {
                     (shield, None)
                 }
                 Err(error) => {
-                    // The recording's own top bar binding, its declaration, flag set and cells.
                     let recorded = layers.recorded_only();
                     warnings.clear();
                     let guis = installed_content_core::gui::native::read_layers(&recorded)?;
@@ -400,7 +341,6 @@ impl ShieldStyle {
                 }
             }
         };
-        // A shield without an overlay has no shading to even.
         let panel = match shield.overlay()? {
             Some(overlay) => shield.with_overlay(even_overlay(&overlay)),
             None => shield.clone(),
@@ -415,9 +355,6 @@ impl ShieldStyle {
         })
     }
 
-    /// The top bar's shield as `catalogue`'s presentation binds, declares and loads it. With
-    /// visual mods shown it is drawn once too: a shield that loads may still not draw (an effect
-    /// the mods break), and the recording's must replace it before any flag is chosen for it.
     fn shown(
         catalogue: &Catalogue,
         decode: installed_content_image::native::Decode,
@@ -445,8 +382,6 @@ impl ShieldStyle {
         Ok(shield)
     }
 
-    /// The layers and cells the flags this shield frames are read at, with the files kept for
-    /// them: the recording's when it is the recording's shield, else the flag context's own.
     fn flags_from<'a>(
         &'a self,
         layers: &'a installed_content_core::ResolvedLayers,
@@ -463,8 +398,6 @@ impl ShieldStyle {
         }
     }
 
-    /// The flag set the shield samples: the small set when its descriptor says
-    /// `small`, else the large set.
     pub(crate) fn sets(&self) -> &'static [FlagSet] {
         if self.shield.small() {
             &[FlagSet::Small]
@@ -473,9 +406,6 @@ impl ShieldStyle {
         }
     }
 
-    /// Each flag in the shield, `Panel`'s app styling when `panel`, drawn from the stack the
-    /// shield was loaded from: the presentation of `layers` or the recording. A recorded
-    /// shield names, on every reply it draws, that it stands in for the visual mods'.
     fn draw(
         &self,
         layers: &installed_content_core::ResolvedLayers,
@@ -491,34 +421,22 @@ impl ShieldStyle {
     }
 }
 
-/// Whether a recorded flag key names a file this reader can resolve inside a
-/// flag folder. The game's path joins the folder, key and `.tga` as text, so
-/// a cosmetic tag such as `variants/red` names `gfx/flags/variants/red.tga`.
-/// A key of any length is accepted when every `/`-separated part is non-empty,
-/// not `.` or `..`, and free of backslashes, NUL and drive colons: so it stays
-/// below the folder. Tags are otherwise opaque (spaces, lower case and other
-/// bytes are the country's own).
 fn safe_flag_key(key: &str) -> bool {
     key.split('/').all(|part| {
         !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', '\0', ':'])
     })
 }
 
-/// The flag the engine draws for one country from its candidate keys in order.
 #[derive(Debug)]
 pub(crate) enum FlagSearch {
     Found {
         asset: String,
         image: Arc<Rgba8Image>,
     },
-    /// A candidate this reader cannot resolve: the engine would have tried it
-    /// before the rest, so no later candidate may stand in for it.
     Unresolvable,
     Absent,
 }
 
-/// The normal, medium and small flag cells of the graphics defines `layers`' artwork reads
-/// (`Defines::graphics_for`): the visual mods' where they set them, else the recording's, named.
 pub(crate) fn flag_cells(layers: &installed_content_core::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
     let recorded = installed_content_core::defines::read(layers)?;
     let graphics = recorded.graphics_for(layers);
@@ -538,15 +456,12 @@ enum FlagFile {
     Image(Arc<Rgba8Image>),
 }
 
-/// The stack a flag file was read from: the presentation of the layers searched, or the
-/// recorded layers below its visual mods.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Stack {
     Shown,
     Recorded,
 }
 
-/// What a reply's searches have reported once, kept only with the search that reported it.
 #[derive(Clone, Default)]
 struct Reported {
     refused: BTreeSet<(Stack, usize, String)>,
@@ -554,16 +469,13 @@ struct Reported {
     unresolvable: BTreeSet<String>,
 }
 
-/// One decoding per file/set, shared across the country's key ladders.
 #[derive(Default)]
 pub(crate) struct FlagCache {
-    /// The files read: this search's own, or kept for every search of the same layers.
     files: Arc<FlagFiles>,
     reported: Reported,
 }
 
 impl FlagFiles {
-    /// Files that keep only whether each decodes, for searches that choose a flag and draw none.
     pub(crate) fn probing() -> Self {
         Self {
             probing: true,
@@ -572,7 +484,6 @@ impl FlagFiles {
     }
 }
 
-/// The image a probing search keeps of a file that decodes: none of its pixels.
 fn probed() -> Arc<Rgba8Image> {
     static PROBED: std::sync::OnceLock<Arc<Rgba8Image>> = std::sync::OnceLock::new();
     Arc::clone(PROBED.get_or_init(|| {
@@ -585,7 +496,6 @@ fn probed() -> Arc<Rgba8Image> {
 }
 
 impl FlagCache {
-    /// A search reading through `files`, which other searches of the same layers keep.
     pub(crate) fn over(files: Arc<FlagFiles>) -> Self {
         Self {
             files,
@@ -594,21 +504,15 @@ impl FlagCache {
     }
 }
 
-/// One stack of layers' flag files as read and decoded, each with the overlay refusals its
-/// read noted, which every later use credits again: the files cannot change while mounted.
 #[derive(Default)]
 pub(crate) struct FlagFiles {
-    /// Each file by the stack it was read from, its set, its path and the cell it is decoded at.
     files: Mutex<
         BTreeMap<
             (Stack, usize, String, [u32; 2]),
             (FlagFile, installed_content_core::content::diagnostics::Diagnostics),
         >,
     >,
-    /// It keeps whether each file decodes, never its pixels: a decoded file's image is empty.
     probing: bool,
-    /// The recorded layers below the visual mods, searched when the mods' search fails, and
-    /// the cells of the recording's own defines their files are decoded at.
     recorded: OnceLock<(
         (
             installed_content_core::ResolvedLayers,
@@ -618,9 +522,6 @@ pub(crate) struct FlagFiles {
     )>,
 }
 
-/// Each of `images` drawn by `draw`, which draws a batch in one pass: a batch it refuses whole
-/// (its readback past the device's limit, say) is drawn flag by flag, so a flag fails only as it
-/// fails alone. The refusal of a batch of no flags is given back whole.
 fn draw_each(
     images: &[&Rgba8Image],
     draw: impl Fn(&[&Rgba8Image]) -> io::Result<Vec<Rgba8Image>>,
@@ -640,7 +541,6 @@ fn draw_each(
     }
 }
 
-/// The file at `asset` of `layers` in set `set_index`, decoded at `cell`, once per `stack`.
 fn flag_file(
     files: &FlagFiles,
     stack: Stack,
@@ -670,7 +570,6 @@ fn flag_file(
     Ok(file)
 }
 
-/// `error`, met reading the flag file at `asset`, named by it.
 fn unreadable(asset: &str, error: io::Error) -> io::Error {
     io::Error::new(
         error.kind(),
@@ -682,19 +581,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// Searches `sets` in order, and in each the candidates in order: a missing
-/// file or one the game's decoder refuses falls through to the next candidate.
-/// A candidate [`safe_flag_key`] refuses stops the search, because falling
-/// past it would draw a flag the game does not.
-///
-/// Files are read from the presentation of `layers`. With visual mods shown the search is one
-/// transaction, as `catalogue::present` draws: the mods' search fails at a candidate whose file
-/// they supply but which does not decode, whose read fails, or which they hide or leave
-/// undecodable where the recording draws its own. Then the whole ladder is searched again in
-/// the recording, at the recording's own cells, so the recording's own choice is made again,
-/// and the failing file is named as the map names its own
-/// (`ResolvedLayers::note_overlay_refusal`) on every search that falls back. Only the chosen
-/// search's findings are returned.
 pub(crate) fn find_flag(
     layers: &installed_content_core::ResolvedLayers,
     sets: &[FlagSet],
@@ -732,8 +618,6 @@ pub(crate) fn find_flag(
         })
     });
     noted.credit();
-    // Without the recording's own cells nothing can be drawn from the recording: the mods'
-    // search stands as it is.
     let Ok(recorded_cells) = recorded_cells.as_ref() else {
         return plain(files, reported);
     };
@@ -774,15 +658,11 @@ pub(crate) fn find_flag(
     }
 }
 
-/// Where the visual mods' search of a ladder fails: the file they break or hide, and why.
 struct Broken {
     asset: String,
     why: String,
 }
 
-/// [`find_flag`]'s ladder over `layers`, its files read once per `stack`. Given `recorded` (the
-/// recorded layers and their cells) it is the visual mods' search, which fails at the first
-/// candidate they break or hide ([`Broken`]); otherwise it never fails that way.
 #[allow(clippy::too_many_arguments)]
 fn ladder(
     stack: Stack,
@@ -816,10 +696,6 @@ fn ladder(
             if let Some((recorded, recorded_cells)) = recorded
                 && !matches!(read, Ok(FlagFile::Image(_)))
             {
-                // A file the mods supply that does not decode, or a read that fails, is theirs
-                // to fail, as is one they hide or leave undecodable where the recording draws
-                // its own. A file missing or refused alike in both falls through, as the game's
-                // search does.
                 let breaks = match &read {
                     Ok(FlagFile::Refused(_)) if layers.supplied_by_visual_mod(&asset) => true,
                     Err(_) => true,
@@ -850,8 +726,6 @@ fn ladder(
                     if !reported.refused.insert((stack, set_index, asset.clone())) {
                         continue;
                     }
-                    // The game's decoder rejects these headers and skips the candidate.
-                    // This reader also refuses truncated reads.
                     let mut finding = Finding::new(
                         match reason {
                             installed_content_core::flags::DecodeFailure::EngineRefused => Kind::Content,
@@ -877,7 +751,6 @@ fn ladder(
                         && set == FlagSet::Normal
                         && reported.substitutions.insert(asset.clone())
                     {
-                        // Medium-to-normal substitution is not established: actionable.
                         let mut finding = Finding::new(
                             Kind::Fallback,
                             key,
@@ -893,7 +766,6 @@ fn ladder(
             }
         }
     }
-    // Product omission has no established game display behavior.
     findings.push(Finding::new(
         Kind::Fallback,
         candidates.first().cloned().unwrap_or_default(),
@@ -902,12 +774,10 @@ fn ladder(
     Ok(Ok((FlagSearch::Absent, findings)))
 }
 
-/// What a drawn flag shows ([`CountryFlagImage::key`]): its file and a digest of its pixels.
 pub(crate) fn flag_key(asset: &str, pixels: &[u8]) -> String {
     format!("{asset}#{}", blake3::hash(pixels).to_hex())
 }
 
-/// The extent `width` x `height` scaled so its longer side is at most `edge`.
 fn bounded(width: u32, height: u32, edge: u32) -> (u32, u32) {
     let scale = (width.max(height) as f64 / edge as f64).max(1.0);
     (
@@ -916,7 +786,6 @@ fn bounded(width: u32, height: u32, edge: u32) -> (u32, u32) {
     )
 }
 
-/// Point-samples `image` across a `width` x `height` grid.
 fn sample(image: &Rgba8Image, x: u32, y: u32, width: u32, height: u32) -> [u8; 4] {
     let at = (((y * image.height / height) * image.width + x * image.width / width) * 4) as usize;
     image.pixels[at..at + 4].try_into().unwrap()
@@ -936,17 +805,11 @@ fn resize(image: &Rgba8Image, width: u32, height: u32) -> Rgba8Image {
     }
 }
 
-/// The overlay's coverage averaged over a window a quarter of its shorter side:
-/// broad enough to follow the edge shading, narrow enough to leave the weave.
 const EVEN_WINDOW_DIVISOR: u32 = 4;
 
-/// `overlay` with its coverage scaled so every area matches the overlay's centre.
-/// The vignette that darkens a flag's edges goes; the fine texture keeps its
-/// proportions. Colours are unchanged.
 fn even_overlay(overlay: &Rgba8Image) -> Rgba8Image {
     let (width, height) = (overlay.width as usize, overlay.height as usize);
     let radius = (overlay.width.min(overlay.height) / EVEN_WINDOW_DIVISOR).max(1) as usize;
-    // Summed-area table of alpha, one row and column of zeros in front.
     let mut sums = vec![0_u64; (width + 1) * (height + 1)];
     for y in 0..height {
         for x in 0..width {
@@ -985,21 +848,14 @@ fn even_overlay(overlay: &Rgba8Image) -> Rgba8Image {
     }
 }
 
-/// The recording's own flag folders, which preparation chooses each country's flag in: the
-/// recorded mod stack's layers, never the visual mods, whose files only restyle a chosen key.
 pub struct FlagFolders {
     layers: installed_content_core::ResolvedLayers,
-    /// The normal, medium and small cells of the recording's defines.
     cells: [[u32; 2]; 3],
-    /// Whether each file the searches read decodes, read once for every chain.
     files: Arc<FlagFiles>,
-    /// Each chain's choice, made once by the first thread to claim it; none where the search
-    /// failed, so a caller searches again and meets its error.
     chosen: Mutex<HashMap<Chain, Arc<OnceLock<Option<CountryFlagChoice>>>>>,
 }
 
 impl FlagFolders {
-    /// The recorded layers of `content`, at the cells their defines give.
     pub fn read(content: &ResolvedContent) -> io::Result<Self> {
         let layers = content.layers.recorded_only();
         let cells = flag_cells(&layers)?;
@@ -1011,7 +867,6 @@ impl FlagFolders {
         })
     }
 
-    /// Folders of `layers` at `cells`, for tests building their own.
     #[cfg(test)]
     pub(crate) fn of(layers: installed_content_core::ResolvedLayers, cells: [[u32; 2]; 3]) -> Self {
         Self {
@@ -1022,7 +877,6 @@ impl FlagFolders {
         }
     }
 
-    /// `chain`'s place among the choices, and whether this call claimed it.
     fn slot(&self, chain: &Chain) -> io::Result<(Arc<OnceLock<Option<CountryFlagChoice>>>, bool)> {
         let mut chosen = lock(&self.chosen);
         if let Some(slot) = chosen.get(chain) {
@@ -1034,8 +888,6 @@ impl FlagFolders {
         Ok((slot, true))
     }
 
-    /// Makes `chain`'s choice ahead of [`Self::choose`] unless another thread already claimed
-    /// it: the workers make the choices their facts name, and the serial emit looks them up.
     pub fn warm(&self, chain: &Chain) -> io::Result<()> {
         let (slot, claimed) = self.slot(chain)?;
         if claimed {
@@ -1044,10 +896,6 @@ impl FlagFolders {
         Ok(())
     }
 
-    /// The key each atlas draws for `chain`: its first candidate whose file that atlas decodes,
-    /// as the game builds each atlas apart ([`find_flag`]), with what was refused on the way;
-    /// no key past a candidate this reader cannot resolve, and no key where `chain` names none.
-    /// A file that cannot be read fails it, named: no fact of the game, it refuses no hour.
     pub fn choose(&self, chain: &Chain) -> io::Result<CountryFlagChoice> {
         let (slot, _) = self.slot(chain)?;
         match slot.get_or_init(|| self.search(chain).ok()) {
@@ -1056,12 +904,10 @@ impl FlagFolders {
         }
     }
 
-    /// [`Self::choose`], searched anew.
     fn search(&self, chain: &Chain) -> io::Result<CountryFlagChoice> {
         let mut choice = CountryFlagChoice::default();
         for set in [FlagSet::Normal, FlagSet::Medium, FlagSet::Small] {
             let at = atlas(set);
-            // Each file is read once for every chain, keeping whether it decodes, never its pixels.
             let (found, findings) = find_flag(
                 &self.layers,
                 &[set],
@@ -1111,17 +957,10 @@ impl FlagFolders {
 
 pub struct FlagContext {
     options: ResolveOptions,
-    /// The visual mods `content` shows.
     presentation: crate::presentation::Presentation,
-    /// The recorded content with the source's visual mods mounted as its presentation, which
-    /// flag files are read from.
     content: Arc<ResolvedContent>,
-    /// The normal, medium and small cells from the content's defines.
     cells: [[u32; 2]; 3],
-    /// What reading `cells` drew from the recording instead of the visual mods' defines,
-    /// credited to every reply.
     cell_fallbacks: installed_content_core::content::diagnostics::Diagnostics,
-    /// The flag files read from `content`, kept by every context of it.
     files: Arc<FlagFiles>,
     warnings: Vec<String>,
 }
@@ -1185,7 +1024,6 @@ impl FlagContext {
             }
             None => None,
         };
-        // A recorded shield frames the recording's own flags, at its own cells.
         let (flag_layers, cells, files) = shield_style
             .map_or((&self.content.layers, &self.cells, &self.files), |style| {
                 style.flags_from(&self.content.layers, &self.cells, &self.files)
@@ -1194,13 +1032,11 @@ impl FlagContext {
             warnings.extend(style.warnings.iter().cloned());
         }
         let sets = shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets);
-        // Found flags, drawn together once every choice is read.
         let mut shielded = Vec::new();
         for (flag, choice) in (0_u32..).zip(&request.flags) {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Flag request cancelled"));
             }
-            // Each set's own key, the next set drawn only where one has none.
             let mut found = None;
             let mut reasons = Vec::new();
             for &set in sets {
@@ -1209,7 +1045,6 @@ impl FlagContext {
                     reasons.extend(choice.reasons[at].clone());
                     continue;
                 };
-                // Each choice's search reports what it found as it would drawn alone.
                 let (search, findings) = find_flag(
                     flag_layers,
                     &[set],
@@ -1218,7 +1053,6 @@ impl FlagContext {
                     &mut FlagCache::over(Arc::clone(files)),
                 )?;
                 for finding in findings {
-                    // Substitution and engine-skipped files stay corpus-only.
                     if finding.kind == crate::content_check::Kind::Refused {
                         warnings.push(format!("{key}: {}", finding.message));
                         reasons.push(finding.message);
@@ -1241,7 +1075,6 @@ impl FlagContext {
                 }),
             }
         }
-        // Each flag drawn, or why it could not be.
         let drawn: Vec<io::Result<Rgba8Image>> = match shield_style {
             Some(style) => {
                 let panel = request.size == CountryFlagSize::Panel;
@@ -1253,7 +1086,6 @@ impl FlagContext {
                     style.draw(&self.content.layers, batch, panel)
                 }) {
                     Ok(drawn) => drawn,
-                    // With no flag to draw, the shield's refusal is still the reply's to name.
                     Err(error) => {
                         warnings.push(format!("Shield artwork unavailable: {error}"));
                         Vec::new()
@@ -1308,7 +1140,6 @@ impl FlagContext {
 mod tests {
     use super::*;
 
-    /// A reply flag's straight-alpha RGBA, decoded from its PNG.
     fn decoded(image: &CountryFlagImage) -> Vec<u8> {
         let bytes = crate::artwork::url_bytes(&image.png).unwrap();
         let mut reader = png::Decoder::new(std::io::Cursor::new(&*bytes))
@@ -1320,7 +1151,6 @@ mod tests {
         pixels
     }
 
-    /// A context drawing from `content` at `cells`, standing warnings `warnings`.
     fn context(
         content: &Arc<ResolvedContent>,
         cells: [[u32; 2]; 3],
@@ -1341,7 +1171,6 @@ mod tests {
         }
     }
 
-    /// The choice of one key in every atlas.
     fn every(key: &str) -> CountryFlagChoice {
         CountryFlagChoice {
             keys: [0; 3].map(|_| Some(key.to_owned())),
@@ -1356,10 +1185,6 @@ mod tests {
         }
     }
 
-    /// Each atlas takes the first candidate whose file it decodes: a header the engine refuses
-    /// falls through silently; a file this reader refuses where the game would not is named with
-    /// the key found after it or as the reason none is. A medium draw falls back to the normal
-    /// atlas's own key, and draws carry the choice's reasons, never a search of their own.
     #[test]
     fn each_atlas_chooses_its_own_key_and_names_what_it_refused() {
         let image = vec![
@@ -1452,8 +1277,6 @@ mod tests {
         }
     }
 
-    /// A mod with no file for any candidate gives no atlas a key, each naming why: never another
-    /// country's flag or a guessed one. A chain whose operands are unknown names their refusal.
     #[test]
     fn a_mod_without_a_matching_flag_chooses_nothing_and_names_why() {
         let image = vec![
@@ -1487,7 +1310,6 @@ mod tests {
             choice.reasons,
             [0; 3].map(|_| Some("country 7 flag needs its Politics row".to_owned()))
         );
-        // A known cosmetic candidate supplies the flag though the tag tail is unknown.
         let tail = Chain {
             candidates: vec!["GER".into()],
             refusal: Some("original tag of country appearance capture refused".into()),
@@ -1500,8 +1322,6 @@ mod tests {
         );
     }
 
-    /// A choice's refusal is its own whatever else is drawn with it: two chains naming one
-    /// unreadable file, or one unresolvable name, each name it, alone or together.
     #[test]
     fn each_choices_refusal_is_its_own_whatever_else_is_drawn() {
         let mut truncated = vec![
@@ -1562,8 +1382,6 @@ mod tests {
         }
     }
 
-    /// A batch the renderer refuses whole is drawn flag by flag, in order, each flag failing
-    /// only as it fails alone; a single flag's refusal is its own and an empty batch's given back.
     #[test]
     fn a_refused_shield_batch_is_drawn_flag_by_flag() {
         let image = |value: u8| Rgba8Image {
@@ -1701,7 +1519,6 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
-        // An overlay with a dark edge around a lighter centre.
         let overlay = Rgba8Image {
             width: 8,
             height: 8,
@@ -1732,8 +1549,6 @@ mod tests {
             );
             let style = ShieldStyle::load(&catalogue).unwrap();
             assert_eq!(style.sets(), sets);
-            // The native shield keeps its authored overlay; Panel's app styling
-            // replaces only the overlay, with its evened copy.
             assert_eq!(style.shield.overlay().unwrap(), Some(overlay.clone()));
             assert_eq!(style.panel.overlay().unwrap(), Some(even_overlay(&overlay)));
         }
@@ -1745,7 +1560,6 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, shield_programs};
-        // A true-colour Targa of one colour, as the flag decoder reads it.
         let flag = |[width, height]: [u32; 2], rgb: [u8; 3]| {
             let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             bytes.extend((width as u16).to_le_bytes());
@@ -1756,7 +1570,6 @@ mod tests {
             }
             bytes
         };
-        // An opaque mask under an overlay that is clear but for a dark edge.
         let square = |pixel: &dyn Fn(u32, u32) -> [u8; 4]| Rgba8Image {
             width: 8,
             height: 8,
@@ -1794,7 +1607,6 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, bytes).unwrap();
         }
-        // Flags are covered content: the stack is resolved once they are written.
         let catalogue = crate::catalogue::tests::layers_catalogue(
             installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
         );
@@ -1815,20 +1627,16 @@ mod tests {
                 .reply(&request, Some(Ok(&style)), &AtomicBool::new(false))
                 .unwrap();
             assert!(reply.unavailable.is_empty(), "{:?}", reply.unavailable);
-            // `small = yes`: the small flag set's green, never the large blue.
             assert_eq!(reply.flags[0].asset, "gfx/flags/small/MOD.tga");
             assert_eq!([reply.flags[0].width, reply.flags[0].height], [8, 8]);
             assert_eq!(pixel(&reply, 4, 4), [0, 200, 0, 255]);
             drawn.push(pixel(&reply, 0, 4));
         }
-        // The native edge darkens under the overlay; Panel's app styling evens it away.
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
         assert!(near(drawn[0], [0, 43, 0, 255]), "{:?}", drawn[0]);
         assert!(near(drawn[1], [0, 200, 0, 255]), "{:?}", drawn[1]);
     }
 
-    /// #660's shield fixture as a recorded folder: a small-set shield whose opaque mask sits
-    /// under an overlay clear but for a dark edge, and the green small flag it frames.
     fn recorded_shield() -> (crate::catalogue::tests::Folder, [[u32; 2]; 3]) {
         use crate::catalogue::texture_tests::shield_programs;
         let programs = shield_programs();
@@ -1837,7 +1645,6 @@ mod tests {
             .map(|(path, text)| (*path, text.as_str()))
             .collect();
         files.extend([
-            // The cells the flags below are drawn at, as the recording's defines give them.
             (
                 "common/defines/00_flags.lua",
                 "NDefines = { NGraphics = { COUNTRY_FLAG_TEX_WIDTH = 4, COUNTRY_FLAG_TEX_HEIGHT = 2, COUNTRY_FLAG_TEX_MAX_SIZE = 8, COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 2, COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 2, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 8, COUNTRY_FLAG_SMALL_TEX_WIDTH = 2, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 8 } }",
@@ -1878,7 +1685,6 @@ mod tests {
         (folder, cells)
     }
 
-    /// An 8 by 8 PNG of `pixel`.
     fn shield_square(pixel: &dyn Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
         crate::catalogue::texture_tests::png_bytes(&Rgba8Image {
             width: 8,
@@ -1887,7 +1693,6 @@ mod tests {
         })
     }
 
-    /// A true-colour Targa of one colour, as the flag decoder reads it.
     fn shield_flag([width, height]: [u32; 2], rgb: [u8; 3]) -> Vec<u8> {
         let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         bytes.extend((width as u16).to_le_bytes());
@@ -1899,9 +1704,6 @@ mod tests {
         bytes
     }
 
-    /// The shield `MOD`'s flag is drawn in from `layers` (the recorded folder, with any visual
-    /// mod mounted over it), as the centre and edge pixels of its Shield reply, with what the
-    /// load and the reply named as drawn from the recording.
     fn shield_pixels(
         layers: installed_content_core::ResolvedLayers,
         cells: [[u32; 2]; 3],
@@ -1929,8 +1731,6 @@ mod tests {
         (centre, edge, fallbacks)
     }
 
-    /// `layers` with the folder mod at `mod_root` selected as a visual mod, installed through a
-    /// user folder under `user`.
     fn with_visual_mod(
         mut layers: installed_content_core::ResolvedLayers,
         user: &std::path::Path,
@@ -1967,10 +1767,6 @@ mod tests {
         layers
     }
 
-    /// The topbar shield follows the selected visual mods: their own shield draws, one whose
-    /// textures they do not supply is the recording's own declaration, and one that loads but
-    /// does not draw is the recording's drawn shield, each named; mods that leave the shield
-    /// alone, and no mods at all, draw the recording's shield exactly as before, naming nothing.
     #[test]
     fn the_shield_follows_the_selected_visual_mods_and_falls_back_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1979,7 +1775,6 @@ mod tests {
         let (recorded, cells) = recorded_shield();
         let base =
             || installed_content_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
-        // No visual mods: #660's draw, the dark edge shaded in, nothing named.
         let (centre, edge, fallbacks) = shield_pixels(base(), cells);
         assert_eq!(centre, [0, 200, 0, 255]);
         assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
@@ -2008,7 +1803,6 @@ mod tests {
                 .iter()
                 .any(|why| why.starts_with("shield player_flag ("))
         };
-        // The mod's own shield, an overlay without the dark edge: the edge stays green.
         let clear = shield_square(&|_, _| [0, 0, 0, 0]);
         let (centre, edge, fallbacks) = visual(
             "own",
@@ -2026,7 +1820,6 @@ mod tests {
         );
         assert_eq!((centre, edge), ([0, 200, 0, 255], [0, 200, 0, 255]));
         assert!(fallbacks.is_empty(), "{fallbacks:?}");
-        // A declaration whose mask the mod does not supply: the recording's own shield.
         let (centre, edge, fallbacks) = visual(
             "missing",
             &[(
@@ -2041,9 +1834,6 @@ mod tests {
         assert_eq!(centre, [0, 200, 0, 255]);
         assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
         assert!(fell_back(&fallbacks), "{fallbacks:?}");
-        // A mod that binds the top bar to a shield of its own name, which does not load: the
-        // recording's own binding and declaration, not the mod's name looked up in the
-        // recording.
         let (centre, edge, fallbacks) = visual(
             "renamed",
             &[
@@ -2067,8 +1857,6 @@ mod tests {
         assert_eq!(centre, [0, 200, 0, 255]);
         assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
         assert!(fell_back(&fallbacks), "{fallbacks:?}");
-        // A mod that restyles other artwork and leaves the shield alone: the stack resolves the
-        // recording's own shield, a plain draw with nothing named.
         let (centre, edge, fallbacks) = visual(
             "untouched",
             &[
@@ -2083,9 +1871,6 @@ mod tests {
         assert_eq!(centre, [0, 200, 0, 255]);
         assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
         assert!(fallbacks.is_empty(), "{fallbacks:?}");
-        // A shield that loads but whose effect does not draw, from the large flag set: the
-        // recording's drawn shield, framing the recording's own small-set flag (green, not the
-        // large set's blue) at its own cells.
         let (centre, edge, fallbacks) = visual(
             "undrawn",
             &[(
@@ -2104,8 +1889,6 @@ mod tests {
         assert!(fell_back(&fallbacks), "{fallbacks:?}");
     }
 
-    /// A kept shield is served only for the catalogue it came from: once the visual mods change,
-    /// the new presentation's catalogue loads its own, never the old one's.
     #[test]
     fn a_kept_shield_belongs_to_the_catalogue_it_came_from() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2158,8 +1941,6 @@ mod tests {
 
     #[test]
     fn panel_overlay_loses_its_edge_shading_and_keeps_its_texture() {
-        // A 16x16 overlay: alpha 150 within two pixels of the edge, otherwise a
-        // weave alternating 40 and 60 around a centre mean of 50.
         let mut pixels = Vec::new();
         for y in 0..16_u32 {
             for x in 0..16_u32 {
@@ -2213,7 +1994,6 @@ mod tests {
         let params: CountryFlagParams = serde_json::from_value(value).unwrap();
         assert_eq!(params.size, CountryFlagSize::Full);
         assert!(CountryFlags::validate(&params).is_ok());
-        // A key names a file below its flag folder, of any spelling the recording gave.
         let mut params = CountryFlagParams {
             flags: vec![every("variants/red"), every("mod country tag")],
             size: CountryFlagSize::Full,

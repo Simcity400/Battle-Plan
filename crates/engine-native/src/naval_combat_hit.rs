@@ -1,16 +1,12 @@
-//! Retained naval-hit entry: target slot/name, convoy flag, accumulated damage,
-//! denominator and final-hit flag. The denominator is distinct from a hit count.
 use crate::capture_text::Value;
 use crate::{Memory, cnaval_combatant::field};
 use engine_sites::Rva;
 
-/// Naval-hit entry primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_6f88);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
     pub target_slot: u32,
-    /// Stored MSVC string copied using its full length.
     pub target_name: crate::capture_text::Owned,
     pub convoy: u8,
     pub damage: i64,
@@ -23,9 +19,6 @@ impl Row {
     }
 }
 
-/// The hit's fields [`read`] reads (vtable, target slot, target name
-/// header, convoy, damage and denominator, last hit), one record per hit for
-/// a run of hits (`cfex_member::append_entries`).
 pub const RECORD: [crate::memory::RecordField; 5] = {
     use crate::memory::RecordField;
     [

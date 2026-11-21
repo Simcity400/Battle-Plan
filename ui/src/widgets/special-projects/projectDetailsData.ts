@@ -21,9 +21,7 @@ const facility = (value: unknown) => object(value) && (value.speedRaw === null |
     && reference(source.scientistReference) && raw(source.valueRaw));
 const reward = (value: unknown) => object(value) && label(value.label) && nullable(value.description) && nullable(value.unavailable) && Array.isArray(value.options)
   && value.options.every(option => object(option) && label(option.label));
-/** An unavailable roster is null: it is never read as an empty one. */
 const roster = (value: unknown): value is unknown[] | null => value === null || Array.isArray(value);
-/** A daily value's read is at or before the hour it is shown for. */
 const readBy = (value: unknown, hour: number) => integer(value) && value <= hour;
 
 export function validateProjectDetails(value: unknown): SpecialProjectDetails {
@@ -78,8 +76,6 @@ const read = (hour: number | null) => hour === null ? '' : ` · read ${dayLabel(
 
 export const scientistState = (scientist: ScientistDetails) => scientist.active === null ? 'State unavailable' : scientist.active === 0 ? 'Unassigned' : 'Assigned';
 
-/** The texts of the values the game refreshes daily, by the key of the element each is painted into: written each time
- * a reply lands, never by a render. */
 export function detailTexts(details: SpecialProjectDetails): Map<string, string> {
   const out = new Map<string, string>();
   for (const scientist of details.scientists ?? []) {
@@ -110,8 +106,6 @@ export function detailTexts(details: SpecialProjectDetails): Map<string, string>
   return out;
 }
 
-/** What the details show apart from the painted texts ([`detailTexts`]): a reply whose structure is unchanged renders
- * nothing. A facility source's or skill's value, a read date, a day count or a variable's value never renders. */
 export function detailsStructure(details: SpecialProjectDetails): string {
   const label = (v: ProjectLabel | null) => v && [v.token, v.name];
   const person = (v: ProjectPerson) => [v.assigned, v.id, v.name, v.portrait, v.missing];

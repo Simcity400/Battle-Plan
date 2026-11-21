@@ -43,7 +43,6 @@ fn height(name: &str, height: f32, fade_distance: f32) -> HeightVolume {
     }
 }
 
-/// `EuropeandRussia`'s box.
 fn volume() -> BoxVolume {
     BoxVolume {
         day: "green".into(),
@@ -90,9 +89,6 @@ fn extent(min: [i32; 2], size: [i32; 2], area: i32, land: bool) -> Option<Provin
     })
 }
 
-/// Every pass of the chain reads its own block of the kept constants by a dynamic offset, so a
-/// block must stand where any device can select it and hold its register whole: at the device's
-/// uniform offset alignment, with zeros wherever the pass reads past the bytes written.
 #[test]
 fn a_kept_block_stands_at_the_devices_offset_alignment_and_zeroes_what_follows_its_bytes() {
     for alignment in [1_u32, 16, 64, 256, 512] {
@@ -121,7 +117,6 @@ fn a_kept_block_stands_at_the_devices_offset_alignment_and_zeroes_what_follows_i
 fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     let schedule = ReductionSchedule::new([2048, 1152]);
     assert_eq!(schedule.seed, [1024, 576]);
-    // The bloom blurs at a quarter of the scene, the luminance from the half-size seed.
     assert_eq!(schedule.bloom, [512, 288]);
     assert_eq!(schedule.backing, [512, 288]);
     let viewports: Vec<_> = schedule.steps.iter().map(|step| step.viewport).collect();
@@ -139,7 +134,6 @@ fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
         ]
     );
     assert_eq!(schedule.gather, [4, 3]);
-    // 9 -> 5 samples row 9 of the fixed backing texture, not a clamped row 8.
     assert_eq!(schedule.steps[6].uv_scale[1], (10.0 / 9.0) * (9.0 / 288.0));
 
     let odd = ReductionSchedule::new([1023, 575]);
@@ -147,8 +141,6 @@ fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     assert_eq!(odd.bloom, [256, 144]);
     assert_eq!(ReductionSchedule::new([1920, 1080]).bloom, [480, 270]);
     assert!(odd.steps[0].uv_scale[0] > 1.0);
-    // Half-resolution world for a 2051x1155 output: native floors twice;
-    // restore still uses the full output viewport, not this chain's dimensions.
     let half = ReductionSchedule::new([1025, 577]);
     assert_eq!((half.seed, half.backing), ([512, 288], [256, 144]));
     let tiny = ReductionSchedule::new([12, 10]);
@@ -156,8 +148,6 @@ fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     assert_eq!(tiny.gather, [6, 5]);
 }
 
-/// A volume whose scale is not zero blurs: its pairs sum to that scale and sit between the texels
-/// they fold. A volume whose scale is zero (this recording's mod) has no weight to draw with.
 #[test]
 fn bloom_pairs_sum_to_the_scale_between_their_texels_and_a_zero_scale_has_no_blur() {
     let mut volumes = europe();
@@ -210,7 +200,6 @@ fn the_identity_cube_is_red_across_blue_slices_with_nearest_bytes() {
 
 #[test]
 fn the_night_factor_follows_the_eye_and_applies_strength_before_saturating() {
-    // 14:00 over Berlin is full day; the 03:00 hour twelve later is night.
     let eye = [3010.0, 310.178, 1538.0];
     let defines = PostDefines::default();
     assert_eq!(
@@ -226,8 +215,6 @@ fn the_night_factor_follows_the_eye_and_applies_strength_before_saturating() {
         ),
         1.0
     );
-    // At the equator at full night the narrow feather exceeds one even at
-    // half strength; saturating first would give 0.5.
     let equator = [2793.0, 300.0, 2048.0 * (0.5 - 0.17) / (0.93 - 0.17)];
     let half = DayNight {
         hour_fraction: 0.0,
@@ -248,7 +235,6 @@ fn the_night_factor_follows_the_eye_and_applies_strength_before_saturating() {
 
 #[test]
 fn a_box_fades_in_from_its_faces() {
-    // The reference eye is 188 inside the z face at 1350, past the 125 fade.
     assert_eq!(box_fade([3010.0, 310.178, 1538.0], &volume()), 1.0);
     assert_eq!(box_fade([4000.0, 310.0, 1538.0], &volume()), 0.0);
     let edge = box_fade([3010.0, 310.0, 1400.0], &volume());
@@ -258,7 +244,6 @@ fn a_box_fades_in_from_its_faces() {
 #[test]
 fn province_extents_count_pixels_in_the_bottom_up_raster_with_even_edges() {
     use ProvinceKind::{Land, Sea};
-    // Top-down rows: [1 1 2] above [2 1 3], so native row 0 is [2 1 3].
     let map = map(
         3,
         &[1, 1, 2, 2, 1, 3],
@@ -281,10 +266,8 @@ fn province_extents_count_pixels_in_the_bottom_up_raster_with_even_edges() {
 fn a_region_is_represented_by_its_last_eligible_province_and_weighted_by_whole_area() {
     let mut extents = vec![None; 12];
     extents[5] = extent([12, 12], [2, 2], 4, true);
-    // Mostly outside the volume, but its whole area still counts.
     extents[6] = extent([15, 15], [15, 15], 100, true);
     extents[7] = extent([12, 12], [2, 2], 50, false);
-    // Touching the x = 20 face is not an overlap.
     extents[8] = extent([20, 12], [2, 2], 50, true);
     extents[9] = extent([40, 40], [2, 2], 50, true);
     extents[10] = extent([12, 12], [0, 0], 0, true);
@@ -330,8 +313,6 @@ fn the_factor_bands_each_representative_then_the_weighted_sum() {
         ),
         None
     );
-    // 10250 is a quarter up the 0.1..0.2 band; 0.025 at weight 0.8 is 0.02,
-    // which is 0.4 of the 0..0.05 total band.
     let factor = map_snow::winter::snow_factor(
         &records,
         &[Some(0), Some(10_250), Some(-5)],
@@ -359,8 +340,6 @@ fn the_factor_bands_each_representative_then_the_weighted_sum() {
 #[test]
 fn a_volume_records_regions_against_world_z_rows() {
     use ProvinceKind::Land;
-    // Province 3 occupies only native row 0, but its even-aligned box
-    // reaches row 2, so it overlaps the volume and represents the region.
     let map = map(3, &[1, 1, 2, 2, 1, 3], &[(1, Land), (2, Land), (3, Land)]);
     let mut volume = volume();
     volume.position = [2.5, 0.0, 1.5];
@@ -441,10 +420,8 @@ fn the_first_box_around_the_eye_wins_and_unknown_snow_keeps_the_height_grade() {
     assert_eq!(unknown.values, resolved(0, 0.2));
     volumes.snow[0] = Some(1.0);
     assert_eq!(volumes.select(reference, day).values.middle_grey, 0.8);
-    // No snow takes the summer path: the box's own day values (0.4).
     volumes.snow[0] = Some(0.0);
     assert_eq!(volumes.select(reference, day).values.middle_grey, 0.4);
-    // The look-at is inside, but the eye 30 units south is outside.
     let south = volumes.select(camera([3010.0, 1370.0], 290.0), day);
     assert_eq!(south.selection.region, None);
 }
@@ -456,12 +433,10 @@ fn lut_blends_skip_endpoints_and_store_each_native_draw() {
     assert_eq!(program.blend(a, b, 1.0), b);
     assert_eq!(program.blend(a, b, 0.0), a);
     assert_eq!(program.len, 0);
-    // Day/night and snow are one double-blend draw.
     let winter = program.compose([a, b, c, d], 0.25, 0.5);
     assert_eq!(program.len, 1);
     assert_eq!(program.operations[0].factors, [0.25, 0.5]);
     assert!(program.operations[0].double);
-    // The box edge blends that stored result again.
     let result = program.blend(a, winter, 0.75);
     assert_eq!(program.operations[1].sources[2], LutSource::Intermediate(0));
     assert!(!program.operations[1].double);

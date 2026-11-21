@@ -1,4 +1,3 @@
-//! Declared-log page contracts and reads shared by concrete products.
 use dashboard_query::{Query, log::{self, FacetFilter}, series::{MissingSpan, PAGE_LIMIT, hour_of}};
 use replay_columnar::manifest::Status;
 use serde::{Deserialize, Serialize};
@@ -22,27 +21,23 @@ pub struct LogPageParams {
     pub log: String,
     #[serde(default)]
     pub facets: Vec<FacetFilter>,
-    /// The timeline's first hour when none.
+    #[doc = " The timeline's first hour when none."]
     pub from: Option<f64>,
     pub to: f64,
-    /// The ordinal the page starts at, counted from the timeline's first hour.
+    #[doc = " The ordinal the page starts at, counted from the timeline's first hour."]
     pub cursor: Option<String>,
     pub page_size: u32,
-    /// The columns a row carries, by name; every column when none. A followed page pushes these.
+    #[doc = " The columns a row carries, by name; every column when none. A followed page pushes these."]
     pub columns: Option<Vec<String>>,
 }
 
-/// A logged cell.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LogCell {
-    /// A number, as a decimal string.
     Number { value: String },
     Text { value: String },
-    /// A list cell's bytes, base64.
     List { bytes: String },
-    /// An optional number without a value.
     Missing,
     NotRecorded,
 }
@@ -52,19 +47,19 @@ pub enum LogCell {
 #[serde(rename_all = "camelCase")]
 pub struct LogPageRow {
     pub hour: i32,
-    /// The row's key, as a decimal string.
+    #[doc = " The row's key, as a decimal string."]
     pub key: String,
-    /// Its ordinal among the asked rows from the timeline's first hour.
+    #[doc = " Its ordinal among the asked rows from the timeline's first hour."]
     pub ordinal: String,
-    /// The country whose filter it matched, when a facet is filtered by countries.
+    #[doc = " The country whose filter it matched, when a facet is filtered by countries."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub country: Option<dashboard_query::identity::Country>,
-    /// Its ordinal among its country's rows from the timeline's first hour, with a country.
+    #[doc = " Its ordinal among its country's rows from the timeline's first hour, with a country."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub own_ordinal: Option<String>,
-    /// By the reply's `columns`.
+    #[doc = " By the reply's `columns`."]
     pub cells: Vec<LogCell>,
 }
 
@@ -79,14 +74,13 @@ pub struct LogPageReply {
     pub total: String,
     pub cursor: Option<String>,
     pub rows: Vec<LogPageRow>,
-    /// Hours of the range the timeline does not hold, with why.
+    #[doc = " Hours of the range the timeline does not hold, with why."]
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
 
 crate::reply_warnings!(LogPageReply);
 
-/// The hours of `from..=to` the timeline does not hold, with why.
 fn unheld(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
     query
         .timeline
@@ -97,8 +91,6 @@ fn unheld(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
         .collect()
 }
 
-/// The hours of `from..=to` the timeline holds where `log`'s table was not recorded whole, each
-/// with the recording's reason: a log not read or not derived there is missing, never no rows.
 fn unread(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32) -> io::Result<Vec<MissingSpan>> {
     let recording = query.replay.recording();
     let mut out: Vec<MissingSpan> = Vec::new();
@@ -122,8 +114,6 @@ fn unread(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32) -
     Ok(out)
 }
 
-/// What `from..=to` of `log` does not hold, in hour order: the hours no run holds and the hours its
-/// table was not recorded whole.
 pub fn missing(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32) -> io::Result<Vec<MissingSpan>> {
     let mut out = unheld(query, from, to);
     out.extend(unread(query, log, from, to)?);
@@ -131,7 +121,6 @@ pub fn missing(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i
     Ok(out)
 }
 
-/// A page of `params.log`'s rows, each mapped by `map` (a product's own row shape).
 pub fn page<R>(query: &Query<'_>, params: &LogPageParams, mut map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R) -> io::Result<(log::Page, Vec<R>, Vec<MissingSpan>)> {
     let log = declared(&params.log)?;
     let reader = log::Reader::new(query, log)?;

@@ -1,0 +1,11 @@
+# 0103. Certify each character role and operative input independently
+
+Character role capture uses the roster job's census when available. The census provides the live and retired occurrences in order, so the role job can proceed if the roster is no longer readable after that census. Without a census the role job must walk the roster. A refused walk, failed job, or forgotten store invalidates the held table. A load, gap, recovery, or change to a census identity such as its country also forces the affected inputs to be read again.
+
+The capture can republish a retained CharacterRoleTraits table without taking it apart while its census and writer witnesses still match. A notified role writer ends the quiet period. If the writer cannot identify the character it changed, all role certificates are invalidated. Scientist roles have a separate writer token. A scientist-role or trait write forces the next capture to reread the scientist rows, while subsequent quiet hours carry them without reading the scientist objects. This reuse depends on observing every relevant writer. The fixture deliberately makes an unobserved write to prove that a quiet witness cannot detect it on its own.
+
+Operative links use a separate unit-leader witness. An unobserved domain cannot certify a link. A valid witness permits reuse of the resolved name, codename and assigned traits. If the read refused a name, the link is retried the next time without needing a mutation notice. The resolved operative type determines the name group layout independently of the stored category operand. Regression `722e92182e` covers this distinction.
+
+The role-store test compares retained and fresh frames at 13,200 characters. Run its `role_traits_hour_costs_at_late_war_scale` benchmark in a release test build with `--ignored --nocapture`.
+
+[Role-store tests](../../crates/collector/src/extended/character_inputs/role_store_tests.rs) · [Operative fixtures](../../crates/collector/src/extended/character_inputs_scale_tests.rs)

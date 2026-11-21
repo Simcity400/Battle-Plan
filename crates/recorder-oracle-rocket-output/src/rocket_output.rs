@@ -1,5 +1,3 @@
-//! Retained rocket output has no historical spending/delivery serializer.
-//! Check the recorded event counters and independent signed totals along a branch.
 use super::{Report, complete, daily_read, invalid};
 use replay::campaign::Replay;
 use replay_data::{rows::RocketProductionOutputRow, rows::RowCodec, rows::TableId, rows::tables};
@@ -39,22 +37,16 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
     Ok(())
 }
 
-/// Branch continuity of the recorded rocket output, from its daily reads.
 #[derive(Default)]
 struct Continuity {
     previous: BTreeMap<(u32, u64), RocketProductionOutputRow>,
-    /// The hour of the frame `previous` was read at.
     read: Option<i32>,
-    /// The branch's recorded event losses, as the reads each lies between.
     event_losses: Vec<(i32, i32)>,
     compared: usize,
 }
 
 impl Continuity {
     fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
-        // A recorded event loss since the previous read restarted the
-        // writer observation: the counts start again after it, as they do
-        // at the branch's start, and never cross it.
         if self.read.is_some_and(|read| {
             self.event_losses
                 .iter()
@@ -192,9 +184,6 @@ mod tests {
         assert!(check_rows(&mut previous, &[world, scope]).is_err());
     }
 
-    /// Output restarted after a recorded event loss starts its continuity
-    /// again there, even when the restart is first read later; the same
-    /// restart without a recorded loss stays a failure.
     #[test]
     fn a_recorded_event_loss_restarts_rocket_continuity_and_nothing_else_does() {
         let rows = |since_hour: i32, ticks: u64| {
@@ -241,8 +230,6 @@ mod tests {
         assert_eq!(run(vec![(100, 101)]).unwrap(), 6);
     }
 
-    /// A full refresh off the production slot marks the rocket output it read, which is
-    /// checked there; an hour that read only another table of the slot is not.
     #[test]
     fn a_refresh_off_the_slot_is_checked_where_the_rocket_output_is_marked_read() {
         use replay::spool::Record;

@@ -34,9 +34,6 @@ import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
-/** Every recorded faction over time: a band per faction whose thickness follows its member count, and a lane per member
- * from join to leave, the leader's stretch marked. Factions founded and dissolved partway through are included; names,
- * members and leaders come from the recording. The history comes from one `country-groups` request. */
 export default function FactionsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';
@@ -57,7 +54,6 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const data = groups.data;
   const { colours, names } = factionColours;
-  // Names resolve locally by hour; campaign colours follow the complete history.
   const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? tokens.muted) : [], [data, names, colours, tokens.muted]);
   const axisOffset = track?.axisOffset ?? 0;
   const changes = useMemo(() => data ? factionChangeHours(data, views) : [], [data, views]);
@@ -69,17 +65,14 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour), [widget.countries, dashboardTag, data, at, lastHour]);
   const [inView, setInView] = useState<[number, number]>([0, 24]);
-  // The faction opened from the timeline; a new source or branch closes it.
   const [drill, setDrill] = useState<string | null>(null);
   useEffect(() => { setDrill(null); }, [track?.source.id, track?.branch.id]);
-  // Flags follow the visible lanes; name sorting also reads every compared lane.
   const [named, setNamed] = useState<string[]>([]);
   const [sortNames, setSortNames] = useState<string[]>([]);
   const identityHistories = useMemo(() => new Map(data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [data]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
   const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames, segmentAt, undefined,
     { clock, on: followsClock, hour: (clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null });
-  // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const hover = useHoverLabels(runtime.client, track, active, country);
   const branchFirstHour = track?.branch.firstHour ?? 0;
   const unobserved = data?.unobserved.factions;
@@ -116,13 +109,11 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   if (!data.factions.length) return <>{failure}<WidgetState kind="empty" message={data.warnings.length ? 'Faction data unavailable.' : 'No factions recorded.'} /></>;
   if (!lanes.length) return <>{failure}<WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} /></>;
 
-  // The legend names each visible faction; leader details belong to the timeline.
   const shownFactions = new Set(lanes.filter(lane => !lane.depth).map(lane => info.get(lane.id)!.faction.id));
   const legend = views.filter(view => shownFactions.has(view.id)).map(view => {
     const name = factionLabel(view, at);
     return {
       id: view.id, label: name, color: view.color,
-      // For every campaign by default, or this one only (the widget's setting).
       onColor: (hex: string) => { factionColours.setColour(view.id, hex, options.colourScope as ColourScope); },
     };
   });
@@ -138,7 +129,6 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     if (!about.member) {
       const leader = leaderAt(view.leaders, hour);
       const count = membersAt(view, hour);
-      // Founded and dissolved as the faction's lifetime says: joined across unrecorded hours.
       const life = stretchAt(view.lifetime, hour);
       const start = life?.firstHour;
       const state = runState(life ? [life] : [], at, gaps);
@@ -149,7 +139,6 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
         ...(state.kind === 'ended' ? [{ label: 'Dissolved', value: state.lastSeen == null ? day(state.at) : `by ${day(state.at)}` }]
           : state.kind === 'unknown' ? [{ label: 'Last recorded', value: day(state.lastSeen) }] : []),
       ];
-      // Who belonged at the hour, the leader first.
       const belonged = count == null ? [] : membersHeld(view, hour);
       hover.ask(hour, leader && !belonged.includes(leader) ? [leader, ...belonged] : belonged);
       const members = belonged
@@ -165,9 +154,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     const label = tag === null ? { name: 'Unknown country', flagReason: 'Country unavailable at this time.' } : named(tag);
     const run = member.runs.find(item => item.firstHour <= hour && hour <= item.lastHour);
     const led = run ? leadershipParts(run, view.leaders).find(part => part.firstHour <= hour && hour <= part.lastHour)?.leader ?? false : false;
-    // An hour whose roster is not known says so, not that the country was out.
     const unknownThen = roster.some(span => span.firstHour <= hour && hour <= span.lastHour);
-    // Joined and left as its membership says, joined across unrecorded hours and changes of tag.
     const stretch = stretchAt(member.stretches, hour);
     if (!stretch) return null;
     const state = runState([stretch], at, roster);
@@ -181,14 +168,13 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     ];
     return { title: label.name, countryFlag: label, subtitle: `Member · ${day(hour)}`, rows };
   };
-  // What the timeline shows at the moment shown, for keyboard and screen-reader users.
   const description = `${dayLabel(at)}: ${lanes.filter(lane => !lane.depth).map(lane => {
     const about = info.get(lane.id)!;
     return `${factionLabel(about.faction, at)}, ${lane.label}`;
   }).join('. ')}.`;
   return <div className="factions-widget">
     {failure}
-    {/* Shown for one faction too: its swatch is where its colour is changed. */}
+    { }
     {options.legend === true && <Legend label="Factions" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} liveHead={liveHead}
       labelHour={liveHead ? undefined : at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}

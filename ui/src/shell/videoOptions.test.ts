@@ -4,7 +4,6 @@ import { sameDisplay } from './videoOptions.ts';
 
 test('the maps display alike whatever their diagnostics switch, so Revert stays hidden at the game settings', () => {
   const game = { useGameSettings: true, uiScale: 100, vsync: true, mapUiScale: null, mapFrameLimit: null };
-  // Saved settings carry the diagnostics switch; the game's own settings never do.
   const saved = { ...game, mapDiagnostics: true };
   assert.equal(sameDisplay(saved, game), true);
   for (const changed of [{ ...saved, uiScale: 125 }, { ...saved, vsync: false }, { ...saved, mapUiScale: 90 }, { ...saved, mapFrameLimit: 60 }, { ...saved, useGameSettings: false }])

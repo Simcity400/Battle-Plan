@@ -1,4 +1,3 @@
-//! Native events are transient; saves cannot certify their action or actor roles.
 use super::Report;
 use replay::campaign::Replay;
 use replay_data::{
@@ -81,7 +80,6 @@ fn report_coverage(row: &EventFeedHistoryRow, hour: i32, save_hour: i32, report:
         "native event interval coverage is incomplete; the save retains no event history and cannot certify the unobserved interval",
         subject.clone(),
     );
-    // Its own group: retained-state refusals at the same hour stay listed beside it.
     if hour == save_hour {
         report.incomplete("EventFeedHistory interval", subject);
     }

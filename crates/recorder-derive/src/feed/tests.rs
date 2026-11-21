@@ -35,13 +35,11 @@ fn occurrence(generation: u64, sequence: u64, hour: i32, source: Source, actor: 
     }
 }
 
-/// `event` naming the decision token `dec_a`, the arena's first five bytes.
 fn decision(mut event: EventFeedEvent) -> EventFeedEvent {
     event.script = Some(EventFeedScript { token_len: 5, ..EventFeedScript::default() });
     event
 }
 
-/// `event` of native event (3, 44), instance 5.
 fn dispatched(mut event: EventFeedEvent, option: Option<i32>) -> EventFeedEvent {
     event.script = Some(EventFeedScript { native_event: Some(EventFeedEventIdentity { kind: 3, id: 44 }), instance: Some(5), option, ..EventFeedScript::default() });
     event
@@ -63,7 +61,6 @@ fn pack(generation: u64, read_hour: i32, coverage: EventFeedCoverage, events: Ve
     }
 }
 
-/// The feed's read at each hour of the story the tests tell, in generation 9 then 10.
 fn read_at(hour: i32) -> EventFeedHistoryRow {
     let complete = EventFeedCoverage::Complete;
     let (ger, pol, alias) = (country(1), country(2), EventFeedCountry { reference: 1, id: 99, instance: 0 });
@@ -98,9 +95,6 @@ fn guarantee(owner: u32, target: u32, ordinal: u16, first: u32, second: u32, sta
     RelationTupleRow { owner_country: owner, target_country: target, type_id: GUARANTEE, ordinal, first_country: first, second_country: second, start_hour: start, ..RelationTupleRow::default() }
 }
 
-/// The world at `hour`: GER (1) at slot 10 and POL (2) at 20, reference 7 an alias of slot 10; POL
-/// owns no state from hour 3; GER guarantees POL from before the run, POL guarantees GER from hour
-/// 2, listed again under GER's slice at hour 3.
 fn world(store: &mut Store, hour: i32) {
     if hour == 0 {
         for (id, slot, tag) in [(1, 10, b"GER"), (2, 20, b"POL")] {
@@ -134,7 +128,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, setup: impl FnOnce(&
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// FeedEvents' rows as the store holds them, by key.
 fn feed(store: &Store) -> Vec<FeedEventRow> {
     let view = store.view(TableId::FeedEvents.index());
     let format = FormatVersion::CURRENT.version();
@@ -146,7 +139,6 @@ fn feed(store: &Store) -> Vec<FeedEventRow> {
     rows
 }
 
-/// Each row's kind, generation, sequence, actor slot and opener.
 fn brief(rows: &[FeedEventRow]) -> Vec<(u8, u64, u64, Recorded<u32>, Option<u64>)> {
     rows.iter().map(|row| (row.kind, row.generation, row.sequence, row.actor_slot, row.opener)).collect()
 }
@@ -225,7 +217,6 @@ fn a_rows_operands_are_typed_and_what_was_not_recorded_stays_so() {
 
 const TABLES: [TableId; 4] = [TableId::FeedEvents, TableId::FeedOpenEvents, TableId::FeedOpenDecisions, TableId::FeedGuarantees];
 
-/// Every table of the writer, each hour of the story.
 fn story_tables() -> Vec<Vec<Vec<(u128, Vec<String>)>>> {
     let (mut store, mut writers) = (testing::store(), writers());
     (0..=5)
@@ -239,7 +230,6 @@ fn story_tables() -> Vec<Vec<Vec<(u128, Vec<String>)>>> {
 #[test]
 fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
     let expected = story_tables();
-    // Stopped after hour 0 a dispatch is open, after 1 a selection, after 2 a guarantee is seen.
     for stop in 0..=4 {
         let (mut stopped, mut before) = (testing::store(), writers());
         for hour in 0..=stop {
@@ -285,11 +275,6 @@ fn the_open_tables_hold_open_cards_only_and_a_guarantee_is_held_once() {
     );
 }
 
-/// A guarantee is held while RelationTuples rows hold it, counted: moved to another ordinal,
-/// listed under the other country's slice too, cancelled or listed again uncancelled it is held and
-/// written to the feed once; one of its rows going leaves it held by the other, the last going
-/// lets it go, and so does the whole read after a read not complete. A guarantee first read
-/// cancelled is held unwritten and written at the read listing it uncancelled, dated at its start.
 #[test]
 fn a_guarantee_is_held_while_a_relation_row_holds_it_and_written_once() {
     let held = |owner: u32, ordinal: u16, start: i32, cancel: u8| RelationTupleRow { cancel, ..guarantee(owner, 3 - owner, ordinal, 2, 1, start) };

@@ -1,6 +1,5 @@
 import type { TooltipContent } from '../tooltip';
 
-/** A still hover reuses its content until its hit or tooltip inputs change. */
 export class FlowTooltipCache<Hit> {
   private id: string | null = null;
   private callback: ((hit: Hit) => TooltipContent | null) | undefined;

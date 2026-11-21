@@ -47,8 +47,6 @@ fn flow_runs_preserve_native_group_parity_and_index_order() {
     );
 }
 
-/// A bitmap from rows of characters: `.` land, `S` source, `j`/`J` junction 1 and 2, digits and
-/// `a`/`b` the body indices 0 to 11.
 fn image(rows: &[&str]) -> (u32, u32, Vec<u8>) {
     let height = rows.len() as u32;
     let width = rows[0].len() as u32;
@@ -88,9 +86,7 @@ fn a_straight_river_walks_from_its_source_to_its_last_body_pixel() {
     assert_eq!(trace.unreachable, 0);
     let river = &trace.rivers[0];
     assert_eq!(river.seed, Seed::Source);
-    // The source pixel plus five body pixels, carrying each body pixel's own index.
     assert_eq!(river.widths, [0, 3, 3, 4, 4, 5]);
-    // World z is `height - 1 - row`, so row 1 of three is z 1.
     assert_eq!(river.points[0], [1.0, 1.0]);
     assert_eq!(river.points[5], [6.0, 1.0]);
 }
@@ -107,14 +103,11 @@ fn a_two_pixel_river_is_reported_too_small_and_dropped() {
             points: 2
         }]
     );
-    // The body pixel was walked even though the river was dropped, so it is not unreachable.
     assert_eq!(trace.unreachable, 0);
 }
 
 #[test]
 fn a_junction_marker_stitches_its_tributary_onto_the_stream_it_joins() {
-    // A stream running east with a tributary reaching it from the north. The tributary has no
-    // source of its own, so only the junction marker can reach it.
     let rows = [
         "..........",
         "...4......",
@@ -127,18 +120,12 @@ fn a_junction_marker_stitches_its_tributary_onto_the_stream_it_joins() {
     assert_eq!(trace.junctions_used, 1);
     assert_eq!(trace.rivers.len(), 2);
     assert_eq!(trace.unreachable, 0);
-    // The junction walk runs after every source, and it starts on the stream it joins rather
-    // than on the marker, so the tributary's ribbon reaches the water it flows into.
     let joined = &trace.rivers[1];
     assert_eq!(joined.seed, Seed::Junction(1));
     assert_eq!(joined.seed_pixel, [3, 2]);
-    // World z is `height - 1 - row`: the stream pixel under the marker, then the marker, then north.
     assert_eq!(joined.points, [[3.0, 1.0], [3.0, 2.0], [3.0, 3.0]]);
-    // The stitch point and the marker both carry the stream's own index, so the ribbon is full
-    // width where the two meet instead of pinching to the marker's index 1.
     assert_eq!(joined.widths, [3, 3, 4]);
 
-    // Without the marker nothing reaches that tributary, and the engine draws nothing there.
     let unmarked = traced(&[rows[0], rows[1], "..........", rows[3], rows[4]]);
     assert_eq!(unmarked.rivers.len(), 1);
     assert_eq!(unmarked.unreachable, 1);
@@ -146,18 +133,15 @@ fn a_junction_marker_stitches_its_tributary_onto_the_stream_it_joins() {
 
 #[test]
 fn a_loop_is_reported_circular_and_stops_the_walk() {
-    // A stem into a ring: the walk goes round the ring and meets its own first ring pixel.
     let trace = traced(&["........", ".S33333.", "....3.3.", "....333.", "........"]);
     assert_eq!(trace.rivers.len(), 1);
     assert_eq!(trace.circular.len(), 1);
-    // Every body pixel of the ring is walked exactly once before the walk closes on itself.
     assert_eq!(trace.unreachable, 0);
     assert_eq!(trace.rivers[0].points.len(), 11);
 }
 
 #[test]
 fn body_pixels_no_walk_reaches_are_counted() {
-    // A river with no source and no junction marker: the engine never traces it.
     let trace = traced(&[".....", ".333.", "....."]);
     assert_eq!(trace.rivers, []);
     assert_eq!(trace.unreachable, 3);
@@ -165,13 +149,10 @@ fn body_pixels_no_walk_reaches_are_counted() {
 
 #[test]
 fn the_walk_is_four_connected_and_clamps_at_the_seam() {
-    // A diagonal step is not a step: the walk stops at the first body pixel.
     let diagonal = traced(&["......", ".S3...", "...3..", "......"]);
     assert_eq!(diagonal.rivers, []);
     assert_eq!(diagonal.too_small.len(), 1);
     assert_eq!(diagonal.unreachable, 1);
-    // The world does not wrap here, so a river touching the left edge does not continue on the
-    // right one.
     let seam = traced(&["......", "33S..3", "......"]);
     assert_eq!(seam.rivers.len(), 1);
     assert_eq!(seam.rivers[0].points.len(), 3);
@@ -191,7 +172,6 @@ fn the_body_range_is_the_engines_and_not_the_shipped_palette() {
 
 #[test]
 fn palette_indices_determine_ribbon_widths() {
-    // Ribbon width depends on palette index independently of colour and bank falloff.
     for (index, expected) in [
         (3u8, 1.11_f32),
         (4, 1.28),
@@ -207,10 +187,8 @@ fn palette_indices_determine_ribbon_widths() {
             width_for_index(index)
         );
     }
-    // Source and junction markers remain narrower than body classes.
     assert!(width_for_index(0) < width_for_index(3));
     assert!(width_for_index(11) > width_for_index(10));
-    // Every index the engine accepts has a positive, finite width.
     for index in 0..=BODY_MAX_INDEX {
         assert!(width_for_index(index) > 0.0 && width_for_index(index).is_finite());
     }
@@ -256,7 +234,6 @@ fn junctions_taper_and_fade_at_the_far_end_only() {
     );
     assert_eq!(mesh.vertices[0].position[3], 1.0);
     assert_eq!(mesh.vertices[120].position[3], 0.0);
-    // Both terminal pairs collapse; the last repeats the penultimate offset and tangent.
     for i in [118, 120] {
         assert_eq!(mesh.vertices[i].position, mesh.vertices[i + 1].position);
     }
@@ -300,7 +277,6 @@ fn flat(width: u32, height: u32) -> Vec<u8> {
 
 #[test]
 fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
-    // Long enough that the middle is past `RIVER_FADE_FROM` at both ends.
     let mut row = String::from(".S");
     row.push_str(&"6".repeat(60));
     row.push('.');
@@ -326,12 +302,10 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
     let (fine, coarse) = mesh.vertices.split_at(points * 2);
     assert_eq!(mesh.indices.len(), (points - 1) * 6);
 
-    // The two rails of one point share a position along the flow and differ across it.
     let (left, right) = (fine[40], fine[41]);
     assert_eq!(left.uv_tangent[0], 0.0);
     assert_eq!(right.uv_tangent[0], 1.0);
     assert_eq!(left.uv_tangent[1], right.uv_tangent[1]);
-    // The river runs east, so the tangent is +x and the rails straddle it in z.
     assert!((left.uv_tangent[2] - 1.0).abs() < 1e-4);
     assert!(left.uv_tangent[3].abs() < 1e-4);
     let across = (left.position[2] - right.position[2]).abs();
@@ -339,21 +313,15 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
         (across - width_for_index(6)).abs() < 1e-3,
         "ribbon is {across} wide"
     );
-    // The along-flow coordinate is the point index, independent of arc length.
     let step = fine[42].uv_tangent[1] - left.uv_tangent[1];
     assert_eq!(step, 1.0);
     assert_eq!(left.uv_tangent[1], 20.0);
 
-    // A source fades at its first end; its final pair and middle are opaque.
     assert_eq!(fine[0].position[3], 0.0);
     assert_eq!(fine.last().unwrap().position[3], 1.0);
     assert_eq!(fine[points].position[3], 1.0);
-    // Byte 120 is sampled as height 12.0, without a sea-level clamp.
     assert_eq!(fine[0].position[1], 12.0);
 
-    // The coarse level keeps the ends and the knees of the taper and fade, in its own vertices
-    // after the fine ones. On a straight river each kept point is the fine vertex pair of its
-    // point index, and the fine rails and fade stand within the tolerances of the coarse ribbon.
     assert!(coarse.len() * 4 < fine.len(), "{} of {}", coarse.len(), fine.len());
     assert_eq!(mesh.coarse_indices.len(), (coarse.len() / 2 - 1) * 6);
     assert!(mesh.coarse_indices.iter().all(|&index| index as usize >= fine.len()));
@@ -379,8 +347,6 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
     }
 }
 
-/// The most a ribbon's coarse rails stand off its fine ones: at a kept point, the coarse vertex
-/// off the fine vertex, and at a dropped point, the fine vertex off the coarse rail beside it.
 fn coarse_rail_error(fine: &[RiverVertex], coarse: &[RiverVertex]) -> f32 {
     let xz = |vertex: &RiverVertex| [vertex.position[0], vertex.position[2]];
     let kept: Vec<usize> = coarse.iter().step_by(2).map(|vertex| vertex.uv_tangent[1] as usize).collect();
@@ -400,8 +366,6 @@ fn coarse_rail_error(fine: &[RiverVertex], coarse: &[RiverVertex]) -> f32 {
     worst
 }
 
-/// A wide river's banks swing by several units round a bend its centre makes by one: the coarse
-/// level keeps points there until both banks stand within the tolerance of the fine ones.
 #[test]
 fn a_wide_river_keeps_its_banks_within_the_tolerance_round_a_small_sharp_bend() {
     let mut points: Vec<[f32; 2]> = (0..400).map(|x| [x as f32, 8.0]).collect();
@@ -431,8 +395,6 @@ fn a_wide_river_keeps_its_banks_within_the_tolerance_round_a_small_sharp_bend() 
     assert!(coarse.len() * 10 < fine.len(), "{} of {}", coarse.len(), fine.len());
 }
 
-/// A point kept for the banks splits a span: the fade of every point it still drops is measured
-/// against the new span, so a bend inside the source's fade keeps the fade within its tolerance too.
 #[test]
 fn a_bend_in_the_fade_keeps_the_fade_within_its_tolerance_as_well_as_the_banks() {
     for (bend, lift, width) in (1..40).flat_map(|bend| [0.6_f32, 1.0, 2.0, 3.5].into_iter().flat_map(move |lift| [24_u8, 60, 99].map(|width| (bend, lift, width)))) {
@@ -460,7 +422,6 @@ fn a_bend_in_the_fade_keeps_the_fade_within_its_tolerance_as_well_as_the_banks()
         let (fine, coarse) = mesh.vertices.split_at(120);
         assert!(coarse_rail_error(fine, coarse) <= super::super::line_lod::TOLERANCE + 1e-4, "bend at {bend}, lift {lift}, width {width}");
         let kept: Vec<usize> = coarse.iter().step_by(2).map(|vertex| vertex.uv_tangent[1] as usize).collect();
-        // The fade is drawn along each rail: measured at each fine rail vertex's place on the coarse rail.
         let xz = |vertex: &RiverVertex| [vertex.position[0], vertex.position[2]];
         for (at, segment) in kept.windows(2).enumerate() {
             let (a, b) = (segment[0], segment[1]);

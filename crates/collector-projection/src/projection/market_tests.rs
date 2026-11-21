@@ -1,4 +1,3 @@
-//! Certified state snapshots at encoding keyframes, without native acquisition.
 use super::*;
 use replay_data::rows::{
     CountryMarketRow, LendLeaseAgreementRow, MarketContractRuntime, MarketContractTermsRow,
@@ -184,8 +183,6 @@ fn all_market_state_tables_cross_periodic_keyframes_and_keep_the_next_sparse_upd
             let mut decoder = FrameDecoder::for_tables(&[table]);
             let scratch = ProjectionScratch::default();
             let keyframe_hour = KEYFRAME_INTERVAL as i32;
-            // Establish committed rows at the immediately preceding hour while
-            // keeping the original encoding keyframe at hour zero.
             for hour in [0, keyframe_hour - 1] {
                 let rows = state(table, 0, &pool);
                 let frame = encoder

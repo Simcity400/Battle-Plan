@@ -1,4 +1,3 @@
-//! Current status-pointer inputs, never a historical subject-date join.
 use crate::rows::{RelationLinkRow, TransportSubjectAccess, ZeroSubjectInputs};
 type Fact<T> = Result<T, String>;
 
@@ -51,8 +50,6 @@ pub fn current(
     Ok(Some(packet))
 }
 
-/// Raw equality first, then alias equality only for two nonzero references.
-/// Null or wrong type does not demand target or endpoint words.
 pub fn matches(
     subject: &ZeroSubjectInputs,
     target: Fact<u32>,

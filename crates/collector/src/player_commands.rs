@@ -156,7 +156,6 @@ struct Live {
     name_demand: AtomicUsize,
 }
 
-// The callback's exclusive, nonwaiting admission owns producer; lanes publish immutable records.
 unsafe impl Sync for Live {}
 unsafe impl Send for Live {}
 
@@ -388,7 +387,6 @@ impl Live {
         self.failed.fetch_add(1, Ordering::Release);
     }
 
-    /// Observations lost since attach and why the first was.
     fn status(&self) -> impl serde::Serialize + use<> {
         crate::status::status!({
             "lost": self.failed.load(Ordering::Acquire),
@@ -402,7 +400,6 @@ impl Live {
         Ok(())
     }
 
-    /// Slots for twice `players`; seen players carry over.
     fn grow_players(&self, producer: &mut Producer, players: usize) -> Result<(), &'static str> {
         let slots = players
             .checked_mul(2)
@@ -732,7 +729,6 @@ impl Live {
             _ if producer.active => producer.session,
             _ => return Ok(()),
         };
-        // Accepted commands are live before the first hourly snapshot, including while paused.
         self.mode(memory, producer, world, session, time, order)?;
         let command = match site {
             1 => Some(
@@ -1186,7 +1182,6 @@ impl Drain {
                 batch: Batch::default(),
             });
         }
-        // Without an emitted world no packet claims coverage; status still names the refusal.
         for group in groups.values_mut() {
             group.context = self.contexts.get(&group.world).copied();
             if let Some(Some(window)) = self.windows.get_mut(&group.world) {
@@ -1204,7 +1199,6 @@ impl Drain {
                 }
             }
         }
-        // Charge refusals once to the latest world while invalidating every possibly affected span.
         if let Some(mut latest) = groups.last_entry() {
             latest.get_mut().lost = lost;
             self.last_world = *latest.key();
@@ -2150,7 +2144,6 @@ pub(crate) mod tests {
         assert!(groups[0].batch.spans.iter().all(|span| span.complete));
         assert_eq!(live.events().rejected(), 0);
         assert_eq!(live.failed.load(Ordering::Acquire), 0);
-        // The drained lane is replaced by one sized for the burst.
         assert!(live.events().len() > burst as usize);
     }
 
@@ -2199,7 +2192,6 @@ pub(crate) mod tests {
         };
         set_roster(&mut memory, count as u32);
         attempt_mode(&live, &memory, 1, 100, 1).unwrap();
-        // Fewer slots, narrower spans and a smaller player table than the roster needs.
         assert!(live.metadata().len() < count && live.metadata().stride() < 16);
         let producer = unsafe { &mut *live.producer.get() };
         assert!(producer.players.len() < 2 * count);
@@ -2260,7 +2252,6 @@ pub(crate) mod tests {
             }
             let mut memory = Fixture::new();
             attempt_mode(&live, &memory, 1, 100, 1).unwrap();
-            // More players leave than the event lane was prepared for.
             let players = 4 * live.events().len() as u64;
             {
                 let producer = unsafe { &mut *live.producer.get() };

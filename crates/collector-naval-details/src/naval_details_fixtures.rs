@@ -1,4 +1,3 @@
-//! Independently authored memory fixtures for naval capture and status tests.
 
 use engine_native::{Memory, cgame_state, memory::SliceMemory};
 
@@ -26,23 +25,15 @@ pub const TREE_CHILDREN: usize = 200;
 pub const CHILD_ENTRIES: usize = 8;
 pub const ROOT_ENTRIES: usize = 300;
 pub const SHIPS_PER_COMBAT: usize = 30;
-/// The lexer witness, the doctrine key generators' and dictionary's pointers
-/// and a marker, served at their module globals once
-/// [`Fixture::with_doctrines`] wrote them.
 const LEXER: usize = 0xe_8000;
 const LEXER_MARK: u32 = 0x1e8e;
-/// Entries of each doctrine node's modifier in [`Fixture::with_doctrines`].
 const DOCTRINE_ENTRIES: usize = 4;
-/// Entries of a ship's, a medal store's and a task force's weapon-context
-/// accumulator in [`Fixture::live_sized`].
 pub const LIVE_ENTRIES: [usize; 3] = [30, 8, 10];
 pub const SHIP_TABLE: usize = 0x8_0000;
 pub const SHIP_BUCKETS: usize = 0x8_1000;
 pub const SHIP_MASK: usize = 16383;
 pub const WING: usize = 0xf_0000;
 pub const WING_HANDLE: u64 = (1_u64 << 32) | 52;
-// Strategic-region template identity for the shared main/branch fixture.
-// Its custom-modifier vector is read by the capture.
 pub const TEMPLATE_VTABLE_RVA: usize = 0x02a5_5348;
 
 #[derive(Clone, Copy)]
@@ -298,8 +289,6 @@ impl Fixture {
             this.u32(region + 0x58, 0);
             this.u64(terrain_link, (IMAGE + TEMPLATE_VTABLE_RVA) as u64);
             this.u64(terrain_link + 0x130, TERRAIN as u64);
-            // Side damage matrix, baseline and one map node per side
-            // are read by the actual CNavalCombatant details path.
             for (number, side) in [left, right].into_iter().enumerate() {
                 this.u64(
                     side,
@@ -435,8 +424,6 @@ impl Fixture {
         );
         this
     }
-    /// Mutations are outside the measured callback. These write values in
-    /// place: neither counts nor pointers certify that the inputs are quiet.
     pub fn advance(&mut self, combats: usize, hour: Hour, pass: u64) {
         let countries = match hour {
             Hour::Quiet => return,
@@ -492,9 +479,6 @@ impl Fixture {
             }
         }
     }
-    /// [`Self::new`] with weapon-context accumulators of about a late-war save's size: each
-    /// country's ([`ROOT_ENTRIES`] in either fixture) and, here only, each ship's own, each medal
-    /// store's and each task force's ([`LIVE_ENTRIES`]); the base fixture leaves those empty.
     pub fn live_sized(combats: usize) -> Self {
         let mut this = Self::new(combats);
         for slot in 0..COUNTRY_COUNT {
@@ -511,10 +495,6 @@ impl Fixture {
         this
     }
 
-    /// This fixture with a doctrine tree of `nodes` nodes on every task force
-    /// (keys 1 to `nodes`, each node's modifier [`DOCTRINE_ENTRIES`] entries,
-    /// shared as content is) and the lexer the doctrine key selection reads:
-    /// an empty modifier-key dictionary, so every node selects no country key.
     pub fn with_doctrines(mut self, nodes: usize) -> Self {
         assert!(nodes > 0);
         let tokens = self.allocate((nodes + 1) * 32);
@@ -571,16 +551,10 @@ impl Fixture {
         self
     }
 
-    /// This fixture with every task force at the first combat's province
-    /// (needs a combat), every country's diplomacy matrix (no relation held)
-    /// and the weather manager's province records, so each ship's weapon
-    /// context reads its task force's location terms.
     pub fn with_locations(mut self) -> Self {
         let province = BODIES + 0xb00;
         let provinces = self.allocate(2 * 0x330);
         self.array(WEATHER + 0x370, provinces, 2);
-        // The selected terrain's name and an empty class hash (one bucket),
-        // so every class takes the terrain's default records.
         self.inline(TERRAIN + 0x18, b"ocean");
         let buckets = self.allocate(12);
         self.u64(TERRAIN + 0x1b8, buckets as u64);
@@ -608,9 +582,6 @@ impl Fixture {
         self
     }
 
-    /// This fixture with no member's ship registered: every member is read
-    /// without a live ship (no ship fields, no weapon context), to split a
-    /// member's cost.
     pub fn without_live_ships(mut self, combats: usize) -> Self {
         for index in 0..combats {
             for ordinal in 0..SHIPS_PER_COMBAT {
@@ -624,7 +595,6 @@ impl Fixture {
         self
     }
 
-    /// An accumulator at `at` of `count` entries, keys ascending from `key`.
     fn entries(&mut self, at: usize, count: usize, key: u32) {
         let data = self.allocate(count * 16);
         self.array(at, data, count);
@@ -762,9 +732,6 @@ impl Memory for Fixture {
     }
 }
 
-/// Independently authored broad four-level modifier trees on the combat's
-/// accumulators, carrier fighters and bombers, and early-combat and escaping
-/// ships: the live shape of a busy naval hour.
 pub fn live_shape() -> LiveShape {
     let mut memory = Fixture::new(3);
     let keys = TREE_KEYS;
@@ -784,8 +751,6 @@ pub fn live_shape() -> LiveShape {
         })
         .collect();
     let mut next_id = 1_u64;
-    // Full carrier -> air base -> country container -> pool -> wing links,
-    // so the production efficiency reader actually reaches the fighter flag.
     for combat in 0..3 {
         for carrier in 0..4 {
             let body = BODIES + combat * STRIDE;
@@ -891,8 +856,6 @@ pub fn live_shape() -> LiveShape {
     for combat in 0..3 {
         memory.put(BODIES + combat * STRIDE + 0x200 + 0xb8, &[0]);
     }
-    // The middle combat is past initial duration; the last adds submarine
-    // and convoy escape sources without removing its four carrier planes.
     memory.u32(BODIES + STRIDE + engine_native::cland_combat::DURATION, 13);
     memory.u64(
         BODIES + 2 * STRIDE + 0xc000 + 2 * 0xa00 + engine_native::cship::FORMATION_FLAGS,
@@ -945,8 +908,6 @@ pub fn live_shape() -> LiveShape {
     LiveShape(memory)
 }
 
-/// The modifier keys the fixture's trees carry: sortie efficiencies, the
-/// escape and positioning keys and screening.
 const TREE_KEYS: [u32; 9] = [0x24, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x1b2, 0x1b3, 0x1b6];
 
 pub struct LiveShape(pub Fixture);

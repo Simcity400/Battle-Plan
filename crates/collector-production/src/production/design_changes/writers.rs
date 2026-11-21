@@ -1,7 +1,3 @@
-//! Prepared receiver claims outlive originals and their terminal snapshots.
-//! The claim mutex is never held while calling native code or taking STORE.
-//! Callback acquisition may wait for this prepared metadata: the only
-//! nested order is STORE then WRITERS, never the reverse or across an original.
 use super::*;
 
 static WRITERS: OnceLock<Mutex<State>> = OnceLock::new();
@@ -43,8 +39,6 @@ fn prepare_with(population: usize, before_growth: impl FnOnce()) -> Result<(), &
     let required = population.max(state.required);
     let replacement = if state.claims.capacity() < required {
         drop(state);
-        // Callbacks may enter throughout allocation. Revalidate their live
-        // flights and capacity high-water before replacing prepared storage.
         before_growth();
         let mut claims = HashMap::new();
         engine_allocation::reserve_map(&mut claims, required)
@@ -64,7 +58,6 @@ fn prepare_with(population: usize, before_growth: impl FnOnce()) -> Result<(), &
     } else {
         None
     };
-    // Only a quiescent complete census may discard receiver claims.
     state.ancestry = 0;
     state.lifetime = 0;
     let replaced = replacement.map(|claims| std::mem::replace(&mut state.claims, claims));
@@ -79,8 +72,6 @@ pub(super) fn release() {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = State::default();
     }
 }
-/// A full claim table grows in the callback; only a failed allocation leaves
-/// the writer unobserved.
 fn room(state: &mut State, additional: usize) -> bool {
     state.required = state
         .required
@@ -102,9 +93,6 @@ fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -
         claim.dependency_conflicted |= claim.thread != thread;
         claim.conflicted
     });
-    // Roster/create commands have no single known receiver. Ancestry readers
-    // additionally exclude foreign consuming moves/destruction: even an
-    // intermediate ancestor's lifetime can change the game's version owner.
     if pointer == 0
         || (footprint == Footprint::Ancestry && state.lifetime != 0)
         || (footprint == Footprint::Lifetime && state.ancestry != 0)
@@ -132,9 +120,6 @@ fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -
         dependency_conflicted: false,
     });
     if footprint == Footprint::Identity {
-        // Ordinary content conflicts repair that receiver, not a child's
-        // immutable parent identity. Only a lifetime/global conflict poisons
-        // this witness. A same-thread move may snapshot its own parent.
         claim.dependency_conflicted |=
             conflicted || (claim.lifetime != 0 && claim.thread != thread);
         claim.identities += 1;
@@ -163,9 +148,6 @@ fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -
     admitted
 }
 pub(super) struct Flight {
-    // A mutation names one receiver and, for move/derived refresh, one other
-    // consumed receiver or version owner. These are the writer's operands,
-    // not a population or thread limit.
     pointers: [Option<(usize, Footprint)>; 2],
     thread: u32,
     admitted: bool,
@@ -180,8 +162,6 @@ pub(super) fn enter(pointer: usize, other: Option<usize>, footprint: Footprint) 
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let other = other.filter(|other| *other != pointer);
-    // Prepared headroom normally covers both operands without probing either
-    // receiver twice. Near capacity, count only genuinely new claims.
     if state.required > state.claims.capacity()
         || state.claims.capacity() - state.claims.len() < 1 + usize::from(other.is_some())
     {
@@ -232,9 +212,6 @@ impl Flight {
             self.admitted = false;
         }
     }
-    /// Conflict inspection and release are one cut. Otherwise a foreign
-    /// writer could enter after inspection but before release, when a saved
-    /// destruction's binding is already gone and looks like an excluded draft.
     pub(super) fn finish_with_dependency(mut self) -> (bool, bool) {
         self.close()
     }
@@ -251,8 +228,6 @@ impl Flight {
         let mut conflicted = false;
         let mut dependency = false;
         for (pointer, footprint) in pointers.into_iter().flatten() {
-            // Entry may prepare insertion space for a missing key. Even this
-            // invalid-flight path must not grow a full callback table.
             if state.claims.len() == state.claims.capacity() && !state.claims.contains_key(&pointer)
             {
                 conflicted = true;
@@ -281,8 +256,6 @@ impl Flight {
             claim.ancestry -= usize::from(footprint == Footprint::Ancestry);
             claim.lifetime -= usize::from(footprint == Footprint::Lifetime);
             let remove = claim.count == 0;
-            // Retire through this lookup, rather than hashing the same receiver
-            // again on every completed outermost writer.
             if remove {
                 entry.remove();
             }
@@ -343,8 +316,6 @@ mod tests {
             });
             pause.wait();
             ACTIVE.fetch_add(1, Ordering::SeqCst);
-            // The worker is paused at population-sized growth. A callback
-            // must enter without that worker releasing any further lock.
             let flight = collector_test_support::with_allocations_denied(|| {
                 enter(1, None, Footprint::Design).unwrap()
             });
@@ -375,8 +346,6 @@ mod tests {
                 flights.push(flight);
             }
             for pointer in 1..=population {
-                // Identity witnesses share a receiver with its same-thread
-                // ordinary writer, without another receiver-map allocation.
                 let witness = enter(pointer, None, Footprint::Identity).unwrap();
                 assert!(witness.admitted());
                 assert!(!witness.finish_with_dependency().0);
@@ -411,8 +380,6 @@ mod tests {
             for flight in flights.drain(..) {
                 assert!(!flight.finish_with_dependency().0);
             }
-            // Once an overflow has raised demand, spare slots cannot reopen
-            // admission before the existing quiescent preparation succeeds.
             assert!(enter(1, None, Footprint::Design).is_none());
         });
         prepare(capacity + 1).unwrap();

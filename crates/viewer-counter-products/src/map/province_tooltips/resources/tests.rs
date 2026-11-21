@@ -6,7 +6,6 @@ use viewer_foundation::{
     resource_origins::fixture::{self, AFG, GER, MIXED, ORPHAN},
 };
 
-/// Synthetic texts for every key the hover writes.
 fn texts() -> Localisation {
     loaded(concat!(
         "l_english:\n",
@@ -34,7 +33,6 @@ fn hover(frame: &DecodedFrame, state: u32) -> Vec<Line> {
     .unwrap()
 }
 
-/// The text the localisation makes of `key` with `args`: what a line must hold.
 fn text(key: &str, args: &[(&str, Arg<'_>)]) -> Result<String, String> {
     Ok(texts().localise_with(key.as_bytes(), args).unwrap())
 }
@@ -51,9 +49,6 @@ fn each_resource_writes_its_delivery_buildings_route_damage_and_refused_explanat
     assert_eq!(
         lines,
         [
-            // Oil: AFG's origin, at its full amount; the refinery's grant; AFG's route is not
-            // recorded; AFG's local resources factor's explanation is refused although its
-            // recorded total is zero; two damaged levels; temporary oil.
             (
                 "resource produced",
                 text(
@@ -82,8 +77,6 @@ fn each_resource_writes_its_delivery_buildings_route_damage_and_refused_explanat
             ("resource modifiers", Err(MODIFIERS_UNRECORDED.to_owned())),
             ("infrastructure damage", damage.clone()),
             ("temporary resources", Err(TEMPORARY_UNRECORDED.to_owned())),
-            // Steel: GER's own origin at efficiency 0.8 on a naval route, below its nominal
-            // amount; its local resources factor's explanation is refused.
             (
                 "resource produced",
                 text(
@@ -122,7 +115,6 @@ fn each_resource_writes_its_delivery_buildings_route_damage_and_refused_explanat
             ("infrastructure damage", damage),
         ]
     );
-    // Rubber only costs: neither listed nor delivering, it writes nothing.
 }
 
 #[test]

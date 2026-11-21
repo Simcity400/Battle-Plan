@@ -37,11 +37,9 @@ fn a_frame_from_the_same_inputs_keeps_the_list_and_each_input_makes_it_again() {
         made == Made::new(revision, frame, frames, reads, samples, textures, 0, &[], None)
     };
     assert!(same(9, &frame(camera(), &offsets), &[&SCENE, &SCENE], 1, 3));
-    // The scene blocks' bytes change every frame (they carry the animation clock): kept.
     assert!(same(9, &frame(camera(), &offsets), &[&[1; 416], &[2; 416]], 1, 3));
 
     assert!(!same(10, &frame(camera(), &offsets), &[&SCENE, &SCENE], 1, 3), "revision");
-    // A camera that travels keeps the list: its view is admitted with room to spare.
     let mut moved = camera();
     moved.center[0] += 0.5;
     assert!(same(9, &frame(moved, &offsets), &[&SCENE, &SCENE], 1, 3), "camera");
@@ -64,8 +62,6 @@ fn a_frame_from_the_same_inputs_keeps_the_list_and_each_input_makes_it_again() {
     assert!(!same(9, &frame(camera(), &offsets), &[&SCENE, &[0; 400]], 1, 3), "scene length");
     assert!(!same(9, &frame(camera(), &offsets), &[&SCENE, &SCENE], 4, 3), "samples");
     assert!(!same(9, &frame(camera(), &offsets), &[&SCENE, &SCENE], 1, 4), "a texture replaced");
-    // The viewport widened with the camera still: the cull's side planes moved, and a caster list
-    // walked with no rectangle (the map frame's) would otherwise keep the casters the old ones cut.
     let narrow = crate::map::models::GameCull::of(&camera(), [800, 600]);
     let wide = crate::map::models::GameCull::of(&camera(), [1600, 600]);
     let culled = |cull| Made::new(9, &frame(camera(), &offsets), &[&SCENE, &SCENE], reads, 1, 3, 0, &[], Some(cull));
@@ -86,7 +82,6 @@ fn a_lit_list_is_made_again_by_what_its_walk_reads_beyond_the_casters() {
     assert_ne!(kept, made(&shared, lit, 6, &[0; 112]), "the global textures");
     assert_ne!(kept, made(&shared, lit, 5, &[1; 112]), "the incoming block's tail");
     assert_ne!(kept, made(&[&SCENE, &[0; 32]], lit, 5, &[0; 112]), "the grid's length");
-    // A pass whose nodes supply no userdata reads the incoming one and the snapshot.
     let carried = Reads { views: 1, grid: true, pixel: true, own_pixel: false };
     let snapshot = [4u8; 208];
     let with = [&SCENE[..], &grid, &snapshot];
@@ -126,12 +121,10 @@ fn a_walk_bands_where_its_parts_stop_agreeing_and_a_part_with_no_order_stands_al
         (vec![0; 4], 1),
         "parts that agree are one band, whatever their part"
     );
-    // A tank's tracks between two bodies: the bodies on either side are bands of their own.
     assert_eq!(
         band(&[Some(opaque), Some(opaque), Some(tracks), Some(opaque), Some(opaque)]),
         (vec![0, 0, 1, 2, 2], 3)
     );
-    // A part that allows no order at all is a band of its own, and so is the draw after it.
     assert_eq!(
         band(&[Some(opaque), None, None, Some(opaque)]),
         (vec![0, 1, 2, 3], 4)
@@ -161,7 +154,6 @@ fn unit(live: bool, index: usize, vertex: Option<Block>, skin: Option<Block>) ->
     }
 }
 
-/// One still figure's walk at `position`: a world block of `fill`.
 fn still_figure(recording: &mut Recording, position: usize, identity: u32, fill: u8) -> Block {
     recording.begin(0, position, key(identity), false);
     let block = recording.place(&[fill; 208]);
@@ -174,15 +166,12 @@ fn laid_out_made() -> Made {
     Made::new(0, &frame(camera(), &[0., 0.]), &[&SCENE, &SCENE], reads, 1, 0, 0, &[], None)
 }
 
-/// A block of `fill` the list keeps, whole, as it keeps every node's.
 fn kept_block(list: &mut Kept, fill: u8, length: usize) -> Block {
     let at = list.blocks.len();
     list.blocks.extend(std::iter::repeat_n(fill, length));
     Block { at, length }
 }
 
-/// A list of one figure a node, in walk order: `nodes` gives each its actor's identity, whether
-/// its actor has a player, whether it waited on a build and the byte its block is filled with.
 fn listed(nodes: &[(u32, bool, bool, u8)]) -> Kept {
     let mut list = Kept::new(Kind::Casters);
     for (at, &(identity, live, waiting, fill)) in nodes.iter().enumerate() {
@@ -205,8 +194,6 @@ fn listed(nodes: &[(u32, bool, bool, u8)]) -> Kept {
     list
 }
 
-/// A figure the walk began and gave no units, as a caster walk leaves one whose descriptors
-/// all draw in the alternate queue, is held at its place all the same.
 #[test]
 fn a_figure_without_units_is_held_at_its_place() {
     let mut list = listed(&[(1, false, false, 3), (2, false, false, 4), (3, false, false, 5)]);
@@ -219,7 +206,6 @@ fn a_figure_without_units_is_held_at_its_place() {
     assert!(!list.holds(0, 3) && !list.holds(1, 1));
 }
 
-/// A list with room for rows: the still area above the live one, each with a megabyte.
 fn rows_list(groups: &[(usize, bool, bool, &[(Supply, usize)])]) -> Kept {
     let mut list = Kept::new(Kind::Lit);
     list.bytes = vec![0; 2 << 20];
@@ -232,7 +218,6 @@ fn rows_list(groups: &[(usize, bool, bool, &[(Supply, usize)])]) -> Kept {
     list
 }
 
-/// What the list holds of the group at `at`: its rows block, its runs and its slots.
 fn held(list: &Kept, at: usize) -> (Option<usize>, Vec<Run>, usize) {
     let group = list.groups[at].as_ref().expect("a group of the list");
     (group.rows, group.runs.clone(), group.slots.len())
@@ -251,7 +236,6 @@ fn a_groups_runs_stand_at_a_multiple_of_their_stride_with_room_for_what_joins_it
     );
     assert_eq!(placed.iter().map(|run| run.stride).collect::<Vec<_>>(), vec![208, 128]);
     assert_eq!(list.groups[0].as_ref().expect("made").capacity, 5, "room for four more");
-    // A part whose draws keep the list's order stands alone, one instance a draw.
     let alone = rows_list(&[(3, false, true, &runs)]);
     assert_eq!(alone.groups[0].as_ref().expect("made").capacity, 1);
 }
@@ -285,7 +269,6 @@ fn a_group_with_no_room_for_its_runs_leaves_none_taken() {
     let long = [(Supply::Vertex, 1 << 22)];
     assert!(list.make_group(1, 0, false, 0, false, true, &long, ALIGNMENT).is_none());
     assert_eq!(list.still_area, free, "the area is as it was");
-    // A group that cannot grow keeps the slots it has.
     let mut list = rows_list(&[(2, false, false, &[(Supply::Vertex, 1 << 17)])]);
     while list.take_slot(0).is_some() {}
     let slots = held(&list, 0).2;
@@ -294,7 +277,6 @@ fn a_group_with_no_room_for_its_runs_leaves_none_taken() {
     assert_eq!(held(&list, 0).2, slots);
 }
 
-/// Takes one slot of the group at `at` for the list's next instance.
 fn joined(list: &mut Kept, at: usize) -> usize {
     let (slot, _) = list.take_slot(at).expect("room");
     let instance = list.instances.len();
@@ -322,7 +304,6 @@ fn an_instance_that_leaves_gives_its_slot_back_and_the_rows_above_it_move_down()
     let rows: Vec<u8> = (0..3).map(|slot| list.bytes[at + slot * 208]).collect();
     assert_eq!(rows, vec![10, 12, 13], "their rows moved with them");
     assert_eq!(list.dirty_ranges(), vec![at + 208..at + 624], "the still rows it wrote");
-    // Every instance of a group leaving gives its runs back.
     list.release(&[0, 2, 3]);
     assert!(list.groups[0].is_none(), "the group left");
     assert_eq!(list.still_area, Area::new(1 << 20, 1 << 20, 2 << 20), "its area is as it was");
@@ -330,7 +311,6 @@ fn an_instance_that_leaves_gives_its_slot_back_and_the_rows_above_it_move_down()
 
 #[test]
 fn a_node_writes_its_world_and_userdata_into_its_block_and_the_rows_its_draws_read() {
-    // Its part reads 96 bytes of its 208-byte block: the row holds those, the list the whole.
     let runs = [(Supply::Vertex, 96), (Supply::Skin, 128)];
     let mut list = rows_list(&[(3, false, false, &runs)]);
     let (_, placed, _) = held(&list, 0);
@@ -360,7 +340,6 @@ fn a_node_writes_its_world_and_userdata_into_its_block_and_the_rows_its_draws_re
         vec![row..palette + 128],
         "the still rows it wrote, joined: they stand near each other"
     );
-    // A palette of another length only a walk of its figure can place.
     let moved = LiveBytes { world: &world, userdata: None, bones: Some(&[0; 64]) };
     assert!(!list.write_unit(0, moved));
     let none = LiveBytes { world: &world, userdata: None, bones: None };
@@ -384,7 +363,6 @@ fn a_kept_frame_stages_the_rows_and_shared_blocks_whose_bytes_changed() {
     let moved = [[0.75f32; 4]; 4];
     assert!(list.write_unit(0, LiveBytes { world: &moved, userdata: None, bones: None }));
     assert_eq!(list.dirty_ranges(), vec![at..at + 64], "a row whose node moved");
-    // A shared block reaches the GPU on the frame its bytes change, and near writes join.
     list.write_shared(&[&[1; 416], &[2; 416]]);
     assert_eq!(list.dirty_ranges(), vec![0..928], "both blocks");
     list.write_shared(&[&[1; 416], &[2; 416]]);
@@ -448,7 +426,6 @@ fn a_walk_of_some_figures_takes_their_routes_alone_and_marks_each() {
     let mut all = Recording::default();
     assert!(all.takes(0, 0) && all.takes(3, 9), "a full walk takes every route");
 
-    // Two still figures around a live one and one with no block: each keeps its own nodes.
     let mut recording = Recording::default();
     still_figure(&mut recording, 0, 1, 1);
     recording.begin(0, 1, key(2), true);
@@ -517,8 +494,6 @@ fn target(position: usize, identity: u32, born: bool) -> Target {
 #[test]
 fn a_figure_placed_once_in_both_frames_is_kept_and_every_other_is_walked() {
     let casters = listed(&[(1, false, false, 3), (2, true, false, 4), (3, false, false, 6)]);
-    // 3 first, 1 kept, 4 joins; 2 left.
-    // Each walked target counted once, by why.
     let entered = |targets: &[Target], demoted: &[bool]| {
         let mut entered = [0u64; ENTERED];
         let next = casters.plan_counting(targets, demoted, Some(&mut entered));
@@ -534,15 +509,12 @@ fn a_figure_placed_once_in_both_frames_is_kept_and_every_other_is_walked() {
     let targets = [target(0, 3, false), target(1, 1, false), target(2, 4, false)];
     assert_eq!(casters.plan(&targets, &[]), vec![Some(2), Some(0), None]);
     assert_eq!(entered(&targets, &[]), only(Entered::New, 1));
-    // A figure given a player since it was walked still is walked again; one already live, not.
     let born = [target(0, 1, true), target(1, 2, true)];
     assert_eq!(casters.plan(&born, &[]), vec![None, Some(1)]);
     assert_eq!(entered(&born, &[]), only(Entered::Born, 1));
-    // A figure whose nodes no longer write in place is walked again.
     let all = [target(0, 1, false), target(1, 2, false), target(2, 3, false)];
     assert_eq!(casters.plan(&all, &[false, true, false]), vec![Some(0), None, Some(2)]);
     assert_eq!(entered(&all, &[false, true, false]), only(Entered::Demoted, 1));
-    // An actor placed twice is never matched by guess.
     let twice = [target(0, 1, false), target(1, 1, false), target(2, 3, false)];
     assert_eq!(casters.plan(&twice, &[]), vec![None, None, Some(2)]);
     assert_eq!(entered(&twice, &[]), only(Entered::Twice, 2));
@@ -550,7 +522,6 @@ fn a_figure_placed_once_in_both_frames_is_kept_and_every_other_is_walked() {
     other_view.view = 1;
     assert_eq!(casters.plan(&[other_view], &[]), vec![None], "another view is another figure");
     assert_eq!(entered(&[other_view], &[]), only(Entered::OtherView, 1));
-    // The same actor in the same view under another key: which part of it.
     let mut mesh = target(0, 1, false);
     mesh.key.0 = 9;
     let mut epoch = target(1, 2, false);
@@ -661,7 +632,6 @@ fn placements_made_again_unchanged_raise_nothing_and_a_change_is_listed_by_insta
     assert_eq!(walked.note(&placed, &mut changed), Change::Same, "a change is listed once");
     assert!(changed.instances.is_empty() && changed.groups.is_empty());
 
-    // A figure that starts walking keeps its actor: only its own nodes are made again.
     placed.instances[0].animation = entity_animation::STOPPED + 1;
     placed.instances[0].native_flags = 3;
     assert_eq!(walked.note(&placed, &mut changed), Change::Changed);
@@ -697,7 +667,6 @@ fn a_whole_change_counts_what_joined_left_and_left_its_order() {
     let mut walked = WalkedField::default();
     let mut changed = Changed::default();
     walked.note(&actors(&[1, 2, 3, 4, 5]), &mut changed);
-    // 6 joins, 2 leaves, 5 is out of the order the others keep.
     assert_eq!(walked.note(&actors(&[1, 5, 3, 4, 6]), &mut changed), Change::Whole);
     assert_eq!(walked.reshaped, [1, 1, 1]);
     assert_eq!(walked.note(&actors(&[1, 5, 3, 4, 6]), &mut changed), Change::Same);
@@ -723,8 +692,6 @@ fn a_field_placed_twice_in_a_frame_is_compared_once_as_drawn() {
     pass.update_placed(placed(), 128.);
     assert_eq!(pass.field_change(&mut changed), Change::Whole, "the first placement");
     assert_eq!(pass.field_change(&mut changed), Change::Same, "nothing placed since");
-    // The layer hands over one field and the history places another the same frame: only the
-    // last is compared with what was drawn.
     let mut handed = placed();
     handed.reverse();
     pass.update_placed(handed, 128.);
@@ -749,7 +716,6 @@ fn a_whole_change_lists_the_actors_in_both_fields_whose_values_changed() {
     assert_eq!(changed.instances, vec![0, 3], "actors 3 and 4, at their new places");
     assert!(changed.groups.is_empty());
 
-    // An actor that changed before another left keeps its change listed.
     let mut walked = WalkedField::default();
     walked.note(&actors(&[1, 2, 3]), &mut changed);
     let mut next = actors(&[1, 2, 3]);
@@ -759,8 +725,6 @@ fn a_whole_change_lists_the_actors_in_both_fields_whose_values_changed() {
     assert_eq!(changed.instances, vec![0]);
 }
 
-/// A lit walk of two figures: a node drawing one part (frame, vertex, pixel and grid), then a
-/// skinned node drawing two parts and a node written that draws nothing.
 fn lit(reads: Reads) -> Kept {
     let mut list = Kept::new(Kind::Lit);
     let a = kept_block(&mut list, 1, 208);
@@ -806,7 +770,6 @@ fn a_lit_list_gives_the_constant_state_its_walk_leaves() {
     let binds: Vec<_> = replay.sources.resolve_with(named).into_iter().take(6).collect();
     let expected: [&[u8]; 6] = [b"frame", b"frame", b"second", b"second", b"palette", b"grid"];
     assert_eq!(binds, expected.map(Some), "each slot from the last node that supplied it");
-    // A pass whose nodes carry the incoming userdata keeps the incoming snapshot.
     let carried = lit(Reads { pixel: true, own_pixel: false, ..own });
     let replay = carried.replay(|key| (0, key != 3));
     let pixel = replay.sources.resolve_with(named)[3];
@@ -876,7 +839,6 @@ fn a_figure_that_waited_on_a_build_is_walked_again_alone_and_the_list_is_kept() 
 
 #[test]
 fn part_counts_give_what_instancing_by_run_and_by_part_leaves() {
-    // Two figures of parts 3, 4 then 3, 4 in one view, then one of part 3 in another.
     let mut list = Kept::new(Kind::Lit);
     for (position, view) in [(0, 0), (1, 0), (2, 1)] {
         let parts = if view == 0 { 2 } else { 1 };
@@ -890,9 +852,6 @@ fn part_counts_give_what_instancing_by_run_and_by_part_leaves() {
     assert_eq!(counts, PartCounts { parts: 2, runs: 5, in_views: 3 }, "3,4,3,4 then 3 in view 1");
 }
 
-/// The camera still, one unit walks out past its mesh's cull distance and another walks in: each
-/// is culled or drawn on the frame its sphere's centre crosses. A list made with a figure culled
-/// lets it join when it comes within the cull.
 #[test]
 fn with_the_camera_still_a_unit_walking_out_or_in_crosses_the_cull_on_the_frame_it_crosses() {
     use crate::map::models::GameCull;
@@ -906,7 +865,6 @@ fn with_the_camera_still_a_unit_walking_out_or_in_crosses_the_cull_on_the_frame_
     let distance = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     let mut list = Kept::default();
     let mut culled = Vec::new();
-    // 10 units a frame along x with the eye 100 above: 430 from the eye lies between 410 and 420.
     for frame in 0..6 {
         let out = [400. + 10. * frame as f32, 0., 0.];
         let back = [0., 0., 450. - 10. * frame as f32];

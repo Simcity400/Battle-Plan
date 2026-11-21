@@ -1,4 +1,3 @@
-//! Immutable content for unit/province hover and selected-order queries.
 use super::province_tooltips;
 use installed_content_core::unit_leader::SubUnits;
 use installed_content_division_names::division_names::Database;
@@ -46,7 +45,6 @@ pub struct Content {
 }
 
 impl Content {
-    /// The same recorded-stack ability definition that selected this grid's sprite.
     pub(crate) fn ability_definition(
         &self,
         token: &[u8],

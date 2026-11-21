@@ -1,14 +1,3 @@
-//! Country name lists from `common/names` and seeded advisor-name draws
-//! for ideas without a localisation key.
-//!
-//! Read direct `.txt` files in directory order ([`script_files::paths`]).
-//! `default` lists append across blocks and files; each country declaration
-//! starts fresh pools and replaces the previous entry of that exact name.
-//! `male` and `female` hold names pools, `ace` holds an ace declaration, and
-//! other fields belong to the general pool. List fields append, `operation`
-//! reads lists by numeric key, and prefix/suffix fields consume text values.
-//! Unexpected fields are skipped. Advisor draws use only names and surnames
-//! from the male and female pools.
 
 use crate::{
     ResolvedLayers,
@@ -20,15 +9,12 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-/// Name and surname pools retain each entry's stored bytes. Every entry
-/// counts regardless of encoding; the caller converts the selected text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pool {
     pub names: Vec<Vec<u8>>,
     pub surnames: Vec<Vec<u8>>,
 }
 
-/// A country's male and female name pools.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryNames {
     pub male: Pool,
@@ -36,25 +22,19 @@ pub struct CountryNames {
 }
 
 impl CountryNames {
-    /// Whether either pool has names and either pool has surnames.
     fn has_names(&self) -> bool {
         self.male.names.len() + self.female.names.len() != 0
             && self.male.surnames.len() + self.female.surnames.len() != 0
     }
 }
 
-/// The names database.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NameLists {
     default: CountryNames,
-    /// By the key's bytes, exactly.
     countries: BTreeMap<Vec<u8>, CountryNames>,
-    /// Files whose reading stops short, with the cause: their later
-    /// entries are unknown.
     pub unknown: Vec<String>,
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
     Top,
@@ -75,14 +55,11 @@ fn pool_field(field: &native::Field<'_>) -> Shape<Node> {
             | b"naval_operation_suffix"
             | b"use_geographical_default_operation_names",
         ) => Shape::One,
-        // Unexpected fields are reported and skipped.
         _ => Shape::Skip,
     }
 }
 
-/// Read one names file to the end of its text.
 fn read_file(input: &[u8]) -> native::Read {
-    // Skip the leading mark when constructing the names-file lexer.
     native::read(
         input,
         native::Mode::SkipMark,
@@ -96,9 +73,7 @@ fn read_file(input: &[u8]) -> native::Read {
                 _ => pool_field(field),
             },
             Node::Pool => pool_field(field),
-            // Each operation entry scans its numeric key and reads a string list.
             Node::Operation => Shape::List,
-            // Ace text fields and the gender flag each consume one value token.
             Node::Ace => match field.keyword().as_deref() {
                 Some(b"name" | b"type" | b"surname" | b"callsign" | b"is_female") => Shape::One,
                 _ => Shape::Skip,
@@ -107,7 +82,6 @@ fn read_file(input: &[u8]) -> native::Read {
     )
 }
 
-/// Stored bytes from every matching list field, appended in source order.
 fn strings(items: &[Item], key: &str) -> Vec<Vec<u8>> {
     items
         .iter()
@@ -124,7 +98,6 @@ fn pool(items: &[Item]) -> Pool {
     }
 }
 
-/// Reads one entry's pools into `names`, appending.
 fn read_entry(names: &mut CountryNames, fields: &[Item]) {
     for field in fields {
         let target = if field.keyword_is("male") {
@@ -141,7 +114,6 @@ fn read_entry(names: &mut CountryNames, fields: &[Item]) {
 }
 
 impl NameLists {
-    /// Adds one file.
     fn apply(&mut self, path: &str, input: &[u8]) {
         let read = read_file(input);
         for item in &read.items {
@@ -162,25 +134,18 @@ impl NameLists {
         }
     }
 
-    /// Probe the cosmetic entry before falling back to the original tag.
     pub fn for_cosmetic(&self, cosmetic_tag: &str) -> Option<&CountryNames> {
         (!cosmetic_tag.is_empty())
             .then(|| self.countries.get(cosmetic_tag.as_bytes()))
             .flatten()
     }
 
-    /// Country lookup tries a listed cosmetic tag, then the supplied
-    /// original-or-own tag, then the default names when neither is listed.
     pub fn for_country(&self, cosmetic_tag: &str, tag: &str) -> &CountryNames {
         self.for_cosmetic(cosmetic_tag)
             .or_else(|| self.countries.get(tag.as_bytes()))
             .unwrap_or(&self.default)
     }
 
-    /// Draw a male name from the entry's pools, or from the default when the
-    /// entry lacks names or surnames across both pools. Each selected index
-    /// hashes `seed`. Return None when the chosen male pool lacks either list,
-    /// which the caller renders as empty text.
     pub fn draw<'a>(&'a self, names: &'a CountryNames, seed: i32) -> Option<(&'a [u8], &'a [u8])> {
         let names = if names.has_names() {
             names
@@ -216,7 +181,6 @@ impl NameLists {
     }
 }
 
-/// The names database of the content stack.
 pub fn read(layers: &ResolvedLayers) -> io::Result<NameLists> {
     let mut lists = NameLists::default();
     for path in script_files::paths(layers, "common/names/", Some(".txt"))? {
@@ -235,9 +199,6 @@ mod tests {
         lists
     }
 
-    /// `default` adds up; a country entry is replaced by a later one;
-    /// the general pool and aces are read past; a country with no names or
-    /// no surnames draws from the default.
     #[test]
     fn entries_read_and_draw_as_the_database_does() {
         let names = lists(
@@ -255,9 +216,7 @@ mod tests {
         let (first, surname) = names.draw(ger, 7).unwrap();
         assert!([b"Karl".as_slice(), b"Otto"].contains(&first));
         assert!([b"Weber".as_slice(), b"Braun", b"Kurz"].contains(&surname));
-        // A cosmetic tag the database does not list falls back to the tag.
         assert_eq!(names.for_country("GER_nazi", "GER"), ger);
-        // An unlisted tag is the default; ITA has names but no male pool.
         assert_eq!(
             names.draw(names.for_country("", "SOV"), 3),
             Some((b"John".as_slice(), b"Smith".as_slice()))
@@ -265,7 +224,6 @@ mod tests {
         assert_eq!(names.draw(names.for_country("", "ITA"), 3), None);
     }
 
-    /// Seeded draws select fixed entries across positive and negative seeds.
     #[test]
     fn the_draw_hashes_the_seed() {
         let names = lists(
@@ -287,8 +245,6 @@ mod tests {
         }
     }
 
-    /// Every stored entry counts in the draw, including non-UTF-8 bytes.
-    /// Its encoding does not shift later entries in the pool.
     #[test]
     fn an_entry_that_is_not_utf8_keeps_its_place_in_the_pool() {
         let names = lists(b"GER = { male = { names = { A \"\xfe\" C } surnames = { s } } }");

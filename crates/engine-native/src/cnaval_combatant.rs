@@ -1,47 +1,24 @@
-//! CNavalCombatant naval-side layout.
 
 use engine_sites::Rva;
 use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};
 
-/// CNavalCombatant vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_d3b8);
-/// CNavalCombatant parent CNavalCombat pointer.
 pub const COMBAT: usize = 0x18;
-/// Task-force pointer array: data, capacity and count. Admission requires naval units;
-/// serialization retains every full handle.
 pub const UNITS: usize = 0x20;
-/// CNavalCombatant engaged byte.
 pub const ENGAGED: usize = 0xda;
-/// CNavalCombatant CFEXGroup pointer array.
 pub const GROUPS: usize = 0xe8;
-/// CNavalCombatant group count i32.
 pub const GROUPS_COUNT: usize = 0xf4;
-/// CNavalCombatant positioning i64/100000.
 pub const POSITIONING: usize = 0x158;
-/// CNavalCombatant anti-air i64/100000.
 pub const ANTI_AIR: usize = 0x170;
 
-/// Current commander pointer shown by the naval window. Null remains no commander without fallback
-/// to the retained last leader after it. Selection keeps the first highest-skill candidate, or null
-/// when none. Unit addition/removal, round preparation while null, post-load rebuild and leader
-/// rebuild publish this selection; only nonnull selections replace the last leader. Both initialize
-/// to zero. Saves restore only last leader; a null selection at any later tick also leaves that
-/// retained identity unchanged.
 pub const COMMANDER: usize = 0x130;
-/// Stored screening operands.
 pub const SCREENING: usize = 0x148;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
-    /// Persistent 6x6 damage matrix; live members cannot reconstruct it.
     pub damage_history: [[i64; 6]; 6],
-    /// Opposing side's stored original health, used as the damage denominator.
     pub original_health: i64,
-    /// Stored total damage increments only for target categories other than
-    /// sentinel five; flag hover uses this aggregate.
     pub total_damage: i64,
-    /// Stored damage totals keyed by source token. Flag hover sorts them by
-    /// damage; this span indexes the owned side damage-source arena.
     pub damage_by_type: [usize; 2],
     pub commander: u64,
     pub engaged: u8,
@@ -53,12 +30,9 @@ pub struct DetailsRow {
     pub planes: [usize; 2],
     pub summary: crate::naval_combat_summary_inputs::Row,
     pub commander_inputs: [usize; 2],
-    /// The [`UNITS`] task-force handles, in native order, in the caller's unit arena.
     pub units: [usize; 2],
 }
 
-/// Unordered-map list order preserves insertion order for stable sorted ties. Nodes are 0x20 bytes:
-/// a token, then a fixed5 total; the map is the sentinel.
 fn damage_by_type(
     memory: &impl Memory,
     side: usize,
@@ -107,8 +81,6 @@ fn walk_damage_by_type(
         if let Some(output) = output.as_mut() {
             output[index] = (field(memory, next, 0x10)?, field(memory, next, 0x18)?);
         } else if field::<u64>(memory, next, 8)? as usize != previous {
-            // Both list links are maintained. A repeated node cannot preserve its
-            // predecessor, so torn cycles fail without a count cap.
             return Err("naval damage source predecessor mismatch");
         }
         previous = next;
@@ -127,28 +99,17 @@ fn walk_damage_by_type(
     Ok([start, count])
 }
 
-/// The caller-owned arenas one side's [`details`] fills, in native order.
 pub(crate) struct SideArenas<'a> {
-    /// The summary's country lists, grown at admission on the acquisition worker.
     pub countries: &'a mut Vec<u32>,
     pub countries_len: &'a mut usize,
-    /// The [`UNITS`] handles, grown from the original array header on workers.
     pub units: crate::walk::Buffer<'a, u64>,
     pub units_len: &'a mut usize,
-    /// Every side's unit count this original walk.
     pub units_required: &'a mut usize,
     pub damage_sources: crate::walk::Buffer<'a, (u32, i64)>,
     pub damage_sources_len: &'a mut usize,
     pub damage_sources_required: &'a mut usize,
 }
 
-/// Reads a side's [`UNITS`] into `arena` from `*len`: one read for the array header, one per 64
-/// slots and one scattered read per task force, which must carry the CTaskForce primary vtable, the
-/// secondary vtable and a nonzero handle. The count is the live array's own (bounded by its
-/// capacity header) and is only trusted as far as its entries authenticate; no bound is chosen
-/// here. `required` gains the side's count whether or not it fits. Worker storage grows from the
-/// acquired header before entry reads; fixed fixture storage retains
-/// [`crate::cfex_member::DETAIL_ARENA_CAPACITY`].
 fn units(
     memory: &impl Memory,
     base: usize,
@@ -298,21 +259,13 @@ pub(crate) fn details(
     })
 }
 
-/// One member of one naval side. The key retains the complete combat reference,
-/// the side and the native battle slot without a width limit on either id.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The complete native combat reference, including its type word.
     pub combat: u64,
-    /// Zero for attacker, one for defender, from the combat's side pointers.
     pub side: u8,
-    /// Native CFEXMember battle slot (`cfex_member::BATTLE_SLOT`), not the member array ordinal.
     pub battle_slot: u32,
-    /// Complete ship reference; zero means no ship reference, including convoy members.
     pub ship: u64,
-    /// Native country reference, resolved through the recorded country links.
     pub owner: u32,
-    /// Complete stored u32 state bits.
     pub state: u32,
 }
 
@@ -327,7 +280,6 @@ impl Row {
 #[derive(Debug, Clone, Copy)]
 pub struct Side {
     pub pointer: usize,
-    /// Combat-only payload; failed scalar reads do not invalidate the side root.
     pub scalars: Result<(i64, i64), &'static str>,
 }
 
@@ -341,8 +293,6 @@ pub fn side(
     let (mut vtable, mut parent, mut positioning, mut anti_air) = ([0; 8], [0; 8], [0; 8], [0; 8]);
     let copied = if read_scalars {
         memory.copy_scattered(
-            // An overflowing payload address must not discard the readable
-            // identity prefix. The guarded scatter stops at the zero address.
             [0, COMBAT, POSITIONING, ANTI_AIR]
                 .map(|offset| pointer.checked_add(offset).unwrap_or(0)),
             &mut [&mut vtable, &mut parent, &mut positioning, &mut anti_air],
@@ -545,7 +495,6 @@ mod damage_source_tests {
             base: 0,
             bytes: &bytes,
         };
-        // A fresh capture: the arena starts empty again.
         (used, required) = (0, 0);
         assert_eq!(
             damage_by_type(

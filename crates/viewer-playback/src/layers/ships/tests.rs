@@ -33,10 +33,6 @@ use viewer_world::map::{
     unit_models::{Force, ForcePart, ResolvedHull, ResolvedRoster},
 };
 
-/// Province `p`'s box ten units wide at x `100 p`; ships drawn below a camera height of 500. A
-/// figure is the task force's values as a candidate, and its roster as a formation; a roster is
-/// one hull whose flags count the times that task force's roster was asked (203 has no ship).
-/// With an `epoch`, every roster decides one graphics pool, whose limit holds from that hour on.
 struct Fake {
     bounds: BTreeMap<u32, [f32; 4]>,
     asked: Mutex<BTreeMap<u64, u64>>,
@@ -169,9 +165,6 @@ fn order(store: &mut Store, slot: u32, province: u32, mixed: &[u64]) {
     order.write(slot, column(TableId::ProvinceUnitOrder, "mixed"), Cell::U64List(mixed)).unwrap();
 }
 
-/// Three task forces of two countries in three provinces, one where no box stands; a task force
-/// sails to another province, a ship's model changes twice in two hours, a task force is deleted
-/// and another inserted with a ship, and ShipModels is not recorded for a stretch.
 fn campaign(at: u32, store: &mut Store) {
     for table in TABLES {
         let status = if table == TableId::ShipModels && (180..220).contains(&at) { Status::NotRecorded } else { Status::Complete };
@@ -230,8 +223,6 @@ fn side_with(name: &str, view: View, naval: Arc<Fake>) -> MapSide {
 
 fn side_of(name: &str, view: View, naval: Arc<dyn Naval>, campaign: fn(u32, &mut Store)) -> MapSide {
     let units = recorded::record(name, HOURS, campaign);
-    // A step an hour (`speed / rate`): every hour of the campaign is a step boundary, so the hour
-    // a test drives the head to is a hour the head can stand at exactly, whatever the machine does.
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 4.0, ..Settings::default() }).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Ships::new(naval).unwrap())], view).unwrap();
     layer(&side).set_source(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
@@ -251,14 +242,6 @@ fn layer(side: &MapSide) -> &Ships {
     side.parts().unwrap().1[0].any().downcast_ref::<Ships>().unwrap()
 }
 
-/// Frames with the head held at `hour` until `done`, which is the only head these tests ever ask
-/// the side for.
-///
-/// [`recorded::frames_until`] asks for `playhead().newest()` — the newest hour the stepper has
-/// filled its ring to, which grows with the wall time the machine took. That was the one way the
-/// clock reached these tests: a head it drove overshot the hour the test meant by however far the
-/// stepper had got, so a step the test meant to apply inside a window of its own could already
-/// have been applied before it. Held at `hour`, what a test applies is what it asked for.
 fn frames_at(side: &mut MapSide, hour: i32, mut done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
     for _ in 0..50_000_000u64 {
         recorded::reads_landed(side);
@@ -271,16 +254,10 @@ fn frames_at(side: &mut MapSide, hour: i32, mut done: impl FnMut(&MapSide, &crat
     panic!("the map side never reached what this test waited for with its head at {hour}: {}", recorded::seen(side));
 }
 
-/// The head applied through `hour` and composed. The side is never asked for a later head and a
-/// step is an hour, so this is the one hour it can stop at: no clock and no step boundary decides
-/// where a test's head ends up.
 fn applied_to(side: &mut MapSide, hour: i32) {
     frames_at(side, hour, |side, _| side.applied() == Some(hour) && !side.composing());
 }
 
-/// The rosters asked answered at the head and taken: every figure made. While a reader's tables
-/// load (they join the playhead past its head) frames go on being drawn, with the head held at
-/// `hour` as the window's would be.
 fn settled(side: &mut MapSide, hour: i32) {
     frames_at(side, hour, |side, _| !side.composing());
     if !layer(side).drawn() {
@@ -316,7 +293,6 @@ fn composed_equal(side: &MapSide) {
     assert_eq!(layer(side).differ(&fresh), (0, None));
 }
 
-/// Each task force's province, ordinal and hull flags, by id.
 fn drawn(side: &MapSide) -> Vec<(u64, u32, u32, Vec<u64>)> {
     let (sources, _) = layer(side).sources();
     sources
@@ -335,17 +311,9 @@ fn a_task_force_changed_in_a_step_is_marked_once_and_settled_to_the_composed_val
     assert_eq!(drawn(&side), vec![(201, 10, 0, vec![1]), (202, 20, 0, vec![1]), (203, 2000, u32::MAX, vec![])]);
     composed_equal(&side);
     to(&mut side, 30);
-    // The head stands at the hour this test drove it to and at no other: the sail at hour 50 is
-    // therefore still ahead of it, whatever the machine has been doing. Driven by
-    // `recorded::frames_until`, which asks for `playhead().newest()`, it stood at 32 or 36 by the
-    // run and on a loaded machine past 50, and the mark the window below reads had been made and
-    // counted before `before` was read.
     assert_eq!(side.applied(), Some(30), "the head is the hour the test drove it to");
     let before = layer(&side).marked();
     {
-        // The settles held: the steps that apply the sail mark the task force and nothing settles
-        // it, so what the mark is worth is read where it is made rather than wherever the layer's
-        // own settle happened to have got to.
         let _settles = side.hold_settles();
         applied_to(&mut side, 64);
         assert_eq!(side.applied(), Some(64), "every step through hour 64, the sail at 50 among them, is applied inside this window");
@@ -420,7 +388,6 @@ fn a_view_that_draws_no_ship_declares_nothing_and_one_that_does_composes() {
         !side.views().held().iter().any(|(table, _)| *table == TableId::ShipModels),
         "closed, the rosters' reader lets its tables go"
     );
-    // Drawn again, the rosters declare their tables anew and they arrive.
     side.set_view(View::default()).unwrap();
     applied_to(&mut side, 72);
     settled(&mut side, 72);
@@ -446,9 +413,6 @@ fn a_task_force_whose_roster_is_answered_before_it_is_read_still_gets_its_figure
     let mut side = side("ships-born");
     to(&mut side, 120);
     applied_to(&mut side, 132);
-    // The worker's acknowledgement: the roster of the task force born at 130 is answered, told on
-    // its condvar, before the layer, held by its zero settling, reads it. The worker changes what it
-    // answered under the lock it notifies after, so no answer is missed.
     let shared = &layer(&side).rosters().shared;
     let mut asked = shared.lock();
     while !(asked.known.contains(&204) && asked.wanted.is_empty()) {
@@ -461,7 +425,6 @@ fn a_task_force_whose_roster_is_answered_before_it_is_read_still_gets_its_figure
     assert!(parts.get(&204).is_some_and(Option::is_some), "the task force born at 130 has its figure: {:?}", parts.iter().map(|(id, part)| (*id, part.is_some())).collect::<Vec<_>>());
 }
 
-/// The campaign with a land occupant (999) beside task force 202 in province 20 from hour 60 to 119.
 fn contested(at: u32, store: &mut Store) {
     campaign(at, store);
     let mixed: &[u64] = match at {
@@ -472,10 +435,6 @@ fn contested(at: u32, store: &mut Store) {
     store.table(TableId::ProvinceUnitOrder.index()).unwrap().write(1, column(TableId::ProvinceUnitOrder, "mixed"), Cell::U64List(mixed)).unwrap();
 }
 
-/// The window's hand-over: drawn, the layer stands in and its ships are what the window's unit models
-/// carry (today's made without ships, the layer's joined); while a land occupant competes in a task
-/// force's province it does not, so today's ships are made again; hidden, or refused where today's
-/// builder draws nothing, it stands in with nothing drawn and the refusal named.
 #[test]
 fn the_window_draws_the_layers_ships_and_todays_where_a_land_occupant_competes() {
     use viewer_world::map::unit_models::{PreparedModels, naval_differ};
@@ -517,27 +476,16 @@ fn the_window_draws_the_layers_ships_and_todays_where_a_land_occupant_competes()
     assert_eq!(layer(&side).warnings(), report.warnings(), "kept as the handover words them, the refusal named");
 }
 
-/// `fake`'s rosters, each build waiting at a gate the test opens, closes and lets a counted
-/// number of builds through. A test synchronises on the hand-overs — the builds that came to the
-/// gate, the hours of the rows they are over, and the builds that left it — and never on the
-/// clock: no assertion here depends on a thread having got somewhere. [`GIVEN_UP`] is a safety
-/// deadline alone: a build the test never lets through is **refused by name** rather than let
-/// through, so a test that forgets one fails saying so instead of quietly meaning something else.
 struct HeldRosters {
     fake: Arc<dyn Naval>,
-    /// Builds the gate will let through; [`OPEN`] while it is open.
     permits: Mutex<usize>,
-    /// Builds that came to the gate, with the hour of the rows each is over, and those that left.
     builds: Mutex<(Vec<i32>, u64)>,
     changed: std::sync::Condvar,
     built: std::sync::Condvar,
 }
 
-/// The gate open: every build goes through and none is counted against the permits.
 const OPEN: usize = usize::MAX;
 
-/// A hand-over this long in coming means the test has a mistake in it: the build at the gate is
-/// refused by name and a wait for one gives up by name. Nothing a passing run does waits at all.
 const GIVEN_UP: Duration = Duration::from_secs(30);
 
 impl HeldRosters {
@@ -550,7 +498,6 @@ impl HeldRosters {
         self.changed.notify_all();
     }
 
-    /// `builds` more go through the closed gate; the one after them waits at it again.
     fn let_through(&self, builds: usize) {
         let mut permits = self.permits.lock().unwrap();
         if *permits != OPEN {
@@ -560,19 +507,15 @@ impl HeldRosters {
         self.changed.notify_all();
     }
 
-    /// Waits until more than `seen` builds came to the gate (`left` false) or left it.
     fn builds_past(&self, seen: u64, left: bool) {
         let count = |builds: &(Vec<i32>, u64)| if left { builds.1 } else { builds.0.len() as u64 };
         self.waiting_for(&format!("more than {seen} builds to have {} the gate", if left { "left" } else { "come to" }), |builds| count(builds) > seen);
     }
 
-    /// Waits until a build over the rows at `hour` has come to the gate: which rows a build is
-    /// over is what a test about a seek or a hour needs, not merely that one arrived.
     fn arrived_at(&self, hour: i32) {
         self.waiting_for(&format!("a build over the rows at hour {hour} to come to the gate"), |builds| builds.0.contains(&hour));
     }
 
-    /// Waits for a hand-over from the gate, naming it if it never comes.
     fn waiting_for(&self, what: &str, done: impl Fn(&(Vec<i32>, u64)) -> bool) {
         let until = Instant::now() + GIVEN_UP;
         let mut builds = self.builds.lock().unwrap();
@@ -582,7 +525,6 @@ impl HeldRosters {
         }
     }
 
-    /// The builds that came to the gate and those that left it.
     fn builds(&self) -> (u64, u64) {
         let builds = self.builds.lock().unwrap();
         (builds.0.len() as u64, builds.1)
@@ -636,21 +578,15 @@ impl Naval for HeldRosters {
     }
 }
 
-/// What a wait in the roster tests saw last: the hour applied, a compose, and the layer's carried,
-/// waiting, asked and published.
 fn roster_state(side: &MapSide) -> String {
     let layer = side.parts().map(|_| layer(side)).map(|layer| (layer.carried(), layer.waiting(), layer.rosters().pending(), layer.published()));
     format!("applied {:?}, composing {}, carried, waiting, asked and published {layer:?}", side.applied(), side.composing())
 }
 
-/// Frames with the head at `hour` until it is applied, every roster asked is answered and the layer
-/// carries nothing and waits for nothing.
 fn settled_at(side: &mut MapSide, hour: i32) {
     loop {
         let frame = side.frame(hour).unwrap();
         if side.applied() == Some(hour) && !side.composing() {
-            // Settled once the rosters' rows stand at the hour: until then the layer says the hour
-            // they stand at, never current.
             let answered = layer(side).rosters().wait(hour, Duration::from_millis(200)).is_ok();
             side.settle_all().unwrap();
             let held = layer(side);
@@ -664,12 +600,6 @@ fn settled_at(side: &mut MapSide, hour: i32) {
     }
 }
 
-/// While a task force waits for its roster on the worker (held by the test: task force 202's ship
-/// changes model at hours 100 and 101) the layer carries nothing for it and publishes the hour its
-/// parts stood for before the change, which the host shows; answered, it is current again. On the
-/// base the waiting task force was carried and the layer published `Current`, so the host kept the
-/// hour it last carried nothing at. The head moves a step at a time, so no step past the change is
-/// taken before the worker is held.
 #[test]
 fn a_roster_out_on_the_worker_is_not_carried_and_the_hour_the_parts_stand_for_is_shown() {
     let held = HeldRosters::new(fake());
@@ -683,8 +613,6 @@ fn a_roster_out_on_the_worker_is_not_carried_and_the_hour_the_parts_stand_for_is
     assert_eq!((layer(&side).carried().entities, layer(&side).published()), (0, Published::Current));
     let (came, _) = held.builds();
     held.set(false);
-    // The head past the change at 101, and the build of the roster it asked at the gate: task
-    // force 202 waits for it because the gate holds it, not because a thread has not got there.
     applied_to(&mut side, before + 8);
     held.builds_past(came, false);
     side.frame(before + 8).unwrap();
@@ -692,9 +620,6 @@ fn a_roster_out_on_the_worker_is_not_carried_and_the_hour_the_parts_stand_for_is
     let Published::At(stands) = layer(&side).published() else { panic!("a roster out publishes the hour the parts stand for: {:?}", layer(&side).published()) };
     let answered = layer(&side).rosters().answered().expect("the worker has answered some rows");
     let owed = layer(&side).rosters().owed().into_iter().map(|(_, at)| at).min().expect("the gate holds a roster the worker owes");
-    // The rule, not a hour: the rows the worker answered from, and before the change it owes. The
-    // last settle that owed nothing was at `before`, which is what the frozen `product_hour` used
-    // to say however far the head had run on.
     assert_eq!(stands, answered.min(owed - 1), "a roster out publishes the hour the parts stand for: the rows answered ({answered}), before the change it owes ({owed}), and never the hour of the last settle that owed nothing ({before})");
     assert_eq!(side.last_frame().layers[0].shown, Some(stands), "the host shows that hour");
     held.set(true);
@@ -708,10 +633,6 @@ fn clocked(at: u32, store: &mut Store) {
     store.table(TableId::Clock.index()).unwrap().write(0, column(TableId::Clock, "hour"), Cell::I32(at as i32)).unwrap();
 }
 
-/// A graphics pool whose limit compares the date (it holds from hour 70) decides the rosters, and
-/// no table they read changes between hours 64 and 76: past 70 they are resolved again, at the hour
-/// the pool decides otherwise. On the base only a changed table resolved a known roster again, and
-/// task force 202 kept the roster the pool chose before hour 70.
 #[test]
 fn a_roster_whose_graphics_limit_compares_the_date_is_resolved_again_when_it_decides_otherwise() {
     let naval = fake_with(Some(70));
@@ -725,8 +646,6 @@ fn a_roster_whose_graphics_limit_compares_the_date_is_resolved_again_when_it_dec
     assert_eq!(drawn(&side)[1].3, vec![naval.asked(202)], "and drawn from that answer");
 }
 
-/// [`Fake`]'s rosters read from the rows as today's are: a task force with no ship in the rows of
-/// the frame's hour, as the function says of it and the hour, has no roster.
 struct FromRows(Arc<Fake>, fn(u64, i32) -> bool);
 
 impl Naval for FromRows {
@@ -765,19 +684,15 @@ impl Naval for FromRows {
     }
 }
 
-/// A task force born in a step the map applied while the rosters' rows still stand before it (the
 fn leaves(force: u64, hour: i32) -> bool {
     force == 202 && hour >= 150
 }
 
-/// Sought to `hour`, with frames at it until the map applied it and composed, then settled whole.
 fn sought(side: &mut MapSide, hour: i32) {
     sought_alone(side, hour);
     side.settle_all().unwrap();
 }
 
-/// [`sought`] without the whole settle: for a test that holds a roster build at the gate, which a
-/// whole settle would wait for.
 fn sought_alone(side: &mut MapSide, hour: i32) {
     side.entry().playhead().seek(hour);
     while side.applied() != Some(hour) || side.composing() {
@@ -786,15 +701,10 @@ fn sought_alone(side: &mut MapSide, hour: i32) {
     }
 }
 
-/// The hull flags task force `force` is drawn with; none while it is not drawn.
 fn hulls(side: &MapSide, force: u64) -> Option<Vec<u64>> {
     drawn(side).into_iter().find(|(id, ..)| *id == force).map(|(.., hulls)| hulls)
 }
 
-/// Sought back from 160 to 140 while the rosters' rows are held at the seek before (202 has its
-/// ship at 140 and none at 160), the worker looks at those rows with 202 asked; released, 202 is
-/// drawn with its ship of 140 and the head never moved. On the base the worker answered from the
-/// seek before's rows, which stand past 140, and 202 kept no roster for good.
 #[test]
 fn a_roster_asked_after_a_seek_back_is_answered_from_that_seeks_rows_never_the_one_before() {
     let mut side = side_of("ships-seek-back", View::default(), Arc::new(FromRows(fake(), leaves)), campaign);
@@ -811,10 +721,6 @@ fn a_roster_asked_after_a_seek_back_is_answered_from_that_seeks_rows_never_the_o
     composed_equal(&side);
 }
 
-/// A roster build over the rows of 160 (202 has no ship there) is held on the worker while the map
-/// seeks back to 140 with the rosters' rows held; let go, its answers are the seek before's and
-/// are dropped: 202 still waits, and once the rows of 140 come it is drawn with its ship. On the
-/// base the layer took the build's answer at 140, and 202 was drawn with no ship.
 #[test]
 fn a_roster_build_across_a_seek_back_answers_nothing() {
     let held = HeldRosters::new(Arc::new(FromRows(fake(), leaves)));
@@ -822,11 +728,8 @@ fn a_roster_build_across_a_seek_back_answers_nothing() {
     held.set(false);
     let (_, left) = held.builds();
     sought_alone(&mut side, 160);
-    // The build at the gate is over the rows at 160, which is what this test is about.
     held.arrived_at(160);
     sought_alone(&mut side, 140);
-    // That build alone goes through, and the next — over the rows of the seek the map is at —
-    // waits at the gate, so task force 202 can only still be waiting.
     held.let_through(1);
     held.builds_past(left, true);
     held.arrived_at(140);
@@ -838,9 +741,6 @@ fn a_roster_build_across_a_seek_back_answers_nothing() {
     composed_equal(&side);
 }
 
-/// [`campaign`]'s world with two changes, each asking one task force's roster again: task force
-/// 201's ship changes model at hour 100, the hour the test drains the worker at, and task force
-/// 202's at hour 101, in the step after it. Nothing is left unrecorded.
 fn apart(at: u32, store: &mut Store) {
     for table in TABLES {
         store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
@@ -853,22 +753,6 @@ fn apart(at: u32, store: &mut Store) {
     }
 }
 
-/// The hour the layer says its figures stand at is bounded by the roster the worker owes, and by
-/// nothing else.
-///
-/// The gate holds the build of hour 100's change (task force 201's) while the head runs on to 104,
-/// which applies hour 101's change (task force 202's) and asks its roster too; one build is then
-/// let through — 201's, resolved from the rows at 100 — and the next waits at the gate with 202's
-/// ask in it. No settle between hour 96 and here owed nothing, so the last hour the layer stood at
-/// owing nothing is 96; it must now say it stands at the rows that build answered from, 100, which
-/// is the hour before the change at 101 it still owes. On the base it said 96, and went on saying
-/// the hour of that settle for as long as anything was outstanding; at the top speed something is
-/// outstanding at nearly every publication, so what it said fell behind the head without bound and
-/// the step judge refused the ships layer by name.
-///
-/// Every wait here is a hand-over: the builds that came to the gate and left it, and the head the
-/// side has applied. Nothing waits on the clock, and nothing is asserted that a thread had to have
-/// reached first.
 #[test]
 fn the_hour_the_figures_stand_at_is_bounded_by_the_roster_the_worker_owes() {
     let held = HeldRosters::new(fake());
@@ -877,20 +761,14 @@ fn the_hour_the_figures_stand_at_is_bounded_by_the_roster_the_worker_owes() {
     assert_eq!(layer(&side).published(), Published::Current, "everything drawn stands at the hour applied");
     let (came, left) = held.builds();
     held.set(false);
-    // Hour 100's change asks task force 201's roster, and its build waits at the gate over the
-    // rows at 100: the head is there and no later rows exist.
     applied_to(&mut side, 100);
     held.builds_past(came, false);
     assert!(layer(&side).waiting() > 0, "task force 201 waits for the roster the gate holds");
-    // Hour 101's change asks task force 202's; both are owed at every settle from here to 104.
     applied_to(&mut side, 104);
     assert!(layer(&side).waiting() > 0, "a task force still waits for the roster the gate holds");
-    // 201's build goes through and 202's waits at the gate: the rows answered are hour 100's.
     held.let_through(1);
     held.builds_past(left, true);
     held.builds_past(came + 1, false);
-    // A publication's own settle, which waits for no product: a whole settle would wait for the
-    // build at the gate.
     side.frame(104).unwrap();
     assert!(layer(&side).waiting() > 0, "task force 202 waits for the roster the gate holds");
     let Published::At(stands) = layer(&side).published() else {

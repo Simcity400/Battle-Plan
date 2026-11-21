@@ -4,17 +4,13 @@ import type { EventBadge } from './badges.ts';
 import type { PlotFrame } from './frame.ts';
 import type { ChartTokens } from './tokens.ts';
 
-/** Stable ordered event ordinals; a cluster's members are requested as list pages. */
 export interface MarkCluster {
   firstHour: number;
   lastHour: number;
   firstOrdinal: string;
   count: string;
-  /** A single event retains its authored glyph. Dense cells show their count. */
   badge?: EventBadge;
-  /** The consumer attaches its actor identity; it is never part of an ordinal. */
   tag?: string;
-  /** Made of tiles: its bins with drops, each (last hour, drops), so the head inside it shows those it has passed. */
   bins?: readonly (readonly [number, number])[];
 }
 export interface MarkSummary {
@@ -24,19 +20,13 @@ export interface MarkSummary {
   clusters: readonly MarkCluster[];
   placement?: 'ticks' | 'badges';
   color?: string;
-  /** Made of tiles: its clusters run past the hours shown, and only those whose bin the head has passed are shown. */
   tiles?: true;
 }
 
-/** Whether `cluster` of `summary` is shown whole with the head at `until`: a tiled cluster once the head has passed
- * its last bin with drops. */
 export const clusterShown = (summary: MarkSummary, cluster: MarkCluster, until: number | null) => !summary.tiles || until === null || cluster.lastHour <= until;
 
 const shown = new WeakMap<MarkSummary, { whole: number; part: number; clusters: readonly MarkCluster[] }>();
 
-/** The clusters of `summary` drawn with the head at `until`: of a tiled summary, those the head has passed, and the one
- * it is inside cut to the bins it has passed (its drops theirs, its last hour their last). Made again only when the
- * head passes a bin with drops. */
 export function shownClusters(summary: MarkSummary, until: number | null): readonly MarkCluster[] {
   if (!summary.tiles || until === null) return summary.clusters;
   const clusters = summary.clusters;
@@ -74,8 +64,6 @@ export function drawMarkSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   }), null);
 }
 
-/** Hit the geometry drawn, returning the stable range for exact paged members.
- * A cluster has a date range, never an invented common event date. */
 export function markClusterAt(point: { x: number; y: number }, frame: PlotFrame, summary: MarkSummary, until: number | null = null): MarkCluster | null {
   if (summary.placement === 'ticks') {
     const bottom = frame.plotTop + frame.plotHeight;
@@ -89,8 +77,6 @@ export function markClusterAt(point: { x: number; y: number }, frame: PlotFrame,
   return found;
 }
 
-/** Reference adapter: indexed once, then width-bounded queries. Production sends
- * these summaries from prepared pages and retains only exact reached pages. */
 export function markIndex(source: readonly EventBadge[]) {
   const badges = source.map((badge, index) => ({ badge, index })).sort((a, b) => a.badge.hour - b.badge.hour || a.index - b.index).map(entry => entry.badge);
   const lower = (hour: number) => {
@@ -123,5 +109,4 @@ export function markIndex(source: readonly EventBadge[]) {
   };
 }
 
-/** Cluster counts are decimal strings (exact past 2^53). */
 export const eventCount = (count: string | number) => `${count} ${String(count) === '1' ? 'event' : 'events'}`;

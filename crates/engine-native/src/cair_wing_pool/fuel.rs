@@ -1,12 +1,3 @@
-//! Passive wing-pool simulation fuel used by simulation and carrier tooltips.
-//! No game function, UI state or stored forecast is executed or reconstructed.
-//! Products and divisions retain signed wrapping i64 order. Current mission
-//! state is independent of the saved active byte.
-//!
-//! The caller supplies authenticated pool, definition and member observations
-//! from the same stopped registration walk. Begin one Reader per admitted pass;
-//! construction clears caller-owned memos. Fixed acquisition allocates nothing;
-//! worker buffers grow before publication. No game pointers escape in Packet.
 
 use crate::{
     Memory, air_fuel_defines as defines, air_mission, cace, cair_base, cair_wing, ccountry,
@@ -25,7 +16,6 @@ fn forecast_hash(region: usize) -> usize {
     (region >> 4).wrapping_mul(0x9e37_79b9)
 }
 
-/// Rehash only owned keys, keeping failed observations sticky across growth.
 fn grow_memo<T: Default + Copy>(
     slots: &mut Buffer<'_, T>,
     required: usize,
@@ -51,21 +41,13 @@ fn grow_memo<T: Default + Copy>(
 
 const P: i64 = defines::FIXED_SCALE;
 const SENTINEL: i64 = u32::MAX as i64;
-/// Fuel modifiers requested by both pool getters, with the independent
-/// owner modifier used for ace scaling.
 const FUEL_KEY: u32 = 0x19e;
 const ACE_KEY: u32 = crate::modifier_keys::ACE_EFFECTIVENESS_FACTOR;
-/// The maximum getter scans the first eighteen costs even when content has more.
 const MAXIMUM_MISSIONS: usize = 18;
-/// Current fuel's active branch reads the mission target province.
 const MISSION_PLANES: usize = 0x170;
-/// Four content-defined capacities selected by base type.
 const SUBTYPE_CAPACITIES: usize = 0x600;
-/// Module-property cache pair; dirty state scans modules without consulting validity.
 const SHIP_CARRIER_CACHE: usize = 0x801;
-/// Module entries and each selected definition's capacity contribution.
 const MODULE_CARRIER_FLAG: usize = 0x2d0;
-/// Weather manager coefficients and province-record direction vector.
 const FORECAST_COEFFICIENTS: usize = 0x350;
 const FORECAST_HOURS: usize = 24;
 const FORECAST_VECTOR_BYTES: usize = FORECAST_HOURS * 24;
@@ -76,13 +58,10 @@ type Value = Result<i64, &'static str>;
 pub struct Packet {
     pub current: Option<i64>,
     pub maximum: Option<i64>,
-    /// Diagnostics only; neither static reason nor a native pointer is wire data.
     pub current_failure: Option<&'static str>,
     pub maximum_failure: Option<&'static str>,
 }
 
-/// Acquisition-only projection of the registration walk's authenticated pool
-/// and DefinitionIdentity. Copy from that observation, never from a later lookup.
 #[derive(Clone, Copy, Debug)]
 pub struct PoolInput {
     pub pointer: usize,
@@ -92,8 +71,6 @@ pub struct PoolInput {
     pub wing_count: u32,
 }
 
-/// One pool accumulator accepts each authenticated primary-wing occurrence,
-/// including repeats, in the copied membership order. It holds no wing arena.
 pub struct PoolRead {
     input: PoolInput,
     seen: u32,
@@ -135,7 +112,6 @@ impl PoolRead {
     }
 }
 
-/// Slot indexed by the authenticated canonical country slot, reserved0 included.
 #[derive(Default, Clone, Copy)]
 pub struct CountryTerms {
     pointer: usize,
@@ -143,15 +119,12 @@ pub struct CountryTerms {
     ace: Option<Value>,
 }
 
-/// Open-addressed ace cache. Retain failures as well as successes.
 #[derive(Default, Clone, Copy)]
 pub struct AceSlot {
     reference: u64,
     value: Option<Value>,
 }
 
-/// Regional night-count cache. Every query shares this Reader's
-/// exact native24-hour window and threshold; modes only select its complement.
 #[derive(Default, Clone, Copy)]
 pub struct ForecastSlot {
     region: usize,
@@ -167,10 +140,6 @@ struct ForecastSource {
     scale: i64,
 }
 
-/// All variable storage belongs to the prepared collector packet. For W
-/// admitted wing occurrences, 2W ace/forecast slots bound all distinct keys;
-/// country storage uses the live canonical table count. Capacity shortages
-/// refuse only the reached query and never fall back to an allocating reader.
 pub struct Reader<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -262,8 +231,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             pool.refuse(reason);
             return pool;
         }
-        // Maximum's first dependency is its complete native18-cost prefix.
-        // Empty sums are known zero and demand none of the per-wing inputs.
         if input.wing_count != 0
             && let Err(reason) = self.maximum_cost()
         {
@@ -273,8 +240,6 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 
     fn reserve_wings(&mut self, count: usize) -> Result<(), &'static str> {
-        // Both fuel getters visit every copied pool member. Each occurrence can
-        // reach at most one ace key and forecast key in this pass.
         self.wing_demand = self
             .wing_demand
             .checked_add(count)
@@ -292,17 +257,10 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
-    /// `wing` is a nonnull primary pointer already authenticated with full
-    /// type69 handle and pool backlink in this registration observation.
-    /// Call once for every copied occurrence; no deduplication or reread of
-    /// pool/definition identity is needed. The final count certifies coverage.
     pub fn wing(&mut self, pool: &mut PoolRead, wing: usize) {
         let _ = self.wing_observation(pool, wing, false);
     }
 
-    /// Share the original plane-count attempt with the carrier plane sum.
-    /// Failed current/maximum fuel branches cannot heal a failed plane read;
-    /// only an unreached plane-count leaf is acquired once on this demand.
     pub fn wing_with_planes(
         &mut self,
         pool: &mut PoolRead,
@@ -400,8 +358,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             cair_wing::MISSION + air_mission::CURRENT_TYPE,
         )?;
         let (count, index) = if current != 0 {
-            // The mission-index helper arithmetic-shifts until zero. Negative masks
-            // do not terminate; multi-bit masks violate its assertion.
             if current < 0 || !(current as u32).is_power_of_two() {
                 return Err("carrier current mission is not one positive bit");
             }
@@ -635,9 +591,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             if field::<u8>(self.memory, host, cship::FORMATION_FLAGS)? & 0x80 != 0 {
                 3
             } else {
-                // A valid cache may be stale; preserve it exactly. Dirty state recomputes
-                // all stored variant and module occurrences without writes, independently
-                // of equipment amounts.
                 let valid: u8 = field(self.memory, host, SHIP_CARRIER_CACHE + 1)?;
                 let special = if valid != 0 {
                     field::<u8>(self.memory, host, SHIP_CARRIER_CACHE)?
@@ -662,7 +615,6 @@ impl<'a, M: Memory> Reader<'a, M> {
                 cair_base::CAPACITY,
             )?))
         } else {
-            // The air-type assertion precedes subtype capacity dispatch.
             if flags & 0x1f_0037_fc00 == 0 {
                 return Err("carrier training subtype is not air");
             }
@@ -679,8 +631,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .checked_add(cship::EQUIPMENT_POOL)
             .ok_or("carrier host equipment pool address overflow")?;
         let variants = cequipment_variant_pool::entries(self.memory, self.base, pool)?;
-        // Native breaks only the inner loop. Do not stop at a positive module:
-        // it still dereferences every later variant and its earlier modules.
         let mut found = false;
         for index in 0..variants.count {
             let entry = variants
@@ -815,7 +765,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Err("carrier forecast region census mismatch");
         }
         let provinces = array(self.memory, region, cstrategic_region::PROVINCES, 8)?;
-        // An empty division returns the unsigned u32 sentinel rather than zero.
         if provinces.count == 0 {
             return Ok([SENTINEL; FORECAST_HOURS]);
         }
@@ -915,7 +864,6 @@ fn current_term(modified: i64, weight: i64, mission_cost: i64) -> i64 {
     (modified.wrapping_mul(weight) / P).wrapping_mul(mission_cost) / P
 }
 fn maximum_term(planes: i32, modified: i64, weight: i64, cost: i64) -> i64 {
-    // Retain the multiplication by 100000 before division; do not cancel it.
     let amount = i64::from(planes).wrapping_mul(modified).wrapping_mul(P) / P;
     (amount.wrapping_mul(weight) / P).wrapping_mul(cost) / P
 }
@@ -928,7 +876,6 @@ fn capacity_gate(planes: i32, capacity: i32, threshold: i64) -> bool {
     }
 }
 fn province_forecast(vector: [i64; 3], coefficients: [i64; 3], subtract: i64, scale: i64) -> i64 {
-    // Sum separately truncated X, Z and Y terms, then subtract and scale.
     let value = (coefficients[0].wrapping_mul(vector[0]) / P)
         .wrapping_add(coefficients[2].wrapping_mul(vector[2]) / P)
         .wrapping_add(coefficients[1].wrapping_mul(vector[1]) / P);

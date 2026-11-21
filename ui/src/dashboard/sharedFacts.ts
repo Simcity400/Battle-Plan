@@ -1,38 +1,26 @@
-/** Country facts at an hour shared by every widget reading them through one fact spec on one
- * recording: an hour's country is asked once however many widgets want it, and what it was told
- * is kept for the next to want it, so widgets on a page, and pages shown in turn, ask only for
- * what none has asked for. Kept apart from the product cache, bounded by hours. */
 import type { DashboardClient } from './client';
 import type { Failure } from './queryError';
 import { PerClient } from './prepare.ts';
 
 export interface FactFailure { error: Failure; retryable: boolean }
 
-/** What a request told: each country's value (a country it lacks has none), or that it failed,
- * and whether it may be tried again. */
 export type Told<V> = ReadonlyMap<string, V> | { failed: FactFailure };
 
-/** Asks for countries at an hour; never rejects. */
 export type Ask<V> = (hour: number, tags: readonly string[], signal: AbortSignal) => Promise<Told<V>>;
 
-/** What one read found: the countries told, with or without a value, and those failed. */
 export interface SharedRead<V> { found: Map<string, V>; failed: Map<string, FactFailure> }
 
-/** One request for countries at an hour, shared by every read waiting on it. */
 interface Asking<V> {
   readonly tags: readonly string[];
   readonly controller: AbortController;
   told: Promise<Told<V>>;
-  /** Reads waiting on it: it is cancelled only once none does. */
   waiting: number;
   settled: boolean;
 }
 
-/** A country's answer: its value (none when told without one), or the request telling it. */
 type Entry<V> = { value: V | undefined } | Asking<V>;
 const asking = <V>(entry: Entry<V>): entry is Asking<V> => 'controller' in entry;
 
-/** The hours kept, the ones used most recently. */
 export const SHARED_FACT_HOURS = 64;
 
 export class SharedFacts<V> {
@@ -40,8 +28,6 @@ export class SharedFacts<V> {
   private readonly ask: Ask<V>;
   constructor(ask: Ask<V>) { this.ask = ask; }
 
-  /** The countries `tags` at `hour`: told before, joined to a request telling them, or asked
-   * now, all but the first only if no read asks them yet. Null once `signal` is aborted. */
   async read(hour: number, tags: readonly string[], signal: AbortSignal): Promise<SharedRead<V> | null> {
     if (signal.aborted) return null;
     const known = this.hours.get(hour) ?? new Map<string, Entry<V>>();
@@ -88,7 +74,6 @@ export class SharedFacts<V> {
       const held = this.hours.get(hour);
       for (const tag of tags) {
         if (held?.get(tag) !== each) continue;
-        // A failure is never kept: the next read asks again.
         if ('failed' in result) held.delete(tag);
         else held.set(tag, { value: result.get(tag) });
       }
@@ -98,14 +83,12 @@ export class SharedFacts<V> {
     for (const tag of tags) known.set(tag, each);
   }
 
-  /** A request no read waits on any more: cancelled, and its countries left for the next read to ask. */
   private abandon(hour: number, each: Asking<V>): void {
     const held = this.hours.get(hour);
     for (const tag of each.tags) if (held?.get(tag) === each) held.delete(tag);
     each.controller.abort();
   }
 
-  /** Drops the hours used least recently past [`SHARED_FACT_HOURS`], never one still being asked. */
   private evict(): void {
     if (this.hours.size <= SHARED_FACT_HOURS) return;
     for (const [hour, known] of this.hours) {
@@ -115,7 +98,6 @@ export class SharedFacts<V> {
   }
 }
 
-/** `promise`, or null once `signal` is aborted first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | null> {
   if (signal.aborted) return Promise.resolve(null);
   return new Promise(resolve => {
@@ -125,13 +107,9 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | 
   });
 }
 
-/** Each client's shared facts, by source, then fact spec, then the recording's revision, branch
- * and content revision. */
 const shared = new PerClient<Map<string, WeakMap<object, Map<string, SharedFacts<unknown>>>>>();
-/** Recordings' revisions, branches and contents kept per spec and source, the latest used first. */
 const KEPT_SCOPES = 4;
 
-/** The facts `spec` reads on one recording at one content revision, shared by every reader. */
 export function sharedFacts<V>(client: DashboardClient, sourceId: string, scope: string, spec: object, ask: () => Ask<V>): SharedFacts<V> {
   let sources = shared.get(client);
   if (!sources) shared.set(client, sources = new Map());
@@ -150,7 +128,6 @@ export function sharedFacts<V>(client: DashboardClient, sourceId: string, scope:
   return facts;
 }
 
-/** Forgets every fact read on a source: it is released, or its products are read again. */
 export function forgetFacts(client: DashboardClient, sourceId: string): void {
   shared.get(client)?.delete(sourceId);
 }

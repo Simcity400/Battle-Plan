@@ -1,14 +1,3 @@
-//! ConstructionLineOutput: the civilian-factory output each construction line
-//! consumed, totalled per recording branch from the daily progress the
-//! `construction_ic` hooks observe.
-//!
-//! Nothing is read from the game for it. Every clocked hour the callback hands the
-//! hook log over into this pack's preallocated entries ([`Captured::drain`]); the
-//! spool adds them to the branch's [`Totals`] and publishes the table with that
-//! hour's BuildingConstruction and RailwayConstruction census, which decides which
-//! lines ended and which were created after the observation began. The table shares
-//! the census's daily slot: off it, the spool carries the last publication, until a
-//! day's output goes unobserved.
 use super::output_continuity::OutputMap;
 use super::output_continuity::{self, Progress, Reasons, State};
 pub use super::output_continuity::{Receipt, holds_publication};
@@ -36,7 +25,6 @@ pub fn identity_conflicts() -> u64 {
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ConstructionLineOutput];
 
-/// The spool replaces this placeholder with the published table.
 pub const ASSEMBLED_BY_SPOOL: &str =
     "assembled by the spool from the construction output the hooks observed";
 
@@ -51,10 +39,8 @@ impl output_continuity::Observation for Observation {
 }
 pub type Captured = output_continuity::Captured<Observation>;
 
-/// One line's output on the branch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Line {
-    /// The first hour whose drain or census showed the line.
     first_hour: i32,
     railway: bool,
     identity: Option<Identity>,
@@ -68,9 +54,7 @@ struct Line {
     ticks: i32,
     repair_ticks: i32,
     linked: bool,
-    /// Its factories contributed to a partner whose combined output is recorded.
     unknown_share: bool,
-    /// The publication that first showed it ended; dropped once one written did.
     ended: Option<u64>,
     completion: Option<ConstructionCompletion>,
     count_reset: i64,
@@ -100,13 +84,11 @@ impl Line {
     }
 }
 
-/// The branch's per-line totals, owned by the spool for one campaign.
 #[derive(Debug, Default)]
 pub struct Totals {
     shared: output_continuity::Totals<Line>,
 }
 
-/// A census table this hour: its rows, skipped (the slot is not read), or why not.
 enum Census<'a, T> {
     Rows(&'a [T]),
     Skipped,
@@ -135,9 +117,6 @@ fn census<'a, T>(
 }
 
 impl Totals {
-    /// Account this frame's drain and publish ConstructionLineOutput into
-    /// `tables`, beside the frame's construction queues. Runs before the
-    /// staggered carry, so an off-slot hour's skip is carried like any daily table's.
     pub fn assemble(
         &mut self,
         branch: BranchId,
@@ -160,11 +139,9 @@ impl Totals {
         tables[TableId::ConstructionLineOutput.index()] = TableInput::Sampled(published);
     }
 
-    /// Taken after a frame's assembly, before it is queued, from its scoped table.
     pub fn receipt(&self, output: &TableInput) -> Receipt {
         self.shared.receipt(output)
     }
-    /// After the frame of `receipt` was actually written.
     pub fn written(&mut self, receipt: Receipt) {
         self.shared.written(receipt);
     }
@@ -261,7 +238,6 @@ impl Totals {
             .prepare_publication(hour, live.keys().copied())?;
         reserve_map(&mut self.shared.lines, live.len())?;
         let baseline = &self.shared.census;
-        // Every live line has a row; linked partners retain an unknown share.
         for (&handle, &railway) in &live {
             self.shared.lines.entry(handle).or_insert_with(|| Line {
                 first_hour: hour,
@@ -302,8 +278,6 @@ impl Totals {
             } else {
                 line.ended.or(Some(publication))
             };
-            // Absent from the first census and first seen after it: created
-            // after that census, so every day of its life was observed.
             let observed_since_creation = baseline.observed_since_creation(handle, line.first_hour);
             ConstructionLineOutputRow {
                 line: handle,
@@ -378,7 +352,6 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
     if let Some(identity) = entry.identity {
         line.observe_identity(identity);
     }
-    // New output is in no publication yet.
     line.ended = None;
     if let Some(completion) = entry.completion {
         if completion.hour > hour
@@ -416,8 +389,6 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
         } else {
             &mut line.construction
         };
-        // Undo the wrapping addition of speed and bank.
-        // Restore the original signed factory operand even if it wrapped.
         *total = sum(*total, entry.amount.wrapping_sub(entry.bank))?;
         line.bank = sum(line.bank, entry.bank)?;
     }
@@ -673,8 +644,6 @@ mod tests {
             hour: 120,
             cancelled: false,
         };
-        // Partner removed inside AdvanceProduction; its daily getter is never
-        // reached. The primary's ordinary getter completes separately.
         for line in [LINE_B, LINE_A] {
             add(
                 &mut lines,
@@ -697,8 +666,6 @@ mod tests {
         let partner = rows.iter().find(|row| row.line == LINE_B).unwrap();
         assert!(!partner.exact);
         assert_eq!((partner.construction_raw, partner.ticks), (0, 0));
-        // Attaching after the primary's spend must not make its completed
-        // partner's output look like an exact unlinked zero.
         let mut after_spend = Totals::default();
         add(
             &mut after_spend.shared.lines,
@@ -828,7 +795,6 @@ mod tests {
         queued(totals, 1, hour, captured, tables).0
     }
 
-    /// One frame through the totals, with the receipt its queued write carries.
     fn queued(
         totals: &mut Totals,
         branch: BranchId,
@@ -857,13 +823,9 @@ mod tests {
         }
     }
 
-    /// Output splits into construction, repair and instant; the bank draw is kept
-    /// apart; a line created after the first census covers its whole life; an
-    /// ended line is published once more, then dropped.
     #[test]
     fn totals_split_by_kind_and_publish_with_the_census() {
         let mut totals = Totals::default();
-        // The branch's first frame: its drained output came before it.
         published(
             &mut totals,
             0,
@@ -924,7 +886,6 @@ mod tests {
         let rail = &first[2];
         assert_eq!((rail.railway, rail.construction_raw), (true, 180));
         assert!(first.iter().all(|row| row.since_hour == 0 && !row.ended));
-        // LINE_A leaves the queue: published as ended until a written frame held it.
         let (ended, receipt) = queued(
             &mut totals,
             1,
@@ -999,9 +960,6 @@ mod tests {
         assert!(!ended[1].exact);
     }
 
-    /// Off the census's slot the table is skipped (and carried); a lost drain
-    /// withholds it for the rest of the branch; output still in the log leaves
-    /// the hour unavailable.
     #[test]
     fn lost_output_withholds_and_an_incomplete_hour_is_unavailable() {
         let mut totals = Totals::default();
@@ -1025,7 +983,6 @@ mod tests {
             published(&mut totals, 24, &waiting, census_of(&[LINE_A], &[])),
             TableView::Unavailable { reason } if reason.contains("still in the log")
         ));
-        // Entries 1 and 2 are lost: the next drain starts past them.
         let view = published(
             &mut totals,
             48,
@@ -1197,7 +1154,6 @@ mod tests {
         );
     }
 
-    /// A late write retires only the ends its own publication showed.
     #[test]
     fn a_late_write_retires_only_the_ends_its_publication_showed() {
         let mut totals = Totals::default();
@@ -1215,7 +1171,6 @@ mod tests {
             census_of(&[LINE_B], &[]),
         );
         assert!(rows(first)[0].ended);
-        // LINE_B ends while the first frame still waits for its write.
         let (second, _lost_b) = queued(&mut totals, 1, 48, &captured(0, &[]), census_of(&[], &[]));
         assert!(rows(second).iter().all(|row| row.ended));
         totals.written(ended_a);
@@ -1232,7 +1187,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(LINE_B, true)]
         );
-        // The second frame's write failed: its receipt is lost, LINE_B repeats.
         let (fourth, held_b) = queued(&mut totals, 1, 96, &captured(0, &[]), census_of(&[], &[]));
         assert_eq!(rows(fourth).len(), 1);
         totals.written(held_b);
@@ -1247,7 +1201,6 @@ mod tests {
         );
     }
 
-    /// Output after an end still queued is in no written publication.
     #[test]
     fn output_after_an_unwritten_end_survives_its_late_write() {
         let mut totals = Totals::default();
@@ -1271,7 +1224,6 @@ mod tests {
         assert_eq!((after[0].construction_raw, after[0].ended), (9, true));
     }
 
-    /// A write completing after a load retires nothing on the new branch.
     #[test]
     fn an_old_branch_write_never_retires_the_new_branch_lines() {
         let mut totals = Totals::default();

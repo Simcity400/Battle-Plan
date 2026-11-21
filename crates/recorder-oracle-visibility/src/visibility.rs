@@ -1,6 +1,3 @@
-//! Fog-rebuild inputs (L2b): RelationLinks against the saved relations that set
-//! its slots, LocalPlayer against the saved `player` tag, and named limitations
-//! for the inputs no save serializer writes.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -53,14 +50,6 @@ pub fn compare(
     }
 }
 
-/// The attache relation sets the second country's status toward the first.
-/// Air-base access, military access and docking rights set the first country's
-/// status toward the second, while their offers set the second's toward the first.
-/// Removing a link clears its status, so
-/// each saved relation of those types is one set slot. A relation is saved
-/// under both endpoints; the slot is counted once. The co-belligerent byte
-/// is rebuilt at load by wartime-ally rebuilding and never
-/// saved, so it is excluded here and named as a limitation.
 pub fn compare_links(
     frame: &DecodedFrame,
     save: &Save,
@@ -157,9 +146,6 @@ pub fn compare_links(
     Ok(())
 }
 
-/// The save serializes relation objects, never the current association
-/// or the sparse owner-coverage certificate. Check current suffix admission
-/// independently while keeping the saved link-byte comparison unchanged.
 fn compare_transport_subject_access(
     frame: &DecodedFrame,
     rows: &[RelationLinkRow],
@@ -279,9 +265,6 @@ mod transport_subject_tests {
     }
 }
 
-/// The access-mode writer's access-mode field emits a pair only for CHAR > 0. A fresh native save
-/// cannot explicitly contain zero/high-bit modes. Keep duplicates and unsupported saved forms
-/// visible instead of normalizing them.
 pub fn saved_access_modes(pairs: &[(u32, u8)]) -> io::Result<BTreeMap<u32, u8>> {
     let mut expected = BTreeMap::new();
     for &(region, mode) in pairs {
@@ -299,8 +282,6 @@ pub fn saved_access_modes(pairs: &[(u32, u8)]) -> io::Result<BTreeMap<u32, u8>> 
     Ok(expected)
 }
 
-/// The access-mode writer saves only signed-positive CHAR access modes. The table retains
-/// every nonzero raw byte; omitted high-bit values have no exact save witness.
 pub fn compare_naval_access(
     frame: &DecodedFrame,
     save: &Save,
@@ -353,11 +334,6 @@ pub fn compare_naval_access(
     Ok(())
 }
 
-/// `AceRangeInputs` against the saved ace rosters (`countries.<tag>.ace`, in roster order) and the
-/// saved wings' `ace` references. The ace block carries `alive` but not its assigned wing; the save
-/// names that wing only from the wing side, the wing's ace reference, which ace assignment keeps
-/// paired with it (assignment, deployment, deletion and disband; marking an ace dead clears
-/// neither). The table is read for every country each hour.
 pub fn compare_ace_inputs(
     frame: &DecodedFrame,
     save: &Save,
@@ -442,18 +418,12 @@ pub fn compare_ace_inputs(
     Ok(())
 }
 
-/// The bound variant quantity insertion clamps every running sum to: a variant's amount and its
-/// archetype's total each saturate on their own.
 const AMOUNT_LIMIT: i128 = 0x53e2_d620_fb40;
 
-/// Why a recorded archetype total away from a load is not compared.
 const RUNTIME_TOTAL: &str = "away from a load an archetype total is its own running sum, clamped at the bound apart from its variants' amounts, and the save keeps only the variants: they do not certify a total that may have reached the bound since the load";
 
-/// Why saved variant amounts a load could clamp in more than one way derive no total.
 const ORDERED_TOTAL: &str = "a load inserting these saved variant amounts could clamp the archetype total at the bound in more than one way, depending on the order of insertion";
 
-/// One saved variant as a load inserts it: the amount it ends at and the range of amounts it
-/// takes on the way, zero included.
 #[derive(Clone, Copy)]
 struct LoadedAmount {
     last: i64,
@@ -461,9 +431,6 @@ struct LoadedAmount {
     low: i64,
 }
 
-/// One archetype's saved variants as a load inserts them. Set-quantity moves the archetype total
-/// by each variant's change from its previous amount and clamps it, so a repeated variant's last
-/// amount stands.
 #[derive(Default)]
 struct LoadedVariants {
     variants: BTreeMap<u64, LoadedAmount>,
@@ -489,8 +456,6 @@ impl LoadedVariants {
         );
     }
 
-    /// The archetype total the load leaves, or `None` when the order of insertion could change
-    /// how the bound clamps it.
     fn total(&self) -> Option<i128> {
         let (mut sum, mut high, mut low) = (0_i128, 0_i128, 0_i128);
         for amount in self.variants.values() {
@@ -499,12 +464,10 @@ impl LoadedVariants {
             low += i128::from(amount.low);
         }
         if high <= AMOUNT_LIMIT && low >= -AMOUNT_LIMIT {
-            // Every running total lies between `low` and `high`: nothing clamps.
             Some(sum)
         } else if self.repeated {
             None
         } else if low == 0 {
-            // Running totals only grow, and stay at the bound once they reach it.
             Some(sum.min(AMOUNT_LIMIT))
         } else if high == 0 {
             Some(sum.max(-AMOUNT_LIMIT))
@@ -514,16 +477,6 @@ impl LoadedVariants {
     }
 }
 
-/// `StockpileArchetypes` against the saved stockpile. The table is the first array of each
-/// country's production status stockpile pool, kept for the archetypes a raid type lists as
-/// essential, in whole units capped at the largest amount any raid type requires (`essential_caps`,
-/// by archetype name); the save writes only the pool's variant rows (`equipments`, the variant
-/// quantity writer). Every quantity reaches both through variant quantity insertion, which adds it
-/// to the variant and to its archetype's total (the definition's archetype link), each clamped at
-/// the bound on its own. So only at a load hour, when the game has just rebuilt each total from
-/// the saved variants ([`LoadedVariants`]), do they certify it; elsewhere a total is compared only
-/// with the whole units the collector can record at all ([`RUNTIME_TOTAL`]). A variant's
-/// archetype is its `VariantDefinitions.archetype_token`. Every country is read each hour.
 pub fn compare_stockpile_archetypes(
     frame: &DecodedFrame,
     save: &Save,
@@ -544,7 +497,6 @@ pub fn compare_stockpile_archetypes(
             return Ok(());
         }
     };
-    // Each essential archetype's cap, by the token the rows carry.
     let cap_of: BTreeMap<u32, i32> = tokens
         .iter()
         .filter_map(|(&token, &name)| caps.get(name).map(|&cap| (token, cap)))
@@ -592,8 +544,6 @@ pub fn compare_stockpile_archetypes(
         .map(|(&tag, country)| (country.canonical_slot, tag))
         .collect();
     let certified = report.load_hour;
-    // The collector truncates a total within the bound to whole units and caps them, whatever
-    // the cap's sign.
     let whole = (AMOUNT_LIMIT / 100_000) as i32;
     let mut compared = 0;
     let mut zero_only = 0;
@@ -626,7 +576,6 @@ pub fn compare_stockpile_archetypes(
             row.archetype
         );
         let loaded = expected.remove(&(tag, row.archetype));
-        // No history and no variant, known or not, records a value outside these.
         let (low, high) = ((-whole).min(cap), whole.min(cap));
         if row.units < low || row.units > high {
             compared += 1;
@@ -644,7 +593,6 @@ pub fn compare_stockpile_archetypes(
             report.difference(label, row.units, "no saved country");
             continue;
         }
-        // Compare the signed integer obtained by truncating total / 100000.
         let units = |total: i128| ((total / 100_000) as i32).min(cap);
         let total = loaded.as_ref().map(LoadedVariants::total);
         if !certified {
@@ -676,7 +624,6 @@ pub fn compare_stockpile_archetypes(
             None => zero_only += 1,
         }
     }
-    // Every saved variant has an archetype entry, which the collector records whatever its total.
     for ((tag, archetype), loaded) in expected {
         if !underived.contains_key(tag) && countries.by_tag.contains_key(tag) {
             report.difference(
@@ -714,10 +661,6 @@ pub fn compare_stockpile_archetypes(
     Ok(())
 }
 
-/// The game state save writer writes the saving client's `player` tag
-/// using the signed-positive local tag, else the fallback tag, the
-/// choice `LocalPlayerRow::viewing_country` makes. Only that choice is saved,
-/// so the other reference decodes uncertified.
 fn compare_local_player(
     frame: &DecodedFrame,
     save: &Save,
@@ -755,10 +698,6 @@ fn compare_local_player(
     Ok(())
 }
 
-/// Uncapped volunteer stockpile aircraft use all saved variants, independently of raid essentials.
-/// Group variant amounts by their captured archetype before native whole-plane conversion. The
-/// game reads the archetype totals, which saved variants certify only as
-/// [`compare_stockpile_archetypes`] says.
 pub fn compare_volunteer_stockpile(
     frame: &DecodedFrame,
     save: &Save,
@@ -836,8 +775,6 @@ pub fn compare_volunteer_stockpile(
             "RaidCountryInputs {} volunteer_stockpile_planes",
             String::from_utf8_lossy(tag)
         );
-        // The pool may hold plane archetype totals no saved variant shows, so away from a load
-        // no recorded value is impossible.
         match expected {
             Some(expected) if !certified && expected != actual => report.limitation(
                 RUNTIME_TOTAL,
@@ -863,7 +800,6 @@ pub fn compare_volunteer_stockpile(
     Ok(())
 }
 
-/// Inputs the text save does not carry: they decode, but nothing certifies them.
 fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     for row in complete::<tables::SimulationFeatures>(frame)? {
         if let Some(extent) = report.recorded(
@@ -962,8 +898,6 @@ mod tests {
     use replay_data::{rows::LocalPlayerRow, rows::TableId, rows::TableRows};
     use replay_frame::frame::TableView;
 
-    /// The save names the tag of the playing reference when positive, else of
-    /// the observer's; an alias reference resolves through the links.
     #[test]
     fn the_saved_player_tag_certifies_the_clients_viewing_choice() {
         let (mut frame, mut save, _, _) = super::super::fixtures::fixture();

@@ -1,4 +1,3 @@
-//! Native deployment readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, carmy, carmy_manpower_values, ccountry, cequipment_type, cequipment_variant,

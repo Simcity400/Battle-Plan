@@ -17,7 +17,6 @@ fn column(name: &str) -> usize {
     dashboard_declare::field(TableId::FeedEvents, name).unwrap()
 }
 
-/// A row of FeedEvents as the log hands it: every column not recorded but those `set` names.
 fn row(generation: u64, sequence: u64, set: &[(&str, Cell)]) -> Row {
     let mut cells = vec![Cell::Unrecorded; TableId::FeedEvents.field_count()];
     for (name, cell) in set {
@@ -34,7 +33,6 @@ fn party(reference: u32, slot: Slot) -> Party {
     Party { reference, id: Some(reference), slot }
 }
 
-/// A native event with no operands but its kind and roles.
 fn event(code: u8, hour: i32, actor: Slot, target: Slot) -> FeedEvent {
     FeedEvent {
         generation: 1,
@@ -128,13 +126,11 @@ fn a_feed_rows_cells_read_back_typed_and_what_was_not_recorded_stays_so() {
     assert_eq!(read.costs, Some([Some(-5_000_000), None]));
     assert_eq!(read.id(), "native:1:42");
 
-    // A cause not recorded leaves every cause operand not recorded, and no scope graph is none.
     let bare = row(FeedEventRow::DERIVED, 5 << 32 | 3, &[("hour", number(5)), ("read_hour", number(5)), ("kind", number(i64::from(FeedEventRow::CEASED_TO_EXIST))), ("actor_reference", number(11)), ("target_reference", number(0))]);
     let read = columns.read(&bare).unwrap();
     assert_eq!((&read.cause, &read.scopes, &read.costs, &read.token), (&None, &None, &None, &None));
     assert_eq!(read.actor.slot, Slot::NotRecorded);
     assert_eq!(read.id(), "derived:5:3");
-    // A column the writer always records refuses the row when missing.
     assert!(columns.read(&row(1, 1, &[("hour", number(5))])).is_err());
 }
 
@@ -318,7 +314,6 @@ fn a_logged_strike_reads_back_whole_and_a_refused_part_is_never_totalled() {
     assert_eq!((row.id.as_str(), row.hour, row.read_hour, row.kind), ("nuclear:9", 40, 41, EventFeedKind::NuclearStrike));
     let detail = row.strike.unwrap();
     assert_eq!((detail.state, detail.building_levels, detail.war_support, detail.units), (Some(1_204), Some(2.5), Some(-25.0), Some(1)));
-    // Air crews belong to the refused equipment calls: neither manpower nor equipment is totalled.
     assert_eq!((detail.manpower_lost, detail.equipment_lost), (None, None));
     assert_eq!(detail.not_recorded, ["equipment: equipment destruction writers not forwarded (1×)"]);
     assert_eq!(super::nuclear::detail(&NuclearStrikeRow::default()).state, None, "a province without a state");
@@ -375,8 +370,6 @@ fn the_naming_readers_warmed_at_open_are_kept_at_the_head_for_the_first_page() {
     assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions().iter().map(|at| at.1).collect::<Vec<_>>(), [140], "the first page resumes the readers the open left at the head, never restores its own");
 }
 
-/// The open reads every run's feed log into the scope index on a thread of its own: a scope asked after it passes
-/// over no log. Before, the first scoped page of each run paid that pass while it was waited on.
 #[test]
 fn the_scope_index_warmed_at_open_holds_every_run_of_the_timeline() {
     use crate::test_fixtures::{CAMPAIGN, records, source};
@@ -397,10 +390,6 @@ fn the_scope_index_warmed_at_open_holds_every_run_of_the_timeline() {
     assert!(super::scope::kept(&source).is_empty(), "forgotten with the recording's index");
 }
 
-/// A page away from the head keeps its own naming readers where it stopped, beside the head's: the
-/// same page asked again, or the next forward, moves on from them instead of restoring nine tables,
-/// and a page before every kept set restores rather than move one back. LT7 measured ~1 s a card
-/// page at mid-war from the one kept set, which every page away from it restored.
 #[test]
 fn each_page_keeps_its_naming_readers_where_it_stopped_and_the_next_takes_the_nearest_behind_it() {
     use crate::test_fixtures::{CAMPAIGN, records, source};
@@ -444,8 +433,6 @@ fn the_spans_coverage_notices_from_the_incomplete_facet_equal_a_walk_of_its_read
     let kind = declared.facets.iter().position(|facet| facet.name == "kind").unwrap();
     let base = Pattern { run: 1, first: 0, last: 1_000, mask: u128::from(u32::MAX) << facet_shift(kind), value: u128::from(FeedEventRow::READ_INCOMPLETE) << facet_shift(kind), group: 0 };
     let patterns = families::notice_patterns(&[base], facet_shift(at));
-    // (hour, coverage, refusals): partial and unavailable reads, families refused alone and together,
-    // a complete read refusing a family, and more than three of a notice.
     let reads = [(100, 1, 0), (101, 0, 0b11), (102, 2, 0b100), (103, 0, 0), (104, 1, 0b1), (105, 2, 0b1), (106, 0, 0b10000), (107, 0, 0b1)];
     let rows: Vec<(u128, u128, FeedEvent)> = reads
         .iter()
@@ -481,10 +468,6 @@ fn the_spans_coverage_notices_from_the_incomplete_facet_equal_a_walk_of_its_read
     assert!(!patterns.iter().any(|pattern| unheld & pattern.mask == pattern.value), "a row the facet does not hold raises no notice");
 }
 
-/// A scope keeps a row when any of its countries (actor, target, an ally joining with it) held a
-/// tag of the scope at the hour the feed matches the row at: its own hour, a ceased country's last
-/// named hour, a guarantee's start where its tags held then. A role naming no witnessed country
-/// matches nothing.
 #[test]
 fn a_scope_keeps_the_rows_naming_its_countries_by_every_role_at_the_hour_they_are_matched() {
     use super::scope::{Scope, entry};
@@ -523,8 +506,6 @@ fn a_scope_keeps_the_rows_naming_its_countries_by_every_role_at_the_hour_they_ar
     assert!(![war, joined, ceased, exact].iter().any(|row| scope("ITA", 0, 200).admits(row)), "a tag no one held keeps nothing");
 }
 
-/// A scoped page's ordinals and its counts number the kept rows only, by hour then key across
-/// runs, each run's rows taken by its own patterns and their facet values.
 #[test]
 fn a_scoped_page_and_its_counts_number_only_the_rows_kept() {
     use super::scope::{Entry, Scope, count, matched, window};

@@ -47,9 +47,7 @@ impl Viewer {
                 match created {
                     Ok(mut dashboard) => {
                         dashboard.set_diagnostics(self.diagnostics);
-                        // New maps start with the current mute choice.
                         dashboard.set_muted(self.muted);
-                        // Every map of a recording follows one fallback decision per key.
                         dashboard.share_fallbacks(Arc::clone(&self.visual_fallbacks));
                         self.embedded_open = None;
                         self.embedded_seek = None;
@@ -86,7 +84,6 @@ impl Viewer {
             self.follow_visual_checks(ctx, Some(&*frame));
         }
         let actions = pending.actions;
-        // The web shell owns these controls and changes the map's own state.
         for action in actions {
             self.host_map_action(action, ctx, frame);
         }
@@ -95,8 +92,6 @@ impl Viewer {
             self.poll_fly_aircraft(ctx);
         }
         if self.dashboard_active {
-            // Full-map loading may have started before the tab changed. Finish
-            // it once and lend its verified content to dashboard maps.
             self.poll(ctx);
         }
         if self.dashboard_active
@@ -132,15 +127,9 @@ impl Viewer {
             } else {
                 None
             };
-            // The seek is newer than any queued open: the pipe drops earlier
-            // seeks when an open arrives. Its explicit snapshot supersedes
-            // that queue, even if a native picker changed the local selection.
             self.embedded_open = seek_open_target(&seek, accepted, pending_load);
             self.embedded_seek = Some(seek);
         }
-        // A host can select files faster than their content can load. Retain
-        // one pending path and finish the active loader before starting it.
-        // Each pending seek is tied to its requested file, never the old map.
         {
             let _other_cost = replay_frame::cpu::scope("frame.load", Some("other"));
             self.poll(ctx);
@@ -226,7 +215,6 @@ impl Viewer {
         if visible {
             if let Some(hidden) = self.hidden_since.take() {
                 self.started += now.duration_since(hidden);
-                // The host's clock ran on while hidden and sends no anchor on showing: catch up.
                 if self.capture.is_none()
                     && let (Some(head), Some(document)) = (self.playhead, &self.document)
                     && let Some((_, last)) = document.playback.range(head.branch)
@@ -243,16 +231,12 @@ impl Viewer {
             self.input.release();
             self.grab_pointer(ctx);
         }
-        // Invalid input arrives after any earlier coalesced work. Retain its
-        // failure until a later successful open/seek or native user action.
         if let Some(error) = pending.error {
             self.error = Some(error);
         }
         self.report_embedded(ctx);
     }
 
-    /// A saved change of the Campaign map's visual mods, texture quality or anti-aliasing reopens
-    /// it where it stands, once no load runs.
     pub(super) fn follow_campaign_preferences(
         &mut self,
         service: &dashboard::Service,
@@ -284,15 +268,11 @@ impl Viewer {
         }
     }
 
-    /// The Campaign map's visual mod checks and fallback: a finished check marks the maps whose
-    /// mods changed on disk, a check asked for during a load runs again after it, and changed or
-    /// fallen-back content loads again. Dashboard maps reload theirs with the window's `frame`.
     pub(super) fn follow_visual_checks(
         &mut self,
         ctx: &egui::Context,
         frame: Option<&eframe::Frame>,
     ) {
-        // A finished check of the visual mods the open maps show reloads the changed ones.
         if let Some(stale) = self
             .visual_check
             .as_ref()
@@ -304,7 +284,6 @@ impl Viewer {
                 "Visual mods checked: {changed} of {} open map(s) changed since they loaded",
                 stale.checked
             );
-            // Stale dashboard content goes first: the Campaign map's reload would reuse it.
             if let Some(dashboard) = &mut self.dashboard
                 && let Some(frame) = frame
             {
@@ -319,17 +298,12 @@ impl Viewer {
             }
             self.visual_check_note = Some(format!("{note}."));
         }
-        // A check asked for while a map loaded runs again once every load is installed: the
-        // load may have mounted the mods before they changed, after its own last look.
         if self
             .visual_check_after_load
             .due(self.loading_any_map(), self.visual_check.is_some())
         {
             self.check_visual_mods(false, ctx);
         }
-        // The Campaign map's visual mod fallback: its frame's report goes to the one owner
-        // ([`crate::visual_fallback`]), and content that is not what its key holds loads again,
-        // without the mods or with them back, as the user chose.
         if let Some(report) = self.take_visual_report() {
             crate::visual_fallback::lock(&self.visual_fallbacks).reduce(vec![report]);
         }
@@ -345,8 +319,6 @@ impl Viewer {
         {
             self.reload_campaign_map(source, ctx);
         }
-        // A changed Campaign map reloads once no load runs: a load already running may reuse the
-        // stale content, and one that mounted the current files carries another revision.
         if self.loading.is_none()
             && let Some(revision) = self.visual_stale_campaign.take()
             && self
@@ -360,7 +332,6 @@ impl Viewer {
         }
     }
 
-    /// Answers each export among `actions`, which this pass does not run, refused for `why`.
     fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard::protocol::MapAction>, why: &str) {
         for action in actions {
             if let dashboard::protocol::MapAction::Export { request, .. } = action {
@@ -413,8 +384,6 @@ impl Viewer {
             }
             MapAction::Configure { options } => {
                 self.host_perspective(&options);
-                // The campaign map's picker choices come back here, so a restarted viewer
-                // shows them again.
                 self.apply_host_options(&options);
             }
             MapAction::Export {
@@ -452,13 +421,11 @@ impl Viewer {
                     self.export_results.push((request, Err("Open a map and wait for any active export to finish".into())));
                 }
             }
-            // The host saved and checked them; the map only applies them.
             MapAction::Folders { game, user } => {
                 self.config.game_dir = PathBuf::from(game);
                 self.config.user_dir = PathBuf::from(user);
                 self.awaiting_folders = self.config.resolve_options().is_err();
                 self.error = None;
-                // The host configured its service's content before it sent these folders.
                 if self.error.is_none()
                     && let Some(path) = self.options.replay.clone()
                 {
@@ -466,9 +433,6 @@ impl Viewer {
                 }
                 self.report_map_details();
             }
-            // Saved preferences reload any map whose selection, quality or anti-aliasing they
-            // change (the per-frame preference check); both actions then reload each map whose
-            // visual mods changed on disk since it loaded.
             MapAction::MapSettingsSaved => self.check_visual_mods(true, ctx),
             MapAction::RefreshVisualMods => self.check_visual_mods(false, ctx),
             MapAction::Inspect => self.report_map_details(),
@@ -478,8 +442,6 @@ impl Viewer {
         ctx.request_repaint();
     }
 
-    /// Advances the chosen aircraft's bake for the open map and reports a
-    /// changed status.
     fn poll_fly_aircraft(&mut self, ctx: &egui::Context) {
         let repaint = ctx.clone();
         let assets = self
@@ -495,8 +457,6 @@ impl Viewer {
         }
     }
 
-    /// Reopens the campaign map at the hour, branch and camera it shows. The host's playback
-    /// clock keeps playing it after the load.
     fn reload_campaign_map(
         &mut self,
         source: std::sync::Arc<dashboard::Source>,
@@ -506,12 +466,10 @@ impl Viewer {
             self.options.branch = Some(branch);
             self.options.hour = Some(hour);
         }
-        // The host clock keeps running and sends no anchor for a reload, so the load resumes it.
         let clock = HeldClock {
             playhead: self.playhead,
             playing: self.playing,
             anchor: self.clock_anchor,
-            // The playhead stands where the last step left it.
             at: self.last_step,
         };
         self.held_view = Some((
@@ -530,14 +488,10 @@ impl Viewer {
         self.source = Some(source);
     }
 
-    /// Off the UI thread: reads saved preferences again when asked, then the revision of the
-    /// visual mods each open map shows ([`installed_content_core::content::visual::revision`]). The maps
-    /// whose mods changed since they loaded come back through `visual_check`.
     pub(super) fn check_visual_mods(&mut self, reload_settings: bool, ctx: &egui::Context) {
         let Some(service) = self.service() else {
             return;
         };
-        // A map still loading has no content to check yet.
         let loading = self.loading_any_map();
         self.visual_check_after_load.asked(loading);
         let options = self.config.resolve_options().ok();
@@ -627,7 +581,6 @@ impl Viewer {
         }
     }
 
-    /// Whether the Campaign map or a dashboard source's content is loading.
     fn loading_any_map(&self) -> bool {
         self.loading.is_some()
             || self
@@ -640,7 +593,6 @@ impl Viewer {
         let Some(embedded) = &self.embedded else {
             return;
         };
-        // Built here on demand, since ordinary viewing no longer keeps them.
         let mut messages = self
             .document
             .as_ref()
@@ -704,7 +656,6 @@ impl Viewer {
     }
 
     pub(super) fn report_embedded(&mut self, ctx: &egui::Context) {
-        // The hour the frame drew everything at, as the map's details report it too.
         let shown = self.rendered.map(|head| (head.branch, head.hour)).or_else(|| self.layers_on_screen());
         let Some(embedded) = self.embedded.as_mut() else {
             return;
@@ -725,19 +676,14 @@ impl Viewer {
     }
 }
 
-/// A check of the visual mods asked for while a map loads. The load may have mounted the mods
-/// before they changed, and its content is not there to check, so the maps are checked again
-/// once no map loads and no check runs.
 #[derive(Debug, Default)]
 pub(crate) struct DeferredCheck(bool);
 
 impl DeferredCheck {
-    /// A check was asked for while a map did (`loading`) or did not load.
     pub(crate) fn asked(&mut self, loading: bool) {
         self.0 |= loading;
     }
 
-    /// Whether to check again now, once: no map loads (`loading`) and no check runs (`checking`).
     pub(crate) fn due(&mut self, loading: bool, checking: bool) -> bool {
         let due = self.0 && !loading && !checking;
         if due {
@@ -751,17 +697,12 @@ impl DeferredCheck {
 mod deferred_check_tests {
     use super::DeferredCheck;
 
-    /// A Refresh that arrives while a map seeds its decoder or builds its scene, after the load
-    /// last read the mods, checks the installed map again, once; one that arrives with nothing
-    /// loading needs no second check.
     #[test]
     fn a_refresh_during_a_load_checks_the_installed_map_again() {
         let mut deferred = DeferredCheck::default();
         deferred.asked(true);
-        // Still loading, or the first check still running: not yet.
         assert!(!deferred.due(true, false));
         assert!(!deferred.due(false, true));
-        // Installed, nothing checking: once.
         assert!(deferred.due(false, false));
         assert!(!deferred.due(false, false));
         deferred.asked(false);

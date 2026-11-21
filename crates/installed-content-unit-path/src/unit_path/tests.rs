@@ -32,14 +32,11 @@ struct World {
     ports: BTreeMap<u32, u32>,
     armies: BTreeMap<u32, Vec<Occupant>>,
     combats: BTreeSet<u32>,
-    /// Provinces in a border conflict, with the orders groups admitted.
     conflicts: BTreeMap<u32, Vec<u64>>,
     straits: BTreeMap<u32, StraitFleet>,
     regions: BTreeMap<u32, u32>,
     modes: BTreeMap<(Country, u32), u8>,
-    /// Provinces whose controller is not recorded.
     unknown: BTreeSet<u32>,
-    /// Override the raw-positive gate while canonical controllers stay linked.
     raw_positive: Option<BTreeSet<u32>>,
     raw_owner_positive: Option<BTreeSet<u32>>,
     rail_connections: BTreeSet<(u32, u32)>,
@@ -215,9 +212,9 @@ fn invasion_costs_keep_the_non_admissible_heuristic_and_zero_slot() {
         }
         .invasion_route(&army, Some(1), 1, 4)
     };
-    assert_eq!(route(&world), Ok(vec![2, 4])); // zero relation: doubled costs
+    assert_eq!(route(&world), Ok(vec![2, 4]));
     world.cost_friendly.insert((1, 0));
-    assert_eq!(route(&world), Ok(vec![3, 4])); // same graph, lower costs, greedy path
+    assert_eq!(route(&world), Ok(vec![3, 4]));
     assert_eq!(
         Mover {
             graph: &graph,
@@ -266,7 +263,6 @@ fn invasion_forces_port_links_but_ignores_region_avoidance_and_base_level() {
     world.ports.insert(3, 5);
     world.regions.extend([(5, 1), (6, 2)]);
     world.modes.insert((1, 2), 2);
-    // No naval base is required for forced transfer.
     let moves = MoveGraph::new(&graph, &geometry);
     let mover = Mover {
         graph: &moves,
@@ -276,7 +272,6 @@ fn invasion_forces_port_links_but_ignores_region_avoidance_and_base_level() {
     assert_eq!(mover.invasion_sea(1), Ok(Some(5)));
     assert_eq!(mover.invasion_sea(4), Ok(None));
     assert_eq!(mover.invasion_route(&army, Some(1), 5, 6), Ok(vec![6]));
-    // A zero edge really blocks, unlike a negative nonzero edge.
     graph.edges.get_mut(&5).unwrap().last_mut().unwrap().1 = Some(0);
     let moves = MoveGraph::new(&graph, &geometry);
     assert_eq!(
@@ -376,7 +371,6 @@ fn invasion_search_obeys_rules_visible_strait_fleets_and_request_country_stop() 
     );
 }
 
-/// Land 1..=4 in a row, and sea 5 touching 1 and 3.
 fn map() -> (ProvinceGraph, ProvinceGeometry) {
     let mut graph = ProvinceGraph {
         rules: crate::adjacency_rules::parse(RULES).unwrap(),
@@ -640,7 +634,7 @@ fn positive_raw_state_owner_linked_to_zero_does_not_exempt_foreign_access() {
     assert_eq!(access(&world), (Ok(false), Ok(false), Ok(true)));
     world.docking.clear();
     world.raw_owner_positive = Some(BTreeSet::new());
-    world.unknown.insert(2); // nonpositive owner skips controller/relation demand
+    world.unknown.insert(2);
     assert_eq!(access(&world), (Ok(true), Ok(true), Ok(true)));
 }
 
@@ -668,7 +662,6 @@ fn railway_counter_requires_directed_connections_but_transfer_uses_port_links() 
         ..army()
     };
     assert_eq!(route(&world, &reverse, 4, 1), Ok(vec![]));
-    // Forced sea transfer neither demands rail nodes nor an orders group.
     world.rail_connections.clear();
     world.ports.insert(1, 5);
     assert_eq!(route(&world, &army(), 1, 5), Ok(vec![5]));
@@ -776,7 +769,7 @@ fn task_force_counter_uses_naval_output_and_directional_docking_rights() {
         }
         .counter_route(&unit, 5, to, request)
     };
-    assert_eq!(route(&world, 6), Ok(vec![6])); // foreign sea needs no land access
+    assert_eq!(route(&world, 6), Ok(vec![6]));
     assert_eq!(route(&world, 3), Ok(vec![]));
     world.occupy_non_war.insert(1);
     world.enemies.extend([(1, vec![9]), (3, vec![9])]);
@@ -835,7 +828,6 @@ fn task_force_land_mass_exclusion_survives_forced_and_active_transfer() {
             Ok(vec![])
         );
     }
-    // Even on one land mass, task forces cannot use ordinary land edges.
     world.task_force_access.insert((77, 2));
     assert_eq!(
         Mover {
@@ -890,9 +882,8 @@ fn task_force_counter_rule_selects_submarines_and_exile_keeps_class_gates() {
         .counter_route(&unit, 5, 6, request)
     };
     assert_eq!(route(&world), Ok(vec![]));
-    world.submarines.insert(77); // also true for an empty roster
+    world.submarines.insert(77);
     assert_eq!(route(&world), Ok(vec![6]));
-    // A visible strait still blocks a task force, unless exile bypasses it.
     cross(
         &mut graph,
         5,
@@ -979,9 +970,9 @@ fn task_force_mode_two_uses_hostile_gate_and_preserves_local_fallback() {
     assert_eq!(route(&world, true), Ok(vec![]));
     assert_eq!(route(&world, false), Ok(vec![6]));
     world.task_force_hostile_allows.insert((77, 6));
-    assert_eq!(route(&world, true), Ok(vec![6])); // no army war/combat/region test
+    assert_eq!(route(&world, true), Ok(vec![6]));
     world.task_force_access.clear();
-    assert_eq!(route(&world, true), Ok(vec![])); // actual task-force access remains mandatory
+    assert_eq!(route(&world, true), Ok(vec![]));
 }
 
 fn reaches(
@@ -1000,10 +991,6 @@ fn reaches(
     let full = mover.reach(army);
     let shared = mover.army_reaches_in(army, to, true, || &full);
     assert_eq!(single, shared, "early stop and full reach agree");
-    // One search resumed for every province, from both ends, with the
-    // hour's reachable components deciding the provinces apart; and run
-    // ahead a few edges at a time between the queries, stopping anywhere
-    // in either phase.
     let reachable = mover.reachable(army.exfiltrates);
     for (order, ahead) in [false, true]
         .into_iter()
@@ -1036,7 +1023,6 @@ fn reaches(
     single
 }
 
-/// Marks the pair's crossing both ways.
 fn cross(graph: &mut ProvinceGraph, a: u32, b: u32, crossing: Authored) {
     graph.crossings.insert((a, b), crossing.clone());
     graph.crossings.insert((b, a), crossing);
@@ -1050,9 +1036,6 @@ fn ruled(name: &str) -> Authored {
     }
 }
 
-/// A province with no neighbour table, reached only through an unknown
-/// fact, does not end a search toward a source it does not lead to: the
-/// early stop answers as the full reach does, naming the unknown fact.
 #[test]
 fn an_open_province_behind_an_unknown_fact_does_not_end_the_search_early() {
     let (mut graph, mut geometry) = map();
@@ -1069,9 +1052,6 @@ fn an_open_province_behind_an_unknown_fact_does_not_end_the_search_early() {
     assert_eq!(answer, Err("province 3 is not recorded".into()));
 }
 
-/// An island reached only by sea is apart from the army's land without
-/// a port and naval base to embark at and land on, and answers no as the
-/// full search does; with them it is searched for.
 #[test]
 fn an_island_without_ports_is_apart_and_answers_no() {
     let (mut graph, mut geometry) = map();
@@ -1108,11 +1088,9 @@ fn an_army_walks_own_land_and_stops_at_enemy_or_closed_land() {
     let mut world = world();
     assert_eq!(reaches(&graph, &geometry, &world, &army(), 3), Ok(true));
     assert_eq!(reaches(&graph, &geometry, &world, &army(), 1), Ok(true));
-    // An enemy controller closes province 2; the sea is no way on foot.
     world.controllers.insert(2, 2);
     world.wars.insert((1, 2));
     assert_eq!(reaches(&graph, &geometry, &world, &army(), 3), Ok(false));
-    // A neutral's land needs military access.
     world.wars.clear();
     world.controllers.insert(2, 3);
     world.state_owners.insert(2, 3);
@@ -1138,7 +1116,6 @@ fn embarking_needs_an_active_port_unless_the_army_exfiltrates() {
         ..army()
     };
     assert_eq!(reaches(&graph, &geometry, &world, &marines, 3), Ok(true));
-    // Landing still needs the destination's active base.
     world.bases.insert(3, false);
     assert_eq!(reaches(&graph, &geometry, &world, &marines, 3), Ok(false));
 }
@@ -1196,7 +1173,6 @@ fn admission_refuses_retreat_transfer_and_an_enemy_the_army_cannot_attack() {
 #[test]
 fn a_strait_is_closed_only_by_a_visible_enemy_fleet_in_a_sea_through() {
     let (mut graph, mut geometry) = map();
-    // Land 2 and 3 cross a strait through sea 5.
     graph.edges.insert(1, vec![(2, Some(50_000))]);
     graph.edges.insert(2, vec![(1, Some(50_000))]);
     let strait = Authored {
@@ -1218,7 +1194,6 @@ fn a_strait_is_closed_only_by_a_visible_enemy_fleet_in_a_sea_through() {
             "{fleet:?}"
         );
     }
-    // A strait through land holds no fleet; through nothing is unknown.
     world.straits.insert(5, StraitFleet::Visible);
     geometry.land.insert(5);
     assert_eq!(reaches(&graph, &geometry, &world, &army(), 2), Ok(true));
@@ -1232,7 +1207,6 @@ fn a_strait_is_closed_only_by_a_visible_enemy_fleet_in_a_sea_through() {
 #[test]
 fn an_avoided_or_blocked_sea_region_closes_to_the_search() {
     let (mut graph, geometry) = map();
-    // Marines embark at 1 onto sea 5 and land at 3; 2 is cut.
     graph.edges.insert(1, vec![(5, Some(50_000))]);
     graph.edges.insert(2, vec![]);
     let mut world = world();
@@ -1252,7 +1226,6 @@ fn an_avoided_or_blocked_sea_region_closes_to_the_search() {
             "mode {mode}"
         );
     }
-    // A region is only tested when the search enters it from another.
     world.modes.insert((9, 8), 2);
     world.regions.insert(1, 8);
     assert_eq!(reaches(&graph, &geometry, &world, &navy, 3), Ok(true));
@@ -1262,7 +1235,6 @@ fn an_avoided_or_blocked_sea_region_closes_to_the_search() {
 fn an_exiled_army_moves_without_access_through_its_state_owner() {
     let (graph, geometry) = map();
     let mut world = world();
-    // Country 3 holds 2 and 3; the army has no access there.
     for id in 2..=3 {
         world.controllers.insert(id, 3);
         world.state_owners.insert(id, 3);
@@ -1272,8 +1244,6 @@ fn an_exiled_army_moves_without_access_through_its_state_owner() {
         exiled: true,
         ..army()
     };
-    // The exile passes the move access test, but province access still
-    // asks for the state owner of the start.
     assert_eq!(reaches(&graph, &geometry, &world, &exiled, 3), Ok(false));
     world.state_owners.insert(1, 3);
     assert_eq!(reaches(&graph, &geometry, &world, &exiled, 3), Ok(true));
@@ -1290,7 +1260,6 @@ fn a_border_conflict_admits_only_its_orders_groups() {
         ..army()
     };
     assert_eq!(reaches(&graph, &geometry, &world, &grouped, 3), Ok(true));
-    // Starting inside a conflict lifts the province access test only.
     world.conflicts.insert(1, vec![]);
     world.conflicts.insert(3, vec![]);
     let inside = Army {
@@ -1316,7 +1285,6 @@ fn an_army_in_combat_disengages_and_retreats_by_the_rules() {
         combats: vec![combat.clone()],
         ..army()
     };
-    // Too early to disengage from a combat into a province not at war.
     assert_eq!(reaches(&graph, &geometry, &world, &fighting, 2), Ok(false));
     let long = Army {
         combats: vec![ArmyCombat {
@@ -1326,13 +1294,11 @@ fn an_army_in_combat_disengages_and_retreats_by_the_rules() {
         ..army()
     };
     assert_eq!(reaches(&graph, &geometry, &world, &long, 2), Ok(true));
-    // A no-retreat commander keeps it in.
     let held = Army {
         no_retreat_attacking: true,
         ..long.clone()
     };
     assert_eq!(reaches(&graph, &geometry, &world, &held, 2), Ok(false));
-    // Retreat needs no enemy strength of a whole unit there.
     world.wars.insert((1, 2));
     world.armies.insert(
         2,
@@ -1345,7 +1311,6 @@ fn an_army_in_combat_disengages_and_retreats_by_the_rules() {
     assert_eq!(reaches(&graph, &geometry, &world, &long, 2), Ok(false));
     world.armies.get_mut(&2).unwrap()[0].strength = 99_999;
     assert_eq!(reaches(&graph, &geometry, &world, &long, 2), Ok(true));
-    // A defender cannot step onto its attackers.
     let defending = Army {
         combats: vec![ArmyCombat {
             attacking: false,
@@ -1358,14 +1323,10 @@ fn an_army_in_combat_disengages_and_retreats_by_the_rules() {
     assert_eq!(reaches(&graph, &geometry, &world, &defending, 2), Ok(false));
 }
 
-/// Admission into an enemy-held province whose state a third country
-/// owns. The path search never enters a province its owner fights, so only
-/// admission reads this case.
 #[test]
 fn an_enemy_occupied_neutral_state_needs_disclosure_access_or_a_shared_enemy() {
     let (graph, geometry) = map();
     let mut world = world();
-    // Enemy 2 controls 2, which neutral 3 owns.
     world.controllers.insert(2, 2);
     world.state_owners.insert(2, 3);
     world.wars.insert((1, 2));
@@ -1390,7 +1351,6 @@ fn an_enemy_occupied_neutral_state_needs_disclosure_access_or_a_shared_enemy() {
     world.access.clear();
     world.factions.insert(3, 7);
     assert_eq!(admits(&world), Ok(true));
-    // The search still refuses a province held by the enemy.
     assert_eq!(reaches(&graph, &geometry, &world, &army(), 2), Ok(false));
 }
 
@@ -1446,9 +1406,7 @@ fn required_provinces_at_war_contest_the_rule() {
         verdict(&graph, &world, "C", 3),
         Ok(Some(Verdict::Contested))
     );
-    // The reason names the matched country of each province's chain, the first's first.
     assert_eq!(relation(&graph, &world, "C", 3), Ok(RuleReason::Contested(1, 2)));
-    // Contested forbids armies on this rule.
     cross(&mut graph, 1, 2, ruled("C"));
     world.controllers.insert(4, 1);
     world.controllers.insert(2, 1);
@@ -1461,11 +1419,9 @@ fn required_provinces_at_war_contest_the_rule() {
 fn overlord_chains_decide_the_fallback_and_a_loop_is_unknown() {
     let (graph, _) = map();
     let mut world = world();
-    // 3's overlord 4 is at war with 2's overlord 1 (controller of 2).
     world.overlords.extend([(3, 4)]);
     world.wars.insert((1, 4));
     assert_eq!(verdict(&graph, &world, "R", 3), Ok(Some(Verdict::Enemy)));
-    // Disclosure through a subject tie makes a friend.
     world.wars.clear();
     world.overlords.insert(4, 1);
     assert_eq!(verdict(&graph, &world, "R", 3), Ok(Some(Verdict::Friend)));
@@ -1478,7 +1434,6 @@ fn overlord_chains_decide_the_fallback_and_a_loop_is_unknown() {
     );
 }
 
-/// A small xorshift, for reproducible random graphs.
 struct Random(u32);
 
 impl Random {
@@ -1490,8 +1445,6 @@ impl Random {
     }
 }
 
-/// Plain breadth-first reach over the edges `admit` accepts, each asked
-/// alone with no memo, taking an unknown edge as `unknown`.
 fn flood(mover: &Mover<'_, World>, army: &Army, unknown: bool) -> BTreeSet<u32> {
     let graph = mover.graph;
     let start = graph.dense(army.location).unwrap();
@@ -1512,9 +1465,6 @@ fn flood(mover: &Mover<'_, World>, army: &Army, unknown: bool) -> BTreeSet<u32> 
     seen.into_iter().map(|at| graph.ids[at]).collect()
 }
 
-/// On random graphs and worlds, the fill reaches what a plain flood fill
-/// reaches, is unknown exactly where unknown edges decide, and stops at
-/// a target with the same answer.
 #[test]
 fn the_reach_equals_a_plain_flood_fill_on_random_graphs() {
     let mut random = Random(0x9e37_79b9);
@@ -1623,7 +1573,6 @@ fn the_reach_equals_a_plain_flood_fill_on_random_graphs() {
             );
         }
     }
-    // Every answer occurs often enough to test.
     assert!(outcomes.iter().all(|&count| count > 100), "{outcomes:?}");
 }
 

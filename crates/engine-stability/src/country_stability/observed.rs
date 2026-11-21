@@ -1,6 +1,3 @@
-//! First exact-span observations of one stability walk. Guarded speculative
-//! batches retain only complete successes; a failed batch yields to the serial
-//! readers once. Their authoritative failures remain memoized without retries.
 
 use std::{
     cell::{Cell, RefCell},
@@ -13,12 +10,9 @@ use crate::{
     memory::{RecordLayout, RecordSources},
 };
 
-// Transfer geometry only: later chunks and larger payloads continue normally.
 const BATCH_FIELDS: usize = 64;
 const BATCH_BYTES: usize = 8192;
 
-/// Internal integer keys only. Avalanche both the low bucket-index bits and
-/// the high tag bits: aligned native addresses must not cluster by low bits.
 #[derive(Default)]
 struct SpanHasher(u64);
 
@@ -45,17 +39,10 @@ impl Hasher for SpanHasher {
     }
 }
 
-/// Shared static observations of one hourly Stability job. The caller clears this before every
-/// hour, including failed, skipped, load and full hours. Static modifier binding selects the shared
-/// CStaticModifiers; Static modifier lookup owns their names. Neither country-owned operands nor
-/// source-selection pointers enter this memo.
 #[derive(Debug, Default)]
 pub struct Memo {
     spans: HashMap<(usize, usize), Option<usize>, BuildHasherDefault<SpanHasher>>,
     bytes: Vec<u8>,
-    // Pending gather keys deduplicate immediately, but their bytes are not
-    // observations until the whole chunk succeeds. Prepared never follows
-    // a control whose speculative copy has not completed.
     acquired: usize,
 }
 
@@ -88,8 +75,6 @@ impl Memo {
         }
     }
 
-    /// Most walks reuse capacity. Enter the advisory scope only for actual
-    /// growth; every entry insertion then has checked, fallible map storage.
     fn reserve(&mut self, spans: usize, bytes: usize) -> bool {
         if spans <= self.spans.capacity() - self.spans.len()
             && bytes <= self.bytes.capacity() - self.bytes.len()
@@ -104,19 +89,12 @@ impl Memo {
         .is_some()
     }
 
-    /// Room for `key`'s entry. An existing key needs none, so a full map grows
-    /// (and a denied growth stops speculation) only for a new span.
     fn room_for(&mut self, key: (usize, usize)) -> bool {
         self.spans.len() < self.spans.capacity()
             || self.spans.contains_key(&key)
             || self.reserve(1, 0)
     }
 
-    /// Keep the first observation of an exact span. Retention is optional
-    /// storage: when it cannot allocate, nothing (no partial bytes) is kept
-    /// and the observation stands as acquired, so a later use reads the span
-    /// as the walk without the memo did. A failed copy ends the country's
-    /// walk, so within a walk it is never read again either way.
     fn retain(&mut self, address: usize, bytes: &[u8], copied: bool) -> bool {
         let key = (address, bytes.len());
         if bytes.is_empty() {
@@ -172,10 +150,6 @@ impl Chunk {
     }
 }
 
-/// Ordinary observations are country-local. Only an explicitly selected
-/// static's source or identity reader uses `shared`; subsequent consumers may
-/// reuse those exact spans. Context::read already reads slots, defines,
-/// modifier metadata and language once per hour.
 pub(super) struct Observed<'a, M> {
     source: &'a M,
     local: RefCell<&'a mut Memo>,
@@ -200,8 +174,6 @@ impl<'a, M: Memory> Observed<'a, M> {
         Shared(self)
     }
 
-    /// Preparation may follow retained controls, but must never acquire a
-    /// missing scalar ahead of the authoritative serial object reader.
     pub(super) fn prepared(&self) -> Prepared<'_, 'a, M> {
         Prepared(self)
     }
@@ -210,20 +182,10 @@ impl<'a, M: Memory> Observed<'a, M> {
         self.fallbacks.get()
     }
 
-    /// Exact spans reached through acquired pointers/headers. Bounded transfer
-    /// pages are throughput units, never limits on objects, entries or text.
-    /// Reserve optional retention BEFORE reading: if it cannot be kept, the
-    /// original reader acquires the span itself, with no speculative attempt.
     pub(super) fn gather(&self, spans: impl IntoIterator<Item = (usize, usize)>, shared: bool) {
-        // Overlapping later preparation must not speculate on a failed batch
-        // again. The rest of this country uses its original readers; successful
-        // observations already retained still stand. No retry loop is possible.
         if self.stopped.get() {
             return;
         }
-        // No metadata is initialized until a missing, admissible span is
-        // reached. Iterator preparation may itself consult retained controls,
-        // so release both memo borrows before advancing it.
         let mut chunk: Option<Chunk> = None;
         for (address, len) in spans {
             if len == 0 || len > BATCH_BYTES || address == 0 || address.checked_add(len).is_none() {
@@ -253,8 +215,6 @@ impl<'a, M: Memory> Observed<'a, M> {
                 && crate::allocation::advisory(|| crate::allocation::reserve(&mut memo.bytes, len))
                     .is_err()
             {
-                // The vacant entry holds no key yet. Remove only this pending
-                // chunk; earlier completed chunks remain observations.
                 if let Some(chunk) = chunk.as_ref() {
                     chunk.discard(memo);
                 }
@@ -294,10 +254,6 @@ impl<'a, M: Memory> Observed<'a, M> {
             destination
         });
         if self.source.copy_scattered(addresses, &mut destinations) != addresses.len() {
-            // Nothing from the failed chunk, including its copied prefix, is
-            // installed. Earlier successful chunks stand as acquired.
-            // The callers' ordinary per-object readers run once, in their own
-            // order, locating a persistent failure or recovering a one-shot.
             chunk.discard(memo);
             self.fallbacks.set(self.fallbacks.get().saturating_add(1));
             self.stopped.set(true);
@@ -311,8 +267,6 @@ impl<'a, M: Memory> Observed<'a, M> {
         if destination.is_empty() {
             return self.source.copy(address, destination);
         }
-        // A shared read still prefers an earlier local observation, preserving
-        // the original memo precedence even for overlapping native operands.
         if shared && let Some(copied) = self.local.borrow().copy(address, destination) {
             return copied;
         }
@@ -366,9 +320,6 @@ impl<'a, M: Memory> Observed<'a, M> {
         }
     }
 
-    /// Child modifier cloning owns these fields.
-    /// Vtable and accumulator controls are consumed from the acquired head
-    /// only; matches/same_text and emit re-read the display header alone.
     pub(super) fn copy_child_heads(
         &self,
         sources: RecordSources<'_>,
@@ -419,8 +370,6 @@ impl<M: Memory> Memory for Observed<'_, M> {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
-        // Keep existing batches and their failure prefixes intact. Save only
-        // each completed exact operand (and the attempted failure), in order.
         let completed = self.source.copy_scattered(addresses, destinations);
         let mut memo = self.local.borrow_mut();
         for (index, (address, destination)) in addresses
@@ -504,7 +453,6 @@ impl<M: Memory> Memory for Prepared<'_, '_, M> {
 mod tests {
     use super::*;
 
-    /// One scattered call: its width and its nonempty (address, len) spans.
     type Call = (usize, Vec<(usize, usize)>);
 
     #[derive(Default)]
@@ -540,8 +488,6 @@ mod tests {
                 addresses.iter().zip(destinations.iter_mut()).enumerate()
             {
                 if self.fail_chunk == Some(chunk) && index == 3 {
-                    // Even a failed operand may have overwritten part of its
-                    // destination. Nothing from this chunk can become a memo.
                     bytes.fill(0xee);
                     return index;
                 }
@@ -642,9 +588,6 @@ mod tests {
             } else {
                 assert!(memory.shared().copy(0x2000, &mut bytes));
             }
-            // The iterator observes the immediately accepted key before its
-            // read, then after its chunk completes. Only complete bytes may
-            // authorize later speculative controls.
             let mut index = 0;
             let spans = std::iter::from_fn(|| {
                 let span = match index {
@@ -681,7 +624,6 @@ mod tests {
         }
     }
 
-    /// Counts native reads without allocating, for allocation-denied runs.
     #[cfg(feature = "alloc-fault-injection")]
     #[derive(Default)]
     struct Quiet {
@@ -735,7 +677,6 @@ mod tests {
                 memo.spans.len() == memo.spans.capacity()
             };
             let mut bytes = [0; 8];
-            // An empty map is also "full" (no capacity): read before testing.
             let mut next = 0x1000;
             loop {
                 assert!(read(next, &mut bytes));
@@ -766,8 +707,6 @@ mod tests {
             let mut shared = Memo::default();
             for memo in [&mut local, &mut shared] {
                 memo.spans.reserve(256);
-                // A completed chunk and six pending spans fit; the seventh
-                // pending span needs byte growth.
                 memo.bytes = Vec::with_capacity(70 * 8);
             }
             let memory = Observed::new(&source, &mut local, &mut shared);

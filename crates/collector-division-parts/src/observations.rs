@@ -1,15 +1,8 @@
-//! The hour's frozen writer observations: one take of every marking registry the division
-//! capture certifies its carries under, after the hour's boundary and before any read. Every
-//! consumer reads this one batch, so no consumer drains another's marks, and a receiver held
-//! under a taken epoch that no take visited is unchanged without a per-division probe.
 use crate::army_stat_changes::Changes;
 use collector_observers::unit_history_changes;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-/// Observations carried under the hour's take without a certificate query, cumulative: stored
-/// XP, previous template, officer XP, career and history.
 static QUIET: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-/// Takes that certified nothing, by registry, in [`HourObservations`] order.
 static REFUSED: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
 pub(crate) fn quiet(kind: usize) {
@@ -17,9 +10,6 @@ pub(crate) fn quiet(kind: usize) {
 }
 
 
-/// One registry's take: the epoch it certified, and the receivers writers touched since the
-/// previous take, sorted. A failed take, or one whose visits could not all be kept, certifies
-/// nothing.
 #[derive(Default)]
 pub struct Taken {
     epoch: Option<u64>,
@@ -48,12 +38,10 @@ impl Taken {
         self.touched.clear();
     }
 
-    /// The epoch the take certified; `None` certifies nothing.
     pub fn epoch(&self) -> Option<u64> {
         self.epoch
     }
 
-    /// The receivers writers touched since the previous take, sorted.
     pub fn touched_receivers(&self) -> &[usize] {
         &self.touched
     }
@@ -62,12 +50,10 @@ impl Taken {
         self.touched.len()
     }
 
-    /// Whether a writer touched `receiver` since the previous take.
     pub fn touched(&self, receiver: usize) -> bool {
         self.touched.binary_search(&receiver).is_ok()
     }
 
-    /// Whether `receiver`, registered and held under `epoch`, is unchanged since it was held.
     pub fn quiet(&self, receiver: usize, epoch: u64) -> bool {
         self.epoch == Some(epoch) && !self.touched(receiver)
     }
@@ -77,25 +63,17 @@ impl Taken {
     }
 }
 
-/// Every division-capture registry's take for one hour.
 #[derive(Default)]
 pub struct HourObservations {
     taken: bool,
-    /// Armies (attack operands and maxima) and name members.
     pub armies: Taken,
-    /// Stored XP, by army.
     pub experience: Taken,
-    /// Previous template, by army.
     pub progression: Taken,
-    /// Officer receivers, careers (by army), history roots and medal stores.
     pub history: Taken,
-    /// History entry edits.
     pub edits: Taken,
 }
 
 impl HourObservations {
-    /// Takes every registry once for the hour; a second call before [`Self::finish`] keeps the
-    /// first take.
     pub fn take(&mut self, changes: &dyn Changes) {
         if std::mem::replace(&mut self.taken, true) {
             return;
@@ -121,17 +99,14 @@ impl HourObservations {
         }
     }
 
-    /// Whether this hour's registries were taken.
     pub fn is_taken(&self) -> bool {
         self.taken
     }
 
-    /// The hour ends: the next hour takes again.
     pub fn finish(&mut self) {
         self.taken = false;
     }
 
-    /// Certifies nothing until the next take.
     pub fn forget(&mut self) {
         self.taken = false;
         for taken in [

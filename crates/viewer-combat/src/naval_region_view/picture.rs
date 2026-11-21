@@ -1,6 +1,3 @@
-//! The terrain picture and the modifier grid, built as the naval battle window builds them, but
-//! from the whole region: night from its provinces' mean night factor, the battle prefix from any
-//! engaged combat in it.
 use super::{Content, Element};
 use crate::binding::{self, Bindings};
 use crate::naval_environment::{MODIFIER_ENTRY, night_picture, picture_names, region_custom_sea, weather_entries, weather_suffix};
@@ -10,10 +7,8 @@ use replay_frame::frame::DecodedFrame;
 use std::io;
 use viewer_foundation::engagement_history::CombatFlags;
 
-/// Above this mean night factor the picture is a night one.
 const NIGHT: i64 = 50_000;
 
-/// The region's night factor: its provinces' sum over their count, as fixed5.
 fn mean_night(factors: &[i64]) -> i64 {
     let count = (factors.len() as i64).wrapping_mul(100_000);
     let sum = factors.iter().fold(0_i64, |sum, factor| sum.wrapping_add(*factor));
@@ -23,7 +18,6 @@ fn mean_night(factors: &[i64]) -> i64 {
     sum.wrapping_mul(100_000) / count
 }
 
-/// Whether any province of the region holds an engaged combat, or why that is undecided.
 fn ongoing(frame: &DecodedFrame, engaged: &CombatFlags, provinces: &[u32]) -> Result<bool, String> {
     let table = frame.complete::<tables::NavalProvinceCombats>();
     let complete = table.is_ok();

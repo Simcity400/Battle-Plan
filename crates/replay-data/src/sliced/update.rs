@@ -1,13 +1,3 @@
-//! One hour's read of an owner-sliced table as an update of its complete
-//! baseline: every row of the listed owners is replaced by the read's rows of
-//! those owners (possibly none), and every other owner's rows are kept.
-//!
-//! The update describes exactly [`merge_slice`](super::merge_slice)'s merged
-//! table without materialising it: the listed owners are those the hour read
-//! and those no longer live. The frame encoder writes the merged table's
-//! change against its baseline by visiting only the listed owners' rows, which
-//! are contiguous because the owner is the most significant part of every row
-//! key, and its commit replaces those rows in the baseline in place.
 
 use super::SlicedRow;
 use crate::{codec::invalid_static as invalid, rows::{TableId, TableRows}};
@@ -16,26 +6,16 @@ use crate::{codec::put_varint, rows::{ChangedRows, count_header}};
 use engine_allocation as allocation;
 use std::{io, ops::Range};
 
-/// Replacement rows for listed owners, or listed exact holder keys, against
-/// a shared complete baseline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SliceUpdate {
-    /// Certified replacements of arbitrary key ranges; empty for owner slices.
     pub ranges: Vec<Range<u128>>,
-    /// Ascending, distinct.
     #[doc(hidden)]
     pub owners: Vec<u32>,
-    /// Exact row keys for certificate updates of individual holders.
-    /// Empty for owner slices; keyed updates never also list owners.
     pub keys: Vec<u128>,
-    /// Rows of listed owners only, in key order.
     #[doc(hidden)]
     pub rows: TableRows,
 }
 
-/// Two tables of the same owner-sliced type, with `$wrap` naming that type's
-/// `TableRows` variant; the keyed TechnologyDefinitions table has no owners
-/// and merges by key instead.
 macro_rules! sliced_pair {
     ($left:expr, $right:expr, |$a:ident, $b:ident, $wrap:ident| $body:expr, $other:expr) => {
         sliced_pair!(@list ($left, $right), $a, $b, $wrap, $body, $other;)
@@ -62,8 +42,6 @@ macro_rules! sliced_pair {
     };
 }
 
-/// Two tables of a type that takes keyed holder updates: every owner-sliced type, and the
-/// tables of [`takes_keyed_updates`].
 macro_rules! keyed_pair {
     ($left:expr, $right:expr, |$a:ident, $b:ident, $wrap:ident| $body:expr, $other:expr) => {
         sliced_pair!(@list ($left, $right), $a, $b, $wrap, $body, $other;
@@ -74,9 +52,6 @@ macro_rules! keyed_pair {
     };
 }
 
-/// Whether the producer of `table`, a table whose rows change by key each hour and that no
-/// owner slicing reads, publishes only its changed, new and removed rows against a shared
-/// baseline ([`SliceUpdate::keyed`]). [`keyed_pair!`] takes every one of them.
 pub fn takes_keyed_updates(table: TableId) -> bool {
     let empty = TableRows::empty(table);
     sliced_pair!(@arms (&empty, &empty), _old, _new, _wrap, true, false;
@@ -86,7 +61,6 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
         AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
 }
 
-/// `rows.partition_point(holds)`, probing outward from the front so short prefixes stay local.
 fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
     let mut low = 0;
     let mut high = 1;
@@ -97,7 +71,6 @@ fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
     low + rows[low..high.min(rows.len())].partition_point(holds)
 }
 
-/// The rows of `owner` in `rows` (in key order), searched onward from an earlier owner's end.
 fn owner_range_from<R: SlicedRow>(rows: &[R], from: usize, owner: u32) -> Range<usize> {
     let from = if from > 0 && rows[from - 1].owner() >= owner {
         0
@@ -108,7 +81,6 @@ fn owner_range_from<R: SlicedRow>(rows: &[R], from: usize, owner: u32) -> Range<
     start..start + gallop(&rows[start..], |row| row.owner() <= owner)
 }
 
-/// The distinct owners of `rows` (in key order), each found next to the last.
 fn owner_ranges<R: SlicedRow>(rows: &[R]) -> impl Iterator<Item = (u32, Range<usize>)> + '_ {
     let mut start = 0;
     std::iter::from_fn(move || {
@@ -121,8 +93,6 @@ fn owner_ranges<R: SlicedRow>(rows: &[R]) -> impl Iterator<Item = (u32, Range<us
     })
 }
 
-/// Merge owner groups, not rows. Both inputs are already ordered, so neither
-/// sorting nor a membership check for every row is necessary.
 fn merge_owners<R: SlicedRow>(
     previous: &[R],
     fresh: &[R],
@@ -147,8 +117,6 @@ fn merge_owners<R: SlicedRow>(
     Ok(owners)
 }
 
-/// Consume one fresh owner's group. Unlisted owners remain unconsumed, so the
-/// caller's final length check still refuses them.
 fn take_owner<R: SlicedRow>(rows: &[R], next: &mut usize, owner: u32) -> Range<usize> {
     let start = *next;
     if rows.get(start).is_some_and(|row| row.owner() == owner) {
@@ -158,8 +126,6 @@ fn take_owner<R: SlicedRow>(rows: &[R], next: &mut usize, owner: u32) -> Range<u
 }
 
 impl SliceUpdate {
-    /// Whether this update replaces the held row keyed `key` of `table`: a row of a listed
-    /// owner (the top 32 of the table's key bits), in a listed range, or a listed key.
     pub fn replaces(&self, table: TableId, key: u128) -> bool {
         let owner = (key >> table.key_bits().saturating_sub(32)) as u32;
         self.owners.binary_search(&owner).is_ok()
@@ -167,7 +133,6 @@ impl SliceUpdate {
             || self.keys.binary_search(&key).is_ok()
     }
 
-    /// Replace only the listed complete row keys, including removed holders.
     pub fn keyed(keys: Vec<u128>, rows: TableRows) -> Self {
         Self {
             ranges: Vec::new(),
@@ -177,10 +142,6 @@ impl SliceUpdate {
         }
     }
 
-    /// The update [`merge_slice`](super::merge_slice) applies: `fresh` holds
-    /// only owners `read` selects, in key order; the listed owners are every
-    /// owner of `previous` or `fresh` that `read` selects or that is no longer
-    /// `live`. Refuses what `merge_slice` refuses, with its errors.
     pub fn new(
         previous: &TableRows,
         fresh: TableRows,
@@ -216,26 +177,20 @@ impl SliceUpdate {
         })
     }
 
-    /// The listed owners, ascending.
     pub fn owners(&self) -> &[u32] {
         &self.owners
     }
 
-    /// The listed owners' rows, in key order.
     pub fn rows(&self) -> &TableRows {
         &self.rows
     }
 
-    /// The merged table, copying every kept row: what
-    /// [`merge_slice`](super::merge_slice) returns for the same read.
     pub fn merged(&self, previous: &TableRows) -> io::Result<TableRows> {
         let mut rows = previous.try_clone()?;
         self.clone().apply(&mut rows)?;
         Ok(rows)
     }
 
-    /// Whether the rows are of `previous`'s type, every row's owner is
-    /// listed, and the rows keep key order: what encoding and applying need.
     pub fn fits(&self, previous: &TableRows) -> bool {
         if !self.ranges.is_empty() {
             return self.owners.is_empty() && self.rows.range_update_fits(previous, &self.ranges);
@@ -263,10 +218,6 @@ impl SliceUpdate {
             )
     }
 
-    /// Write the merged table's change against `previous` exactly as the
-    /// encoder's full comparison of the two complete tables writes it: the
-    /// changed rows in key order, then the deleted keys. Only the listed
-    /// owners' rows can differ. Returns whether anything changed.
     #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub fn encode_changes(
         &self,
@@ -277,9 +228,6 @@ impl SliceUpdate {
         self.encode_changes_with(previous, output, deleted, None)
     }
 
-    /// [`Self::encode_changes`], recording in `changed` each row of an owner or key update it
-    /// writes (its index in the update's rows beside its baseline row's) and each key it
-    /// deletes; an owner update writes nothing when no row changed.
     #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub fn encode_changes_recorded(
         &self,
@@ -325,7 +273,6 @@ impl SliceUpdate {
         ) -> io::Result<bool> {
             u32::try_from(fresh.len()).map_err(|_| invalid("too many rows"))?;
             u32::try_from(previous.len()).map_err(|_| invalid("too many rows"))?;
-            // A recorded merge writes its header only once a row differs.
             let start = output.len();
             let mut count_at = None;
             if changed.is_none() {
@@ -375,7 +322,6 @@ impl SliceUpdate {
                         changed_count += 1;
                         changed_key = key;
                         if let Some(changed) = &mut changed {
-                            // Both lengths were checked to fit 32 bits above.
                             let before = baseline.map(|(before, _)| (old_start + before) as u32);
                             changed.pair((new_start + at) as u32, before);
                         }
@@ -415,11 +361,6 @@ impl SliceUpdate {
         )
     }
 
-    /// Replace the listed owners' rows of `previous` with this update's rows
-    /// and return the replaced rows. Owners whose row count is unchanged swap
-    /// in place; otherwise the table is rebuilt once, moving every row, with
-    /// its storage reserved before anything moves. On error `previous` is
-    /// unchanged.
     pub fn apply(self, previous: &mut TableRows) -> io::Result<TableRows> {
         if !self.ranges.is_empty() {
             return self.rows.apply_range_update(previous, &self.ranges);
@@ -455,8 +396,6 @@ impl SliceUpdate {
                 return Err(invalid("slice update holds an unlisted owner's row"));
             }
             if same_counts {
-                // Each listed owner's fresh rows take its old rows' places;
-                // `fresh` then holds the replaced rows.
                 let mut next_fresh = 0;
                 let mut next_old = 0;
                 for &owner in listed {
@@ -540,7 +479,6 @@ fn encode_keys<R: crate::rows::RowCodec>(
                     .ok_or(invalid("too many changed rows"))?;
                 changed_key = key;
                 if let Some(recorded) = recorded.as_deref_mut() {
-                    // Both lengths were checked to fit 32 bits above.
                     recorded.pair(at as u32, before.map(|before| before as u32));
                 }
             }
@@ -583,7 +521,6 @@ fn apply_keys<R: crate::rows::RowCodec>(
         }
         return Ok(fresh);
     }
-    // Membership changes move retained rows once; immutable pools stay shared.
     let mut rebuilt = allocation::vec(allocation::add(old.len() - removed, fresh.len())?)?;
     let mut replaced = allocation::vec(removed)?;
     let mut fresh = fresh.into_iter().peekable();
@@ -607,8 +544,6 @@ mod tests {
     use super::*;
     use crate::rows::{LendLeaseAgreementRow, MarketEquipment, MarketPool, ResearchInputRow};
 
-    /// [`SliceUpdate::replaces`] finds a held row's owner in the top 32 of its key bits, for
-    /// every fixture row of every owner-sliced table.
     #[test]
     fn every_sliced_table_keeps_its_owner_in_the_top_32_key_bits() {
         let mut sliced = 0;
@@ -649,7 +584,6 @@ mod tests {
         assert_eq!(sliced, 30);
     }
 
-    /// Every keyed producer table takes keyed updates, and none is owner-sliced.
     #[test]
     fn keyed_producer_tables_take_keyed_updates_and_are_not_sliced() {
         let mut keyed = 0;
@@ -674,7 +608,6 @@ mod tests {
         }
     }
 
-    /// Odd owners 1..=79, with group sizes crossing every galloping step.
     fn grouped(progress: i64) -> Vec<ResearchInputRow> {
         const SIZES: [u32; 14] = [1, 2, 3, 4, 5, 7, 8, 9, 16, 17, 63, 64, 65, 130];
         (0..40)
@@ -703,7 +636,6 @@ mod tests {
             .map(|owner| (owner, naive(owner)))
             .collect();
         assert_eq!(owner_ranges(&rows).collect::<Vec<_>>(), expected);
-        // Every cursor, including one past the owner's rows, finds them.
         for owner in 0..82 {
             for from in 0..=rows.len() {
                 assert_eq!(
@@ -715,8 +647,6 @@ mod tests {
         }
     }
 
-    /// A recorded owner update whose listed owners read their rows again unchanged writes
-    /// nothing, needs no room and records nothing.
     #[test]
     fn a_recorded_reread_of_unchanged_owners_grows_nothing() {
         let previous = TableRows::ResearchInputs(grouped(0));
@@ -747,7 +677,6 @@ mod tests {
         let previous = TableRows::ResearchInputs(grouped(0));
         type Read = fn(u32) -> bool;
         let cases: [(Vec<ResearchInputRow>, Read, Read); 4] = [
-            // Same counts: rows swap in place.
             (
                 grouped(1)
                     .into_iter()
@@ -756,7 +685,6 @@ mod tests {
                 |owner| owner % 7 == 3,
                 |_| true,
             ),
-            // Groups shrink, owner 40 is new, 9 returns nothing, owners ending in 5 are gone.
             (
                 {
                     let mut rows: Vec<_> = grouped(2)
@@ -770,9 +698,7 @@ mod tests {
                 |owner| owner % 6 == 1 || owner == 40 || owner == 53 || owner == 9,
                 |owner| owner % 10 != 5,
             ),
-            // Nothing read, nothing gone.
             (Vec::new(), |_| false, |_| true),
-            // Everything read and changed.
             (grouped(3), |_| true, |_| true),
         ];
         for (step, (fresh, read, live)) in cases.into_iter().enumerate() {
@@ -794,8 +720,6 @@ mod tests {
                 "{step}"
             );
             assert_eq!(actual, expected, "{step}");
-            // Recorded: the same bytes when a row changed and none otherwise, and the rows it
-            // wrote and the keys it deleted, by key, those the merged table's diff records.
             let (mut recorded, mut rows) = (Vec::new(), ChangedRows::default());
             let wrote = update
                 .encode_changes_recorded(&previous, &mut recorded, &mut deleted, &mut rows)

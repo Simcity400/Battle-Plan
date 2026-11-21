@@ -1,9 +1,7 @@
-//! Offscreen production submission and direct installed-program reference draws.
 use super::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Exercise the production upload, sorting, pipeline cache and draw loop offscreen.
 pub fn render_batch(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -32,7 +30,6 @@ pub fn render_images(
         wgpu::TextureFormat::Rgba8Unorm,
     )
     .unwrap();
-    // The frame's one arena, as the scene owns it: reset per frame, flushed before its draws.
     let arena = shader_pipeline::gpu::Arena::new(device);
     arena.reset();
     pass.upload(device, queue, &arena, batch, [16, 16], 1.);
@@ -41,8 +38,6 @@ pub fn render_images(
     let bake_views: Vec<_> = pass.bakes.iter().map(|b| b.view.clone()).collect();
     let retained_frame = pass.uploads.as_ref().unwrap().frame();
     arena.reset();
-    // The scene's next frame may overwrite all its own uploads. Retained GUI submissions
-    // must still bind their pass-owned bytes, not this deliberately different vertex stream.
     arena.vertices(&[0xff; 4096]).unwrap();
     arena.flush(queue);
     pass.upload(device, queue, &arena, batch, [16, 16], 1.);
@@ -81,8 +76,6 @@ pub fn render_images(
     for quad in &mut changed.quads {
         quad.color[0] = 0.25;
     }
-    // A batch that changes and comes back draws what a whole rebuild of it draws, and the
-    // private arena is reset only by the uploads that rebuild.
     for (index, frame_batch) in [batch, &changed, batch, batch].into_iter().enumerate() {
         let private_frame = pass.uploads.as_ref().unwrap().frame();
         arena.reset();
@@ -121,8 +114,6 @@ pub fn render_images(
     (pixels, pass.native_refusals, first_count)
 }
 
-/// Draws `batch` on a 16 by 16 frame through the production upload and draw, fade pages included,
-/// over the given image pages, into the output of a map drawn with 4x MSAA.
 pub fn render_presented(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -132,7 +123,6 @@ pub fn render_presented(
     render_presented_at(device, queue, batch, pages, [16, 16])
 }
 
-/// [`render_presented`] on a frame of `size` pixels.
 pub fn render_presented_at(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -148,8 +138,6 @@ pub fn render_presented_at(
     arena.reset();
     pass.upload(device, queue, &arena, batch, size, 1.);
     arena.flush(queue);
-    // The scene and depth are multisampled; the output the grade writes and the icons draw
-    // over is single-sample, as the game's back buffer is, and needs no resolve.
     let targets = Targets::new(device, size, size, 4, crate::map::gpu_contract::SeaBed::Half);
     let output = targets.output_attachment(wgpu::LoadOp::Load);
     assert_eq!(output.view.texture().sample_count(), 1);
@@ -161,8 +149,6 @@ pub fn render_presented_at(
     (pixels, pass.fade_pages())
 }
 
-/// Caller-populated ABI inputs. Reference tests construct these from their cases, independently
-/// of GUI emission and SpritePass upload.
 pub struct Inputs {
     pub declaration: shader_pipeline::vertices::Declaration,
     pub vertices: Vec<u8>,
@@ -181,8 +167,6 @@ pub struct Oracle {
 }
 
 impl Oracle {
-    /// Compile the content-resolved technique, then prepare a direct draw with the reference's
-    /// own vertices, constants, resource namespaces and render state.
     pub fn prepare(
         device: &wgpu::Device,
         arena: &shader_pipeline::gpu::Arena,

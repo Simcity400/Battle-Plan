@@ -1,8 +1,3 @@
-//! Changes to a campaign's recording that no capture is writing: one more revision added to it
-//! ([`revise`]), the revisions after one cut away ([`cut_back`]), and a recording of records
-//! alone ([`create`]). A capture under way writes
-//! through [`super::live::LiveWriter`], which holds the recording's newest root; nothing else
-//! adds to a recording while one does.
 
 use super::{Revision, records::Records};
 #[cfg(any(test, feature = "recording"))]
@@ -22,20 +17,12 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// What one revision adds to a recording no capture is writing.
 #[derive(Default)]
 pub struct Addition<'a> {
-    /// Records, added as one extent of their own.
     pub records: Option<&'a Records>,
-    /// A game facts pack.
     pub facts: Option<&'a [u8]>,
 }
 
-/// Adds one revision to the recording at `path`, whose newest revision `recording` opened:
-/// `addition`, saved or not, its records recorded in the recording's own format, as a recording
-/// never mixes formats. Records this build cannot write in that format are refused by name and
-/// nothing is written. The revision leaves the resume state of a capture under way as the root
-/// before it names it. A failure cuts the file back to the revision opened.
 pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
     let (root, before): (&Root, Revision) = (recording.root(), recording.revision());
     let records = match addition.records.filter(|records| !records.is_empty()) {
@@ -54,7 +41,6 @@ pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved
         container.section(SectionKey::RECORDS, schema::RECORDS)?;
         container.section(SectionKey::FACTS, schema::FACTS)?;
         if let Some(pack) = addition.facts {
-            // Stored as it is: a pack is compressed within, and read at its offsets.
             let extent = container.put(Kind::Facts, Tags::default(), pack.len() as u64, pack)?;
             container.append(SectionKey::FACTS, extent)?;
         }
@@ -67,15 +53,11 @@ pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved
         Ok(revision)
     })();
     if written.is_err() {
-        // Readers keep the revision they opened; the torn tail goes.
         cut_back(path, before)?;
     }
     written
 }
 
-/// Creates at `path` the recording of `campaign` that holds `records` alone, not saved: what a
-/// capture that lost every hour of the campaign leaves to say. Its content and capture mode are
-/// its first session's. A failure leaves no file.
 #[cfg(any(test, feature = "recording"))]
 pub fn create(path: &Path, campaign: &[u8], records: &Records, level: i32) -> io::Result<Revision> {
     let session = records
@@ -112,7 +94,6 @@ pub fn create(path: &Path, campaign: &[u8], records: &Records, level: i32) -> io
     written
 }
 
-/// Whether the file at `path` holds `revision`: its footer there names that root.
 pub fn holds_revision(path: &Path, revision: Revision) -> io::Result<bool> {
     let mut file = File::open(path)?;
     if file.seek(SeekFrom::End(0))? < revision.length {
@@ -125,7 +106,6 @@ pub fn holds_revision(path: &Path, revision: Revision) -> io::Result<bool> {
     }
 }
 
-/// Refuses a file whose footer ending at `revision.length` does not name its root.
 fn check_revision(file: &mut File, revision: Revision) -> io::Result<()> {
     let start = revision
         .length
@@ -140,8 +120,6 @@ fn check_revision(file: &mut File, revision: Revision) -> io::Result<()> {
     Ok(())
 }
 
-/// Cuts the recording at `path` back to `revision`, which it must hold: every later one goes,
-/// durably. Cutting a recording back to the revision it ends at changes nothing.
 pub fn cut_back(path: &Path, revision: Revision) -> io::Result<()> {
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     check_revision(&mut file, revision)?;

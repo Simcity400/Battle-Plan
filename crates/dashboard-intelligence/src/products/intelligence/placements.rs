@@ -1,5 +1,3 @@
-//! Who spies on whom: every operative at work at an hour, by the country it works for and the
-//! country it works in (rows at an hour of the daily operative census).
 
 use super::{Content, Country, IDENTITY, Tags, branch, missing};
 use crate::{
@@ -18,22 +16,19 @@ use ts_rs::TS;
 
 const TABLES: [TableId; 3] = [TableId::OperativeMemberships, IDENTITY[0], IDENTITY[1]];
 
-/// The agency's active list: recruitment pools are kinds 1 to 3.
 pub const ACTIVE: u8 = 0;
-/// Assignments as the game numbers them: captured, then on a mission, in an operation.
 pub const CAPTURED: u32 = 0;
 pub const MISSION: u32 = 3;
 pub const OPERATION: u32 = 4;
 
-/// An operative a reply names: its full handle and its saved name in the reader's language.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Operative {
-    /// The full handle, as a decimal string.
+    #[doc = " The full handle, as a decimal string."]
     pub id: String,
     pub name: Option<String>,
-    /// Why the name is not shown, when it is not.
+    #[doc = " Why the name is not shown, when it is not."]
     pub name_missing: Option<String>,
 }
 
@@ -50,8 +45,6 @@ impl Operative {
     }
 }
 
-/// Where an active, free operative works at the hour: its mission's or operation's target, its own
-/// country included, as the game lists it.
 pub fn target(row: &OperativeMembershipRow) -> Option<u32> {
     if row.roster_kind != ACTIVE || row.assignment == CAPTURED {
         return None;
@@ -87,9 +80,9 @@ pub struct Placement {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperativePlacementReply {
-    /// By owner, then target id.
+    #[doc = " By owner, then target id."]
     pub placements: Vec<Placement>,
-    /// The census's read hour the rows hold (it is taken daily).
+    #[doc = " The census's read hour the rows hold (it is taken daily)."]
     pub read_hour: Option<i32>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
@@ -97,7 +90,6 @@ pub struct OperativePlacementReply {
 
 dashboard_base::reply_warnings!(OperativePlacementReply);
 
-/// The frame's placements.
 pub fn placements(frame: &DecodedFrame, content: &Content) -> io::Result<Vec<Placement>> {
     let tags = Tags::read(frame)?;
     let rows = frame.complete::<tables::OperativeMemberships>()?;

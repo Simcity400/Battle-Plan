@@ -164,8 +164,6 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
     }
 }
 
-/// A failed raw copy hides only the two tables it carries: the sliced
-/// Projects and ProjectHistory come from the typed family read.
 #[test]
 fn failed_project_job_hides_prior_rows_and_preserves_independent_results() {
     let (_, mut captured) = small();
@@ -283,7 +281,6 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
     };
     captured.raid_type_tokens.first[..2].copy_from_slice(&[u32::MAX, 7]);
     captured.raid_type_tokens.len = 2;
-    // The player cache's tokens follow the parents' in the arena.
     captured.raid_player.outcome = Outcome::Rows { len: 1 };
     captured.raid_player.rows[0] = engine_visibility::cplayer_status_cache::Row {
         country: u32::MAX,
@@ -608,8 +605,6 @@ impl Memory for ProgramSource<'_> {
             destination[..partial].fill(0xe3);
             return false;
         }
-        // Relocate only the program object for checked-address tests;
-        // heap text and country links retain their fixture addresses.
         let source = address
             .checked_sub(self.pointer)
             .filter(|&offset| offset < nproject_cprogram::OWNER_COPY + 12)
@@ -638,7 +633,6 @@ fn program_links(bytes: &[u8]) -> Array {
     Array::from_header(bytes[start..start + 16].try_into().unwrap(), 4).unwrap()
 }
 
-/// The fixture's three-slot country table, read in full.
 const COUNTRIES: Array = Array { data: 0, count: 3 };
 
 fn copy_fixture_program(log: &mut RawLog<2>, memory: &ProgramSource<'_>) -> bool {
@@ -666,8 +660,6 @@ fn copy_fixture_program(log: &mut RawLog<2>, memory: &ProgramSource<'_>) -> bool
     )
 }
 
-/// Exact successful fixture observations through the original scalar path.
-/// Optional/invalid fixture cases shorten or replace this explicit script.
 fn program_script(bytes: &[u8], pointer: usize) -> Vec<(Option<usize>, usize)> {
     use super::projects_test_kit as kit;
     let at = |offset| pointer.checked_add(offset);
@@ -721,7 +713,6 @@ fn scalar_program_script(
     {
         return false;
     }
-    // A refused assignment child leaves its independently authenticated program.
     let _ = script[child..]
         .iter()
         .all(|&(address, len)| span(log, memory, address, len, M_PROGRAMS).is_some());
@@ -821,8 +812,6 @@ fn program_body_batch_preserves_every_capacity_prefix_and_growth() {
             assert_eq!(actual.bytes.capacity(), expected.bytes.capacity());
         }
     }
-    // Identity leaves nine body bytes: the body is taken field by field,
-    // growing as each needs, rather than preflighting all 61.
     let source = ProgramSource::new(&bytes);
     let mut log = dirty_program_log(16, 25);
     assert!(copy_fixture_program(&mut log, &source));
@@ -942,8 +931,6 @@ fn program_body_batch_keeps_identity_owner_presence_and_string_gates() {
                 false
             }
             _ => {
-                // The mirror stages the terminator; its value is validated
-                // during typed decoding, not by an extra live read/gate.
                 bytes[kit::HEAP + b"program-building-01".len()] = 7;
                 true
             }
@@ -1055,8 +1042,6 @@ fn program_body_batch_keeps_plan_blocking_and_cold_retirement() {
         log.prepare_read_plan();
         log.clear();
 
-        // Retired plans permit fresh discovery, while the body scatter
-        // keeps that new capture ineligible for a scalar compiled plan.
         for _ in 0..2 {
             let fresh = ProgramSource::new(&bytes);
             assert!(!log.begin_planned_capture(&fresh, [0; 4]));
@@ -1090,8 +1075,6 @@ fn split_copy_matches_direct_walk() {
     assert_eq!(counts, expected_counts);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Spot-checks: program identity with heap building bytes and the
-    // breakthrough payload. The project pools are not in the payload.
     assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
     let program = &split.programs.rows[0];
     assert_eq!((program.id, program.owner, program.province), (5, 1, 13413));
@@ -1118,8 +1101,6 @@ fn split_copy_matches_direct_walk() {
     );
 }
 
-/// A positive slot holding the reserved slot-zero object is skipped as `Reader::at` skips it:
-/// the copy stages that authentication, so the replay still reads every country.
 #[test]
 fn a_reserved_country_alias_keeps_the_split_census() {
     use super::projects_test_kit as kit;
@@ -1137,14 +1118,6 @@ fn a_reserved_country_alias_keeps_the_split_census() {
 
 #[test]
 fn projects_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 1 program and 1 breakthrough, so
-    // cap 1 is both the one-row and exact-fit arm, cap 0 is both the
-    // zero-cap, overflow-by-one (total 1 == cap+1) and massive arm;
-    // u32 unread saturation is not reachable and is covered by the
-    // walk's own saturating arithmetic.
     use super::projects_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -1165,7 +1138,6 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
         assert!(report.raw_ok, "rows={rows:?}");
         kit::assert_matches_direct(&split, &direct);
     }
-    // Arena arms: names/candidates truncation agrees on both paths.
     for (names, candidates) in [(0, 0), (4, 1), (8192, 1024)] {
         let capacities = Capacities {
             rows: [256; N],
@@ -1183,7 +1155,6 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
         assert!(report.raw_ok);
         kit::assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows on both tables.
     let capacities = Capacities {
         rows: [1; N],
         program_names: 8192,
@@ -1238,9 +1209,6 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
             self.memory.copy(address, output)
         }
     }
-    // Primary raw fault attribution, [programs, breakthroughs], remains
-    // independent of decoded outcomes. The project pools are not copied, so
-    // their faults touch neither.
     for (offset, fault_mask) in [
         (cgame_state::COUNTRIES, [true, true]),
         (kit::C1, [true, true]),
@@ -1305,10 +1273,6 @@ fn project_hour(
     owners
 }
 
-/// Projects and ProjectHistory are read for every country at the hour after
-/// the daily tick and, in between, for the countries a project writer marked,
-/// within the hour. A country's alias raw id is read and kept with it. A
-/// lifecycle change no hook saw is read at the next boundary.
 #[test]
 fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     use super::projects_test_kit as kit;
@@ -1317,14 +1281,12 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
     let changes = Domain::enabled(64);
     let mut captured = Captured::with_capacities(&split_capacities());
     let mut store = SliceFingerprints::new();
-    // Nothing held: every country, off the boundary too.
     assert_eq!(
         project_hour(&mut captured, &bytes, 5, &mut store, &changes),
         [1, 2]
     );
     assert_eq!(captured.projects.outcome, Outcome::Rows { len: 1 });
     assert!(project_hour(&mut captured, &bytes, 6, &mut store, &changes).is_empty());
-    // A completion marks country 1: read at the next hour, alone.
     bytes[kit::PROJ1 + nproject_cproject::COMPLETED] = 1;
     changes.write(Table::Projects, 1);
     assert_eq!(
@@ -1333,8 +1295,6 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
     );
     assert_eq!(captured.projects.rows[0].completed, 1);
     assert!(project_hour(&mut captured, &bytes, 8, &mut store, &changes).is_empty());
-    // Country 1 gains the alias raw id 3, which its project now names: the
-    // country is read with both raw ids, and the rows keep the alias.
     let links = cgame_state::COUNTRY_LINKS;
     bytes[links + 8..links + 12].copy_from_slice(&4_u32.to_le_bytes());
     bytes[links + 12..links + 16].copy_from_slice(&4_u32.to_le_bytes());
@@ -1350,8 +1310,6 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
     assert_eq!(captured.projects.rows[0].owner, 3);
     assert_eq!(captured.history.rows[0].owner, 3);
     assert!(project_hour(&mut captured, &bytes, 10, &mut store, &changes).is_empty());
-    // A writer marks the country, not the alias its project names: the
-    // alias's rows are read as the country's.
     bytes[kit::PROJ1 + nproject_cproject::STARTED] = 0;
     changes.write(Table::Projects, 1);
     assert_eq!(
@@ -1359,8 +1317,6 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
         [1, 3]
     );
     assert_eq!(captured.projects.rows[0].started, 0);
-    // The daily pass appends history: every country is read at the
-    // boundary.
     let date = kit::HIST1 + nproject_sproject_history::DATE;
     bytes[date..date + 4].copy_from_slice(&444_i32.to_le_bytes());
     assert_eq!(
@@ -1368,7 +1324,6 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
         [1, 2, 3]
     );
     assert_eq!(captured.history.rows[0].date, 444);
-    // A completion no hook marked waits for the boundary.
     bytes[kit::PROJ1 + nproject_cproject::COMPLETED] = 0;
     assert!(project_hour(&mut captured, &bytes, 25, &mut store, &changes).is_empty());
     assert_eq!(
@@ -1596,9 +1551,6 @@ mod raid_memos {
     }
 }
 
-/// The walks after the project family, taken out and walked on their own as a worker walks them
-/// beside the family, leave every table and tick as the inline walk does, on a daily and an
-/// ordinary hour.
 #[test]
 fn the_rest_walked_beside_the_projects_equals_the_inline_walk() {
     use super::projects_test_kit as kit;

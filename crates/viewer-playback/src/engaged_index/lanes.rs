@@ -1,8 +1,3 @@
-//! The engaged index and the combat icon frames folded from the recording by lanes of their own:
-//! each table the folds read is a [`Lane`] stepped an hour at a time from a piece's first hour, on
-//! a worker of its own, apart from the head and its seeks. The rows of those tables, and only the
-//! columns the folds read, are kept from each hour's change set ([`Store`]) and handed to
-//! today's fold ([`Pass::fold_source`]) through [`Tables`].
 
 use super::Pass;
 use crate::lane_rows::{Kept, Table};
@@ -21,7 +16,6 @@ use std::{
 };
 use viewer_foundation::{engagement_history::History, map::perspective::Country};
 
-/// The tables the folds read, and their columns by field name (every column when none).
 const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::Campaign, None),
     (TableId::CountryLinks, None),
@@ -41,14 +35,12 @@ const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::TaskForces, Some(&["roster_owner", "logical_owner"])),
 ];
 
-/// The tables the viewers' inputs and the viewing country are read from.
 const VIEWER: [TableId; 8] = [TableId::CountryLinks, TableId::Countries, TableId::LocalPlayer, TableId::Players, TableId::HumanControllers, TableId::FactionMembers, TableId::WarRelations, TableId::Subjects];
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// The fold's tables at the hour its lanes have reached.
 pub struct Store {
     tables: Vec<Option<Box<dyn Kept>>>,
     branch: BranchId,
@@ -80,12 +72,10 @@ impl Store {
         T::borrow(self.tables.get(T::ID.index())?.as_ref()?.rows())
     }
 
-    /// Lane hours stepped and skipped, over every lane.
     pub fn steps(&self) -> (u64, u64) {
         self.tables.iter().flatten().map(|table| table.steps()).fold((0, 0), |(a, b), (c, d)| (a + c, b + d))
     }
 
-    /// Bytes of the rows kept, and what the lanes hold.
     pub fn held(&self) -> (usize, playhead::lane::Held) {
         let mut total = (0, playhead::lane::Held::default());
         for table in self.tables.iter().flatten() {
@@ -144,17 +134,10 @@ impl Tables for Store {
     }
 }
 
-/// A fold's recording, the pieces of its timeline, the branch it folds into and its viewing
-/// country.
 type FoldKey = (String, Vec<Piece>, BranchId, Country);
 
-/// The folds running: one each, whoever asks.
 static FOLDS: std::sync::Mutex<Vec<(FoldKey, std::sync::Weak<History>)>> = std::sync::Mutex::new(Vec::new());
 
-/// The engaged index of branch `branch` of `replay` for `country`, its timeline's pieces
-/// (`units`) folded by lanes on a thread of its own into that branch: started on the first ask and
-/// shared after (the window's index and the engagement layer read one fold). The fold stops when
-/// no holder is left.
 pub fn shared(replay: &replay::campaign::Replay, units: &crate::playhead_host::units::Units, branch: BranchId, country: &Country) -> io::Result<Arc<History>> {
     let key: FoldKey = (units.name.clone(), units.timeline.pieces().to_vec(), branch, country.clone());
     let mut folds = FOLDS.lock().unwrap_or_else(|p| p.into_inner());
@@ -175,9 +158,6 @@ pub fn shared(replay: &replay::campaign::Replay, units: &crate::playhead_host::u
     Ok(history)
 }
 
-/// How each of `timeline`'s pieces (the playhead's of branch `branch`) starts, by today's rule
-/// (the index's fold of a recording's blocks): a native load at its segment's loaded hour, else a
-/// restart where a later piece of the branch's history begins.
 fn starts(replay: &replay::campaign::Replay, timeline: &Timeline, branch: BranchId) -> Vec<PieceStart> {
     let history = replay.pieces(branch);
     let start = |piece: &Piece| {
@@ -199,8 +179,6 @@ fn starts(replay: &replay::campaign::Replay, timeline: &Timeline, branch: Branch
         .collect()
 }
 
-/// How a piece of the timeline starts: the branch it folds into, and whether its first hour is a
-/// native load (rebuilt) or a restart after unobserved hours.
 #[derive(Clone, Copy, Debug)]
 pub struct PieceStart {
     pub branch: BranchId,
@@ -208,20 +186,13 @@ pub struct PieceStart {
     pub restart: bool,
 }
 
-/// What a fold of the timeline took, by part.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Spent {
     pub hours: u64,
-    /// Seeking and stepping the lanes and keeping their rows.
     pub read_ns: u64,
-    /// Today's fold of the hours.
     pub fold_ns: u64,
 }
 
-/// Folds every hour of `timeline` (its pieces from their first hour, or hours `within`) for
-/// `country` into `shared`, as today's pass folds a recording's blocks; stops when `shared` is
-/// cancelled. `started` gives each piece's branch and start; `campaign` is the recording's id,
-/// which the Campaign table must name for an hour to be read.
 pub fn fold(
     pages: &Arc<dyn Pages>,
     timeline: &Timeline,

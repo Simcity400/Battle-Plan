@@ -1,16 +1,6 @@
-//! Counter bars and status glyphs from `DivisionStatus`.
-//!
-//! Rules take plain numbers so arithmetic can be checked on synthetic inputs.
-//! Hit points, organisation and status magnitudes are signed i64 values over
-//! 100,000 ([`FIXED`]). [`stack_fill`] converts a ratio to the drawn fraction.
-//! Bar geometry comes from the resolved sprite and window; the fill uses the
-//! integer steps in [`super::counter_inputs::bar_pixels`].
 
-/// The native fixed-point scale: one whole unit is 100 000.
 pub const FIXED: i64 = 100_000;
 
-/// Raw fixed5 NGraphics thresholds from the matching content, in native test
-/// order. Mods may replace them, so the renderer must not bake in vanilla.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SupplyThresholds {
     pub very_low: i64,
@@ -19,8 +9,6 @@ pub struct SupplyThresholds {
 }
 
 impl SupplyThresholds {
-    /// `SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD`, `_LOW_THRESHOLD` and
-    /// `_SHOW_THRESHOLD` through the native fixed-point getter.
     pub fn read(defines: &installed_content_core::defines::Defines) -> std::io::Result<Self> {
         let value = |name| defines.fixed5("NGraphics", name);
         Ok(Self {
@@ -31,17 +19,12 @@ impl SupplyThresholds {
     }
 }
 
-/// Raw fixed-point divide-by-zero guard: one thousandth of a whole unit.
 pub const MAXIMUM_FLOOR: i64 = 100;
 
-/// Maximum used by a counter bar. Recorded maxima already apply this floor;
-/// retain the clamp for synthetic inputs and a recorded zero maximum.
 pub fn effective_maximum(recorded: i64) -> i64 {
     recorded.max(MAXIMUM_FLOOR)
 }
 
-/// Fixed-point current value over the effective maximum, clamped to a whole unit.
-/// The three unusable signed current-value sentinels read as full.
 pub fn ratio(current: i64, maximum: i64) -> i64 {
     let maximum = effective_maximum(maximum);
     if (current as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
@@ -51,15 +34,10 @@ pub fn ratio(current: i64, maximum: i64) -> i64 {
     }
 }
 
-/// Strength-bar contribution is [`ratio`] times the recorded strength factor,
-/// with wrapping multiplication, truncating fixed-point division and a whole-unit
-/// clamp. Organisation has no strength factor.
 pub fn modified_strength(current: i64, maximum: i64, factor: i64) -> i64 {
     (ratio(current, maximum).wrapping_mul(factor) / FIXED).clamp(0, FIXED)
 }
 
-/// maximum gates the getter; remaining grace
-/// divides by the content's integer SUPPLY_GRACE, then competes with received supply.
 pub fn effective_supply(received: i64, maximum: i64, remaining: i64, grace: i32) -> i64 {
     if maximum < 1 {
         return 0;
@@ -75,59 +53,35 @@ pub fn effective_supply(received: i64, maximum: i64, remaining: i64, grace: i32)
     received.max(fraction).clamp(0, FIXED)
 }
 
-/// Mean of visible members' fixed-point ratios, using integer truncation before
-/// conversion to the drawn fraction. Members contribute equally regardless of
-/// their maxima.
 pub fn stack_fill(ratios: &[i64]) -> f32 {
     super::counter_inputs::member_mean(ratios.iter().copied())
         .map_or(0.0, super::counter_inputs::bar_fill)
 }
 
-/// One division's status, as far as the counter's glyphs are concerned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Member {
-    /// The raw recorded `DivisionStatus.supply_ratio`.
     pub supply_ratio: i64,
-    /// `DivisionMovement.naval_transfer`: the member is riding a convoy.
     pub naval_transfer: bool,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    /// The division's stored attrition exceeds its recorded threshold. This is the counter's
-    /// attrition-presence predicate.
     pub attrition: bool,
-    /// The exercise predicate; `None` when the hour holds no readable one.
     pub exercising: Option<bool>,
-    /// The raw division's group is present; an ungrouped member skips both
-    /// order-icon branches even when its invalid-orders byte is nonzero.
     pub grouped: bool,
-    /// Canonical roster owner equals the viewer's chosen country.
     pub own: bool,
-    /// Derived from the same-hour order roots and assigned division vectors.
-    /// `None` means a reached root or group was unavailable.
     pub has_order: Option<bool>,
-    /// The recorded `DivisionStatus.invalid_orders`.
     pub invalid_orders: u8,
 }
 
-/// Which glyphs one stack's counter hangs off its plate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Glyphs {
-    /// Frame of `GFX_unitcounter_supply_status_strip`, or `None` for no crate.
     pub supply: Option<u32>,
-    /// Frame of `GFX_onmap_digin_icon`, or `None` for no spade.
     pub digin: Option<u32>,
     pub attrition: bool,
-    /// Unknown when a member's exercise predicate is and no other member exercises.
     pub training: Option<bool>,
-    /// Unknown when missing order inputs could change the red latch.
     pub no_orders: Option<bool>,
-    /// The yellow `!` can coexist with the red one in a mixed stack.
     pub invalid_orders: Option<bool>,
 }
 
-/// Compare supply with the content's very-low, low and show thresholds in that
-/// order. Strict comparisons select zero-based frames two, one and zero; supply
-/// at or above the show threshold hides the crate.
 pub fn supply_frame(supply_ratio: i64, thresholds: SupplyThresholds) -> Option<u32> {
     if supply_ratio < thresholds.very_low {
         Some(2)
@@ -140,8 +94,6 @@ pub fn supply_frame(supply_ratio: i64, thresholds: SupplyThresholds) -> Option<u
     }
 }
 
-/// Supply follows the last visible member outside naval transfer, in stack order.
-/// A stack consisting only of transferred members retains full supply.
 pub fn stack_supply(members: &[Member]) -> i64 {
     members
         .iter()
@@ -151,8 +103,6 @@ pub fn stack_supply(members: &[Member]) -> i64 {
         .unwrap_or(FIXED)
 }
 
-/// Show a spade when any member has positive entrenchment. Use its full frame
-/// only when every entrenched member has reached its own cap.
 pub fn digin_frame(members: &[Member]) -> Option<u32> {
     let mut any = false;
     let mut at_cap = true;
@@ -167,14 +117,7 @@ pub fn digin_frame(members: &[Member]) -> Option<u32> {
     any.then(|| u32::from(at_cap))
 }
 
-/// The two independent order-icon latches. It visits only fully
-/// visible members in their native stack order. A grouped own member without
-/// an order latches red; once red is set, later grouped members can set yellow
-/// from their raw invalid-orders byte without consulting their orders. The two
-/// icons can therefore coexist. A missing order input branches both possible
-/// outcomes, and an icon is certain only when every remaining state agrees.
 pub fn order_glyphs(members: &[Member]) -> (Option<bool>, Option<bool>) {
-    // Four possible (red, yellow) states; bit 0 is red and bit 1 is yellow.
     let mut possible = 0b0001_u8;
     for member in members {
         if !member.grouped {
@@ -216,8 +159,6 @@ pub fn order_glyphs(members: &[Member]) -> (Option<bool>, Option<bool>) {
     (icon(1), icon(2))
 }
 
-/// Any exercising member shows the training glyph; it is off only when every
-/// member's exercise predicate is known.
 pub fn stack_training(members: &[Member]) -> Option<bool> {
     if members.iter().any(|member| member.exercising == Some(true)) {
         Some(true)
@@ -229,11 +170,6 @@ pub fn stack_training(members: &[Member]) -> Option<bool> {
     }
 }
 
-/// Fold supply, dig-in, attrition and training over the stack. Recorded attrition
-/// and exercise predicates retain their own modifier and deployment gates; raw
-/// training requests alone do not establish exercise. Order glyphs use their
-/// ordered latches and preserve unavailable membership. Training hides the spade,
-/// so an unknown one withholds it.
 pub fn glyphs(members: &[Member], thresholds: Option<SupplyThresholds>) -> Glyphs {
     let training = stack_training(members);
     let (no_orders, invalid_orders) = order_glyphs(members);
@@ -283,17 +219,12 @@ mod tests {
 
     #[test]
     fn a_ratio_is_the_division_over_its_own_maximum() {
-        // 12.5 organisation out of a 25.0 maximum is half, whatever the scale.
         assert_eq!(ratio(12 * FIXED + FIXED / 2, 25 * FIXED), FIXED / 2);
         assert_eq!(ratio(0, 25 * FIXED), 0);
         assert_eq!(ratio(25 * FIXED, 25 * FIXED), FIXED);
-        // A division over its template clamps rather than overdrawing.
         assert_eq!(ratio(30 * FIXED, 25 * FIXED), FIXED);
-        // A negative current is an empty bar, not a negative one.
         assert_eq!(ratio(-5 * FIXED, 25 * FIXED), 0);
-        // The engine's sentinel currents read as full.
         assert_eq!(ratio(i64::MAX, 25 * FIXED), FIXED);
-        // The native division truncates: 2/3 is 66666, not 66667.
         assert_eq!(ratio(2 * FIXED, 3 * FIXED), 66_666);
     }
 
@@ -302,38 +233,27 @@ mod tests {
         assert_eq!(effective_maximum(30 * FIXED), 30 * FIXED);
         assert_eq!(effective_maximum(0), MAXIMUM_FLOOR);
         assert_eq!(effective_maximum(-1), MAXIMUM_FLOOR);
-        // The raw maximum floor preserves a full bar at full organisation.
         assert_eq!(ratio(30 * FIXED, 30 * FIXED), FIXED);
     }
 
     #[test]
     fn the_strength_bar_multiplies_the_ratio_by_the_division_factor() {
-        // A full-strength synthetic division with a manpower factor near half draws
-        // a strength bar near half while its unmodified ratio stays full.
         let full = 5_560_832;
         assert_eq!(modified_strength(full, full, FIXED), FIXED);
-        // A fixed-point factor of 55442 leaves the full-strength ratio at 55442.
         assert_eq!(modified_strength(full, full, 55_442), 55_442);
-        // The plain ratio is truncated before the factor applies, as the native integer steps are.
         assert_eq!(modified_strength(2 * FIXED, 3 * FIXED, 50_000), 33_333);
-        // Both steps clamp: an over-full division and a factor above one stay full, a negative
-        // factor or hit points stay empty.
         assert_eq!(modified_strength(30 * FIXED, 25 * FIXED, 150_000), FIXED);
         assert_eq!(modified_strength(full, full, -1), 0);
         assert_eq!(modified_strength(-5 * FIXED, 25 * FIXED, FIXED), 0);
-        // The engine's sentinel hit points read as a full ratio.
         assert_eq!(modified_strength(i64::MAX, 25 * FIXED, 40_000), 40_000);
     }
 
     #[test]
     fn a_stack_averages_its_members_fixed_point_ratios() {
-        // One full division with a small maximum and one empty division with a large one.
         let stack = [ratio(20 * FIXED, 20 * FIXED), ratio(0, 200 * FIXED)];
         assert_eq!(stack_fill(&stack), 0.5);
         assert_eq!(stack_fill(&[]), 0.0);
-        // A stack of equally spent divisions is a quarter bar, not a full one.
         assert_eq!(stack_fill(&[25_000, 25_000]), 0.25);
-        // The mean truncates in fixed point before the float conversion.
         assert_eq!(stack_fill(&[1, 2]), 0.00001);
     }
 
@@ -361,14 +281,12 @@ mod tests {
     fn the_stacks_supply_is_its_last_member_that_is_not_at_sea() {
         assert_eq!(stack_supply(&[]), FIXED);
         assert_eq!(stack_supply(&[member(FIXED), member(10_000)]), 10_000);
-        // The engine overwrites rather than taking a minimum, so order decides.
         assert_eq!(stack_supply(&[member(10_000), member(FIXED)]), FIXED);
         let at_sea = Member {
             naval_transfer: true,
             ..member(0)
         };
         assert_eq!(stack_supply(&[member(10_000), at_sea]), 10_000);
-        // A stack wholly under naval transfer keeps the seeded full ratio and draws no crate.
         assert_eq!(stack_supply(&[at_sea]), FIXED);
         assert_eq!(glyphs(&[at_sea], Some(VANILLA_SUPPLY)).supply, None);
     }
@@ -384,12 +302,10 @@ mod tests {
         assert_eq!(digin_frame(&[dug(0, 5 * FIXED)]), None);
         assert_eq!(digin_frame(&[dug(FIXED, 5 * FIXED)]), Some(0));
         assert_eq!(digin_frame(&[dug(5 * FIXED, 5 * FIXED)]), Some(1));
-        // One member short of its cap keeps the partial frame for the whole stack.
         assert_eq!(
             digin_frame(&[dug(5 * FIXED, 5 * FIXED), dug(FIXED, 5 * FIXED)]),
             Some(0)
         );
-        // A member with no entrenchment at all does not hold the stack back.
         assert_eq!(
             digin_frame(&[dug(5 * FIXED, 5 * FIXED), dug(0, 5 * FIXED)]),
             Some(1)
@@ -418,9 +334,7 @@ mod tests {
             Some(false),
             "the byte is clear on this member"
         );
-        // Hide the dig-in icon while the stack is exercising.
         assert_eq!(out.digin, None);
-        // A supplied stack carries no crate at all.
         assert_eq!(glyphs(&[quiet], Some(VANILLA_SUPPLY)).supply, None);
         let calm = glyphs(
             &[Member {
@@ -449,7 +363,6 @@ mod tests {
         assert_eq!(stack_training(&[known(false), known(false)]), Some(false));
         assert_eq!(stack_training(&[unknown, known(true)]), Some(true));
         assert_eq!(stack_training(&[known(false), unknown]), None);
-        // The spade shows only while the stack is known not to exercise.
         let unsure = glyphs(&[known(false), unknown], Some(VANILLA_SUPPLY));
         assert_eq!((unsure.training, unsure.digin), (None, None));
     }

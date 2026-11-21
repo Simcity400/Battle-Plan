@@ -2,7 +2,6 @@ import { useEffect, useId, useRef } from 'react';
 import { hasMapOverlay } from '../shell/mapOverlays';
 import { commitZone } from '../shell/commitCount';
 
-/** One tooltip for the whole interface, including controls inside native popovers. */
 export default function Tooltip() {
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
@@ -23,8 +22,6 @@ export default function Tooltip() {
     const position = () => {
       if (!target) return;
       const anchor = target.getBoundingClientRect();
-      // Keep sidebar hints in the rail, outside the native child window.
-      // Menus already hide the native surface and can use the full viewport.
       const overlay = hasMapOverlay();
       const rail = !overlay ? target.closest('.sidebar')?.getBoundingClientRect() : null;
       const header = !overlay ? target.closest('.shell-header')?.getBoundingClientRect() : null;
@@ -37,9 +34,6 @@ export default function Tooltip() {
       const top = !above && anchor.bottom + bounds.height <= viewport.clientHeight - 8 ? anchor.bottom : anchor.top - bounds.height;
       tip.style.top = `${Math.max(header ? header.top + 4 : 8, Math.min(top, (header?.bottom ?? viewport.clientHeight) - bounds.height - (header ? 4 : 8)))}px`;
     };
-    // While a tooltip is open the page keeps painting under it, so nothing here reads layout:
-    // its anchor's removal and text are watched as mutations, its hiding by the intersection
-    // pass and its new size after layout.
     const observer = new MutationObserver(() => {
       if (!target?.isConnected || !target.getAttribute('data-tooltip')) { close(); return; }
       const text = target.getAttribute('data-tooltip')!;
@@ -89,7 +83,6 @@ export default function Tooltip() {
     };
     const scroll = (event: Event) => {
       if (tip.contains(element(event.target))) return;
-      // Let a keyboard focus scroll settle before its delayed tooltip appears.
       if (!timer || !target?.contains(document.activeElement)) close();
     };
     const toggle = (event: Event) => { if (event.target !== tip) close(); };

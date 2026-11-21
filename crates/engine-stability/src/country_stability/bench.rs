@@ -1,13 +1,3 @@
-//! Synthetic Stability acquisition through the same guarded memory/accounting
-//! and authenticated country-roster adapters as the worker. No game is needed.
-//!
-//! To transplant onto d16cedeb6c, copy this file, declare this module under
-//! `cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))`, and
-//! add this test-only method to `observed::Memo`:
-//! `#[cfg(test)] pub(super) fn retained(&self) -> (usize, usize) {
-//!     (self.bytes.len(), self.spans.len())
-//! }`
-//! No production API or other fixture module is required.
 
 use super::{
     ADVISOR_MODIFIER, AIR_STATISTICS, Context, DEFINE_RVAS, DEFINES, DIPLOMACY_HOSTING,
@@ -39,21 +29,13 @@ const LINES: usize = CHILDREN * 2;
 const STABILITY_KEY: u32 = 1;
 const WAR_SUPPORT_KEY: u32 = 6;
 const UNTRACKED_KEY: u32 = TRACKED as u32 + 1;
-// This fixture's language singleton is the highest image operand it reads.
 const IMAGE: usize = (localization_root_layout::SINGLETON_RVA.0 + 8 + 15) & !15;
-// Every slot is bound and shared. The at-war fixture adds only one peace/war,
-// good/bad-war-support and good/bad-stability alternative to its child tree.
 const ACTIVE_STATICS: [usize; 5] = [0, 1, 2, 4, 5];
 const ACTIVE_SCALED: [usize; 3] = [6, 8, 9];
 
-/// Build with relative addresses so storage grows from the complete fixture's
-/// live demand. Relocate once, after boxing, then expose immutable bytes only.
-/// None of the addresses given to LiveMemory can move while it is in use.
 struct Arena {
     bytes: Vec<u8>,
     pointers: Vec<usize>,
-    // Allocation extents in address order, the image first. Debug builds
-    // check that every write stays inside the object it addresses.
     objects: Vec<(usize, usize)>,
 }
 
@@ -114,8 +96,6 @@ impl Arena {
         self.u32(address + 12, u32::try_from(count).unwrap());
     }
 
-    /// MSVC strings use the same inline/heap layout as tests::World::string;
-    /// every modifier display and emitted identity here uses the heap form.
     fn string(&mut self, address: usize, value: &[u8]) {
         if value.len() <= msvc_string::INLINE_CAPACITY as usize {
             self.put(address, value);
@@ -139,7 +119,6 @@ impl Arena {
         data
     }
 
-    /// Modifier clone and source geometry follows tests::World::modifier.
     fn modifier(&mut self, address: usize, spec: &ChildSpec) {
         let data = self.entries(&spec.entries);
         self.array(address + cmodifier::ACCUMULATOR, data, spec.entries.len());
@@ -237,9 +216,6 @@ impl Fixture {
         );
         arena.string(language, b"synthetic_language");
 
-        // The bound static modifier slots: all Context slots point at these
-        // same objects for every country, including slots whose children this
-        // at-war fixture omits.
         let database = arena.alloc(0x400);
         arena.pointer(STATIC_DATABASE_RVA.0, database);
         let statics: Vec<_> = STATIC_SLOTS
@@ -274,8 +250,6 @@ impl Fixture {
             arena.i64(country + super::PROPAGANDA_STABILITY_PENALTY, -3277);
             arena.i64(country + super::COASTAL_PROTECTION_STABILITY, 2500);
 
-            // The at-war and offensive-war checks reach one owned war relation
-            // and the next country's hosting operand.
             let diplomacy = arena.alloc(cdiplomacy_status::COUNTRY + 8);
             arena.pointer(country + ccountry::DIPLOMACY_STATUS, diplomacy);
             arena.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
@@ -291,7 +265,6 @@ impl Fixture {
             arena.u32(relation + crelation::SECOND_COUNTRY, (slot % n + 1) as u32);
             arena.u8(relation + cwar_relation::FIRST_WAS_INSTIGATOR, 1);
 
-            // Eight occupied interception-ring rows.
             let stats = arena.alloc(RING + 8);
             let ring = arena.alloc(RING_SIZE + 9);
             let ring_slots = arena.alloc(8 * 8);
@@ -332,8 +305,6 @@ impl Fixture {
                     format!("synthetic_idea_{slot:04}_{index:02}").as_bytes(),
                 );
                 arena.modifier(idea + IDEA_MODIFIER, &spec);
-                // Political modifier addition builds idea labels; these do not
-                // have to equal the source display.
                 spec.display = format!("synthetic politics idea label {slot:04} {index:02}");
                 children.push(spec);
             }
@@ -360,7 +331,6 @@ impl Fixture {
             arena.modifier(group + IDEOLOGY_GROUP_MODIFIER, &spec);
             children.push(spec);
 
-            // Unreplayed source kinds retain their heap display strings.
             Self::unpaired(&mut children, slot, 10);
             let characters = arena.alloc(ccountry_characters::APPOINTED_ADVISORS + 16);
             let advisors = arena.alloc(ADVISORS * 8);
@@ -394,8 +364,6 @@ impl Fixture {
             }
             Self::unpaired(&mut children, slot, 20);
 
-            // Dynamic modifier recalculation: ten enabled entries, each with a
-            // constant child and three nonzero evaluated rows.
             let entries = arena.alloc(DYNAMICS * dynamic_modifier_entry::STRIDE);
             arena.array(
                 country + ccountry::DYNAMIC_MODIFIERS + cdynamic_modifier_container::ENTRIES,
@@ -518,9 +486,6 @@ struct Retained {
     static_spans: usize,
 }
 
-/// Reuse the worker's country-local scratch and output storage across hours.
-/// FreshPerCountry constructs/drops a new static Memo for every country;
-/// HourShared clears one reused Memo at the hour boundary, exactly as live.
 struct Run {
     mode: Mode,
     memo: Memo,
@@ -662,12 +627,8 @@ impl Run {
     }
 }
 
-/// One fixture of `n` countries: a validated warm hour per mode, then, when
-/// `timed`, the measured rounds and their report.
 fn run_fixture(n: usize, timed: bool) {
     let fixture = Fixture::new(n);
-    // SAFETY: every address read below belongs to the immutable boxed
-    // fixture arena, which outlives the memory adapters and every walk.
     let live = CountedMemory::new(unsafe { LiveMemory::new() });
     let mut cache = Cache::with_capacity(Cache::cells_for_countries(n + 1, 0));
     {
@@ -691,8 +652,6 @@ fn run_fixture(n: usize, timed: bool) {
         Run::new(Mode::HourShared, n),
         Run::new(Mode::FreshPerCountry, n),
     ];
-    // Warm all output/scratch allocations before measuring. The timed
-    // fresh-per-country mode still includes its own Memo allocation/drop.
     for run in &mut runs {
         run.hour(&fixture, &memory, &countries, &context, false);
         run.validate();
@@ -712,7 +671,6 @@ fn run_fixture(n: usize, timed: bool) {
 
     let mut times = [Vec::with_capacity(RUNS), Vec::with_capacity(RUNS)];
     for round in 0..RUNS {
-        // Alternate mode order so neither always receives the first pass.
         for index in [round % 2, 1 - round % 2] {
             ReadCounts::take_current();
             let started = Instant::now();
@@ -720,7 +678,6 @@ fn run_fixture(n: usize, timed: bool) {
             times[index].push(started.elapsed().as_nanos());
         }
     }
-    // Memo census and detailed checks stay outside the timed rounds.
     for (index, run) in runs.iter_mut().enumerate() {
         ReadCounts::take_current();
         run.hour(&fixture, &memory, &countries, &context, true);
@@ -750,8 +707,6 @@ fn bench_country_stability_memos() {
     }
 }
 
-/// The release-only bench's fixture in a debug build: every write stays in
-/// its object and both modes walk it to the same validated rows.
 #[test]
 fn stability_bench_fixture_walks_in_both_modes() {
     run_fixture(3, false);

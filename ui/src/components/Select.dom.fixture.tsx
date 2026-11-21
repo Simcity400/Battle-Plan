@@ -1,4 +1,3 @@
-/** Synthetic recorded choices in the production menu and styles. */
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
@@ -33,7 +32,6 @@ export const fixture = {
   },
   async loadChoices() { updateChoices(this.choices()); await settle(); },
   async replaceChoices(options: SelectOption[]) { updateChoices(options); await settle(); },
-  /** The open menu's row tops just after its owner renders again with an equal list, before anything is measured again. */
   sameChoicesNow() {
     const tops = () => [...document.querySelectorAll<HTMLElement>('.select-menu [role="option"]')].map(row => [row.dataset.optionIndex, row.offsetTop]);
     const before = tops();

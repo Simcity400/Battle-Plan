@@ -1,5 +1,3 @@
-//! Opt-in callback tail samples. Recording uses fixed storage and atomics only;
-//! JSON construction belongs to the status thread. Slots are never overwritten.
 use crate::{acquisition, acquisition_jobs, sampling};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -24,12 +22,10 @@ thread_local! {
     static JOIN: std::cell::Cell<Option<JoinSample>> = const { std::cell::Cell::new(None) };
 }
 
-/// Call on the game thread before starting this callback's acquisition.
 pub(crate) fn reset_join() {
     JOIN.set(None);
 }
 
-/// Keep the first largest join on this thread; ties retain the earlier join.
 pub(crate) fn record_join(role: usize, wall_ns: u64, profile: acquisition::Profile) {
     keep(JoinSample {
         role: Some(role),
@@ -41,7 +37,6 @@ pub(crate) fn record_join(role: usize, wall_ns: u64, profile: acquisition::Profi
 
 pub(crate) fn record_readiness(ticks: i64) {
     let mut frequency = 0;
-    // SAFETY: a valid local output.
     unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
     keep(JoinSample {
         wall_ns: (ticks.max(0) as u128 * 1_000_000_000 / frequency.max(1) as u128) as u64,
@@ -56,7 +51,6 @@ fn keep(sample: JoinSample) {
     }
 }
 
-/// Returns this callback's slowest join and clears the thread-local slot.
 pub(crate) fn take_join() -> JoinSample {
     JOIN.take().unwrap_or_default()
 }
@@ -128,12 +122,10 @@ impl JoinSample {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Sample {
-    /// Missing when the hook-entry clock could not be acquired.
     pub hour: Option<i32>,
     pub qpc_begin: i64,
     pub qpc_end: i64,
     pub wall_ns: u64,
-    /// Missing when either cycle query failed or the counter decreased.
     pub thread_cycles: Option<u64>,
     pub thread_id: u32,
     pub frame_grow_ns: u64,
@@ -141,7 +133,6 @@ pub(crate) struct Sample {
     pub parallel_ns: u64,
     pub residual_ns: u64,
     pub dispatch_ns: u64,
-    /// Difference in the completed body-phase counter, not an availability flag.
     pub phase_calls: u64,
     pub join: JoinSample,
     pub segments_ns: [u64; sampling::SEGMENTS],
@@ -256,7 +247,6 @@ pub(crate) fn thread_cycles() -> Option<u64> {
         ) -> i32;
     }
     let mut cycles = 0;
-    // The current-thread pseudo-handle needs no ownership or close operation.
     let ok = unsafe {
         QueryThreadCycleTime(
             windows_sys::Win32::System::Threading::GetCurrentThread(),
@@ -267,8 +257,6 @@ pub(crate) fn thread_cycles() -> Option<u64> {
 }
 
 impl Stamp {
-    /// Start on the game thread before buffer acquisition. The two cycle
-    /// queries lie inside the QPC interval, so wall time includes their cost.
     pub fn start() -> Self {
         Self {
             qpc_begin: sampling::qpc(),
@@ -276,9 +264,6 @@ impl Stamp {
         }
     }
 
-    /// Finish on the same game thread before the native trampoline. Frequency
-    /// is the session's already validated, nonzero QPC frequency. Fill the
-    /// remaining fields from this callback's counter deltas before recording.
     pub fn finish(self, frequency: u64) -> Sample {
         let cycles = thread_cycles();
         let qpc_end = sampling::qpc();
@@ -293,7 +278,6 @@ impl Stamp {
                 .cycles
                 .zip(cycles)
                 .and_then(|(begin, end)| end.checked_sub(begin)),
-            // A thread identifier owns no handle and requires no cleanup.
             thread_id: unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
             ..Sample::default()
         }
@@ -351,8 +335,6 @@ impl<const N: usize> Samples<N> {
         if sample.wall_ns < THRESHOLD_NS {
             return;
         }
-        // Each reservation owns one slot forever. Status readers may omit a
-        // pending reservation but cannot observe a partially published sample.
         let index = self.qualifying.fetch_add(1, Ordering::Relaxed);
         if index < N as u64 {
             self.slots[index as usize].publish(sample);

@@ -82,8 +82,6 @@ fn empty_containers_describe_and_probe_children_once() {
         key_names: Some(&names),
         ..Default::default()
     };
-    // Both inherit child descriptions and
-    // their own text remains empty.
     for (effect_key, own) in [
         ("create_dynamic_country", "original_tag=AAA copy_tag=BBB"),
         (

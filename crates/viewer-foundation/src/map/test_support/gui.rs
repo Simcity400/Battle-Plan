@@ -1,4 +1,3 @@
-//! Native GUI template, sprite, font and effect fixtures.
 use crate::map::{
     native_effects::{Effect, synthetic},
     native_gui::*,
@@ -13,23 +12,16 @@ use installed_content_core::{
 use installed_content_localisation::localisation::Localisation;
 use std::collections::HashMap;
 
-/// The sprites, font and effects the layouts draw from.
 pub struct Fixture {
-    /// The documents whose templates `gui_type` finds.
     pub(crate) templates: Vec<native::Gui>,
     pub sprites: HashMap<&'static str, SpriteInfo>,
     pub(crate) sheets: HashMap<&'static str, SpriteSheet>,
     pub font: native_text::Font,
     pub(crate) localisation: Localisation,
     pub(crate) global: TextColors,
-    /// The records each animated sprite draws.
     pub(crate) animations: HashMap<&'static str, Vec<AnimationRecord>>,
-    /// The text effect, when a test replaces the synthetic one.
     pub(crate) text: Option<Effect>,
-    /// `gfx/FX/buttonstate.shader`, when a test replaces the synthetic one.
     pub(crate) buttonstate: Option<Effect>,
-    /// The physical viewport sprite hit geometry needs; none by default, so a fixture's
-    /// sprites have no pointer geometry unless a hover test asks for it.
     pub physical: Option<[i32; 2]>,
     pub alpha: HashMap<&'static str, AlphaMask>,
 }
@@ -56,7 +48,6 @@ impl Resources for Fixture {
     }
 
     fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
-        // The fixture's names are ASCII; a byte name that is not UTF-8 is not among them.
         self.sprites.get(std::str::from_utf8(name).ok()?).cloned()
     }
 
@@ -148,7 +139,6 @@ impl Resources for Fixture {
     }
 }
 
-/// A plain sprite of `frames` frames of `frame` texels each, across.
 pub(crate) fn plain(frame: [i32; 2], frames: i32) -> SpriteInfo {
     SpriteInfo {
         texture: [frame[0] * frames, frame[1]],
@@ -225,7 +215,6 @@ pub fn fixture() -> Fixture {
             ),
             ("GFX_default_fallback_texture", plain([8, 8], 1)),
             ("GFX_bar3x17", plain([3, 17], 1)),
-            // A 10-texel strip of three frames: integer extent 3 wide, drawn 10 / 3.
             (
                 "GFX_thirds",
                 SpriteInfo {
@@ -277,7 +266,6 @@ pub fn fixture() -> Fixture {
                     ..plain([12, 12], 1)
                 },
             ),
-            // A text sprite of two 60-wide frames over a 120 by 20 texture.
             (
                 "GFX_text",
                 SpriteInfo {
@@ -392,7 +380,6 @@ pub fn windows(source: &[u8]) -> NativeWindows {
     NativeWindows::read(&bytes, [2048, 1152]).unwrap()
 }
 
-/// The fixture with `document`'s templates in its registry.
 pub fn fixture_with(document: native::Gui) -> Fixture {
     Fixture {
         templates: vec![document],

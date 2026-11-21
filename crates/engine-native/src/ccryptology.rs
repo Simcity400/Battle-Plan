@@ -1,4 +1,3 @@
-//! CCryptology, owned by CIntelligenceAgency.
 
 use crate::{
     Memory,
@@ -11,19 +10,13 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CCryptology primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_7ef0);
-/// CCryptology inline CCountryDecryptionState array data pointer.
 pub const DECRYPTION_STATES: usize = 0x28;
-/// Decryption-state signed i32 count, incremented after each 0x38-byte inline row.
 #[cfg(test)]
 pub const DECRYPTION_STATE_COUNT: usize = 0x34;
-/// CCryptology decryption-state capacity i32.
 #[cfg(test)]
 pub const DECRYPTION_STATE_CAPACITY: usize = 0x30;
-/// CCryptology owning CCountry pointer.
 pub const OWNER_COUNTRY: usize = 0x08;
-/// CCryptology container Save.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x0149_4e50;
 
@@ -42,9 +35,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads each authenticated country's inline decryption states without allocation.
-/// Zero progress and inactive states are retained; days-to-decrypt is derived by
-/// the engine and is deliberately not substituted for a native stored field.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -83,9 +73,6 @@ fn walk_inner(
     let mut ahead = None;
     let mut block = [0_u8; STATE_CHUNK * state::STRIDE];
     for slot in 1..countries.count() {
-        // The next slot's census entry and agency link are read while this
-        // country is, the agency's identity and cryptology pointer hinted;
-        // each is used at its own place.
         let (listed, link) = Ahead::take(&mut ahead, &countries, slot);
         let Some(country) = listed? else {
             continue;
@@ -120,9 +107,6 @@ fn walk_inner(
                 .ok_or("cryptology row demand overflow")?,
         )?;
         let owner_start = len;
-        // Up to STATE_CHUNK states the output still holds are read as one
-        // block; a block that does not read whole is read state by state,
-        // as the serial walk reads it.
         let (mut first, mut chunk, mut whole) = (0, 0, false);
         for index in 0..states.count {
             if len == output.len() {
@@ -151,9 +135,6 @@ fn walk_inner(
                 read_state(memory, base, at)?
             };
             let target = countries.resolve(row.target_country)?;
-            // The engine maintains one state per canonical target. The set
-            // answers in O(1); its exact fallback uses the unpublished owner
-            // word as scratch until this owner's walk finishes.
             let slot = target.canonical_slot;
             let earlier = &output[owner_start..len];
             if seen.insert(slot, || {
@@ -180,10 +161,6 @@ fn walk_inner(
     }
 }
 
-/// The agency's vtable, owner and cryptology pointer, which the walk reads
-/// back to back: one guarded gather of the agency. The first field it did
-/// not complete fails with the reason its own read gave, after the checks of
-/// the fields before it.
 fn cryptology(
     memory: &impl Memory,
     base: usize,
@@ -194,7 +171,6 @@ fn cryptology(
         packed_fields([(0, 8), (agency::OWNER_COUNTRY, 8), (agency::CRYPTOLOGY, 8)]);
     const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 24).unwrap();
     if agency_pointer.checked_add(agency::CRYPTOLOGY + 8).is_none() {
-        // Unreachable for a readable vtable; the reads it replaces.
         authenticate(memory, base, agency_pointer, agency::VTABLE_RVA)?;
         if pointer(memory, agency_pointer, agency::OWNER_COUNTRY)? != country {
             return Err("cryptology agency owner mismatch");
@@ -225,9 +201,6 @@ fn cryptology(
     usize::try_from(word(2)).map_err(|_| "cryptology pointer overflow")
 }
 
-/// The cryptology's vtable, owner and decryption state array header, which
-/// the walk reads back to back: one guarded gather of the object, failing
-/// as [`cryptology`] does.
 fn decryption_states(
     memory: &impl Memory,
     base: usize,
@@ -238,7 +211,6 @@ fn decryption_states(
         packed_fields([(0, 8), (OWNER_COUNTRY, 8), (DECRYPTION_STATES, 16)]);
     const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 32).unwrap();
     if crypto.checked_add(DECRYPTION_STATES + 16).is_none() {
-        // Unreachable for a readable vtable; the reads it replaces.
         authenticate(memory, base, crypto, VTABLE_RVA)?;
         if pointer(memory, crypto, OWNER_COUNTRY)? != country {
             return Err("cryptology owner mismatch");
@@ -269,11 +241,8 @@ fn decryption_states(
         .ok_or("cryptology state array unreadable or invalid")
 }
 
-/// Decryption states read per block.
 const STATE_CHUNK: usize = 64;
 
-/// Reads the 32-byte prefixes of `chunk` states from `first` as one block
-/// into `block` at the state stride; whether it read whole.
 fn state_block(
     memory: &impl Memory,
     states: Array,
@@ -292,8 +261,6 @@ fn state_block(
 }
 
 fn read_state(memory: &impl Memory, base: usize, at: usize) -> Result<Row, &'static str> {
-    // This 32-byte prefix is within the proven 0x38-byte inline object. Reading
-    // it once keeps all six fields and the vtable in one guarded native copy.
     let bytes = read::<[u8; 32]>(memory, at).ok_or("cryptology state unreadable")?;
     decode_state(base, bytes)
 }
@@ -349,10 +316,6 @@ mod tests {
     use super::*;
     use crate::{cgame_state, memory::SliceMemory};
 
-    /// The batched walk over `memory` and the serial walk over
-    /// `serial_memory` (each its own source, so a one-shot fault meets each
-    /// walk) into `rows` rows: the batched walk's result, then the serial
-    /// walk's.
     fn both(
         memory: &impl Memory,
         serial_memory: &impl Memory,
@@ -366,9 +329,6 @@ mod tests {
         [(new, batched), (old, serial)]
     }
 
-    /// On healthy memory the batched walk returns the serial walk's rows and
-    /// outcome at 5,000 countries, truncated or not, reading each country's
-    /// decryption states as one block: one span instead of one per state.
     #[test]
     fn batched_states_match_the_serial_walk() {
         use crate::memory::{CountedMemory, ReadCounts};
@@ -388,14 +348,11 @@ mod tests {
         assert_eq!(new, Outcome::Rows { len: rows });
         assert_eq!((new, &batched), (old, &serial));
         let n = u64::from(COUNT);
-        // The gathers replace six copies; the block replaces three.
         assert_eq!(new_reads.copy_calls + 8 * n, old_reads.copy_calls);
         assert_eq!(new_reads.record_calls, old_reads.record_calls + 2 * n);
         assert_eq!(new_reads.spans + 2 * n, old_reads.spans);
     }
 
-    /// Country `slot`'s decryption state `index` in
-    /// [`crate::cintelligence_agency::test_support::intel_world`].
     fn state_at(w: &crate::ccountry::synthetic::World, slot: u32, index: usize) -> usize {
         let memory = w.memory();
         let agency =
@@ -405,9 +362,6 @@ mod tests {
         rows + index * state::STRIDE
     }
 
-    /// The faults the equality tests place: a state's tail, which the serial
-    /// walk never reads, a state's prefix and the agency link of a country
-    /// read ahead.
     fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 3] {
         let tail = state_at(w, 3, 0) + 32;
         let prefix = state_at(w, 3, 1) + 24;
@@ -415,14 +369,10 @@ mod tests {
         [tail..tail + 8, prefix..prefix + 8, link..link + 8]
     }
 
-    /// This thread's Cryptology fallbacks.
     fn fallbacks() -> u64 {
         crate::batch_fallback::count(crate::batch_fallback::Batch::Cryptology)
     }
 
-    /// A persistent fault gives the serial walk's result: a block it breaks
-    /// is read again state by state and a link whose read ahead failed is
-    /// read again at its turn, each once and counted once.
     #[test]
     fn a_persistent_state_fault_gives_the_serial_result() {
         use crate::batch_fallback::Faulty;
@@ -444,9 +394,6 @@ mod tests {
         }
     }
 
-    /// A one-shot fault never refuses more than the serial walk: a block it
-    /// breaks reads again state by state, and a link read ahead that faulted
-    /// is read again at its turn, each counted once.
     #[test]
     fn a_one_shot_state_fault_refuses_no_more_than_the_serial_walk() {
         use crate::batch_fallback::Faulty;
@@ -466,12 +413,6 @@ mod tests {
         }
     }
 
-    /// With 66 states per country a country's states are two blocks: the
-    /// batched walk matches the serial walk at every capacity around the
-    /// 64-state edge and falls back for exactly the block a fault breaks.
-    /// The first block ends at state 63's prefix, so its tail is never
-    /// read; state 62's tail is, and state 64's prefix is the second block.
-    /// A state past the stored rows is never read.
     #[test]
     fn batched_states_cross_the_block_edge_as_the_serial_walk() {
         use crate::batch_fallback::Faulty;
@@ -486,7 +427,6 @@ mod tests {
             let at = state_at(&w, 3, index) + offset;
             at..at + len
         };
-        // (fault, refuses serially, fallbacks persistent and once)
         for (site, (fault, refuses, counted)) in [
             (range(63, 32, 24), false, 0),
             (range(62, 32, 24), false, 1),
@@ -530,7 +470,6 @@ mod tests {
         let (arena, state) =
             crate::cintelligence_agency::test_support::intel_arena(countries as usize, 3);
         let offset = arena.base();
-        // SAFETY: the arena stays allocated and unchanged while read.
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let mut rows = vec![Row::default(); countries as usize * 3];
         for (label, gathered) in [("serial", false), ("batched", true)] {
@@ -618,7 +557,6 @@ mod tests {
         p64(&mut bytes, AGENCY + agency::CRYPTOLOGY, CRYPTO as u64);
         p64(&mut bytes, CRYPTO, VTABLE_RVA.0 as u64);
         p64(&mut bytes, CRYPTO + OWNER_COUNTRY, COUNTRY[0] as u64);
-        // A spare, uninitialized capacity slot must never become a row.
         header(&mut bytes, CRYPTO + DECRYPTION_STATES, STATES, 3, 2);
         for (index, target) in [2, 3].into_iter().enumerate() {
             let at = STATES + index * state::STRIDE;

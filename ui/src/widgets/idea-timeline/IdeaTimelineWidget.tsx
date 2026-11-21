@@ -25,16 +25,12 @@ import { motionOf } from '../../charts/easing.ts';
 const NO_WARNINGS: string[] = [];
 const COUNTRY_NOT_RECORDED = 'country not recorded';
 
-/** One idea category over time: a lane per law or designer slot and per advisor
- * seat, with each slot's holder at the playhead in the left column. */
 export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
-  // Following, the last hour at or before the head where a holding changed: the widget renders only there.
   const hour = useIdeaHour(widget, runtime, track, data, active);
   const window = track && widget.time.mode !== 'follow' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
-  // The lanes are cut at that hour; following, the cursor is drawn at the clock each frame.
   const playhead = following ? hour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
@@ -48,7 +44,6 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
     [data, category, options.laws, options.holders]);
   const gaps = data?.unobserved;
   const menu = useContextMenu('Timeline actions');
-  // Each idea's effects, formatted as the game's tooltip shows them.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
   const slots = useSlotTags(runtime.client, track, active && !!tag && typeof countryFromKey(tag) === 'number');
   const country = tag ? keyNameAt(slots, tag, at) ?? COUNTRY_NOT_RECORDED : COUNTRY_NOT_RECORDED;
@@ -69,7 +64,6 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
 
   const infos = new Map(data.ideas.map(info => [info.token, info]));
   const tokenOf = (span: { id: string }) => span.id.slice(0, span.id.lastIndexOf(':'));
-  // Each slot's holder at the moment shown, with its effects, for keyboard and screen-reader users.
   const description = `${dayLabel(at)}: ${lanes.map(lane => {
     const span = lane.spans.find(item => item.firstHour <= at && at <= item.lastHour);
     if (!span) return `${lane.label}: ${inSpans(data.unobserved, at) ? 'not recorded' : 'empty'}`;

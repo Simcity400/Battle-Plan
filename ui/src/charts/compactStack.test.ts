@@ -116,7 +116,7 @@ test('the CountryRaceView boundary streams 5000 constant parts plus a daily-chan
   forEachCountryRaceSegment(model, 0, lastHour, lastHour / pixels, true, piece => {
     drawPieces++;
     assert.equal(piece.bands.length, count + 1);
-    assert.ok(piece.hours.length <= 3); // held two-point piece, never a branch matrix
+    assert.ok(piece.hours.length <= 3);
     drawnBandPoints += piece.hours.length * piece.bands.length;
   });
   assert.ok(drawPieces <= pixels * 6 + 2);

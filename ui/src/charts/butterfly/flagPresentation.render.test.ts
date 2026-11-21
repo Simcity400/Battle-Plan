@@ -11,9 +11,7 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../draw.ts';
 import { barThickness } from '../race/race.ts';
 import { butterflyLayout } from './layout.ts';
 
-// The actual component owns fitting, decoding, keyboard selection and publication.
 test('country Butterfly tooltips remain bounded after flag status expands, with full speech and totals', async () => {
-  // Filled paths are the bars: each recorded as its bounding box with the fill and opacity used.
   const bars: number[][] = [], barLooks: { fillStyle: unknown; globalAlpha: unknown }[] = [], strokes: number[][] = [];
   const texts: { text: string; font: unknown; fillStyle: unknown }[] = [];
   let dash: number[] = [], path: number[][] = [];
@@ -81,14 +79,10 @@ test('country Butterfly tooltips remain bounded after flag status expands, with 
     state.task!.frame({ now: 0, dt: 0 });
     assert.equal(bars.length, 2, 'both signed sides retain magnitude geometry');
     assert.ok(bars.every(bar => bar[2] > 0)); assert.deepEqual(strokes.filter(line => line.length), [[...SECONDARY_DASH]], 'only the negative bar has a dashed outline');
-    // Drawn as the race draws its rows: both sides from one axis in the country's colour
-    // at full strength, the name at the label weight, exact values at the value weight.
     assert.equal(bars[0][0] + bars[0][2], bars[1][0], 'the taken side ends where the dealt side starts, at the shared axis');
     assert.deepEqual(barLooks, [{ fillStyle: '#123456', globalAlpha: 1 }, { fillStyle: '#123456', globalAlpha: 1 }]);
-    // One country shown of a top ten keeps the row a top ten gives it.
     const slot = butterflyLayout(600, 360, 10, 0, 0, 0).slot;
     assert.ok(bars.every(bar => Math.abs(bar[3] - barThickness(slot)) < 1e-9), 'bars take the race’s thickness for a top-ten row');
-    // The value axis is drawn first, so a row's text is the last drawn with its words.
     const drawn = (text: string) => [...texts].reverse().find(entry => entry.text === text);
     assert.deepEqual(drawn('Native country'), { text: 'Native country', font: `${LABEL_WEIGHT} 12px sans-serif`, fillStyle: tokens.text });
     for (const value of ['−1', '2', '−2']) assert.deepEqual(drawn(value), { text: value, font: `${VALUE_WEIGHT} 12px sans-serif`, fillStyle: tokens.text });

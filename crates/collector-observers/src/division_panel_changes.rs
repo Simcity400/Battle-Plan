@@ -1,4 +1,3 @@
-//! Certificates shared by division membership and variant/state operands.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 static OPERANDS: WatchRegistry = WatchRegistry::marking();
@@ -23,11 +22,8 @@ pub fn patched(enabled: bool) {
     OPERANDS.set_enabled(enabled);
 }
 pub fn variant_availability(stamp: u64, validate: fn(u64) -> bool) {
-    // The owner may withdraw availability from a resetting native callback.
-    // These atomic updates never wait; active calls still finish their pair.
     VARIANT_VALIDATE.store(validate as *const () as usize, Ordering::SeqCst);
     VARIANT_AVAILABILITY.store(stamp, Ordering::SeqCst);
-    // The live validator, rather than this sampled value, admits every use.
     VARIANTS.set_enabled(validate(stamp));
     LIFETIMES.set_enabled(validate(stamp));
 }
@@ -43,8 +39,6 @@ pub fn variant_capability_is_current(stamp: u64) -> bool {
     let validate: fn(u64) -> bool = unsafe { std::mem::transmute(validator) };
     validate(stamp) && VARIANT_AVAILABILITY.load(Ordering::SeqCst) == stamp
 }
-/// A source/provider identity is not a variant address. Revoke the shared
-/// operand domain without reading or registering that foreign receiver.
 pub fn variant_invalidation_before() {
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
     drop(VARIANTS.notify_every());
@@ -56,12 +50,9 @@ pub fn variant_invalidation_after(unwound: bool) {
     drop(VARIANTS.notify_every());
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
-/// Mark both old move bindings, or a destroyed binding, before storage changes.
-/// The worker must reacquire affected membership before following its variants.
 pub fn variant_retiring(receiver: usize) {
     drop(LIFETIMES.notify(receiver));
 }
-/// Paired notifications supplied by the sole design patch owner.
 pub fn variant_before(receiver: usize) {
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
     drop(VARIANTS.notify(receiver));
@@ -103,15 +94,12 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
 pub fn state_sequence(state: u32) -> Option<(u64, u64)> {
     STATES.sequence(state as usize)
 }
-/// Certify existing range receivers; retained slots are checked by receiver.
 pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
     OPERANDS.observed_sequence_at(receiver, slot)
 }
 pub fn state_sequence_at(state: u32, slot: usize) -> Option<((u64, u64), usize)> {
     STATES.observed_sequence_at(state as usize, slot)
 }
-/// [`sequence_at`] and [`state_sequence_at`] that register a receiver no slot
-/// names yet, for range reads that read a cold receiver themselves.
 pub fn register_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
     OPERANDS.sequence_at(receiver, slot)
 }
@@ -119,14 +107,12 @@ pub fn state_register_at(state: u32, slot: usize) -> Option<((u64, u64), usize)>
     STATES.sequence_at(state as usize, slot)
 }
 
-/// Passive lookups for range reads, revalidated at ordered admission.
 pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
     OPERANDS.observed_sequence(receiver)
 }
 pub fn observed_lifetime_sequence(receiver: usize) -> Option<(u64, u64)> {
     LIFETIMES.observed_sequence(receiver)
 }
-/// Passive domain stamp; this never consumes the dirty variant marks.
 pub fn observed_variant_stamp() -> Option<((u64, u64), u64)> {
     let stamp = variant_capability()?;
     if VARIANT_ACTIVE.load(Ordering::SeqCst) != 0 {
@@ -156,7 +142,6 @@ pub fn take(visit: impl FnMut(usize)) -> Option<u64> {
         .then_some(epoch)
         .flatten()
 }
-/// The equipment pools a membership writer touched since the last take.
 pub fn take_operands(visit: impl FnMut(usize)) -> Option<u64> {
     OPERANDS.take(visit)
 }
@@ -200,8 +185,8 @@ pub fn active() -> usize {
         .saturating_add(STATES.active())
         .saturating_add(VARIANT_ACTIVE.load(Ordering::SeqCst))
 }
-/// # Safety
-/// Both patch owners must be quiescent.
+#[doc = " # Safety"]
+#[doc = " Both patch owners must be quiescent."]
 pub unsafe fn release() {
     unsafe {
         OPERANDS.release();

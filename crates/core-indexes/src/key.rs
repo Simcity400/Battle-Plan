@@ -14,7 +14,6 @@ pub fn write_integer(mut value: u64, out: &mut impl Write) -> io::Result<()> {
     write_wide_integer(groups[..len].iter().rev().copied(), out)
 }
 
-// Length prefixes continue past 127 digits without bounding an integer's width.
 pub fn write_wide_integer(
     mut groups: impl ExactSizeIterator<Item = u8>,
     out: &mut impl Write,

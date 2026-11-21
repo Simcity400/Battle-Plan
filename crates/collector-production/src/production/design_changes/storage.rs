@@ -17,7 +17,6 @@ fn prepared(events: usize) -> Batch {
     batch.prepare(events);
     batch
 }
-/// The event demand, and whether the active and spare batches need larger storage.
 fn demand(store: &Store) -> (usize, bool, bool) {
     let events = EVENTS
         .load(Ordering::Relaxed)
@@ -28,7 +27,6 @@ fn demand(store: &Store) -> (usize, bool, bool) {
     };
     (events, short(&store.batch), short(&store.spare))
 }
-/// Swaps in each prepared replacement its batch still needs.
 fn install(store: &Mutex<Store>, events: usize, replacements: &mut [Option<Batch>; 2]) {
     let mut store = store
         .lock()
@@ -62,7 +60,6 @@ fn presize_inner() {
     );
     let mut replacements = [active.then(|| prepared(events)), spare.then(|| prepared(events))];
     install(store, events, &mut replacements);
-    // Retired storage is released outside STORE.
     drop(replacements);
 }
 
@@ -113,7 +110,6 @@ fn presize_with(
         replacements[part.ordinal] = part.output;
     }
     install(store, events, &mut replacements);
-    // Retired storage is released outside STORE.
     drop(replacements);
 }
 

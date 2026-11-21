@@ -14,7 +14,6 @@ test('a breakdown follows playback when playing or opened near the playhead, and
   const far = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000.7, playing: false, playhead: 1000 + FOLLOW_NEAR_HOURS + 1 });
   assert.deepEqual(far, { breakdown: 'income', follow: false, hour: 1000 });
   assert.equal(reduceDrill(CLOSED, { type: 'open', breakdown: 'x', hour: 1, playing: true, playhead: 99_999 }).follow, true);
-  // Whole-campaign views have no playhead, so the picked day holds.
   assert.equal(reduceDrill(CLOSED, { type: 'open', breakdown: 'x', hour: 1, playing: false, playhead: null }).follow, false);
   const picked = reduceDrill(near, { type: 'pick', hour: 2222 });
   assert.deepEqual(picked, { breakdown: 'income', follow: false, hour: 2222 });
@@ -45,10 +44,8 @@ test('a pinned widget goes directly below its source, as wide as it', () => {
   const layouts: GridLayouts = { lg: [{ i: 'source', x: 6, y: 4, w: 6, h: 8 }, { i: 'other', x: 0, y: 0, w: 6, h: 20 }] };
   const next = addGridItemBelow(layouts, { id: 'pin', kind: 'drill-test' } as WidgetSpec, 'source');
   assert.deepEqual(next.lg!.at(-1), { i: 'pin', x: 6, y: 12, w: 6, h: 8, minW: 3, minH: 4 });
-  // Only the breakpoints the layout has: a breakpoint holding just the new widget is invalid.
   assert.deepEqual(Object.keys(next), ['lg']);
   assert.equal(addGridItemBelow({ xs: [] }, { id: 'pin', kind: 'drill-test' } as WidgetSpec, 'missing').xs!.at(-1)!.y, 0);
-  // A widget already sitting right below moves down, so compaction cannot take the spot.
   const crowded: GridLayouts = { lg: [{ i: 'source', x: 6, y: 4, w: 6, h: 8 }, { i: 'under', x: 0, y: 12, w: 12, h: 5 }] };
   const placed = addGridItemBelow(crowded, { id: 'pin', kind: 'drill-test' } as WidgetSpec, 'source').lg!;
   assert.equal(placed.find(item => item.i === 'under')!.y, 20);

@@ -1,11 +1,9 @@
-//! Table gaps required by the selected combat window.
 
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::combat_selection::Selection;
 use viewer_foundation::map::tables::Limitations;
 
-/// Detail-window gaps are reported only while a combat is selected, in both render paths.
 pub fn combat_limitations(frame: &DecodedFrame, selection: Selection) -> Limitations {
     let mut out = Limitations::default();
     out.note::<tables::Politics>(

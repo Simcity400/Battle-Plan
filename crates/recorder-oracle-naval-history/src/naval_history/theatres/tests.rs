@@ -79,8 +79,6 @@ fn frame(alias: bool) -> DecodedFrame {
                 name: Recorded::Value(Some(b"positive".to_vec())),
                 ..Default::default()
             },
-            // The country is intentionally positive and different from the theatre
-            // owner. Partition by the actual theatre join, never this raw field.
             OrdersGroupRow {
                 handle: handle(58, 53),
                 country: 9,
@@ -752,8 +750,6 @@ fn projected_repeated_reserved_aliases_compare_theatres_and_order_of_battle() {
     }
 }
 
-/// A division records the theatre whose saved `unit` list holds it, or zero; a refused read is
-/// a difference, a theatre the game omits a limitation.
 #[test]
 fn unit_theatres_compare_with_saved_theatre_unit_lists() {
     const STATIONED: &[u8] = br#"countries={PST={theatres={theatre={

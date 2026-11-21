@@ -11,7 +11,6 @@ export function validateLeaderChoicesReply(input: unknown): LeaderChoicesReply {
   return input as LeaderChoicesReply;
 }
 
-/** The picker's entries: each leader named with its owner at the last hour it served, by name. */
 export function leaderChoices(choices: readonly LeaderChoice[], campaignKey: string, countryName: (hour: number, tag: string) => { name: string; nameDetail?: string }) {
   return choices.map(([reference, recorded, owner, lastHour]) => {
     const name = leaderName({ name: recorded });

@@ -1,8 +1,3 @@
-//! What the equipment-loss writer recorded of its own coverage (`EquipmentLossCoverage`): the
-//! run's row (the drain's reason each hour, the records not read, the first complete drain, the
-//! hour the drain was withheld or became a lower bound, unresolved references) and the identity's
-//! row (Combat Log land coverage, fallen convoy counts, ended lend-lease exchanges), read as their
-//! history over a window and folded into the reply's spans.
 
 use replay::{
     columnar_frames::Recording,
@@ -14,14 +9,11 @@ use std::{collections::BTreeMap, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Why a cause's amounts are unknown over a span of hours.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum UnknownReason {
-    /// The cause's record was not read completely at these hours.
     Unread,
-    /// A lend-lease exchange ended after its last read: the total is a lower bound from here on.
     EndedAfterLastRead,
     DestructionWithheld,
     DestructionGap,
@@ -39,7 +31,6 @@ pub struct UnknownSpan {
     pub detail: Option<String>,
 }
 
-/// Combat Log land coverage at an hour.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -60,7 +51,6 @@ pub struct CoverageSpan {
     pub coverage: Coverage,
 }
 
-/// The drain at a span of hours: null for a complete drain, else the writer's reason.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -70,10 +60,8 @@ pub struct DestructionCoverageSpan {
     pub reason: Option<String>,
 }
 
-/// The run row's cells over a span of hours.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunCells {
-    /// Empty for a complete drain; none when the cell is not recorded.
     pub drain: Option<String>,
     pub unread: Option<u8>,
     pub counted_from: Option<i32>,
@@ -83,7 +71,6 @@ pub struct RunCells {
     pub unresolved_all: Option<u32>,
 }
 
-/// The identity's row's cells over a span of hours.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryCells {
     pub land: Option<u8>,
@@ -93,15 +80,12 @@ pub struct CountryCells {
     pub ended_from: Option<i32>,
 }
 
-/// Runs of a row: first hour, last hour, its cells; none where the row was not shown (its table
-/// unavailable or the row not live).
 pub type Runs<T> = Vec<(i32, i32, Option<T>)>;
 
 const NOT_AVAILABLE: &str = "The equipment-loss tables were not available at these hours";
 const DRAIN_TEXT_UNREAD: &str = "The drain's reason was not read at these hours";
 const COLUMNS: [usize; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
-/// The coverage of a window, stretch after stretch.
 #[derive(Clone, Debug, Default)]
 pub struct Held {
     pub run: Runs<RunCells>,
@@ -120,7 +104,6 @@ fn hour(cell: Option<&Cell>) -> Option<i32> {
 }
 
 impl Held {
-    /// Both rows of `table` over `first..=last` of run `run`: their cells at each hour one changes.
     pub fn read(&mut self, recording: &Recording, run: u32, country: u128, whole: u128, first: i32, last: i32) -> io::Result<()> {
         let keys = [country.min(whole), country.max(whole)];
         let read = dashboard_query::cost::storage(|| history(recording, run, TableId::EquipmentLossCoverage, &COLUMNS, Keys::These(&keys), first, last))?;
@@ -163,17 +146,14 @@ impl Held {
         self.run.iter().rev().find_map(|(_, _, cells)| cells.as_ref())
     }
 
-    /// The first complete drain the window's runs counted from.
     pub fn counted_from(&self) -> Option<i32> {
         self.run.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min()
     }
 
-    /// The first hour a counted drain was lost or partly unknown, at the window's end.
     pub fn incomplete_from(&self) -> Option<i32> {
         self.last_run()?.incomplete_from
     }
 
-    /// The drain at each recorded hour from the first complete drain: null when complete.
     pub fn destruction_coverage(&self) -> Vec<DestructionCoverageSpan> {
         let counted = self.counted_from();
         let mut out: Vec<DestructionCoverageSpan> = Vec::new();
@@ -193,8 +173,6 @@ impl Held {
         out
     }
 
-    /// One span per distinct drain reason and detail from its first hour after counting starts
-    /// to `last_hour`: missing drains never come back.
     pub fn destruction_unknown(&self, last_hour: i32) -> Vec<UnknownSpan> {
         let Some(counted) = self.counted_from() else { return Vec::new() };
         let mut first: BTreeMap<(UnknownReason, String), i32> = BTreeMap::new();
@@ -227,8 +205,6 @@ impl Held {
         out
     }
 
-    /// The hours a record (its `UNREAD_*` bit) was not read completely, or the tables were not
-    /// available.
     pub fn unread(&self, bit: u8, last_hour: i32) -> Vec<UnknownSpan> {
         let mut out: Vec<UnknownSpan> = Vec::new();
         for (first, last, cells) in &self.run {
@@ -247,8 +223,6 @@ impl Held {
         out
     }
 
-    /// One span per lend-lease exchange that ended after its last read, from the hour its batch is
-    /// lost from.
     pub fn ended(&self, last_hour: i32) -> Vec<UnknownSpan> {
         let mut out = Vec::new();
         let mut before: Option<u32> = None;
@@ -268,7 +242,6 @@ impl Held {
         out
     }
 
-    /// Combat Log land coverage by hour; an hour the identity's row is not shown is unknown.
     pub fn land(&self) -> Vec<CoverageSpan> {
         let mut out: Vec<CoverageSpan> = Vec::new();
         for (first, last, cells) in &self.country {
@@ -287,8 +260,6 @@ impl Held {
         out
     }
 
-    /// The warnings main's reply carried: fallen convoy counts, land not kept or unknown, and loss
-    /// rows naming countries no link resolves.
     pub fn warnings(&self, combat_log: bool) -> Vec<String> {
         let mut out = Vec::new();
         let drops = self.country.iter().rev().find_map(|(_, _, cells)| cells.as_ref()?.convoy_drops).unwrap_or_default();
@@ -312,7 +283,6 @@ impl Held {
     }
 }
 
-/// The kind of unknown a drain reason names.
 pub fn classify(reason: &str) -> UnknownReason {
     if reason == Row::DRAIN_NOT_READ || reason == Row::DRAIN_LOST || reason == EQUIPMENT_DESTRUCTION_PARTIAL_REASON {
         UnknownReason::DestructionGap

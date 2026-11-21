@@ -1,36 +1,19 @@
-//! One timed entry in CDynamicModifierContainer's inline array.
-//!
-//! Remaining duration uses signed daily ticks, separate from absolute expiry.
-//! This module describes construction, serialization and vector movement without
-//! installing lifecycle hooks.
 
 use crate::{Memory, cpdx_array::Array, read, read_slice};
 use engine_sites::Rva;
 
-/// Timed modifier entry stride.
 pub const STRIDE: usize = 0x40;
-/// Timed modifier entry vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0285_3ec8);
-/// Timed modifier scope-country reference u32.
 pub const SCOPE_COUNTRY: usize = 0x08;
-/// Timed modifier scope-state i32.
 pub const SCOPE_STATE: usize = 0x0c;
-/// Timed modifier remaining daily ticks i32.
 pub const DAYS_REMAINING: usize = 0x10;
-/// Timed modifier CDynamicModifier definition pointer.
 pub const DEFINITION: usize = 0x18;
-/// Enabled byte; accepts only zero or one.
 pub const ENABLED: usize = 0x20;
-/// Timed modifier i64 value-array data pointer.
 pub const VALUES: usize = 0x28;
-/// Timed modifier value-array capacity u32.
 pub const VALUES_CAPACITY: usize = 0x30;
-/// Timed modifier value-array count u32.
 pub const VALUES_COUNT: usize = 0x34;
-/// Timed modifier value-array element stride.
 pub const VALUE_STRIDE: usize = 8;
 
-/// Timed entry construction/layout.
 pub const CONSTRUCT_RVA: Rva = Rva(0x0059_9670);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,8 +26,6 @@ pub struct Header {
     pub values: Array,
 }
 
-/// Reads the complete timed-instance field range once. The caller owns the
-/// hourly consistency protocol; this reader does not retry a moving entry.
 pub fn header(memory: &impl Memory, base: usize, address: usize) -> Result<Header, &'static str> {
     let bytes = read::<[u8; 56]>(memory, address).ok_or("dynamic modifier entry unreadable")?;
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
@@ -91,8 +72,6 @@ pub fn copy_values(memory: &impl Memory, array: Array, output: &mut [i64]) -> bo
     let Some(byte_len) = output.len().checked_mul(VALUE_STRIDE) else {
         return false;
     };
-    // SAFETY: initialized i64 has no padding or invalid bit patterns; the byte
-    // slice covers exactly the caller-owned output and cannot escape this call.
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr().cast::<u8>(), byte_len) };
     if !read_slice(memory, array.data, bytes) {

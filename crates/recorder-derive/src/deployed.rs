@@ -1,24 +1,3 @@
-//! `CountryDeployedManpower`: each live country's deployed manpower by canonical slot, as the
-//! game attributes it. Army: each division of its roster whose owner (its positive expeditionary
-//! owner, else its roster owner) and logical owner are the country too, of an ordinary template,
-//! adds the country's own entry among the division's manpower contributors (none is zero); each
-//! live division its sent expeditionaries and volunteers list, repeats kept, adds the same when
-//! its template is ordinary. Navy: each ship of a fleet the country owns adds the crews it holds
-//! and needs. Air: each wing it owns that flies for no exile adds its crews; each wing flying for
-//! it in exile adds its crews to the exile column. Every sum wraps as the game's dwords do.
-//!
-//! What is not known is not recorded, never zero: the army while Divisions, DivisionLandInputs,
-//! DivisionTemplateIcons, CountryCounterInputs or SentVolunteers is not complete, and a country's
-//! army while a counted division's template or land row is not known, or its sent expeditionaries
-//! are not; navy and crews while Ships, TaskForces or Fleets is not complete or a ship's task
-//! force or fleet is not held (for every country), a country's while a counted ship's crews are
-//! not known; the air columns while AirWings is not complete, a country's own while a wing of it
-//! has no exile country read, and every exile column while any wing has none.
-//!
-//! State: per live division, ship and wing the term it adds and where, and per slot the sums; the
-//! inputs' rows are read from the store by key, never copied. A fresh hour, a resume, a change of
-//! links or country slots, or an input becoming or ceasing to be complete rebuilds every sum from
-//! the current tables.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
 use replay_columnar::{
@@ -63,7 +42,6 @@ const fn read(table: TableId, columns: &'static [usize], required: bool) -> Read
     Read { table, columns: Columns::These(columns), watch: Watch::Changed, required }
 }
 
-/// The inputs whose completeness each part needs, in [`READS`] after the two required.
 const ARMY: &[TableId] = &[TableId::Divisions, TableId::DivisionLandInputs, TableId::DivisionTemplateIcons, TableId::CountryCounterInputs, TableId::SentVolunteers];
 const NAVY: &[TableId] = &[TableId::Ships, TableId::TaskForces, TableId::Fleets];
 const AIR: &[TableId] = &[TableId::AirWings];
@@ -82,10 +60,8 @@ const READS: &[Read] = &[
     read(TableId::AirWings, &WING, false),
 ];
 
-/// What one entity adds to a sum: none when not known.
 type Term = Option<i32>;
 
-/// Known terms wrapped together, and how many are not known.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Sum {
     total: i32,
@@ -112,22 +88,17 @@ impl Sum {
     }
 }
 
-/// A division as its roster country's army counts it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Division {
-    /// Its roster owner's slot; [`NONE`] when no link resolves it.
     slot: u32,
     template: u64,
-    /// None when it adds nothing.
     term: Option<Term>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShipTerm {
     Owned { slot: u32, acquired: Term, required: Term },
-    /// Its fleet's owner no link resolves: no country's.
     Unowned,
-    /// Its task force or fleet is not held.
     Unresolved,
 }
 
@@ -141,11 +112,9 @@ struct Ship {
 struct Wing {
     ordinary: Option<(u32, Term)>,
     exiled: Option<(u32, Term)>,
-    /// Its exile country was not read.
     unread: bool,
 }
 
-/// `table`'s row in `slot`, its fields `columns` name, as the row decoder reads them.
 pub(crate) fn row<R: RowCodec>(view: &TableView<'_>, slot: u32, columns: &[usize]) -> io::Result<R> {
     let key = view.key(slot).ok_or_else(|| invalid(format!("Slot {slot} holds no row")))?;
     let mask = columns.iter().fold(0_u64, |mask, &column| mask | 1 << column);
@@ -153,7 +122,6 @@ pub(crate) fn row<R: RowCodec>(view: &TableView<'_>, slot: u32, columns: &[usize
     R::from_wire_fields(key, mask, &mut |column| replay_frame::frame::field(view, slot, column, format))
 }
 
-/// A number cell's bits; none when missing or not recorded.
 pub(crate) fn number(view: &TableView<'_>, column: usize, slot: u32) -> Option<u64> {
     match view.value(column, slot) {
         Held::Number(bits) => Some(bits),
@@ -161,7 +129,6 @@ pub(crate) fn number(view: &TableView<'_>, column: usize, slot: u32) -> Option<u
     }
 }
 
-/// Raw country id to canonical slot, each live country's slot, and each slot's raw ids ascending.
 #[derive(Default)]
 pub(crate) struct Identity {
     pub links: HashMap<u32, u32>,
@@ -184,7 +151,6 @@ impl Identity {
         identity
     }
 
-    /// `raw`'s slot: none for the null country or one no link resolves.
     pub fn resolve(&self, raw: u32) -> Option<u32> {
         (raw != 0).then(|| self.links.get(&raw).copied()).flatten()
     }
@@ -193,19 +159,15 @@ impl Identity {
         self.aliases.get(&slot).map_or(&[], Vec::as_slice)
     }
 
-    /// Whether the hour changed which slot a raw id or a live country holds.
     pub fn changed(hour: &Hour<'_>) -> bool {
         hour.wrote(TableId::CountryLinks, Columns::These(&LINK)) || hour.wrote(TableId::Countries, Columns::These(&SLOT))
     }
 }
 
-/// Which of the parts' inputs are complete: army, navy, air.
 fn complete(hour: &Hour<'_>) -> [bool; 3] {
     [ARMY, NAVY, AIR].map(|tables| tables.iter().all(|&table| hour.complete(table)))
 }
 
-/// The keys of `table`'s rows the hour deleted, then of those it wrote one of `columns` of or
-/// inserted.
 fn touched(hour: &Hour<'_>, table: TableId, columns: &'static [usize]) -> Vec<u128> {
     let view = hour.table(table);
     let mut keys: Vec<u128> = hour.deleted_keys(table).collect();
@@ -215,31 +177,23 @@ fn touched(hour: &Hour<'_>, table: TableId, columns: &'static [usize]) -> Vec<u1
 
 #[derive(Default)]
 pub struct Deployed {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     complete: [bool; 3],
     identity: Identity,
-    /// The slots the table holds rows of.
     held: HashSet<u32>,
     divisions: HashMap<u64, Division>,
     by_template: HashMap<u64, Vec<u64>>,
-    /// Each slot's roster divisions' sum.
     armies: HashMap<u32, Sum>,
-    /// Each raw sender's volunteer rows by ordinal.
     volunteers: HashMap<u32, BTreeMap<u32, u64>>,
-    /// Each live country's listed divisions' term and the references its lists hold.
     listed: HashMap<u32, (Term, Vec<u64>)>,
-    /// The countries whose lists name each division.
     users: HashMap<u64, Vec<u32>>,
     ships: HashMap<u64, Ship>,
     ships_of_task: HashMap<u64, Vec<u64>>,
     task_fleet: HashMap<u64, u64>,
     tasks_of_fleet: HashMap<u64, Vec<u64>>,
-    /// Each slot's crews held and needed.
     navies: HashMap<u32, [Sum; 2]>,
     unresolved_ships: u32,
     wings: HashMap<u64, Wing>,
-    /// Each slot's ordinary and exile crews.
     crews: HashMap<u32, [Sum; 2]>,
     unread_exiles: u32,
 }
@@ -260,15 +214,12 @@ fn take(index: &mut HashMap<u64, Vec<u64>>, at: u64, id: u64) {
 }
 
 impl Deployed {
-    /// Whether `template` is ordinary (not exile manpower): none without its row or the flag.
     fn ordinary(hour: &Hour<'_>, template: u64) -> Option<bool> {
         let view = hour.table(TableId::DivisionTemplateIcons);
         let slot = view.slot(u128::from(template))?;
         view.bool(TEMPLATE[0], slot).map(|exile| !exile)
     }
 
-    /// Slot `slot`'s entry among division `id`'s manpower contributors (zero without one); none
-    /// without the division's land row.
     fn amount(&self, hour: &Hour<'_>, id: u64, slot: u32) -> io::Result<Term> {
         let view = hour.table(TableId::DivisionLandInputs);
         let Some(at) = view.slot(u128::from(id)) else { return Ok(None) };
@@ -276,7 +227,6 @@ impl Deployed {
         Ok(Some(row.manpower.iter().find(|entry| self.identity.resolve(entry.country) == Some(slot)).map_or(0, |entry| entry.amount)))
     }
 
-    /// What `division` adds to its roster country's army, and that country's slot.
     fn division_term(&self, hour: &Hour<'_>, division: &DivisionRow) -> io::Result<(u32, Option<Term>)> {
         let Some(slot) = self.identity.resolve(division.roster_owner) else { return Ok((NONE, None)) };
         if self.identity.resolve(military_aid::owner(division)) != Some(slot) || self.identity.resolve(division.logical_owner) != Some(slot) {
@@ -292,7 +242,6 @@ impl Deployed {
         ))
     }
 
-    /// Division `id`'s term as the store holds it now, its old one taken out.
     fn set_division(&mut self, hour: &Hour<'_>, id: u64, dirty: &mut HashSet<u32>) -> io::Result<()> {
         if let Some(old) = self.divisions.remove(&id) {
             take(&mut self.by_template, old.template, id);
@@ -314,7 +263,6 @@ impl Deployed {
         Ok(())
     }
 
-    /// Country `slot`'s listed divisions' term and the references its lists hold.
     fn lists(&self, hour: &Hour<'_>, slot: u32) -> io::Result<(Term, Vec<u64>)> {
         let aliases = self.identity.aliases(slot);
         let counters = hour.table(TableId::CountryCounterInputs);
@@ -351,7 +299,6 @@ impl Deployed {
         }
     }
 
-    /// Country `slot`'s listed term again, its references indexed.
     fn set_lists(&mut self, hour: &Hour<'_>, slot: u32) -> io::Result<()> {
         if let Some((_, references)) = self.listed.remove(&slot) {
             for id in references {
@@ -418,7 +365,6 @@ impl Deployed {
         self.ships.insert(id, Ship { task, term });
     }
 
-    /// Task force `task`'s fleet as the store holds it now.
     fn set_task(&mut self, hour: &Hour<'_>, task: u64) {
         if let Some(old) = self.task_fleet.remove(&task) {
             take(&mut self.tasks_of_fleet, old, task);
@@ -464,7 +410,6 @@ impl Deployed {
         self.wings.insert(id, wing);
     }
 
-    /// Every sum again from the tables as they stand, and the rows the table holds.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &Rows<'_>) -> io::Result<()> {
         let held = std::mem::take(&mut self.held);
         *self = Self { identity: Identity::read(hour), complete: complete(hour), ..Self::default() };
@@ -515,7 +460,6 @@ impl Deployed {
         Ok(())
     }
 
-    /// Applies what the hour changed of the army's inputs.
     fn army(&mut self, hour: &Hour<'_>, dirty: &mut HashSet<u32>) -> io::Result<()> {
         let mut divisions: Vec<u64> = touched(hour, TableId::Divisions, &DIVISION).into_iter().map(|key| key as u64).collect();
         divisions.extend(touched(hour, TableId::DivisionLandInputs, &LAND).into_iter().map(|key| key as u64));
@@ -557,7 +501,6 @@ impl Deployed {
         Ok(())
     }
 
-    /// Applies what the hour changed of the navy's inputs.
     fn navy(&mut self, hour: &Hour<'_>, dirty: &mut HashSet<u32>) {
         let mut ships: Vec<u64> = touched(hour, TableId::Ships, &SHIP).into_iter().map(|key| key as u64).collect();
         for key in touched(hour, TableId::TaskForces, &TASK) {
@@ -577,7 +520,6 @@ impl Deployed {
         }
     }
 
-    /// Applies what the hour changed of the air wings.
     fn air(&mut self, hour: &Hour<'_>, dirty: &mut HashSet<u32>) {
         let mut wings: Vec<u64> = touched(hour, TableId::AirWings, &WING).into_iter().map(|key| key as u64).collect();
         wings.sort_unstable();
@@ -587,7 +529,6 @@ impl Deployed {
         }
     }
 
-    /// The cells of `slot`'s row.
     fn cells(&self, slot: u32) -> Vec<Value> {
         let cell = |term: Term| term.map_or(Value::Unrecorded, Value::I32);
         let army = self.complete[0]
@@ -608,7 +549,6 @@ impl Deployed {
         ]
     }
 
-    /// Writes the rows of `dirty` live countries, and deletes the rows of slots no longer one.
     fn write(&mut self, dirty: HashSet<u32>, out: &mut Rows) {
         for slot in dirty {
             if self.identity.countries.contains(&slot) {
@@ -669,7 +609,6 @@ impl Writer for Deployed {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every sum from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

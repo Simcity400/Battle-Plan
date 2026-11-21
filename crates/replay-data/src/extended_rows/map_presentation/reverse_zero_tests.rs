@@ -337,7 +337,6 @@ fn reserved_reverse_identical_matrix_is_unchanged_and_a_change_carries_no_hour()
             .into(),
             ..reserved_row()
         };
-        // Equal acquisitions at consecutive hours are one unchanged row.
         assert!(before.clone().delta(Some(&before)).unwrap().is_none());
         let mut cells = vec![cell; count];
         cells[count - 1] = None;
@@ -350,7 +349,6 @@ fn reserved_reverse_identical_matrix_is_unchanged_and_a_change_carries_no_hour()
             ..before.clone()
         };
         let delta = delta_round_trip(&before, &after, 1 << 18);
-        // Opaque length, packet presence and count precede every cell.
         assert_eq!(delta.values.len(), 4 + 1 + 4 + (count - 1) * cell_bytes + 1);
         let mut input = Decoder::new(&delta.values);
         let changed = Kind::Opaque.decode_change(&mut input).unwrap();
@@ -453,8 +451,6 @@ fn reserved_reverse_historical_prefix_keeps_named_gaps_and_original_mask_width()
         delta.apply::<ReservedCountryNamingRow>(None).unwrap(),
         historical
     );
-    // Insert differences use zero numeric baselines. Applying them twice to
-    // the extreme-valued prefix must retain the decoder's strict range check.
     assert!(delta.apply(Some(row.clone())).is_err());
     let current_baseline = ReservedCountryNamingRow {
         overlord: 0,

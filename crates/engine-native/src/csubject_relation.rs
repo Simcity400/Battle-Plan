@@ -1,4 +1,3 @@
-//! CSubjectRelation, a directed overlord-to-subject relation.
 
 use crate::{
     Memory, autonomy_state_definition, ccountry, cdiplomacy_status,
@@ -11,27 +10,17 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CSubjectRelation primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_d388);
-/// Inherited relation type word.
 pub const TYPE_ID: usize = 0x08;
 pub use engine_executable::native_values::subject_relation::TYPE_VALUE;
-/// Overlord country-link reference, u32.
 pub const OVERLORD: usize = 0x10;
-/// Subject country-link reference, u32; the endpoint pair fixes direction.
 pub const SUBJECT: usize = 0x14;
-/// Start hour, i32.
 pub const START_HOUR: usize = 0x20;
-/// Autonomy-state definition pointer; the definition holds its name.
 pub const AUTONOMY_STATE: usize = 0x58;
-/// CSubjectRelation raw autonomy ratio i64/100000.
 pub const AUTONOMY_RATIO: usize = 0x60;
 
-/// Subject constructor initializing base relation with subject type before
-/// installing its primary vtable.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d7_9880);
 
-/// A complete byte string in the caller-owned arena. Empty names remain empty.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Name {
     pub start: usize,
@@ -53,7 +42,6 @@ pub struct Row {
 pub struct NameWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// All native name lengths, including rows omitted for either capacity.
     pub required_bytes: usize,
 }
 
@@ -61,9 +49,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Enumerates native owned relations, authenticating both endpoint matrices and
-/// ownership vectors. Emits each active relation once, from its overlord.
-/// No allocation, retries, name hashing or precision conversion occurs.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -94,12 +79,6 @@ pub fn walk_buffer(
     walk_from(memory, base, game_state, output, names, false, &mut pass)
 }
 
-/// `walk` with caller-owned storage, grown off the game thread from what the
-/// previous pass observed. An overlord with S subjects and K owned relations
-/// is visited from every subject; its owned vector is scanned once and then
-/// answered from the counted snapshot, instead of S complete K-entry scans.
-/// Country and diplomacy authentication is reused through dense cells. Rows,
-/// order and outcomes are identical for every storage size, including empty.
 pub fn walk_owned(
     memory: &impl Memory,
     base: usize,
@@ -137,9 +116,6 @@ pub fn walk_owned_buffer(
     result
 }
 
-/// Independent matrix census for bounded consistency validation. This root does
-/// not require an owned-vector entry; compare ordered country keys and name bytes
-/// off the game thread, because order and arena offsets can differ.
 #[cfg(test)]
 fn walk_matrix(
     memory: &impl Memory,
@@ -163,8 +139,6 @@ fn walk_matrix(
     )
 }
 
-/// Original messages of the subject ownership scans, shared with the war
-/// walker's owned-membership snapshot.
 const SUBJECT_MEMBERSHIP: MembershipReasons = MembershipReasons {
     vector: "subject relation vector unreadable or invalid",
     pointer: "subject relation vector entry unreadable or outside array",
@@ -173,7 +147,6 @@ const SUBJECT_MEMBERSHIP: MembershipReasons = MembershipReasons {
     changed: "subject ownership snapshot changed or became unreadable",
 };
 
-/// Per-walk reusable storage; both parts may be empty.
 struct Pass<'s> {
     resolver: &'s mut crelation_status::Resolver,
     ownership: Option<&'s mut OwnedSnapshotScratch>,
@@ -314,13 +287,9 @@ fn walk_from(
     result.unwrap_or_else(unavailable)
 }
 
-/// Owned entries read ahead per batch.
 const BATCH: usize = 64;
-/// A subject relation's bytes from its vtable to its autonomy ratio: every
-/// field [`Reader::relation`] and the walk read from the relation itself.
 const HEAD: usize = AUTONOMY_RATIO + 8;
 
-/// A subject relation's own fields, from one read of its [`HEAD`].
 #[derive(Clone, Copy)]
 struct Head {
     vtable: u64,
@@ -354,19 +323,11 @@ impl Head {
     }
 }
 
-/// Up to [`BATCH`] owned entries of one country, read ahead of the serial
-/// walk: their pointers in one copy, the type words of those before the
-/// first null in one gather, and the heads of the subject relations among
-/// them in another. Each is used at its entry's turn, after the serial
-/// walk's checks; one the batch did not read is read there as the serial
-/// walk reads it, and such a fallback is counted.
 struct OwnedBatch {
     entries: [usize; BATCH],
-    /// Entries, and type words, read.
     read: usize,
     typed: usize,
     subjects: [bool; BATCH],
-    /// Each entry's head, by its place in `heads`, when read.
     head_of: [Option<u8>; BATCH],
     heads: [u8; BATCH * HEAD],
 }
@@ -481,9 +442,6 @@ pub(crate) fn unavailable(reason: &'static str) -> NameWalk {
     }
 }
 
-/// Header validation keeps the native byte sequence and the complete length.
-/// Definition objects are authenticated by the native relation/status pointers;
-/// no unproved vtable or arbitrary identifier-length whitelist is imposed.
 pub(crate) fn definition_name(
     memory: &impl Memory,
     definition: usize,
@@ -609,9 +567,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
-    /// Every matrix cell is still inspected, including inactive/sentinel slots.
-    /// The same three exact fields are copied together for 64 cells; no relation
-    /// pointer is cached across walks, and empty cells remain authenticated.
     fn matrix_pointers(
         &self,
         source: Array,
@@ -671,7 +626,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
-    /// Whether the overlord's slot toward the subject holds this relation; failed reads are errors.
     fn installed(
         &self,
         pointer: usize,
@@ -695,7 +649,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(self.pointer(status, crelation_status::SUBJECT_RELATION)? == pointer)
     }
 
-    /// An endpoint's country; none for a zero or unlinked id or an empty slot, which no matrix has.
     fn endpoint(
         &self,
         raw: u32,
@@ -741,9 +694,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(status)
     }
 
-    /// Counts `relation` in the vector at `root + offset`. Diplomacy-owned
-    /// vectors, which grow with a country's relation count, use the pass's
-    /// snapshot when one is supplied; all other vectors hold one country pair.
     fn occurrence(
         &self,
         root: usize,
@@ -769,8 +719,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
-    /// One relation's row; `head`, when the batch read it, gives the
-    /// relation's own fields in place of their reads.
     fn relation(
         &self,
         pointer: usize,
@@ -803,10 +751,6 @@ impl<'a, M: Memory> Reader<'a, M> {
                 )
             }
         };
-        // The shared-vision subject terms read only the status's subject-relation pointer and its
-        // type, never the retired byte, and link clearing is what uninstalls a subject. So a
-        // retired relation counts exactly while it is still installed; one left only in an owned
-        // vector is skipped.
         if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass)? {
             return Ok(None);
         }

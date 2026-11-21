@@ -1,9 +1,3 @@
-//! Read-only access to the configured game's current settings.txt and
-//! pdx_settings.txt.
-//!
-//! `settings.txt` follows the shared settings reader ([`SettingsKeys`]);
-//! the generic parser reads only the launcher's `pdx_settings.txt`, applied
-//! entry by entry.
 use crate::{
     fixed5::decimal_i32,
     gui::native::{Case, PersistentKey, PointAxis},
@@ -33,7 +27,6 @@ fn bounded_parse<T: Send + Sync + 'static>(path: &Path, parser: &'static str, re
     })
 }
 
-/// A `pdx_settings.txt` entry's scalar.
 fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<&'a str> {
     items
         .iter()
@@ -42,38 +35,22 @@ fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<&'a str> {
         .ok_or_else(|| io::Error::other(format!("Missing {key} in game settings")))
 }
 
-/// Top-level `settings.txt` keys, with every occurrence read in file order.
-/// Keys dispatch through the settings and system-settings cases; an unknown
-/// key is reported and skipped.
-///
-/// Bare words fold and look up registered keywords without case, so
-/// `Template_Counter` is a keyword; quoted `"template_counter"` is a string
-/// and reaches no case. Settings load before dynamic token registration.
-/// Every consumer uses this walk
-/// ([`gui::native::persistent_keys`](crate::gui::native::persistent_keys)).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettingsKeys(Vec<crate::gui::native::PersistentKey>, Absent);
 
-/// Whether the user folder holds no `settings.txt`. The game then reads nothing and starts from
-/// its constructed settings, saving the file only later.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Absent(bool);
 
-/// Values the game's settings start from before any `settings.txt` is read.
 pub mod constructed {
     pub const CAMERA_TILT: f32 = 100.0;
     pub const CAMERA_SPEED: f32 = 50.0;
     pub const ZOOM_SPEED: f32 = 50.0;
     pub const SCROLL_SPEED: f32 = 50.0;
     pub const CORNER_SCROLLING: bool = true;
-    /// `graphics.gui_scale`.
     pub const GUI_SCALE: f32 = 1.0;
-    /// `graphics.vsync`.
     pub const VSYNC: bool = true;
 }
 
-/// Scalar fields consume only their stored value. Nested objects use their own
-/// field dispatch on the same reader; unhandled fields skip their whole block.
 fn settings_case(keyword: &str) -> Option<Case> {
     match keyword {
         "graphics" => Some(Case::Object(graphics_case)),
@@ -142,7 +119,6 @@ fn settings_case(keyword: &str) -> Option<Case> {
     }
 }
 
-/// Point fields read their own tokens; all other admitted fields are scalar.
 fn graphics_case(keyword: &str) -> Option<Case> {
     match keyword {
         "size" | "min_gui" => Some(Case::Point),
@@ -197,43 +173,32 @@ fn map_rendering_case(keyword: &str) -> Option<Case> {
 }
 
 impl SettingsKeys {
-    /// `settings.txt`'s bytes walked as the game walks them.
     pub fn read(bytes: &[u8]) -> Self {
         Self(crate::gui::native::persistent_keys(bytes, settings_case), Absent(false))
     }
 
-    /// The user folder holds no `settings.txt`: nothing is read.
     pub fn absent() -> Self {
         Self(Vec::new(), Absent(true))
     }
 
-    /// Whether the user folder held no `settings.txt`, so every value is the game's constructed
-    /// one.
     pub fn is_absent(&self) -> bool {
         self.1.0
     }
 
-    /// [`Self::f32_at`], or `constructed` when the file is absent.
     pub fn f32_or_constructed(&self, path: &[&str], constructed: f32) -> Option<f32> {
         self.f32_at(path).or(self.is_absent().then_some(constructed))
     }
 
-    /// [`Self::bool_at`], or `constructed` when the file is absent.
     pub fn bool_or_constructed(&self, path: &[&str], constructed: bool) -> Option<bool> {
         self.bool_at(path).or(self.is_absent().then_some(constructed))
     }
 
-    /// Every occurrence dispatched to the keyword's registered lowercased
-    /// spelling, in file order.
     pub fn assignments<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a PersistentKey> {
         self.0
             .iter()
             .filter(move |key| key.keyword == Some(keyword))
     }
 
-    /// Every occurrence of the key `path` names, in file order: the top level's `path[0]`, then
-    /// within every occurrence of that sub-object its `path[1]`, and so on (registered lowered
-    /// spellings).
     pub fn assignments_at(&self, path: &[&str]) -> Vec<&PersistentKey> {
         let mut level: Vec<&PersistentKey> = self.0.iter().collect();
         let mut found = Vec::new();
@@ -252,29 +217,22 @@ impl SettingsKeys {
         found
     }
 
-    /// The value the field `path` holds once the file is read, when a conversion stored one
-    /// ([`stored_in`]).
     fn stored<T>(&self, path: &[&str], convert: impl Fn(&[u8]) -> Option<T>) -> Option<T> {
         stored_in(self.assignments_at(path), convert)
     }
 
-    /// Converts the field `path` names to `yes` or `no`.
     pub fn bool_at(&self, path: &[&str]) -> Option<bool> {
         self.stored(path, crate::gui::native::bool_of)
     }
 
-    /// Scans the field `path` names as a signed integer (`%i`).
     pub fn i32_at(&self, path: &[&str]) -> Option<i32> {
         self.stored(path, |text| crate::crt::scan_i32(text).stored())
     }
 
-    /// Scans the field `path` names as a float (`%f`).
     pub fn f32_at(&self, path: &[&str]) -> Option<f32> {
         self.stored(path, crate::crt::scan_f32)
     }
 
-    /// Reads text to its first NUL, or "Unreadable String" when it holds
-    /// a line feed.
     pub fn string_at(&self, path: &[&str]) -> Option<Vec<u8>> {
         self.stored(path, |text| {
             Some(if text.contains(&b'\n') {
@@ -285,39 +243,26 @@ impl SettingsKeys {
         })
     }
 
-    /// Reads two integer axes: each keeps the last occurrence that reached
-    /// it, `None` when none did. A first scan storing nothing would store an
-    /// uninitialised value, which cannot be reproduced; `Err` names it.
     pub fn point_at(&self, path: &[&str]) -> Result<[Option<i32>; 2], String> {
         let mut point = [None, None];
         point_in(self.assignments_at(path), &path.join("."), &mut point)?;
         Ok(point)
     }
 
-    /// Whether the file holds the key `path` names at all.
     pub fn has(&self, path: &[&str]) -> bool {
         !self.assignments_at(path).is_empty()
     }
 
-    /// `force_pow2_textures` after reading the file: exact `yes` or `no`
-    /// stores a value; anything else keeps the preceding one. The texture
-    /// decoder's flag and the settings field both start false, so an omitted
-    /// key leaves power-of-two padding off.
     pub fn force_pow2_textures(&self) -> bool {
         self.bool_at(&["force_pow2_textures"]).unwrap_or(false)
     }
 
-    /// Client texture-decoding state supplied by this `settings.txt`.
     pub fn texture_decode(&self) -> crate::image::native::Decode {
         crate::image::native::Decode {
             force_pow2_textures: self.force_pow2_textures(),
         }
     }
 
-    /// The `language` text as stored, which the game compares with its language list's entries
-    /// (`l_english`, ...); `None` when the file names none (or is absent). A request the list
-    /// does not hold, of any form, takes the list's first language
-    /// (`installed_content_localisation::localisation::selected_language`).
     pub fn language(&self) -> Option<String> {
         self.string_at(&["language"])
             .filter(|text| !text.is_empty())
@@ -325,8 +270,6 @@ impl SettingsKeys {
     }
 }
 
-/// Each of `keys` in turn converted into one field: the value the last conversion that stored one
-/// stored, a conversion that stores nothing keeping the value before it.
 fn stored_in<'a, T>(
     keys: impl IntoIterator<Item = &'a PersistentKey>,
     convert: impl Fn(&[u8]) -> Option<T>,
@@ -336,9 +279,6 @@ fn stored_in<'a, T>(
         .last()
 }
 
-/// Reads each of `keys` into the two axes of `point`, preserving an axis
-/// a read did not reach. A first scan storing nothing would store an
-/// uninitialised value, refused by name for `what`.
 fn point_in<'a>(
     keys: impl IntoIterator<Item = &'a PersistentKey>,
     what: &str,
@@ -361,7 +301,6 @@ fn point_in<'a>(
     Ok(())
 }
 
-/// The user folder's `settings.txt` through [`SettingsKeys`].
 pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
     match bounded_parse(&user.join("settings.txt"), "game settings keys", |bytes| {
         match engine_executable::executable_tables::current() {
@@ -405,22 +344,15 @@ pub fn language_in(layers: &installed_content_core::ResolvedLayers, user: &Path)
     Ok(value)
 }
 
-/// The map options the game saves in `settings.txt`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MapOptions {
-    /// The day/night cycle, `hide_daynight_cycle` inverted.
     pub day_night: bool,
-    /// `show_allied_plans`.
     pub allied_plans: bool,
-    /// `counter_color_mode` 0: counters tinted by their owner's colour rather than by allegiance.
     pub country_counter_colours: bool,
-    /// `template_counter` 1: the unit icons' NATO frame.
     pub nato_counters: bool,
 }
 
 impl MapOptions {
-    /// The game's own values when the file stores none: the cycle shown, allied plans hidden,
-    /// counters by allegiance and the plain frame.
     pub const DEFAULT: Self = Self {
         day_night: true,
         allied_plans: false,
@@ -428,14 +360,6 @@ impl MapOptions {
         nato_counters: false,
     };
 
-    /// The options as the game reads them ([`SettingsKeys`]: any case, each occurrence in file
-    /// order).
-    ///
-    /// A `yes`/`no` the game cannot convert keeps the value before it. A counter option's `%i`
-    /// scan ([`crate::crt::scan_i32`]: C radix prefixes, low 32 bits, clamped to 0..=1) that
-    /// converts nothing leaves the game an uninitialised value until a later line stores one;
-    /// when the last line is such a scan the option keeps its default here. Every line that
-    /// could not be read is named in the second value, and none stops the read.
     pub fn read(settings: &SettingsKeys) -> (Self, Vec<String>) {
         let mut options = Self::DEFAULT;
         let mut unread = Vec::new();
@@ -487,8 +411,6 @@ impl MapOptions {
     }
 }
 
-/// Reads the user folder's `pdx_settings.txt`, the launcher's display
-/// settings; `None` when it does not exist, as the engine skips it then.
 pub fn read_pdx(user: &Path) -> io::Result<Option<Document>> {
     match bounded_parse(&user.join("pdx_settings.txt"), "launcher display settings", parser::parse) {
         Ok(document) => Ok(Some(std::sync::Arc::unwrap_or_clone(document))),
@@ -497,132 +419,69 @@ pub fn read_pdx(user: &Path) -> io::Result<Option<Document>> {
     }
 }
 
-/// Reads both display files of a user folder in the engine's order.
 pub fn read_display(user: &Path) -> io::Result<Display> {
     let settings = read_keys(user)?;
     let pdx = read_pdx(user)?;
     Display::read(&settings, pdx.as_ref().map(|pdx| pdx.items.as_slice()))
 }
 
-/// The display mode selected by full-screen and borderless flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayMode {
-    /// Exclusive full screen.
     Fullscreen,
-    /// Neither flag.
     Windowed,
-    /// Borderless without exclusive full screen: a window over the desktop.
     Borderless,
 }
 
-/// One monitor as the game sees it.
-///
-/// `hoi4.exe` declares no DPI awareness (its manifest is empty and it never
-/// asks for any), so Windows gives it a virtualised desktop and stretches its
-/// window by the monitor's scale. The SDL it links reads the desktop mode
-/// through that virtualisation: at 125% a 2560x1440 monitor is a 2048x1152
-/// desktop to the game, which is where `settings.txt`'s `size` comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Desktop {
-    /// The monitor's mode in physical pixels.
     pub physical: [u32; 2],
-    /// Its effective DPI; 96 is 100%.
     pub dpi: u32,
 }
 
 impl Desktop {
-    /// The desktop a DPI-unaware process sees: `MulDiv(pixels, 96, dpi)`.
     pub fn virtualised(&self) -> [u32; 2] {
         let dpi = u64::from(self.dpi.max(1));
         self.physical
             .map(|pixels| ((u64::from(pixels) * 96 + dpi / 2) / dpi) as u32)
     }
 
-    /// How many physical pixels one of the game's window pixels covers.
     pub fn dpi_scale(&self) -> f32 {
         self.dpi.max(1) as f32 / 96.0
     }
 }
 
-/// The display facts that decide how large the game's interface appears on
-/// screen, in the engine's order.
-///
-/// Video is initialized before either settings file is read. Display
-/// settings start borderless at scale 1.0 and display 0's desktop size.
-/// `settings.txt` applies first; each `graphics` block clamps its scale
-/// against the size and borderless flag at its end. `pdx_settings.txt`
-/// applies next, entry by entry, changing mode, monitor and size without
-/// changing scale. The game then applies command-line display overrides;
-/// its launch command line is unavailable to the viewer, so those overrides
-/// are not applied here. Window creation determines the final frame for
-/// interface layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Display {
-    /// Every `graphics` block's end in file order, clamping the scale that
-    /// block left ([`Display::effective_gui_scale`]).
     pub clamps: Vec<Clamp>,
-    /// Size after `pdx_settings.txt`: an unreadable resolution is zero;
-    /// `None` retains display 0's desktop from construction.
     pub size: Option<[i32; 2]>,
-    /// `graphics.min_gui`, the smallest frame for interface layout.
     pub min_gui: [u32; 2],
-    /// The mode after `pdx_settings.txt`.
     pub mode: DisplayMode,
-    /// Monitor after `pdx_settings.txt`: `graphics.adapter`, then
-    /// `display_index`; negative means not chosen.
     pub display_index: i32,
 }
 
-/// One `graphics` block's fields when its closing read finalizes scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Clamp {
-    /// Last `gui_scale` float stored by the block; `None` retains the
-    /// preceding clamp's result, or 1.0 before the first block.
     pub gui_scale: Option<f32>,
-    /// Size at the block's end, retaining earlier blocks' writes; `None`
-    /// selects the initial display 0 desktop.
     pub size: Option<[u32; 2]>,
-    /// Borderless flag at the block's end.
     pub borderless: bool,
 }
 
-/// The window produced by the configured display settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
-    /// Exclusive full screen at the configured size.
     Fullscreen,
-    /// A borderless window at the monitor's desktop.
     Borderless,
-    /// Ordinary window at the configured size: windowed, or borderless on
-    /// a monitor whose desktop query failed.
     Plain,
 }
 
-/// Reference frame size permitting a 1.0 interface scale.
 const GUI_REFERENCE: [f32; 2] = [1280.0, 720.0];
-/// The scale cap is truncated to tenths.
 const GUI_SCALE_STEPS: f32 = 10.0;
-/// Lower bound applied before the scale cap.
 const GUI_SCALE_MIN: f32 = 0.5;
-/// Initial size copied to `min_gui` before replacing it with display 0's
-/// desktop.
 const CONSTRUCTED_MIN_GUI: [u32; 2] = [1280, 720];
-/// Initial interface scale.
 const CONSTRUCTED_GUI_SCALE: f32 = constructed::GUI_SCALE;
 
 impl Display {
-    /// Reads `settings.txt`'s `graphics` sub-object ([`SettingsKeys`]: bare
-    /// keys in any case, each occurrence in order), then applies a parsed
-    /// `pdx_settings.txt`.
-    ///
-    /// A conversion storing nothing retains the constructor value. Stored
-    /// values the viewer cannot lay out with (non-finite scale, nonpositive
-    /// size axis, or a size mixing a stored axis with a desktop axis) and
-    /// uninitialised point reads are refused. Fields carry between graphics
-    /// blocks; every block ends with its own clamp ([`Clamp`]).
     pub fn read(settings: &SettingsKeys, pdx: Option<&[Item]>) -> io::Result<Self> {
         let blocks = settings.assignments_at(&["graphics"]);
-        // Without the file the game reads no block: every field keeps its constructed value.
         if blocks.is_empty() && !settings.is_absent() {
             return Err(io::Error::other("Missing graphics block in game settings"));
         }
@@ -645,8 +504,6 @@ impl Display {
         };
         let (mut size_point, mut min_gui_point) = ([None, None], [None, None]);
         let (mut fullscreen, mut borderless) = (false, true);
-        // The adapter starts at -1; this key and the command-line adapter
-        // option both write it.
         let mut display_index = -1;
         let mut clamps = Vec::with_capacity(blocks.len());
         let mut size = None;
@@ -672,8 +529,6 @@ impl Display {
                 stored_in(here("borderless"), crate::gui::native::bool_of).unwrap_or(borderless);
             display_index = stored_in(here("adapter"), |text| crate::crt::scan_i32(text).stored())
                 .unwrap_or(display_index);
-            // `size` keeps display 0's desktop on an axis no read reached, which the viewer does
-            // not mix with a stored one.
             size = pair("size", size_point, None)?;
             clamps.push(Clamp {
                 gui_scale,
@@ -700,8 +555,6 @@ impl Display {
         Ok(display)
     }
 
-    /// Applies every `Graphics` entry in file order. An entry without a
-    /// `value` reads as empty text, which integer conversion makes zero.
     fn apply_pdx(&mut self, pdx: &[Item]) {
         for category in pdx {
             if category.key.as_deref() != Some(b"Graphics".as_slice()) {
@@ -720,10 +573,7 @@ impl Display {
                     .and_then(|fields| scalar(fields, "value").ok())
                     .unwrap_or("");
                 match key {
-                    // Decimal prefix conversion.
                     b"display_index" => self.display_index = decimal_i32(value.as_bytes()),
-                    // borderless_fullscreen is 2, windowed is 1; any other
-                    // word selects exclusive full screen.
                     b"display_mode" => {
                         self.mode = match value {
                             "borderless_fullscreen" => DisplayMode::Borderless,
@@ -731,8 +581,6 @@ impl Display {
                             _ => DisplayMode::Fullscreen,
                         };
                     }
-                    // Each resolution key writes size only in its own mode,
-                    // as the mode stands when the entry is reached.
                     b"fullscreen_resolution" if self.mode != DisplayMode::Windowed => {
                         if let Some(size) = resolution(value) {
                             self.size = Some(size);
@@ -749,11 +597,6 @@ impl Display {
         }
     }
 
-    /// Effective interface scale, starting at 1.0 and passing through every
-    /// graphics block. A block's stored scale replaces the preceding result
-    /// before its closing clamp ([`effective_gui_scale`]). Borderless blocks
-    /// cap against display 0's virtualised desktop; other blocks cap against
-    /// the configured size, using fields as that block left them.
     pub fn effective_gui_scale(&self, display0: Desktop) -> f32 {
         let mut scale = CONSTRUCTED_GUI_SCALE;
         for clamp in &self.clamps {
@@ -769,12 +612,6 @@ impl Display {
         scale
     }
 
-    /// The monitor the window opens on, and how it opened.
-    ///
-    /// `display_index` selects a desktop in SDL order. An index beyond the
-    /// monitors makes the desktop query fail, turning borderless into an
-    /// ordinary window at the configured size, centred on display 0.
-    /// A negative index uses the chosen adapter, assumed to be display 0.
     pub fn window(&self, desktops: &[Desktop]) -> Option<(Desktop, Window)> {
         let display0 = *desktops.first()?;
         let named = usize::try_from(self.display_index)
@@ -793,12 +630,6 @@ impl Display {
         Some((shown_on, window))
     }
 
-    /// The frame the game renders, in its own pixels.
-    ///
-    /// A borderless window takes its monitor's desktop size, superseding
-    /// configured full-screen resolution; other windows retain configured
-    /// size. Rendering uses the resulting window size. `None` means no
-    /// valid window size, as an unreadable resolution can leave behind.
     pub fn frame(&self, desktops: &[Desktop]) -> Option<[u32; 2]> {
         let display0 = *desktops.first()?;
         let (shown_on, window) = self.window(desktops)?;
@@ -812,12 +643,6 @@ impl Display {
         }
     }
 
-    /// Frame pixels per interface pixel.
-    ///
-    /// Interface layout uses the frame, or `min_gui` expanded to the frame's
-    /// aspect when the frame is smaller, divided by scale and truncated.
-    /// This is the horizontal ratio; the vertical ratio differs only by
-    /// that truncation.
     pub fn interface_to_frame(&self, frame: [u32; 2], scale: f32) -> f32 {
         let [width, height] = frame.map(|value| value.max(1) as i64);
         let [min_width, min_height] = self.min_gui.map(i64::from);
@@ -832,11 +657,6 @@ impl Display {
         width as f32 / logical.max(1) as f32
     }
 
-    /// Physical pixels per frame pixel.
-    ///
-    /// An ordinary or borderless window is stretched by its monitor's scale,
-    /// since the game is not DPI aware. Exclusive full screen is assumed
-    /// to fill the monitor, using the smaller axis when the aspects differ.
     pub fn stretch(&self, desktops: &[Desktop]) -> Option<f32> {
         let (shown_on, window) = self.window(desktops)?;
         Some(match window {
@@ -849,17 +669,12 @@ impl Display {
         })
     }
 
-    /// Physical pixels per interface pixel: the game's interface scale as it
-    /// appears on screen, given every monitor in SDL's display order.
     pub fn screen_scale(&self, desktops: &[Desktop]) -> Option<f32> {
         let scale = self.effective_gui_scale(*desktops.first()?);
         Some(self.interface_to_frame(self.frame(desktops)?, scale) * self.stretch(desktops)?)
     }
 }
 
-/// A `pdx_settings.txt` `WIDTHxHEIGHT`: split on `x`, keeping empty parts,
-/// and read each part's decimal prefix ([`decimal_i32`]). Anything other
-/// than two parts leaves the size alone.
 fn resolution(value: &str) -> Option<[i32; 2]> {
     let parts: Vec<&str> = value.split('x').collect();
     let [width, height] = parts.as_slice() else {
@@ -871,20 +686,13 @@ fn resolution(value: &str) -> Option<[i32; 2]> {
     ])
 }
 
-/// One display adapter as `EnumDisplayDevicesW` lists it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Adapter {
     pub attached: bool,
     pub primary: bool,
-    /// Its current mode and DPI.
     pub desktop: Option<Desktop>,
 }
 
-/// The monitors in SDL's display order, which the game's display indices and
-/// `SDL_GetDesktopDisplayMode(0)` use: attached adapters, the primary first
-/// and the rest in `EnumDisplayDevicesW` order, as SDL's Windows backend adds
-/// them. **UNVERIFIED** beyond the primary: the order of several secondary
-/// monitors has not been compared with a running game.
 pub fn sdl_order(adapters: &[Adapter]) -> Vec<Desktop> {
     let attached = || adapters.iter().filter(|adapter| adapter.attached);
     attached()
@@ -894,12 +702,6 @@ pub fn sdl_order(adapters: &[Adapter]) -> Vec<Desktop> {
         .collect()
 }
 
-/// Every monitor in SDL's display order.
-///
-/// Physical modes and per-monitor DPI are only what they say in a thread that
-/// is per-monitor DPI aware; any other thread is refused rather than handed
-/// virtualised numbers. A monitor whose DPI cannot be read is refused too.
-/// This walks every display adapter, so call it off a frame's path.
 #[cfg(windows)]
 pub fn desktops() -> io::Result<Vec<Desktop>> {
     use windows_sys::Win32::{
@@ -914,7 +716,6 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
             GetThreadDpiAwarenessContext, MDT_EFFECTIVE_DPI,
         },
     };
-    // SAFETY: both calls take and return plain handles or values.
     let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) };
     if awareness != DPI_AWARENESS_PER_MONITOR_AWARE {
         return Err(io::Error::other(
@@ -927,7 +728,6 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
             cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
             ..Default::default()
         };
-        // SAFETY: `device` is a writable DISPLAY_DEVICEW whose `cb` is set.
         if unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } == 0 {
             break;
         }
@@ -936,15 +736,11 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
             dmSize: std::mem::size_of::<DEVMODEW>() as u16,
             ..Default::default()
         };
-        // SAFETY: `DeviceName` is the NUL-terminated name the call above wrote
-        // and `mode` is a writable DEVMODEW whose `dmSize` is set.
         let found = unsafe {
             EnumDisplaySettingsW(device.DeviceName.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode)
         } != 0;
         let desktop = if attached && found && mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0 {
-            // SAFETY: a display's mode fills the position arm of the union.
             let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
-            // SAFETY: MonitorFromPoint takes a point by value.
             let monitor = unsafe {
                 MonitorFromPoint(
                     POINT {
@@ -955,7 +751,6 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
                 )
             };
             let (mut dpi, mut unused) = (0u32, 0u32);
-            // SAFETY: both outputs are writable u32s.
             let read =
                 unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut unused) };
             if read != 0 || dpi == 0 {
@@ -984,8 +779,6 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
     Err(io::Error::other("Monitor sizes are only read on Windows"))
 }
 
-/// The current mode's refresh in hertz of the display `window` is on, the default display's
-/// without one, or none when the mode names none (Windows reports 0 or 1 for a hardware default).
 #[cfg(windows)]
 pub fn display_refresh_hz(window: Option<usize>) -> Option<u32> {
     use windows_sys::Win32::Graphics::Gdi::{
@@ -1000,8 +793,6 @@ pub fn display_refresh_hz(window: Option<usize>) -> Option<u32> {
             },
             szDevice: [0; 32],
         };
-        // SAFETY: `window` is a window handle its holder gave us, and `info` is a writable
-        // MONITORINFOEXW whose `cbSize` covers the device name GetMonitorInfoW writes into it.
         let found = unsafe {
             let monitor = MonitorFromWindow(window as _, MONITOR_DEFAULTTONEAREST);
             !monitor.is_null()
@@ -1014,8 +805,6 @@ pub fn display_refresh_hz(window: Option<usize>) -> Option<u32> {
         ..Default::default()
     };
     let name = device.as_ref().map_or(std::ptr::null(), |device| device.as_ptr());
-    // SAFETY: `name` is that display's null-terminated device name, or null for the default
-    // display, and `mode` is a writable DEVMODEW whose `dmSize` is set.
     let found = unsafe { EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &mut mode) } != 0;
     (found && mode.dmDisplayFrequency > 1).then_some(mode.dmDisplayFrequency)
 }
@@ -1025,8 +814,6 @@ pub fn display_refresh_hz(_window: Option<usize>) -> Option<u32> {
     None
 }
 
-/// A scale below 0.5 becomes 0.5; otherwise cap at
-/// `min(width / 1280, height / 720)` truncated to tenths.
 pub fn effective_gui_scale(authored: f32, frame: [u32; 2]) -> f32 {
     if authored < GUI_SCALE_MIN {
         return GUI_SCALE_MIN;
@@ -1115,13 +902,10 @@ template_counter=1",
             let options = read(text).0;
             (options.country_counter_colours, options.nato_counters)
         };
-        // `%i` clamps to 0..=1, reads a C hexadecimal prefix and keeps the low 32 bits.
         assert_eq!(counters("counter_color_mode=-3
 template_counter=7"), (true, true));
         assert_eq!(counters("template_counter=0x1"), (false, true));
         assert_eq!(counters("template_counter=4294967296"), (false, false));
-        // Ordered writes: the last occurrence wins; bare keywords fold without case, quoted
-        // keys reach no case, and a quoted value converts like a bare one.
         assert_eq!(counters("template_counter=1
 TEMPLATE_counter=0"), (false, false));
         assert_eq!(counters("Template_Counter=1"), (false, true));
@@ -1129,9 +913,6 @@ TEMPLATE_counter=0"), (false, false));
         assert_eq!(counters(r#"template_counter="1""#), (false, true));
     }
 
-    /// A line the game cannot convert never stops the read: the option keeps the value the game
-    /// would have before it (a `yes`/`no`) or its default (an integer scan storing nothing,
-    /// unless a later line stores one), and the line is named.
     #[test]
     fn unreadable_map_option_lines_keep_the_games_value_and_are_named() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1154,7 +935,6 @@ template_counter=1",
         let named = |option: &str| unread.iter().any(|line| line.contains(option));
         assert!(named("hide_daynight_cycle") && named("show_allied_plans"));
         assert!(named("counter_color_mode") && !named("template_counter"), "{unread:?}");
-        // A later stored scan replaces the unknown value.
         let (options, unread) = read("template_counter=-
 template_counter=1");
         assert!(options.nato_counters);
@@ -1170,16 +950,12 @@ template_counter=-");
         let language = |text: &str| SettingsKeys::read(text.as_bytes()).language();
         assert_eq!(language(r#"language="l_english""#).as_deref(), Some("l_english"));
         assert_eq!(language("language=l_braz_por").as_deref(), Some("l_braz_por"));
-        // Any other form is still a request: the game's list decides it.
         assert_eq!(language(r#"language="english""#).as_deref(), Some("english"));
         assert_eq!(language(r#"language="l_""#).as_deref(), Some("l_"));
-        // None named, or an empty one: the game prepares its first declared language.
         assert_eq!(language(""), None);
         assert_eq!(language(r#"language="""#), None);
     }
 
-    /// A user folder without `settings.txt` reads as the game's constructed settings, never an
-    /// error: the game reads nothing then.
     #[test]
     fn an_absent_settings_file_reads_as_the_constructed_settings() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1194,20 +970,17 @@ template_counter=-");
             Some(100.0)
         );
         assert_eq!(keys.f32_at(&["camera_tilt"]), None);
-        // The display keeps its constructed fields: no block clamps the scale.
         let display = Display::read(&keys, None).unwrap();
         assert!(display.clamps.is_empty() && display.size.is_none());
         assert_eq!(display.min_gui, CONSTRUCTED_MIN_GUI);
         assert_eq!(display.mode, DisplayMode::Borderless);
         assert!(Display::read(&SettingsKeys::read(b""), None).is_err());
-        // A present file never takes the constructed values for what it leaves out.
         let present = SettingsKeys::read(b"");
         assert!(!present.is_absent());
         assert_eq!(present.f32_or_constructed(&["camera_tilt"], 100.0), None);
         std::fs::remove_dir(&folder).unwrap();
     }
 
-    /// Two display files and a 2560x1440 monitor at 125%.
     const OWNER_SETTINGS: &str = "graphics={ size={ x=2048 y=1152 } min_gui={ x=1280 y=720 } gui_scale=1.000000 fullScreen=no borderless=yes adapter=0 }";
     const OWNER_PDX: &str = r#""Graphics"={
         "display_mode"={ value="borderless_fullscreen" version=0 }
@@ -1235,19 +1008,13 @@ template_counter=-");
     fn the_engine_clamps_the_scale_to_half_and_to_the_frame_in_tenths() {
         assert_eq!(effective_gui_scale(1.0, [2048, 1152]), 1.0);
         assert_eq!(effective_gui_scale(0.3, [2048, 1152]), 0.5);
-        // 2048 / 1280 = 1152 / 720 = 1.6.
         assert_eq!(effective_gui_scale(2.0, [2048, 1152]), 1.6);
-        // min(1920 / 1280, 1200 / 720) = 1.5.
         assert_eq!(effective_gui_scale(1.75, [1920, 1200]), 1.5);
-        // 1366 / 1280 = 1.067 truncates to 1.0, not 1.1.
         assert_eq!(effective_gui_scale(1.25, [1366, 768]), 1.0);
-        // Below the reference frame the cap can fall under the lower bound.
         assert_eq!(effective_gui_scale(1.0, [800, 600]), 0.6);
         assert_eq!(effective_gui_scale(0.4, [800, 600]), 0.5);
     }
 
-    /// Bare keys fold without case; quoted keys reach no case, variables
-    /// resolve, and every occurrence is read in order.
     #[test]
     fn settings_keys_follow_the_lexers_tokens() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1256,23 +1023,17 @@ template_counter=-");
         assert!(pow2("force_pow2_textures=yes"));
         assert!(pow2("Force_Pow2_Textures=yes"));
         assert!(pow2("FORCE_POW2_TEXTURES = yes"));
-        // A quoted key is a string and reaches no case.
         assert!(!pow2("\"force_pow2_textures\"=yes"));
-        // A quoted value still supplies the boolean conversion's text.
         assert!(pow2("force_pow2_textures=\"yes\""));
-        // Any other text stores nothing and keeps the field; the last stored value holds.
         assert!(pow2("force_pow2_textures=yes\nforce_pow2_textures=maybe"));
         assert!(!pow2("force_pow2_textures=yes\nforce_pow2_textures=no"));
         assert!(!pow2("force_pow2_textures=YES"));
         assert!(pow2("@on = yes\nforce_pow2_textures=@on"));
-        // A block passed over whole by an unexpected key does not hide what follows it.
         assert!(pow2(
             "graphics={ size={ x=1 y=2 } }\nforce_pow2_textures=yes"
         ));
-        // A scalar case given a `{` reads nothing further: the block's keys are the file's.
         assert!(pow2("hints={ force_pow2_textures=yes }"));
         assert!(!pow2("graphics={ force_pow2_textures=yes }"));
-        // Field dispatch retains scalar, point and nested-object consumption.
         let keys = SettingsKeys::read(
             b"language=l_english graphics={ size={ x=640 y=480 } GUI_Scale=1.5 }
               mapRenderingOptions={ texture_quality=2 }
@@ -1297,7 +1058,6 @@ template_counter=-");
         );
         assert_eq!(keys.assignments("force_pow2_textures").count(), 0);
         assert_eq!(keys.assignments("template_counter").count(), 1);
-        // Occurrences keep file order, keyed by the registered spelling.
         let keys =
             SettingsKeys::read(b"Template_Counter=1\n\"template_counter\"=0\ntemplate_counter=2");
         let values: Vec<&[u8]> = keys
@@ -1321,8 +1081,6 @@ template_counter=-");
     #[test]
     fn the_owners_borderless_game_is_stretched_by_windows_to_125_percent() {
         let game = display(OWNER_SETTINGS, Some(OWNER_PDX)).unwrap();
-        // pdx_settings.txt's 2560x1440 is applied, then superseded: a
-        // borderless window is created at the (virtualised) desktop mode.
         assert_eq!(game.size, Some([2560, 1440]));
         assert_eq!(game.mode, DisplayMode::Borderless);
         let monitors = [OWNER_MONITOR];
@@ -1335,7 +1093,6 @@ template_counter=-");
         assert_eq!(game.interface_to_frame([2048, 1152], 1.0), 1.0);
         assert_eq!(game.stretch(&monitors), Some(1.25));
         assert_eq!(game.screen_scale(&monitors), Some(1.25));
-        // Display 0's virtualised 2048x1152 caps a larger scale at 1.6.
         let large = Display {
             clamps: vec![Clamp {
                 gui_scale: Some(2.0),
@@ -1347,11 +1104,6 @@ template_counter=-");
         assert_eq!(large.screen_scale(&monitors), Some(2.0));
     }
 
-    /// Every graphics block clamps the fields it leaves. A 2.0 scale
-    /// capped to 1.0 by the first block's 1280x720 size stays 1.0 when a
-    /// second block only enlarges size, whereas one final clamp would give
-    /// 1.6. A later stored scale replaces the preceding clamp; a scale raised
-    /// to 0.5 at one end can be capped lower at the next.
     #[test]
     fn every_graphics_block_ends_in_its_own_clamp() {
         let two = display(
@@ -1368,22 +1120,17 @@ template_counter=-");
         )
         .unwrap();
         assert_eq!(replaced.effective_gui_scale(OWNER_MONITOR), 1.5);
-        // 0.3 is raised to 0.5 at the first end (800x600 would cap at 0.6).
         let small = display(
             "graphics={ gui_scale=0.3 size={ x=800 y=600 } borderless=no }              graphics={ size={ x=640 y=300 } }",
             None,
         )
         .unwrap();
-        // min(640 / 1280, 300 / 720) = 0.416 truncates to 0.4: 0.5 is capped at 0.4, which one
-        // clamp of the stored 0.3 (raised to 0.5, returning at once) would not give.
         assert_eq!(small.effective_gui_scale(OWNER_MONITOR), 0.4);
         assert_eq!(effective_gui_scale(0.3, [640, 300]), 0.5);
     }
 
     #[test]
     fn the_clamp_sees_settings_txt_before_pdx_settings_change_the_mode() {
-        // Windowed in settings.txt: the 1280x720 size caps 1.5 at 1.0, though
-        // pdx_settings.txt then makes the window borderless.
         let small = "graphics={ size={ x=1280 y=720 } gui_scale=1.5 fullScreen=no borderless=no }";
         let game = display(small, Some(OWNER_PDX)).unwrap();
         assert_eq!(game.mode, DisplayMode::Borderless);
@@ -1392,7 +1139,6 @@ template_counter=-");
 
     #[test]
     fn absent_settings_keep_the_constructors_values() {
-        // Borderless at 1.0 over display 0's desktop, min_gui 1280x720.
         let game = display("graphics={ }", None).unwrap();
         assert_eq!(
             game.clamps,
@@ -1407,8 +1153,6 @@ template_counter=-");
         assert_eq!(game.min_gui, [1280, 720]);
         assert_eq!(game.display_index, -1);
         assert_eq!(game.screen_scale(&[OWNER_MONITOR]), Some(1.25));
-        // Windowed with no size: a window of display 0's desktop, the cap
-        // measured on that same desktop.
         let windowed = display("graphics={ gui_scale=2.0 borderless=no }", None).unwrap();
         assert_eq!(windowed.effective_gui_scale(OWNER_MONITOR), 1.6);
         assert_eq!(windowed.frame(&[OWNER_MONITOR]), Some([2048, 1152]));
@@ -1426,11 +1170,8 @@ template_counter=-");
             (game.mode, game.size),
             (DisplayMode::Windowed, Some([1600, 900]))
         );
-        // A windowed game is stretched by the monitor's scale all the same.
         assert_eq!(game.frame(&[OWNER_MONITOR]), Some([1600, 900]));
         assert_eq!(game.screen_scale(&[OWNER_MONITOR]), Some(1.25));
-        // The mode entry comes after the resolution: the resolution was
-        // applied under `settings.txt`'s borderless mode.
         let late = r#""Graphics"={
             "fullscreen_resolution"={ value="1920x1080" }
             "display_mode"={ value="fullscreen" }
@@ -1440,7 +1181,6 @@ template_counter=-");
             (game.mode, game.size),
             (DisplayMode::Fullscreen, Some([1920, 1080]))
         );
-        // An exclusive 1920x1080 mode fills the 2560x1440 panel.
         let stretch = game.stretch(&[OWNER_MONITOR]).unwrap();
         assert!((stretch - 4.0 / 3.0).abs() < 1e-6);
     }
@@ -1454,22 +1194,17 @@ template_counter=-");
             )
             .unwrap()
         };
-        // A value that does not split in two leaves the size alone.
         let one = pdx(r#""fullscreen_resolution"={ value="2560" }"#);
         assert_eq!(one.size, Some([2048, 1152]));
-        // Each part is `atol`: digits up to the first other character.
         let bad = pdx(r#""fullscreen_resolution"={ value="2560xhigh" }"#);
         assert_eq!(bad.size, Some([2560, 0]));
         let full = Display {
             mode: DisplayMode::Fullscreen,
             ..bad
         };
-        // No window has a zero height, so the scale is not claimed.
         assert_eq!(full.screen_scale(&[OWNER_MONITOR]), None);
         let padded = pdx(r#""fullscreen_resolution"={ value=" 1920x1080p" }"#);
         assert_eq!(padded.size, Some([1920, 1080]));
-        // An entry without a value is the empty string: `atol` 0 and, for the
-        // mode, neither word, so exclusive full screen.
         let bare = pdx(r#""display_index"={ version=0 } "display_mode"={ version=0 }"#);
         assert_eq!(
             (bare.display_index, bare.mode),
@@ -1482,11 +1217,8 @@ template_counter=-");
     fn a_frame_smaller_than_min_gui_squeezes_the_interface() {
         let game = display(OWNER_SETTINGS, None).unwrap();
         assert_eq!(game.min_gui, [1280, 720]);
-        // 1024x576 is laid out on 1280x720: 0.8 frame pixels per interface pixel.
         assert_eq!(game.interface_to_frame([1024, 576], 1.0), 0.8);
-        // A taller frame widens nothing; the height is raised to the aspect.
         assert_eq!(game.interface_to_frame([1024, 768], 1.0), 0.8);
-        // At scale 1.25 a 2048-wide frame is 1638 interface pixels wide.
         assert!((game.interface_to_frame([2048, 1152], 1.25) - 2048.0 / 1638.0).abs() < 1e-6);
     }
 
@@ -1500,7 +1232,6 @@ template_counter=-");
         };
         let desktops = [OWNER_MONITOR, tv];
         assert_eq!(game.window(&desktops), Some((tv, Window::Borderless)));
-        // A 200% 4K monitor is a 1920x1080 borderless frame stretched twice.
         assert_eq!(game.frame(&desktops), Some([1920, 1080]));
         assert_eq!(game.screen_scale(&desktops), Some(2.0));
         assert_eq!(game.screen_scale(&[]), None);
@@ -1511,12 +1242,9 @@ template_counter=-");
         let missing = r#""Graphics"={ "display_index"={ value="5" } }"#;
         let game = display(OWNER_SETTINGS, Some(missing)).unwrap();
         let monitors = [OWNER_MONITOR];
-        // The desktop query fails: no borderless style, the 2048x1152 size,
-        // centred on display 0 and stretched by its scale.
         assert_eq!(game.window(&monitors), Some((OWNER_MONITOR, Window::Plain)));
         assert_eq!(game.frame(&monitors), Some([2048, 1152]));
         assert_eq!(game.screen_scale(&monitors), Some(1.25));
-        // A negative index is the chosen adapter, display 0.
         let unchosen = Display {
             display_index: -1,
             ..game
@@ -1568,7 +1296,6 @@ template_counter=-");
             why,
             "settings.txt graphics.size = { .. } gives a first value %i converts nothing from, so the point reader stores an uninitialised value"
         );
-        // A conversion that stores nothing keeps the constructor's field, as the game's does.
         let kept = display(
             "graphics={ gui_scale=x borderless=maybe adapter=x min_gui={ x=1000 } }",
             None,
@@ -1584,9 +1311,6 @@ template_counter=-");
         assert_eq!(kept.min_gui, [1000, 720]);
     }
 
-    /// The `graphics` sub-object's keys go through the lexer as the top level's do: any case, a
-    /// quoted key reaching no case, the last occurrence of each field, across every `graphics`
-    /// block; `mapRenderingOptions` alike.
     #[test]
     fn nested_settings_keys_follow_the_lexers_tokens() {
         let mixed = display(
@@ -1619,7 +1343,6 @@ template_counter=-");
                 }
             ]
         );
-        // A scalar case given a block leaves its keys to the sub-object.
         let keys =
             SettingsKeys::read(b"MapRenderingOptions={ draw_trees={ Draw_Map_Full_Res=no } }");
         assert_eq!(

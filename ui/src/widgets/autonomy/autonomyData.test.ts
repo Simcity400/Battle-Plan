@@ -63,7 +63,6 @@ test('the head key changes when a lane’s level changes, not while it holds', (
 });
 
 test("a lane is named as its tag's holder at the hour shown: a subject no country holds yet is its tag, never a later holder's name", () => {
-  // SLO is first held at 5,000 (a later subject); GER from the start.
   const holders = new Map([['SLO', [{ firstHour: 5_000, lastHour: 9_000 }]], ['GER', [{ firstHour: 0, lastHour: 2_999 }, { firstHour: 3_000, lastHour: 9_000 }]]]);
   assert.equal(holderSince(holders, 'SLO', 100), null);
   assert.equal(holderSince(holders, 'SLO', 6_000), 5_000);

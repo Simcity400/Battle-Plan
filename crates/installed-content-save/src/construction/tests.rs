@@ -218,7 +218,6 @@ fn a_resource_origin_keeps_its_two_efficiencies_convoys_route_and_rights() {
     };
     assert_eq!(giver.as_slice(), b"AFG");
     assert_eq!(held.state, Some(267));
-    // The writer omits the subscriber exactly when nothing is required.
     assert_eq!(held.convoys, crate::economy::ConvoyCounts::default());
     assert_eq!(
         held.client_efficiency
@@ -333,8 +332,6 @@ fn construction_and_buildings_keep_shared_queue_order_and_signed_levels() {
         i16::MAX
     );
     assert_eq!(saved.state_resistance[&3].level.raw, 0);
-    // A country's offsite buildings keep their tag; a country without a
-    // block has none.
     let offsite = &saved.country_buildings[&(b"GER".to_vec(), b"factory".to_vec())];
     assert_eq!((offsite.level, offsite.healthy_level), (3, 2));
     assert_eq!(saved.country_buildings.len(), 1);

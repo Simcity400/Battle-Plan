@@ -1,6 +1,3 @@
-/** Land battles following the head at 1,440 h/s in a real browser at a world war's density: about 150 battles going on
- * at once, sides of several countries joining and leaving, losses read daily, each battle ending with a result. What a
- * block of the log costs: each frame's main-thread time, the widget's commits and the rows each commit attached. */
 import { attributeCommits } from '../../shell/commitCount.ts';
 import { Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -40,10 +37,7 @@ class Clock {
 
 const WINDOWS = Array.from({ length: HOURS / WINDOW_HOURS }, (_, index) => ({ firstHour: index * WINDOW_HOURS, lastHour: (index + 1) * WINDOW_HOURS - 1 }));
 const TAGS = Array.from({ length: 40 }, (_, at) => `C${String(at).padStart(2, '0')}`);
-/** A deterministic sequence, so every run draws the same battles. */
 const noise = (seed: number) => { const x = Math.sin(seed * 12.9898) * 43758.5453; return x - Math.floor(x); };
-/** Battles begun in each window: one every 3.6 hours, each lasting 200 to 700 hours, so about 150 are going on at once.
- * A battle's roster is read in runs of 48 hours, a side's countries changing every fourth run; its losses daily. */
 const PER_WINDOW = 200;
 function battle(window: number, at: number) {
   const seed = window * PER_WINDOW + at;
@@ -103,9 +97,6 @@ const client = {
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 
-/** Each commit of the widget: its time in React, the rows it kept from the commit before, and the elements it attached
- * inside those kept rows (beside a new state of one, which a battle changing takes): what a block drew again. A row the
- * frame loop binds into a pooled box (`data-pool`) is a binding, counted by the state it shows, not a redraw. */
 let commits: { ms: number; kept: number; redrawn: number }[] = [];
 let observer: MutationObserver | null = null;
 let drawnRows = new Set<Element>();
@@ -144,7 +135,6 @@ function Scoped({ children }: { children: React.ReactNode }) {
   </MeasuredWidget>;
 }
 
-/** The main thread's time for one frame: from its callback to the message it posts, which runs once the frame is drawn. */
 function timedFrame(step: () => void): Promise<number> {
   return new Promise(resolve => native(() => {
     const begun = performance.now();
@@ -171,7 +161,6 @@ export const fixture = {
       <LandBattlesWidget {...{ widget, runtime, active: true, onDiagnostics() {}, setOption() {} } as unknown as WidgetProps} /></Scoped></div>);
     await settle(60);
   },
-  /** Plays `frames` frames of `hours` each: every frame's main-thread ms, and the widget's commits while playing. */
   async play(frames: number, hours: number) {
     clock.playing = true; clock.anchor();
     await settle(4);

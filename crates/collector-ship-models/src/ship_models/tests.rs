@@ -100,8 +100,6 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
             else {
                 panic!("complete fixture")
             };
-            // Legacy absence is distinct from all current counter fields
-            // being present and zero; the native fixture has zero counters.
             rows[1].counter = None;
         }
         let force = change == 24;
@@ -160,7 +158,6 @@ fn source_faults_capacity_and_empty_primary_census_remain_explicit() {
         unread_rows: 3,
     });
     capture.capture_owned(&memory, CaptureContext::new(0));
-    // Seed storage grows; the unreadable source refuses by name.
     assert_eq!(
         capture.outcomes(),
         [Outcome::Unavailable {
@@ -253,7 +250,6 @@ fn owned_seed_handoff_preserves_order_demand_and_clears_callback_pointers() {
     capture.reset();
     assert_eq!(capture.seeds[0].pointer, 0);
 }
-/// A family capture whose census saw `ships` ships, ids 1..=ships.
 fn census(ships: u64, rows: usize) -> Captured {
     let mut capture = Captured::with_capacities(&Capacities {
         rows,
@@ -276,7 +272,6 @@ fn census(ships: u64, rows: usize) -> Captured {
     capture
 }
 
-/// A successful, fully populated model row derived from its census seed.
 fn model(seed: &Seed) -> cship::ModelRow {
     let id = seed.row.id;
     let mut row = cship::ModelRow {
@@ -300,7 +295,6 @@ fn model(seed: &Seed) -> cship::ModelRow {
     row
 }
 
-/// Run the real capture of one range; ship `fail` (if any) fails to read.
 fn run(capture: &mut Captured, fail: Option<u64>) -> CaptureReport {
     capture.capture_with(
         |this, seed| {
@@ -313,7 +307,6 @@ fn run(capture: &mut Captured, fail: Option<u64>) -> CaptureReport {
     )
 }
 
-/// The table of `ships` ships captured unsplit or in `parts`.
 fn captured(ships: u64, parts: usize, fail: Option<u64>) -> (Outcome, [TableView; N]) {
     let mut capture = census(ships, (ships as usize).max(1));
     assert_eq!(capture.split_details(parts), parts);
@@ -338,8 +331,6 @@ fn parts_follow_the_live_ship_count_and_every_range_fits() {
     assert_eq!(parts_for(513), 2);
     assert_eq!(parts_for(2_000), 4);
     assert_eq!(parts_for(100_000), MAX_PARTS);
-    // Every range of every census the family holds fits a part, on any
-    // pool: the part count does not depend on the workers.
     for rows in [
         1_usize, 511, 512, 513, 2_048, 2_049, 3_072, 3_073, 4_096, 10_000, 16_384,
     ] {
@@ -365,7 +356,6 @@ fn split_outcomes_and_rows_equal_the_unsplit_walk_at_every_boundary() {
             }
         );
         assert_eq!(captured(ships, parts, None), unsplit, "{ships} ships");
-        // A failure in any range is the failure the unsplit walk reports.
         for fail in [1, ships / 2 + 1, ships] {
             assert_eq!(
                 captured(ships, parts, Some(fail)),
@@ -374,7 +364,6 @@ fn split_outcomes_and_rows_equal_the_unsplit_walk_at_every_boundary() {
             );
         }
     }
-    // Rows are byte-identical, in census order.
     let [TableView::Complete(replay_data::rows::TableRows::ShipModels(rows))] =
         captured(2049, 4, None).1
     else {
@@ -392,7 +381,6 @@ fn families_of_ten_thousand_ships_grow_their_parts_and_never_truncate() {
         modifiers: SnapshotCapacity::default(),
     };
     let mut capture = Captured::with_capacities(&capacity);
-    // The first census overflows the family, which grows.
     capture.begin_sources();
     for id in 1..=10_000_u64 {
         capture.visit_source(
@@ -413,7 +401,6 @@ fn families_of_ten_thousand_ships_grow_their_parts_and_never_truncate() {
             .iter()
             .all(|part| part.rows.rows.len() >= 2_500)
     );
-    // The next hour's census splits into four complete ranges.
     let mut next = census(10_000, capacity.rows);
     std::mem::swap(&mut next.extra, &mut capture.extra);
     assert_eq!(next.split_details(parts_for(10_000)), 4);
@@ -526,7 +513,6 @@ fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
         (i64::MIN, i64::MAX, u64::MAX)
     );
     assert_eq!(counter.anti_air_base, i64::MIN + 1);
-    // The port strike-force readiness operands are no longer read.
     assert_eq!(
         rows[0].strike,
         replay_data::rows::Recorded::Value(replay_data::rows::Retired)

@@ -1,18 +1,3 @@
-//! The resources map mode's inputs and every trade-route line
-//! ([`engine_resources::resource_map`]): ResourceOrigins, ResourceRights, CountryOilFactors,
-//! StateTemporaryResources and ConvoyClients are read every hour, as the game refreshes
-//! origins and convoy efficiency in its hourly trade task. TradeRoutes is the sliced
-//! `trade_routes` family (owner: the country holding each route) with no slice: each hour
-//! reads an owner new to the census or whose set of referenced routes changed, and every
-//! owner one of whose routes a hooked route writer touched since the previous hour
-//! ([`crate::raid_changes`]: the state-to-state and supply port-to-port updates,
-//! origin refresh's inline kind clear, route construction, country resources
-//! construction and the save loader); every other owner's routes carry. An hour whose
-//! take of the marks does not certify the previous hour's read reads every
-//! owner. A changed census marks its owner too: membership and route-storage
-//! changes legitimately change its rows. StrategicRegionWeights is static: the game
-//! writes it only while loading the map, so it is read on full hours. Read in the
-//! RaidState job, after the raid state inputs.
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -35,14 +20,11 @@ pub const TABLES: [TableId; N] = [
     TableId::StrategicRegionWeights,
 ];
 
-/// Every buffer grows on the worker from what the walk finds.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities;
 
 collector_primitives::capacity_max!(Capacities;);
 
-/// The family's owner store, loaned for one capture, and the hook marks that join each
-/// hour's read.
 pub struct Stores<'a> {
     pub routes: &'a mut SliceFingerprints,
     pub changes: &'a dyn crate::raid_changes::Changes,
@@ -59,16 +41,13 @@ pub struct Captured {
     weights: Vec<native::RegionWeightRow>,
     pairs: Vec<(u32, u32)>,
     descriptors: Vec<cstrategic_resource::Row>,
-    /// Every route a client referenced this hour, in row key order.
     census: Vec<(RouteKey, usize, bool)>,
     routes: Vec<native::RouteRow>,
     path: Vec<u32>,
     outcomes: [Outcome; N],
-    /// The countries whose TradeRoutes rows this hour's read replaced.
     selection: SliceSelection,
 }
 
-/// The row key order of TradeRoutes: country, class, other.
 fn route_order(key: &RouteKey) -> (u32, u8, u32) {
     (key.country, key.class, key.other)
 }
@@ -123,14 +102,12 @@ impl Captured {
             + self.routes.capacity() * size_of::<native::RouteRow>()
             + self.path.capacity() * size_of::<u32>()
     }
-    /// Buffers grow on the worker during the read.
     pub fn grow(&mut self, _capacity: &mut Capacities) {}
 
     pub fn reset_selection(&mut self, hour: i32, force_full: bool) {
         self.selection.reset_hooked(hour, force_full);
     }
 
-    /// The countries whose TradeRoutes rows this frame's read replaced.
     pub fn route_selection(&self) -> &SliceSelection {
         &self.selection
     }
@@ -139,7 +116,6 @@ impl Captured {
         self.outcomes
     }
 
-    /// Worker-only: every buffer grows from what the walks find.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -260,8 +236,6 @@ impl Captured {
         ticks
     }
 
-    /// Origins and clients retain acquisition order for native route and
-    /// regional demand. These independent tables reach only owned rows.
     pub fn settle_owned(&mut self) {
         if !self.pending_owned {
             return;
@@ -280,7 +254,6 @@ impl Captured {
         self.pending_owned = false;
     }
 
-    /// The route census, its owners' selection and the selected owners' routes.
     fn routes(
         &mut self,
         memory: &impl Memory,
@@ -289,7 +262,6 @@ impl Captured {
         mut stores: Option<Stores<'_>>,
     ) -> Outcome {
         let census = self.census();
-        // The link ids the country table can hold, sizing the route mark set.
         let mut ids = None;
         if let Some(stores) = stores.as_mut() {
             let reader = ccountry::Reader::new(memory, base, game_state).ok();
@@ -333,9 +305,6 @@ impl Captured {
         outcome
     }
 
-    /// Mark changed route membership or storage from the census, then every owner
-    /// a hooked writer touched. `resolve` names a mark's raw link's country;
-    /// a mark it cannot name certifies nothing.
     fn select(
         &mut self,
         stores: &mut Stores<'_>,
@@ -343,8 +312,6 @@ impl Captured {
         resolve: &dyn Fn(u32) -> Option<u32>,
     ) {
         use crate::raid_changes::Family;
-        // Each owner's print is its set of referenced routes and where they live, so a
-        // route newly referenced, dropped or rebuilt elsewhere reads its owner.
         let mut start = 0;
         while complete && start < self.census.len() {
             let owner = self.census[start].0.country;
@@ -375,8 +342,6 @@ impl Captured {
         selection.certify(stores.routes, epoch.filter(|_| resolved));
     }
 
-    /// Every route a client referenced this hour, in TradeRoutes' key order. A key naming
-    /// two routes refuses the census.
     fn census(&mut self) -> Result<(), &'static str> {
         let (Outcome::Rows { len: origins }, Outcome::Rows { len: clients }) =
             (self.outcomes[0], self.outcomes[4])
@@ -386,7 +351,6 @@ impl Captured {
         self.census.clear();
         engine_allocation::reserve(&mut self.census, origins + clients)
             .map_err(|_| "trade route census allocation failed")?;
-        // Own and rights-holder origins alike: each carries its route to its list's owner.
         for origin in &self.origins[..origins] {
             let key = RouteKey {
                 class: native::ORIGIN_ROUTE_CLASS,
@@ -416,7 +380,6 @@ impl Captured {
         Ok(())
     }
 
-    /// Record the hour's counts.
     fn record_counts(&self, ids: Option<usize>) {
         use crate::raid_changes::{Counts, Family, record};
         record(
@@ -534,7 +497,6 @@ impl Captured {
     }
 }
 
-/// Sort a complete read's rows by their table key; two rows with one key refuse it.
 fn sorted<T, K: Ord>(rows: &mut [T], outcome: Outcome, key: impl Fn(&T) -> K) -> Outcome {
     let Some(read) = rows.get_mut(..outcome.len()) else {
         return Outcome::Unavailable {

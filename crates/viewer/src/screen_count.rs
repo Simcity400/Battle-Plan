@@ -1,53 +1,28 @@
-//! What the screen shows, counted: one frame's picture against the frame before it.
-//!
-//! A frame rate says how often a frame was finished, not whether it was a new picture of the
-//! replay. [`Compare`] counts that from the two targets the map already keeps: the resolved world
-//! ([`Targets::scene_texture`]: the map's layers, the actors, the weather and the water, before the
-//! grade) and the output the window presents ([`Targets::output`]: the graded world with the
-//! overlay's plates, icons, labels and text over it). A frame whose output differs is a new
-//! picture; one whose output differs while its world does not is what is drawn over it.
-//!
-//! One compute pass a target writes its counts into a slot of one buffer, so a frame never waits
-//! for a comparison. The playback harness keeps a slot a counted frame and reads them all when its
-//! run ends ([`crate::app::playback_cost::pictures`]); the window's readout keeps one slot and
-//! reads it back without waiting ([`Readout`]).
 
 use eframe::wgpu;
 use std::io;
 use viewer_foundation::map::gpu_contract::Targets;
 
-/// The counts one comparison writes: texels differing at all, those differing by at least one,
-/// two, eight and thirty-two steps of 1/255, the largest difference, the sum of the differences,
-/// the rectangle the differing texels lie in, and then one count a tile of [`TILES`].
 pub(crate) const COUNTS: usize = 11 + TILES;
 
-/// The grid a comparison counts the differences a watcher could see by: a change in a handful of
-/// tiles is a thing that moved, a change in all of them is the water, the weather or the light.
 pub(crate) const TILES: usize = 16 * 8;
 
-/// The two pictures a frame is counted by.
 pub(crate) const PARTS: [&str; 2] = ["world", "screen"];
 
-/// Texels differing by two steps of 255 or more above which a frame's change is one a watcher
-/// could see rather than a flicker.
 const SEEN: u32 = 64;
 
 pub(crate) struct Compare {
-    /// The world and the output as the frame compared before them left them.
     kept: [wgpu::Texture; 2],
     pipeline: wgpu::ComputePipeline,
     counts: wgpu::Buffer,
     groups: [wgpu::BindGroup; 2],
-    /// One slot's bytes in `counts`: the device's own storage-binding alignment.
     stride: u64,
     slots: usize,
-    /// The frame compared last, whose pictures the kept textures hold.
     last: Option<u64>,
     sizes: [[u32; 2]; 2],
 }
 
 impl Compare {
-    /// Room for `slots` comparisons, and the first frame's pictures kept when it is given.
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -124,7 +99,6 @@ impl Compare {
         Ok(compare)
     }
 
-    /// A slot's starting values: zero, but for the rectangle's lower corner, reduced by minimum.
     fn start(&self, queue: &wgpu::Queue, slot: usize) {
         let mut start = vec![0u8; COUNTS * 4];
         start[7 * 4..9 * 4].fill(0xff);
@@ -141,9 +115,6 @@ impl Compare {
         self.sizes
     }
 
-    /// This frame's pictures against the frame given before it, into `slot`, and kept for the
-    /// frame after it. False when there was no frame before it (the first of a window) or when
-    /// the targets changed size, which starts the comparison again.
     pub(crate) fn take(
         &mut self,
         device: &wgpu::Device,
@@ -185,8 +156,6 @@ impl Compare {
         against
     }
 
-    /// A copy of the first `slots` slots into a buffer this returns mapped, waiting for the
-    /// comparisons to run. The harness reads every slot once, when its run ends.
     pub(crate) fn read(
         &self,
         device: &wgpu::Device,
@@ -255,7 +224,6 @@ fn texel_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// A texture of the same size and format, which a compared frame's picture is copied into.
 fn kept_like(device: &wgpu::Device, like: &wgpu::Texture, label: &str) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -301,12 +269,6 @@ fn group(
     })
 }
 
-/// The window's own readout (`BATTLE_PLAN_VIEWER_SHOW_PICTURES`), in the map's diagnostics strip: the
-/// frames this map drew and presented a second, and how many of them were a new picture. Off
-/// unless the switch is set, when it costs nothing at all.
-///
-/// The owner's two-minute check on a 240 Hz display: set the switch, open a recording, turn the
-/// map's diagnostics on, and read the two rates while it plays and while the camera moves.
 pub(crate) mod readout {
     use super::{Compare, SEEN};
     use eframe::wgpu;
@@ -322,8 +284,6 @@ pub(crate) mod readout {
         *ON
     }
 
-    /// Frames this process has presented, counted where the swap chain takes them
-    /// ([`crate::renderer_host`]), so the readout's rate is presents and not draws.
     static PRESENTED: AtomicU64 = AtomicU64::new(0);
 
     pub(crate) fn presented() {
@@ -332,7 +292,6 @@ pub(crate) mod readout {
         }
     }
 
-    /// What one frame's comparison said.
     #[derive(Clone, Copy)]
     struct Frame {
         at: Instant,
@@ -343,21 +302,16 @@ pub(crate) mod readout {
 
     struct Readout {
         compare: Compare,
-        /// The slot's copy, asked for without waiting, and whether the map callback has fired.
         read: Option<(wgpu::Buffer, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
         frames: Vec<Frame>,
         index: u64,
-        /// The comparison asked for but not read yet.
         waiting: bool,
     }
 
     thread_local! {
-        /// One readout a map: each map draws on its own thread.
         static READOUT: RefCell<Option<Readout>> = const { RefCell::new(None) };
     }
 
-    /// This frame's picture against the frame before it, and last frame's counts taken if they
-    /// have arrived. Costs nothing while the switch is unset.
     pub(crate) fn count(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -396,7 +350,6 @@ pub(crate) mod readout {
     }
 
     impl Readout {
-        /// The comparison's counts asked for, to be collected on a later frame.
         fn ask(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
             let bytes = u64::from(super::COUNTS as u32) * 4;
             let read = device.create_buffer(&wgpu::BufferDescriptor {
@@ -427,7 +380,6 @@ pub(crate) mod readout {
             self.waiting = true;
         }
 
-        /// The counts asked for, if the device has them: never waited for.
         fn collect(&mut self, device: &wgpu::Device) {
             let Some((read, arrived)) = &self.read else {
                 return;
@@ -464,13 +416,10 @@ pub(crate) mod readout {
             let second = Instant::now() - Duration::from_secs(1);
             self.frames.retain(|frame| frame.at >= second);
             self.waiting = false;
-            // The slot is used again, so its counts start from nothing.
             self.compare.last = None;
         }
     }
 
-    /// The readout's lines for the map's diagnostics strip; empty while the switch is unset or
-    /// nothing has been counted yet.
     pub(crate) fn lines() -> Vec<String> {
         if !on() {
             return Vec::new();

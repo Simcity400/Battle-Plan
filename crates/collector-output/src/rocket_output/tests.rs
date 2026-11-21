@@ -168,8 +168,6 @@ fn failed_spending_never_invalidates_known_delivery_and_fractional_delivery_is_u
         (3, 2, 1)
     );
     assert!(find(&totals, 0, 0).units_exact);
-    // A fresh DELIVERY design can succeed when the earlier spending read could
-    // not authenticate it; only a proved conflicting entry CID is a mismatch.
     let no_design = RocketTick {
         country: 5002,
         failure: RocketFailure::Design,
@@ -371,7 +369,6 @@ fn checked_amount_overflow_stays_unknown_and_does_not_poison_another_country() {
     assert!(find(&totals, 0, 0).units_exact);
     sample(&mut totals, 172, 4, &[spending(5001, DESIGN, -1, 0)]);
     assert!(!find(&totals, 5001, DESIGN).exact);
-    // Counter overflow cannot masquerade as a complete prefix.
     totals.rows.get_mut(&(0, 0)).unwrap().ticks = u64::MAX;
     sample(&mut totals, 196, 5, &[spending(5002, DESIGN, 1, 0)]);
     assert_eq!(

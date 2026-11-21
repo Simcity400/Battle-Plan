@@ -1,9 +1,3 @@
-//! Land-counter action frames from recorded simulation state.
-//!
-//! Actions classify movement rather than battle-plan orders. The representative is
-//! classified before fully visible division members are compared. Frames are code + 1;
-//! own code 1 hides the child and mixed code 0 shows the first frame. The sprite and
-//! placement remain authored GUI facts.
 
 use crate::map::unit_rules::idle;
 use std::{
@@ -22,12 +16,10 @@ use crate::map::{directed_wars::Owner, tables::rows};
 
 pub type Action = Result<u8, &'static str>;
 
-/// Missing current-hour strategic-redeployment modifier operands.
 pub const CURRENT_RAIL_MODIFIERS: &str = "current strategic-redeployment modifier operands";
 const STRATEGIC_NOT_RECORDED: &str = "DivisionMovement.strategic_action not recorded";
 pub const STRATEGIC_LAYOUT: &str = "division strategic action fixed layout";
 
-/// Division movement action. Reached branches alone demand their operands.
 pub fn action_code(
     movement: &DivisionMovementRow,
     any_attacking: Option<bool>,
@@ -36,7 +28,6 @@ pub fn action_code(
 ) -> Action {
     if (movement.path_total as i32) <= 0 {
         return if idle(movement.path_total, movement.combat_count) {
-            // Idle land units use action code one.
             Ok(1)
         } else {
             any_attacking
@@ -73,7 +64,6 @@ pub fn action_code(
     )
 }
 
-/// Route action after target, retreat, redeployment and transfer-combat checks.
 pub fn route_tail(enemy: Result<bool, &'static str>, transfer: bool, combats: u32) -> Action {
     Ok(match (enemy?, transfer) {
         (true, true) => 8,
@@ -84,8 +74,6 @@ pub fn route_tail(enemy: Result<bool, &'static str>, transfer: bool, combats: u3
     })
 }
 
-/// ordinary-route destination controller, raw identity first,
-/// then canonical country identity and active war.
 pub struct DestinationHostility<'a> {
     frame: &'a DecodedFrame,
     controllers: BTreeMap<u32, u32>,
@@ -133,8 +121,6 @@ impl<'a> DestinationHostility<'a> {
     }
 }
 
-/// [`DestinationHostility::destination_enemy`] from a province's controller and whether a
-/// receiver (raw) is at war with a target (raw).
 pub fn destination_enemy_by(
     path: &[u32],
     total: u32,
@@ -142,7 +128,6 @@ pub fn destination_enemy_by(
     controller_of: impl Fn(u32) -> Option<u32>,
     at_war: impl FnOnce(u32, u32) -> Result<bool, &'static str>,
 ) -> Result<bool, &'static str> {
-    // Test the signed ordinary count before looking up its tail.
     if (total as i32) <= 0 {
         return Ok(false);
     }
@@ -152,7 +137,6 @@ pub fn destination_enemy_by(
     let last = *path
         .last()
         .ok_or("last ordinary-route province hostility")?;
-    // Reject signed nonpositive province IDs.
     if (last as i32) <= 0 {
         return Ok(false);
     }
@@ -164,14 +148,9 @@ pub fn destination_enemy_by(
     if controller == owner {
         return Ok(false);
     }
-    // The game receives the destination controller and
-    // targets the unit's raw logical owner. Reverse truth is no evidence.
     at_war(controller, owner)
 }
 
-/// Unit and combat membership links are maintained in both directions.
-/// The hourly inverse census proves transfer combat membership without another
-/// recorded field. A partial census proves positive membership only.
 struct TransferCombatUnits {
     units: BTreeSet<u64>,
     complete: bool,
@@ -213,13 +192,10 @@ impl TransferCombatUnits {
     }
 }
 
-/// Whether a division is in a naval transfer a naval combat names: proved when named, disproved
-/// only by a whole census.
 pub fn transfer_membership(named: bool, complete: bool) -> Option<bool> {
     if named { Some(true) } else { complete.then_some(false) }
 }
 
-/// One hour's class-0 actions for the viewing country's roster, independent of camera.
 #[derive(Clone, Default)]
 pub struct Actions {
     by_division: BTreeMap<u64, Action>,
@@ -300,8 +276,6 @@ impl Actions {
     }
 }
 
-/// The action of one division from its movement row: its standing attack, its transfer-combat
-/// membership and, only when the route's tail decides, whether that tail is hostile.
 pub fn division_action(
     movement: &DivisionMovementRow,
     standing: Option<bool>,
@@ -329,9 +303,6 @@ pub fn division_action(
     )
 }
 
-/// Scan unit combat references and ordered attacker countries, preserving early
-/// return. Naval details supply their side's ordered primary list. This path
-/// does not inspect combat-side unit membership.
 fn recorded_standing(
     frame: &DecodedFrame,
     packet: &replay_data::rows::UnitCombatReferences,
@@ -344,7 +315,6 @@ fn recorded_standing(
             let side = sides.rows().iter().find(|side| side.combat == combat)?;
             Some(side.attacker_primary.clone())
         }
-        // Naval details carry this same ordered primary country list.
         _ => {
             let naval = rows::<tables::NavalCombatDetails>(frame).ok()?;
             let row = naval.rows().iter().find(|row| row.combat == combat)?;
@@ -353,8 +323,6 @@ fn recorded_standing(
     })
 }
 
-/// [`recorded_standing`] with `countries` giving a referenced combat's ordered attacker
-/// countries by its kind (0 and 1 land, 2 naval) and id.
 pub fn recorded_standing_by(
     packet: &replay_data::rows::UnitCombatReferences,
     owner: u32,
@@ -378,8 +346,6 @@ pub fn recorded_standing_by(
     Some(false)
 }
 
-/// The fallback when a division's combat references are not recorded: its combats from
-/// combat-side membership (`references`) and each one's attacker countries.
 pub fn membership_standing(
     owner: u32,
     references: &BTreeSet<u64>,
@@ -412,10 +378,6 @@ pub fn membership_standing(
     (!unknown && combats_complete && references.len() == combat_count as usize).then_some(false)
 }
 
-/// Combat-side membership and unit combat references are added and removed
-/// together. Land combats and their attacker countries can prove an attack.
-/// A negative requires coverage of every reference; naval or missing references
-/// remain a named gap.
 fn standing_attacks(
     frame: &DecodedFrame,
     movements: &[DivisionMovementRow],
@@ -489,9 +451,6 @@ fn standing_attacks(
     Ok(result)
 }
 
-/// Whether the recording's strategic-redeployment fixed layout validates against its recorded
-/// definitions, however they are read ([`replay_derive::fixed_layout::validate_definitions`]):
-/// the actions 6 and 11 are refused by name otherwise.
 pub fn strategic_layout_of(
     whole: Result<(), String>,
     token: impl Fn(u32) -> Option<u32>,
@@ -500,7 +459,6 @@ pub fn strategic_layout_of(
     replay_derive::fixed_layout::validate_definitions(replay_derive::fixed_layout::STRATEGIC_ACTION, whole, token, spells).is_ok()
 }
 
-/// A fixed-key failure affects only the two strategic-redeployment actions.
 fn admit_strategic_layout(action: Action, admitted: bool) -> Action {
     if !admitted && matches!(action, Ok(6 | 11)) {
         Err(STRATEGIC_LAYOUT)
@@ -525,9 +483,6 @@ fn strategic_unknown(reason: &str) -> bool {
         .any(|failure| failure.reason() == reason)
 }
 
-/// Representative unconditional, then fully visible members only. Different
-/// known actions prove mixed 0. A strategic gap permits only 6/11,
-/// so a participating known action outside that pair also proves mixed 0.
 pub fn aggregate_actions(
     representative: Action,
     members: impl IntoIterator<Item = (bool, Action)>,
@@ -556,7 +511,6 @@ pub fn aggregate_actions(
     unknown.map_or_else(|| Ok(known.unwrap_or(0)), Err)
 }
 
-/// Zero-based frame of the authored `onmap_action_icon` child.
 pub fn action_frame(code: u8, own: bool) -> Option<u32> {
     (own && code != 1).then_some(u32::from(code))
 }
@@ -660,7 +614,6 @@ mod tests {
         let hostility = DestinationHostility::read(&frame, &links).unwrap();
         assert_eq!(hostility.destination_enemy(&[20], 1, Some(100)), Ok(false));
         assert_eq!(hostility.destination_enemy(&[], u32::MAX, None), Ok(false));
-        // Reverse true cannot supply an absent controller->owner cell.
         directed_fixture(&mut frame, &[(100, 1), (200, 2)], &[(100, 2, true)]);
         let hostility = DestinationHostility::read(&frame, &links).unwrap();
         assert_eq!(
@@ -974,8 +927,6 @@ mod tests {
             division: 7,
             combat_count: 2,
             combat_role: 2,
-            // This exercises historical inverse proofs. A current refused packet
-            // must not fall back to LandCombats membership.
             combat_references: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
         };
@@ -1116,7 +1067,7 @@ mod tests {
         if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
             packet.entries.reverse();
         }
-        assert_eq!(check(&frame, &movement), None); // Reached missing naval details.
+        assert_eq!(check(&frame, &movement), None);
         movement.combat_references = Recorded::Value(None);
         set(
             &mut frame,
@@ -1127,7 +1078,7 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        assert_eq!(check(&frame, &movement), None); // Inverse truth cannot repair refusal.
+        assert_eq!(check(&frame, &movement), None);
         movement.combat_references = Recorded::Value(Some(packet(vec![
             UnitCombatReference {
                 combat: 40,
@@ -1149,7 +1100,7 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        assert_eq!(check(&frame, &movement), Some(false)); // Repeats do not become a set.
+        assert_eq!(check(&frame, &movement), Some(false));
     }
 
     #[test]
@@ -1200,8 +1151,6 @@ mod tests {
             );
             assert_eq!(check(&frame, owner, &links), Ok(expected));
         }
-        // Duration and task-force membership do not affect this action.
-        // Raw equality returns before resolving aliases or any later country.
         naval.sides[0].summary.countries = vec![100, 999];
         set(
             &mut frame,
@@ -1274,8 +1223,6 @@ mod tests {
         if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
             packet.entries.pop();
         }
-        // A present row's complete primary list proves a negative even if
-        // another combat did not fit. Ordered repeated references still count.
         assert_eq!(check(&frame, &movement), Some(false));
         movement.combat_count = 3;
         if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
@@ -1291,7 +1238,7 @@ mod tests {
         if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
             packet.entries.reverse();
         }
-        assert_eq!(check(&frame, &movement), Some(true)); // Land hit precedes naval failure.
+        assert_eq!(check(&frame, &movement), Some(true));
         let mut stale = frame.clone();
         stale.hour += 1;
         assert_eq!(check(&stale, &movement), None);

@@ -1,5 +1,3 @@
-//! The recorder's background work budget: bounded workers, gated by the game's hourly tick
-//! while it plays, and budgeted file reads and writes.
 
 use std::{
     collections::VecDeque,
@@ -15,7 +13,6 @@ type Gate = dyn Fn() + Send + Sync;
 
 struct Budget {
     progress: Mutex<Option<crate::progress::Progress>>,
-    // Playing limits remain active even after catch-up leaves OS background mode.
     background: std::sync::Arc<std::sync::atomic::AtomicBool>,
     io: Mutex<std::time::Instant>,
     catch_up: std::sync::atomic::AtomicBool,
@@ -28,7 +25,6 @@ struct Budget {
     promoted: Mutex<Option<std::time::Instant>>,
     timings: Mutex<[Option<std::time::Duration>; 5]>,
     io_bytes: std::sync::atomic::AtomicU64,
-    /// Waits out the game's hourly tick while playing limits apply.
     gate: std::sync::OnceLock<std::sync::Arc<Gate>>,
 }
 
@@ -36,7 +32,6 @@ thread_local! {
     static BUDGET: std::cell::RefCell<Option<std::sync::Arc<Budget>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Recorder-owned persistent workers: four active CPU credits and 32 MiB/s while playing.
 pub struct Packing {
     pool: std::sync::Arc<rayon::ThreadPool>,
     budget: std::sync::Arc<Budget>,
@@ -138,7 +133,6 @@ impl Packing {
         pool.in_place_scope(work)
     }
 
-    /// Promote these workers in place, at their next table, section or frame boundary.
     pub fn promote(&self) {
         let mut promoted = lock(&self.budget.promoted);
         if promoted.is_none() {
@@ -149,18 +143,14 @@ impl Packing {
         self.pool.spawn_broadcast(|_| refresh());
     }
 
-    /// Every packing thread calls `gate` at its item boundaries while playing limits apply:
-    /// the recorder waits out the game's hourly tick there.
     pub fn set_gate(&self, gate: impl Fn() + Send + Sync + 'static) {
         let _ = self.budget.gate.set(std::sync::Arc::new(gate));
     }
 
-    /// The coordinator's own wait at its loop boundaries; nothing once promoted.
     pub fn wait_for_game(&self) {
         wait_for_game(&self.budget);
     }
 
-    /// Leave OS background mode while catching up, retaining the playing CPU and logical I/O limits.
     pub fn catch_up(&self, enabled: bool) {
         if self.budget.catch_up.swap(enabled, Ordering::AcqRel) != enabled {
             self.pool.spawn_broadcast(|_| refresh());
@@ -168,7 +158,6 @@ impl Packing {
         refresh();
     }
 
-    /// Busy operations refresh priority themselves if the coordinator cannot sample its backlog.
     pub fn watch_progress(&self, active: bool) {
         let due = if active {
             (self.budget.started.elapsed() + std::time::Duration::from_secs(10))
@@ -243,7 +232,6 @@ impl Packing {
         self.budget.io_bytes.load(Ordering::Relaxed)
     }
 
-    /// Sum of limiter waits on all packing threads, not coordinator wall time.
     pub fn io_wait(&self) -> std::time::Duration {
         std::time::Duration::from_nanos(self.budget.io_wait_ns.load(Ordering::Relaxed))
     }
@@ -253,7 +241,6 @@ impl Packing {
     }
 }
 
-/// Charge completed file I/O once, including short operations, against the current packing job.
 pub struct Budgeted<T>(T);
 
 impl<T> Budgeted<T> {
@@ -315,7 +302,6 @@ impl<T: io::Seek> io::Seek for Budgeted<T> {
     }
 }
 
-/// Exclusive coordinator wall time, reported only for phases actually entered after Stop.
 #[derive(Clone, Copy)]
 pub enum Phase {
     Drain,
@@ -372,7 +358,6 @@ pub(super) fn refresh() {
     });
 }
 
-/// A packing thread waits for the game between the bounded chunks of a long step.
 pub(crate) fn wait_here() {
     BUDGET.with_borrow(|budget| {
         if let Some(budget) = budget {
@@ -381,7 +366,6 @@ pub(crate) fn wait_here() {
     });
 }
 
-/// Playing limits apply until promotion, catch-up included, as for the I/O limit.
 fn wait_for_game(budget: &Budget) {
     if budget.background.load(Ordering::Acquire)
         && let Some(gate) = budget.gate.get()
@@ -392,13 +376,10 @@ fn wait_for_game(budget: &Budget) {
 
 #[cfg(test)]
 thread_local! {
-    /// Tests pack this thread's recordings on this many threads.
     pub(crate) static WORKERS: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// The threads a pack keeps busy, the calling thread included: half the
-/// machine's logical CPUs, at least one.
 pub(crate) fn workers() -> usize {
     #[cfg(test)]
     if let Some(workers) = WORKERS.get() {
@@ -418,8 +399,6 @@ pub(crate) fn workers() -> usize {
     (thread::available_parallelism().map_or(1, usize::from) / 2).max(1)
 }
 
-/// The threads a pack may keep busy, and how many are: the calling thread,
-/// the workers packing a block, and the helpers free ones are lent to.
 pub(crate) struct Cores {
     limit: usize,
     busy: Mutex<usize>,
@@ -427,7 +406,6 @@ pub(crate) struct Cores {
 }
 
 impl Cores {
-    /// `limit` threads, the calling one busy.
     pub(crate) fn new(limit: usize) -> Self {
         Self {
             limit: limit.max(1),
@@ -436,7 +414,6 @@ impl Cores {
         }
     }
 
-    /// Up to `wanted` more busy threads, as many as are free now.
     fn take(&self, wanted: usize) -> usize {
         let mut busy = lock(&self.busy);
         let taken = self.limit.saturating_sub(*busy).min(wanted);
@@ -450,7 +427,6 @@ impl Cores {
     }
 }
 
-/// Cores taken for helpers, given back however their work ends.
 struct Lent<'a>(&'a Cores, usize);
 
 impl Drop for Lent<'_> {
@@ -463,9 +439,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// `work` over `items` with the result `items.into_iter().map(work).collect()`
-/// has, the first error or panic in item order, on this thread and on as many
-/// helper threads as `cores` has free.
 pub(crate) fn each<T: Send, U: Send>(
     cores: &Cores,
     items: Vec<T>,
@@ -521,7 +494,6 @@ pub(crate) fn each<T: Send, U: Send>(
             for _ in 0..helpers {
                 let progress = progress.clone();
                 let priority = job_priority::JobPriority::current();
-                // A helper the OS refuses leaves its items to the others.
                 let _ = thread::Builder::new().spawn_scoped(scope, move || {
                     let _progress = progress.map(crate::progress::Progress::install);
                     priority.enter(job_priority::Level::Normal);
@@ -553,7 +525,6 @@ struct Lane<T, U> {
     closed: bool,
 }
 
-/// Closes a lane however its reader stops, so its workers end.
 struct Closing<'a, T, U>(&'a Mutex<Lane<T, U>>, &'a Condvar);
 
 impl<T, U> Drop for Closing<'_, T, U> {
@@ -565,7 +536,6 @@ impl<T, U> Drop for Closing<'_, T, U> {
     }
 }
 
-/// `take(work(next()))` in item order, as a loop would, with `work` on up to `threads` threads.
 pub(crate) fn ordered<T: Send, U: Send>(
     threads: usize,
     mut next: impl FnMut() -> Option<T>,
@@ -585,7 +555,6 @@ pub(crate) fn ordered<T: Send, U: Send>(
         return inline(&mut next, &mut take);
     }
     if Packing::active() {
-        // Pool tasks finish a batch; none waits for its coordinator to feed or accept work.
         let cores = Cores::new(threads);
         let ahead = helpers.saturating_mul(2);
         loop {

@@ -1,4 +1,3 @@
-//! Border-conflict outcome tail after common marker text.
 use dashboard_text::{
     effect_description::{self, Context as EffectContext},
     scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText},
@@ -20,7 +19,6 @@ use {
     viewer_foundation::{table_access::rows, tooltip_text::Tooltip},
 };
 
-// Localisation keys and substitution names for border conflicts.
 tooltip_keys! {
     BORDER_CONFLICT_IF_YOU_WIN = "BORDER_CONFLICT_IF_YOU_WIN",
     BORDER_CONFLICT_IF_YOU_LOSE = "BORDER_CONFLICT_IF_YOU_LOSE",
@@ -50,8 +48,6 @@ fn tail_side(
     viewer: u32,
     links: &BTreeMap<u32, u32>,
 ) -> Result<Option<usize>, String> {
-    // A win/lose event or a state transfer must enable an outcome.
-    // With neither outcome, no country/content lookup can add text.
     if border.transfer_state == 0
         && border
             .sides
@@ -75,7 +71,6 @@ fn newline(body: &mut String) {
 }
 
 fn country_marker(name: &str, flag: &str, transfer: bool) -> String {
-    // the game brackets the transfer target; the enemy heading uses a space.
     if transfer {
         format!("{name} ({INLINE_FLAG}{flag})")
     } else {
@@ -83,9 +78,6 @@ fn country_marker(name: &str, flag: &str, transfer: bool) -> String {
     }
 }
 
-/// ROOT is a fresh country scope; FROM is this side's state, whose FROM is
-/// a deep copy of the opposing country/state context. PREV stays itself.
-/// the game builds copies before linking the original state scopes.
 fn scopes(own: u32, own_state: u32, enemy: u32, enemy_state: u32) -> EventScopes {
     let mut values = vec![
         EventScope::of(EventObject::Country(own)),
@@ -128,8 +120,6 @@ fn event_description(
         out.refuse(why.clone());
         return out;
     }
-    // Lose skips enemy win text when the event has more than one option;
-    // Win instead emits the enemy lose-event title.
     if enemy_win && event.options.len() >= 2 {
         return out;
     }
@@ -144,10 +134,7 @@ fn event_description(
             newline(&mut out.body);
         }
     }
-    // a zero-option enemy win appends its title after
-    // the immediate body; a single option describes only the effect bodies.
     if event.options.len() >= 2 || (enemy_win && event.options.is_empty()) {
-        // the game chooses a scoped title, not any effect body.
         let title = event.sole_title_key().and_then(|key| match key {
             Some(key) => render(key, scopes),
             None => Ok(String::new()),
@@ -167,7 +154,7 @@ fn event_description(
     out
 }
 
-#[allow(clippy::too_many_arguments)] // Border-conflict context and output.
+#[allow(clippy::too_many_arguments)]
 fn build(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -295,7 +282,6 @@ pub(super) fn append(
             },
         )
     };
-    // All outcomes use one hour and viewing perspective; the event graph picks THIS.
     let scripted = static_content
         .scripted
         .as_ref()

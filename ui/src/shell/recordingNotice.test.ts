@@ -5,7 +5,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { formatDateTime } from '../dashboard/calendar.ts';
 
-// Node strips TypeScript but needs the UI toolchain to compile JSX.
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null } });
 const { BuildNotice, RecordingNotice, PartialRecordingBadge, partialRecordingText } =
   await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx').finally(() => vite.close()) as typeof import('./recordingNotice.tsx');

@@ -1,16 +1,8 @@
-//! Machine-free content identity. Layer order is part of the identity.
-//!
-//! The types and their validation; replay-data's `identity` module writes and
-//! reads them in the recording. Nothing here depends on the recording format,
-//! so the content layer (installed-content) builds on this crate without the replay
-//! chain.
 
 use std::io;
 
 use engine_allocation as allocation;
 
-/// An invalid identity field. Collector error paths cannot allocate even for a
-/// static diagnostic.
 fn invalid(message: &'static str) -> io::Error {
     if allocation::capture_active() {
         io::Error::from(io::ErrorKind::InvalidData)
@@ -21,7 +13,6 @@ fn invalid(message: &'static str) -> io::Error {
 
 pub const COVERAGE_POLICY_VERSION: u32 = 5;
 
-/// Whether a campaign identity can be used unchanged as a UUID file name.
 pub fn is_campaign_uuid(bytes: &[u8]) -> bool {
     bytes.len() == 36
         && bytes.iter().enumerate().all(|(i, byte)| {
@@ -37,16 +28,13 @@ pub fn is_campaign_uuid(bytes: &[u8]) -> bool {
 pub struct Dlc {
     pub id: String,
     pub hash: [u8; 32],
-    /// The descriptor's claim, retained separately from the installed-byte hash.
     pub declared_checksum: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mod {
-    /// Workshop remote_file_id, or a local descriptor's file name.
     pub id: String,
     pub display_name: String,
-    /// Empty when the descriptor declares no version.
     pub declared_version: String,
     pub hash: [u8; 32],
 }
@@ -80,7 +68,6 @@ pub struct Identity {
     pub vanilla_hash: [u8; 32],
     pub dlc: Vec<Dlc>,
     pub mods: Vec<Mod>,
-    /// Readers must understand this policy before claiming byte-equal content.
     pub coverage_policy: u32,
     pub language: String,
     pub recorder_version: String,
@@ -88,15 +75,9 @@ pub struct Identity {
     pub verification: Verification,
 }
 
-/// Which instant of the engine hour a session's frames sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SampleBoundary {
-    /// After the hooked full tick returns and the commands its batch runs behind it
-    /// (straight after the tick where that batch is not observed), so commands of later
-    /// batches in the same hour are absent from hour H.
     AfterHourlyUpdate,
-    /// At the next full tick's entry, before the date increment, so hour H
-    /// includes every command of hour H.
     EndOfHour,
 }
 
@@ -108,7 +89,6 @@ impl SampleBoundary {
         }
     }
 
-    /// The recorded tag.
     pub const fn byte(self) -> u8 {
         match self {
             Self::AfterHourlyUpdate => 0,
@@ -116,7 +96,6 @@ impl SampleBoundary {
         }
     }
 
-    /// The boundary a recorded tag names; unknown tags are refused.
     pub fn from_byte(byte: u8) -> io::Result<Self> {
         match byte {
             0 => Ok(Self::AfterHourlyUpdate),
@@ -132,7 +111,6 @@ impl std::fmt::Display for SampleBoundary {
     }
 }
 
-/// Which tables a recording holds. replay-data's `scope` module lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[derive(replay_spool::Spooled)]
 pub enum CaptureMode {
@@ -178,16 +156,11 @@ impl std::fmt::Display for CaptureMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionStart {
-    /// The session's id (replay-data's `SessionId`).
     pub id: u64,
     pub process_id: u32,
-    /// Process creation FILETIME: 100 ns ticks since 1601-01-01 UTC.
     pub process_start_time: u64,
-    /// QueryPerformanceFrequency ticks per second for this session's clock witnesses.
     pub qpc_frequency: u64,
-    /// The explicitly recorded acquisition boundary.
     pub sample_boundary: SampleBoundary,
-    /// The same for every session of a recording file.
     pub capture_mode: CaptureMode,
     pub identity: Identity,
 }
@@ -245,7 +218,6 @@ impl Roster {
             mods: clone_strings(&self.mods)?,
         })
     }
-    /// The recorded size.
     pub fn encoded_bytes(&self) -> io::Result<usize> {
         self.dlc
             .iter()
@@ -322,7 +294,6 @@ impl Identity {
             verification,
         })
     }
-    /// The recorded size.
     pub fn encoded_bytes(&self) -> io::Result<usize> {
         let mut bytes = 32 + 8 + 32 + 4 + 4 + 4 + 32 + 1;
         for value in [&self.game_version, &self.language, &self.recorder_version] {
@@ -418,8 +389,6 @@ impl Identity {
         Ok(())
     }
 
-    /// Tool builds and verification outcomes belong to each session. They do not
-    /// change the content needed to render sessions together.
     pub fn same_content(&self, other: &Self) -> bool {
         self.game_version == other.game_version
             && self.exe_hash == other.exe_hash
@@ -459,8 +428,6 @@ impl SessionStart {
 pub mod test_fixtures {
     use super::*;
 
-    /// A valid identity with two DLC, a workshop and a local mod, and no
-    /// verification.
     pub fn identity() -> Identity {
         Identity {
             game_version: "Synthetic version 1.2.3".into(),

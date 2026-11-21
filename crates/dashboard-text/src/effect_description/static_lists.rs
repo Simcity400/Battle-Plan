@@ -1,12 +1,6 @@
-//! A content static modifier's raw modifier list at a scale, for hovers that show a
-//! static modifier's effects in proportion to a value (the Operatives map mode's
-//! network effects).
 
 use super::*;
 
-/// `token`'s modifier list without scope expansion, each line after `prefix`, with
-/// every value multiplied by the fixed5 `scale` before formatting: precision two, no
-/// outer colour, every category, no plus or polarity override.
 pub fn scaled_static_modifiers(
     context: &Context<'_, '_>,
     token: &str,

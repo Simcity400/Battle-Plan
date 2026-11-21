@@ -1,0 +1,11 @@
+# Share admitted building records between site, icon and hover lookups
+
+The building layer, naval headquarters anchors and facility hovers use the same admitted authored records. The ordinary loader first requires a registered bucket entity, with positive signed maximum and mesh count and matching registered entity names. The bitmap province must be land and belong to the declared state. Excluded records never affect a site even if their declaration is ambiguous. Floating harbours follow their own admission arm. Preserve authored order and resolve type and spawn names under the content lexer's fold.
+
+Each listed province has an icon while only the state has a site for its air base, rocket site or gun emplacement. Radar places an icon without a state site. The per-state list walks admitted records whose buckets declare the base kind. The air-base position finder chooses a matching record by its own type. Rocket and gun sites match the explicit spawn bucket, and a type with no such binding gives no site match. A generated bucket does not become an explicit spawn point when a type already owns that name. The first listed province is available independently of whether it gives a site position.
+
+The icon queue takes generated buckets in declaration order, followed by explicit bindings, with each bucket queued once. Use the first record in the first queued bucket that the province holds, falling back to its first unit-stack slot when necessary. Uncertain earlier entries retain ordering. A repeated declaration makes the outcome undecided only where it could select a different record. This lets an icon or site stand when every declaration would choose the same position. Report the refused records by name and count. A disagreement in unrelated fields such as an icon frame does not by itself move a record. Authored types may use any name, so the searches use specialization flags and bindings.
+
+The visibility test resolves a positive owner override or the recorded controller at the proper scope. An unresolved owner might be an alias for the viewing country. For foreign buildings requiring detection, read the winning raid-target status. A complete census with no matching status differs from a census without a complete answer.
+
+[Building facts and regression fixtures](../../crates/viewer-foundation/src/map/building_facts.rs)

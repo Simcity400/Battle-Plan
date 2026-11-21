@@ -1,4 +1,3 @@
-//! Worker drain and certified owner updates for market and lend-lease data.
 use collector_observers::market_changes::{self as producer, held};
 use collector_projection::{projection::Projection, table_conversion::unavailable};
 use engine_native::{Memory, walk::Outcome};
@@ -174,7 +173,6 @@ impl Captured {
             .take();
         let Some(changes) = changes else {
             let state = self.refusal.unwrap_or("market conversion already consumed");
-            // Event observation does not depend on reconstructing a state table.
             let events = self.event_refusal.unwrap_or("market events not supplied");
             return std::array::from_fn(|index| {
                 unavailable(if index == 3 { events } else { state }).into()
@@ -226,9 +224,6 @@ impl Captured {
                 None => unavailable("market conversion has no baseline projection").into(),
             },
         };
-        // Every admitted occurrence, including named holder-level amount
-        // refusals, is a complete row. A truncated table would discard them
-        // at keyframes even though these rows need no earlier baseline.
         let events = match self.event_refusal {
             Some(reason) => unavailable(reason),
             None => TableView::Complete(TableRows::MarketEvents(changes.events)),
@@ -331,8 +326,6 @@ mod tests {
                 false,
             );
             if daily {
-                // The daily owning reader reports a failed header before the
-                // successful country census reaches off-slot recovery.
                 held::finish_contract_seed(false);
             }
             held::finish_seed(true);
@@ -369,8 +362,6 @@ mod tests {
             let scratch = ProjectionScratch::default();
             for hour in 100..=104 {
                 if hour == 102 {
-                    // Spool continuity is lost without changing the native clock.
-                    // Include a sticky state failure from an earlier failed drain.
                     session.lose_interval();
                     held::refuse("event ledger observation invalidated");
                     encoder = FrameEncoder::new();
@@ -452,7 +443,6 @@ mod tests {
                     });
                 }
                 let mut pack = Captured::vacant();
-                // Recovery belongs to the census epoch, not this caller flag.
                 pack.capture(&NoReads, 0, 0, hour, false);
                 for outcome in &pack.outcomes()[..3] {
                     assert!(
@@ -479,7 +469,6 @@ mod tests {
                 let wire = encoder.encode_bytes(frame, false).unwrap();
                 let frame = wire.decode().unwrap();
                 assert_eq!(frame.keyframe, matches!(hour, 100 | 102));
-                // Exercise the same row-field encoder and record validation as spool.
                 replay::spool::encode_record(&replay::spool::Record::Frame(frame.clone())).unwrap();
                 let decoded = decoder.apply(&frame).unwrap();
                 for table in TABLES {

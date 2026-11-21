@@ -45,9 +45,6 @@ const NO_WARNINGS: string[] = [];
 const WORDS = { pending: NAME_LOADING, missing: NAME_NOT_KNOWN };
 const pendingCountry = () => ({ name: NAME_LOADING });
 
-/** Every civil war on a lane timeline: a heading per civil war, expanded by
- * default, with each side beneath it in its own colour and a breakaway indented
- * under the side it broke from. Playback looks up the one branch reply locally. */
 export default function CivilWarsWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';
@@ -67,7 +64,6 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'civil-wars', params: { branchId: track.branch.id } } : null;
   const product = useProduct<CivilWarsReply>(runtime.client, request, active, validateCivilWarsReply, track?.source);
   const data = product.data;
-  // Hours not read are unknown, never an ending.
   const branchFirst = track?.branch.firstHour ?? 0;
   const unread = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null),
     [track?.branch.gaps, data, branchFirst]);
@@ -89,13 +85,11 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
     ...(widget.time.mode === 'range' ? { from: first } : {}),
   }) : null, [data, at, options.ended, narrowing, filter.countryIds, identities, unread, widget.time.mode, first]);
 
-  // Civil wars start expanded; a heading click collapses one. Ids belong to one branch.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => { setCollapsed(new Set()); }, [track?.source.id, track?.branch.id]);
   const [inView, setInView] = useState<[number, number]>([0, 24]);
   const [wanted, setWanted] = useState<{ live: string[]; dated: NameAt[] }>({ live: [], dated: [] });
   const [nameWanted, setNameWanted] = useState<{ live: string[]; dated: NameAt[] }>({ live: [], dated: [] });
-  // Countries a tooltip names at fixed hours, asked for only while it shows.
   const [tipWanted, setTipWanted] = useState<NameAt[]>([]);
   const tipKey = useRef('');
   const askTip = useCallback((pairs: NameAt[]) => {
@@ -106,7 +100,6 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   }, []);
   const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
-  // Sides still listed are named and coloured at the shown hour; the rest at a fixed hour each.
   const { country, revision } = useCountriesAt(runtime.client, track, wanted.live, at, active, nameWanted.live, segmentAt, WORDS,
     { clock, on: followsClock, hour: (clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null });
   const looks = useCountryLooks(runtime.client, track, wanted.live, at, active, segmentAt);
@@ -141,7 +134,6 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const neutral = mix(tokens.text, tokens.surface, 0.45);
   const { lanes, info } = useMemo(() => view ? civilWarLanes(view.wars, collapsed, { side, dated, day: dayLabel, neutral, positive: tokens.positive }, branchFirst, unread)
     : { lanes: [], info: new Map<string, CivilWarLaneInfo>() }, [view, collapsed, side, dated, neutral, tokens.positive, branchFirst, unread]);
-  // The spoken description names every lane; flag artwork follows the viewport.
   const requests = laneRequests(lanes, inView);
   const wantedKey = JSON.stringify(laneCountries(requests.looks, info)), nameWantedKey = JSON.stringify(laneCountries(requests.names, info));
   useEffect(() => { setWanted(JSON.parse(wantedKey) as { live: string[]; dated: NameAt[] }); }, [wantedKey]);
@@ -159,7 +151,6 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const hover = useHoverLabels(runtime.client, track, active, pendingCountry, NAME_NOT_KNOWN, segmentAt);
   const menu = useContextMenu('Timeline actions');
 
-  // A side's name not known among the lanes drawn, beside those with no recorded tag.
   const unnamedDrawn = requests.looks.filter(lane => {
     const about = info.get(lane.id);
     return about?.kind === 'side' && about.side.tag !== null && lane.identity?.label === NAME_NOT_KNOWN;
@@ -197,14 +188,12 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
         const content = warTooltip(about.war, hovered, text);
         return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'side' : 'sides'}` });
       }
-      // Named by its tag at the hovered hour, within the hours it is listed.
       const nameHour = sideNameHour(about.side, hovered);
       const tag = tagAt(about.side.side.tags, nameHour);
       if (tag !== null) hover.ask(nameHour, [tag]);
       const look = tag === null ? unknownLook() : hover.labelAt(nameHour)(tag);
       return sideTooltip(about.war, about.side, hovered, look, tag, text);
     };
-    // What the timeline shows at the moment shown, for keyboard and screen-reader users.
     const said: { war: string; sides: string[] }[] = [];
     for (const lane of lanes) {
       if (lane.heading) said.push({ war: `${lane.identity?.label}, ${lane.label}`, sides: [] });

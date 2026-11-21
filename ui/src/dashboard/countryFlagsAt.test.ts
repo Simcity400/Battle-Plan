@@ -61,7 +61,6 @@ test('dated labels forward the hour limit to the name read and distinguish pendi
         assert.equal(call.args[0], client);
         assert.equal(call.args[2], wanted);
         assert.equal(call.args[3], true);
-        // Flags read no hours: a timeline lookup each, so nothing bounds them.
         assert.equal(call.args.length, call.kind === 'names' ? 5 : 4);
         if (call.kind === 'names') assert.equal(call.args[4], limit ?? Infinity);
       }

@@ -1,4 +1,3 @@
-//! Prepared decoder snapshots. This packet never enters a recording or spool.
 use super::*;
 use crate::{
     FORMAT_VERSION,
@@ -10,8 +9,6 @@ const MAGIC: &[u8; 4] = b"H4CP";
 const VERSION: u16 = 5;
 
 impl DecodedFrame {
-    /// Append a prepared snapshot, keeping decoded values and sample provenance
-    /// exact. Its independent schema invalidates only prepared caches.
     pub fn encode_checkpoint(&self, output: &mut Vec<u8>) -> io::Result<()> {
         let start = output.len();
         let result = self.encode_checkpoint_inner(output);
@@ -72,7 +69,6 @@ impl DecodedFrame {
         Ok(())
     }
 
-    /// Read a snapshot from a bounded page payload; its owner checks `finish`.
     pub fn decode_checkpoint(input: &mut Decoder<'_>) -> io::Result<Self> {
         if input.take(4)? != MAGIC || input.u16()? != VERSION || input.u16()? != FORMAT_VERSION {
             return Err(invalid_static("unsupported prepared checkpoint schema"));

@@ -1,5 +1,3 @@
-//! CEquipmentProductionLine, the offset-zero base of military, naval, refit
-//! and railway-gun lines. Reads never invoke game helpers.
 
 use crate::{
     Memory, cequipment_type, cequipment_variant, cmilitary_production_line, cnaval_production_line,
@@ -8,43 +6,19 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CEquipmentProductionLine CEquipmentVariant pointer.
 pub const EQUIPMENT_VARIANT: usize = 0x88;
-/// CEquipmentProductionLine industrial organisation CID (type u32 then id u32).
 pub const INDUSTRIAL_ORGANISATION_CID: usize = 0x90;
-/// Conversion control byte. Military production converts stockpiled
-/// equipment into the line's design while it is set and the design is a
-/// conversion target; the save writes it as `is_converting`. Line refresh and
-/// the player's command change it, never the production advance itself.
 pub const CONVERSION: usize = 0xec;
-/// CEquipmentProductionLine requested factory count i32.
 pub const REQUESTED_FACTORIES: usize = 0xe8;
-/// Per-factory efficiency array of signed i64 Q15 values (x32768).
-/// Every counted entry is serialized. Refresh grows to maximum factory count
-/// and zero-fills new entries without shrinking the array, so the saved length
-/// can exceed active factories. The ordinary census records the average;
-/// `production_modifiers` retains the complete ordered array.
 pub const FACTORY_EFFICIENCIES: usize = 0xc0;
 
-/// Maximum-factory dispatch slot, used to clamp the efficiency count.
-/// Military lines select their type's optional limit, then its archetype's,
-/// then the military define. Naval and refit lines use that sequence with the
-/// naval optional limit and convoy, floating-harbour, capital-ship or default
-/// define selected by classifier bits. Railway-gun lines use their define alone.
 pub const MAX_FACTORIES_VIRTUAL_SLOT: usize = 0x58;
-/// Loaded military maximum factories per line, signed i32.
 pub const MAX_MIL_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_06cc);
-/// Loaded convoy maximum naval factories per line, signed i32; classifier bit 0.
 pub const CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_04c8);
-/// Loaded floating-harbour maximum naval factories per line, signed i32; classifier bit 9.
 pub const FLOATING_HARBOR_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_0558);
-/// Loaded default maximum naval factories per line, signed i32.
 pub const DEFAULT_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_0430);
-/// Loaded capital-ship maximum naval factories per line, signed i32; classifier bit 6.
 pub const CAPITAL_SHIP_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_060c);
-/// Loaded railway-gun maximum factories per line, signed i32.
 pub const RAILWAY_GUN_MAX_MIL_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_081c);
-/// The six defines above, read together once per walk, in this order.
 pub const MAX_FACTORY_DEFINE_RVAS: [Rva; 6] = [
     MAX_MIL_FACTORIES_PER_LINE_RVA,
     CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA,
@@ -53,27 +27,19 @@ pub const MAX_FACTORY_DEFINE_RVAS: [Rva; 6] = [
     CAPITAL_SHIP_MAX_NAV_FACTORIES_PER_LINE_RVA,
     RAILWAY_GUN_MAX_MIL_FACTORIES_PER_LINE_RVA,
 ];
-/// Efficiency entries copied per guarded read.
 pub const EFFICIENCY_BATCH: usize = 256;
 
-/// Military production, distinguished by the exact native primary vtable.
 pub use engine_executable::native_values::production_line::KIND_MILITARY;
-/// Naval new-build production, distinguished by the exact native primary vtable.
 pub use engine_executable::native_values::production_line::KIND_NAVAL;
-/// Ship refit production, distinguished by the exact native primary vtable.
 pub use engine_executable::native_values::production_line::KIND_SHIP_REFIT;
-/// Railway-gun production, distinguished by the exact native primary vtable.
 pub use engine_executable::native_values::production_line::KIND_RAILWAY_GUN;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CReferenceObject type/id words, including their high bits.
     pub handle: u64,
     pub country: u32,
     pub kind: u8,
-    /// Authenticated CEquipmentVariant type/id words, not its process pointer.
     pub variant: u64,
-    /// Native industrial organisation CID; no resolver or game helper is called.
     pub mio: u64,
     pub active_factories: i32,
     pub requested_factories: i32,
@@ -82,19 +48,12 @@ pub struct Row {
     pub produced_raw: i64,
     pub priority: i32,
     pub amount: i32,
-    /// The line's maximum factories (virtual slot 11), the count the
-    /// efficiency average is clamped to. See [`MAX_FACTORIES_VIRTUAL_SLOT`].
     pub max_factories: i32,
-    /// The current efficiency the production view shows, i64 Q15 (x32768):
-    /// [`efficiency_average`] over the leading factories, using the lesser of
-    /// the active and maximum factory counts.
     pub efficiency_raw: i64,
 }
 
 pub use game_model::production::efficiency_average;
 
-/// The six maximum-factory defines, read together once per walk, when the
-/// first line needs one. Defines are reloadable, so no walk reuses another's.
 #[derive(Debug, Default)]
 pub struct Defines(Option<[i32; 6]>);
 
@@ -120,9 +79,6 @@ impl Defines {
     }
 }
 
-/// The line's virtual slot 11 without calling it: the equipment type's
-/// optional, then its archetype's, then the kind's define. Both equipment
-/// types are authenticated by vtable; the game dereferences them unchecked.
 fn max_factories(
     memory: &impl Memory,
     base: usize,
@@ -152,8 +108,6 @@ fn max_factories(
     }
     let mut equipment = usize::try_from(u64::from_le_bytes(definition))
         .map_err(|_| "production line equipment type pointer overflow")?;
-    // The type, then its archetype, which the constructor self-initializes; only the type's read
-    // also takes the archetype link.
     for archetype in [false, true] {
         let mut vtable = [0; 8];
         let mut maximum = [0; 16];
@@ -205,9 +159,6 @@ fn max_factories(
     )
 }
 
-/// Sums the first `count` efficiency entries as the averager does, copying
-/// at most [`EFFICIENCY_BATCH`] entries per guarded read. The game reads them
-/// without a bound; a count beyond the array's own is refused.
 fn efficiency_sum(memory: &impl Memory, header: [u8; 16], count: i32) -> Result<u64, &'static str> {
     let count = u32::try_from(count).unwrap_or(0);
     if count == 0 {
@@ -234,10 +185,6 @@ fn efficiency_sum(memory: &impl Memory, header: [u8; 16], count: i32) -> Result<
     Ok(sum)
 }
 
-/// Copies the recorded fields and the efficiency array header in one guarded
-/// scatter, resolves the variant identity, then the maximum factories and the
-/// efficiency entries they select. No game helper is called; the cap and
-/// growth helpers are modifier calculations and are not recorded.
 pub(crate) fn read_row(
     memory: &impl Memory,
     base: usize,
@@ -348,10 +295,7 @@ mod tests {
         assert_eq!(efficiency_average(u64::MAX, 0), 0);
         assert_eq!(efficiency_average(7, -1), 0);
         assert_eq!(efficiency_average(7, 2), 3);
-        // A negative sum truncates toward zero, as IDIV does.
         assert_eq!(efficiency_average(-7_i64 as u64, 2), -3);
-        // The shift discards the sum's top 15 bits and moves bit 48 into the
-        // sign before the signed division.
         assert_eq!(efficiency_average((1 << 48) + 6, 3), -(1_i64 << 48) / 3 + 2);
         assert_eq!(efficiency_average((1 << 49) + 6, 3), 2);
     }

@@ -1,6 +1,3 @@
-//! Registry witnesses for the air bases the flying-aircraft map resolves.
-//! Acquisition keeps each probed handle's result; conversion drops misses and
-//! keeps a base's fields only where the AirBases roster lacks or disagrees.
 
 use engine_allocation as allocation;
 use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
@@ -14,15 +11,10 @@ use crate::table_conversion::table;
 pub struct BaseWitness {
     pub handle: u64,
     pub base: Option<BaseReference>,
-    /// The base's host task-force owner; None when the host misses
-    /// or its task force is null, which the flag marks.
     pub host_owner: Option<u32>,
     pub host_without_task_force: bool,
 }
 
-/// The existing witness rows are the host memo: group by complete raw handle,
-/// retain each successful miss/value for its repeats, and stop on a fault.
-/// Restore base-handle order for the sortie reader even after a failed probe.
 pub fn capture_hosts(
     witnesses: &mut [BaseWitness],
     mut read: impl FnMut(u64) -> Result<Host, &'static str>,
@@ -49,14 +41,11 @@ pub fn capture_hosts(
     result
 }
 
-/// `witnesses` are this hour's probes and `outcome` says whether they are
-/// complete. `manager` is the complete AirBases census, if there is one.
 pub fn table_view(
     outcome: Outcome,
     witnesses: &[BaseWitness],
     manager: Option<&[cair_base::Row]>,
 ) -> TableView {
-    // Conversion runs off the game thread; the census is in manager order.
     let mut listed: Vec<&cair_base::Row> = Vec::new();
     if allocation::reserve(&mut listed, manager.map_or(0, <[cair_base::Row]>::len)).is_err() {
         return crate::table_conversion::unavailable("");

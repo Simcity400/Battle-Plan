@@ -1,6 +1,3 @@
-//! Which installed layers still hold a recording's content: each recorded layer is hashed on
-//! its own in each candidate installation, so a recording's facts can be gathered from
-//! whichever installations still match it, layer by layer, and withheld by name where none do.
 
 use std::{
     collections::BTreeMap,
@@ -18,21 +15,14 @@ use super::{
     sort_descriptors, text_path,
 };
 
-/// One installation's layers, each as installed when it hashes as recorded, or why not.
 pub struct Candidate {
     pub game_dir: PathBuf,
-    /// The base game and its built-in roots, which the recording hashes together: those below
-    /// every mod, then those above.
     pub game: Result<(Vec<ResolvedLayer>, Vec<ResolvedLayer>), String>,
-    /// Each recorded DLC, in recorded order.
     pub dlc: Vec<Result<ResolvedLayer, String>>,
-    /// Each recorded mod, in recorded order.
     pub mods: Vec<Result<ResolvedLayer, String>>,
-    /// The installed executable, when it is the recorded one.
     pub executable: Option<PathBuf>,
 }
 
-/// Hashes each of `identity`'s layers as `options`' installation holds it.
 pub fn candidate(
     identity: &Identity,
     options: &ResolveOptions,
@@ -42,7 +32,6 @@ pub fn candidate(
     let coverage = CoveragePolicy::recorded(identity.coverage_policy)?;
     let game_dir = fs::canonicalize(&options.game_dir)?;
     let user_dir = fs::canonicalize(&options.user_dir).ok();
-    // The cache is disposable: a folder that cannot be made only leaves it unsaved.
     let _ = fs::create_dir_all(&options.cache_dir);
     let cache_path = options.cache_dir.join(HASH_CACHE);
     let mut cache: HashCache = fs::read(&cache_path)
@@ -120,7 +109,6 @@ pub fn candidate(
     result
 }
 
-/// A hashed layer, when its hash is the recorded one.
 fn proven(
     layer: io::Result<(ResolvedLayer, [u8; 32])>,
     recorded: [u8; 32],
@@ -133,7 +121,6 @@ fn proven(
     })
 }
 
-/// The base game's layer and built-in roots as [`super::gather`] mounts them, and their hash.
 fn game_layers(
     game_dir: &Path,
     coverage: CoveragePolicy,
@@ -216,9 +203,6 @@ fn game_layers(
     Ok((below, above, hash))
 }
 
-/// The recorded stack gathered from `candidates`: each recorded layer from the first that
-/// holds it as recorded, and a placeholder for one none holds, with why, by its index in the
-/// stack; and the recorded executable, when one holds it.
 pub fn assemble(
     identity: &Identity,
     candidates: &[Candidate],

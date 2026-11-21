@@ -9,7 +9,6 @@ import { object, signed32 } from './validation.ts';
 export interface DatedCountrySelection { campaign: string; branch: string; tag: string; originOffset: number; extent?: [number, number] }
 export const datedCountryToken = (selection: DatedCountrySelection) => setToken(JSON.stringify(selection));
 
-/** Store the original choice, never a later alias or a runtime handle. */
 export function readDatedCountry(token: unknown, campaign: string, branch: string, countries?: CountrySelection): DatedCountrySelection | null {
   if (typeof token !== 'string' || !token) return null;
   try {
@@ -23,8 +22,6 @@ export function readDatedCountry(token: unknown, campaign: string, branch: strin
   } catch { return null; }
 }
 
-/** The country a choice that saves one shows: the one saved, else (its automatic choice) the widget's own country `tag` as
- * it was at `origin`, the hour the choice was first shown. Null when neither is known. */
 export function chosenDatedCountry(token: unknown, campaign: string, branch: string, countries: CountrySelection, tag: string | undefined,
   firstHour: number, lastHour: number, origin: number): DatedCountrySelection | null {
   if (typeof token === 'string' && token) return readDatedCountry(token, campaign, branch, countries);
@@ -32,7 +29,6 @@ export function chosenDatedCountry(token: unknown, campaign: string, branch: str
   return { campaign, branch, tag, originOffset: origin - firstHour };
 }
 
-/** Strict native coverage: missing origins and conflicting aliases never fall back to a tag segment. */
 export function datedCountrySpans(histories: readonly CountryIdentityHistory[], selection: DatedCountrySelection,
   firstHour: number, lastHour: number, membership?: ReadonlyMap<string, readonly Span[]> | null): ReadonlyMap<string, readonly Span[]> | null {
   const originHour = firstHour + selection.originOffset;

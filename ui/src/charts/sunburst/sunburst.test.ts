@@ -483,17 +483,14 @@ test('exact IC keeps missing-name, language and native-cause notes through group
 test('incomplete attribution at a hidden level still reaches the whole and every shown ancestor', () => {
   const parts = [
     item(['new', 'type', 'design'], 1, { exact: 1n }),
-    // A marker under a purpose: its purpose and type are incompletely attributed.
     item(['other', 'unresolved'], 0, { exact: 0n, unknownLevels: [true, true, false] }),
   ];
   for (const shown of [[true, true, true], [false, false, true], [false, true, false], [true, false, false]]) {
     assert.equal(groupTree(parts, ROOT, shown).valueUnknown, true, JSON.stringify(shown));
   }
-  // Only the hidden level's shown ancestors: a shown sibling stays exact.
   const types = groupTree(parts, ROOT, [false, true, false]);
   assert.equal(types.children.find(node => node.key === 'type')!.valueUnknown, false);
   assert.equal(types.children.find(node => node.key === 'unresolved')!.valueUnknown, true);
-  // Local attribution of a hidden ring has no slice to mark.
   const local = groupTree([item(['new', 'design'], 1, { exact: 1n, localUnknownLevels: [true, false] })], ROOT, [false, true]);
   assert.equal(local.valueUnknown, false);
   assert.equal(local.children[0].valueUnknown, false);
@@ -601,7 +598,6 @@ test('a tree adds its items up and keeps missing measurement apart from zero', (
   assert.equal(repair.value, 0);
   assert.deepEqual(repair.notes, ['Not measured']);
   assert.equal(root.unmeasured, false);
-  // Children keep one order by their whole amount, not by the amount so far.
   const civ = root.children[0].children[0];
   assert.deepEqual(civ.children.map(child => child.key), ['ruhr', 'saxony']);
   assert.deepEqual(root.children[0].children.map(child => child.key), ['civ', 'fort']);
@@ -611,7 +607,6 @@ test('a level switched off joins its children, adding the same keys together', (
   const items = [item(['new', 'civ', 'ruhr'], 30), item(['new', 'fort', 'saar'], 5), item(['repair', 'civ', 'ruhr'], null, { note: 'n' }), item(['old', 'civ', 'ruhr'], 7)];
   const root = groupTree(items, ROOT, [false, true, false]);
   assert.deepEqual(root.children.map(child => [child.key, child.value, child.unmeasured]), [['civ', 37, false], ['fort', 5, false]]);
-  // A node with a measured part keeps the note of the part that is not measured.
   assert.deepEqual(root.children[0].notes, ['n']);
   assert.deepEqual(root.children[0].children, []);
   const flat = groupTree(items, ROOT, [false, false, false]);
@@ -733,13 +728,11 @@ test('more slices than colours fold their smallest into Other, the same ones all
   assert.equal(root.children.length, 8);
   const other = root.children.at(-1)!;
   assert.equal(other.other, true);
-  // t0 has nothing yet but the most by the end, so it stays out of Other.
   assert.equal(root.children[0].key, 't0');
   assert.deepEqual(other.children.map(child => child.key), ['t7', 't8', 't9', 't10']);
   assert.equal(other.value, 93 + 92 + 91 + 90);
   assert.equal(other.children[0].depth, 2);
   assert.equal(other.children[0].parent, other);
-  // A folded slice keeps its id, so a zoom into it survives regrouping.
   assert.equal(findNode(root, other.children[0].id), other.children[0]);
   assert.equal(findNode(root, `${other.children[0].id}\u0000gone`), other.children[0]);
   assert.equal(findNode(root, 'nowhere'), root);
@@ -757,14 +750,11 @@ test('the zoomed slice fills the circle and its children share it; Fill sweeps t
   const zoomed = arcTargets(root, a, 'share');
   assert.ok(Math.abs(zoomed.get(a.children[0].id)!.a1 - Math.PI * 1.5) < 1e-9);
   assert.equal(zoomed.get(a.children[0].id)!.ring, 1);
-  // Outside the zoomed slice, nothing shows.
   assert.equal(zoomed.get(b.id)!.shown, false);
   assert.equal(zoomed.get(a.id)!.shown, false);
-  // Fill: 80 of the 120 there will be.
   assert.ok(Math.abs(sweepOf(root, 'fill') - Math.PI * 2 * 80 / 120) < 1e-9);
   const filled = arcTargets(root, root, 'fill');
   assert.ok(Math.abs(filled.get(b.id)!.a1 - sweepOf(root, 'fill')) < 1e-9);
-  // Three rings out is not shown with two rings.
   const deep = groupTree([item(['a', 'b', 'c'], 1)], ROOT);
   assert.equal(arcTargets(deep, deep, 'share').get(walk(deep).at(-1)!.id)!.shown, false);
 });
@@ -824,7 +814,6 @@ test('the innermost ring takes the palette in order and outer rings shade their 
   assert.equal(colours.get(b.id), '#00ff00');
   assert.equal(colours.get(a.children[0].id), '#ff0000');
   assert.notEqual(colours.get(a.children[1].id), '#ff0000');
-  // Zoomed in, a's children become the innermost ring and take the palette.
   const zoomed = sliceColours(a, ['#0000ff', '#00ff00'], { light: '#ffffff', dark: '#000000' });
   assert.equal(zoomed.get(a.children[1].id), '#00ff00');
   assert.equal(zoomed.has(b.id), false);
@@ -846,8 +835,6 @@ test('a point finds the centre or the slice drawn under it, and labels fit only 
   assert.equal(labelFits({ a0: 0, a1: Math.PI / 2, inner: 40, outer: 70 }, 40, 11), true);
   assert.equal(labelFits({ a0: 0, a1: 0.1, inner: 40, outer: 70 }, 40, 11), false);
   assert.equal(labelFits({ a0: 0, a1: Math.PI, inner: 40, outer: 50 }, 20, 11), false);
-  // Codex round 4: a 180 px label on a 120-degree outer slice (middle radius 117.6)
-  // reaches radius 148 at its ends, past the outer 140, though its arc is long.
   assert.equal(labelFits({ a0: 0, a1: Math.PI * 2 / 3, inner: 95.2, outer: 140 }, 180, 11), false);
   assert.equal(labelFits({ a0: 0, a1: Math.PI * 2 / 3, inner: 95.2, outer: 140 }, 60, 11), true);
 });
@@ -887,7 +874,6 @@ test('a slice tooltip gives its exact amount, shares, count and what is not coun
   assert.deepEqual(unmeasured.rows.map(row => [row.label, row.value]), [['Spent', 'Not measured'], ['Projects', '4']]);
   assert.equal(unmeasured.note, 'Not measured here.');
   assert.equal(sunburstSummary(root, text), 'All: 40 IC, partial; A: 40 IC, 100%, partial; R: not measured');
-  // Zoomed into a slice that is not measured, the read-out says so, as the centre does.
   assert.equal(sunburstSummary(r, text), 'R: not measured; Z: not measured');
 });
 
@@ -905,12 +891,10 @@ test('a part with nothing counted yet but parts not counted stays listed, with i
   assert.equal(listed(gap), true);
   const text = { format: (value: number) => String(value), unit: 'IC', valueLabel: 'Spent' };
   assert.equal(sunburstSummary(root, text), 'All: 50 IC, partial; A: 50 IC, 100%; GAP: 0 IC, partial');
-  // A part with nothing at all is not listed.
   assert.equal(listed(groupTree([item(['a'], 0, { final: 0 })], ROOT).children[0]), false);
 });
 
 test('an item not yet present adds only its whole amount: order, colours and Fill are the end\'s', () => {
-  // A spends its last 100 by the hour shown; B appears later and spends 900.
   const at = (bPresent: boolean, aValue: number, bValue: number | null) => groupTree([
     item(['a'], aValue, { final: 100 }),
     item(['b'], bValue, { final: 900, present: bPresent }),
@@ -935,7 +919,6 @@ test('equal whole amounts keep one order by data key, whatever the amounts so fa
   const tree = (x: number, y: number) => groupTree([item(['y'], y, { final: 50 }), item(['x'], x, { final: 50 })], ROOT);
   assert.deepEqual(tree(10, 40).children.map(child => child.key), ['x', 'y']);
   assert.deepEqual(tree(40, 10).children.map(child => child.key), ['x', 'y']);
-  // Folding into Other follows the same order.
   const many = (bump: number) => foldTree(groupTree(Array.from({ length: 10 }, (_, index) =>
     item([`k${index}`], index === 9 ? bump : 1, { final: 5 })), ROOT), 8);
   assert.deepEqual(many(0).children.at(-1)!.children.map(child => child.key), many(4).children.at(-1)!.children.map(child => child.key));
@@ -949,7 +932,6 @@ test('exact amounts add up without rounding through a number', () => {
 });
 
 test('a colour glide ends exactly, however small each frame\'s step', () => {
-  // Smooth motion at 24 h/s with 16 ms frames: about 8.5% a frame.
   const amount = 1 - Math.exp(-16 / 180);
   const target = { r: 0x39, g: 0x87, b: 0xe5 };
   let colour = { r: 0x3e, g: 0x82, b: 0xe0 };
@@ -967,7 +949,6 @@ test('a colour glide ends exactly, however small each frame\'s step', () => {
 test('folding goes by whole amounts, so a type that is repaired first and built later folds the same all along', () => {
   const tree = (built: boolean) => foldTree(groupTree([
     ...Array.from({ length: 8 }, (_, index) => item([`t${index}`], 10 + index, { final: 100 + index })),
-    // Type z: a repair (not measured) now; later construction, not present yet, of 50.
     item(['z'], null, { note: 'n' }),
     item(['z'], built ? 50 : null, { final: 50, present: built }),
   ], ROOT), 8);
@@ -987,8 +968,6 @@ test('parts that are never drawn take no palette slot', () => {
 });
 
 test('Other is not measured when only an unmeasured part of it is present', () => {
-  // Nine types (the new-or-repair level switched off); only a lower-ranked type's
-  // repair has appeared, and it falls in Other.
   const items = [
     ...Array.from({ length: 9 }, (_, index) => item([`t${index}`], null, { final: 100 - index, present: false })),
     item(['t8'], null, { note: 'Repairs are not measured.' }),
@@ -1000,7 +979,6 @@ test('Other is not measured when only an unmeasured part of it is present', () =
   assert.equal(listed(other), true);
   assert.equal(other.exact, null);
   assert.deepEqual(other.notes, ['Repairs are not measured.']);
-  // With a measured part present, Other is measured and sums it exactly.
   const measured = foldTree(groupTree([...items, item(['t7'], 5, { exact: 5n, final: 0 })], ROOT), 8);
   const withAmount = measured.children.find(child => child.other)!;
   assert.equal(withAmount.unmeasured, false);
@@ -1008,8 +986,6 @@ test('Other is not measured when only an unmeasured part of it is present', () =
 });
 
 test('a project in two merged categories counts once', () => {
-  // With the new-or-repair level off, a project that repaired and then built is
-  // in both of its type's items.
   const root = groupTree([
     item(['repair', 'civ'], null, { note: 'n', counted: ['9'] }),
     item(['new', 'civ'], 40, { counted: ['9', '10'] }),
@@ -1019,8 +995,6 @@ test('a project in two merged categories counts once', () => {
 });
 
 test('a merged category with unmeasured parts and nothing counted stays listed', () => {
-  // With the new-or-repair level off, a type with a repair and a new project that
-  // has spent nothing counted yet.
   const root = groupTree([
     item(['repair', 'civ'], null, { note: 'Repairs are not measured.' }),
     item(['new', 'civ'], 0),
@@ -1031,7 +1005,6 @@ test('a merged category with unmeasured parts and nothing counted stays listed',
   assert.equal(listed(civ), true);
   const text = { format: (value: number) => String(value), unit: 'IC', valueLabel: 'Spent' };
   assert.equal(sunburstSummary(root, text), 'All: not measured; CIV: not measured');
-  // Its tooltip says so too, not "0 IC".
   const [tip] = sliceTooltip(civ, root, text);
   assert.deepEqual(tip.rows[0], { label: 'Spent', value: 'Not measured', tone: 'muted' });
 });

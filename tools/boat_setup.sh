@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Builds the hoi4-check image tools/boat.py clones: boat new --type large --ttl 14400 --no-env;
-# boat push ID CLEAN_MAIN_WORKTREE --to /home/user/hoi4/src; boat scp tools/boat_setup.sh ID:/home/user/setup.sh;
-# boat exec ID --timeout 0 --stream -- bash /home/user/setup.sh SOURCE_SHA; boat snapshot ID hoi4-check; boat extend ID --ttl 120
 ROOT=/home/user/hoi4
 SRC=$ROOT/src
 [[ -f $SRC/rust-toolchain.toml ]] || { echo "Push the clean main worktree to $SRC first" >&2; exit 1; }
@@ -20,7 +17,6 @@ cat > "$ROOT/tools/bin/clang-cl" <<'BOAT_CLANG_CL'
 #!/usr/bin/env python3
 import os
 import sys
-# libudis86 requests GCC's forced-include spelling even with the CL driver.
 args = ['/FIstring.h' if arg == '-includestring.h' else arg for arg in sys.argv[1:]]
 os.execv('/usr/bin/clang-19', ['clang-cl', '--driver-mode=cl', *args])
 BOAT_CLANG_CL
@@ -75,9 +71,7 @@ fi
 [[ -L node_modules ]] || ln -s "$ROOT/npm/node_modules" node_modules
 sha256sum package-lock.json | cut -d" " -f1 > "$ROOT/node-lock.sha256"
 /usr/bin/time -v cargo xwin check --workspace --all-targets --target x86_64-pc-windows-msvc
-# The release snapshot covers all four operational artifacts, with Cargo's normal release profile.
 /usr/bin/time -v cargo xwin build --release -p dashboard --bin columnar-family-check -p viewer --bin viewer -p recorder --bin recorder -p collector --lib --target x86_64-pc-windows-msvc
 python3 "$ROOT/remote.py" checkpoint
 printf '%s\n' "${1:-source revision not supplied}" > "$ROOT/source-revision"
 { rustc -vV; cargo xwin --version; clang-cl --version; lld-link --version; node --version; cat "$ROOT/xwin/xwin/DONE"; cargo xwin env --target x86_64-pc-windows-msvc; } > "$ROOT/toolchain.txt"
-# Save after this exits: boat snapshot ID hoi4-check; boat extend ID --ttl 120.

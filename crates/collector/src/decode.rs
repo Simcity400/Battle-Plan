@@ -1,33 +1,3 @@
-//! Single FIFO decode worker for the retained raw-capture families.
-//!
-//! Each staged payload owns its current copied bytes. The worker fills the
-//! corresponding pooled typed rows before the spool ready-queue handoff.
-//! Families acquired directly into typed rows need only forwarding; their rows
-//! and measured costs remain intact for conversion and encoding.
-//!
-//! Ordering: every frame transits this one FIFO in game-thread production
-//! order, so spool handoff order is inherently hour order and no reorder
-//! buffer exists. Off-refresh families carry no payload. Every frame still
-//! transits the FIFO so a slow refresh decode cannot let a later hour overtake it.
-//!
-//! No backpressure: each frame's job lives in its frame slot and the FIFO links
-//! the slots ([`crate::frame_pool`]), so enqueue never fills, never waits and
-//! never allocates; a backlog takes more frames. Only a failed allocation
-//! refuses an hour, as a whole-frame loss through `LossBatch`. Staging capacity
-//! misses instead use each family's admitted fallback and preserve its first
-//! failure; accepted-job panics and failed prepared acquisitions cannot retry
-//! live reads.
-//!
-//! Each family's payload pool keeps a payload for every frame a backlog holds and trims back
-//! to `JOB_POOL_STEADY` once it clears.
-//! Exhaustion or lock contention returns an empty staging object without
-//! allocating another payload. Retirement only transfers ownership on the game
-//! thread; the decode worker clears, grows and recycles that storage.
-//! Raw payload storage is additional to the typed frame pool. Queue depth,
-//! process memory and per-family span/byte capacities require live measurement;
-//! a sum of byte arenas alone is not a bound on aggregate allocation.
-//!
-//! Per-frame copy-only ns stays in the `table_ns` slots for the staged tables.
 
 use crate::{
     extended::{
@@ -57,26 +27,14 @@ mod pools;
 
 pub use pools::*;
 
-/// Relations family in calibration/report order: [opinions, tuples]. The
-/// payload freezes each table's activity selected by replay cadence.
 pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
 
-/// Characters family in calibration/report order: [characters, leaders,
-/// advisors, units, traits]. Cadence selects the active tables.
-/// ActiveAbilities is separate.
 pub const CHARACTERS: [TableId; crate::extended::characters::N] =
     crate::extended::characters::TABLES;
 
-/// The raw-copied project tables in calibration/report order: [programs,
-/// breakthroughs]. Sliced and hourly project tables stay game-side typed.
 pub const PROJECTS: [TableId; 2] = crate::extended::projects::RAW;
 
-/// Lexical family: the global token dictionary.
 pub const LEXICAL: [TableId; 1] = [TableId::LexicalTokens];
-/// Divisions group in calibration/report order: [divisions, equipment,
-/// groups, requests, deliveries, produced]. Divisions stay hourly; the
-/// payload's details_active flag gates the five slot-2 detail tables. The
-/// upgrades phase cost is charged to the groups slot.
 pub const DIVISIONS: [TableId; 6] = [
     TableId::Divisions,
     TableId::DivisionEquipment,
@@ -85,63 +43,32 @@ pub const DIVISIONS: [TableId; 6] = [
     TableId::ArmyUpgradeDeliveries,
     TableId::ArmyUpgradeProduced,
 ];
-/// Players pair in calibration/report order: [players, controllers].
-/// Hourly like every Tier-H table (no refresh gate). Each stages its own
-/// roster/census copies with no cross-family decoded roots.
 pub const PLAYERS: [TableId; 2] = [TableId::Players, TableId::HumanControllers];
 
-/// Session family in calibration/report order: [world, sources, aggregates].
-/// All three refresh on daily slot 18; the shared manager header is charged
-/// to the world slot.
 pub const SESSION: [TableId; 3] = [
     TableId::WorldTension,
     TableId::ThreatSources,
     TableId::ThreatCountryAggregates,
 ];
 
-/// Wing-fed air pair in calibration/report order: [equipment, cumulative].
-/// Equipment stays hourly and cumulative refreshes on daily slot 16. Both
-/// consume owned rows from the shared map/extension/naval wing census.
 pub const AIR_WING: [TableId; 2] = [TableId::WingEquipment, TableId::WingCumulative];
 
-/// Daily slot-5 air-statistics table in calibration/report order: [statistics].
-/// Stages its own strategic-air census copies with no cross-family decoded roots.
 pub const AIR_STATS: [TableId; 1] = [TableId::AirStatistics];
 
-/// Shared bases payload in calibration/report order: [bases, registrations,
-/// aces]. Bases and registrations stay hourly; aces refresh on daily slot 21.
-/// The wing/manager census is taken once into shared raw spans; the bases,
-/// registrations and aces decodes all read the shared spans (registrations
-/// rows live in the fog pack and decode from this same log).
 pub const AIR_BASES: [TableId; 3] = [
     TableId::AirBases,
     TableId::AirBaseRegistrations,
     TableId::AirAces,
 ];
 
-/// Shared daily slot-7 history payload in calibration/report order: [history,
-/// damage]. The single regional walk is charged to the history slot.
-/// Daily slot-23 supremacy table in calibration/report order: [supremacy].
 pub const SUPREMACY: [TableId; 1] = [TableId::NavalSupremacy];
 
-/// Daily slot-19 sunk-ships table in calibration/report order: [sunk ships].
 pub const SUNK: [TableId; 1] = [TableId::SunkShips];
 
-/// Daily slot-21 radar table in calibration/report order: [radar].
 pub const RADAR: [TableId; 1] = [TableId::RadarCoverage];
 
-/// Hourly intel table in calibration/report order: [intel]. Hourly like
-/// every Tier-H table (no refresh gate). The division/fleet census spans
-/// are the walk's own takes, shared once inside the payload between the
-/// division and fleet paths.
 pub const INTEL: [TableId; 1] = [TableId::UnitIntel];
 
-/// Source-fed naval block in calibration/report order: [land theatres, land
-/// groups, land members, air theatres, air groups, air members, orders
-/// groups, orders members, army members]. The six theatre tables refresh on
-/// daily slot 13; the three order/member tables stay hourly. Shared
-/// theatre roots are anchor-charged to land theatres; shared OOB roots to
-/// orders groups, matching the read-group convention.
 pub const NAVAL_ORDER: [TableId; 9] = [
     TableId::LandTheatres,
     TableId::LandTheatreGroups,
@@ -154,11 +81,6 @@ pub const NAVAL_ORDER: [TableId; 9] = [
     TableId::ArmyGroupMembers,
 ];
 
-/// Production daily slot-8 rest in calibration/report order: [lines, stockpiles,
-/// licences, conveyors, lines, manpower, equipment, records]. The deployment
-/// shared traversal is charged to the conveyors slot; the licence walk to the licences
-/// slot, matching the read-group convention. Empty ProductionLicenseRecords
-/// shares the licence walk and moves with it.
 pub const PRODUCTION_REST: [TableId; 8] = [
     TableId::ProductionLines,
     TableId::Stockpiles,
@@ -170,12 +92,6 @@ pub const PRODUCTION_REST: [TableId; 8] = [
     TableId::ProductionLicenseRecords,
 ];
 
-/// Construction daily slot-3 rest in calibration/report order: [resources,
-/// building, railway, settings, laws, garrisons, assigned, reserve,
-/// resistance, collaboration]. The construction queue is charged to the building
-/// slot; the occupation shared walk to the settings slot, matching the read-group
-/// convention. Empty reserve/collaboration tables share their walks and move
-/// with them.
 pub const CONSTRUCTION_REST: [TableId; 10] = [
     TableId::StateBaseResources,
     TableId::BuildingConstruction,
@@ -189,13 +105,6 @@ pub const CONSTRUCTION_REST: [TableId; 10] = [
     TableId::CountryCollaboration,
 ];
 
-/// Economy mixed rest in calibration/report order: [fuel, experience,
-/// supply, hubs, disrupted, foreign, definitions, resources, exchanges,
-/// purchases, fuel consumers, fuel demand parts]. Supply stays hourly, the
-/// three resource tables refresh on slot 10, and the eight remaining tables
-/// on slot 17; the demand parts are split from the fuel walk's packs. The supply shared traversal is anchor-charged to the hubs slot; the
-/// resource dictionary to the definitions slot and the shared fuel walk to the
-/// fuel slot, matching the read-group convention.
 pub const ECONOMY_REST: [TableId; crate::extended::economy::N] = [
     TableId::CountryFuel,
     TableId::CountryExperience,
@@ -211,26 +120,15 @@ pub const ECONOMY_REST: [TableId; crate::extended::economy::N] = [
     TableId::FuelDemandParts,
 ];
 
-/// Hourly weather family in calibration/report order: [regions, provinces].
-/// Hourly like every Tier-H table (no refresh gate). The manager header is
-/// anchor-charged to the regions slot, matching the read-group convention.
 pub const WEATHER: [TableId; 2] = [TableId::WeatherRegions, TableId::WeatherProvinces];
 
-/// Hourly capitulation table in calibration/report order: [capitulation].
-/// Hourly like every Tier-H table (no refresh gate).
 pub const CAPITULATION: [TableId; 1] = [TableId::Capitulation];
 
-/// One FIFO item. The payload's byte buffers already live on the heap inside
-/// its vectors; pooled-frame typed rows are filled by the worker before the
-/// ready-queue handoff.
 #[derive(Debug, Default)]
 pub struct DecodeJob {
     pub index: usize,
     pub seq: u64,
     pub hour: i32,
-    // Refresh flags declare an owned decode handoff. False can also mean the
-    // callback installed typed outcomes. Per-table activity is frozen in the
-    // payload; neither these flags nor timings establish acquisition freshness.
     pub relations_refresh: bool,
     pub characters_refresh: [bool; CHARACTER_PARTS],
     pub projects_refresh: bool,
@@ -275,7 +173,6 @@ pub struct DecodeJob {
     pub weather_payload: Option<WeatherJob>,
     pub capitulation_payload: Option<CapitulationJob>,
 }
-// hits, misses, ineligible, comparisons, installs, compare/restore/install ns.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
@@ -288,36 +185,27 @@ pub(crate) fn owned_failed() -> bool {
     crate::allocation::failed() || panic_failure().is_some()
 }
 
-/// Registered before hook installation, joined before final DLL quiescence.
 pub fn worker_id() -> u32 {
     WORKER_ID.load(Ordering::Acquire)
 }
 
-/// Loader watchdog only. A missing or failed worker cannot return frame leases, so the
-/// loader detaches rather than let the frames grow.
 pub fn worker_finished() -> bool {
     WORKER.lock().map_or(true, |slot| {
         slot.as_ref().is_none_or(|handle| handle.is_finished())
     })
 }
-/// Admit a relations payload whenever any family table is active. The payload
-/// freezes each table's activity for decode.
 pub fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
     RELATIONS
         .iter()
         .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-/// Admit a character payload whenever any family table is active.
 pub fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
     CHARACTERS
         .iter()
         .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-/// Projects refresh together on their daily slot (`replay_data::cadence`); full
-/// hours (branch start, load, gap or an explicit refresh request) force their
-/// complete acquisition.
 pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     let walk = replay_data::cadence::should_walk(PROJECTS[0], hour, force_full);
     for table in PROJECTS.iter().skip(1) {
@@ -329,23 +217,16 @@ pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     walk
 }
 
-/// Admit the dictionary according to its authoritative replay cadence.
 pub fn lexical_refresh_hour(hour: i32, force_full: bool) -> bool {
     replay_data::cadence::should_walk(LEXICAL[0], hour, force_full)
 }
 
-/// Monotonic frame sequence for FIFO order proofs. Gaps in the sequence are
-/// dropped frames; order within the sequence is queue order.
 pub fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Each family stages one owned payload or retires its failed staging object;
-/// each independent character part owns a separate payload.
 const PAYLOADS_PER_FRAME: usize = 19 + CHARACTER_PARTS;
 
-// The worker takes each queued frame before draining retirement, so that frame's
-// callback has already retired its failures before its lease can be returned.
 #[allow(clippy::large_enum_variant)]
 enum RetiredPayload {
     Relations(RelationsJob),
@@ -369,11 +250,6 @@ enum RetiredPayload {
     Weather(WeatherJob),
     Capitulation(CapitulationJob),
 }
-/// Payloads retired on the game thread, freed or recycled by the decode worker. It holds
-/// as many as a backlog retires: the worker keeps room for every frame live, so a retirement
-/// allocates only when frames grew since its last drain. A retirement never waits: finding the
-/// worker taking the held ones, or a refused allocation, frees the payload where it is, which
-/// loses only its storage.
 struct Retirement {
     held: Mutex<Vec<RetiredPayload>>,
 }
@@ -402,8 +278,6 @@ impl Retirement {
         }
     }
 
-    /// Everything retired so far, leaving `spare`'s storage, sized for `frames` frames, in its
-    /// place.
     fn take(&self, mut spare: Vec<RetiredPayload>, frames: usize) -> Vec<RetiredPayload> {
         let room = frames.saturating_mul(PAYLOADS_PER_FRAME);
         if spare.capacity() < room {
@@ -446,7 +320,6 @@ fn prepare_retirement() -> std::io::Result<()> {
         )
         .is_err()
     {
-        // Another initializer won; this allocation was never published.
         unsafe {
             drop(Box::from_raw(queue));
         }
@@ -454,9 +327,6 @@ fn prepare_retirement() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Retain pools while callbacks can still reach the DLL on a failed detach.
-/// Normal detach/cancel releases them before self-unload; Rust statics do
-/// not run destructors when Windows unloads a DLL.
 pub struct PayloadPools;
 
 impl Drop for PayloadPools {
@@ -534,8 +404,6 @@ impl Drop for PayloadPools {
         }
         let queue = RETIRED_PAYLOADS.swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !queue.is_null() {
-            // The loader clears SHARED only after callback quiescence and
-            // joining/draining the decode worker. No queue borrow survives.
             unsafe {
                 drop(Box::from_raw(queue));
             }
@@ -543,8 +411,6 @@ impl Drop for PayloadPools {
     }
 }
 
-/// A refused allocation is the collector's allocation failure; the pools prepared so far are
-/// released with the returned error.
 pub fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
     let pools = PayloadPools;
     prepare_retirement()?;
@@ -590,10 +456,8 @@ fn defer_payload(payload: RetiredPayload) {
         !queue.is_null(),
         "payload retirement initialized before hook"
     );
-    // Preparation precedes enabling the hook; reclamation follows quiescence.
     let queue = unsafe { &*queue };
     queue.push(payload);
-    // A payload retired without a queued frame still reaches the parked worker.
     let shared = sampling::SHARED.load(Ordering::Acquire);
     if !shared.is_null()
         && let Some(worker) = unsafe { &*shared }.decode_waker.get()
@@ -607,7 +471,6 @@ fn reclaim_payloads() {
     if queue.is_null() {
         return;
     }
-    // Only the decode worker or the quiescent loader drains this queue.
     let queue = unsafe { &*queue };
     let shared = sampling::SHARED.load(Ordering::Acquire);
     let frames = if shared.is_null() {
@@ -649,11 +512,8 @@ fn reclaim_payloads() {
     }
 }
 
-/// The decode worker's empty retirement storage, swapped in at its next drain.
 static SPARE_RETIREMENT: Mutex<Vec<RetiredPayload>> = Mutex::new(Vec::new());
 
-/// Enqueue a frame for decode (or ordered forwarding for skip hours) by value, as tests build
-/// their jobs. None unless an allocation failed, which returns the job.
 #[cfg(test)]
 pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     if crate::allocation::failed() {
@@ -665,9 +525,6 @@ pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     None
 }
 
-/// Hands the hour's job, filled in place in its frame's slot, to the decode worker. Only a
-/// failed allocation refuses it: the job's payloads retire to their pools for the existing
-/// gap path and it returns false.
 pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
     if crate::allocation::failed() {
         recycle_payloads(reserved.job());
@@ -685,7 +542,6 @@ fn enqueued(shared: &Shared) {
     }
 }
 
-/// Return an unqueued job's payloads to their pools.
 fn recycle_payloads(job: &mut DecodeJob) {
     if let Some(payload) = job.relations_payload.take() {
         recycle_relations_job(payload);
@@ -749,8 +605,6 @@ fn recycle_payloads(job: &mut DecodeJob) {
     }
 }
 
-/// The single FIFO decode worker. Game frames arrive in hour order and hand
-/// off to the spool ready queue in the same order; no reorder buffer exists.
 fn decode_loop() {
     let _worker = crate::allocation::enter(crate::allocation::Phase::Decode);
     let mut air_bases_memo = AirBasesMemo::default();
@@ -799,9 +653,6 @@ pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
     }
 }
 
-/// The worker owns the raw payloads through decoding, then returns every
-/// family to its pool. Dropping this envelope without recycling used to
-/// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
     shared.frame_stage(job.index, sampling::FrameStage::Decoding);
     let failure_scope = failure::Scope::frame(failure::Frame {
@@ -831,17 +682,12 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     } else {
         crate::allocation::attempted_hour(Some(job.hour));
     }
-    // Enqueue follows the callback's failed-payload retirement. Drain after
-    // taking this frame, before publication lets the spool thread return its
-    // lease. Draining before the queue pop permits one slot to retire twice.
     failure::stage("frame retirement", None);
     reclaim_payloads();
     if !crate::allocation::failed() {
         process_job(shared, &mut job, air_bases_memo);
     }
 
-    // Return even a terminally skipped frame's loan. Its Drop forgets an
-    // incomplete settlement, so later acquisition never carries a partial tree.
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.map.naval.discard_owned();
     frame.extended.discard_owned_censuses();
@@ -913,8 +759,6 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
-    // This worker holds the frame alone, off the game thread: charge its whole size, capture
-    // and decode growth included, before the spool can queue it, and stamp the frame with it.
     shared.measure_frame(job.index);
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
@@ -923,7 +767,6 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     failure::stage("publish ready", None);
     shared.frame_stage(job.index, sampling::FrameStage::Ready);
     let published = publish_ready(shared, job.index, job.game_elapsed);
-    // No frame reference or diagnostic lease survives its ready publication.
     drop(failure_scope);
     failure::stage("after ready handoff", None);
     if published {
@@ -932,8 +775,6 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     crate::allocation::attempted_hour(None);
 }
 
-/// Hands a decoded frame to the spool, unless an allocation failed: the spool may have stopped
-/// and can no longer return it, so teardown joins this worker instead.
 fn publish_ready(shared: &Shared, index: usize, elapsed: i64) -> bool {
     let completed = &shared.frames.slot(index).completed;
     if crate::allocation::failed() {
@@ -963,8 +804,6 @@ fn exercise_projects() -> Option<ProjectsJob> {
     Some(payload)
 }
 
-/// One projects decode: whether a refused allocation cost its tables by name while the frame
-/// was still published.
 #[cfg(test)]
 pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
     let Some(payload) = exercise_projects() else {
@@ -1000,9 +839,6 @@ pub(crate) struct RefusalHour {
     pub(crate) capitulation: engine_native::walk::Outcome,
 }
 
-/// One hour of two payload decodes, projects and capitulation, on the frame `index`, which the
-/// caller holds: `arm` runs once the payload is built, then the hour is decoded, taken back from
-/// the ready queue when published, and prepared again.
 #[cfg(all(test, feature = "alloc-fault-injection"))]
 pub(crate) fn refusal_exercise(
     shared: &Shared,
@@ -1075,7 +911,6 @@ pub fn start_worker() -> Result<(), &'static str> {
 const MISSING_PAYLOAD_REASON: &str = "missing active decode payload";
 const ALLOCATION_REASON: &str = "capture buffer allocation failed";
 
-/// One payload decode's tables, as one verdict refuses them.
 #[derive(Clone, Copy)]
 enum Family {
     Relations,
@@ -1181,8 +1016,6 @@ fn fail_family(frame: &mut sampling::Captured, family: Family, reason: &'static 
     }
 }
 
-/// A declared handoff without its payload is terminal. An undeclared handoff
-/// may already contain typed results or skipped outcomes, which remain intact.
 fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
     let mut missing = |refresh: bool, present: bool, family: Family| {
         if refresh && !present {
@@ -1229,8 +1062,6 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
     );
 }
 
-/// A payload decode runs contained: a refused allocation in it costs its family's tables this
-/// hour, by name, instead of the capture, and the next hour decodes again.
 fn decode_contained(
     shared: &Shared,
     index: usize,
@@ -1245,8 +1076,6 @@ fn decode_contained(
     refused
 }
 
-/// Decode one FIFO item and hand its pooled frame to the spool ready queue
-/// in FIFO hour order. Skip items forward without touching typed rows.
 fn process_job(
     shared: &Shared,
     job: &mut DecodeJob,
@@ -1258,7 +1087,6 @@ fn process_job(
     }
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
-    // Return presentation's cross-frame store before independent publication.
     decode_presentation(shared, job.index);
     failure::stage("owned capture tails", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
@@ -1563,7 +1391,6 @@ fn process_job(
             );
         });
         if refused {
-            // A refused hour's words are no comparison for the next.
             let _ = tracker.observe(job.hour, None);
         }
         account_decode(shared, &WEATHER, &decode_ticks);
@@ -1593,8 +1420,6 @@ fn account_decode(shared: &Shared, tables: &[TableId], ticks: &[u64]) {
     let _ = (shared, tables, ticks);
 }
 
-/// The FIFO worker owns the frame; this packet has no raw decode dependency.
-/// Return its held-store loan before unrelated families can delay the next hour.
 fn decode_presentation(shared: &Shared, index: usize) {
     failure::stage("division presentation", None);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1611,11 +1436,6 @@ fn decode_presentation(shared: &Shared, index: usize) {
     }
 }
 
-/// Detach drain (runtime only, after callback quiescence): stop the worker,
-/// join it, then synchronously decode any remaining FIFO items in order and
-/// hand them to the spool ready queue before the existing spool drain runs.
-/// The spool thread is still consuming, so handoffs make progress.
-/// `drained` receives the count of queued jobs decoded so far, after each.
 pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     let _failure = failure::Scope::worker("decode detach drain");
     STOP.store(true, Ordering::Release);
@@ -1654,8 +1474,6 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         return panic_failure().or(error).map_or(Ok(()), Err);
     }
     let shared = unsafe { &*shared_ptr };
-    // The joined worker drops its memo. Drain owns one fresh entry and cannot
-    // race or retain references into worker/ready-queue storage.
     let mut air_bases_memo = AirBasesMemo::default();
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut count = 0;
@@ -1682,20 +1500,15 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     panic_failure().or(error).map_or(Ok(()), Err)
 }
 
-/// Frame `index`'s decode job, to fill in place: the game thread never moves a job (tens of
-/// KiB) through its stack. The caller holds the frame.
 pub fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
     Reserved { shared, index }
 }
 
-/// The oldest queued job, moved out of its frame's slot.
 pub fn pop(shared: &Shared) -> Option<DecodeJob> {
     let index = shared.frames.pop_decode()?;
-    // SAFETY: popping the index hands its frame, and so its job, to this consumer.
     Some(std::mem::take(unsafe { shared.frames.job(index) }))
 }
 
-/// Queues a job built by value into its frame's slot, as tests build them.
 #[cfg(test)]
 pub fn push(shared: &Shared, job: DecodeJob) {
     let mut reserved = reserve(shared, job.index);
@@ -1703,8 +1516,6 @@ pub fn push(shared: &Shared, job: DecodeJob) {
     reserved.publish();
 }
 
-/// A frame's job, until published. Dropped unpublished, it is left vacant: payloads it still
-/// holds are dropped, like the locals they replace.
 pub struct Reserved<'a> {
     shared: &'a Shared,
     index: usize,
@@ -1712,11 +1523,9 @@ pub struct Reserved<'a> {
 
 impl Reserved<'_> {
     pub fn job(&mut self) -> &mut DecodeJob {
-        // SAFETY: this reservation's caller holds the frame.
         unsafe { self.shared.frames.job(self.index) }
     }
 
-    /// Hands the job to the consumer.
     fn publish(self) {
         self.shared.frames.push_decode(self.index);
         std::mem::forget(self);
@@ -1726,7 +1535,6 @@ impl Reserved<'_> {
 impl Drop for Reserved<'_> {
     fn drop(&mut self) {
         let job = self.job();
-        // Field by field: no vacant job is built on this stack.
         job.relations_payload = None;
         job.characters_payload = [const { None }; CHARACTER_PARTS];
         job.projects_payload = None;
@@ -1754,8 +1562,6 @@ impl Drop for Reserved<'_> {
 pub(crate) fn reset_for_test() {
     prepare_retirement().unwrap();
     reclaim_payloads();
-    // Production prepares bounded payload storage before installing the hook.
-    // Tests exercise that lifecycle rather than relying on cold tick allocation.
     std::mem::forget(prepare_payload_pools(false).unwrap());
     SEQ.store(0, Ordering::Relaxed);
 }

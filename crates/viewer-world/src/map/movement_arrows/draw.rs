@@ -1,4 +1,3 @@
-//! Selected-unit arrow submission, separate from the battle-plan b3 pass.
 use std::{
     io,
     sync::{Arc, OnceLock},
@@ -58,7 +57,6 @@ struct Compiled {
     layouts: Vec<gpu::VertexLayout>,
 }
 
-/// An error means the native texture binding is unknown, rather than a known null texture.
 pub type Texture = Result<Option<wgpu::TextureView>, String>;
 
 pub struct Arrow {
@@ -71,7 +69,6 @@ pub struct Arrow {
 }
 
 impl Arrow {
-    /// Content selection is cheap; compilation waits until this arrow type has a bucket.
     pub fn new(
         effect: &Arc<Effect>,
         samples: u32,
@@ -81,8 +78,6 @@ impl Arrow {
         let source = &effect.source;
         let (state, depth_state, samplers) =
             if let Some(technique) = source.technique("ArrowEffect") {
-                // The sampler array extends to the highest register plus one, leaving gaps null.
-                // Bind only the first min(count, 4) PS slots. VS slots remain retained.
                 let samplers = source
                     .common
                     .samplers
@@ -98,8 +93,6 @@ impl Arrow {
                     samplers,
                 )
             } else {
-                // Negative or missing effect lookup returns an empty record. Its depth
-                // state falls back to the scene default with comparison ALWAYS.
                 (
                     gpu::State {
                         samplers: Default::default(),
@@ -144,7 +137,6 @@ impl Arrow {
 
     fn compiled(&self) -> &Result<Option<Compiled>, String> {
         self.compiled.get_or_init(|| {
-            // A visual mod's replacement that cannot be drawn here falls back to the recording.
             shader_pipeline::library::with_recorded(&self.effect, |effect| {
                 let build = || -> Result<_, String> {
                     let Some(selection) = effect.select("ArrowEffect")? else {
@@ -162,14 +154,11 @@ impl Arrow {
         })
     }
 
-    /// Bind a nonempty type bucket before testing any of its arrows' frusta.
-    /// Other buffers, VS resources and the rasterizer stay inherited from the scene.
     pub fn bind_style(&self, retained: &mut shader_scene::State, textures: &[Texture; 4]) {
         let compiled = self.compiled();
         let stream = &mut retained.stream;
         stream.bind_depth_stencil(self.depth.clone());
         stream.bind_blend(self.state.blend, self.state.write_mask);
-        // Selection changes shaders/input layout and leaves the rasterizer retained.
         match compiled {
             Ok(Some(compiled)) => {
                 stream.bind_program(Some(compiled.selection.clone()), compiled.layouts.clone())
@@ -186,8 +175,6 @@ impl Arrow {
         }
     }
 
-    /// Submit an admitted arrow after its bucket's [`Self::bind_style`]. Only b1 and
-    /// the vertex allocation change here; shader usage controls unknown-texture refusals.
     pub fn prepare(
         &self,
         arena: &gpu::Arena,
@@ -197,9 +184,6 @@ impl Arrow {
         constants: &[u8; 112],
         textures: &[Texture; 4],
     ) -> io::Result<NativeSubmission> {
-        // The unpooled request is 0x70 bytes, aligned to 112.
-        // Upload matrix/callback/zero/wrap through byte 100. Discard padding
-        // 100..112 is inside the allocation; reads at 112 and beyond are zeros.
         for stage in [Stage::Vertex, Stage::Pixel] {
             retained.stream.bind_partial_constants(
                 1,
@@ -229,15 +213,12 @@ impl Arrow {
     }
 }
 
-/// Restore the scene rasterizer after all arrow buckets, including an empty pass.
-/// Device initialization creates that handle from the default state.
 pub fn restore_depth(retained: &mut shader_scene::State) {
     retained
         .stream
         .bind_depth_stencil(DepthStencilState::default());
 }
 
-/// The caller owns the native bucket/wrap order, attachments and scissor rectangle.
 pub fn draw(pass: &mut wgpu::RenderPass<'_>, submission: &NativeSubmission, count: u32) {
     shader_pipeline::gpu::stats::pipeline();
     pass.set_pipeline(&submission.pass.pipeline.pipeline);
@@ -284,8 +265,6 @@ mod tests {
         )
         .unwrap();
         arrow.bind_style(&mut retained, &textures);
-        // A missing technique retains both the declaration and its old stride until
-        // an admitted arrow makes the native IA bind. No prepare/frustum draw ran.
         assert_eq!(retained.stream.vertex_layouts().unwrap(), declaration);
 
         let source = Program {

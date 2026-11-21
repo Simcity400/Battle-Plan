@@ -1,12 +1,3 @@
-//! Pass-owned country-reference observations. Raw zero and a readable nonzero
-//! link to zero select authenticated physical slot zero. Positive slots retain
-//! every ordinary Reader::at check. Paired country lookup uses the same rules
-//! without changing the positive-only Reader API.
-//!
-//! Prepare storage off acquisition and reset it once for the held pass. Workers
-//! may grow from original headers and distinct queries. Borrowed contexts never
-//! retain Reader or source across worker loans. Synthetic coverage is separate
-//! from live, save and performance acceptance.
 
 use std::{
     cell::{Cell, RefCell},
@@ -20,8 +11,6 @@ type CountryResult = Result<Country, &'static str>;
 type SlotResult = Result<Option<Country>, &'static str>;
 type LinkResult = Result<u32, &'static str>;
 
-/// Two private instances keep raw aliases and physical slots in separate
-/// namespaces. Open addressing avoids a linear alias scan at mod-sized counts.
 struct Results<T: Copy> {
     entries: Vec<Option<(u32, T)>>,
     capacity: usize,
@@ -98,8 +87,6 @@ impl<T: Copy> Results<T> {
                     return true;
                 }
             }
-            // After a refused growth, further unseen IDs cannot be uniquely
-            // counted. Refuse before querying them and report this lower bound.
             self.short = true;
             false
         }
@@ -127,15 +114,11 @@ impl<T: Copy> Results<T> {
     }
 }
 
-/// Owned results for one exclusively loaned acquisition pass. Growth in the
-/// pass retains every earlier result.
 pub struct NativeReferenceMemo {
     identity: Option<(usize, usize)>,
     reserved: Cell<Option<super::ReservedCountryObservation>>,
     positive: Cell<Option<Result<[Array; 2], &'static str>>>,
     raw: RefCell<Results<CountryResult>>,
-    // Distinct resolved nonzero slots cannot outnumber admitted raw resolves.
-    // A sparse lane at that same bound retains at's Ok, None AND Err.
     canonical: RefCell<Results<SlotResult>>,
     links: RefCell<Vec<Option<LinkResult>>>,
     link_used: Cell<usize>,
@@ -149,9 +132,6 @@ impl Default for NativeReferenceMemo {
 }
 
 impl NativeReferenceMemo {
-    /// Allocation-free placeholder after a caller's terminal construction
-    /// failure. It carries no observation or pass identity and cannot undo
-    /// the already latched allocation failure.
     pub const fn vacant() -> Self {
         Self {
             identity: None,
@@ -189,18 +169,14 @@ impl NativeReferenceMemo {
         self.link_required.set(0);
     }
 
-    /// Exactly once before Orders, never again while loaning this pass to Late.
     pub fn reset(&mut self, base: usize, game_state: usize) {
         self.clear();
         self.identity = Some((base, game_state));
     }
 
-    /// Only between passes, off acquisition. Clears the pass even on a failed
-    /// growth attempt; a subsequent reset is required before any view is used.
     pub fn reserve(&mut self, raw_references: usize, links: usize) -> io::Result<()> {
         self.clear();
         if raw_references > self.raw.get_mut().capacity {
-            // Construct both before replacing either; no partial arena pair.
             let raw = Results::new(raw_references)?;
             let canonical = Results::new(raw_references)?;
             *self.raw.get_mut() = raw;
@@ -212,7 +188,6 @@ impl NativeReferenceMemo {
         Ok(())
     }
 
-    /// Borrow a source for this worker only. No header, root or native read.
     pub fn view<'a, M: Memory>(
         &'a self,
         memory: &'a M,
@@ -233,7 +208,6 @@ impl NativeReferenceMemo {
     pub fn raw_used(&self) -> usize {
         self.raw.borrow().used
     }
-    /// Exact admitted unique demand; a known lower bound after exhaustion.
     pub fn raw_required(&self) -> usize {
         self.raw.borrow().required
     }
@@ -249,14 +223,10 @@ impl NativeReferenceMemo {
     pub fn link_used(&self) -> usize {
         self.link_used.get()
     }
-    /// Exact live link-table width once the positive context was observed.
     pub fn link_required(&self) -> usize {
         self.link_required.get()
     }
 
-    /// Actual retained arena heap capacities, excluding inline state and
-    /// allocator metadata. The containing frame already counts this embedded
-    /// value's inline size; a worker loan adds no second heap charge.
     pub fn allocated_bytes(&self) -> usize {
         self.raw.borrow().heap_bytes()
             + self.canonical.borrow().heap_bytes()
@@ -294,8 +264,6 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         if let Some(observation) = self.memo.reserved.get() {
             return observation;
         }
-        // A missing shared source is never permission to authenticate slot0
-        // again or construct a positive Reader. Retain its first failure too.
         let mut observation =
             super::cached_reserved_observation(self.memory, self.base, self.game_state)
                 .unwrap_or_else(|| {
@@ -318,15 +286,11 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         if let Some(result) = self.memo.positive.get() {
             return result;
         }
-        // With no link array yet, this adapter delegates ordinary header reads
-        // but still retains the first shared reserved result seen by Reader.
         let memory = ObservedLinks::new(self, None);
         let result = Reader::new(&memory, self.base, self.game_state).map(|reader| reader.arrays());
         if let Ok([_, links]) = result {
             self.memo.link_required.set(links.count as usize);
         }
-        // Resolve the full original link domain. Grow storage before any link
-        // resolution and retain observed headers on failure.
         let result = result.and_then(|arrays| {
             let mut links = self.memo.links.borrow_mut();
             let required = arrays[1].count as usize;
@@ -340,8 +304,6 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         result
     }
 
-    /// The native numeric slot, not a claim that an object is authenticated.
-    /// Zero does not demand the reserved object or positive array headers.
     pub fn canonical_slot(&self, raw: u32) -> LinkResult {
         self.check()?;
         if raw == 0 {
@@ -369,8 +331,6 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
             let result = Reader::from_arrays(&memory, self.base, self.game_state, arrays)
                 .and_then(|reader| reader.link(raw).map(|slot| slot.unwrap_or(0)));
             let result = memory.result(result);
-            // A complete authenticated roster can answer link without copy.
-            // Keep that exact owned observation in the same result lane.
             let mut entries = self.memo.links.borrow_mut();
             if entries[raw as usize].is_none() {
                 entries[raw as usize] = Some(result);
@@ -427,8 +387,6 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
     }
 }
 
-/// Intercepts only scalar words at exact valid elements of this pass's
-/// observed links array. Other reads and the shared authentication delegate.
 struct ObservedLinks<'c, 'a, M: Memory> {
     context: &'c NativeReferenceContext<'a, M>,
     links: Option<Array>,

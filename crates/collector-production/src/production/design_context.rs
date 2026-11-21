@@ -1,6 +1,3 @@
-//! Demanded country operands, refreshed by existing accumulator notifications.
-//! Everything here runs on acquisition/observer workers. Quiet publication only
-//! increments an immutable snapshot's reference count.
 use super::*;
 use collector_observers::country_input_changes::{self as changes, Changes};
 use std::{
@@ -8,7 +5,6 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
-// The native designer requests the common factor and its equipment-family factor.
 const COMMON_COST_FACTOR: u32 = 0x1d7;
 const AIR_COST_FACTOR: u32 = 0x1da;
 const TANK_COST_FACTOR: u32 = 0x1d9;
@@ -25,10 +21,6 @@ struct Demand {
     generation: u64,
 }
 
-/// Only nonidentity country references need an index. Resolve them during the
-/// already demanded numeric read, and route native owner notifications back to
-/// those raw creator scopes. No country lookup is needed while decoding an
-/// owned design event.
 #[derive(Default)]
 struct Owners {
     aliases: HashMap<u32, u32>,
@@ -100,7 +92,6 @@ struct Cache {
     modules: HashMap<u32, u32>,
     upgrade_currencies: HashMap<u32, u32>,
     owners: Owners,
-    /// True for a native writer/epoch; false for newly demanded keys only.
     dirty: HashMap<u32, bool>,
     values: HashMap<(u32, u32), rows::DesignCountryModifierRow>,
     snapshot: Snapshot,
@@ -648,9 +639,6 @@ fn reseed_organisation_owner(
     if definition.organisation_pointer.is_some() || state.design_team == 0 {
         return organisation_owner(memory, base, definition);
     }
-    // A carried design deliberately has no visit-local organisation pointer.
-    // Context recovery resolves only that reached raw author, not the design.
-    // A frozen negative lookup is not proof of current author liveness.
     if state.design_team_serialized
         && state.design_team as u32
             != engine_production::nindustrial_organisation_corganisation::REFERENCE_TYPE_ID
@@ -784,8 +772,6 @@ fn seed_cached_with(
     cold: Option<ColdSeed>,
     refresh: impl FnOnce(&mut Cache) -> Result<Snapshot, &'static str>,
 ) -> Result<Snapshots, &'static str> {
-    // Country-context admission is independent of the three design proofs.
-    // Retry only on this existing daily visit, never by forcing design reads.
     let full = full || !cache.seeded || cache.failure.is_some();
     if cache.failure.is_some() {
         let failures = cache.failures;
@@ -858,7 +844,6 @@ fn seed_demands(
             demand.generation = generation;
             continue;
         }
-        // The legacy module census is already owned; no new native module walk.
         if let Some(cold) = cold.as_mut() {
             let row = cold
                 .next()
@@ -919,7 +904,6 @@ pub(super) fn remove(variant: u64) -> Result<(), &'static str> {
     cache().remove(variant)
 }
 
-/// Records the demand of a design the boundary read: its owner's country and context keys.
 pub(super) fn event(
     memory: &impl Memory,
     base: usize,
@@ -938,8 +922,6 @@ pub(super) fn event(
     }
     Ok(())
 }
-/// Current author liveness can change its country demand independently of the
-/// frozen design lookup witness. Reuse the boundary's resolved raw reference.
 pub(super) fn author(
     memory: &impl Memory,
     base: usize,
@@ -1053,8 +1035,6 @@ fn capture_inner(
     Ok((modifiers, templates))
 }
 pub(super) fn invalidate() {
-    // Also called at a callback boundary. Do not drop owner maps or shared
-    // payloads there; the acquisition worker retires them before its next read.
     INVALIDATED.store(true, std::sync::atomic::Ordering::Release);
     super::design_template_changes::invalidate();
 }
@@ -1655,7 +1635,6 @@ impl ColdSeed {
             .map_err(|_| "design context seed join allocation failed")?;
         engine_allocation::reserve_map(&mut cache.template_dirty, template_count)
             .map_err(|_| "design context seed join allocation failed")?;
-        // Move shard-owned maps; do not rebuild each design's demands on the parent.
         for mut part in self.caches {
             for (country, keys) in part.countries.drain() {
                 if let Some(target) = cache.countries.get_mut(&country) {
@@ -1717,7 +1696,6 @@ fn seed_operand(
 fn seed_operands(cache: &mut Cache, parts: &mut [CountryPart], memory: &impl Memory, base: usize) {
     let _reads = read_accounting::table(TableId::DesignCountryModifiers);
     let mut failure = None;
-    // Native first occurrences stay serial; owned per-design aggregation stays parallel.
     for part in parts {
         let seed = part.seed.as_mut().unwrap();
         for input in &mut seed.inputs {

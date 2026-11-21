@@ -86,7 +86,6 @@ impl Fixture {
         for (index, branch) in branches.iter().copied().enumerate() {
             world.u64(branch_vector + (index + 1) * 8, branch as u64);
             world.u64(branch, (module + BRANCH_VTABLE_RVA.0) as u64);
-            // Native valid checks accept nonzero, rather than normalising it.
             world.put(branch + VALID, &[0x7f]);
             world.u32(branch + TOKEN, 11 + index as u32);
         }
@@ -110,7 +109,6 @@ impl Fixture {
         let globals = world.alloc(3 * 8);
         world.u64(globals + 8, definitions[0] as u64);
         world.u64(globals + 16, definitions[1] as u64);
-        // Token 7 in the second branch deliberately has no global pointer entry.
         world.array(database + DATABASE_UPGRADES, globals, 3);
         let entries = world.alloc(3 * ENTRY_STRIDE);
         for (index, (definition, level)) in [

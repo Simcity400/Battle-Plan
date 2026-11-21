@@ -35,7 +35,6 @@ test('a timeline unmounting answers resizes, scrolls and frames between its refs
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'timeline-detached', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        // The viewport is read from the elements it is given, never from cleared refs.
         if (path.endsWith('/charts/timeline/viewport.ts')) return `export * from '/ui/src/charts/timeline/viewport.ts?actual';
           export const timelineViewport = (spacer, scrolling) => { if (!spacer || !scrolling) throw new Error('read a cleared ref'); return globalThis.__timelineDetached.viewport; };`;
         if (path.endsWith('/charts/liveMotion.ts')) return 'export const useMotionNow = () => given => given;';
@@ -61,7 +60,6 @@ test('a timeline unmounting answers resizes, scrolls and frames between its refs
     for (const ref of refs) ref.current = element;
     for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
     assert.ok(resized.length && scrolled.length && state.frame, 'the effect observes, listens and schedules');
-    // Unmounting: React clears the refs and detaches the nodes before this effect's cleanup runs.
     for (const ref of refs) ref.current = null;
     element.isConnected = false;
     for (const changed of resized) assert.doesNotThrow(changed, 'a resize');

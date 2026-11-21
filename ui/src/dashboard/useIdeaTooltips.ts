@@ -9,26 +9,14 @@ import { ideaTooltipSources } from './ideaTooltip.ts';
 import type { BoundTrack } from './model';
 import type { IdeaHistoryReply } from '../generated/dashboard';
 
-/** What the idea widgets' tooltips read: the formats and texts of the reply, each
- * idea and its artwork, and the countries targeted modifiers name, as they were
- * when each idea was taken on (else `fallbackName`, which must hold at any hour, or
- * the loading or unavailable wording; never the metadata's name, from another date).
- * Those names are read on demand, only for the tooltips actually built, each hour
- * once, so however long the campaign, every name shown can be read. What is asked
- * for is bounded by the reply (its ideas' targets at their hours), not by time, and
- * is dropped with the reply; nothing asked is ever dropped while it is still shown,
- * so asking never repeats itself. */
-/** How long a failed name read waits before it is asked for again. */
 const RETRY_MS = 10_000;
 
 export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork' | 'modifiers' | 'texts'> | undefined, track: Pick<BoundTrack, 'source' | 'branch'> | undefined,
   client: DashboardClient, active: boolean, fallbackName?: (tag: string) => string) {
   const [requested, setRequested] = useState<NameAt[]>([]);
-  // When each name was last asked for, so one whose read failed is asked again, at most every few seconds.
   const asked = useRef(new Map<string, number>());
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { setRequested([]); asked.current.clear(); }, [data, track?.source.id, track?.source.revision, track?.branch.id]);
-  // Asked for only as tooltips are built, so no cap on hours is needed; the store keeps every hour asked.
   const names = useCountryNamesAt(client, track, requested, active, Infinity, attempt);
   return useMemo(() => {
     if (!data || !track) return null;
@@ -37,8 +25,6 @@ export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork'
       const key = nameKey(hour, tag);
       const read = names.get(key);
       if (read?.kind === 'value') return read.value;
-      // Asked for only while the widget is shown, after this render. One whose read
-      // failed is asked again when shown again, at most every RETRY_MS.
       const last = asked.current.get(key);
       const now = performance.now();
       if (active && last == null) {

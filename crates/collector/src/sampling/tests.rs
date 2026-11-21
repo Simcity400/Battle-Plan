@@ -27,7 +27,6 @@ impl engine_native::Memory for NoRosterRetry<'_> {
     }
 }
 
-/// A rejected submission as `submit_retained` leaves it: parked in the pool.
 fn park(batch: &mut acquisition::Batch<'_>, request: acquisition::Job) -> PendingAcquisition {
     let mut retained = Some(request);
     PendingAcquisition::Rejected(batch.park(&mut retained).expect("free acquisition slot"))
@@ -53,7 +52,6 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     let rejected = park(&mut batch, request);
     let reads = crate::read_accounting::Capture::new();
     let completed = crate::test_support::with_allocations_denied(|| {
-        // SAFETY: rejection must return the owned packet without executing it.
         unsafe { finish_acquisition(&shared, &mut batch, rejected) }
     });
     assert!(matches!(
@@ -83,9 +81,6 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     assert_eq!(pool.calibration().executor.uncollected, 0);
 }
 
-/// The hourly body holds a pending join for every dispatched job at once, on
-/// the game thread's stack: a join is a ticket, and a rejected request waits
-/// parked in the pool rather than in the join.
 #[test]
 fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     assert!(size_of::<PendingAcquisition>() <= 2 * size_of::<acquisition::Ticket>());
@@ -104,14 +99,12 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
         },
         payload,
     });
-    // SAFETY: the stopped pool runs nothing; the batch drains its tickets.
     let pending = unsafe { submit_acquisition(&shared, &mut batch, request) };
     assert!(matches!(pending, PendingAcquisition::Rejected(_)));
     let calibration = pool.calibration();
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.queued, 0);
     let completed = crate::test_support::with_allocations_denied(|| {
-        // SAFETY: as above.
         unsafe { finish_acquisition(&shared, &mut batch, pending) }
     });
     assert!(matches!(
@@ -143,7 +136,6 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
         let request = captured.take_air_missions_request(&countries, 0, 0, None);
         let owner = &*request.pack as *const _;
         let pending = park(&mut batch, acquisition::Job::AirMissions(request));
-        // SAFETY: the stopped pool owns only the retained rejected request.
         let completed = crate::test_support::with_allocations_denied(|| unsafe {
             finish_acquisition(&shared, &mut batch, pending)
         });
@@ -157,8 +149,6 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
         };
         assert_eq!(&*request.pack as *const _, owner);
         captured.restore_air_missions_request(request, false);
-        // A cold attach and a subsequent gap recovery both admit an explicit
-        // table refusal, never an incomplete row masquerading as a value.
         let tables = captured.air_wing_pilot().tables();
         let mut source = replay_frame::frame::DecodedFrame {
             branch: 1,
@@ -183,9 +173,6 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
     }
 }
 
-/// A rejected Presentation job is terminal like every worker-only job: its
-/// join fails the merged report even when the movement pass beside it read,
-/// so the whole presentation is refused once both loans are home.
 #[test]
 fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     let shared = Shared::new(0, 0, 1);
@@ -205,11 +192,9 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
         army_stats: None,
     };
     let movement = request.take_movement();
-    // SAFETY: the stopped pool runs nothing; the batch drains its tickets.
     let pending =
         unsafe { submit_acquisition(&shared, &mut batch, acquisition::Job::Presentation(request)) };
     assert!(matches!(pending, PendingAcquisition::Rejected(_)));
-    // SAFETY: as above.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
     let acquisition::Job::Presentation(mut request) = completed.request else {
         panic!("parked presentation lost");
@@ -234,9 +219,6 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     );
 }
 
-/// The stopped pool an Orders panic leaves rejects the Fronts job: the join
-/// gets its part back whole, and a part whose Orders job failed keeps that
-/// reason; a part whose Orders job completed fails as the Fronts job's own.
 #[test]
 fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
     use crate::extended::plans::{Capacities, Captured};
@@ -263,10 +245,8 @@ fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
         let fronts = plans.take_fronts();
         let bytes = fronts.allocated_bytes();
         let request = acquisition::Job::Fronts(acquisition::FrontsRequest { base: 0, fronts });
-        // SAFETY: the stopped pool runs nothing; the batch drains its tickets.
         let pending = unsafe { submit_acquisition(&shared, &mut batch, request) };
         assert!(matches!(pending, PendingAcquisition::Rejected(_)));
-        // SAFETY: as above.
         let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
         assert!(matches!(
             completed.report,
@@ -281,9 +261,6 @@ fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
     }
 }
 
-/// A refused OrdersPart job returns its part unrun, and the join fails the
-/// census with the admission reason a refused Orders job has; a part that
-/// ran and failed keeps the acquisition reason.
 #[test]
 fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
     let shared = Shared::new(0, 0, 1);
@@ -298,10 +275,8 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
         part,
         rejected: false,
     });
-    // SAFETY: the stopped pool runs nothing; the batch drains its tickets.
     let pending = unsafe { submit_acquisition(&shared, &mut batch, request) };
     assert!(matches!(pending, PendingAcquisition::Rejected(_)));
-    // SAFETY: as above.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
     assert!(completed.report.is_ok());
     let acquisition::Job::OrdersPart(request) = completed.request else {
@@ -321,10 +296,6 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
     assert_eq!(ran.failure(false), None);
 }
 
-/// An Orders job or part that fails while running stops the pool, which then
-/// refuses the OrdersStitch job: the census and plans keep the acquisition
-/// reason, as a failed single Orders job's would. A refused stitch over a
-/// census nothing failed takes the admission reason.
 #[test]
 fn a_rejected_stitch_keeps_an_earlier_order_failure() {
     use crate::extended::plans::{Capacities, Captured};
@@ -351,12 +322,10 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
         if let Some(reason) = earlier {
             request.fail(reason);
         }
-        // SAFETY: the stopped pool runs nothing; the batch drains its tickets.
         let pending = unsafe {
             submit_acquisition(&shared, &mut batch, acquisition::Job::OrdersStitch(request))
         };
         assert!(matches!(pending, PendingAcquisition::Rejected(_)));
-        // SAFETY: as above.
         let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
         let acquisition::Job::OrdersStitch(request) = completed.request else {
             panic!("rejected stitch lost");
@@ -374,7 +343,6 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
     }
 }
 
-/// An empty order request for the stitch tests, failed with `earlier`.
 fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::OrdersRequest {
     use crate::extended::plans::{Capacities, Captured};
     let mut request = acquisition::OrdersRequest {
@@ -391,12 +359,6 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
     request
 }
 
-/// The stitch leaves before jobs the census does not gate are dispatched, so
-/// its own panic must not stop the pool before its join: the panic is
-/// contained and reported, later submissions are still admitted, and the
-/// join stops the pool, counts the panic and fails the census with the
-/// acquisition reason, as a stitch submitted at the join's segment and
-/// failing there did. An uncontained panic stopped the pool at once.
 #[test]
 fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     use engine_native::walk::Outcome;
@@ -405,24 +367,19 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     let mut batch = acquisition::Batch::new(&pool);
     let job =
         || acquisition::Job::OrdersStitch(stitch_request(acquisition::STITCH_PANIC_BASE, None));
-    // SAFETY: the batch drains every accepted ticket before the pool drops.
     let pending = unsafe { submit_acquisition(&shared, &mut batch, job()) };
     assert!(matches!(pending, PendingAcquisition::Accepted(_)));
     batch.wait_ready(|batch| pending_complete(batch, &pending).then_some(()));
     assert!(!stitch_can_advance(&batch, &pending, false));
     assert!(stitch_can_advance(&batch, &pending, true));
-    // SAFETY: as above.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
     let Ok(acquisition::Report::OrdersStitch(report)) = completed.report else {
         panic!("a contained stitch panic is a report");
     };
     assert!(report.contained_panic);
     assert!(!batch.stopped(), "the panic did not stop the pool");
-    // A job dispatched before the stitch's join is still admitted.
-    // SAFETY: as above.
     let later = unsafe { submit_acquisition(&shared, &mut batch, job()) };
     assert!(matches!(later, PendingAcquisition::Accepted(_)));
-    // SAFETY: as above.
     drop(unsafe { finish_acquisition(&shared, &mut batch, later) });
     let acquisition::Job::OrdersStitch(mut request) = completed.request else {
         panic!("stitch request lost");
@@ -440,27 +397,19 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
             .panicked,
         1
     );
-    // SAFETY: as above.
     let refused = unsafe { submit_acquisition(&shared, &mut batch, job()) };
     assert!(matches!(refused, PendingAcquisition::Rejected(_)));
-    // SAFETY: as above.
     drop(unsafe { finish_acquisition(&shared, &mut batch, refused) });
 }
 
-/// A clean stitch can release fronts before unrelated joins, while a
-/// rejected stitch retains its original failure barrier and refusal path.
 #[test]
 fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
-    // An earlier census refusal makes this body a no-read clean completion;
-    // its original table-local reason must survive the early handoff.
     let job = acquisition::Job::OrdersStitch(stitch_request(0, Some("original census refusal")));
-    // SAFETY: the batch drains every accepted ticket.
     let pending = unsafe { submit_acquisition(&shared, &mut batch, job) };
     batch.wait_ready(|batch| stitch_can_advance(batch, &pending, false).then_some(()));
-    // SAFETY: as above.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
     let acquisition::Job::OrdersStitch(request) = completed.request else {
         unreachable!()
@@ -473,7 +422,6 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
     );
     drop(request);
     pool.shutdown().unwrap();
-    // SAFETY: the stopped pool runs no job; rejected storage stays in Batch.
     let pending = unsafe {
         submit_acquisition(
             &shared,
@@ -484,7 +432,6 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
     assert!(matches!(pending, PendingAcquisition::Rejected(_)));
     assert!(!stitch_can_advance(&batch, &pending, false));
     assert!(stitch_can_advance(&batch, &pending, true));
-    // SAFETY: as above.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
     let acquisition::Job::OrdersStitch(request) = completed.request else {
         unreachable!()
@@ -497,8 +444,6 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
     );
 }
 
-/// Publication, not collection order, releases the final borrowers. Parked
-/// cells supply unpublished tickets without racing a native reader.
 #[test]
 fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
@@ -510,8 +455,6 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
         .unwrap();
     let unpublished = PendingAcquisition::Accepted(ticket);
     let rejected = PendingAcquisition::Rejected(ticket);
-    // Residual Intel, capitulation, optional Session and Relations
-    // and the character parts: every scheduled producer must publish.
     let producers = 4 + CHARACTER_PARTS - 1;
     crate::test_support::with_allocations_denied(|| {
         assert!(!final_inputs_ready(&batch, false, [None]));
@@ -527,8 +470,6 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
                 })),
             ));
         }
-        // A rejected producer is collected through its normal failure path;
-        // an unrelated unpublished job is not part of this barrier.
         assert!(final_inputs_ready(
             &batch,
             true,
@@ -543,9 +484,6 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
     drop(batch.unpark(ticket).unwrap());
 }
 
-/// A contained stitch panic that the callback never settles, because it
-/// unwound before the stitch's join, is settled by the drain: counted once
-/// and the pool stopped, unless the pool had already stopped.
 #[test]
 fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
     let shared = Shared::new(0, 0, 1);
@@ -557,7 +495,6 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
                 acquisition::STITCH_PANIC_BASE,
                 None,
             ));
-            // SAFETY: the batch drains every accepted ticket on drop.
             let PendingAcquisition::Accepted(ticket) =
                 (unsafe { submit_acquisition(&shared, &mut batch, job) })
             else {
@@ -572,7 +509,6 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
             if stopped_first {
                 pool.shutdown().unwrap();
             }
-            // Dropped uncollected, as on an unwinding callback.
         }
         let calibration = pool.calibration();
         assert_eq!(
@@ -590,11 +526,6 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
     }
 }
 
-/// A stitch settles as if submitted at its join's segment. Where the pool had
-/// already stopped there, it would have been refused: a stitch that did not
-/// complete (cancelled while queued, or panicked) takes the admission reason
-/// and counts no panic; one that completed keeps its census. Otherwise a
-/// failure takes the acquisition reason. An earlier census reason stands.
 #[test]
 fn a_stitch_settles_with_the_reason_of_its_join_segment() {
     use engine_native::walk::Outcome;
@@ -628,9 +559,6 @@ fn a_stitch_settles_with_the_reason_of_its_join_segment() {
     assert_eq!(pool.calibration().executor.panicked, 0);
 }
 
-/// The callback carries the order census split from each stitched hour to
-/// the next through `Shared`, whichever pooled frame either hour uses; an
-/// hour whose stitch planned nothing leaves the next hour one part.
 #[test]
 fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
     use crate::extended::bench_world::{self, Shape};
@@ -645,11 +573,7 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
     );
     let memory = world.slice();
     let shared = Shared::new(0, 0, 10_000_000);
-    // One hour on `orders`, with `millis` of measured part work: the parts it
-    // prepares from the callback's split; `fail` fails it, as a failed job
-    // does, before its stitch.
     let hour = |orders: &mut Orders, millis: u64, fail: bool| {
-        // SAFETY: this test is the split's only reader and writer.
         unsafe { begin_order_parts(&shared, orders) };
         orders.walk_roots(&memory, world.base);
         orders.prepare_parts();
@@ -672,7 +596,6 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
             assert!(!orders.failed());
             orders.plan_split();
         }
-        // SAFETY: as above.
         unsafe { end_order_parts(&shared, orders) };
         count
     };
@@ -681,14 +604,10 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
         Orders::for_test(&MapCapacities::default()),
         Orders::for_test(&MapCapacities::default()),
     ];
-    // The first hour walks one part and measures enough work for all of them.
     assert_eq!(hour(&mut frames[0], 3, false), 1);
-    // The next, on a fresh frame, takes that split and prepares its boxes.
     assert_eq!(hour(&mut frames[1], 0, true), MAX_PARTS);
     assert!(frames[1].parts_allocated_bytes() >= MAX_PARTS * size_of::<Part>());
-    // It failed before planning: the next hour walks one part, on the first frame.
     assert_eq!(hour(&mut frames[0], 3, false), 1);
-    // And the hour after takes that hour's split on a third frame.
     assert_eq!(hour(&mut frames[2], 0, false), MAX_PARTS);
 }
 
@@ -721,7 +640,6 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
         ..Default::default()
     };
     let mut job = DivisionsJob::new_worker();
-    // Storage admission succeeds; the original native failure remains an outcome.
     assert!(copy_divisions_inputs_refresh(
         &memory, context, &mut job
     ));
@@ -859,8 +777,6 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
     };
     let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
     let hour = replay_data::cadence::refresh_slot(TableId::DivisionEquipment).unwrap() as i32;
-    // Exercise the final equipment consumers on their native slot; a full
-    // refresh also acquires the independent fuel contributor roster.
     assert!(!replay_data::cadence::should_walk(
         TableId::CountryFuel,
         hour,
@@ -879,8 +795,6 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
             division_sources: displaced_length,
             ..Default::default()
         });
-        // The original packet has moved; its displaced zero/short buffer cannot
-        // masquerade as a second complete observation of the same census.
         job.supply_sources(&mut sink, None);
         let mut frame = Captured::new();
         job.supply_sources(&mut frame.extended, None);
@@ -939,8 +853,6 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     let rejected = park(&mut batch, request);
     let reads = crate::read_accounting::Capture::new();
     let completed = crate::test_support::with_allocations_denied(|| {
-        // SAFETY: the rejected request acquired no native state; it must only
-        // return its owned storage for the caller's named unavailable outcome.
         unsafe { finish_acquisition(&shared, &mut batch, rejected) }
     });
     assert!(matches!(
@@ -1039,13 +951,10 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
             registry: 7_000
         }
     );
-    // A trained division carries a dynamic type minted from the registry.
     assert!(counters.minted_after((7_001 << 32) | 0x1268));
     assert!(!counters.minted_after((41 << 32) | 0x1268));
-    // The unit counter's own value is the next unit id.
     assert!(!counters.minted_after((39 << 32) | u64::from(engine_native::cship::HANDLE_TYPE)));
     assert!(counters.minted_after((40 << 32) | u64::from(engine_native::cship::HANDLE_TYPE)));
-    // An unreadable counter at the daily walk leaves the next hours unknown.
     struct Unreadable;
     impl Memory for Unreadable {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1122,7 +1031,6 @@ fn callback_time_waits_for_decode_and_includes_the_game_thread_tail() {
 fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
     use crate::slicing::{RESEARCH, SliceSelection};
     let shared = Shared::new(0, 0, 1);
-    // SAFETY: test thread only; nothing else holds the store.
     let store = || {
         unsafe { &mut *shared.slice_fingerprints[RESEARCH].get() }
             .as_mut()
@@ -1145,7 +1053,6 @@ fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
         frame.extended.prepare_hour(7, false);
         frame.clock = clock;
         drop_owned_frame(&shared, frame, index);
-        // Hour 7's slice (owner 7) was not published: read it again at hour 8.
         assert_eq!(
             early_at(8),
             expected,
@@ -1159,7 +1066,6 @@ fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
 fn a_family_the_spool_could_not_publish_is_read_in_full_next_hour() {
     use crate::slicing::{RAID_STATE, RESEARCH, SliceSelection};
     let shared = Shared::new(0, 0, 1);
-    // SAFETY: test thread only; nothing else holds the stores.
     let store = |family: usize| {
         unsafe { &mut *shared.slice_fingerprints[family].get() }
             .as_mut()
@@ -1177,14 +1083,12 @@ fn a_family_the_spool_could_not_publish_is_read_in_full_next_hour() {
         early_at(family, 0);
         assert_eq!(early_at(family, 1), 0);
     }
-    // The spool withheld a converted research read.
     shared
         .forget_families
         .fetch_or(1 << RESEARCH, Ordering::Release);
     forget_unpublished_families(&shared);
     assert_eq!(early_at(RESEARCH, 2), 2);
     assert_eq!(early_at(RAID_STATE, 2), 0);
-    // Once only.
     forget_unpublished_families(&shared);
     assert_eq!(early_at(RESEARCH, 3), 0);
 }
@@ -1219,13 +1123,10 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     let mut bytes = engine_allocation::SharedBox::<AtomicU64>::BYTES;
     bytes += unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
-    // One CountryIntel buffer and one held RaidAirScores table for the pool.
     bytes += shared.country_intel.allocated_bytes();
     bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.fixed_layout_buffer.get() }.capacity();
-    // The frame-priority pipeline is one shared allocation.
     bytes += engine_allocation::SharedBox::<crate::frame_priority::Pipeline>::BYTES;
-    // The pool's slots and the capacities a new frame is allocated from.
     bytes += shared.frames.slot_bytes() as usize;
     bytes += engine_allocation::SharedBox::<crate::frame_capacities::Capacities>::BYTES;
     for slot in shared.frames.slots() {
@@ -1247,10 +1148,6 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     assert_eq!(shared.pool_owned(), bytes as u64);
 }
 
-/// A spool stalled for more hours than the pool keeps never holds the game: each hour takes a
-/// new frame instead of waiting, every hour comes out of the decode FIFO in order, and once
-/// the spool catches up the frames past the steady count are freed. On the base the fifth
-/// hour waited for a frame (`buffer_wait_calls` counted it) until the spool returned one.
 #[test]
 fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frames() {
     use std::{collections::HashSet, sync::mpsc};
@@ -1304,16 +1201,6 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
     shared.recycle_frame(index);
 }
 
-/// A builder as slow as an hour, with the spool held back so every hour's frame stays taken: the
-/// game thread wakes it while the last free frame is still there, it keeps building while fewer
-/// than the next hour's and a spare are free, so every hour from the first past the steady frames
-/// takes a frame built ahead and none is built on the game thread. A burst faster than the
-/// builder still gets its frame at once, built on the game thread, and told to stop, the builder
-/// finishes the build under way and builds nothing more. Once the spool catches up its returns
-/// free every frame past the steady ones. On the base the builder was woken only when
-/// the free set was empty and built only what the backlog grew by since its last look, so the
-/// hour after the last steady frame was built on the game thread. Watched: a block anywhere fails
-/// the test with the step it was at.
 #[test]
 fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame() {
     use crate::frame_pool::{AHEAD, STEADY};
@@ -1326,7 +1213,6 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             let (started, builds) = mpsc::channel::<()>();
             let (release, released) = mpsc::channel::<()>();
             let released = Mutex::new(released);
-            // Each build ahead starts, then finishes once the test has taken the next hour.
             let installed = shared.build_ahead_seam.set(Box::new(move |at| {
                 if at == BuildAhead::Starting {
                     let _ = started.send(());
@@ -1361,7 +1247,6 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             for at in 1..=STEADY - AHEAD {
                 assert_eq!(hour(at, &mut held), 0, "hour {at}: {}", gauge());
             }
-            // This hour leaves the last free frame: the builder starts on the next one now.
             assert_eq!(hour(STEADY - 1, &mut held), 0, "{}", gauge());
             build_started(STEADY - 1);
             let hours = 4 * STEADY;
@@ -1371,13 +1256,11 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
                 assert_eq!(gauge.grown, 0, "hour {at}: {gauge:?}");
                 assert_eq!(gauge.ahead_taken, (at - STEADY) as u64, "hour {at}: {gauge:?}");
                 builder.release();
-                // The next build starts only once the one released is in the free set.
                 build_started(at);
             }
             let behind = shared.frames.gauge();
             assert_eq!((behind.in_flight, behind.free, behind.grown), (hours, 1, 0), "{behind:?}");
             assert_eq!(behind.built_ahead, (hours - STEADY + 1) as u64, "{behind:?}");
-            // Two hours before the builder finishes: the second builds its own and never waits.
             assert_eq!(hour(hours + 1, &mut held), 0, "{}", gauge());
             let grew = hour(hours + 2, &mut held);
             let burst = shared.frames.gauge();
@@ -1385,7 +1268,6 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             assert!(grew > 0, "{burst:?}");
             assert!(grew < crate::TEST_HANG_GUARD.as_nanos() as u64, "{grew} ns: {burst:?}");
             assert_eq!((burst.grow_ns, burst.grow_max_ns), (grew, grew), "{burst:?}");
-            // The builder is held at the start of its next build: that one finishes, no other.
             steps.at(format_args!("ending the builder; {}", gauge()));
             builder.end(gauge).unwrap();
             let behind = shared.frames.gauge();
@@ -1407,9 +1289,6 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
     );
 }
 
-/// A frame builder thread for a test, running the product's loop ([`Shared::build_ahead_until`]).
-/// However the test leaves, dropping it stops the builder and lets a held build finish; the test
-/// waits for it only through [`Self::end`], which is bounded.
 struct TestBuilder {
     stop: Arc<std::sync::atomic::AtomicBool>,
     release: Option<std::sync::mpsc::Sender<()>>,
@@ -1421,7 +1300,6 @@ impl TestBuilder {
         Self::following(shared, release, || {})
     }
 
-    /// With `follow` run before each of the builder's looks.
     fn following(
         shared: &Arc<Shared>,
         release: std::sync::mpsc::Sender<()>,
@@ -1439,7 +1317,6 @@ impl TestBuilder {
         }
     }
 
-    /// Lets the build held at its start finish.
     fn release(&self) {
         if let Some(release) = &self.release {
             release.send(()).unwrap();
@@ -1454,7 +1331,6 @@ impl TestBuilder {
         }
     }
 
-    /// Stops the builder and returns what its loop returned.
     fn end(mut self, gauge: impl Fn() -> String) -> std::io::Result<()> {
         self.stop();
         let builder = self.builder.take().expect("a started builder");
@@ -1468,12 +1344,6 @@ impl Drop for TestBuilder {
     }
 }
 
-/// Told to stop, the frame builder builds nothing more and ends: parked with the frames it keeps
-/// ahead free, in the middle of a build with none free, and held before its look with none free.
-/// On the base it read `stop` only before a look: stopped mid-build or before its look while
-/// frames were short, it built until two were free, then parked without reading `stop` again,
-/// and the stop's wake had been used by a wait inside the build (here the test's hold), so it
-/// never ended.
 #[test]
 fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
     use crate::frame_pool::STEADY;
@@ -1592,8 +1462,6 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     assert_eq!(shared.take_frame(&mut 0), None);
     assert_eq!(shared.frames.live(), BUFFERS);
 
-    // During a delayed hook restore, record the next hour as a loss without
-    // running acquisition again or consuming another capture buffer.
     assert!(!unsafe {
         guarded_acquisition(&shared, Some(clock(42, 7).borrowed()), || {
             acquisitions.fetch_add(1, Ordering::Relaxed);
@@ -1606,8 +1474,6 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     let run = losses.iter().next().unwrap();
     assert_eq!((run.first_hour, run.last_hour, run.count), (40, 42, 3));
 
-    // Cancellation also works when no healthy frame remains. Do not
-    // reclaim the partially restored frame as if acquisition succeeded.
     while shared.frames.pop().is_some() {}
     assert_eq!(shared.take_frame(&mut 0), None);
     assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 0);
@@ -1679,7 +1545,6 @@ fn capacity_growth_keeps_primary_rows_and_name_arena_sized() {
         unread_rows: 3,
     };
     frame.faction_names_required = 20_000;
-    // The state display-name arena grows to what the walk asked for.
     frame.state_names_required = 40_000;
     frame.grow(&mut capacities);
     assert_eq!(frame.wars.len(), 2048);
@@ -1703,7 +1568,6 @@ fn cadence_clock(hour: i32, signal: i64) -> Clock {
     clock
 }
 
-// Production prepares the campaign copy before the callback.
 fn prepared_cadence() -> CadenceState {
     let mut cadence = CadenceState::default();
     cadence.prev_campaign.prepare(8).unwrap();
@@ -1714,7 +1578,6 @@ fn prepared_cadence() -> CadenceState {
 fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
     use replay_data::rows::TableId;
     use replay_data::{cadence::Cadence, cadence::cadence, cadence::is_refresh};
-    // A retired table keeps its cadence but is never walked.
     let recorded = |table: TableId| {
         table
             .last_change()
@@ -1727,7 +1590,6 @@ fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
             let slot = hour.rem_euclid(24);
             for table in TableId::ALL {
                 let expected = match cadence(table) {
-                    // A sliced table reads one owner slice every hour.
                     Cadence::Hourly | Cadence::Sliced => true,
                     Cadence::Daily(s) => s as i32 == slot,
                     Cadence::Static => false,
@@ -1858,8 +1720,6 @@ fn wars_typed_walk_preserves_primary_native_rows() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let split = kit::direct(&memory, 64);
-    // Spot-checks: the owned walk emits each war once from its first
-    // endpoint, retaining native signed values.
     assert_eq!(split.owned_outcome, Outcome::Rows { len: 2 });
     assert_eq!(split.owned[0].first_country, 1);
     assert_eq!(split.owned[0].second_country, 2);
@@ -1900,7 +1760,6 @@ fn wars_primary_faults_preserve_native_validation_scope() {
             self.memory.copy(address, output)
         }
     }
-    // The primary census validates each used link and ignores unrelated slots.
     for (fault, complete) in [
         (kit::GAME_STATE + cgame_state::COUNTRIES, false),
         (kit::GAME_STATE + cgame_state::COUNTRY_LINKS, false),
@@ -1946,7 +1805,6 @@ fn divisions_split_copy_matches_direct_walk() {
     let (split, report, _) = kit::split(&memory, [64; 6]);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Spot-checks: null location/template/orders read as zero rows.
     assert_eq!(split.divisions_outcome, Outcome::Rows { len: 3 });
     assert_eq!(split.divisions[0].id, 101);
     assert_eq!(split.divisions[0].province, 1);
@@ -1998,10 +1856,6 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
             self.memory.copy(address, output)
         }
     }
-    // (fault address, expected independent table verdicts in group order).
-    // Outcomes including reason strings must match the typed walks
-    // exactly, including each independent table fault.
-    // Shared census failures block every dependent table.
     let group = 0x60070usize;
     for (fault, complete) in [
         (kit::GAME_STATE + cgame_state::COUNTRIES, [false; 6]),
@@ -2030,7 +1884,6 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
             [true, false, true, true, true, true],
         ),
         (0x42000, [true, false, true, true, true, true]),
-        // V1 backs equipment entries and the first request row.
         (0x50000, [true, false, true, false, true, true]),
         (
             kit::A1 + carmy::REQUESTS,
@@ -2054,8 +1907,6 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
         (0x64000, [true, true, true, true, false, false]),
         (
             0x64000 + cupgrade_delivery::STATUS,
-            // The native delivery header independently authenticates its
-            // produced pool before attempting this optional status read.
             [true, true, true, true, false, true],
         ),
         (
@@ -2118,8 +1969,6 @@ fn divisions_presentation_memory() -> impl engine_native::Memory {
         }
     }
     let mut bytes = kit::fixture();
-    // Null map entities and disabled training need no render/global reads.
-    // Per-division effective stats are the only extra heap input.
     let stats = 0x65000_usize;
     bytes[stats..stats + 8].copy_from_slice(&(stats::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[stats + stats::MAXIMUM_STRENGTH..stats + stats::MAXIMUM_STRENGTH + 8]
@@ -2191,8 +2040,6 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
         status.iter().map(|r| r.division).collect::<Vec<_>>(),
         [101, 102, 103]
     );
-    // The actual worker installation preserves acquired live tables and
-    // installs the independently captured native detail rows.
     frame.extended.set_divisions_raw_mode(true);
     decode_divisions_payload(&mut frame, 0, &mut first, &mut [0; 6]);
     assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
@@ -2225,7 +2072,7 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
         bytes[fault..fault + 8].fill(0xff);
         let mut first = DivisionsJob::new();
         let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
-        assert!(report.raw_ok); // No overflow is not a successful census.
+        assert!(report.raw_ok);
         assert!(matches!(
             first.source_outcome(),
             Outcome::Unavailable { .. }
@@ -2242,8 +2089,6 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
         first.source_outcome(),
         Outcome::Unavailable { .. }
     ));
-    // The pointer census is empty and complete for independent consumers;
-    // core division sources still refuse the missing-country world above.
     assert_eq!(first.census.census_outcome(), Outcome::Rows { len: 0 });
     let mut bytes = kit::fixture();
     for country in [kit::C0, kit::C1] {
@@ -2251,7 +2096,7 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
     }
     copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
     assert_eq!(first.source_outcome(), Outcome::Rows { len: 0 });
-    assert!(first.census.sources().0.is_empty()); // Recycled rows were cleared.
+    assert!(first.census.sources().0.is_empty());
 }
 
 #[test]
@@ -2585,8 +2430,6 @@ fn divisions_copy_decode_counters_keep_game_thread_cost_separate() {
 
 #[test]
 fn divisions_split_from_any_pooled_storage_matches_the_whole_direct_walk() {
-    // Zero, one row, an exact fit and ample pooled storage all grow to the
-    // whole 3-division census and its dependents.
     use super::divisions_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -2619,7 +2462,6 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
     let shared = Shared::new(0, 0, 1);
     shared.roster_ready.store(true, Ordering::Release);
-    // An hour without a frame: its frame could not be allocated.
     let index = None;
     unsafe {
         acquire(
@@ -2641,7 +2483,6 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
         sources::drain(&mut entries).unwrap_err(),
         "naval result sources lost observation; interval unavailable"
     );
-    // A later callback obtains a frame. That must not make the lost event interval complete.
     let held = shared.take_frame(&mut 0).unwrap();
     sources::boundary(Some(clock(42, 7).with_campaign_id(0)));
     assert_eq!(
@@ -2755,7 +2596,6 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
         pending.iter().next().unwrap().campaign_id.as_bytes().len(),
         5_001
     );
-    // A change beyond the former chosen text boundary must change observer identity.
     memory.bytes[0x2000 + 5_000] = b'b';
     memory.bytes[cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
         .copy_from_slice(&43_i32.to_le_bytes());
@@ -2776,9 +2616,6 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     shared.recycle_frame(index);
 }
 
-/// The game thread grows the clock destination itself. Refused by the allocator, the growth
-/// fails the hour's clock read, by the allocation failure, and nothing on that path aborts; the
-/// next callback grows it. No assertion runs inside the denial: a panic's message allocates.
 #[test]
 fn campaign_clock_growth_refused_by_the_allocator_fails_the_read_and_a_later_callback_grows() {
     let short = campaign_clock_memory(1);
@@ -2796,11 +2633,6 @@ fn campaign_clock_growth_refused_by_the_allocator_fails_the_read_and_a_later_cal
     assert!(capture.read(&long, 0).is_ok());
 }
 
-/// A new slot segment the allocator refuses gives the hour's frame growth up without aborting,
-/// and the pool is as it was. Each of the frame's own allocations is refused in turn by
-/// `allocation_failure_tests::every_refused_allocation_of_a_new_frame_names_its_hour_and_never_aborts`,
-/// in a child with the terminal hooks installed. No assertion runs inside the denial: a panic's
-/// message allocates.
 #[test]
 fn frame_growth_refused_a_slot_segment_gives_up_without_aborting() {
     let shared = Shared::new(0, 0, 1);
@@ -2819,8 +2651,6 @@ fn frame_growth_refused_a_slot_segment_gives_up_without_aborting() {
     assert_eq!((shared.frames.made(), shared.frames.live()), (BUFFERS + 1, BUFFERS));
 }
 
-/// The spool grows only the free frames for a longer campaign id, never the game thread's own
-/// clock buffers: the hour for that id grows those itself, and finds its frame already grown.
 #[test]
 fn campaign_clock_preparation_grows_on_the_game_thread_without_waiting() {
     let short = campaign_clock_memory(1);
@@ -2832,8 +2662,6 @@ fn campaign_clock_preparation_grows_on_the_game_thread_without_waiting() {
     let capture = unsafe { shared.prepared_clock_capture(&long) };
     assert_eq!(capture.prepared, 5_001);
     assert!(capture.read(&long, 0).is_ok());
-    // Every free frame was grown, one at a time past the next hour's and its spare: no hour
-    // allocates for its clock.
     let frames = crate::test_support::with_allocations_denied(|| {
         let frames: [Option<usize>; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0));
         for index in frames.into_iter().flatten() {
@@ -2844,10 +2672,6 @@ fn campaign_clock_preparation_grows_on_the_game_thread_without_waiting() {
     assert!(frames.iter().all(Option::is_some), "a frame was short: {frames:?}");
 }
 
-/// The spool's clock preparation, held while it grows a free frame for a longer campaign id,
-/// never holds up the hour that needs that id: the game thread grows its own buffers and the
-/// frame it takes, and reads the exact clock without waiting. On the base the hour took the
-/// clock lock that the spool held through its growth, and waited for it.
 #[test]
 fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation() {
     use std::sync::mpsc;
@@ -2871,7 +2695,6 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
     crate::watched(
         move || format!("{:?}", watching.frames.gauge()),
         move |steps| {
-            // Dropped on every way out, so the held preparation always finishes.
             let release = release;
             let spool = {
                 let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
@@ -2880,7 +2703,6 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
             steps.at("waiting for the spool's clock preparation to hold a frame");
             held.recv_timeout(crate::TEST_HANG_GUARD)
                 .unwrap_or_else(|_| panic!("the spool's clock preparation never held a frame"));
-            // Left behind, never joined, if it waits.
             let hour = {
                 let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
                 crate::spawn_ending(move || {
@@ -2926,7 +2748,6 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
     let held: Vec<_> = (0..BUFFERS)
         .map(|_| shared.take_frame(&mut 0).unwrap())
         .collect();
-    // The hour that asked for the longer id grew the game thread's own buffers.
     let _ = unsafe { shared.prepared_clock_capture(&long) };
     shared.prepare_frame_clocks(&long);
     for index in held {
@@ -2967,10 +2788,8 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
         GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
         THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
     };
-    // SAFETY: the current-thread pseudo-handle needs no close.
     let current = || unsafe { GetThreadPriority(GetCurrentThread()) };
     let set = |priority| {
-        // SAFETY: as above; this test owns its process's only test thread.
         assert_ne!(unsafe { SetThreadPriority(GetCurrentThread(), priority) }, 0);
     };
     for game in [THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL] {
@@ -2981,7 +2800,6 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
         }
         assert_eq!(current(), game);
     }
-    // A game thread already at or above highest is left exactly as it was.
     for game in [THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_TIME_CRITICAL] {
         set(game);
         {
@@ -2991,7 +2809,6 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
         }
         assert_eq!(current(), game);
     }
-    // A contained acquisition panic still restores the game's priority.
     set(THREAD_PRIORITY_NORMAL);
     let result = std::panic::catch_unwind(|| {
         let _raised = CallbackPriority::raise();
@@ -3005,7 +2822,6 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
 fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
     use std::{sync::mpsc, time::Duration, time::Instant};
     let shared = Arc::new(Shared::new(0, 0, 1));
-    // Before the spool registers, a wake is a no-op rather than a fault.
     shared.wake_spool();
     let (registered, ready) = mpsc::channel();
     let spool = {
@@ -3015,7 +2831,6 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
             registered.send(()).unwrap();
             let started = Instant::now();
             while shared.frames.ready_is_empty() {
-                // Far longer than the test allows: only the wake ends it.
                 std::thread::park_timeout(Duration::from_secs(60));
                 assert!(started.elapsed() < Duration::from_secs(30));
             }
@@ -3028,7 +2843,6 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
     shared.wake_spool();
     let waited = spool.join().unwrap();
     assert!(waited < Duration::from_secs(10), "{waited:?}");
-    // A wake that precedes the wait is kept, so publication is never lost.
     let early = {
         let shared = Arc::new(Shared::new(0, 0, 1));
         shared.spool_waker.set(std::thread::current()).unwrap();
@@ -3040,11 +2854,6 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
     assert!(early < Duration::from_secs(10), "{early:?}");
 }
 
-/// The spool thread returns every buffer through `recycle_frame_prepared`
-/// (the capture's clock preparation and allocated-byte census). Run it on a
-/// thread whose stack is a small fraction of the spool thread's
-/// `BACKGROUND_STACK_BYTES`: a large by-value local on that path overflows
-/// here, ending this test binary, before it can reach the game process.
 #[test]
 fn buffer_return_runs_on_a_small_stack() {
     const SMALL_STACK: usize = 256 * 1024;
@@ -3085,10 +2894,6 @@ fn buffers_backlogged_with_one_free_buffer() {
     assert_eq!(shared.frames.len(), BUFFERS);
 }
 
-/// The Radar and Projects joins turn an incomplete raw acquisition into a
-/// failure, as the AirBases join does: their verdicts (`raw_ok || failure`)
-/// were true for every join, so setting them when the jobs are queued, before
-/// the Gated dispatch, reads nothing new.
 #[test]
 fn every_raw_copy_join_has_a_raw_payload_or_a_failure() {
     const INCOMPLETE: &str = "Radar owned acquisition could not complete";
@@ -3106,12 +2911,6 @@ fn every_raw_copy_join_has_a_raw_payload_or_a_failure() {
     }
 }
 
-/// The AirBases join turns an incomplete raw acquisition into a failure, so
-/// every join holds a raw payload or a failure: the verdicts it set
-/// (`raw_ok || failure`) were true for every join, and the Gated packs' and
-/// the air pack's typed fallbacks could not run. Setting them true before
-/// the Gated dispatch therefore reads nothing new; a join that could end
-/// with neither would fail here.
 #[test]
 fn every_air_bases_join_has_a_raw_payload_or_a_failure() {
     for failure in [None, Some("AirBases acquisition job panicked")] {

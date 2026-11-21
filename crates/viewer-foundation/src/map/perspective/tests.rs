@@ -10,7 +10,6 @@ fn set<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T:
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
-/// Slot 1 is the player; slot 2's division 7 stands in province 2.
 fn hour() -> (
     DecodedFrame,
     BTreeMap<u32, u32>,
@@ -53,8 +52,6 @@ fn view(
     Vision::read(frame, links, tags, &Choice { country, fog }, Ok(content)).unwrap()
 }
 
-/// The window builds a vision from only [`VISION_TABLES`]; on the fixture
-/// hour that must read exactly what the whole hour reads.
 #[test]
 fn the_vision_tables_are_all_a_vision_reads() {
     let (frame, links, tags, content) = hour();
@@ -126,7 +123,6 @@ fn any_country_and_either_fog_setting_rebuild_from_the_same_hour() {
         true,
     );
     assert_eq!(absent.resolution(), &Resolution::Absent("XXX".into()));
-    // A slot chosen by Ctrl+click is followed whatever tag it holds now; its label only names it.
     let by_slot = view(&frame, &links, &tags, &content, Country::Slot { slot: 2, tag: "OLD".into() }, true);
     assert_eq!((by_slot.ours(), by_slot.resolution()), (2, &Resolution::Requested));
     assert_eq!(by_slot.sees_land(7, 2, 2), english.sees_land(7, 2, 2));
@@ -144,8 +140,6 @@ fn one_missing_input_is_scoped_to_what_reads_it() {
     assert_eq!(vision.visibility_gap(), Some("RadarCoverage"));
     assert_eq!(vision.province_fog(), None);
     assert_eq!(vision.undecided(), None, "unit sight keeps its own inputs");
-    // The land term is unknown, so the stack is drawn in full, as for an
-    // undecided hour; the naval ladder needs no province term.
     assert_eq!(vision.sees_land(7, 2, 2), Sight::Full);
     let unloaded = Vision::read(
         &frame,
@@ -213,13 +207,10 @@ fn a_truncated_intel_census_leaves_an_unlisted_foreign_task_force_unknown() {
         missing: 1,
     };
     let vision = view(&frame, &links, &tags, &content, Country::Recorded, true);
-    // A recorded entry decides; an unlisted foreign unit could be the omitted one.
     assert_eq!(vision.navy_byte_known(9, 3), Some(vision.navy_byte(9, 3)));
     assert_eq!(vision.navy_byte_known(8, 3), None);
-    // Drawn as fog off draws it, never hidden by the omitted row's absence.
     assert_eq!(vision.navy_byte(8, 3), 255);
     assert_eq!(vision.sees_land(8, 3, 2), Sight::Full);
-    // Our own units are seen in full whatever the census.
     assert_eq!(vision.navy_byte_known(8, 1), Some(255));
     set::<tables::UnitIntel>(&mut frame, Vec::new());
     let vision = view(&frame, &links, &tags, &content, Country::Recorded, true);

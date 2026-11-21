@@ -1,6 +1,3 @@
-//! Country-scale synthetic rosters for the role-census equivalence tests and
-//! the role capture cost test. Memory is procedural: every read renders only
-//! the requested window, so 5,000-country rosters need no large allocation.
 
 use super::*;
 use engine_native::{
@@ -25,39 +22,28 @@ pub(super) const TRAITS: usize = 0xc_0000_0000;
 const EXPERIENCE: usize = 0xd_0000_0000;
 pub(super) const DEFINITION: usize = 0xe_0000_0000;
 
-/// `(region, stride)` of each procedural object family.
 pub(super) const STRIDES: [(usize, usize); 11] = [
     (CHARACTER, 0x100),
     (LEADER_HEAD, 0x40),
     (LEADER_NODE, 0x40),
-    // Current ideology is stored beyond the old role prefix.
     (LEADER_ROLE, 0x200),
     (ADVISOR_HEAD, 0x40),
     (ADVISOR_NODE, 0x60),
     (ADVISOR_ROLE, 0x400),
-    // A CArmyLeader reaches past its captured byte.
     (UNIT, 0x2000),
     (TRAITS, 0x40),
     (EXPERIENCE, 0x100),
     (DEFINITION, 0x1000),
 ];
 
-/// A roster of `characters` with realistic role densities: roughly one
-/// country-leader role per five characters, one advisor per forty and one unit
-/// leader per four, each leader holding one or two traits and four or five
-/// trait-experience entries over a few hundred shared definitions.
 #[derive(Clone)]
 pub(super) struct World {
     pub characters: usize,
     pub historical: usize,
     pub definitions: usize,
-    /// Roster slot to character index; `None` is the identity roster.
     pub roster: Option<Vec<usize>>,
-    /// Exact byte overrides applied after rendering.
     pub patches: Vec<(usize, Vec<u8>)>,
-    /// Every read overlapping one of these addresses fails.
     pub faults: Vec<usize>,
-    /// Every eighth leader-role character also holds an advisor role.
     pub dual: bool,
 }
 
@@ -173,7 +159,6 @@ impl World {
             (DYNAMIC, historical, self.slots() - historical),
         ] {
             if address >> 32 == region >> 32 {
-                // Pointer vectors are read in whole pages.
                 if end > region + count * 8 {
                     return false;
                 }
@@ -431,7 +416,6 @@ impl Window<'_> {
         self.put(at + 24, &15_u64.to_le_bytes());
     }
 
-    /// A single-node tree link set: every link names `target`.
     fn node(&mut self, at: usize, target: usize, nil: u8) {
         for link in [
             msvc_tree_node::LEFT,
@@ -471,12 +455,9 @@ impl Memory for World {
     }
 }
 
-/// Counts guarded calls as `LiveMemory` issues them: one per copy, scattered
-/// batch, record gather and prepared read plan.
 pub(super) struct Counting<'a> {
     pub inner: &'a World,
     pub calls: Cell<usize>,
-    /// Bytes the guarded calls copied successfully.
     pub bytes: Cell<usize>,
 }
 
@@ -575,7 +556,6 @@ impl advisors::Changes for Quiet {
     }
 }
 
-/// Pooled capacities that hold a 5,000-country roster without truncation.
 pub(super) fn capacities() -> Capacities {
     Capacities {
         rows: [1 << 18, 1 << 16, 1 << 13, 1 << 16, 1 << 17, 0],
@@ -592,7 +572,6 @@ pub(super) fn context(active: [bool; N]) -> CharactersCopyContext {
     }
 }
 
-/// Grow a job until its staging holds the whole capture, as recycling does.
 fn settle(
     memory: &impl Memory,
     active: [bool; N],
@@ -620,7 +599,6 @@ fn decode(job: &CharactersJob) -> Captured {
     captured
 }
 
-/// The typed walk of one part's tables against live memory.
 pub(super) fn typed(memory: &impl Memory, part: usize) -> Captured {
     let mut capacities = capacities();
     let mut captured = Captured::with_capacities(&capacities);
@@ -647,7 +625,6 @@ pub(super) fn typed(memory: &impl Memory, part: usize) -> Captured {
     }
 }
 
-/// The roster job's payload after a role-hour pass.
 pub(super) fn roster(memory: &impl Memory) -> CharactersJob {
     let mut job = CharactersJob::new_part(0);
     settle(memory, PART_MASKS[0], &mut job, Roles::Gather);
@@ -656,7 +633,6 @@ pub(super) fn roster(memory: &impl Memory) -> CharactersJob {
     job
 }
 
-/// One role job's decoded payload.
 fn role(memory: &impl Memory, part: usize, roles: Roles<&census::RoleCensus>) -> (Captured, bool) {
     let mut job = CharactersJob::new_part(part);
     settle(memory, PART_MASKS[part], &mut job, roles);
@@ -665,9 +641,6 @@ fn role(memory: &impl Memory, part: usize, roles: Roles<&census::RoleCensus>) ->
     (decode(&job), job.census_capture)
 }
 
-/// A census-loaned role job decodes exactly the independent roster walk's
-/// outcomes, rows, arenas and demand, and the typed walk's. Returns whether
-/// the loan was admitted and used.
 fn assert_part(memory: &impl Memory, part: usize, loan: Option<&census::RoleCensus>) -> bool {
     let (independent, walked) = role(memory, part, Roles::Independent);
     assert!(!walked);
@@ -678,7 +651,6 @@ fn assert_part(memory: &impl Memory, part: usize, loan: Option<&census::RoleCens
     used || part == 2
 }
 
-/// Decoded tables of one payload, checked against the fixture's role counts.
 fn decode_cache(cache: &advisors::Cache) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
     captured.fail_character_tables(
@@ -710,8 +682,6 @@ fn growth_acquires_current_ideology_for_every_authenticated_role() {
     characters_test_kit::assert_matches_direct(&captured, &typed(&memory, 1));
 }
 
-/// A small roster with every role shape: aliases, dual roles, heads inside
-/// the character view, and the historical/generated split.
 fn small() -> World {
     let mut world = World::new(300);
     world.dual = true;
@@ -747,7 +717,6 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
     let character = |index: usize| World::character(index);
     let leader_head = World::leader_head;
     let advisor_head = World::advisor_head;
-    // Faults the roster job never reads, so the loan stays admitted.
     let mut faults = vec![
         leader_head(1),
         leader_head(0) + msvc_tree_node::NIL,
@@ -774,8 +743,6 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
             assert!(assert_part(&world, part, Some(&loan)), "fault {fault:x}");
         }
     }
-    // Empty-map sentinels that fail after an exact read, and heads the
-    // character view owns, fail exactly as the independent walk does.
     let broken = [
         (leader_head(1) + msvc_tree_node::NIL, vec![0]),
         (
@@ -844,7 +811,6 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
 fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     let _globals = crate::extended::characters::test_globals();
     let world = small();
-    // A widened field the roster job does not read fails only the gather.
     for field in [
         ccharacter::ADVISOR_MAP_HEAD + 4,
         ccharacter::LEADER_MAP_SIZE,
@@ -861,8 +827,6 @@ fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
             assert_part(&faulted, part, None);
         }
     }
-    // A short portrait census or role storage grows to the observed roster in
-    // the pass.
     let mut short = CharactersJob::new_part(0);
     settle(&world, PART_MASKS[0], &mut short, Roles::Gather);
     short.portrait_census = Some(engine_allocation::shared(
@@ -876,7 +840,6 @@ fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
     assert!(narrow.portrait_census().is_some());
     let loan = narrow.role_census().expect("grown role census");
-    // Another game state cannot use it.
     let other = CharactersCopyContext {
         game_state: GAME_STATE + 8,
         ..context(PART_MASKS[1])
@@ -884,8 +847,6 @@ fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     let mut job = CharactersJob::new_part(1);
     copy_characters(&world, other, &mut job, Roles::Borrow(&loan));
     assert!(!job.census_capture);
-    // Hours without role jobs gather nothing; a retained loan blocks the
-    // next gather without waiting, and the returned loan admits it again.
     copy_characters(
         &world,
         context(PART_MASKS[0]),
@@ -908,8 +869,6 @@ fn short_census_visit_storage_grows_to_the_whole_demand_in_the_pass() {
     let loan = owner.role_census().unwrap();
     for part in [1, 3] {
         let mut job = CharactersJob::new_part(part);
-        // The leader cache reads no visit list; this covers the raw census
-        // acquisition it replaces, which stays the path without the cache.
         job.leader_cache = None;
         settle(&world, PART_MASKS[part], &mut job, Roles::Borrow(&loan));
         job.census_visited = Vec::with_capacity(3);
@@ -920,7 +879,6 @@ fn short_census_visit_storage_grows_to_the_whole_demand_in_the_pass() {
             Roles::Borrow(&loan),
         );
         assert!(report.raw_ok && !report.plan_failed, "part {part}");
-        // No visit was refused; `grow_for_next` may still presize to the live census.
         assert_eq!(job.census_required, 0, "part {part}");
         assert!(job.census_visited.len() > 3, "part {part}");
         characters_test_kit::assert_matches_direct(&decode(&job), &typed(&world, part));
@@ -941,17 +899,12 @@ fn census_advisor_cache_keeps_reuse_and_fresh_countries() {
     assert_eq!(cache.counts.planned, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
-    // A quiet, unchanged census certifies both sections in one execution each.
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 2);
-    // Definitions need only the two prepared control programs. Every advisor
-    // still acquires both independent headers: numeric cache (16 bytes) and
-    // tooltip set (17 bytes), even when both are empty.
     assert_eq!(counting.calls.get(), 2 + 2 * demand.rows);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
-    // A changed country comes from the current census, never the entry.
     drop(loan);
     world.patch(
         World::character(3) + ccharacter::COUNTRY,
@@ -963,7 +916,6 @@ fn census_advisor_cache_keeps_reuse_and_fresh_countries() {
     assert_eq!(cache.counts.planned, 2);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
-    // A changed sentinel stops the plan and is walked again from its prefix.
     world.patch(World::advisor_head(43) + msvc_tree_node::COLOR, &[0]);
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
@@ -971,7 +923,6 @@ fn census_advisor_cache_keeps_reuse_and_fresh_countries() {
     assert_eq!(cache.counts.planned, 1);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
-    // Roster and census passes never certify each other's plans.
     cache.capture(&world, ctx, &Quiet, None);
     assert_eq!(cache.counts.planned, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
@@ -982,7 +933,6 @@ fn census_advisor_cache_keeps_reuse_and_fresh_countries() {
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
 }
 
-/// The advisor family's domain with a revision that moves when a writer runs.
 pub(super) struct Advisors {
     pub revision: Cell<u64>,
 }
@@ -996,9 +946,6 @@ impl advisors::Changes for Advisors {
     }
 }
 
-/// A quiet hour of the advisor job carries every definition, modifier cache
-/// and tooltip key without a read; a writer of either family, a changed
-/// census or a load reads again.
 #[test]
 fn quiet_advisor_hours_read_nothing() {
     let _globals = crate::extended::characters::test_globals();
@@ -1020,7 +967,6 @@ fn quiet_advisor_hours_read_nothing() {
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     assert!(DOMAIN.lookups() > 0);
     cache.prepare();
-    // Nothing ran: no read, no lookup, the same tables.
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(counting.calls.get(), 0, "a quiet hour reads nothing");
@@ -1028,7 +974,6 @@ fn quiet_advisor_hours_read_nothing() {
     assert_eq!(cache.counts.planned, 0);
     assert!(cache.counts.reused > 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
-    // An advisor-family writer: the definitions are certified again.
     observer.revision.set(1);
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
@@ -1038,7 +983,6 @@ fn quiet_advisor_hours_read_nothing() {
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(counting.calls.get(), 0);
-    // A character-domain writer: every role's certificate is looked up.
     drop(DOMAIN.watches.notify(Some(World::character(5)), 0));
     DOMAIN.lookups();
     cache.capture(&world, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
@@ -1047,7 +991,6 @@ fn quiet_advisor_hours_read_nothing() {
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
     assert_eq!((counting.calls.get(), DOMAIN.lookups()), (0, 0));
-    // A changed census (a country) certifies every section again.
     drop(loan);
     world.patch(
         World::character(3) + ccharacter::COUNTRY,
@@ -1060,7 +1003,6 @@ fn quiet_advisor_hours_read_nothing() {
     assert!(counting.calls.get() > 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
-    // A load, gap or recovery reads every role afresh.
     DOMAIN.watches.boundary(true);
     DOMAIN.lookups();
     let counting = Counting::new(&world);
@@ -1069,15 +1011,12 @@ fn quiet_advisor_hours_read_nothing() {
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
 }
 
-/// Role jobs size their visit lists from the live census length, published
-/// by each role census the roster job acquires; the roster job needs none.
 #[test]
 fn visit_lists_follow_the_live_census_length() {
     let _globals = crate::extended::characters::test_globals();
     let world = small();
     let owner = roster(&world);
     assert!(owner.role_census().is_some());
-    // Published by the acquisition (other tests may publish concurrently).
     assert!(census::live_len() > 0);
     let mut job = CharactersJob::new_part(1);
     job.census_visited = Vec::new();
@@ -1085,14 +1024,10 @@ fn visit_lists_follow_the_live_census_length() {
     job.census_required = 109;
     assert_eq!(job.visits_required(105), 109);
     assert_eq!(CharactersJob::new_part(0).visits_required(105), 0);
-    // Growth reserves at least the recorded demand.
     job.grow();
     assert!(job.census_visited.capacity() >= 109);
 }
 
-/// A frame whose buffers hold the advisor cache's table publishes it again
-/// without rewriting it while the cache carried the table whole (a planted
-/// marker survives); a capture that reads afresh rewrites it.
 #[test]
 fn a_frame_publishes_its_held_advisor_table_without_rewriting_it() {
     let _globals = crate::extended::characters::test_globals();
@@ -1134,7 +1069,6 @@ fn a_frame_publishes_its_held_advisor_table_without_rewriting_it() {
         frame.advisors.rows.rows[0].character, MARK,
         "rows republished in place"
     );
-    // An advisor-family writer: the capture reads and the frame is rewritten.
     observer.revision.set(1);
     assert_eq!(hour(&mut cache, &mut frame), fresh);
 }

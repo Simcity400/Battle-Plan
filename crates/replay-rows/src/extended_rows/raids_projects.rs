@@ -45,33 +45,19 @@ pub struct RaidSource {
     pub ship_reference_type: u32,
     pub ship_reference_id: u32,
     pub country: i32,
-    /// The stored building reference, whatever the source kind: type token
-    /// (0x4c17 for none), location (province or state id by type, -1 for none),
-    /// and country. A building source's arrow starts at the location's province
-    /// for a province-scoped type, as RaidTargets' building arm does.
     pub building_type: u32,
     pub building_location: i32,
     pub building_country: i32,
 }
 value_struct!(RaidSource {kind: Option<u32>, kind_present: u8, province: u32, ship_reference_type: u32, ship_reference_id: u32, country: i32, building_type: u32, building_location: i32, building_country: i32});
 
-/// A raid target scope arm by arm as saved. Zero is a null arm.
-/// `building_*` describe its building status: location, flags (bit 0 a
-/// province location, bit 1 a state location), and raw country override.
-/// `leader_country` is the captor of the resolved `leader_reference`,
-/// `None` when the reference does not resolve.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RaidScope {
-    /// The target scope's province id.
     pub province: u32,
-    /// The target scope's state id.
     pub state: u32,
-    /// The target scope's full character reference.
     pub leader_reference: u64,
-    /// The target scope's province id, the save's `leader_province`.
     pub leader_province: u32,
-    /// The target building's lexer type token.
     pub building_type: u32,
     pub building_location: u32,
     pub building_flags: u32,
@@ -81,9 +67,6 @@ pub struct RaidScope {
 value_struct!(RaidScope {province: u32, state: u32, leader_reference: u64, leader_province: u32, building_type: u32, building_location: u32, building_flags: u32, building_country: i32, leader_country: Option<i32>});
 
 impl RaidScope {
-    /// The target's country by the game's priority (building, province, state, resolved captive
-    /// leader's captor, then leader province; a resolved captor's raw word suppresses the
-    /// leader-province fallback): the controller of a province and of a state by id.
     pub fn country_with<E>(
         &self,
         province_controller: impl Fn(u32) -> Result<u32, E>,
@@ -102,8 +85,6 @@ impl RaidScope {
         } else if self.state != 0 {
             state_controller(self.state)?
         } else if let Some(captor) = self.leader_country {
-            // Copy the captor's raw country word unchanged; no signed-positive
-            // test or leader-province retry follows that read.
             captor as u32
         } else if self.leader_province != 0 {
             province_controller(self.leader_province)?
@@ -113,8 +94,6 @@ impl RaidScope {
         Ok((raw != 0).then_some(raw))
     }
 
-    /// The target's state by plain location priority (explicit state, province, leader province,
-    /// then building state): the state of a province by id.
     pub fn state_with<E>(&self, province_state: impl Fn(u32) -> Result<u32, E>) -> Result<Option<u32>, E> {
         if self.state != 0 {
             return Ok(Some(self.state));
@@ -128,14 +107,10 @@ impl RaidScope {
         } else if self.building_flags & 1 != 0 {
             province_state(self.building_location)?
         } else if self.building_location as i32 <= 0 {
-            // A state building rejects a nonpositive signed location.
             0
         } else {
             self.building_location
         };
-        // Province and leader locations require a state pointer, as does a
-        // provincial building's province. The recorder retains an observed null
-        // as state 0; an unreadable pointer is a table gap.
         Ok((id != 0).then_some(id))
     }
 }

@@ -1,7 +1,3 @@
-//! Declarative expectations for this synthetic fixture, not another weather renderer.
-//! No technique cache, no-op tracker, ring append, copy plan or native-pass cache is used.
-//! The generic Stream consumer below draws these explicit bytes/states; it remains the
-//! production path for native/unproved layouts, independently of weather optimizations.
 use super::*;
 
 pub(super) fn constants(packet: &Packet) -> ([u8; 16], [u8; 96]) {
@@ -34,7 +30,6 @@ pub(super) fn instance(instance: &Instance) -> Vec<u8> {
     bytes
 }
 
-/// These offsets/formats are fixed expectations of the fixture's five declarations.
 fn layouts(index: usize) -> Vec<gpu::VertexLayout> {
     use wgpu::VertexFormat::{Float32x2, Float32x3, Float32x4, Uint8x4, Unorm8x4};
     let attribute = |format, offset, shader_location| wgpu::VertexAttribute {
@@ -91,8 +86,6 @@ pub(super) struct Frame {
     pub final_state: State,
 }
 
-/// The fixture's native state contract. Each snapshot freezes its own written ranges,
-/// including actor-wide uploads, empty-actor binds, null selections and trail replacements.
 pub(super) fn frame(
     effect: &Arc<Effect>,
     pages: &[wgpu::TextureView],
@@ -197,8 +190,6 @@ pub(super) fn frame(
         if trail.as_ref().is_some_and(Vec::is_empty) {
             continue;
         }
-        // This table is deliberately independent of RenderDescriptor::technique and
-        // Program::new: unexpected authored names/flags must not silently self-verify.
         let (name, selected) = match (
             packet.descriptor.shader.as_str(),
             packet.descriptor.trail,

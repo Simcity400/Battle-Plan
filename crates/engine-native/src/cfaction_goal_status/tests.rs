@@ -66,7 +66,6 @@ fn fixture() -> Vec<u8> {
         date(&mut bytes, goal + GOAL_DATE, -123 + ordinal as i32);
     }
     header(&mut bytes, status + COMPLETED, HISTORY, 3);
-    // Preserve repeated and null occurrences; these are not sets.
     put(&mut bytes, HISTORY, (DEFINITIONS as u64).to_le_bytes());
     put(&mut bytes, HISTORY + 16, (DEFINITIONS as u64).to_le_bytes());
     header(&mut bytes, status + CANCELLED, HISTORY + 8, 1);
@@ -287,7 +286,6 @@ fn faction_goal_structure_and_selected_cache_equal_the_full_reader_without_cross
     let mut full = Snapshot::default();
     read_into(&memory, 0, FACTION, &mut full).unwrap();
     let mut split = Snapshot::default();
-    // The structure reader must not touch even an unreadable cache.
     let structure = Fault {
         bytes: &bytes,
         address: GOAL_DATA + GOAL_PROGRESS,
@@ -295,7 +293,6 @@ fn faction_goal_structure_and_selected_cache_equal_the_full_reader_without_cross
     };
     read_structure_into(&structure, 0, FACTION, &mut split).unwrap();
     assert_eq!(structure.hits.get(), 0);
-    // Cache reads must not touch owner, definitions, status, history or dates.
     for address in [
         FACTION + STATUS,
         DEFINITIONS,

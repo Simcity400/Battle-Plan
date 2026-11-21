@@ -1,13 +1,3 @@
-//! The open combat window's read, made by the map's side for each publication's own hour. The
-//! frame posts what the window reads ([`Asking`]) with the view; the step asks its maker at the
-//! apply for the read of the hour it applied, over the side's own rows of that hour, and joins it at
-//! its end, so the read reaches the frame in the publication it is of and the window stands at the
-//! map's hour. A read that misses its step is never handed with a later one.
-//!
-//! A step waits for the read while the head stands still or a saved frame asks, and while the
-//! hours run only while the last read fitted one publication's interval: past that the window
-//! says it is loading at the top speeds rather than slow the map down.
-
 use super::views;
 use crate::layers::Settling;
 use replay_data::{BranchId, Hour, rows::TableId};
@@ -22,20 +12,14 @@ use std::{
 use viewer_combat::reads::Reads;
 use viewer_foundation::engagement_history::History;
 
-/// How long a step that waits for the read waits, and a read for its rows: a saved frame shows
-/// exactly its hour or names what it waited for.
 const WHOLE: Duration = Duration::from_secs(120);
 
-/// How long a read waiting for its rows sleeps between looks at whether a newer ask passed it over.
 const LOOK: Duration = Duration::from_millis(2);
 
-/// What the side reads an open window part at, posted by the frame: everything but the rows.
 pub trait Asking: Clone + Send + 'static {
-    /// Which window and settings a read is of.
     type Key: Clone + PartialEq + std::fmt::Debug + Send + 'static;
     type Made: Send + 'static;
     fn key(&self) -> Self::Key;
-    /// The read of `rows`, of `hour`, made at the side's `seek`.
     fn read(&self, branch: BranchId, hour: Hour, seek: u64, rows: Arc<DecodedFrame>, engaged: Option<Arc<History>>) -> Self::Made;
 }
 
@@ -52,14 +36,12 @@ impl Asking for viewer_combat::Asking {
     }
 }
 
-/// What a [`Combat::join`] did: whether its ask was answered, and whether it took the read asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Joined {
     pub answered: bool,
     pub made: bool,
 }
 
-/// One read: of this picture (`generation`), at this hour, under this engaged cover and asking.
 #[derive(Clone, Debug, PartialEq)]
 struct Key<K> {
     generation: u64,
@@ -69,31 +51,21 @@ struct Key<K> {
     read: K,
 }
 
-/// The maker: the worker the reads run on and the window's rows from the side's view store.
 struct Maker<A: Asking> {
     reads: Reads<Key<A::Key>, Result<A::Made, String>>,
     rows: Arc<views::Reader>,
     declared: Vec<TableId>,
-    /// The newest key asked, and how many keys have been: a read waiting for its rows gives up once
-    /// another is asked.
     last: Option<Key<A::Key>>,
     newest: Arc<AtomicU64>,
-    /// The last read's nanoseconds, its wait for rows included: whether it fits a publication.
     took: Arc<AtomicU64>,
 }
 
-/// The open combat window's read as the side's step holds it.
 pub struct Combat<A: Asking> {
     asking: Option<A>,
     maker: Option<Maker<A>>,
-    /// Tables a read found its rows did not hold, declared from then on, across windows.
     learned: Vec<TableId>,
-    /// Bumped by every reset: nothing read for the picture before is handed as this one's.
     generation: u64,
-    /// What this step asked, which its join takes.
     asked: Option<Key<A::Key>>,
-    /// The read last handed to the frame: a step at its hour asks for nothing, since the frame holds
-    /// it already.
     handed: Option<Key<A::Key>>,
     made: Option<A::Made>,
     loading: Vec<String>,
@@ -106,7 +78,6 @@ impl<A: Asking> Default for Combat<A> {
 }
 
 impl<A: Asking> Combat<A> {
-    /// The frame's newest asking; none closes the window, and its maker and rows with it.
     pub fn ask(&mut self, asking: Option<A>) {
         if asking.is_none() {
             (self.maker, self.asked, self.handed, self.made) = (None, None, None, None);
@@ -115,14 +86,11 @@ impl<A: Asking> Combat<A> {
         self.asking = asking;
     }
 
-    /// A reset: the picture changes, so no read made for the one before is handed.
     pub fn reset(&mut self) {
         self.generation += 1;
         (self.asked, self.handed, self.made) = (None, None, None);
     }
 
-    /// The step asks for the read of `applied`, its hour, at its apply, over the rows it posts at
-    /// `epoch`, so the read is made while its layers settle. Whether anything was asked for.
     pub fn ask_step(&mut self, store: &views::Store, applied: Option<Hour>, branch: Option<BranchId>, epoch: u64, engaged: Option<Arc<History>>) -> bool {
         self.asked = None;
         let (Some(asking), Some(hour), Some(branch)) = (self.asking.clone(), applied, branch) else { return false };
@@ -154,10 +122,6 @@ impl<A: Asking> Combat<A> {
         true
     }
 
-    /// The read this step asked for, taken when it is made: waited for while `settling` waits, and
-    /// while the hours run for one `interval` if the last read fitted it. Whether the ask was
-    /// answered (false when the read found a table its rows did not hold, which is declared and
-    /// read again at the next ask), and whether this join took the read it asked for.
     pub fn join(&mut self, settling: Settling, interval: Duration) -> Joined {
         let (Some(key), Some(maker)) = (self.asked.take(), self.maker.as_mut()) else { return Joined { answered: true, made: false } };
         let limit = if settling.waits() {
@@ -190,29 +154,24 @@ impl<A: Asking> Combat<A> {
         Joined { answered, made }
     }
 
-    /// The read the last join took; the frame holds it from then on.
     pub fn take(&mut self) -> Option<A::Made> {
         self.made.take()
     }
 
-    /// What the window is waiting for, by name; empty once a read is handed.
     pub fn loading(&self) -> &[String] {
         &self.loading
     }
 
-    /// Whether a window is open to read.
     pub fn open(&self) -> bool {
         self.asking.is_some()
     }
 
-    /// How many tables reads have found their rows did not hold.
     pub fn learned(&self) -> usize {
         self.learned.len()
     }
 }
 
 impl<A: Asking> Maker<A> {
-    /// The worker and the window's rows, declared with the vision's tables and every table learned.
     fn open(store: &views::Store, learned: &[TableId]) -> Self {
         let declared = Self::tables(learned);
         let rows = Arc::new(store.reader("combat window", &declared.iter().copied().map(views::Need::every).collect::<Vec<_>>()));
@@ -226,7 +185,6 @@ impl<A: Asking> Maker<A> {
         tables
     }
 
-    /// Every table learned declared to the rows, which are made from the side's mirrors at once.
     fn declare(&mut self, learned: &[TableId]) {
         let tables = Self::tables(learned);
         if tables != self.declared {
@@ -237,16 +195,11 @@ impl<A: Asking> Maker<A> {
 }
 
 impl<A: Asking> Drop for Maker<A> {
-    /// A read waiting for its rows gives up, so the rows' reader closes with the window.
     fn drop(&mut self) {
         self.newest.fetch_add(1, Ordering::AcqRel);
     }
 }
 
-/// The window's rows of exactly `hour` as the step posted them at `epoch`: rows of another seek,
-/// even of the same hour, are another history's. Refused by name once a newer ask (`newest` past
-/// `stamp`) or the window's closing passes this one over, once the rows have passed the hour, or
-/// after [`WHOLE`].
 fn rows_at(rows: &views::Reader, hour: Hour, epoch: u64, newest: &AtomicU64, stamp: u64) -> Result<Arc<DecodedFrame>, String> {
     let until = Instant::now() + WHOLE;
     loop {
@@ -284,7 +237,6 @@ mod tests {
     use replay_data::scope::CaptureMode;
     use std::sync::{Mutex, mpsc};
 
-    /// A window whose read is the hour of its rows, each read held until the test lets it finish.
     #[derive(Clone)]
     struct Held {
         started: Arc<Mutex<mpsc::Sender<Hour>>>,
@@ -305,8 +257,6 @@ mod tests {
         }
     }
 
-    /// Each step's read is of that step's hour: one that misses its step is never handed with a
-    /// later step, which hands its own hour's read or nothing.
     #[test]
     fn the_read_handed_with_a_publication_is_of_its_hour_and_a_late_one_never_is() {
         let entry = open(record("combat window publication", 8), hourly_steps()).unwrap();
@@ -322,7 +272,6 @@ mod tests {
         let read = || reads.recv_timeout(WHOLE).expect("a read starts");
         let interval = Duration::from_millis(1);
 
-        // Each step asks before it posts its rows, as the side's does.
         assert!(combat.ask_step(fed.store(), Some(1), branch, epoch, None));
         assert!(fed.drive(1));
         assert_eq!(read(), 1);
@@ -347,8 +296,6 @@ mod tests {
         assert_eq!(combat.take(), Some(3), "hour 3's publication hands hour 3's read, never hour 2's");
     }
 
-    /// A join reports the read it took itself: a product of an earlier step the frame has not taken
-    /// yet never stands for a later ask whose read failed.
     #[test]
     fn a_join_reports_only_the_read_it_took() {
         let entry = open(record("combat window join", 8), hourly_steps()).unwrap();
@@ -370,8 +317,6 @@ mod tests {
         assert_eq!(combat.take(), Some(1), "hour 1's read is still the frame's to take");
     }
 
-    /// A seek back to the hour the rows stand at asks for that hour again: the rows the step posted
-    /// before the seek are of the same hour but another history, and never answer the read.
     #[test]
     fn rows_of_the_seek_before_never_answer_a_read_of_the_same_hour() {
         let entry = open(record("combat window seek", 8), hourly_steps()).unwrap();

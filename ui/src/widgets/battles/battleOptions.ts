@@ -21,7 +21,6 @@ export function battleOptions(measures: readonly { value: string; label: string 
   ];
 }
 
-/** The Biggest battles view as its own catalogue card: "Biggest land battles". */
 export function battleVariants(title: string, fields: readonly OptionField[]): WidgetPreset[] {
   return choiceVariants(fields.find(field => field.key === 'view'), () => `Biggest ${title.toLowerCase()}`);
 }

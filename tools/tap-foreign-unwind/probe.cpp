@@ -1,4 +1,3 @@
-// Independently authored out-of-game exception sources and native handlers.
 #include <windows.h>
 #include <cstdint>
 
@@ -30,8 +29,6 @@ __declspec(noinline) static std::uint32_t cpp_handler(Entry entry, void* probe) 
     }
 }
 
-// Unexpected SEH also stays in this DLL and fails the oracle. It must not cross
-// the non-unwinding Rust wrapper that records the final native registers.
 extern "C" __declspec(dllexport) std::uint32_t tap_probe_cpp(std::uintptr_t entry, void* probe) {
     __try {
         return cpp_handler(reinterpret_cast<Entry>(entry), probe);

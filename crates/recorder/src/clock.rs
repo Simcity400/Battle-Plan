@@ -1,5 +1,3 @@
-//! `recorder clock --pid <pid>`: the game's clock as JSON lines for the smoke driver, read through
-//! the located sites with read-only rights. Nothing is written to the game or injected.
 use crate::controller::{Probe, probe_withheld};
 use engine_native::{
     Memory,
@@ -19,7 +17,6 @@ pub(crate) const USAGE: &str = "recorder clock --pid <game process id>
   A field this build withholds is left out of clock and named in withheld with its reason;
   a withheld clock prints {\"ready\":false,\"withheld\":{\"clock\":..}} and fails.";
 
-/// The fields read through the in-game idler, withheld together when its sites are.
 const PRESENTATION: [&str; 4] = ["paused", "eye", "look_at", "viewport"];
 
 #[derive(Debug)]
@@ -45,21 +42,17 @@ fn once(memory: &impl Memory, base: usize, presentation: bool) -> Option<Sample>
     })
 }
 
-/// Whether a campaign is loaded: the clock reads and the in-game idler runs. The game state and
-/// its clock exist from startup, while the game is still loading its content.
 pub(crate) fn campaign_loaded(memory: &impl Memory, base: usize) -> bool {
     engine_allocation::advisory(|| cgame_state::read_clock(memory, base)).is_some()
         && matches!(command_inputs::in_game_idler(memory, base), Ok(Some(_)))
 }
 
-/// Two reads that agree on the clock and the pause state; the camera is the second read's.
 pub(crate) fn sample(memory: &impl Memory, base: usize, presentation: bool) -> Option<Sample> {
     let first = once(memory, base, presentation)?;
     let second = once(memory, base, presentation)?;
     (first.clock == second.clock && first.paused == second.paused).then_some(second)
 }
 
-/// Each presentation field named with the reason its sites are withheld, or none.
 fn withheld(presentation: Result<(), &str>) -> Map<String, Value> {
     match presentation {
         Ok(()) => Map::new(),
@@ -242,7 +235,6 @@ mod tests {
     fn a_campaign_is_loaded_only_once_the_in_game_idler_runs() {
         let mut game = game();
         assert!(campaign_loaded(&game, 0));
-        // During startup the game state and its clock already read, under another idler.
         game.put(IDLER, 0, &0x1234_u64.to_le_bytes());
         assert!(!campaign_loaded(&game, 0));
         game.put(IDLER_RVA.0, 0, &0_u64.to_le_bytes());

@@ -7,21 +7,13 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029b_4d58);
-/// State ID, u32, copied from the template and used as its roster slot.
 pub const ID: usize = 0x58;
 
-/// Owning country raw reference, u32.
 pub const OWNER: usize = 0xc8;
-/// Controlling country raw reference, u32, independent of owner and province controllers.
 pub const CONTROLLER: usize = 0xcc;
-/// Contested owner country-link vector (u32 entries), saved as `contested_owners`; the state view
-/// flags each before the owner. Only its add and remove setters and state loading write it.
 pub const CONTESTED_OWNERS: usize = 0xd0;
 
-/// A province's state as the land movement speed reads it: the state's id and
-/// raw controller. `state` is a nonnull state pointer a province holds.
 pub fn id_and_controller(memory: &impl Memory, state: usize) -> Result<(u32, u32), &'static str> {
     let field = |offset: usize| {
         state
@@ -32,101 +24,48 @@ pub fn id_and_controller(memory: &impl Memory, state: usize) -> Result<(u32, u32
     Ok((field(ID)?, field(CONTROLLER)?))
 }
 
-/// CState province-pointer CPdxArray.
 pub const PROVINCES: usize = 0x18;
-/// CState province-list signed i32 count.
 pub const PROVINCE_COUNT: usize = 0x24;
-/// State-template pointer from the second constructor argument.
 pub const TEMPLATE: usize = 0x30;
-/// Primary display-name string selected when nonempty. Scripted naming
-/// localises it; serialization emits nonempty text as `name`.
 pub const PRIMARY_DISPLAY_NAME: usize = 0x38;
-/// Secondary display-name string selected before template fallback. Ownership
-/// updates localise the owner tag/template key when available and otherwise
-/// clear it. This cache is not serialized.
 pub const SECONDARY_DISPLAY_NAME: usize = 0xe8;
-/// CState claim-country CPdxArray of u32 links.
 pub const CLAIMS: usize = 0x98;
-/// CState core-country CPdxArray of u32 links.
 pub const CORES: usize = 0xb0;
-/// Cached controller-group count; the scripted layer tests exactly one.
 pub const CONTROLLER_GROUP_COUNT: usize = 0x1a4;
-/// CState strategic-location CPdxArray of 8-byte (location token, anchor
-/// province id) pairs in insertion order. The state effect appends one
-/// pair and refuses a token already listed; loading reads the list.
 pub const STRATEGIC_LOCATIONS: usize = 0x800;
-/// The size of one [`STRATEGIC_LOCATIONS`] pair.
 pub const STRATEGIC_LOCATION_STRIDE: usize = 8;
-/// Embedded building status with its building vector.
 pub const BUILDING_STATUS: usize = 0x120;
-/// Embedded resistance object.
 pub const RESISTANCE: usize = 0x268;
-/// Flag-walk address. Container ownership is unresolved; construction only
-/// establishes the pointer before the resource modifier.
 pub const FLAGS: usize = 0x540;
-/// Embedded resource modifier and accumulator.
 pub const RESOURCE_MODIFIER: usize = 0x548;
-/// Base resource-modifier accumulator used by base and country-specific queries.
 pub const BASE_MODIFIERS: usize = 0x558;
-/// Additive resource-modifier gate byte refreshed before resource calculation.
 pub const RESOURCE_MODIFIER_GATE: usize = 0x1b4;
-/// Added-resource pool serialized as `resources`.
 pub const RESOURCE_POOL: usize = 0x1b8;
-/// Dynamic-modifier container used by state-scope triggers and serialized.
 pub const DYNAMIC_MODIFIERS: usize = 0x788;
-/// Variable-walk address with unresolved container ownership.
 pub const VARIABLES: usize = 0x7f8;
-/// Demilitarized boolean byte set by the effect and serialized independently
-/// of its adjacent byte.
 pub const DEMILITARIZED: usize = 0x864;
-/// Active border-war byte serialized independently.
 #[cfg(test)]
 pub const BORDER_CONFLICT_ACTIVE: usize = 0x865;
-/// Pointer-ordered border-combat set size.
 pub const BORDER_CONFLICT_SIZE: usize = 0x8a8;
 mod border_conflicts;
 pub mod building_inputs;
 pub mod infrastructure_map;
-/// Embedded state manpower object.
 pub const MANPOWER: usize = 0x838;
-/// Stored signed available manpower summed across pools and serialized.
 pub const MANPOWER_AVAILABLE: usize = MANPOWER + 0x10;
-/// Stored signed population locked outside the recruitable pool.
 pub const MANPOWER_LOCKED: usize = MANPOWER + 0x14;
-/// The state's population, signed i32, serialized as the manpower pool's
-/// `total`: the value the `state_population` triggers compare and the
-/// manpower map mode colours each state by (over its define
-/// `MAP_MODE_MANPOWER_RANGE_MAX`). Available manpower is a different value.
 pub const POPULATION: usize = MANPOWER + 0x18;
-/// The state's own extra shared building slots, i32, which the
-/// `add_extra_state_shared_building_slots` effect writes; the shared slot count adds it after
-/// the slot modifiers.
 pub const EXTRA_SHARED_SLOTS: usize = 0x858;
-/// Cached best victory-point index; negative selects the first province.
 pub const BEST_VP_INDEX: usize = 0x85c;
-/// Bytes from [`MANPOWER_AVAILABLE`] through [`POPULATION`], read as one span.
 const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
-/// The state's category definition pointer: loading and the category effect
-/// replace it, and the save writes its definition's name as `state_category`.
 pub const CATEGORY: usize = 0x898;
-/// State category definition vtable.
 pub const CATEGORY_VTABLE_RVA: Rva = Rva(0x02a3_5798);
-/// The category definition's lexer token id, u32, beside its vtable.
 pub const CATEGORY_TOKEN: usize = 0x08;
-/// State constructor establishing template and ID.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00a1_a8a0);
-/// Owner setter updating the raw country reference before ownership notifications.
 pub const SET_OWNER_RVA: Rva = Rva(0x00a2_9290);
-/// Sorted conflict-tree head storing border combats. Predicates inspect
-/// side countries and intersect tree values.
 pub const BORDER_CONFLICT_TREE: usize = 0x8a0;
-/// Country-specific modifier hash data pointer.
 pub const COUNTRY_MODIFIERS: usize = 0x8d0;
-/// Country-modifier bucket stride.
 pub const COUNTRY_MODIFIER_STRIDE: usize = 0xd0;
 
-/// Batch IDs behind an ordered state-pointer array. Null memberships remain
-/// zero. Claims and country rosters use the same stored state ID.
 pub(crate) fn copy_ids(
     memory: &impl Memory,
     source: Array,
@@ -163,8 +102,6 @@ pub(crate) fn copy_ids(
                 pointer.checked_add(ID).unwrap_or(0)
             }
         });
-        // The states are scattered objects: hint every id's line first so
-        // their misses overlap. Hints read nothing.
         let mut fields = ids.iter_mut().enumerate();
         let read_ids = memory
             .copy_scattered_prefetched(
@@ -218,7 +155,6 @@ fn movement_state(memory: &impl Memory, base: usize, state: usize) -> Result<(),
     movement_state_vtable(base, state, read::<u64>(memory, state))
 }
 
-/// The identity check over an already acquired vtable read.
 fn movement_state_vtable(
     base: usize,
     state: usize,
@@ -230,7 +166,6 @@ fn movement_state_vtable(
     Ok(())
 }
 
-/// A gathered field, consulted where `movement_field` would read it.
 fn movement_batched<T: crate::memory::Raw, const N: usize>(
     memory: &impl Memory,
     fields: &FieldBatch<N>,
@@ -241,7 +176,6 @@ fn movement_batched<T: crate::memory::Raw, const N: usize>(
         .ok_or("state movement input unreadable")
 }
 
-/// Fields of `pointer` in one guarded call; an overflowing one fails there.
 fn movement_fields<const N: usize>(
     memory: &impl Memory,
     fields: [(usize, usize, usize); N],
@@ -252,9 +186,6 @@ fn movement_fields<const N: usize>(
     )
 }
 
-/// Country-specific numeric modifier uses its override or the state base.
-/// The selector flag only changes optional tooltip formatting; passive reads
-/// need no game call or mutation.
 pub fn movement_modifier(
     memory: &impl Memory,
     base: usize,
@@ -279,8 +210,6 @@ pub fn movement_modifier(
     )
 }
 
-/// Same selecting controls as movement_modifier, with caller-owned numeric
-/// observations/metadata. The callback cannot change native selection.
 #[allow(clippy::too_many_arguments)]
 pub fn movement_modifier_with(
     memory: &impl Memory,
@@ -292,8 +221,6 @@ pub fn movement_modifier_with(
     mut effective: impl FnMut(usize, u32) -> Result<i64, &'static str>,
 ) -> Result<i64, &'static str> {
     let linked = game_state != 0 && owner_raw != 0;
-    // The state's identity, its hash header and, for a linked owner, the
-    // country links header are one guarded call.
     let heads = FieldBatch::gather(
         memory,
         [
@@ -330,8 +257,6 @@ pub fn movement_modifier_with(
     effective(accumulator, key)
 }
 
-/// Authenticated state accumulator for the country: selected bucket
-/// accumulator or base accumulator.
 pub fn country_modifier_accumulator(
     memory: &impl Memory,
     game_state: usize,
@@ -356,8 +281,6 @@ pub fn country_modifier_accumulator(
     probe_country_modifiers(memory, state, owner_raw, links, header)
 }
 
-/// Country-modifier probe uses hash data, mask, maximum distance and linked
-/// country identity.
 fn probe_country_modifiers(
     memory: &impl Memory,
     state: usize,
@@ -377,8 +300,6 @@ fn probe_country_modifiers(
     country_modifier_accumulator_with_canonical(memory, state, owner_raw, header, canonical)
 }
 
-/// Probe using an already copied state hash header and authenticated country
-/// links. Worker censuses can reuse their country mapping and state identity.
 pub fn country_modifier_accumulator_with_canonical(
     memory: &impl Memory,
     state: usize,
@@ -432,8 +353,6 @@ pub fn country_modifier_accumulator_with_canonical(
     .ok_or("state movement modifier address overflow")
 }
 
-/// Resource infrastructure modifier retains signed widths, wrapping multiplies
-/// and -0.95 floor. Healthy infrastructure levels contribute rather than total levels.
 pub fn movement_infrastructure(
     memory: &impl Memory,
     base: usize,
@@ -442,8 +361,6 @@ pub fn movement_infrastructure(
     movement_infrastructure_shared(memory, base, state, &mut None)
 }
 
-/// Successful global operands from this infrastructure pass only. The ordinal
-/// remains absent until a state actually needs the native index lookup.
 #[derive(Clone, Copy)]
 struct InfrastructureInputs {
     definition: usize,
@@ -460,8 +377,6 @@ fn movement_infrastructure_shared(
     shared: &mut Option<InfrastructureInputs>,
 ) -> Result<i64, &'static str> {
     use crate::{cbuilding, cbuilding_database, cbuilding_status, cbuilding_template};
-    // A shared pass knows the lookup flag; a first pass gathered it and reads
-    // it at the same point either way.
     enum Lookup {
         Known(u8),
         Gathered(FieldBatch<2>),
@@ -474,7 +389,6 @@ fn movement_infrastructure_shared(
             Lookup::Known(inputs.lookup_enabled),
         )
     } else {
-        // The state's identity and the database root are one guarded call.
         let heads = movement_fields(
             memory,
             [
@@ -491,12 +405,10 @@ fn movement_infrastructure_shared(
         if database == 0 {
             return Err("state movement building database null");
         }
-        // Select the infrastructure definition from its database field.
         let definition = movement_field::<u64>(memory, database, 0x3b0)? as usize;
         if definition == 0 {
             return Err("state movement infrastructure definition null");
         }
-        // The maximum and the lookup flag are one guarded call.
         let fields = movement_fields(
             memory,
             [
@@ -504,7 +416,6 @@ fn movement_infrastructure_shared(
                 (definition, cbuilding_template::LOOKUP_ENABLED_CANDIDATE, 1),
             ],
         );
-        // Select the first local level scale, then the second, then the loaded default.
         let mut maximum = movement_batched::<i32, 2>(memory, &fields, 0)?;
         if maximum < 1 {
             maximum = movement_field::<i32>(memory, definition, 0x2b8)?;
@@ -526,8 +437,6 @@ fn movement_infrastructure_shared(
     if lookup_enabled != 0
         && movement_field::<i32>(memory, status, cbuilding_status::BUILDING_INDEX_COUNT)? != 0
     {
-        // The index header and, on a first lookup, the ordinal: one call.
-        // A known ordinal's address is null, so the call ends before it.
         let ordinal_at = match ordinal {
             Some(_) => 0,
             None => definition
@@ -590,7 +499,6 @@ fn movement_infrastructure_shared(
         Some(inputs) => inputs.per_level,
         None => movement_global::<i64>(memory, base, Rva(0x033e_5080))?,
     };
-    // A failed state read never installs a partial set of shared operands.
     *shared = Some(InfrastructureInputs {
         definition,
         maximum,
@@ -615,33 +523,19 @@ pub struct Row {
     pub id: u32,
     pub owner: u32,
     pub controller: u32,
-    /// Current hourly fixed5 infrastructure term. Staggered StateBuildings
-    /// cannot supply this movement operand.
     pub movement_infrastructure: i64,
-    /// Stored available state manpower.
     pub manpower_available: i32,
     pub manpower_locked: i32,
-    /// Stored state population ([`POPULATION`]).
     pub population: i32,
     pub best_vp_index: Option<i32>,
-    /// The token of the state's category definition ([`CATEGORY`]); None is a
-    /// failed independent capture.
     pub category: Option<u32>,
-    /// The exact bytes of [`PRIMARY_DISPLAY_NAME`] and
-    /// [`SECONDARY_DISPLAY_NAME`] in the caller's name arena ([`read_names`]).
     pub custom_name: NameSpan,
     pub owner_name: NameSpan,
-    /// Cached controller-group count equals one; None is an independent refusal.
     pub single_controller: Option<bool>,
-    /// Retained state-template continent token, zero for the native null object; None is a failed
-    /// independent capture, never a guessed content value.
     pub continent: Option<u32>,
-    /// [`CONTESTED_OWNERS`] as little-endian words in the name arena ([`read_names`]); None is a
-    /// refused read.
     pub marked_owners: Option<NameSpan>,
 }
 
-/// A string's bytes in a caller-owned arena; an empty string is valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NameSpan {
     pub start: usize,
@@ -651,14 +545,10 @@ pub struct NameSpan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameWalk {
     pub outcome: Outcome,
-    /// Bytes copied for the returned rows.
     pub bytes_len: usize,
-    /// Both strings' native lengths over every census row, including rows
-    /// omitted for the arena's capacity, so the spool thread can grow it.
     pub required_bytes: usize,
 }
 
-/// Authenticated callback-scoped state identity, never a replay field.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Source {
     pub pointer: usize,
@@ -673,19 +563,13 @@ pub struct FlagRow {
     pub border_conflict_countries: Vec<[i32; 2]>,
 }
 
-/// Read the ID-indexed state array. Country references remain raw, including
-/// zero and aliases.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_with(memory, base, game_state, output, |_| {})
 }
 
-/// Both country tags follow the identity gates. Keep their separate spans so
-/// a failed controller never changes the owner-first failure or copied prefix.
 pub fn read_country_tags(memory: &impl Memory, pointer: usize) -> Result<[u32; 2], &'static str> {
     let owner = pointer.checked_add(OWNER).ok_or("state address overflow")?;
     let Some(controller) = pointer.checked_add(CONTROLLER) else {
-        // Preserve the scalar prefix before a later address overflow. Never
-        // submit an invented null source or retry a failed field.
         read::<u32>(memory, owner).ok_or("state owner unreadable")?;
         return Err("state address overflow");
     };
@@ -704,8 +588,6 @@ pub fn read_country_tags(memory: &impl Memory, pointer: usize) -> Result<[u32; 2
     Ok(tags.map(u32::from_le_bytes))
 }
 
-/// The visitor runs only for complete authenticated rows, inside this census.
-/// Its sources may be consumed only before this capture ends.
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,
@@ -742,7 +624,6 @@ fn walk_with_buffer(
             reason: "state table has no state slots",
         };
     }
-    // World reset sizes slots from the live state database.
     let outcome = walk::pointers(memory, array, output, |index, pointer| {
         let at = |offset| pointer.checked_add(offset).ok_or("state address overflow");
         let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
@@ -783,10 +664,6 @@ fn walk_with_buffer(
     }
 }
 
-/// Retained template continent tokens read independently of census/name
-/// failures. Unassignable passes and province edits preserve the cache.
-/// Authenticate the plain continent through its live database ordinal without
-/// chosen count limits.
 pub fn read_continents(
     memory: &impl Memory,
     base: usize,
@@ -797,8 +674,6 @@ pub fn read_continents(
     read_continents_selected(memory, base, game_state, census, rows, |_| true);
 }
 
-/// [`read_continents`] for the census rows `selected` admits by index; the
-/// others keep their values.
 pub fn read_continents_selected(
     memory: &impl Memory,
     base: usize,
@@ -808,7 +683,6 @@ pub fn read_continents_selected(
     selected: impl Fn(usize) -> bool,
 ) {
     let database = (|| {
-        // State database singleton and constructor layout.
         let database = engine_sites::at(base, Rva(0x033d_d4b8))
             .and_then(|address| read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())?;
@@ -879,10 +753,6 @@ pub fn read_continents_selected(
     }
 }
 
-/// Fills the hourly movement infrastructure term over an already-authenticated
-/// state census. It is a second pass because it chases the building database
-/// rather than the state's own fields. A fault denies the States table; the
-/// independently captured StateFlags table keeps the authenticated census.
 pub fn read_movement_infrastructure(
     memory: &impl Memory,
     base: usize,
@@ -893,8 +763,6 @@ pub fn read_movement_infrastructure(
     read_movement_infrastructure_selected(memory, base, game_state, census, rows, |_| true)
 }
 
-/// [`read_movement_infrastructure`] for the census rows `selected` admits by
-/// index; the others keep their values.
 pub fn read_movement_infrastructure_selected(
     memory: &impl Memory,
     base: usize,
@@ -932,12 +800,6 @@ pub fn read_movement_infrastructure_selected(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The two display-name strings at [`PRIMARY_DISPLAY_NAME`] and [`SECONDARY_DISPLAY_NAME`] over an
-/// already-authenticated census, copied exactly into preallocated storage without an engine call or
-/// allocation. One read covers both headers (0xD0 bytes from `PRIMARY_DISPLAY_NAME`); a heap string
-/// adds its terminator and payload reads. A row whose strings do not fit ends the returned prefix
-/// (the rest are omitted rows); `required_bytes` counts every row so the arena grows off the game
-/// thread. A fault denies the table.
 pub fn read_names(
     memory: &impl Memory,
     game_state: usize,
@@ -955,10 +817,6 @@ pub fn read_names(
     )
 }
 
-/// [`read_names`] where `carried` supplies, by row index, the custom and
-/// owner name bytes of a row the caller proves current: they are copied into
-/// the arena at the row's place without reading the state, so the arena and
-/// every span equal a fresh read's.
 pub fn read_names_carried<'h>(
     memory: &impl Memory,
     game_state: usize,
@@ -972,7 +830,6 @@ pub fn read_names_carried<'h>(
     })
 }
 
-/// A carried row's held names, cached choices and marked owner words ([`read_names_carried`]).
 pub type Carried<'h> = ([&'h [u8]; 2], Option<bool>, Option<i32>, Option<&'h [u8]>);
 
 pub fn read_names_carried_scripted<'h>(
@@ -1061,7 +918,6 @@ pub fn read_names_carried_scripted<'h>(
                 at + SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME,
                 header(SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME),
             )?;
-            // The contested owner header lies between the two name headers.
             let marked = Array::from_header(
                 headers[CONTESTED_OWNERS - PRIMARY_DISPLAY_NAME..][..16]
                     .try_into()
@@ -1077,7 +933,6 @@ pub fn read_names_carried_scripted<'h>(
             required_bytes = required_bytes
                 .checked_add(wanted)
                 .ok_or("state name size overflow")?;
-            // Display naming selects these retained strings.
             bytes.ensure(required_bytes)?;
             if kept < len || wanted > bytes.len() - bytes_len {
                 kept = kept.min(index);
@@ -1149,7 +1004,6 @@ pub fn read_names_carried_scripted<'h>(
     }
 }
 
-/// Advisory storage demand from retained display strings, without copying text.
 pub fn name_demand(
     memory: &impl Memory,
     base: usize,
@@ -1180,7 +1034,6 @@ pub fn name_demand(
             {
                 return Err("state name demand identity mismatch");
             }
-            // Display naming selects these retained descriptors.
             for offset in [PRIMARY_DISPLAY_NAME, SECONDARY_DISPLAY_NAME] {
                 let address = pointer
                     .checked_add(offset)
@@ -1196,8 +1049,6 @@ pub fn name_demand(
     Ok(required)
 }
 
-/// Acquire the byte flags from this callback's shared census. Source faults and
-/// omitted rows remain faults/truncation; no partial census becomes complete.
 pub fn read_flags(
     memory: &impl Memory,
     base: usize,
@@ -1280,20 +1131,11 @@ pub fn read_flags(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Bytes of [`Globals`].
 const GLOBAL_BYTES: usize = 8 + 8 + 4 + 1 + 4 + 4 + 4 + 16 + 8 + 4 + 8 + 16;
 
-/// The operands every state's movement and railway infrastructure terms and continent share, as raw
-/// bytes: the building database and its infrastructure definition (held by the database; its type,
-/// lookup flag, both maxima and ordinal), the database's template array, the infrastructure
-/// movement-penalty and maximum-level defines, and the state database with its continent array.
-/// Only loaders write them; a caller holding rows computed from them compares this every hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Globals([u8; GLOBAL_BYTES]);
 
-/// This hour's [`Globals`]; `None` when an infrastructure operand does not
-/// read or a pointer is null, which a fresh read refuses. The continent part
-/// is optional to a fresh read, so an unreadable one is kept as zero bytes.
 pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
     use crate::{cbuilding_database as database, cbuilding_template as template};
     let mut bytes = [0_u8; GLOBAL_BYTES];
@@ -1340,7 +1182,6 @@ pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
         memory,
         engine_sites::at(base, Rva(0x033e_5274))?,
     )?);
-    // The state database singleton, as read_continents reads it.
     let state_database = engine_sites::at(base, Rva(0x033d_d4b8))
         .and_then(|address| read::<u64>(memory, address))
         .unwrap_or(0);
@@ -1355,7 +1196,6 @@ pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
     Some(Globals(bytes))
 }
 
-/// The raw header of the state-id-indexed array, [`walk`]'s root.
 pub fn header(memory: &impl Memory, game_state: usize) -> Option<[u8; 16]> {
     game_state
         .checked_add(cgame_state::STATES)
@@ -1372,9 +1212,6 @@ const SLOT_LAYOUT: RecordLayout<'static> = RecordLayout::new(
 )
 .expect("valid slot layout");
 
-/// The pointer of every state slot after the reserved slot zero, in slot
-/// order ([`walk`] reads the same slots), in guarded record copies of 64;
-/// `output[index]` is slot `index + 1`.
 pub fn read_slots(
     memory: &impl Memory,
     array: Array,
@@ -1436,18 +1273,14 @@ const MANPOWER_LAYOUT: RecordLayout<'static> = RecordLayout::new(
 .expect("valid manpower layout");
 const MANPOWER_RECORD: usize = 32;
 
-/// A state's stored manpower words and category pointer ([`read_manpower`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Manpower {
     pub available: i32,
     pub locked: i32,
     pub population: i32,
-    /// The category definition pointer ([`CATEGORY`]), for [`category_token`].
     pub category: u64,
 }
 
-/// A category definition's token: its vtable must be the category vtable.
-/// Several states share a definition, so callers resolve each pointer once.
 pub fn category_token(
     memory: &impl Memory,
     base: usize,
@@ -1467,9 +1300,6 @@ pub fn category_token(
     ))
 }
 
-/// Each listed state's identity (vtable and id, as [`walk`] checks them),
-/// available manpower, population and category pointer, in guarded record
-/// copies of 64. A failed or mismatching field fails the whole read.
 pub fn read_manpower(
     memory: &impl Memory,
     base: usize,

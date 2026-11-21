@@ -58,16 +58,11 @@ pub(crate) fn fixture() -> Vec<u8> {
     fixture_inner()
 }
 
-/// Alias country slot plus a rocket-vector base: exercises the census
-/// alias skip and a non-state base vector with the same shared takes.
 pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
     use engine_native::{cair_base, cgame_state, cprovince, cstate, cstrategic_air_manager};
-    // Alias slot 3 publishing the slot-1 object once: its link entry
-    // resolves to slot 1 like its id does.
     header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
     put64(bytes, CTAB + 24, C0 as u64);
     put32(bytes, LTAB + 12, 1);
-    // Rocket vector with a hole plus one state base at slot 1.
     header(
         bytes,
         MANAGER + cstrategic_air_manager::STATE_ROCKET_BASES,
@@ -95,8 +90,6 @@ pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
     header(bytes, B2 + cair_base::COUNTRY_CONTAINERS, CVEC2, 0);
 }
 
-/// Slot zero holds the reserved country object (id zero) and a fourth slot holds it again, as
-/// the game's country table may.
 pub(crate) fn add_reserved_alias(bytes: &mut [u8]) {
     use engine_native::{ccountry, cgame_state};
     const RESERVED: usize = 0x22000;
@@ -130,7 +123,6 @@ fn fixture_inner() -> Vec<u8> {
     put64(&mut bytes, ACES0, A0 as u64);
     put64(&mut bytes, ACES0 + 8, A1 as u64);
     header(&mut bytes, C1 + ccountry::ACES, 0, 0);
-    // Manager with two state bases (indexed hole at 0) and one host.
     put64(
         &mut bytes,
         GAME_STATE + cgame_state::STRATEGIC_AIR_MANAGER,
@@ -169,7 +161,6 @@ fn fixture_inner() -> Vec<u8> {
         1,
     );
     put64(&mut bytes, HVEC, H0 as u64);
-    // State bases with authenticated state/province links.
     for (base, id, state, state_id, province, province_id, capacity, kind) in [
         (B0, 0x41u64, S0, 1u32, P0, 5u32, 1200i32, 0i32),
         (B1, 0x42u64, S1, 2u32, P1, 6u32, -3i32, 1i32),
@@ -207,7 +198,6 @@ fn fixture_inner() -> Vec<u8> {
         put32(&mut bytes, province + cprovince::ID, province_id);
         put64(&mut bytes, province + cprovince::STATE, state as u64);
     }
-    // Stateless host with a native host reference.
     put64(&mut bytes, H0, cair_base::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
@@ -228,13 +218,9 @@ fn fixture_inner() -> Vec<u8> {
     );
     put32(&mut bytes, H0 + cair_base::HOST_REFERENCE + 28, 1);
     header(&mut bytes, H0 + cair_base::COUNTRY_CONTAINERS, 0, 0);
-    // B0 containers: hole at slot 0 plus one country-1 container with a
-    // two-wing pool. B1 containers: hole plus one empty country-2 pool.
     header(&mut bytes, B0 + cair_base::COUNTRY_CONTAINERS, CVEC0, 2);
     put64(&mut bytes, CVEC0, 0);
     put64(&mut bytes, CVEC0 + 8, CONT1 as u64);
-    // Country-2's container sits at its canonical slot 2: the engine
-    // installs each container at its resolved ordinal.
     header(&mut bytes, B1 + cair_base::COUNTRY_CONTAINERS, CVEC1, 3);
     put64(&mut bytes, CVEC1, 0);
     put64(&mut bytes, CVEC1 + 8, 0);
@@ -275,7 +261,6 @@ fn fixture_inner() -> Vec<u8> {
         put64(&mut bytes, wing + 24, handle);
         put64(&mut bytes, wing + cair_wing::POOL, POOL0 as u64);
     }
-    // Aces: A0 alive with inline names, A1 dead with heap names.
     ace(
         &mut bytes,
         A0,
@@ -298,7 +283,6 @@ fn fixture_inner() -> Vec<u8> {
         Some((0xB0u64, 9u32)),
         [("DeadAce", false), ("", false), ("Z", false)],
     );
-    // Heap name bytes with terminators.
     put_string(&mut bytes, NSTR, b"DeadAce");
     put_string(&mut bytes, NSTR + 8, b"");
     put_string(&mut bytes, NSTR + 9, b"Z");
@@ -336,7 +320,6 @@ fn ace(
                 msvc_string::INLINE_CAPACITY,
             );
         } else {
-            // Heap strings live consecutively from NSTR in field order.
             let source = NSTR + heap_offset(index);
             put64(bytes, head + msvc_string::DATA, source as u64);
             put64(bytes, head + msvc_string::LENGTH, text.len() as u64);
@@ -353,7 +336,6 @@ fn ace(
 }
 
 fn heap_offset(index: usize) -> usize {
-    // NSTR layout: "DeadAce\0" (8) + "" (1) + "Z\0" (2).
     [0, 8, 9][index]
 }
 
@@ -362,7 +344,6 @@ fn put_string(bytes: &mut [u8], at: usize, text: &[u8]) {
     bytes[at + text.len()] = 0;
 }
 
-// Map the distant image singleton without a dense image-sized allocation.
 pub(crate) const GUI_SINGLETON: usize = 0x7ff00;
 
 pub(crate) struct SyntheticMemory<'a> {
@@ -402,8 +383,6 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
         count as u32,
     );
     for index in 0..count {
-        // State vectors require each state's id to equal its indexed slot.
-        // Stateless vectors preserve these repeated original occurrences.
         put64(&mut bytes, bases + index * 8, H0 as u64);
         put64(&mut bytes, aces + index * 8, A0 as u64);
     }
@@ -489,7 +468,6 @@ pub(super) fn collect_split(
     (split, report, first)
 }
 
-/// What the decode worker replays from `job`'s acquisition.
 pub(crate) fn decode(job: &AirBasesJob) -> Split {
     decode_with(job, Capacities::fixture().rows, 65_536, 2048, 4096)
 }
@@ -540,8 +518,6 @@ pub(crate) fn split(memory: &impl Memory) -> (Split, AirBasesCopyReport, AirBase
     collect_split(memory, Capacities::fixture().rows, 65_536, 2048, 4096)
 }
 
-/// Optional carrier arenas may report their own first-observation demand.
-/// The original bases/registrations/aces storage must remain sufficient.
 pub(crate) fn assert_no_mandatory_growth(job: &AirBasesJob) {
     assert!(!job.log.grow_for_next());
     assert!(job.required_census <= job.census.capacity());

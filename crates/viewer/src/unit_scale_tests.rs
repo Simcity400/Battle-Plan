@@ -1,4 +1,3 @@
-//! Opt-in layer measurements against the synthetic replay example's output.
 use replay::campaign::SeekResult;
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
@@ -61,7 +60,6 @@ fn unit_scale_replay_layers() {
         fog: false,
         ..Default::default()
     };
-    // The index folded over the hours these laps read, as the engagements layer's lanes fold it.
     let mut folded = Vec::new();
     for offset in 0..9 {
         let SeekResult::Frame(frame) = replay.seek(1, first + offset).unwrap() else {
@@ -98,7 +96,6 @@ fn unit_scale_replay_layers() {
                 println!("UNIT_REPLAY first_hour={first}");
                 for table in TableId::ALL {
                     if let TableView::Complete(rows) = &*frame.tables[table.index()] {
-                        // Row-vector allocation only; nested strings/lists are separate.
                         println!(
                             "UNIT_ROWS table={table:?} row_vector_bytes={}",
                             rows.allocated_bytes()
@@ -114,8 +111,6 @@ fn unit_scale_replay_layers() {
             lap("names", camera_name, at, || {
                 hour.place_names(&Default::default())
             });
-            // The land combat flags alone: from the covering index, as the
-            // window reads them, and rebuilt as a load (or a dump) does.
             let viewer = hour.vision(&perspective).unwrap().ours();
             let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(&frame)
                 .unwrap()
@@ -143,10 +138,6 @@ fn unit_scale_replay_layers() {
                     *counts.entry(format!("{flag:?}")).or_insert(0) += 1;
                 }
                 println!("UNIT_ENGAGED hour={at} flags={counts:?}");
-                // The fixture covers the engaged index, not every marker:
-                // its added combats have no LandCombatDetails row, so a seen
-                // one draws no plate or wedge. Every combat such a gap names
-                // must be one of those.
                 let tables = hour.hour_tables(&perspective, Some(&*engaged)).unwrap();
                 let (gaps, limits) = tables.land_combat_gaps();
                 let details: BTreeSet<u64> = core::<tables::LandCombatDetails>(&frame)
@@ -178,9 +169,6 @@ fn unit_scale_replay_layers() {
                         );
                     }
                 }
-                // The covering index answers every flag: no load-rebuilt
-                // provenance. (Marker value limits, such as an unseen
-                // icon's withheld frame, are not provenance.)
                 assert!(
                     !limits.keys().any(|limit| limit.starts_with("engaged flag")),
                     "the covering index answers: {:?}",

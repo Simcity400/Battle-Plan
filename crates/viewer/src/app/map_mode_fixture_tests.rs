@@ -1,12 +1,9 @@
-//! Map modes on dashboard maps over a synthetic scene fixture: the picker's keys and toggles
-//! through two maps drawn in one frame, the names a mode writes, and the mode hovers.
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
 use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::test_support::TEST_HANG_GUARD;
 use viewer_world::map::map_mode::MapMode;
 
-/// Each map's size in points; the two sit side by side.
 const MAP: [f32; 2] = [640., 480.];
 
 fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::DashboardMapView {
@@ -36,12 +33,10 @@ fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::Dashboard
     }
 }
 
-/// The left edge of map `index` on screen.
 fn left(index: usize) -> f32 {
     index as f32 * MAP[0]
 }
 
-/// One frame of both maps with `events`.
 fn pass(
     viewers: &mut [Viewer; 2],
     targets: &[dashboard::protocol::DashboardMapView; 2],
@@ -97,9 +92,6 @@ fn press(x: f32, y: f32, pressed: bool) -> egui::Event {
     }
 }
 
-/// Map-mode keys reach only the dashboard map that owns keyboard input (the one last pressed),
-/// or the hovered one while none does; the mode list holds every mode without scrolling; the
-/// player-only counters toggle filters its own map.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
@@ -155,7 +147,6 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
         std::thread::sleep(Duration::from_millis(1));
     }
 
-    // The keys of two slots holding modes other than the default.
     let document = viewers[0].document.as_ref().unwrap();
     let slots = super::picker::slot_modes(document, &[]);
     let keys: Vec<_> = viewer_combat::picker::shortcuts(
@@ -182,7 +173,6 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     let (first_mode, first_key) = keys[0].clone();
     let (second_mode, second_key) = keys[1].clone();
 
-    // No map was pressed yet: the key goes to the hovered map alone.
     let over_second = left(1) + MAP[0] / 2.;
     pass(
         &mut viewers,
@@ -194,7 +184,6 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     assert_eq!(viewers[0].map_mode, MapMode::default());
     assert_eq!(viewers[1].map_mode, first_mode);
 
-    // The map last pressed takes the keys, though the pointer has moved on to the other.
     let over_first = MAP[0] / 2.;
     pass(
         &mut viewers,
@@ -223,8 +212,6 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     assert_eq!(viewers[0].map_mode, second_mode);
     assert_eq!(viewers[1].map_mode, first_mode);
 
-    // The mode list holds every mode, inside its window, and the wheel does not move it: the
-    // game's lists take no scrollbar and grow instead.
     viewers[1].picker.open = viewer_combat::picker::Open::All;
     pass(&mut viewers, &targets, &ctx, &frame, Vec::new());
     let entries = |viewer: &mut Viewer| {
@@ -285,7 +272,6 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     );
     viewers[1].picker.open = viewer_combat::picker::Open::None;
 
-    // The player-only counters toggle keeps the viewing country's own counters on that map.
     viewers[0].picker_toggle("player_counters_toggle");
     pass(&mut viewers, &targets, &ctx, &frame, Vec::new());
     let ours = viewers[0].overlay_tables.as_ref().expect("the side made the overlay's tables").ours();
@@ -297,7 +283,6 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Both strategic modes name regions rather than countries.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> {
@@ -321,9 +306,6 @@ fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> 
     Ok(())
 }
 
-/// The states mode's category line names the state's live category (States `category`); a
-/// recording without it refuses the line by name, and the history category is never shown in
-/// its place.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Result<()> {
@@ -361,10 +343,8 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
     let default = hover(false);
     assert!(!default.refused.contains_key(refusal));
     if states.refused.get(refusal) == Some(&1) {
-        // The rest of the location block is the default mode's.
         assert_eq!(states.title, default.title);
     } else {
-        // The category line joins the default mode's location block.
         assert!(
             states.title.len() > default.title.len(),
             "{:?}",
@@ -374,9 +354,6 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
     Ok(())
 }
 
-/// A scripted mode's hover expands its text in the game's scopes: ROOT the viewing country,
-/// FROM the hovered province's state; a state function the shared expansion lacks is refused by
-/// name.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::Result<()> {
@@ -453,8 +430,6 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
     Ok(())
 }
 
-/// The resistance and compliance hover shows the occupied state's complete recorded inputs.
-/// The text artifact retains native colour controls for a matched game-hover comparison.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {

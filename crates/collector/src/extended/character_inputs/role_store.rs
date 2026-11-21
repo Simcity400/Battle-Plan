@@ -1,40 +1,3 @@
-//! Country-leader and advisor role rows held between hours for
-//! CharacterRoleTraits ([`crate::character_changes`]).
-//!
-//! The census walk visits every occurrence of the roster job's admitted census in roster order. A
-//! character's held country-leader and advisor rows are carried, without reading its maps, roles or
-//! trait arrays, only when all of these hold at this boundary: the same character pointer and id as
-//! the held read; the same country-leader and advisor map headers (head node and size, freshly
-//! gathered by the roster job this callback); and no hooked writer touched the character since the
-//! read registered it (same watch epoch and sequence; a load, gap, recovery, table change, poison,
-//! an unnamed receiver or a running writer revokes it). Every writer of those maps, their roles'
-//! parent links and trait arrays is a hooked site ([`engine_mutations::character_role_mutations`],
-//! [`engine_mutations::advisor_mutations`]), and trait definitions (token and ordinal) are database objects
-//! nothing rewrites, so the fresh read would return the held rows. Scientist rows and operative
-//! links are read every hour.
-//!
-//! A quiet hour carries every country-leader and advisor row without a
-//! lookup: when the latest full walk held every occupant, the character
-//! domain's quiet token ([`Changes::quiet`]) equals the one taken before that
-//! walk's first registration, and the census has that walk's generation
-//! ([`Admitted::generation`]), no observed writer ran and every occupant,
-//! identity and map header is the one read then, so every held certificate
-//! still matches. The held rows are appended in runs between the occupants
-//! with a scientist or operative, whose operative links are read as every
-//! hour.
-//!
-//! A quiet hour also carries the scientist rows that walk held when the
-//! scientist domain's token ([`Changes::scientists`],
-//! [`crate::roster_changes`]) equals the one taken before it: the census's
-//! scientist pointers are that walk's (same generation), and every writer of
-//! A scientist role or its trait array  (scientist build, scientist attach,
-//! scientist clear, scientist trait add, scientist trait remove, scientist trait reset) moves that token.
-//! Otherwise the scientist rows are read as every hour.
-//!
-//! The store follows the Gated job's loan and holds only the characters of
-//! the latest complete census walk, so its size follows the live roster.
-//! Allocation is advisory: a character whose rows cannot be held is read
-//! afresh next hour.
 use crate::{
     character_changes::{Changes, Counts},
     extended::characters::census::Admitted,
@@ -64,10 +27,8 @@ struct Entry {
     rows: Range<usize>,
 }
 
-/// One walk's held rows; each row's `start` indexes `values`.
 #[derive(Default)]
 struct Held {
-    /// Sorted by character pointer once the walk finishes.
     entries: Vec<Entry>,
     rows: Vec<TraitRow>,
     values: Vec<Trait>,
@@ -86,8 +47,6 @@ impl Held {
             .ok()
     }
 
-    /// Holds `rows` (indexing `values`) for `certificate`; `false` when the
-    /// storage could not grow, which only withholds the certificate.
     fn hold(&mut self, certificate: Certificate, rows: &[TraitRow], values: &[Trait]) -> bool {
         let count: usize = rows.iter().map(|row| row.len).sum();
         let stored = allocation::advisory(|| {
@@ -120,63 +79,34 @@ impl Held {
     }
 }
 
-/// Rows of the latest complete walk and the walk being made.
 #[derive(Default)]
 pub(crate) struct RoleStore {
     current: Held,
     previous: Held,
     scope: (usize, usize),
     counts: Counts,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walk drops every held row.
     forgotten: bool,
-    /// What lets a quiet hour carry every held row: the domain's quiet token
-    /// before the latest full walk and its census generation, when that walk
-    /// held every occupant.
     quiet: Option<((u64, u64), u64)>,
-    /// Of that walk, in roster order: each occupant with a scientist or an
-    /// operative link, the held rows up to and including its own, and its
-    /// scientist rows.
     breaks: Vec<Break>,
-    /// The scientist rows of `breaks`; each row's `start` indexes
-    /// `scientist_values`.
     scientist_rows: Vec<TraitRow>,
     scientist_values: Vec<Trait>,
-    /// The scientist domain's token taken before that walk.
     scientists: Option<(u64, u64)>,
-    /// A quiet hour's published scientist rows, held in place of
-    /// `scientist_rows` once complete.
     fresh_rows: Vec<TraitRow>,
     fresh_values: Vec<Trait>,
-    /// Names the CharacterRoleTraits table a quiet hour publishes from the
-    /// held rows and scientist rows: a fresh value whenever either changes;
-    /// zero for none.
     content: u64,
-    /// The operative links of the latest walk ([`Operatives`]).
     operatives: Operatives,
 }
 
-/// A content version no other store has held.
 fn fresh_content() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// What carries an operative link: the certificates of the unit leader its
-/// reference resolves to, from the unit leader domain (owner, skill,
-/// category, names and codename writers, [`crate::unit_leader_changes`])
-/// and the trait domain (its assigned traits,
-/// [`crate::unit_leader_trait_changes`]); both see the leader constructors
-/// and destructor. A CharacterOperatives row reads nothing else of the
-/// leader, and the skill level and trait ordinals it reads are the content's.
 pub(crate) trait LeaderChanges: Sync {
-    /// Both certificates of `leader`, registering it; `None` when either
-    /// domain cannot observe it.
     fn certificate(&self, leader: usize) -> Option<[(u64, u64); 2]>;
 }
 
-/// The hooks' domains.
 pub(crate) struct LeaderObserver;
 impl LeaderChanges for LeaderObserver {
     fn certificate(&self, leader: usize) -> Option<[(u64, u64); 2]> {
@@ -188,7 +118,6 @@ impl LeaderChanges for LeaderObserver {
     }
 }
 
-/// Tests: one domain stands in for both.
 #[cfg(test)]
 impl LeaderChanges for crate::unit_leader_changes::Watches {
     fn certificate(&self, leader: usize) -> Option<[(u64, u64); 2]> {
@@ -198,9 +127,6 @@ impl LeaderChanges for crate::unit_leader_changes::Watches {
     }
 }
 
-/// One held operative link: the occupant's census index and reference, the
-/// object it resolved to with its certificates taken before the read, and
-/// the row with its definitions and text.
 #[derive(Clone, Debug)]
 struct HeldOperative {
     index: usize,
@@ -212,23 +138,18 @@ struct HeldOperative {
     text: Range<usize>,
 }
 
-/// One walk's operative links, held for the next walk ([`LeaderChanges`]).
 #[derive(Default)]
 struct Operatives {
-    /// By census index.
     held: Vec<HeldOperative>,
     definitions: Vec<u32>,
     text: Vec<u8>,
-    /// This walk's links, held again.
     next: Vec<HeldOperative>,
     next_definitions: Vec<u32>,
     next_text: Vec<u8>,
-    /// A fresh read's text.
     scratch: Vec<u8>,
     counts: OperativeCounts,
 }
 
-/// One walk's operative links.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OperativeCounts {
     pub carried: u64,
@@ -250,7 +171,6 @@ impl Operatives {
         self.text.clear();
     }
 
-    /// Before a walk's first link.
     fn begin(&mut self) {
         self.next.clear();
         self.next_definitions.clear();
@@ -258,8 +178,6 @@ impl Operatives {
         self.counts = OperativeCounts::default();
     }
 
-    /// After the walk: its links are held when the CharacterOperatives table
-    /// completed; otherwise nothing is.
     fn finish(&mut self, complete: bool) {
         if complete {
             std::mem::swap(&mut self.held, &mut self.next);
@@ -278,9 +196,6 @@ impl Operatives {
         Some(&self.held[at]).filter(|held| held.reference == reference)
     }
 
-    /// The census occurrence `index`'s operative link: carried from its held
-    /// read while the leader's certificates hold, read afresh otherwise; held
-    /// again either way when it can be certified and its read refused no name.
     fn visit(
         &mut self,
         memory: &impl Memory,
@@ -293,7 +208,6 @@ impl Operatives {
         if occupant.operative == 0 {
             return;
         }
-        // Taken before any read of this link.
         let held = self.holding(index, occupant.operative).cloned();
         let held_certificate = held
             .as_ref()
@@ -331,8 +245,6 @@ impl Operatives {
             self.scratch = text;
             return;
         };
-        // A refused name is not the leader's: the row is not held, and the
-        // next walk reads it afresh as an uncarried walk would.
         let whole = row.name_reason.is_none() && row.codename_reason.is_none();
         if let (Some(object), Some(certificate), true) = (object, certificate, whole) {
             self.keep(
@@ -351,9 +263,6 @@ impl Operatives {
         self.scratch = text;
     }
 
-    /// Holds a link for the next walk: its own definitions and text, or the
-    /// held ones. Storage is advisory: a link it cannot hold is read next
-    /// walk.
     fn keep(&mut self, mut held: HeldOperative, fresh: Option<(&[u32], &[u8])>) {
         let (definitions, text) = match fresh {
             Some(fresh) => fresh,
@@ -380,14 +289,10 @@ impl Operatives {
     }
 }
 
-/// One walk's view of the store and the observation that certifies reuse.
 pub(crate) struct RoleReuse<'a> {
     pub store: &'a mut RoleStore,
     pub changes: &'a dyn Changes,
-    /// The store content whose CharacterRoleTraits table the frame's buffers
-    /// hold; a quiet hour publishing that table leaves them as they are.
     pub held: Option<u64>,
-    /// What carries each operative link.
     pub leaders: &'a dyn LeaderChanges,
 }
 
@@ -396,21 +301,16 @@ impl RoleStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next walk reads afresh.
-    /// Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.forgotten = true;
         self.content = 0;
         self.operatives.forget();
     }
 
-    /// Before a walk: no operative link of it is held yet.
     pub(crate) fn begin_operatives(&mut self) {
         self.operatives.begin();
     }
 
-    /// After a walk: hold its operative links when CharacterOperatives
-    /// completed.
     pub(crate) fn finish_operatives(&mut self, complete: bool) {
         self.operatives.finish(complete);
         let counts = self.operatives.counts;
@@ -422,13 +322,10 @@ impl RoleStore {
         self.operatives.counts
     }
 
-    /// The content of the CharacterRoleTraits table the latest walk
-    /// published from or into the held rows; zero for none.
     pub(crate) fn content(&self) -> u64 {
         self.content
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -465,8 +362,6 @@ impl RoleStore {
             + self.operatives.measure();
     }
 
-    /// Holds one break's scientist rows (indexing `values`); `false` when
-    /// the storage could not grow.
     fn hold_scientist(&mut self, rows: &[TraitRow], values: &[Trait]) -> Option<Range<usize>> {
         let count: usize = rows.iter().map(|row| row.len).sum();
         allocation::advisory(|| {
@@ -484,8 +379,6 @@ impl RoleStore {
         Some(first..self.scientist_rows.len())
     }
 
-    /// Whether this walk may carry every held row: the latest full walk held
-    /// every occupant of this census, and no observed writer ran since.
     fn quiet_hour(
         &self,
         scope: (usize, usize),
@@ -498,8 +391,6 @@ impl RoleStore {
             && token.is_some_and(|token| self.quiet == Some((token, census.generation)))
     }
 
-    /// Keeps this walk's rows only when every trait row was read or carried
-    /// completely, and publishes its counts.
     fn finish(&mut self, complete: bool) {
         self.content = if complete { fresh_content() } else { 0 };
         if complete {
@@ -518,13 +409,6 @@ impl RoleStore {
         );
     }
 
-    /// A quiet hour's rows: every held row in runs, with the scientist row
-    /// and operative link of each occupant that has one after its own rows,
-    /// in roster order as a full walk appends them. The operative link is
-    /// carried or read afresh ([`Operatives::visit`]); the scientist rows are carried when `scientists` (the
-    /// scientist token matched) and read afresh otherwise. The scientist rows
-    /// published are held again, so a quiet hour after a scientist write
-    /// carries the rows it read.
     fn carry_all(
         &mut self,
         memory: &impl Memory,
@@ -562,7 +446,6 @@ impl RoleStore {
             } else {
                 walk.scientist(memory, base, &occupant);
             }
-            // Held again as published.
             let (published, values) = walk.stored_since(from);
             let count: usize = published.iter().map(|row| row.len).sum();
             let stored = walk.traits_complete()
@@ -590,16 +473,12 @@ impl RoleStore {
             std::mem::swap(scientist_rows, fresh_rows);
             std::mem::swap(scientist_values, fresh_values);
         }
-        // Scientist rows read afresh may differ from the held ones.
         if counts.carried as usize != self.breaks.len() || !counts.held {
             self.content = fresh_content();
         }
         counts
     }
 
-    /// A quiet hour whose CharacterRoleTraits table is the held content's
-    /// and already in the frame: the operative link of each break, carried
-    /// or read afresh ([`Operatives::visit`]).
     fn operatives_only(
         &mut self,
         memory: &impl Memory,
@@ -618,9 +497,6 @@ impl RoleStore {
     }
 }
 
-/// One break of a held walk: the census occurrence with a scientist or an
-/// operative link, the end of the held rows up to and including its own, and
-/// its scientist rows in [`RoleStore::scientist_rows`].
 #[derive(Clone, Debug)]
 struct Break {
     index: usize,
@@ -628,27 +504,18 @@ struct Break {
     scientist: Range<usize>,
 }
 
-/// A quiet hour's scientist rows.
 #[derive(Clone, Copy, Debug, Default)]
 struct ScientistCounts {
     carried: u64,
-    /// Every break's published scientist rows are held again.
     held: bool,
 }
 
-/// What [`visit`] wrote into the walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Visited {
-    /// Both tables.
     Walked,
-    /// Only CharacterOperatives: the CharacterRoleTraits table is the held
-    /// content's ([`RoleReuse::held`]).
     Held,
 }
 
-/// Every occupant of `census` into `walk` in roster order: each character's
-/// country-leader and advisor rows carried when `reuse` proves them current
-/// and read afresh otherwise, then its scientist row and operative link.
 pub(crate) fn visit(
     memory: &impl Memory,
     base: usize,
@@ -657,7 +524,6 @@ pub(crate) fn visit(
     walk: &mut CensusWalk<'_>,
     mut reuse: Option<RoleReuse<'_>>,
 ) -> Visited {
-    // Taken before any registration or read this walk certifies.
     let token = reuse.as_ref().and_then(|reuse| reuse.changes.quiet());
     let scientist_token = reuse.as_ref().and_then(|reuse| reuse.changes.scientists());
     if let Some(reuse) = reuse.as_mut()
@@ -691,8 +557,6 @@ pub(crate) fn visit(
         let counts = reuse
             .store
             .carry_all(memory, base, &census, walk, scientists, reuse.leaders);
-        // The published scientist rows were read or carried after
-        // this hour's token was taken.
         reuse.store.scientists = scientist_token.filter(|_| counts.held);
         crate::roster_changes::record(
             crate::roster_changes::Table::CharacterRoleTraits,
@@ -715,8 +579,6 @@ pub(crate) fn visit(
             );
             return Visited::Walked;
         }
-        // A scientist row failed or the rows did not fit: the
-        // table publishes that outcome, and nothing is held.
         reuse.store.forget();
         reuse.store.begin((base, game_state));
         reuse.store.finish(false);
@@ -725,7 +587,6 @@ pub(crate) fn visit(
     if let Some(reuse) = reuse.as_mut() {
         reuse.store.begin((base, game_state));
     }
-    // Every occupant so far holds a certificate.
     let mut held_all = true;
     let mut index = 0;
     let mut occupants = (0..census.len())
@@ -740,7 +601,6 @@ pub(crate) fn visit(
         let mut fresh = 0;
         for (slot, occupant) in page.iter_mut().zip(occupants.by_ref()) {
             *slot = occupant;
-            // Registration precedes every read it certifies.
             let plan = reuse
                 .as_ref()
                 .map_or_else(Plan::default, |reuse| plan(reuse, &occupant));
@@ -831,9 +691,6 @@ pub(crate) fn visit(
         let store = reuse.store;
         let complete = walk.traits_complete();
         store.finish(complete);
-        // Every occupant held under one certificate each (a duplicated
-        // pointer dropped its entries and is read afresh), with this walk's
-        // census: a quiet hour carries the whole table.
         store.quiet = token
             .filter(|_| {
                 complete
@@ -847,7 +704,6 @@ pub(crate) fn visit(
             store.scientist_rows.clear();
             store.scientist_values.clear();
         }
-        // Every break's scientist rows were held with the walk.
         store.scientists = store.quiet.and(scientist_token);
         crate::roster_changes::record(
             crate::roster_changes::Table::CharacterRoleTraits,
@@ -860,12 +716,9 @@ pub(crate) fn visit(
     Visited::Walked
 }
 
-/// What a walk does with one occupant.
 #[derive(Clone, Copy, Default)]
 struct Plan {
     certificate: Option<Certificate>,
-    /// The previous walk's entry this certificate matches, carried instead
-    /// of reading.
     held: Option<usize>,
 }
 

@@ -1,4 +1,3 @@
-//! Shared native floating-point ribbon geometry.
 pub fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -7,7 +6,6 @@ pub fn length(v: [f32; 3]) -> f32 {
     (v[1] * v[1] + v[0] * v[0] + v[2] * v[2]).sqrt()
 }
 
-/// Leave a zero-length vector unchanged.
 pub fn normalize(v: [f32; 3]) -> [f32; 3] {
     let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if l != 0.0 {
@@ -17,15 +15,10 @@ pub fn normalize(v: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// The side the native rotation builds from a direction: `(-z, y, x)`.
 fn side(v: [f32; 3]) -> [f32; 3] {
     [-v[2], v[1], v[0]]
 }
 
-/// At turns sharper than 60 degrees, insert two points around the corner,
-/// each a quarter of its segment in and pushed three `amount` sideways away
-/// from the turn. Push later revisits sideways at both visits; a revisit at
-/// the second-to-last point alone moves, twice as far.
 pub fn smooth_sharp_turns(points: &mut Vec<[f32; 3]>, amount: f32) {
     let mut index = 2usize;
     while (index as i64) < points.len() as i64 - 1 {
@@ -113,15 +106,12 @@ mod tests {
         ];
         smooth_sharp_turns(&mut turn, 1.0);
         assert_eq!(turn.len(), 7);
-        // A quarter of the incoming segment back, pushed three units off the
-        // turn's side.
         assert_eq!(turn[2], [17.5, 0.0, -3.0]);
         assert_eq!(turn[3], [20.0, 0.0, 0.0]);
     }
 
     #[test]
     fn a_revisited_point_is_pushed_apart_at_both_visits() {
-        // A square loop back through (20, 0), every turn a right angle.
         let mut points = vec![
             [0.0, 0.0, 0.0],
             [10.0, 0.0, 0.0],
@@ -135,9 +125,7 @@ mod tests {
         ];
         smooth_sharp_turns(&mut points, 1.0);
         assert_eq!(points.len(), 9);
-        // The first visit moves across its outgoing leg (+z), side (-z, y, x).
         assert_eq!(points[2], [19.0, 0.0, 0.0]);
-        // The revisit moves across the leg after it (-z).
         assert_eq!(points[6], [21.0, 0.0, 0.0]);
     }
 }

@@ -1,4 +1,3 @@
-//! Scientist-effect describers and their content-backed display names.
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope};
@@ -8,9 +7,6 @@ use installed_content_core::tokens::Token;
 mod tests;
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // The active roster is kept in step with the character's scientist holder.
-    // An unrostered character's holder is not captured, so absence of a
-    // Scientists row alone cannot prove the null-holder gate.
     pub(in crate::effect_description) fn char_scientist(
         &self,
         scopes: Scopes,
@@ -35,8 +31,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         ))
     }
 
-    // Use TAG_token when that localisation exists, otherwise the token.
-    // No scope expansion occurs in this name or the XP/level wrapper.
     pub(in crate::effect_description) fn char_specialization_name(
         &self,
         operand: &[u8],
@@ -70,8 +64,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.localised(key.as_bytes(), &[], scopes, false).map(Some)
     }
 
-    // The character name and one space precede the XP/SPECIALIZATION wrapper.
-    // No LF is appended.
     pub(in crate::effect_description) fn char_add_scientist_xp(
         &self,
         item: &Item,
@@ -80,8 +72,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_scientist_change(item, scopes, false)
     }
 
-    // Unlike XP, the LEVELS/SPECIALIZATION description emits only the wrapper,
-    // with neither character name nor LF.
     pub(in crate::effect_description) fn char_add_scientist_level(
         &self,
         item: &Item,
@@ -135,8 +125,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Expand the injury description in a fresh default scope set to the character,
-    // so ROOT, FROM and PREV are that character rather than the calling event.
     pub(in crate::effect_description) fn char_injure_scientist(
         &self,
         item: &Item,
@@ -166,15 +154,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Only a found trait is valid. Localise TRAIT_NAME without expansion;
-    // format modifiers in the caller scope, then indent them by two spaces.
     pub(in crate::effect_description) fn char_add_scientist_trait(
         &self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Look up the held token ID. Quoted and numeric values
-        // have the lexer's reserved identities.
         if item.kind != installed_content_core::parser::native::Kind::Bare || item.number() {
             return Ok(String::new());
         }
@@ -201,7 +185,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             scopes,
             false,
         )?;
-        // Pass all category bits and the caller scope to the modifier formatter.
         let modifiers = self.modifier_list_with(
             &trait_.modifiers,
             "",
@@ -215,9 +198,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Preserve authored trait order, join the wrappers with commas and spaces,
-    // and wrap nonempty output in parentheses.
-    // Portrait, gender and starting skills are execution inputs only.
     pub(in crate::effect_description) fn char_generate_scientist(
         &self,
         item: &Item,
@@ -260,8 +240,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the named character, then fall back to the current character.
-    // There is no scientist-role existence gate.
     pub(in crate::effect_description) fn char_add_scientist_role(
         &self,
         item: &Item,
@@ -280,7 +258,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Substitute NAME without appending LF or gating on scientist presence.
     pub(in crate::effect_description) fn char_remove_scientist_role(
         &self,
         item: &Item,

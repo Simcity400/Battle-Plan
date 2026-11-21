@@ -1,13 +1,3 @@
-//! Class-13's fresh counter duration.
-//! The common route search owns admission. Land speed uses equipment maximum
-//! plus the directed railway bonus, then land scale and the gun's own supply
-//! factor; it never uses the army road-speed fallback. Sea-crossing and
-//! transfer legs move at the logical owner's transport speed in the leg's
-//! source strategic region (OwnerTransportSpeeds), scaled by the content's
-//! naval speed modifier. Capture records those speeds for the regions the
-//! owner's guns stand in or route through along their stored paths; the route
-//! here is searched afresh and can cross another region, whose leg refuses by
-//! [`NOT_RECORDED`].
 
 use super::fresh_search::Inputs;
 use game_model::movement::{army::MovementSpeedInputs, unit::eta_ratio};
@@ -15,14 +5,8 @@ use installed_content_unit_path::{unit_path::CounterRequest, unit_path::Fact, un
 use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow, rows::tables};
 use viewer_foundation::map::movement_reads::Moves;
 
-/// A sea leg in a region with no recorded speed for its owner: capture
-/// records the regions the owner's guns stand in or route through (their
-/// stored paths), and the counter's searched route can cross another.
 const NOT_RECORDED: &str = "fresh railway ETA sea-leg transport speed is not recorded for the leg's region: capture records only the regions the owner's guns stand in or route through";
 
-/// The owner's raw transport speed in `region`, recorded for each railway-gun
-/// owner in the regions its guns stand in or route through. Reasons name no
-/// owner or region, so they count together.
 fn transport(inputs: &Inputs<'_>, owner: u32, region: u32) -> Fact<i64> {
     let rows = inputs
         .frame()
@@ -171,8 +155,6 @@ fn remaining(
             }
             .evaluate()
         };
-        // Zero speed returns immediately, before later edges or independently
-        // recorded actual first-edge progress are demanded.
         if speed == 0 {
             return Ok(0);
         }
@@ -249,7 +231,6 @@ mod tests {
                 outer_scale: 100_000,
                 ..Default::default()
             },
-            // Large road/base values must not enter the class13 formula.
             rail: Ok(RailMovementDefines {
                 speed: [99_000_000, 98_000_000, 97_000_000, 200_000],
                 maximum_level: 5,
@@ -264,7 +245,6 @@ mod tests {
             gun: 7,
             province: 1,
             logical_owner: 99,
-            // Different first edge leaves old ETA inputs outside demand.
             ordinary_path: vec![4],
             ..Default::default()
         }
@@ -351,7 +331,6 @@ mod tests {
         let mut content = content(1);
         content.defines.outer_scale = 150_000;
         let inputs = Inputs::new(&frame, &content);
-        // 1->2: (2+2)*1.5*.5=3; 2->3: 2*1.5*.5=1.5.
         assert_eq!(
             remaining(&inputs, &gun(), &land(), &[2, 3], |_| Ok(9)),
             Ok(400_000)
@@ -373,9 +352,6 @@ mod tests {
         );
     }
 
-    /// Sea-crossing and transfer legs move at the logical owner's speed in
-    /// the leg's source region, without reaching any land domain; an embark
-    /// leg takes the embark distance.
     #[test]
     fn sea_legs_use_the_owners_regional_transport_speed() {
         let mut frame = frame();
@@ -386,7 +362,6 @@ mod tests {
         let mut sea = content(0);
         sea.rail = Err("unreached rail content".into());
         let inputs = Inputs::new(&frame, &sea);
-        // 400000 embark distance at 2.0: two hours.
         assert_eq!(
             remaining(
                 &inputs,
@@ -401,7 +376,6 @@ mod tests {
         transfer.naval_transfer = 2;
         let content = content(1);
         let inputs = Inputs::new(&frame, &content);
-        // 600000 + 300000 at 2.0.
         assert_eq!(
             remaining(
                 &inputs,
@@ -412,7 +386,6 @@ mod tests {
             ),
             Ok(450_000)
         );
-        // The source region decides the speed, leg by leg.
         assert_eq!(
             remaining(
                 &inputs,
@@ -423,7 +396,6 @@ mod tests {
             ),
             Ok(300_000 + 30_000_000_000)
         );
-        // An empty route needs no speed at all.
         assert_eq!(
             remaining(
                 &inputs,
@@ -506,7 +478,6 @@ mod tests {
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
-        // No railway bonus and no equipment speed: the first land leg is zero.
         content.rail.as_mut().unwrap().speed[3] = 0;
         let inputs = Inputs::new(&frame, &content);
         let mut gun = gun();
@@ -515,7 +486,6 @@ mod tests {
             maximum_speed: Some(0),
             ..land()
         };
-        // The same first edge would demand the unrecorded actual progress.
         assert_eq!(
             remaining(&inputs, &gun, &stopped, &[2, 3], |_| Ok(9)),
             Ok(0)
@@ -593,9 +563,6 @@ mod tests {
             ..land()
         };
         let inputs = Inputs::new(&frame, &content);
-        // First speed = -2*.5 = -1, so wrapping distance*100000 is
-        // i64::MIN and native division traps. The damaged next departure
-        // would produce speed0, but native has already reached the trap.
         assert_eq!(
             remaining(&inputs, &gun(), &fresh, &[2, 3], |_| Ok(9)),
             Err("ETA native signed division overflows".into()),

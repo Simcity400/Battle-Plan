@@ -1,0 +1,13 @@
+# 0201. Resume combat history from an exact owned baseline after loss
+
+The combat-history observer appends owned occurrences without waiting or following unrelated histories. It uses a prepared lane where possible and can grow from a fallible spill. Demand from a refused or spilled lane informs the next worker preparation. The single worker installs storage only at a drained, quiescent boundary. An unobserved event, refused or escaped native write requires a fresh quiet baseline, and hooks with a possible unwind path retain their executable storage.
+
+The producer records group creation at the append site, keeping ordinary lookups free of observer work. The normal result route obtains the affected current month's metadata directly. Event sequence counters refuse before wrapping or reaching lane-reserved mark bits. Writer guards finish within the hook's phase, and reclaims wait for quiescence. The family publishes as a unit so partial observer installation cannot certify an interval.
+
+`emit` tests handoff only after its native call has entered the active writer count. That count keeps the loaded lane alive until the append completes.
+
+A complete owned baseline can publish even when its incremental cache refuses to grow. Recovery replaces partially drained state, and row counts are confirmed when an event batch is projected. Native addresses remain private to the reducer for the current baseline and session. Destruction removes their associations. The reducer returns typed identities and native ordinals. Reverse counts certify unchanged references, so validation visits changed slots and references only. Projection works from owned conversion data, and a prefix prune rekeys only its affected collection. Unchanged certified snapshots share their allocation with the encoder.
+
+Observer rows take stable labels from the encoder's complete prior baseline and compare occurrence identity independently of values. The full combat and side scope the key. A table-wide high-water mark assigns new labels in occurrence order. Removing an earlier child leaves labels of surviving child families and parents stable. A genuine counter reset remains visible as a value change. Reusable scratch sorts small keys and row ordinals. Native indexes and handles keep their full widths.
+
+[Event observer](../../crates/collector-combat-log/src/history_events.rs) · [Owner](../../crates/collector-combat-log/src/history_capture.rs) · [Reducer](../../crates/collector-combat-log/src/history_reducer.rs) · [Projection](../../crates/collector-combat-log/src/history_projection.rs) · [Row labels](../../crates/collector-combat-log/src/observer_projection.rs)

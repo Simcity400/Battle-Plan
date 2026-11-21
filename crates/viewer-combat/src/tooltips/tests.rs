@@ -112,7 +112,6 @@ fn land_balance_bar_and_frame_share_native_outlook_and_delayed_explanation() {
             );
             assert!(widget.hover_owned);
         }
-        // A missing recorded score clears an authored main tooltip, counted once.
         land_progress_hovers(
             &mut values,
             &NoIcons,
@@ -177,9 +176,6 @@ fn naval_flag_hover_titles_both_flags_from_first_side_and_refuses_unknown_alias(
         detail.sides[1].summary.countries = second.to_vec();
         detail
     };
-    // The viewer in the first combatant is selected through its canonical
-    // alias; viewing from the other combatant still titles BOTH flags with
-    // the first country's name, not the enemy flag's country.
     let combat = detail(&[12, 34], &[80]);
     assert_eq!(naval_flag_country(&combat, &aliases, 340), Ok(340));
     assert_eq!(naval_flag_country(&combat, &aliases, 800), Ok(120));
@@ -257,8 +253,6 @@ fn political_province_hover_keys_preload_native_inline_icons() {
     }
 }
 
-/// The tactic registry read through the real parse
-/// (installed_content_core::combat_tactics), as the land hovers use it.
 fn tactics(text: &[u8]) -> Tactics {
     Tactics::from_database(installed_content_core::combat_tactics::parse(
         text,
@@ -273,16 +267,10 @@ fn loc(entries: &[(&str, &str)]) -> Localisation {
         .collect()
 }
 
-/// The hovers find the recorded tactic at its recorded ID, which must carry
-/// the recorded name;
-/// a repeated name is its own tactic, and a refused effect or an
-/// unproven entry names the tactic and why.
 #[test]
 fn recorded_tactics_find_their_registry_effects() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Whether `x` names an ideology group is unknown while an ideology
-    // file stops short.
     let mut names = installed_content_core::key_names::KeyNames::default();
     names.counts.ideologies_gap = Some("common/ideologies/a.txt is unknown from line 1".into());
     let registry = Tactics::from_database(installed_content_core::combat_tactics::parse(
@@ -305,14 +293,11 @@ fn recorded_tactics_find_their_registry_effects() {
             ..Effects::default()
         })
     );
-    // The repeat is tactic 4, with its own values.
     assert_eq!(
         registry.effects(4, b"tactic_a").map(|t| t.attacker),
         Ok(50_000)
     );
     assert_eq!(registry.effects(1, b"PHASES"), Ok(Effects::default()));
-    // The game reads any text: an unbound reference is its own text
-    // (0), and 'e' is a digit to it.
     assert_eq!(registry.effects(3, b"tactic_b"), Ok(Effects::default()));
     assert_eq!(
         registry.effects(5, b"tactic_c"),
@@ -321,8 +306,6 @@ fn recorded_tactics_find_their_registry_effects() {
             ..Effects::default()
         })
     );
-    // A trigger block the port cannot settle: that tactic is unproven
-    // and no later one is known.
     let unsettled = registry.effects(6, b"tactic_d").unwrap_err();
     assert!(
         unsettled.starts_with("tactic tactic_d's ID or fields cannot be read as the game reads them: combat_tactics.txt line 7: field `x`"),
@@ -350,9 +333,6 @@ fn tactic_a() -> Described<'static> {
     }
 }
 
-/// The null tactic (kind 1) takes the ordinary hover path: its constructor
-/// name supplies the header, zero effects add no lines, and TACTIC_DESC supplies
-/// the delayed text. A countered tactic adds the countered line.
 #[test]
 fn the_null_tactic_object_is_described_like_a_tactic() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -418,7 +398,6 @@ fn tactic_description_goes_to_the_delayed_slot() {
             Ok("What tactics do".into())
         ))
     );
-    // The countered overlay shares both slots.
     assert_eq!(
         tactic_description(&NoIcons, &loc, &content, tactic_a(), true, true),
         Ok(("Tactic A\nCountered".into(), Ok("What tactics do".into())))
@@ -430,8 +409,6 @@ fn tactic_description_goes_to_the_delayed_slot() {
     );
 }
 
-/// Every hover these builders cannot make names why, and a missing or
-/// undrawable delayed description leaves the immediate text standing.
 #[test]
 fn refused_hovers_name_their_reason() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -446,7 +423,6 @@ fn refused_hovers_name_their_reason() {
     let content = tactics(b"tactic_a = { }");
     let missing = tactic_description(&NoIcons, &entries(&[]), &content, tactic_a(), true, false);
     assert!(
-        // A missing top-level key shows its own bytes.
         matches!(&missing, Ok((_, Ok(text))) if text == "TACTIC_DESC"),
         "{missing:?}"
     );
@@ -470,7 +446,6 @@ fn refused_hovers_name_their_reason() {
         unknown,
         Err("recorded tactic id 1 is tactic_b, but the content's tactic 1 is tactic_a".into())
     );
-    // The null tactic's missing name key shows as itself.
     let side = LandCombatSideDetails {
         tactic_kind: 1,
         ..Default::default()
@@ -504,9 +479,6 @@ fn refused_hovers_name_their_reason() {
     let loc = entries(&[]);
     let inputs = LandCombatSideInputs::default();
     let definitions = super::super::modifier_text::Definitions::from_parts(&[], &[], None);
-    // A missing top-level key shows its own bytes. Without the
-    // keys' recorded definitions the offence and defence lines alone refuse,
-    // by name, and the skill line stands.
     let (text, lines) =
         skill_tooltip(&NoIcons, &loc, 3, Ok(&inputs), false, Ok(&definitions)).unwrap();
     assert!(text.contains("LEADER_SKILL_DESC"));
@@ -525,11 +497,6 @@ fn refused_hovers_name_their_reason() {
     );
 }
 
-/// The skill hover: the viewing country's commander gets the
-/// recorded progress, or the at-cap arm when the next level is missing or
-/// invalid; every commander's hover then lists the leader block's keys 0x5F
-/// and 0x60, skipping a zero one, after a newline. A missing operand refuses
-/// only the part it feeds.
 #[test]
 fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
     let loc = loc(&[
@@ -553,7 +520,6 @@ fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
     });
     let definitions = super::super::modifier_text::Definitions::from_parts(&rows, &[], None);
     let mut inputs = LandCombatSideInputs {
-        // 432.098625%, at the printed precision.
         skill_progress: 432_000,
         skill_modifiers: Some([15_000, 0]),
         ..Default::default()
@@ -578,11 +544,8 @@ fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
             None
         ))
     );
-    // Nothing to describe leaves the skill line and its newline.
     inputs.skill_modifiers = Some([0, 0]);
     assert_eq!(skill(Ok(&inputs), false, 9), Ok(("Skill 9\n".into(), None)));
-    // An unread leader block refuses only the lines; an unread next level
-    // refuses the viewing country's skill line, which needs it, and no other.
     inputs.skill_modifiers = None;
     assert_eq!(
         skill(Ok(&inputs), false, 9),
@@ -597,8 +560,6 @@ fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
         skill(Ok(&inputs), false, 9),
         Ok(("Skill 9\n".into(), Some(SKILL_LINES_UNREAD.into())))
     );
-    // A recording without the side inputs: another country's commander keeps
-    // its skill line; the viewing country's needs the progress.
     let missing = "LandCombatDetails.side_inputs not recorded";
     assert_eq!(
         skill(Err(missing), false, 4),
@@ -613,10 +574,6 @@ fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
     );
 }
 
-/// The authored `pdx_tooltip` is the text a widget is created with: a
-/// dynamic builder's text, or its refusal, replaces it whichever binds
-/// first (the game sets its hovers on every update), and an unowned
-/// widget keeps the seed.
 #[test]
 fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -639,7 +596,6 @@ fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
     set_hover(&mut values, "dynamic", hover_text("Dynamic"), None);
     let mut refused = BTreeMap::new();
     authored(&gui, window, "", &mut values, &mut refused);
-    // A refusal after the seed clears it too.
     refuse_hovers(&mut values, ["refused"]);
     let hover = |key: &str| {
         let widget = &values[key];
@@ -846,10 +802,6 @@ fn organisation_effects_follow_active_tactics_and_validate_damage_sums() {
     assert!(organisation_effects(&content, &detail, Some(&sides)).is_err());
 }
 
-/// The CAS hover rebuilt from the recorded operands: our planes,
-/// the opponent's air damage, committed condition and kills, and from its
-/// CAS inputs the prevented lanes and the anti-air effectiveness calculation
-/// derives from its stored cache.
 #[test]
 fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes() {
     let loc = loc(&[
@@ -890,16 +842,12 @@ fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes
             "division {unit}'s condition is unknown: the DivisionStatus table has no row for it"
         )
     };
-    // The prevented lanes in whole units, as the `|R0` display step stores
-    // them.
     let cas = |anti_air: i64, attacking: bool| Cas {
         own: &own,
         opponent: &opponent,
         opponent_cas: (anti_air, [100_000, 200_000]),
         attacking,
     };
-    // No anti-air: zero effectiveness (the game's zero arm); the width of 40
-    // fits 120 planes.
     assert_eq!(
         cas_tooltip(
             &NoIcons,
@@ -915,8 +863,6 @@ fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes
             Ok("max 120".into())
         ))
     );
-    // An anti-air cache of 100: the game's defence (about 0.46) times the
-    // 0.75 reduction factor passes the 30% maximum, which caps it.
     assert_eq!(
         cas_tooltip(
             &NoIcons,
@@ -932,7 +878,6 @@ fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes
             Err("unknown width".into())
         ))
     );
-    // Below the cap the product stands: 0.46 x 0.75 truncated.
     let uncapped = super::super::defines::LandDefines {
         anti_air: [75_000, 100_000],
         ..defines.clone()
@@ -940,7 +885,6 @@ fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes
     let effectiveness = anti_air_effectiveness(10_000_000, &uncapped).unwrap();
     assert!((34_000..35_000).contains(&effectiveness), "{effectiveness}");
     assert_eq!(anti_air_effectiveness(0, &uncapped), Ok(0));
-    // The refusal names the opposing division and the table that lacks it.
     assert_eq!(
         cas_tooltip(
             &NoIcons,
@@ -953,7 +897,6 @@ fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes
         ),
         Err("opposing committed division 7's condition is unknown: the DivisionStatus table has no row for it".into())
     );
-    // A missing executable key shows its own bytes.
     let bare: Localisation = [("ATTACKING".to_owned(), "attacking".to_owned())]
         .into_iter()
         .collect();

@@ -1,31 +1,8 @@
-//! Raw HLSL can read or probe the host's files: `#include` and the `__has_include` builtins. Only
-//! PdxShader `Includes` (already resolved by installed-content) may load content, and a compiler CLI has
-//! no include handler to refuse the rest, so the source the compiler receives cannot name a host
-//! file. A raw include's directive name becomes one DXC refuses, preserving #if branches; the
-//! builtins are undefined before the program.
-//!
-//! The scan follows DXC's lexer (its clang `Lexer.cpp`, with HLSL's fixed language options):
-//! `\n` and `\r` each end a line; a backslash, horizontal whitespace and a newline (`\r\n` and
-//! `\n\r` count as one) splice lines everywhere; trigraphs and digraphs are off. Wherever DXC's
-//! whitespace could differ from this scan's, the scan takes more as whitespace, so it finds every
-//! directive DXC does. The scan reads a spliced view, but the compiler receives the program's own
-//! bytes: splicing the spliced text again could join lines the program kept apart.
-//!
-//! An active `#error`, `#warning` or `#pragma mark` reads the rest of its line raw, one in a block
-//! #if leaves out reads it as tokens, and this scan cannot tell which: a program where the two
-//! readings differ, a block comment that tokens open there and close past the line, is refused.
-//! So is one holding NUL, which DXC skips between a backslash and its newline only where that
-//! splice ends a block comment.
 
-/// Undefines the builtins that test a host path; a program naming one afterwards names an
-/// ordinary identifier. `#line` restores the program's own line numbers.
 const PROLOGUE: &str = "#undef __has_include\n#undef __has_include_next\n#line 1\n";
 
-/// What replaces a raw include's directive name: no directive, so DXC refuses it where it is
-/// active and reads the rest of its line as tokens wherever it is, as it did the include's.
 const REFUSED: &str = "Raw_HLSL_includes_are_not_supported";
 
-/// The program as the compiler may receive it, or why it cannot.
 pub fn without_host_files(source: &str) -> Result<String, String> {
     if source.contains('\0') {
         return Err(
@@ -70,7 +47,6 @@ pub fn without_host_files(source: &str) -> Result<String, String> {
     out.push_str(PROLOGUE);
     let mut copied = 0;
     for range in replacements {
-        // The name's own bytes, and any splice inside it, in the program's text.
         let (start, end) = (origin[range.start], origin[range.end - 1] + 1);
         out.push_str(&source[copied..start]);
         out.push_str(REFUSED);
@@ -80,8 +56,6 @@ pub fn without_host_files(source: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// The length of the line splice starting at `index`: a backslash, any horizontal whitespace,
-/// then a newline, the other newline character following it counting as part of it.
 fn splice(bytes: &[u8], index: usize) -> Option<usize> {
     if bytes.get(index) != Some(&b'\\') {
         return None;
@@ -101,7 +75,6 @@ fn splice(bytes: &[u8], index: usize) -> Option<usize> {
     Some(end - index)
 }
 
-/// `source` with every line splice removed, and where in `source` each of its bytes is.
 fn spliced(source: &str) -> (String, Vec<usize>) {
     let bytes = source.as_bytes();
     let mut view = Vec::with_capacity(bytes.len());
@@ -120,19 +93,13 @@ fn spliced(source: &str) -> (String, Vec<usize>) {
     (view, origin)
 }
 
-/// The spliced view the scan reads, and the program's own bytes it came from.
 struct Text<'a> {
     view: &'a str,
-    /// Where in `source` each byte of `view` is.
     origin: &'a [usize],
     source: &'a [u8],
 }
 
 impl Text<'_> {
-    /// After a comment or whitespace starting at `index`, where the scan resumes; `None` when
-    /// something else starts there. Block comments may span lines without ending one; a line
-    /// comment stops before its newline. Form feed, vertical tab, a UCN escape and any non-ASCII
-    /// character count as whitespace.
     fn blank(&self, index: usize) -> Option<usize> {
         let bytes = self.view.as_bytes();
         match bytes[index] {
@@ -157,8 +124,6 @@ impl Text<'_> {
         }
     }
 
-    /// Past the `*/` closing a block comment whose `/*` ended before `index`, or the end. DXC
-    /// closes one only across at most one splice between the two.
     fn comment_end(&self, index: usize) -> usize {
         let bytes = self.view.as_bytes();
         let mut at = index;
@@ -173,8 +138,6 @@ impl Text<'_> {
         bytes.len()
     }
 
-    /// Whether reading the rest of a line from `index` as tokens opens a block comment that
-    /// closes past the line, where reading it raw opens none.
     fn comment_past_line(&self, mut index: usize) -> bool {
         let bytes = self.view.as_bytes();
         while index < bytes.len() {
@@ -198,9 +161,6 @@ impl Text<'_> {
         false
     }
 
-    /// A directive whose `#` ended before `index`: records the range of a raw include's name in
-    /// `replacements` and returns where the scan resumes, past the line of a directive DXC may
-    /// read raw.
     fn directive(
         &self,
         index: usize,
@@ -253,7 +213,6 @@ impl Text<'_> {
     }
 }
 
-/// The newline at or after `index`, or the end.
 fn line_end(bytes: &[u8], index: usize) -> usize {
     bytes[index..]
         .iter()
@@ -261,13 +220,9 @@ fn line_end(bytes: &[u8], index: usize) -> usize {
         .map_or(bytes.len(), |end| index + end)
 }
 
-/// Past a string or character literal whose quote ended before `index`: its closing quote, or
-/// the newline or end that leaves it unterminated.
 fn literal(bytes: &[u8], mut index: usize, quote: u8) -> usize {
     while index < bytes.len() {
         match bytes[index] {
-            // A backslash left before a newline had a splice after it, which the compiler reads
-            // as the escaped character: the newline still ends the literal.
             b'\\' if matches!(bytes.get(index + 1), Some(b'\n' | b'\r')) => index += 1,
             b'\\' => index += 2,
             b'\n' | b'\r' => return index,
@@ -294,7 +249,6 @@ mod tests {
     fn host_includes_become_conditional_compiler_errors() {
         let source = "/* #include \"comment\" */\n#if 0\n# /*comment*/ include \"inactive\"\n#endif\n#inc\\\nlude \"active\"\n// #include \"comment\"\n";
         let lowered = lowered(source);
-        // The spliced name is replaced whole, splice and all.
         assert_eq!(
             lowered
                 .matches("#Raw_HLSL_includes_are_not_supported \"active\"")
@@ -308,8 +262,6 @@ mod tests {
         assert!(lowered.starts_with(PROLOGUE));
     }
 
-    /// DXC ends lines at a bare carriage return too: a line comment stops there, and the
-    /// include after it is a directive.
     #[test]
     fn every_newline_the_compiler_takes_ends_a_line() {
         for newline in ["\r", "\n", "\r\n", "\n\r"] {
@@ -319,34 +271,25 @@ mod tests {
         assert_eq!(refused("#if 0\r#include \"a\"\r#endif\r#include \"b\"\r"), 2);
     }
 
-    /// A splice is a backslash, horizontal whitespace and one newline of any kind, and it joins
-    /// the directive or comment it is in to the next line.
     #[test]
     fn splices_follow_the_compilers_escaped_newlines() {
         for splice in ["\\\n", "\\\r", "\\\r\n", "\\\n\r", "\\ \t\x0b\x0c\n"] {
             assert_eq!(refused(&format!("#inc{splice}lude \"a\"\n")), 1, "{splice:?}");
-            // A spliced line comment hides the next line.
             assert_eq!(
                 refused(&format!("// note{splice}#include \"a\"\n")),
                 0,
                 "{splice:?}"
             );
         }
-        // Spliced into the line before, `#` does not start a directive.
         assert_eq!(refused("float x; \\\n#include \"a\"\n"), 0);
     }
 
-    /// The compiler receives the program's own bytes: a backslash before a splice stays apart
-    /// from the newline after it, as DXC reads it, rather than splicing again.
     #[test]
     fn the_compiler_receives_the_programs_own_splices() {
         let source = "#inc\\\\\n\nlude \"C:/host.h\"\n";
         assert_eq!(lowered(source), format!("{PROLOGUE}{source}"));
     }
 
-    /// Whitespace DXC skips before `#` or between it and the name hides no directive: vertical
-    /// tab, form feed, Unicode whitespace and its UCN spelling, and a block comment spanning
-    /// lines.
     #[test]
     fn whatever_the_compiler_skips_cannot_hide_a_directive() {
         for gap in [
@@ -362,7 +305,6 @@ mod tests {
             assert_eq!(refused(&format!("{gap}#include \"a\"\n")), 1, "{gap:?} before");
             assert_eq!(refused(&format!("#{gap}include \"a\"\n")), 1, "{gap:?} after");
         }
-        // Not at the start of a line, not a directive name, or `##`: no directive.
         for other in [
             "x #include \"a\"\n",
             "#include_next \"a\"\n",
@@ -373,8 +315,6 @@ mod tests {
         }
     }
 
-    /// DXC ends a block comment at `*`, a backslash, NUL and a newline, then `/`: raw HLSL
-    /// holding NUL is refused rather than read otherwise.
     #[test]
     fn raw_hlsl_holding_nul_is_refused() {
         let source = "/* *\\\0\n/\n#include \"C:/host.h\"\n// */\n";
@@ -382,28 +322,19 @@ mod tests {
         assert!(without_host_files("float x;\0\n").is_err());
     }
 
-    /// DXC closes a block comment across one splice between `*` and `/`, never two: a comment
-    /// the program keeps open past two hides nothing DXC reads after its real end, even on the
-    /// same line.
     #[test]
     fn a_comment_ends_where_dxc_ends_it() {
         assert_eq!(refused("/* x *\\\n/ #include \"a\"\n"), 1);
         assert_eq!(refused("/* x *\\ \r\n/ #include \"a\"\n"), 1);
         assert_eq!(refused("/* x *\\\n\\\n/ // */ #include \"C:/host.h\"\n"), 1);
-        // The doubly spliced pair stays inside the comment until its real end.
         assert_eq!(refused("/* x *\\\n\\\n/ #include \"a\"\n*/\n"), 0);
     }
 
-    /// A refused include stays a line DXC reads as tokens, as it read the include: a comment it
-    /// opens hides what it spans.
     #[test]
     fn a_refused_include_line_reads_as_tokens() {
         assert_eq!(refused("#include \"a\" /*\n#include \"b\"\n*/\n"), 1);
     }
 
-    /// An active `#error`, `#warning` or `#pragma mark` reads its line raw and one #if leaves out
-    /// reads it as tokens. Where the two readings agree the scan goes on; where a comment opened
-    /// there would close past the line, they differ and the program is refused.
     #[test]
     fn a_line_dxc_may_read_raw_or_as_tokens_is_refused_when_the_readings_differ() {
         for line in [
@@ -416,32 +347,24 @@ mod tests {
             let source = format!("{line}\n#include \"b\"\n*/\n");
             assert!(without_host_files(&source).is_err(), "{line}");
         }
-        // A skipped warning's comment closes at its first `*/`; its quote then opens a literal
-        // that ends at the line, so the include after `#endif` is live.
         let skipped = "#if 0\n#warning /*\n\" */ \" /*\n#endif\n#include \"C:/host.h\"\n// */\n";
         assert!(without_host_files(skipped).is_err());
         for line in ["#error x /* closed */", "#warning \"/*\" it's", "#pragma mark // x"] {
             let source = format!("{line}\n#include \"b\"\n");
             assert_eq!(refused(&source), 1, "{line}");
         }
-        // Elsewhere a block comment hides what it spans.
         assert_eq!(refused("#define X /*\n#include \"a\"\n*/\n"), 0);
     }
 
-    /// A literal ends at its newline, unterminated, so one cannot swallow a later comment's
-    /// start and leave an include in what the scan took for a comment.
     #[test]
     fn literals_end_where_the_compiler_ends_them() {
         let source = "#if 0\n\"\n#endif\n\"/*\"\n#include \"a\"\n// */\n";
         assert_eq!(refused(source), 1);
         assert_eq!(refused("float x = '\\''; /* \n#include \"a\"\n */\n"), 0);
         assert_eq!(refused("#define S \"/*\"\n#include \"a\"\n"), 1);
-        // A backslash before a splice and an empty line escapes no newline.
         assert_eq!(refused("float s = \"a\\\\\n\n#include \"b\"\n"), 1);
     }
 
-    /// The builtins that test a host path are undefined before the program, which names an
-    /// ordinary identifier with them, however it spells or builds the name.
     #[test]
     fn host_path_tests_are_undefined_first() {
         let lowered = lowered("#if __has_include(\"C:/host.h\")\n#endif\n");

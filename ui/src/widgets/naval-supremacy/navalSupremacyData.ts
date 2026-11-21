@@ -4,10 +4,8 @@ import type { NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../g
 
 export type Control = 'friendly' | 'enemy' | 'neither';
 
-/** Following playback, the chart's end moves by whole months: a render per month of travel, never per hour. */
 export const STEP = 24 * 30;
 
-/** The hour a following view ends at: the end of the head's month while playing, the head itself at a pause. */
 export const followedEnd = (hour: number, playing: boolean) => playing ? Math.floor(hour / STEP) * STEP + STEP - 1 : Math.floor(hour);
 
 const text = (value: unknown): value is string => typeof value === 'string';
@@ -28,7 +26,6 @@ export function validateSupremacy(value: unknown): NavalSupremacyReply {
   return reply;
 }
 
-/** The reply's days within `extent` as heat periods, clipped to it; a day not known has no read. */
 export function supremacyDays(reply: NavalSupremacyReply, extent: readonly [number, number]): (HeatPeriod & { index: number })[] {
   const unknown = new Set(reply.unknown.flatMap(span => Array.from({ length: span.lastDay - span.firstDay + 1 }, (_, at) => span.firstDay + at)));
   const out: (HeatPeriod & { index: number })[] = [];
@@ -42,7 +39,6 @@ export function supremacyDays(reply: NavalSupremacyReply, extent: readonly [numb
   return out;
 }
 
-/** The run of `runs` holding day `index`. */
 export function runOn(runs: readonly SupremacyRun[], index: number): SupremacyRun | null {
   let low = 0, high = runs.length - 1;
   while (low <= high) {
@@ -54,7 +50,6 @@ export function runOn(runs: readonly SupremacyRun[], index: number): SupremacyRu
 
 export const controlOf = (run: SupremacyRun | null): Control | null => run?.control == null ? null : run.control > 0 ? 'friendly' : run.control < 0 ? 'enemy' : 'neither';
 
-/** Heat rows: each region's daily control as one colour; a known day without an admitted control is hatched. */
 export function supremacyRows(regions: readonly SupremacyRegion[], days: readonly (HeatPeriod & { index: number })[], colours: Record<Control, string>, labels: Record<Control, string>): HeatRow[] {
   const blank: HeatCell = { parts: [] }, unknown: HeatCell = { parts: [], unknown: true };
   const cells: Record<Control, HeatCell> = {
@@ -92,14 +87,10 @@ export function supremacyTooltip(region: SupremacyRegion, run: SupremacyRun | nu
   ] };
 }
 
-/** Why day `index` is not known, if it is not. */
 export function unknownReason(reply: NavalSupremacyReply, index: number): string | null {
   return reply.unknown.find(span => span.firstDay <= index && index <= span.lastDay)?.reason ?? null;
 }
 
-/** The windows held (`../../dashboard/heldWindows.ts`), joined in hour order into one reply of their days: each
- * window's days placed after the first's, runs and unknown days continuing the one before with the same values joined.
- * Null while none is held. */
 export function mergeSupremacy(windows: ReadonlyMap<number, NavalSupremacyReply>): NavalSupremacyReply | null {
   const held = [...windows].sort((a, b) => a[0] - b[0]).map(([, reply]) => reply).filter(reply => reply.days > 0);
   const first = held[0];

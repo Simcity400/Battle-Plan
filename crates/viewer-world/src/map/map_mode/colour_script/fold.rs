@@ -413,7 +413,6 @@ fn evaluate(
         scopes.push(EventScope::of(EventObject::Country(controller)));
     }
     let _bound = evaluator.bind_event_scopes(Rc::new(RefCell::new(EventScopes::new(scopes))));
-    // Each outer colour evaluation opens a fresh symbolic TLS context, including inherited refusals.
     let result = evaluator
         .event_scopes(0)
         .map_err(|why| vec![why.to_string()])
@@ -633,7 +632,6 @@ mod tests {
             else {
                 unreachable!()
             };
-            // A recorder writes no per-row NotRecorded; an uncached grouping refuses the state.
             states[0].single_controller = if (1..=3).contains(&step) {
                 replay_data::rows::Recorded::Value(None)
             } else {

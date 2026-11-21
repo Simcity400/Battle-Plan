@@ -1,19 +1,3 @@
-//! Localised strings from layered `localisation/*.yml` files.
-//!
-//! Read physical LF-delimited lines after one mandatory BOM, scanning keys
-//! and values as Unicode characters. Decode `\"`, `\\`, `\n`/`\N` and
-//! `\t`/`\T`; unknown escapes log and keep the character without its
-//! backslash. Bare key/version lines select a language table. Values receive
-//! one decoding pass, without a second newline-replacement pass.
-//! Five authored characters map to stored control bytes: section sign 0x11,
-//! `@` 0x12, pound sign 0x13, currency sign 0x14 and `{` 0x1A. A single
-//! occurrence stores its control byte; a doubled occurrence stores the
-//! literal character once. Keys keep their authored spelling.
-//!
-//! Stored controls are U+0011, U+0012, U+0013, U+0014 and U+001A, so lengths
-//! retain the game's byte counts. [`pieces`] interprets controls for text
-//! layout; [`Localisation::localise`] and [`Localisation::localise_with`]
-//! apply the game's argument substitution and formatting behavior.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -26,7 +10,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Authored text controls in replacement order: character and control byte.
 const STORED: [(char, char); 5] = [
     ('§', '\u{11}'),
     ('@', '\u{12}'),
@@ -35,7 +18,6 @@ const STORED: [(char, char); 5] = [
     ('{', '\u{1a}'),
 ];
 
-/// A decoded value in stored control form; see the module documentation.
 fn store(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut characters = text.chars().peekable();
@@ -52,26 +34,15 @@ fn store(text: &str) -> String {
     out
 }
 
-/// Every localised string of one language, with later layers already applied.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Localisation {
     pub language: String,
-    /// Key as written, value as stored (see the module documentation).
     entries: Entries,
-    /// Reader logs with file, physical line and recovery reason.
-    /// Syntax errors end the file; illegal escapes and failed UTF-8
-    /// conversions log and continue. A missing BOM skips the file.
     pub logged: Vec<String>,
-    /// File forms whose outcome depends on uninitialized reader state.
     pub refused: Vec<String>,
-    /// `<key> <file kept> <file ignored>` for each key defined by two files
-    /// outside a `replace/` directory. Log the conflict and keep the first
-    /// definition.
     pub duplicates: Vec<String>,
 }
 
-/// A localisation's entries: as its files were read, or kept and read in place
-/// ([`Localisation::from_kept`]).
 #[derive(Clone)]
 enum Entries {
     Read(BTreeMap<String, String>),
@@ -152,27 +123,22 @@ impl Entries {
 }
 
 impl Localisation {
-    /// The stored text of a key, or `None` when no layer defines it.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.entries.get(key)
     }
 
-    /// Number of distinct keys.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// True when no layer defined any key of this language.
     pub fn is_empty(&self) -> bool {
         self.entries.len() == 0
     }
 
-    /// Every key and stored value in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.entries.iter()
     }
 
-    /// Appends this localisation in the form [`Self::from_kept`] reads in place.
     pub fn keep(&self, out: &mut Vec<u8>) {
         use installed_content_core::kept::{Table, put_bytes, put_texts};
         put_bytes(out, self.language.as_bytes());
@@ -188,8 +154,6 @@ impl Localisation {
         );
     }
 
-    /// The localisation [`Self::keep`] put at `at` in `bytes`, its entries read in place, and
-    /// where it ends.
     pub fn from_kept(bytes: &std::sync::Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
         let mut input = installed_content_core::kept::Input::new(bytes, at);
         let language = input.text()?;
@@ -209,15 +173,10 @@ impl Localisation {
         ))
     }
 
-    /// The game's localiser with no arguments: [`Localisation::localise_with`]
-    /// with none.
     pub fn localise(&self, key: &[u8]) -> Result<String, Unlocalised> {
         self.localise_with(key, &[])
     }
 
-    /// Localise with `$NAME$` arguments and check the result as text:
-    /// [`Localisation::localise_bytes`] is refused when its bytes are not
-    /// UTF-8 (see [`Cause`]).
     pub fn localise_with(
         &self,
         key: &[u8],
@@ -226,7 +185,6 @@ impl Localisation {
         self.localised(key, arguments, false).0
     }
 
-    /// Text and recovery notes from one substitution walk.
     pub fn localise_with_fallbacks(
         &self,
         key: &[u8],
@@ -260,12 +218,6 @@ impl Localisation {
         (text, notes.into_iter().collect())
     }
 
-    /// Localise with `$NAME$` arguments as output bytes. Keys end at their
-    /// first NUL; an empty key produces empty text. Other keys share one
-    /// 0x1800-byte output buffer, starting at depth 0. Missing top-level keys
-    /// copy their own bytes, which need not be UTF-8; text layout decodes the
-    /// bytes it draws. A Float32 precision without a native format refuses
-    /// the result, including when the surrounding output would be text.
     pub fn localise_bytes(
         &self,
         key: &[u8],
@@ -282,9 +234,6 @@ impl Localisation {
         }
     }
 
-    /// Whether substitution reaches one of these runtime arguments before
-    /// filling its buffer or reaching its recursion limit. Follow the same
-    /// reference walk, stopping at the first unavailable operand.
     pub fn requires_arguments(&self, key: &[u8], names: &[&str]) -> bool {
         let key = crate::parser::c_string(key);
         if key.is_empty() {
@@ -295,9 +244,6 @@ impl Localisation {
         out.required.is_some()
     }
 
-    /// [`Localisation::localise_with`] with arguments supplied only when the
-    /// walk reaches them: `Err` with the index in `deferred` of the first it
-    /// reaches before its buffer fills. A deferred name shadows an argument.
     pub fn localise_with_deferred(
         &self,
         key: &[u8],
@@ -319,8 +265,6 @@ impl Localisation {
         }))
     }
 
-    /// Every recovery the localiser took while producing this text, through
-    /// the same substitution walk as `localise_with`.
     #[cfg(test)]
     fn fallbacks(&self, key: &[u8], arguments: &[(&str, Argument<'_>)]) -> Vec<String> {
         self.localise_with_fallbacks(key, arguments).1
@@ -340,19 +284,6 @@ impl Localisation {
         out
     }
 
-    /// Substitute `key` at recursion `depth` into the shared output buffer:
-    /// - depth 0x20 or greater logs and writes nothing;
-    /// - missing top-level keys copy their bytes, while missing nested keys
-    ///   write nothing;
-    /// - copy an entry up to each `$`; `$$` writes one `$`; `$OPERAND$` uses
-    ///   a matching argument name before `|` while space remains, otherwise
-    ///   look up the whole stored operand one level deeper;
-    /// - an unmatched `$` copies the remaining text;
-    /// - every copy stops at the buffer's end, and a full buffer prevents any
-    ///   level from writing more.
-    ///
-    /// A key that wrote nothing at a depth is not walked there again: with
-    /// room left, the same walk writes, demands and notes nothing new.
     fn substitute(
         &self,
         key: &[u8],
@@ -384,7 +315,6 @@ impl Localisation {
         }
     }
 
-    /// [`Self::substitute`] of a key below the depth limit.
     fn expand(
         &self,
         key: &[u8],
@@ -413,7 +343,6 @@ impl Localisation {
             }
             return;
         };
-        // Stored entries end at their first NUL.
         let text = crate::parser::c_string(text.as_bytes());
         let mut rest = text;
         while !rest.is_empty() {
@@ -460,43 +389,27 @@ impl Localisation {
     }
 }
 
-/// The shared localisation output buffer holds 0x1800 bytes.
 const SUBSTITUTION_BYTES: usize = 0x1800;
-/// The substitution recursion limit.
 const SUBSTITUTION_DEPTH: u32 = 0x20;
 
-/// A named localisation argument: `$NAME$` and `$NAME|format$` match the
-/// name exactly, then format the value according to its type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Argument<'a> {
-    /// A string (types 1 and 2), copied up to its NUL.
     Text(&'a str),
-    /// A signed 32-bit integer (type 5).
     Int32(i32),
-    /// An IEEE 754 single-precision number (type 3), retained as raw bits.
     Float32(u32),
-    /// A fixed-point number with five decimals (type 9).
     Fixed5(i64),
 }
 
-/// Why a key's localised text cannot be shown as the game shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unlocalised {
-    /// The key as passed, up to its NUL.
     pub key: String,
     pub cause: Cause,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cause {
-    /// The output ends inside a multi-byte character where a copy or a
-    /// formatted value was cut at the buffer's end, so the game would draw a
-    /// broken byte sequence.
     CutInsideCharacter,
-    /// Bytes that are not UTF-8 reach the output: a key the content lacks is
-    /// copied as its own bytes.
     NotText,
-    /// The native floating formatter has no format for this precision.
     Float32Precision { precision: u8 },
 }
 
@@ -518,20 +431,14 @@ impl std::fmt::Display for Unlocalised {
 
 impl std::error::Error for Unlocalised {}
 
-/// The output buffer, retaining written bytes and positions where copies cut.
 #[derive(Default)]
 struct Output {
     bytes: Vec<u8>,
-    /// The first required argument the walk reached, by its index.
     required: Option<usize>,
-    /// Other native callers share the formatter with a smaller scratch buffer.
     capacity: Option<usize>,
     fallbacks: Option<BTreeSet<String>>,
-    /// Keys whose walk wrote nothing and demanded no argument, a bit per depth.
     silent: BTreeMap<Vec<u8>, u32>,
-    /// Offsets at which a copy or a formatted value was cut short.
     cuts: Vec<usize>,
-    /// A demanded argument whose native result depends on transient state.
     cause: Option<Cause>,
 }
 
@@ -544,7 +451,6 @@ impl Output {
         self.required.is_some() || self.room() == 0
     }
 
-    /// A bounded copy writes as much as fits.
     fn copy(&mut self, bytes: &[u8]) {
         let taken = bytes.len().min(self.room());
         self.bytes.extend_from_slice(&bytes[..taken]);
@@ -553,14 +459,10 @@ impl Output {
         }
     }
 
-    /// Write one byte after checking the remaining room.
     fn byte(&mut self, byte: u8) {
         self.bytes.push(byte);
     }
 
-    /// Format into the remaining room, which is never empty. Output that
-    /// does not fit keeps one byte less than the room, then fills the final
-    /// byte with a space. Return whether the output fitted.
     fn snprintf(&mut self, text: &[u8]) -> bool {
         let room = self.room();
         if text.len() < room {
@@ -573,8 +475,6 @@ impl Output {
         false
     }
 
-    /// The text once every level is done, refused when it is not UTF-8. An
-    /// incomplete character where a copy was cut is a cut inside it.
     fn finish(self) -> Result<String, Cause> {
         if let Some(cause) = self.cause {
             return Err(cause);
@@ -596,10 +496,6 @@ impl Output {
     }
 }
 
-/// Numeric `[?variable|format]` text shares the fixed5 argument formatter,
-/// using 63 bytes plus the caller's final NUL. Without `|`, or when it
-/// writes nothing, print all fixed5 digits and trim trailing zeros. `_`
-/// alone on zero therefore falls back to `0`; an empty colour pair does not.
 pub fn format_scripted_variable(value: i64, format: Option<&[u8]>) -> String {
     if let Some(format) = format {
         let mut out = Output {
@@ -614,8 +510,6 @@ pub fn format_scripted_variable(value: i64, format: Option<&[u8]>) -> String {
     crate::fixed5::fixed5_to_string(value, -1)
 }
 
-/// Format `operand` when its name before `|` matches an argument and the
-/// buffer has room; false sends the operand to nested lookup.
 fn argument(operand: &[u8], arguments: &[(&str, Argument<'_>)], out: &mut Output) -> bool {
     if out.full() {
         return false;
@@ -635,30 +529,20 @@ fn argument(operand: &[u8], arguments: &[(&str, Argument<'_>)], out: &mut Output
     true
 }
 
-/// Format directives read byte by byte.
 #[derive(Default)]
 struct Directives {
-    /// The last letter that is no other directive: a colour.
     colour: Option<u8>,
-    /// `%`: multiply by 100 and append `%`; `%%` appends without multiplying.
     percent: bool,
     no_multiply: bool,
-    /// `*` and `^`: the metric and compact number forms.
     metric: bool,
     compact: bool,
-    /// `+` or `-`: colour the number by its sign, `-` swapping green and red.
     sign: bool,
     minus: bool,
-    /// The last digit: decimals of a fixed-point or float number (2 by default).
     precision: u8,
-    /// `=`: a `+` before a positive number.
     plus: bool,
-    /// `U` and `l`: the first byte of a text in upper or lower case.
     upper: bool,
     lower: bool,
-    /// `_`: nothing for zero.
     hide_zero: bool,
-    /// `~`: trailing zeros of the decimals dropped.
     trim: bool,
 }
 
@@ -670,8 +554,6 @@ impl Directives {
         };
         for (index, &byte) in format.iter().enumerate() {
             match byte {
-                // A `%` separated from an earlier `%` logs a repeated directive and
-                // multiplies as a single one would.
                 b'%' => {
                     if read.percent && format[index - 1] == b'%' {
                         read.no_multiply = true;
@@ -689,7 +571,6 @@ impl Directives {
                 b'l' => read.lower = true,
                 b'~' => read.trim = true,
                 byte if byte.is_ascii_alphabetic() => read.colour = Some(byte),
-                // `.` and any other byte only assert in a debug build.
                 _ => (),
             }
         }
@@ -697,9 +578,6 @@ impl Directives {
     }
 }
 
-/// Byte case conversion sign-extends each character before applying C
-/// locale rules. Only ASCII letters change; all other bytes, including
-/// those above 0x7F, remain unchanged.
 pub fn crt_case(byte: u8, upper: bool) -> u8 {
     if upper {
         byte.to_ascii_uppercase()
@@ -708,8 +586,6 @@ pub fn crt_case(byte: u8, upper: bool) -> u8 {
     }
 }
 
-/// [`crt_case`] over each byte before the first NUL, or over the first
-/// byte alone for initial-capital formatting.
 pub fn crt_case_text(text: &str, upper: bool, first_only: bool) -> String {
     let end = text.find('\0').unwrap_or(text.len());
     let changed = if first_only { end.min(1) } else { end };
@@ -720,10 +596,6 @@ pub fn crt_case_text(text: &str, upper: bool, first_only: bool) -> String {
     String::from_utf8(bytes).expect("only ASCII bytes change")
 }
 
-/// Write one formatted argument. An explicit colour opens with a control
-/// byte and letter, each bounded by the buffer end. The value follows; a
-/// fitted value always gets the closing control byte and gets `!` only
-/// with room left. A cut value ends the entire write.
 fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
     let read = Directives::read(format);
     if let Some(colour) = read.colour {
@@ -735,8 +607,6 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
         }
     }
     let multiplier = if read.no_multiply { 1 } else { 100 };
-    // `*` is tested before `^`. Neither compact format multiplies by `%`,
-    // which applies only in plain numeric paths, though `%` is still appended.
     let suffixes = if read.metric {
         Some(METRIC)
     } else if read.compact {
@@ -748,8 +618,6 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
         Argument::Text(text) => {
             let text = text.split('\0').next().unwrap_or_default();
             if !text.is_empty() {
-                // Sign-extended byte case conversion uses C locale rules and changes
-                // only ASCII letters ([`crt_case`]).
                 let first =
                     (read.upper || read.lower).then(|| crt_case(text.as_bytes()[0], read.upper));
                 let start = out.bytes.len();
@@ -765,9 +633,7 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
         }
         Argument::Int32(value) => {
             let shown = match suffixes {
-                // Select the `*` or `^` suffix set for compact integer formatting.
                 Some(suffixes) => scaled(value, suffixes, read.precision),
-                // Plain signed integer formatting ignores precision.
                 None if read.percent => value.wrapping_mul(multiplier).to_string(),
                 None => value.to_string(),
             };
@@ -788,10 +654,6 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                 return;
             }
             let value = f32::from_bits(bits);
-            // Float arguments ignore compact and trim directives. Percent
-            // multiplication rounds in single precision before promotion.
-            // NaN promotion and multiplication preserve the spelling class;
-            // retain those bits instead of relying on Rust's NaN payload choice.
             let shown = if read.percent && !value.is_nan() {
                 value * multiplier as f32
             } else {
@@ -805,10 +667,6 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
         }
         Argument::Fixed5(value) => {
             let shown = match suffixes {
-                // Compact fixed5 formatting uses the whole part, truncated and narrowed
-                // to i32. Magnitudes below 1000 use plain decimals without trimming;
-                // otherwise scale that integer. Wrapped absolute value leaves i32::MIN
-                // below 1000, so it follows the plain path.
                 Some(suffixes) => {
                     let whole = (value / 100_000) as i32;
                     if whole.wrapping_abs() < 1000 {
@@ -818,9 +676,6 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                     }
                 }
                 None => {
-                    // With `~` and precision above 6, trimming starts past the digits'
-                    // terminator and stops there before reaching a digit. Keep every
-                    // decimal, as with precision 6.
                     let shown = if read.percent {
                         i64::from(multiplier).wrapping_mul(value)
                     } else {
@@ -829,14 +684,12 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                     crate::fixed5::format_fixed5(shown, read.trim, read.precision)
                 }
             };
-            // Sign flags use the whole 64-bit value.
             (Some(shown), value > 0, value < 0)
         }
     };
     if let Some(number) = number
         && (!read.hide_zero || positive || negative)
     {
-        // snprintf("%s%s%s%s%s"): sign colour, `+`, number, `%`, closing.
         let mut text = Vec::new();
         if read.sign {
             text.push(0x11);
@@ -868,10 +721,6 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
     }
 }
 
-/// Decimal floating output uses the C locale and ties-to-even rounding.
-/// Promotion quiets signalling NaNs; a negative canonical quiet NaN keeps
-/// the CRT's indeterminate spelling. Sign directives still use comparisons
-/// on the original value, independently of the sign printed here.
 fn float32(value: f32, precision: u8) -> String {
     if value.is_nan() {
         return if value.to_bits() == 0xffc0_0000 {
@@ -886,18 +735,9 @@ fn float32(value: f32, precision: u8) -> String {
     format!("{:.*}", usize::from(precision), f64::from(value))
 }
 
-/// Suffixes for `*` compact formatting, from units through billions.
 const METRIC: [&str; 4] = ["", "K", "M", "G"];
-/// Suffixes for `^` compact formatting, from units through billions.
 const COMPACT: [&str; 4] = ["", "K", "M", "B"];
 
-/// Format `value` in thousands, millions or billions, truncating rather
-/// than rounding. Wrapped negation leaves i32::MIN negative. From 1000
-/// up, choose the largest reached power of 1000, then write the integer
-/// quotient, up to four fractional digits and the suffix. Zero-pad the
-/// remainder to three digits per power before taking those digits. Below
-/// 1000 use plain integer text. Negative values add `-`, so i32::MIN
-/// has two minus signs.
 fn scaled(value: i32, suffixes: [&str; 4], precision: u8) -> String {
     let magnitude = match value.wrapping_neg() {
         negated if negated < 0 => value,
@@ -931,30 +771,17 @@ fn scaled(value: i32, suffixes: [&str; 4], precision: u8) -> String {
     )
 }
 
-/// One stored-text piece interpreted by the game's text layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Piece<'a> {
-    /// Characters drawn as glyphs.
     Text(&'a str),
-    /// 0x11 and the following character select text colour; `!` restores
-    /// the previous colour.
     Colour(char),
-    /// 0x12 and up to three following characters select an inline country
-    /// flag occupying twelve pixels.
     Flag(&'a str),
-    /// 0x13 and an icon name: up to 128 characters from `0-9`, `A-Z`,
-    /// `a-z`, `_` and `|`. Consume the character ending a shorter name.
-    /// Lookup tries `GFX_<name>`, then `<name>`, with the frame after `|`.
     Icon(&'a str),
-    /// 0x14: sixteen pixels of advance and no glyph.
     Control14,
-    /// 0x1A and up to two following characters give eight pixels of
-    /// advance without a glyph.
     Control1A(&'a str),
 }
 
 impl Piece<'_> {
-    /// The control's name in a refusal.
     pub fn describe(&self) -> String {
         match self {
             Self::Text(_) => "text".into(),
@@ -969,10 +796,6 @@ impl Piece<'_> {
     }
 }
 
-/// Stored game text as plain text, read as the game's text layout reads it ([`pieces`]): colour
-/// codes are removed, inline images (a text icon or an inline flag) are left
-/// out of the plain text, and the 0x14 and 0x1A spacing controls, which have
-/// no plain-text form, are refused by name.
 pub fn plain_text(text: &str) -> Result<String, String> {
     let mut clean = String::new();
     for piece in pieces(text) {
@@ -990,9 +813,6 @@ pub fn plain_text(text: &str) -> Result<String, String> {
     Ok(clean)
 }
 
-/// A string the engine built for display, recorded as bytes, as plain text.
-/// Stored colour codes and icons use the shared game localiser; unsupported
-/// controls and invalid UTF-8 stay refusals instead of invented text.
 pub fn display_text(bytes: &[u8]) -> Result<String, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "is not UTF-8".to_owned())?;
     plain_text(text)
@@ -1000,12 +820,10 @@ pub fn display_text(bytes: &[u8]) -> Result<String, String> {
         .map_err(|reason| format!("holds {reason}"))
 }
 
-/// Stored text in the pieces the game's text layout makes of it.
 pub fn pieces(text: &str) -> Vec<Piece<'_>> {
     let mut out = Vec::new();
     let mut run = 0;
     let mut at = 0;
-    // The end of the `count` characters after byte `from`, or of the text.
     let after = |from: usize, count: usize| {
         text[from..]
             .char_indices()
@@ -1065,8 +883,6 @@ pub fn pieces(text: &str) -> Vec<Piece<'_>> {
     out
 }
 
-/// Entries without layers, for synthetic callers: each value as a file
-/// would hold it once decoded, stored as the loader stores it.
 impl FromIterator<(String, String)> for Localisation {
     fn from_iter<I: IntoIterator<Item = (String, String)>>(entries: I) -> Self {
         Self {
@@ -1079,31 +895,21 @@ impl FromIterator<(String, String)> for Localisation {
     }
 }
 
-/// One parsed localisation file before the two-pass merge.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ParsedFile {
     pub entries: Vec<(String, String)>,
-    /// Reader logs prefixed with the one-based physical line. Syntax errors
-    /// stop the file; illegal escapes and failed UTF-8 conversions log and
-    /// continue. A missing BOM skips the whole file.
     pub logged: Vec<String>,
-    /// Forms whose reading depends on uninitialized state, refused by name.
     pub refused: Vec<String>,
 }
 
-/// Whitespace characters accepted by the localisation file scanner.
 fn file_space(character: char) -> bool {
     matches!(character, '\t'..='\r' | '\u{14}' | '\u{1c}'..=' ' | '\u{a0}' | '\u{2007}' | '\u{202f}')
 }
 
-/// Key characters: ASCII letters and digits, apostrophe, hyphen, dot and
-/// underscore. These are scanner syntax, independent of content keys.
 fn file_key(character: char) -> bool {
     character.is_ascii_alphanumeric() || matches!(character, '\'' | '-' | '.' | '_')
 }
 
-/// Decode escapes inside the selected delimiters. Choose the closing
-/// quote before decoding, so a final backslash remains literal.
 fn file_value(
     body: &[char],
     column: usize,
@@ -1138,27 +944,15 @@ fn file_value(
         }
         index += 1;
     }
-    // Store decoded text through its first NUL, without another pass for
-    // newline escapes.
     store(decoded.split('\0').next().unwrap_or_default())
 }
 
-/// Read localisation lines: a bare key/version line selects that exact
-/// language table, and each value stores its decoded control bytes.
-///
-/// Split physical lines only on LF; CR stays in the line. Consume exactly
-/// one leading BOM. Decode each line strictly; a failed conversion logs
-/// and reuses the previous decoded line. The value ends at the last quote
-/// on its line, escaped or not; no closing quote stores empty text. Lines
-/// never continue, and text after an opening quote has no comment tokens.
 pub fn parse_file(bytes: &[u8], language: &str) -> ParsedFile {
     scan_file(bytes, language, &mut Vec::new())
 }
 
-/// [`parse_file`], also collecting every table header it reaches, in order.
 fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedFile {
     let mut parsed = ParsedFile::default();
-    // The folder wrappers do not call the reader for an empty file.
     if bytes.is_empty() {
         return parsed;
     }
@@ -1193,8 +987,6 @@ fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedF
             )),
         }
         let start = characters.iter().take_while(|&&c| file_space(c)).count();
-        // Compare the skipped Unicode-character count with the raw byte count,
-        // not the decoded length, including after a failed conversion.
         if characters.get(start) == Some(&'#') || start == line.len() {
             continue;
         }
@@ -1219,8 +1011,6 @@ fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedF
         }
         let key: String = characters[start..key_end].iter().collect();
         let mut value_start = key_end + 1;
-        // Only digits immediately after the colon are the version. The
-        // callbacks' stored version does not decide key/value precedence.
         while characters
             .get(value_start)
             .is_some_and(char::is_ascii_digit)
@@ -1243,8 +1033,6 @@ fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedF
             break;
         }
         if current.is_none() {
-            // The language and source context remain uninitialized until a header
-            // is read. Do not invent a table for a value before that header.
             parsed.refused.push(format!("{number}: entry {key} precedes any language header; language context is uninitialized and the remainder is refused"));
             break;
         }
@@ -1258,8 +1046,6 @@ fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedF
         } else {
             &[]
         };
-        // Decode even unrequested languages: the native reader logs their
-        // escapes too, before the consumer selects a table.
         let keep = current.as_deref().and_then(|key| key.strip_prefix("l_")) == Some(language);
         let value = file_value(body, body_start, number, &mut parsed.logged, keep);
         if keep {
@@ -1269,26 +1055,17 @@ fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedF
     parsed
 }
 
-/// True for a file the engine defers to its second pass: any path with a
-/// `replace` directory in it.
 fn is_replace(path: impl AsRef<[u8]>) -> bool {
     path.as_ref()
         .split(|byte| *byte == b'/')
         .any(|part| part.eq_ignore_ascii_case(b"replace"))
 }
 
-/// The engine's load order for one file: every file outside a `replace/`
-/// directory before every file inside one, then the layer's load order, then
-/// the path in byte order.
 fn load_order(path: impl AsRef<[u8]>, layer: usize) -> (bool, usize, Vec<u8>) {
     let path = path.as_ref();
     (is_replace(path), layer, path.to_vec())
 }
 
-/// Merges one parsed file, following the rule for the pass it belongs to.
-///
-/// A `replace/` file overwrites whatever a key already holds; a base file keeps
-/// the first definition and records the conflict.
 fn merge_file(
     localisation: &mut Localisation,
     sources: &mut BTreeMap<String, String>,
@@ -1320,25 +1097,11 @@ fn merge_file(
     );
 }
 
-/// Read every localisation file of one language across the resolved layers.
-///
-/// Pass one loads files outside `replace/` directories, in layer order
-/// then path order, keeping the first definition of each key and recording
-/// conflicts in [`Localisation::duplicates`]. Pass two loads all `replace/`
-/// files in the same order and overwrites entries unconditionally. Thus an
-/// earlier layer's replacement still beats a later layer's ordinary file.
-/// The `:N` version number never affects these comparisons.
 pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation> {
     let language = carried(layers, language);
     read_with(layers, language, &|bytes| parse_file(bytes, language))
 }
 
-/// The language text is read in: `language`, unless the recording played back carries
-/// another one only, whose text is then shown instead, said once.
-/// The languages the game's language list declares, without their `l_`, in order: every `l_`
-/// table header of `localisation/languages.yml`, read through the mod stack by the localisation
-/// file reader the game parses it with ([`parse_file`]: a file without its BOM, or a header
-/// past a syntax error, declares nothing).
 pub fn declared_languages(layers: &ResolvedLayers) -> io::Result<Vec<String>> {
     let bytes = layers
         .read(LANGUAGE_LIST)
@@ -1361,9 +1124,6 @@ pub fn declared_languages(layers: &ResolvedLayers) -> io::Result<Vec<String>> {
     Ok(declared)
 }
 
-/// The language the game prepares text in, without its `l_`: the requested one (`settings.txt`'s
-/// stored text, such as `l_english`) when it is one of the language list's entries, else the
-/// list's first, as the game's localisation loader chooses.
 pub fn selected_language(layers: &ResolvedLayers, requested: Option<&str>) -> io::Result<String> {
     let mut declared = declared_languages(layers)?;
     let entry = |name: &str| requested.and_then(|wanted| wanted.strip_prefix("l_")) == Some(name);
@@ -1373,7 +1133,6 @@ pub fn selected_language(layers: &ResolvedLayers, requested: Option<&str>) -> io
     })
 }
 
-/// The game's language list.
 const LANGUAGE_LIST: &str = "localisation/languages.yml";
 
 fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
@@ -1388,7 +1147,6 @@ fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
     }
 }
 
-/// [`read`], each file's bytes parsed by `parse`.
 fn read_with(
     layers: &ResolvedLayers,
     language: &str,
@@ -1401,7 +1159,6 @@ fn read_with(
     {
         return Err(invalid(format!("unsupported language name {language:?}")));
     }
-    // Every path by its bytes: an archive's name that is not UTF-8 still loads.
     let mut files = Vec::new();
     for (path, layer) in layers.effective_paths()? {
         let lower = path.to_ascii_lowercase();
@@ -1416,11 +1173,7 @@ fn read_with(
         ..Localisation::default()
     };
     let mut sources = BTreeMap::new();
-    // Verify and parse independent files on the machine's threads, then merge in exactly
-    // the original order, failing at the first file that fails in that order. Filename
-    // language guesses would miss mod entries.
     let read = installed_content_core::parallel::map(&files, |(_, _, path)| {
-        // A panicking read fails in its file's place, as an error callers can fall back from.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bytes = layers.read_path(&normalize_path(path)?)?;
             io::Result::Ok(parse(&bytes))
@@ -1435,14 +1188,8 @@ fn read_with(
     Ok(localisation)
 }
 
-/// What starts a language's parse memo, the format it is written in.
 const MEMO_MAGIC: &[u8; 8] = b"HOI4LP\x00\x01";
 
-/// [`read`], with each file's parse kept in `cache_dir` between runs: every file is still looked
-/// up, read and verified as [`read`] reads it, and only parsing a file whose bytes were parsed
-/// before is skipped, its parse taken from the language's memo by the digest of those bytes.
-/// Every language's files are parsed to find one language's, so a warm read spares nearly all of
-/// that. The memo is written again only when this read parsed a file anew or left one unused.
 pub fn read_cached(
     layers: &ResolvedLayers,
     language: &str,
@@ -1453,13 +1200,11 @@ pub fn read_cached(
         return read(layers, language);
     };
     let build = *build;
-    // Each program keeps its own: the dashboard and the map, each another build, read at once.
     let path = cache_dir.join(format!("localisation-{language}-{program}.bin"));
     let memo = std::fs::read(&path)
         .ok()
         .and_then(|bytes| decode_memo(&bytes, build, language))
         .unwrap_or_default();
-    // Each file's digest, with its parse when it was parsed now.
     let used = std::sync::Mutex::new(BTreeMap::<[u8; 32], Option<ParsedFile>>::new());
     let localisation = read_with(layers, language, &|bytes| {
         let digest = *blake3::hash(bytes).as_bytes();
@@ -1487,8 +1232,6 @@ pub fn read_cached(
     Ok(localisation)
 }
 
-/// The running program's name and this build, as its executable's size and modification time,
-/// read once: a parse kept by another build is parsed again.
 fn build() -> Option<&'static (String, (u64, u128))> {
     static BUILD: std::sync::OnceLock<Option<(String, (u64, u128))>> = std::sync::OnceLock::new();
     BUILD
@@ -1518,7 +1261,6 @@ fn put_texts(out: &mut Vec<u8>, texts: &[String]) {
     }
 }
 
-/// Writes the memo whole or not at all, its payload's digest last.
 fn write_memo(
     path: &std::path::Path,
     build: (u64, u128),
@@ -1546,7 +1288,6 @@ fn write_memo(
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }
-    // Each write its own, so two reads of the language at once never write into one file.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let temporary = path.with_extension(format!(
         "{}-{}.tmp",
@@ -1560,8 +1301,6 @@ fn write_memo(
         })
 }
 
-/// A memo read back, or `None` unless the whole file is one this build wrote for `language`
-/// and its payload matches the digest it ends with.
 fn decode_memo(
     bytes: &[u8],
     build: (u64, u128),
@@ -1576,7 +1315,6 @@ fn decode_memo(
         }
         fn count(&mut self, least: usize) -> Option<usize> {
             let count = usize::try_from(u64::from_le_bytes(self.take(8)?.try_into().ok()?)).ok()?;
-            // Each item takes at least `least` bytes, so a count the rest cannot hold is damage.
             (count <= self.0.len() / least.max(1)).then_some(count)
         }
         fn text(&mut self) -> Option<String> {
@@ -1620,9 +1358,6 @@ fn decode_memo(
 
 #[cfg(test)]
 mod tests {
-    /// The language list follows the mod stack and the game's file reader: a requested language
-    /// the list declares is chosen, else the list's first; a list without its BOM, or one whose
-    /// header lacks its colon, declares nothing and is refused by name, as is a missing list.
     #[test]
     fn the_selected_language_follows_the_mod_stacks_language_list() {
         let root = std::env::temp_dir().join(format!("language-list-{}", std::process::id()));
@@ -1641,8 +1376,6 @@ mod tests {
         assert_eq!(declared_languages(&stack()).unwrap(), ["german", "english"]);
         assert_eq!(selected_language(&stack(), None).unwrap(), "german");
         assert_eq!(selected_language(&stack(), Some("l_english")).unwrap(), "english");
-        // A request that is none of the mod's list's entries takes its first, as the game does:
-        // an undeclared language, a bare name without its `l_`, or an empty one.
         for unlisted in ["l_french", "english", "l_"] {
             assert_eq!(selected_language(&stack(), Some(unlisted)).unwrap(), "german", "{unlisted}");
         }
@@ -1661,10 +1394,6 @@ mod tests {
 
     use super::*;
 
-    /// A warm read takes each file's parse from the memo and reads as a cold one; the memo is
-    /// written again only when a file is parsed anew, and one damaged, another language's or
-    /// another build's is not taken. Files are still read and verified: one changed since
-    /// resolution is refused as a cold read refuses it.
     #[test]
     fn a_memoised_read_reads_as_a_cold_one() {
         let root = std::env::temp_dir().join(format!(
@@ -1705,10 +1434,8 @@ mod tests {
         assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
         let written = std::fs::read(&memo).unwrap();
         assert_eq!(decode_memo(&written, build, "english").unwrap().len(), 3);
-        // A warm read reads the same and leaves the memo as it was.
         assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
         assert_eq!(std::fs::read(&memo).unwrap(), written);
-        // A memo damaged in place, another language's or another build's is not taken.
         let mut damaged = written.clone();
         let middle = damaged.len() / 2;
         damaged[middle] ^= 1;
@@ -1719,13 +1446,11 @@ mod tests {
         std::fs::write(&memo, &damaged).unwrap();
         assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
         assert_eq!(std::fs::read(&memo).unwrap(), written);
-        // A file changed since resolution is refused, as a cold read refuses it.
         write("key:0 \"changed\"");
         assert_eq!(
             read_cached(&layers, "english", &cache).unwrap_err().to_string(),
             read(&layers, "english").unwrap_err().to_string()
         );
-        // Resolved again, it is parsed anew and the memo keeps only what the read used.
         let changed = ResolvedLayers::from_folders(&[(&game, &[][..])]).unwrap();
         assert_eq!(
             read_cached(&changed, "english", &cache).unwrap(),
@@ -1923,13 +1648,9 @@ mod tests {
             loc.localise(b"Unlocalised Name").as_deref(),
             Ok("Unlocalised Name")
         );
-        // A nested reference without an entry writes nothing; a cycle stops
-        // at the recursion limit having written nothing more.
         assert_eq!(loc.localise(b"DANGLING").as_deref(), Ok(""));
         assert_eq!(loc.localise(b"CYCLE").as_deref(), Ok(""));
         assert_eq!(loc.localise(b"").as_deref(), Ok(""));
-        // Brackets are literal glyphs during ordinary substitution and text
-        // layout; they have no scripted meaning on this path.
         assert_eq!(loc.localise(b"SCRIPTED").as_deref(), Ok("[GetName] ]"));
         let refused = loc.localise(b"\xff").unwrap_err();
         assert_eq!(refused.cause, Cause::NotText);
@@ -1939,9 +1660,6 @@ mod tests {
         );
     }
 
-    /// Substitution shares one output cursor: a 23-deep alias chain to
-    /// 3,000 bytes displays whole; output stops at 0x1800 bytes, recursion
-    /// stops at depth 0x20, and `$$` and a lone `$` copy literally.
     #[test]
     fn substitution_follows_the_cursor_depth_and_dollar_forms() {
         let mut entries: Vec<(String, String)> = (0..23)
@@ -1958,19 +1676,14 @@ mod tests {
         assert_eq!(loc.localise(b"A0").map(|text| text.len()), Ok(3000));
         assert_eq!(loc.localise(b"LONG").map(|text| text.len()), Ok(0x1800));
         assert_eq!(loc.localise(b"DOLLARS").as_deref(), Ok("10$ and $ lone"));
-        // Without an argument of that name the format suffix is part of the key.
         assert_eq!(loc.localise(b"FORMAT").as_deref(), Ok("!"));
         let deep = loc.localise(b"D0").unwrap();
         assert!(deep.starts_with("0 1 2 "));
         assert!(deep.ends_with("31 "));
-        // A missing top-level key is copied, cut at the buffer's end.
         let key = vec![b'k'; 0x2000];
         assert_eq!(loc.localise(&key).map(|text| text.len()), Ok(0x1800));
     }
 
-    /// A key naming itself twice reaches 2^32 depth-limit leaves that write
-    /// nothing, so the buffer never stops the walk; each such reference is
-    /// walked once per depth, with the same text and notes.
     #[test]
     fn branching_references_that_write_nothing_are_walked_once_per_depth() {
         let loc = loc(&[
@@ -2003,16 +1716,12 @@ mod tests {
                 "localisation MISSING reached the game's substitution depth limit; text was omitted",
             ]
         );
-        // Text beside silent references is written at every depth, up to the
-        // buffer's end.
         assert_eq!(loc.localise(b"EVERY_DEPTH"), Ok("m".repeat(32)));
         assert_eq!(loc.localise(b"FILL"), Ok("x".repeat(SUBSTITUTION_BYTES)));
-        // An argument behind silent references is still reached.
         let target = [("TARGET", Argument::Text("t"))];
         assert_eq!(loc.localise_with(b"LATE", &target).as_deref(), Ok("t"));
         assert!(loc.requires_arguments(b"LATE", &["TARGET"]));
         assert_eq!(loc.localise_with_deferred(b"LATE", &[], &["TARGET"]), Err(0));
-        // A key that wrote nothing deep down still writes nearer the top.
         let mut entries: Vec<(String, String)> = (1..30)
             .map(|depth| (format!("DEEP{depth}"), format!("$DEEP{}$", depth + 1)))
             .collect();
@@ -2024,9 +1733,6 @@ mod tests {
         assert_eq!(deep.localise(b"BOTH").as_deref(), Ok("y"));
     }
 
-    /// Single authored control characters store their control bytes; doubled
-    /// ones store the literal character. Nested keys use stored bytes while
-    /// keys keep their authored spelling.
     #[test]
     fn values_are_stored_with_control_bytes_and_doubled_patterns_are_literal() {
         let parsed = parse(
@@ -2052,38 +1758,28 @@ mod tests {
             ..Localisation::default()
         };
         assert_eq!(loc.get("X"), Some("key"));
-        // `$£X$` is looked up as the stored 0x13 `X`, which no key is.
         assert_eq!(loc.localise(b"D").as_deref(), Ok("[]"));
         assert_eq!(loc.localise(b"X").as_deref(), Ok("key"));
     }
 
-    /// The buffer is 0x1800 stored bytes and the cut is judged on the result.
     #[test]
     fn the_buffer_is_counted_in_stored_bytes_and_the_cut_is_checked_after() {
         let pad = "x".repeat(SUBSTITUTION_BYTES - 1);
         let tail = |tail: &str| {
             loc(&[("PAD", pad.as_str()), ("T", &format!("$PAD${tail}"))]).localise(b"T")
         };
-        // A single control is one byte and fills the buffer exactly.
         for control in ["§", "£", "¤", "@", "{"] {
             let text = tail(&format!("{control}a")).unwrap();
             assert_eq!(text.len(), SUBSTITUTION_BYTES);
             assert!(!text.ends_with('a'));
         }
-        // A doubled `§` is the two-byte literal: its first byte is kept.
         assert_eq!(cause(tail("§§")), Cause::CutInsideCharacter);
-        // `@@` is one ASCII `@`, which fits.
         assert!(tail("@@").unwrap().ends_with('@'));
         assert_eq!(cause(tail("é")), Cause::CutInsideCharacter);
-        // A character that fits exactly is kept, and so is a literal `]`.
         assert!(tail("]").unwrap().ends_with(']'));
         let exact = loc(&[("T", &format!("{}é", "x".repeat(0x17FE)))]);
         assert!(exact.localise(b"T").unwrap().ends_with('é'));
-        // With no room left nothing more is written and nothing is cut.
         assert_eq!(tail("ab").map(|text| text.len()), Ok(0x1800));
-        // A missing key is its raw bytes, cut at the buffer's end and then
-        // judged: half a `§` is a cut, a 0xFF past the end is never written,
-        // and a 0xFF inside it is not text.
         let empty = Localisation::default();
         let mut key = pad.clone().into_bytes();
         key.extend_from_slice("§".as_bytes());
@@ -2098,9 +1794,6 @@ mod tests {
         loc(&[("KEY", entry), ("NESTED", "<$VALUE|Y$>")]).localise_with(b"KEY", arguments)
     }
 
-    /// Format directives apply to text, integer and fixed5 arguments,
-    /// including the skill, count, loss, strength and organization operands
-    /// used by combat displays.
     #[test]
     fn arguments_are_formatted_by_type_as_the_formatter_does() {
         let int = |format: &str, value| {
@@ -2116,18 +1809,15 @@ mod tests {
             )
         };
         assert_eq!(int("|Y", 5).as_deref(), Ok("\u{11}Y5\u{11}!"));
-        // The integer form ignores the precision; `%` multiplies, `%%` not.
         assert_eq!(int("|1%", 7).as_deref(), Ok("700%"));
         assert_eq!(int("|%%", 7).as_deref(), Ok("7%"));
         assert_eq!(int("|=", 3).as_deref(), Ok("+3"));
         assert_eq!(int("|=", 0).as_deref(), Ok("0"));
         assert_eq!(int("|_", 0).as_deref(), Ok(""));
-        // Sign colours: green for good, red for bad, yellow for zero.
         assert_eq!(int("|+", 2).as_deref(), Ok("\u{11}G2\u{11}!"));
         assert_eq!(int("|-", 2).as_deref(), Ok("\u{11}R2\u{11}!"));
         assert_eq!(int("|+", -2).as_deref(), Ok("\u{11}R-2\u{11}!"));
         assert_eq!(int("|+", 0).as_deref(), Ok("\u{11}Y0\u{11}!"));
-        // Fixed point truncates at the precision (default 2), never rounds.
         assert_eq!(fixed("|R0", 36_958_320).as_deref(), Ok("\u{11}R369\u{11}!"));
         assert_eq!(fixed("", 199_999).as_deref(), Ok("1.99"));
         assert_eq!(fixed("", -150_000).as_deref(), Ok("-1.50"));
@@ -2137,7 +1827,6 @@ mod tests {
         assert_eq!(fixed("|6~", 150_000).as_deref(), Ok("1.50000"));
         assert_eq!(fixed("|9", 150_000).as_deref(), Ok("1.50000"));
         assert_eq!(fixed("|%0", 12_345).as_deref(), Ok("12%"));
-        // Text copies, and U or l recases its first byte.
         let text = |format: &str, value| {
             with(
                 &format!("$VALUE{format}$"),
@@ -2147,16 +1836,12 @@ mod tests {
         assert_eq!(text("", "3 ").as_deref(), Ok("3 "));
         assert_eq!(text("|U", "abc").as_deref(), Ok("Abc"));
         assert_eq!(text("|l+%", "ABC").as_deref(), Ok("aBC"));
-        // The "C" locale changes no byte above 0x7F.
         assert_eq!(text("|U", "émile").as_deref(), Ok("émile"));
         assert_eq!(text("|H", "").as_deref(), Ok("\u{11}H\u{11}!"));
-        // Arguments reach nested keys.
         assert_eq!(
             with("$NESTED$", &[("VALUE", Argument::Int32(1))]).as_deref(),
             Ok("<\u{11}Y1\u{11}!>")
         );
-        // `~` above a precision of 6 keeps every decimal (the trim stops at
-        // the digits' terminator), and a zero remainder none.
         assert_eq!(fixed("|7~", 150_000).as_deref(), Ok("1.50000"));
         assert_eq!(fixed("|7~", 123_450).as_deref(), Ok("1.23450"));
         assert_eq!(fixed("|9~", 100_000).as_deref(), Ok("1"));
@@ -2177,11 +1862,9 @@ mod tests {
         assert_eq!(float("|0", 2.5), "2");
         assert_eq!(float("|0", 3.5), "4");
         assert_eq!(float("|6", 0.29), "0.290000");
-        // Promoting before multiplication would instead yield 28.999999.
         assert_eq!(float("|6%", 0.29), "29.000000%");
         assert_eq!(float("|6%%", 0.29), "0.290000%");
         assert_eq!(float("|3%", 0.125), "12.500%");
-        // Floating arguments never enter the compact or trimming paths.
         assert_eq!(float("|*^~1%", 1500.0), "150000.0%");
         assert_eq!(float("|^~3", 1.5), "1.500");
         assert_eq!(float("|61", 1.5), "1.5");
@@ -2206,7 +1889,6 @@ mod tests {
         assert_eq!(float("|+=", (-0.0_f32).to_bits()), "\u{11}Y-0.00\u{11}!");
         assert_eq!(float("|_", (-0.0_f32).to_bits()), "");
         assert_eq!(float("|Y_", 0), "\u{11}Y\u{11}!");
-        // A tiny nonzero value prints zero but keeps its original sign gates.
         assert_eq!(float("|_+=", 1), "\u{11}G+0.00\u{11}!");
         assert_eq!(float("|_+=", 0x8000_0001), "\u{11}R-0.00\u{11}!");
         assert_eq!(float("|+=", f32::INFINITY.to_bits()), "\u{11}G+inf\u{11}!");
@@ -2255,8 +1937,6 @@ mod tests {
                 Cause::Float32Precision { precision }
             );
         }
-        // Without a matching argument it is an ordinary nested key; a full
-        // buffer also prevents entry into the argument's formatter.
         assert_eq!(
             localisation.localise(b"KEY").as_deref(),
             Ok("before  after ")
@@ -2278,9 +1958,6 @@ mod tests {
         assert_eq!(notes.len(), 1);
     }
 
-    /// Compact formatting for integers and fixed5 truncates without rounding,
-    /// writes at most four decimals, appends `%` without multiplying, and
-    /// takes sign flags from the original value.
     #[test]
     fn scaled_forms_divide_by_powers_of_a_thousand() {
         let int = |format: &str, value| {
@@ -2335,10 +2012,6 @@ mod tests {
         }
     }
 
-    /// Colour formatting checks each opening byte against the buffer end.
-    /// A value that does not fit keeps one byte less than the room and ends
-    /// in a space without closing controls. Fitted values always write the
-    /// closing control byte and add `!` only with room.
     #[test]
     fn colour_writes_follow_the_order_at_the_buffer_end() {
         let at_end = |room: usize, entry: &str, value| {
@@ -2379,7 +2052,6 @@ mod tests {
                 Text("f"),
             ]
         );
-        // A 128-character name keeps the character after it.
         let long = format!("\u{13}{} z", "n".repeat(128));
         assert_eq!(pieces(&long)[1], Text(" z"));
         assert_eq!(pieces("\u{12}GE"), vec![Flag("GE")]);
@@ -2404,8 +2076,6 @@ mod tests {
                 ("A".into(), "$OVERLORDADJ$ Zone\nsecond".to_owned()),
                 ("B".into(), "x".to_owned()),
                 ("NOSPACE".into(), "y".to_owned()),
-                // Backslash pairs decode once; there is no second
-                // newline replacement on the native file path.
                 ("C".into(), "a\\n b\\\\n".to_owned()),
             ]
         );
@@ -2464,13 +2134,11 @@ mod tests {
             parsed.logged,
             ["3: key is missing its colon at column 12; remainder skipped"]
         );
-        // The native callback context has no initialized language yet.
         let orphan = parse("\u{feff} A: \"x\"\nl_english:\n B: \"y\"\n", "english");
         assert!(orphan.entries.is_empty());
         assert_eq!(orphan.refused.len(), 1);
     }
 
-    // The last quote closes a value; arbitrary trailing tokens are ignored.
     #[test]
     fn values_ignore_text_after_the_last_quote() {
         for suffix in ["\u{60}", ".", "*", "trailing_marker"] {
@@ -2487,7 +2155,6 @@ mod tests {
         }
     }
 
-    // Unclosed quoted values never continue across LF and store empty text.
     #[test]
     fn unclosed_quotes_store_empty_without_swallowing_the_next_entry() {
         for value in ["unfinished", ""] {
@@ -2504,7 +2171,6 @@ mod tests {
         }
     }
 
-    // A bare key with an optional version selects its language table.
     #[test]
     fn headers_accept_a_version_and_any_bare_key_selects_a_table() {
         let parsed = parse(
@@ -2518,8 +2184,6 @@ mod tests {
         assert!(parsed.logged.is_empty());
     }
 
-    // Consume exactly one BOM. A second U+FEFF is neither a key character
-    // nor whitespace, so it stops the file with an invalid-key error.
     #[test]
     fn doubled_bom_logs_an_invalid_key_and_stops_the_file() {
         let parsed = parse(
@@ -2533,7 +2197,6 @@ mod tests {
         );
     }
 
-    // Choose the final quote before escape decoding, retaining its backslash.
     #[test]
     fn trailing_escaped_quote_is_the_delimiter_and_keeps_the_backslash() {
         let parsed = parse(
@@ -2550,7 +2213,6 @@ mod tests {
         assert!(parsed.logged.is_empty());
     }
 
-    // A token before the opening quote stops the file with a syntax error.
     #[test]
     fn token_before_the_quote_logs_and_stops_the_file() {
         let parsed = parse(
@@ -2612,8 +2274,6 @@ mod tests {
 
     #[test]
     fn failed_conversion_can_skip_the_reused_line_by_its_raw_byte_count() {
-        // Compare the skipped Unicode-character index with the invalid line's
-        // raw byte count even when the previous decoded line is reused.
         let parsed = parse_file(
             b"\xef\xbb\xbfl_english:\n A: \"one\"\n\xff\n B: \"two\"\n",
             "english",
@@ -2644,8 +2304,6 @@ mod tests {
             assert!(parsed.entries.is_empty(), "{rejected}");
             assert_eq!(parsed.logged.len(), 1, "{rejected}");
         }
-        // The native emptiness test compares a UTF-32 index with byte
-        // length, so a line of only multibyte white space is invalid.
         let parsed = parse("\u{feff}l_english:\n\u{a0}\n A: \"unread\"\n", "english");
         assert!(parsed.entries.is_empty());
         assert!(parsed.logged[0].contains("invalid localisation key at column 2"));
@@ -2671,19 +2329,15 @@ mod tests {
                 .map(|file| std::str::from_utf8(&file.2).unwrap())
                 .collect::<Vec<_>>(),
             vec![
-                // Pass one: base files, layer order then path order.
                 "localisation/english/c.yml",
                 "localisation/english/a.yml",
                 "localisation/english/b.yml",
-                // Pass two: every replace file, however early its layer.
                 "localisation/replace/english/a.yml",
                 "localisation/replace/english/z.yml",
             ]
         );
     }
 
-    /// Runs the two passes over synthetic files given in any order, exactly as
-    /// [`read`] does once it has the bytes.
     fn merged(files: &[(&str, usize, &str)]) -> Localisation {
         let mut ordered = files
             .iter()
@@ -2727,7 +2381,6 @@ mod tests {
             localisation.duplicates,
             vec!["A localisation/english/a.yml localisation/english/b.yml"]
         );
-        // A key repeated inside one file follows the same rule.
         let repeated = merged(&[(
             "localisation/english/a.yml",
             0,
@@ -2741,8 +2394,6 @@ mod tests {
         assert_eq!(repeated.duplicates.len(), 1);
     }
 
-    /// A kept localisation reads back equal to the one read from its files, answering every key,
-    /// substitution and missing key alike, and a key merged into it after is kept beside them.
     #[test]
     fn a_kept_localisation_reads_in_place_as_its_files_were_read() {
         let read = merged(&[
@@ -2792,7 +2443,6 @@ mod tests {
         ]);
         assert_eq!(localisation.get("A"), Some("replaced"));
         assert!(localisation.duplicates.is_empty());
-        // Two replace files: the later one wins, still silently.
         let both = merged(&[
             (
                 "localisation/replace/english/z.yml",
@@ -2850,7 +2500,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Files read by several workers merge as one reader reading them in order.
     #[test]
     fn many_files_merge_in_load_order_whichever_worker_reads_them() {
         let root = std::env::temp_dir().join(format!(

@@ -8,7 +8,6 @@ test('loadables share one load, show its code within frames of arriving, and loa
     await act('mount("Shown", ["a", "b"])');
     assert.equal(await act('text()'), 'loading aloading b');
     assert.equal(await act('loads("Shown")'), 1, 'instances share one load, under StrictMode too');
-    // Revealed through Suspense, the code would wait until 300 ms after the fallback showed.
     await act('resolve("Shown")');
     assert.equal(await act('text()'), 'shown ashown b');
     const shownFallbacks = await act('fallbacks("Shown")');

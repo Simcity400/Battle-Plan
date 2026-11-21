@@ -1,6 +1,3 @@
-//! Naval slot representatives and retained hulls, on the viewer's frame clock.
-//! Animator and selection state are viewer-owned presentation, simulated rather
-//! than recorded. Support-locator RNG is a separate client-only limitation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,17 +9,14 @@ pub struct Sources {
     pub candidates: Vec<Candidate>,
     pub formations: Vec<Formation>,
     pub combats: super::naval_combat::Sources,
-    /// Each formation's hour placement, which its animator moves.
     pub positions: Vec<FormationPlacement>,
 }
 
-/// Where the hour placed a formation's root.
 #[derive(Clone)]
 pub struct FormationPlacement {
     pub force: u64,
     pub position: viewer_foundation::map::counter_move::Position,
     pub rotation: f32,
-    /// The settled stack scale its hulls and locator offsets were sized with.
     pub scale: f32,
 }
 
@@ -62,30 +56,21 @@ impl Sources {
     }
 }
 
-/// One admitted province occupant, in the order the game walks it.
 #[derive(Clone)]
 pub struct Candidate {
     pub province: u32,
     pub identity: u64,
     pub ordinal: u32,
     pub slot: u32,
-    /// Ours, unselected = 3 - movement-target presence;
-    /// other shared-vision = 2, at war = 1, otherwise 0.
     pub priority: u8,
     pub ours: bool,
     pub class: CounterClass,
-    /// Land occupants must pass both the terrain/slot
-    /// predicate and the land model gate to offer a representative.
     pub land_eligible: bool,
-    /// Sampled route count used by the arrival gate.
     pub sample_count: usize,
-    /// Arc at the next anchor sample.
     pub next_arc: f32,
     pub route: Vec<u32>,
     pub speed: f32,
-    /// The game forces the free arc to one at game speed index >= 4.
     pub min_arc: f32,
-    /// Arrival glide needs speed < 4, no combat, and its day deadline.
     pub arrival_allowed: bool,
     pub day: i32,
 }
@@ -107,7 +92,6 @@ impl Candidate {
 #[derive(Clone)]
 pub struct Hull {
     pub flags: u64,
-    /// The retained attachment's explicit entity name, byte-for-byte.
     pub graphics: Vec<u8>,
     pub targets: [Option<Target>; 4],
 }
@@ -123,21 +107,16 @@ pub struct Formation {
     pub identity: u64,
     pub province: u32,
     pub slot: u32,
-    /// First roster ship and eligibility order.
     pub roster: Vec<Hull>,
 }
 
 impl Formation {
-    /// Every potential attachment must remain resident, including a hull a
-    /// later frame can retain after the roster's preferred order changes.
     pub fn targets(&self) -> impl Iterator<Item = Target> + '_ {
         self.roster
             .iter()
             .flat_map(|h| h.targets.iter().copied().flatten())
     }
 
-    /// Maintain slot 0, then support slots 1..3. Hull creation
-    /// retains an entity while its ship handle and explicit graphics match.
     pub(super) fn update(
         &self,
         entity: &mut Entity,
@@ -160,8 +139,6 @@ impl Formation {
                 refresh(hull, slot, entity);
                 continue;
             }
-            // Stale supports are destroyed before a budget-held replacement;
-            // capital attachment above instead keeps its old hull when held.
             entity.parts.remove(&slot);
             let unused = |hull: &&Hull| {
                 hull.occupant().is_some_and(|handle| {
@@ -183,8 +160,6 @@ impl Formation {
                         .find(unused)
                 });
             if let Some(hull) = next {
-                // A failed attach does not acquire the handle, so later empty
-                // slots retry this same first candidate.
                 attach(hull, slot, entity, frame, epoch, budget);
             }
         }
@@ -193,8 +168,6 @@ impl Formation {
 
 fn refresh(hull: &Hull, slot: u32, entity: &mut Entity) {
     if let (Some(target), Some(part)) = (hull.targets[slot as usize], entity.parts.get_mut(&slot)) {
-        // The retained entity keeps the selector's mesh and animation; its
-        // placement follows the frame and its own incarnation keeps running.
         let mesh = part.target.mesh;
         let animation = part.target.instance.animation;
         part.target = target;
@@ -251,7 +224,6 @@ impl Default for History {
 struct ArcState {
     province: u32,
     route: Vec<u32>,
-    /// Prepared during install; swapping on glide completion never allocates.
     pending_route: Vec<u32>,
     sample_count: usize,
     next_arc: f32,
@@ -282,9 +254,6 @@ impl ArcState {
             self.next_arc = candidate.next_arc;
             return;
         }
-        // The stored route has two extra entries, its second entry is the
-        // current province, and its tail matches. Keep the old arc until
-        // it reaches the next anchor sample.
         let arrived = self.sample_count != 0
             && self.route.first() == Some(&candidate.province)
             && self.route[1..] == candidate.route;
@@ -313,11 +282,7 @@ impl ArcState {
 
     fn advance(&mut self, candidate: &Candidate, frame: Frame) {
         if self.arrived {
-            // Native starts the six-day deadline on the first animator visit,
-            // not when the hour's unseen candidate inputs are installed.
             self.arrival_deadline.get_or_insert(candidate.day + 6);
-            // arrived arc clamps to [0,t[A]]; reaching t[A]
-            // rebuilds and initializes at ZERO, with no second dt advance.
             self.arc = if frame.steady {
                 self.next_arc
             } else {
@@ -328,8 +293,6 @@ impl ArcState {
                 self.initialize(candidate);
             }
         } else {
-            // <4 controls clears the stored animator route and samples;
-            // empty routes initialize at zero on every frame.
             self.arc = if self.route.is_empty() || self.sample_count == 0 {
                 0.0
             } else if frame.steady {
@@ -356,7 +319,6 @@ impl History {
         self.candidates.get(&province).is_some_and(|c| !c.is_empty())
     }
 
-    /// Provinces with nonempty candidate lists, in ascending province order.
     pub(super) fn candidate_provinces(&self) -> impl Iterator<Item = u32> + '_ {
         self.candidates
             .iter()
@@ -364,13 +326,11 @@ impl History {
             .map(|(&province, _)| province)
     }
 
-    /// An empty occupant list, which installs never leave, so joins can prove the predicate.
     #[cfg(test)]
     pub(super) fn empty_candidates_for_test(&mut self, province: u32) {
         self.candidates.insert(province, Vec::new());
     }
 
-    /// Viewer selection is read on each frame, independent of hourly sources.
     pub(super) fn set_selection(&mut self, selected: &BTreeSet<Unit>) {
         if self.selected != *selected {
             self.selected.clone_from(selected);
@@ -400,8 +360,6 @@ impl History {
             .map(|candidate| (candidate.unit(), candidate))
             .collect();
         self.arcs.retain(|key, _| current.contains_key(key));
-        // Allocate route/arc storage at the hour boundary, never in the
-        // per-province frame walk, including a unit's first admission.
         for (key, candidate) in current {
             self.arcs
                 .entry(key)
@@ -412,8 +370,6 @@ impl History {
     }
 
     pub(super) fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
-        // Recreating units destroys entities, preserving the movement animator
-        // animators. Only a load-equivalent reset restarts our simulated arcs.
         if provinces.is_none() {
             for candidate in &self.sources.candidates {
                 let state = self.arcs.get_mut(&candidate.unit()).unwrap();
@@ -425,25 +381,15 @@ impl History {
         }
     }
 
-    /// The game chooses ONE representative per visual slot, including land
-    /// occupants in the same bucket. Its pointer and priority can diverge:
-    /// an eligible foreign candidate keeps an own pointer but writes priority.
-    /// The formations a province's visual slots offer, and the combat its chosen slot names
-    /// ([`Self::combat`]). The combat is returned rather than kept, so a frame that leaves a
-    /// province alone leaves nothing of another province's behind.
     pub(super) fn representatives(
         &mut self,
         province: u32,
         frame: Frame,
     ) -> (impl Clone + Iterator<Item = &Formation>, Option<(u64, u64)>) {
-        // 0x26 visual slots. Counts and the
-        // reusable output are bounded by the native slots, not unit counts.
         let mut slots: [Option<(usize, u8)>; 0x26] = [None; 0x26];
         let mut counts = [0u16; 0x26];
         for &index in self.candidates.get(&province).into_iter().flatten() {
             let candidate = &self.sources.candidates[index];
-            // Only the first 0x400 admitted occupants of a
-            // bucket reach animator advancement and representative selection.
             let count = &mut counts[candidate.slot as usize];
             if *count == 0x400 {
                 continue;
@@ -459,8 +405,6 @@ impl History {
             {
                 continue;
             }
-            // Only an own selected unit gets priority 4.
-            // Moving-arc precedence below still runs before priority.
             let candidate_priority = if candidate.ours && self.selected.contains(&candidate.unit())
             {
                 4
@@ -487,8 +431,6 @@ impl History {
             }
             *priority = candidate_priority;
         }
-        // The game compares slot PRIORITIES, not occupant counts. A tie
-        // selects slot 9 even if only slot 10 has a priority-zero unit.
         let combat_slot = if slots[9].map_or(0, |(_, priority)| priority)
             < slots[10].map_or(0, |(_, priority)| priority)
         {
@@ -532,7 +474,6 @@ impl History {
         )
     }
 
-    /// The combat actor `selected` names in `province`, as its representative walk chose it.
     pub(super) fn combat(
         &self,
         province: u32,
@@ -823,8 +764,6 @@ mod tests {
             })
             .collect();
         history.install(sources(candidates));
-        // Main instead allocated the arc map node and cloned the route at
-        // first frame admission. Every occupant is prepared before this walk.
         assert_eq!(history.arcs.len(), 0x26);
         let route = history.arcs[&Unit::TaskForce(1)].route.as_ptr();
         let buffer = history.representatives.as_ptr();
@@ -897,8 +836,6 @@ mod tests {
         assert_eq!(state.arrival_deadline, None);
         assert_eq!(winner(&mut history, 0.25), 2);
 
-        // A final arrival has no new samples, but the old samples still
-        // compete until their glide completes.
         moving.province = 1660;
         moving.route.clear();
         moving.sample_count = 0;

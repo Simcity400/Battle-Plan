@@ -1,6 +1,3 @@
-//! Role fields of the roster job's admitted census, loaned to the role jobs
-//! and the character-input consumer of the same stopped-world callback so
-//! they need not walk the roster again.
 
 use engine_allocation::{default_vec, owned_vec, reserve_exact, vec};
 use engine_native::{
@@ -8,10 +5,6 @@ use engine_native::{
     memory::RecordLayout, memory::RecordSources,
 };
 
-/// One occurrence: character id, then the exact bytes at `COUNTRY` and at
-/// `LEADER_MAP_HEAD..OPERATIVE + 8`, which hold the leader map header, the
-/// unit leader pointer, the advisor map header, the scientist pointer and the
-/// unit-leader reference in that order.
 pub(crate) const ROW: usize = 64;
 const ROLE_SPAN: usize = ccharacter::OPERATIVE + 8 - ccharacter::LEADER_MAP_HEAD;
 const _: () = assert!(
@@ -40,9 +33,6 @@ const LAYOUT: RecordLayout<'static> = match RecordLayout::new(&FIELDS, ROW) {
     None => panic!("role census layout"),
 };
 
-/// The roster job gathers these fields once on role hours, after its roster
-/// pass, from the occurrences of its complete portrait census. Worker storage
-/// grows from the original roster before this census can be published.
 #[derive(Debug)]
 pub(crate) struct RoleCensus {
     pointers: Vec<usize>,
@@ -51,36 +41,21 @@ pub(crate) struct RoleCensus {
     scope: (usize, usize),
     complete: bool,
     required: usize,
-    /// The admitted content's [`Generation`]; zero for none.
     generation: u64,
 }
 
-/// Names the content of an admitted census: two censuses share a nonzero
-/// generation only when their scope, historical length, occurrence pointers
-/// and every gathered byte are equal. The roster job compares each admitted
-/// census with the latest one ([`History`]) and keeps its generation when
-/// they are byte-for-byte equal, so a role job whose last complete capture
-/// used generation `g` knows, without reading or comparing anything, that
-/// this hour's occurrences, identities, countries and role headers are the
-/// ones it read then. Any difference, a held loan, or storage that cannot
-/// grow takes a generation no earlier census had.
 static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// The latest admitted census's content and generation.
 #[derive(Debug, Default)]
 struct History {
     scope: (usize, usize),
     historical: usize,
     pointers: Vec<usize>,
     rows: Vec<u8>,
-    /// Zero when the content is not held.
     generation: u64,
 }
 
 impl History {
-    /// The generation of an admitted census with this content, keeping the
-    /// held one when equal. Worker only: holding new content may allocate,
-    /// advisorily; a failure holds nothing.
     fn generation(
         &mut self,
         scope: (usize, usize),
@@ -119,8 +94,6 @@ fn fresh_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Only the roster job, one per hour, takes it; a contended lock takes a
-/// fresh generation instead of waiting.
 #[cfg(not(test))]
 fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
     static HISTORY: std::sync::Mutex<History> = std::sync::Mutex::new(History {
@@ -141,7 +114,6 @@ fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], r
 
 #[cfg(test)]
 thread_local! {
-    /// Tests: each test thread's own latest census.
     static HISTORY: std::cell::RefCell<History> = std::cell::RefCell::default();
 }
 
@@ -150,9 +122,6 @@ fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], r
     HISTORY.with_borrow_mut(|history| history.generation(scope, historical, pointers, rows))
 }
 
-/// The occurrence count of the most recent role census the roster job
-/// acquired. Role jobs size their visit lists from it: a pass visits at most
-/// every occurrence.
 static LIVE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static LIVE_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -171,8 +140,6 @@ pub(crate) fn initial_len() -> usize {
     live_len().max(LIVE_HINT.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Occurrences in the live roster, as last observed; 0 before the first
-/// role census.
 pub(crate) fn live_len() -> usize {
     LIVE_LEN.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -204,13 +171,10 @@ impl RoleCensus {
         self.required > self.fits()
     }
 
-    /// Occurrences both vectors hold without reallocating: `pointers` must
-    /// not grow in the callback, and its capacity may exceed the rows.
     fn fits(&self) -> usize {
         self.pointers.capacity().min(self.rows.len() / ROW)
     }
 
-    /// Off-thread only: reserve the whole observed roster in one step.
     pub fn grow(&mut self) {
         if self.needs_growth() {
             let additional = self.required - self.pointers.len();
@@ -229,9 +193,6 @@ impl RoleCensus {
         }
     }
 
-    /// Gather every occurrence's fields in one guarded call. `census` must be
-    /// complete and freshly certified for `scope` in this callback; the
-    /// census is admitted only when every field of every occurrence copied.
     pub(crate) fn gather(
         &mut self,
         memory: &impl Memory,
@@ -263,8 +224,6 @@ impl RoleCensus {
         self.complete
     }
 
-    /// Whether this admitted census was gathered in `scope` from exactly
-    /// `census`'s occurrences, ids and historical length.
     fn holds(&self, scope: (usize, usize), census: &[PortraitIdentity], historical: usize) -> bool {
         self.complete
             && self.scope == scope
@@ -280,13 +239,10 @@ impl RoleCensus {
                 })
     }
 
-    /// The admitted content's generation, which names its scope too; zero
-    /// for none.
     pub fn generation(&self) -> u64 {
         if self.complete { self.generation } else { 0 }
     }
 
-    /// Occurrences in roster order, only for the scope they were acquired in.
     pub fn admitted(&self, base: usize, game_state: usize) -> Option<Admitted<'_>> {
         (self.complete && self.scope == (base, game_state)).then(|| Admitted {
             pointers: &self.pointers,
@@ -302,7 +258,6 @@ pub(crate) struct Admitted<'a> {
     pointers: &'a [usize],
     rows: &'a [u8],
     pub historical: usize,
-    /// Equal nonzero generations name byte-identical censuses ([`History`]).
     pub generation: u64,
 }
 
@@ -320,7 +275,6 @@ impl Admitted<'_> {
     }
 }
 
-/// One owned census occurrence; role payloads retain the ones they decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Occurrence {
     pub pointer: usize,
@@ -357,7 +311,6 @@ impl Occurrence {
         u64::from_le_bytes(self.row[56..64].try_into().unwrap())
     }
 
-    /// The role fields the character-input walk reads from.
     pub fn occupant(&self) -> engine_characters::character_inputs::Occupant {
         engine_characters::character_inputs::Occupant {
             pointer: self.pointer,
@@ -369,8 +322,6 @@ impl Occurrence {
         }
     }
 
-    /// The fields `View::read` would copy for the given required domains
-    /// (names, country-leader map, unit pointer, advisor map).
     pub fn fields(&self, required: [bool; 4]) -> ccharacter::AcquiredFields {
         ccharacter::AcquiredFields {
             country: (required[0] || required[1] || required[3]).then(|| self.country()),
@@ -396,8 +347,6 @@ impl Occurrence {
     }
 }
 
-/// Map header fields that `RoleTree::read` checks before its sentinel read.
-/// `None` fails before that read.
 pub(crate) fn map_head(header: [u8; 16]) -> Option<(usize, u32)> {
     let head = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
         .ok()
@@ -406,13 +355,10 @@ pub(crate) fn map_head(header: [u8; 16]) -> Option<(usize, u32)> {
     Some((head, count))
 }
 
-/// Whether the sentinel read lies inside the fields a character `View` owns;
-/// such a read never reaches foreign memory and cannot be gathered.
 pub(crate) fn inside_view(pointer: usize, head: usize, len: usize) -> bool {
     head < pointer.saturating_add(ccharacter::VIEW_EXTENT) && head.saturating_add(len) > pointer
 }
 
-/// Sentinel reads gathered per guarded call.
 pub(crate) const SENTINEL_BATCH: usize = 128;
 pub(crate) const SENTINEL: usize = 26;
 const SENTINEL_FIELDS: [RecordField; 1] = [RecordField {
@@ -426,8 +372,6 @@ pub(crate) const SENTINEL_LAYOUT: RecordLayout<'static> =
         None => panic!("sentinel layout"),
     };
 
-/// Gather up to `SENTINEL_BATCH` sentinels, hinting them all first. Returns
-/// the completed prefix; the next one failed or was not addressable.
 pub(crate) fn gather_sentinels(
     memory: &impl Memory,
     heads: &[usize],
@@ -446,17 +390,9 @@ pub(crate) fn gather_sentinels(
     )
 }
 
-/// The roster job's role census held between gathers
-/// ([`crate::census_changes`]). A census is kept, without gathering it, when
-/// the census domain's token equals the one taken before the gather that
-/// admitted it and the hour's occurrences, ids, scope and historical length
-/// are the ones it was gathered from: no observed writer of a gathered field
-/// ran since.
 pub(crate) struct CensusCarry {
     changes: &'static dyn crate::census_changes::Changes,
-    /// Taken before the gather that admitted the held census.
     token: Option<(u64, u64)>,
-    /// The portrait census stamp that gather read its occurrences from.
     stamp: Option<u64>,
 }
 
@@ -484,9 +420,6 @@ impl CensusCarry {
         }
     }
 
-    /// The roster job's gather of `census`, the rows of the portrait census
-    /// with `stamp`, into `roles`. Returns whether `roles` is admitted for
-    /// the hour, and how.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn acquire(
         &mut self,
@@ -499,7 +432,6 @@ impl CensusCarry {
     ) -> (bool, crate::census_changes::Counts) {
         let mut counts = crate::census_changes::Counts::default();
         let token = self.changes.quiet();
-        // The rows it was gathered from need no comparison.
         let same_occurrences = || {
             if self.stamp == Some(stamp) {
                 roles.complete && roles.scope == scope && roles.historical == historical

@@ -1,4 +1,3 @@
-//! Synthetic retained native GUI payload: solid bake, sampled frame draw and fade page.
 use eframe::wgpu;
 use installed_content_core::pdxshader::{
     Address,

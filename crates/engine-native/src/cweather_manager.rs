@@ -1,7 +1,3 @@
-//! Weather simulation arrays and independent graphics-refresh controls.
-//! Hourly weather jobs finish before capture and display-byte publication follows
-//! the simulation joins. Graphics copying separately requires zero outstanding
-//! work and an unchanged refresh token; the timestamp alone proves no completion.
 
 use crate::{
     Memory, cgame_state,
@@ -15,85 +11,37 @@ use engine_sites::Rva;
 mod display_grid;
 pub use display_grid::{DisplayGrid, display_grid_size, read_display_grid};
 
-/// CWeatherManager vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_4138);
-/// CWeatherManager contiguous SWeatherPerProvince array header.
 pub const PROVINCES: usize = 0x10;
-/// CWeatherManager province array count, i32.
 pub const PROVINCES_COUNT: usize = 0x1c;
-/// CWeatherManager contiguous SWeatherPerRegion array header.
 pub const REGIONS: usize = 0x40;
-/// CWeatherManager region array count, i32.
 pub const REGIONS_COUNT: usize = 0x4c;
-/// Province update cursor, i32: the weather update pass visits the window from it and stores where
-/// it stopped, wrapping to zero at the province count (`PROVINCES_COUNT`).
 pub const UPDATE_CURSOR: usize = 0x58;
-/// `provinces_per_update`, i32, which the content loader loads from
-/// common/weather.txt; an ordinary weather update pass visits that many slots.
 pub const PROVINCES_PER_UPDATE: usize = 0x2f0;
-/// Region update cursor, i32: the weather update pass visits the region window from it and wraps it
-/// to zero at the region count (`REGIONS_COUNT`).
 pub const REGION_CURSOR: usize = 0x5c;
-/// `regions_per_update`, i32, loaded by the content loader beside
-/// [`PROVINCES_PER_UPDATE`]; an ordinary weather update pass visits that many
-/// region slots.
 pub const REGIONS_PER_UPDATE: usize = 0x2f4;
-/// Weather random seed, u32: the hourly update adds a synchronized 31-bit
-/// random integer before the pass, and province weather calculation hashes each
-/// province id plus it.
 pub const SEED: usize = 0x308;
-/// Weather manager snow ceiling, native i64 fixed point; province and region
-/// weather calculations read all eight bytes. Construction zeroes it and only
-/// the content loader, reached from load initialization, writes it.
 pub const MAX_SNOW: usize = 0x1f8;
-/// Display-snow byte array indexed by province id and sized to the live
-/// province count. Changed weather updates the bytes, then the graphics grid
-/// averages them.
 pub const DISPLAY_SNOW: usize = 0x310;
-/// CWeatherManager display mud bytes (0 or 255), the same layout as [`DISPLAY_SNOW`].
 pub const DISPLAY_MUD: usize = 0x328;
-/// Content-loaded fixed5 graphics refresh interval.
 pub const DISPLAY_REFRESH_INTERVAL: usize = 0x300;
-/// Graphics refresh-start f64 bits, stored before rebuilding.
 pub const DISPLAY_REFRESH_IDENTITY: usize = 0x340;
-/// Current snow/mud grid pointers, sized to the live quarter-map dimensions.
 pub const DISPLAY_GRID_SNOW: usize = 0x388;
 #[cfg(any(test, feature = "test-support"))]
 pub const DISPLAY_GRID_MUD: usize = 0x390;
-/// Queued graphics cells, i32 count of [`DISPLAY_WORK_QUEUE`] awaiting the timed threaded
-/// rebuild, which empties the queue whole and zeroes this after its jobs join.
 pub const DISPLAY_WORK_COUNT: usize = 0x3b4;
-/// Queued grid-cell indices, an i32 array. A changed province appends every cell of its
-/// box clamped short of the last row and column, repeating cells boxes share, so the
-/// count alone can pass the grid's extent. A whole-grid mark empties the queue and
-/// appends every index in order; only it reaches the last column.
 pub const DISPLAY_WORK_QUEUE: usize = 0x3a8;
-/// The queue's capacity in entries, an i32 between [`DISPLAY_WORK_QUEUE`] and
-/// [`DISPLAY_WORK_COUNT`]: the three are the queue's header, read together.
 pub const DISPLAY_WORK_CAPACITY: usize = 0x3b0;
-/// Province day/night array, sized to the live weather province count.
 pub const PROVINCE_CLOCKS: usize = 0x370;
-/// Held seasonal direction used by regional day/night forecasts.
 pub const DAYLIGHT_DIRECTION: usize = 0x350;
-/// Initial-mode byte: initialization sets it before the hourly update, whose weather update pass
-/// then visits every province and region in as many passes as its stored pass count; the hourly
-/// update clears it afterward.
 pub const INITIAL_MODE: usize = 0x348;
-/// Hourly-update gates: weather updating tests both bytes from `SUSPEND_FLAGS` before advancing
-/// weather and day/night. The weather-simulation reset command can change the second.
 pub const SUSPEND_FLAGS: usize = 0x349;
-/// CWeatherManager hourly update.
 pub const HOURLY_UPDATE_RVA: Rva = Rva(0x00f9_f440);
 
-/// An authenticated manager for one callback. Each table reads its own header,
-/// so failure of one weather array does not make the other table unavailable.
 pub struct Reader<'a, M> {
     memory: &'a M,
     base: usize,
     pointer: usize,
-    // Movement selectors share these original header attempts for this Reader's
-    // callback lifetime. A second region cannot retry a failed common count or
-    // data pointer. The dense table walkers retain their independent headers.
     movement_provinces: MovementHeader,
     movement_regions: MovementHeader,
     clocks: std::cell::Cell<Option<Result<Array, &'static str>>>,
@@ -129,7 +77,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Self::with_manager(memory, base, pointer)
     }
 
-    /// Authenticate an already read, nonnull manager pointer.
     fn with_manager(memory: &'a M, base: usize, pointer: usize) -> Result<Self, &'static str> {
         let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("weather manager vtable withheld")?;
         if read::<u64>(memory, pointer) != Some(vtable as u64) {
@@ -145,7 +92,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
-    /// The snow ceiling, which every region row carries.
     pub fn max_snow(&self) -> Result<i64, &'static str> {
         self.pointer
             .checked_add(MAX_SNOW)
@@ -153,7 +99,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("weather snow ceiling unreadable")
     }
 
-    /// The update cursor, window and seed the hourly temperature pass reads.
     pub fn temperature_words(&self) -> Result<(i32, i32, u32), &'static str> {
         let word = |offset: usize| {
             self.pointer
@@ -168,7 +113,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         ))
     }
 
-    /// Stored simulation gates, read together without normalising their bytes.
     pub fn suspend_flags(&self) -> Result<[u8; 2], &'static str> {
         let address = self
             .pointer
@@ -181,8 +125,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(flags)
     }
 
-    /// Only held/suspended clocks need this observation. Ordinary updated
-    /// direction derives from the hour without acquiring another field.
     pub fn daylight_direction(&self) -> Result<[i64; 3], &'static str> {
         self.pointer
             .checked_add(DAYLIGHT_DIRECTION)
@@ -195,8 +137,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("weather daylight direction unreadable")
     }
 
-    /// The native feather words may retain initialization while updates are
-    /// suspended; only an ordinary completed update proves content derivation.
     pub fn daylight_feather(&self) -> Result<[i64; 2], &'static str> {
         let word = |key| {
             engine_sites::at(self.base, key)
@@ -209,8 +149,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         ])
     }
 
-    /// Attach sizing only, using the live signed province and region counts
-    /// with their respective array strides.
     pub fn region_count(&self) -> Result<usize, &'static str> {
         self.pointer
             .checked_add(REGIONS)
@@ -227,7 +165,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("weather province array unreadable or invalid")
     }
 
-    /// Select original region root once.
     pub fn regions(&self, output: &mut [sweather_per_region::Row]) -> Outcome {
         let max_snow = match self.max_snow() {
             Ok(value) => value,
@@ -249,8 +186,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         outcome
     }
 
-    /// Active i16 regional vector, bounded by the authenticated strategic
-    /// template's count. Reached only for a live naval combat's region.
     pub fn custom_sea_into(&self, region_id: i32, output: &mut [i16]) -> Result<(), &'static str> {
         let count = output.len();
         if count == 0 {
@@ -265,8 +200,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         let len = count
             .checked_mul(2)
             .ok_or("naval custom sea length overflow")?;
-        // i16 has alignment 2 and the Windows game target is little endian.
-        // The arena is owned and sized before entering the hourly block.
         let bytes =
             unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr().cast::<u8>(), len) };
         if data == 0 || !crate::read_slice(self.memory, data, bytes) {
@@ -275,8 +208,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
-    /// Convenience wrapper for fixture readers; the live capture uses the
-    /// bounded pack arena above and performs no allocation in the block.
     pub fn custom_sea(&self, region_id: i32, count: u32) -> Result<Vec<i16>, &'static str> {
         let mut values = crate::allocation::filled(count as usize, 0)
             .map_err(|_| "naval custom sea allocation failed")?;
@@ -284,7 +215,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(values)
     }
 
-    /// The display snow and mud array headers.
     pub fn display_arrays(&self) -> Result<[Array; 2], &'static str> {
         let header = |offset| {
             self.pointer
@@ -295,8 +225,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok([header(DISPLAY_SNOW)?, header(DISPLAY_MUD)?])
     }
 
-    /// Stored day/night rows, joined by the ordinary weather array's slot.
-    /// Suspension flags can hold their values, including a reset local hour zero.
     pub fn province_clocks(&self) -> Result<Array, &'static str> {
         original_attempt(&self.clocks, || {
             self.pointer
@@ -308,7 +236,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
-    /// Every province's snow and display bytes.
     pub fn provinces(&self, output: &mut [sweather_per_province::Row]) -> Outcome {
         let Some(array) = self
             .pointer
@@ -344,9 +271,6 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 }
 
-/// Passive division movement-weather inputs. Zero means the indexed getter
-/// has no modifier, distinct from read failure. Region weather uses the authored
-/// region id rather than its runtime roster slot.
 pub fn movement_modifiers(
     memory: &impl Memory,
     base: usize,
@@ -354,7 +278,6 @@ pub fn movement_modifiers(
     province: usize,
 ) -> Result<(usize, usize), &'static str> {
     let reader = Reader::new(memory, base, state)?;
-    // The province's id and region pointer are one guarded call.
     let fields = FieldBatch::gather(
         memory,
         movement_fields(
@@ -402,8 +325,6 @@ pub fn movement_modifiers(
 }
 
 impl<M: Memory> Reader<'_, M> {
-    /// Authenticate a row within the signed bounds, without walking the dense
-    /// array or reading unrelated weather fields.
     pub(crate) fn movement_record(&self, id: i32, region: bool) -> Result<usize, &'static str> {
         if id < 0 {
             return Ok(0);
@@ -427,8 +348,6 @@ impl<M: Memory> Reader<'_, M> {
                 &self.movement_provinces,
             )
         };
-        // The data pointer is read only for an admitted id, as main reads it;
-        // the row's vtable and id are one guarded call.
         let count = original_attempt(&header.count, || {
             movement_field::<i32>(self.memory, self.pointer, count_offset)
         })?;
@@ -463,8 +382,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Gather fields of the object at `pointer`; a null object or overflowing
-/// field fails at that field.
 fn movement_fields<const N: usize>(
     pointer: usize,
     fields: [(usize, usize); N],
@@ -480,7 +397,6 @@ fn movement_fields<const N: usize>(
     })
 }
 
-/// A gathered field, consulted exactly as `movement_field` would read it.
 fn movement_batched<T: crate::memory::Raw, const N: usize>(
     memory: &impl Memory,
     fields: &FieldBatch<N>,
@@ -509,19 +425,9 @@ fn movement_field<T: crate::memory::Raw>(
         .ok_or("movement weather field unreadable")
 }
 
-/// Rows per batched dense gather and the exact bytes reserved for each record.
 pub(crate) const DENSE_BATCH: usize = 64;
 pub(crate) const DENSE_RECORD_BYTES: usize = 64;
 
-/// Weather arrays store rows directly, including id zero. Their validated count
-/// supplies the exact number of rows omitted when the caller's buffer is full.
-///
-/// Dense weather rows share one exact field layout, so a whole batch crosses
-/// the guarded boundary once instead of once per row. Decoding still runs per
-/// row in slot order with that row's own copied-field prefix, so every value,
-/// validator and first-failure reason is the one a per-row gather produced.
-/// A decode failure stops the walk exactly where it did before; the only
-/// difference is that the batch's later rows were already copied.
 pub(crate) fn walk_dense_records<R>(
     memory: &impl Memory,
     array: Array,
@@ -531,10 +437,6 @@ pub(crate) fn walk_dense_records<R>(
     output: &mut [R],
     decode: impl FnMut(u32, &[u8], usize) -> Result<R, &'static str>,
 ) -> Outcome {
-    // Only the admitted rows' exact fields need a view. Both weather layouts
-    // leave trailing allocation padding, so this is a proper subrange even
-    // when every row fits. Recorded declines aliases and overriding spans;
-    // live/recording sources retain the original guarded-read path.
     let view = (|| {
         if record_stride > DENSE_RECORD_BYTES {
             return None;
@@ -570,8 +472,6 @@ pub(crate) fn walk_dense_records<R>(
     walk_dense_records_from(memory, array, stride, fields, record_stride, output, decode)
 }
 
-/// Both sources use the same batch scheduling, field-prefix validation and
-/// row decoder. Borrowing owned bytes changes no capacity or outcome rule.
 fn walk_dense_records_from<R>(
     memory: &impl Memory,
     array: Array,
@@ -595,17 +495,12 @@ fn walk_dense_records_from<R>(
         let count = (len - first).min(DENSE_BATCH);
         let mut overflow = None;
         let sources = if array.element((first + count - 1) as u32, stride).is_some() {
-            // A valid last address proves the preceding nonnegative offsets.
-            // Keep the native array strided so the guarded reader validates its
-            // envelope once, without rebuilding and checking every row pointer.
             RecordSources::Strided {
                 base: array.element(first as u32, stride).unwrap(),
                 stride,
                 count,
             }
         } else {
-            // Hand-constructed or overflowing arrays retain the old exact
-            // readable prefix and the row-address error at its original slot.
             for (slot, pointer) in pointers[..count].iter_mut().enumerate() {
                 match array.element((first + slot) as u32, stride) {
                     Some(address) => *pointer = address,

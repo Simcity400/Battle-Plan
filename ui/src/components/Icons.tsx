@@ -3,7 +3,6 @@ import type { IconName } from './iconNames.ts';
 
 export type { IconName };
 
-// One outline family: 24px grid, 1.75 stroke, round caps and joins.
 const paths = {
   plane: <path d="m21 12-7-3V4a2 2 0 0 0-4 0v5l-7 3v2l7-1v5l-2 2v1l4-1 4 1v-1l-2-2v-5l7 1v-2Z" />,
   walk: <><circle cx="13.5" cy="4.5" r="1.75" /><path d="m10 21 2.2-5.6 2.8 2.6v3M7.5 12.2l2.2-4.2h3.8l1.8 3.6 2.7 1.1M12.2 15.4l1.3-7.4" /></>,
@@ -80,7 +79,6 @@ const paths = {
   flows: <><path d="M4 5.5v5M20 5.5v4M20 13.5v5M4 14.5v4" /><path d="M4 8c8 0 8 8 16 8M4 16.5c7 0 9-5 16-5.5" /></>,
   shield: <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="M12 3.5v17" /></>,
   hierarchy: <><rect x="9" y="3.5" width="6" height="4.5" rx="1.25" /><rect x="3.5" y="16" width="6" height="4.5" rx="1.25" /><rect x="14.5" y="16" width="6" height="4.5" rx="1.25" /><path d="M12 8v4M6.5 16v-4h11v4" /></>,
-  // Event feed kinds without game artwork.
   swords: <><path d="M14.5 17.5 3 6V3h3l11.5 11.5" /><path d="m13 19 6-6M16 16l4 4M19 21l2-2" /><path d="M9.5 17.5 21 6V3h-3L6.5 14.5" /><path d="m11 19-6-6M8 16l-4 4M5 21l-2-2" /></>,
   'flag-torn': <><path d="M5 21V3.5c2.2-1.3 4.3-.9 6.3.2L10 7l2.5 3-1.3 3.3c-2-1.1-4-1.4-6.2-.3" /><path d="M14.6 4.5c1.4.4 2.9.2 4.4-1v10c-1.9 1.1-3.7 1.2-5.5.7l1.3-3.4-2.4-3 2.2-3.3Z" /></>,
   'flag-plus': <><path d="M5 21V3.5c5-3 9 3 14 0v10c-5 3-9-3-14 0" /><path d="M12 6.5v5M9.5 9h5" /></>,

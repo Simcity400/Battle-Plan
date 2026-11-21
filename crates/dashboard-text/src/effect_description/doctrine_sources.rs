@@ -1,12 +1,8 @@
-//! CountryDoctrineState's locked-tactic source list.
 
 use super::*;
 use crate::{scripted_text::EventScope, triggers::Eval};
 use installed_content_core::{doctrines::DefinitionSources, tokens::Token};
 
-/// Fully formatted source fragments, retaining source order and duplicates.
-/// `resolve_tactic` shares the caller's exact-name combat-tactic registry.
-/// Independent fragments survive a named local refusal.
 pub fn doctrine_tactic_sources(
     context: &Context<'_, '_>,
     country: u32,
@@ -33,7 +29,6 @@ pub fn doctrine_tactic_sources(
     let mut output = Vec::new();
     let mut gaps = BTreeMap::<String, usize>::new();
     let matches = |tactics: &[Vec<u8>]| -> Result<bool, String> {
-        // Every base/milestone/reward stops after its first pointer match.
         for tactic in tactics {
             if resolve_tactic(tactic)? == tactic_id {
                 return Ok(true);
@@ -49,8 +44,6 @@ pub fn doctrine_tactic_sources(
                 .or_default() += 1
         }
     };
-    // Both databases' pointer rosters include repeated definition
-    // occurrences. Grand sources always precede sub sources.
     for (grand, order, definitions, names, unread) in [
         (
             true,
@@ -147,9 +140,6 @@ pub fn doctrine_tactic_sources(
                     record(&label, Err(why.clone()));
                     continue;
                 }
-                // addresses milestones by track index, never by
-                // authored name or country progress. A shorter array is
-                // invalid native content, not an empty milestone.
                 for (index, track) in definition.tracks.iter().enumerate() {
                     let Some(milestone) = definition.milestones.get(index) else {
                         record(
@@ -179,8 +169,6 @@ pub fn doctrine_tactic_sources(
             } else {
                 let mut mastery = Ok(0i64);
                 for reward in &definition.rewards {
-                    // Includes every earlier reward, matching or not;
-                    // native ADD wraps, and zero selects the stack's define.
                     let amount = if reward.mastery == 0 {
                         sources.default_reward_mastery.ok_or_else(|| {
                             "NDoctrines.DEFAULT_REWARD_MASTERY unavailable".to_owned()
@@ -234,8 +222,6 @@ fn tracked_source(
     track: &installed_content_core::gui::native::BoundLocalization,
     mastery: Option<i64>,
 ) -> Result<String, String> {
-    // localisation expansion receives an empty
-    // argument array, with no country/scripted-text expansion.
     let track = renderer.bound_localisation(track, Scopes::empty(), false)?;
     let mut args = vec![
         (doctrine_argument, Argument::Text(name)),
@@ -255,9 +241,6 @@ fn available(
     if definition.available.is_empty() {
         return Ok(true);
     }
-    // constructs a new event scope and sets only the country.
-    // ROOT/FROM/PREV and seed lanes are native fresh defaults. The
-    // available conjunction is the sole gate: no captured progress is read.
     let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
         EventObject::Country(country),
     )])));
@@ -275,8 +258,6 @@ fn available(
 #[cfg(test)]
 mod tests;
 
-/// Shared unit-stat, modifier and effect descriptions for a doctrine bonus.
-/// Independent fragments survive named refusals.
 pub fn doctrine_benefits(
     benefits: &installed_content_core::doctrines::Benefits,
     context: &Context<'_, '_>,

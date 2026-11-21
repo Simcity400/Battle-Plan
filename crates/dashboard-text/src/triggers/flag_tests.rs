@@ -1,13 +1,8 @@
-//! The shared flag test, as `has_country_flag` reads it.
 use super::*;
 
-/// The frame's hour: three days and an hour past the day the flags were set.
 const NOW: i32 = game_model::calendar::HOUR_EPOCH + 1003 * 24 + 1;
-/// The hour the flags were set: day 1000 (year 2, 28 September), hour 5.
 const SET: i32 = game_model::calendar::HOUR_EPOCH + 1000 * 24 + 5;
 
-/// Flag `x`, set at [`SET`], at hour [`NOW`]: of value 2 in the global store, on D01 (slot 1),
-/// state 7 and character 9; of value 0 on D02 (slot 2), state 8 and character 10.
 fn flagged() -> DecodedFrame {
     let mut f = frame(&countries(), &[]);
     f.hour = NOW;
@@ -46,9 +41,6 @@ fn flagged() -> DecodedFrame {
     f
 }
 
-/// Without `value` a flag holds only above zero; `value` compares by its operator; `date`
-/// compares the setting hour strictly; `days` compares day starts strictly; `date =` and
-/// `days =` add no test; a quoted name is the same flag.
 #[test]
 fn country_flags_compare_value_date_and_days() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -101,9 +93,6 @@ fn country_flags_compare_value_date_and_days() {
     }
 }
 
-/// State, global and character flags share the country flag's test, each on its own scope's
-/// record: without `value` the value must be above zero, and `value`, `date` and `days`
-/// compare as they do for countries.
 #[test]
 fn state_global_and_character_flags_share_the_test() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -136,7 +125,6 @@ fn state_global_and_character_flags_share_the_test() {
             Scope::Character(9),
             Some(Scope::Character(10)),
         );
-        // The global store is one, whatever scope asks.
         cases("has_global_flag = x", Scope::Country(1), None);
         cases("has_global_flag = x", Scope::State(8), None);
     });

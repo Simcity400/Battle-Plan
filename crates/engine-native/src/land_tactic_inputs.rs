@@ -1,6 +1,3 @@
-//! Per-combat country, general and field-marshal tactic preferences and the
-//! country preference modifier. Definitions, weights and factors are content;
-//! unlocks come from the daily CountryTacticUnlocks census.
 
 use crate::{
     Memory, ccombat_tactic, ccountry, cland_combat, cnull_combat_tactic, cpdx_array::Array, read,
@@ -8,12 +5,10 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// General's stored preferred-tactic pointer.
 pub const LEADER_PREFERRED_TACTIC: usize = 0x10b0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
-    /// Country, general and field marshal database ids, separately per side.
     pub preferred_tactic_ids: [[i32; 3]; 2],
     pub country_weights: [ccombat_tactic::WeightRow; 2],
     pub country_weight_present: [u8; 2],
@@ -81,8 +76,6 @@ fn authentic(
     }
 }
 
-/// First formation in theatre order with this commander and a parent.
-/// The leader's stored formation pointer does not substitute for that selection.
 fn parent_commander(
     memory: &impl Memory,
     base: usize,
@@ -98,7 +91,6 @@ fn parent_commander(
         let theatre = pointer(memory, theatres.data, ordinal as usize * 8)?;
         authentic(memory, base, theatre, &[crate::ctheatre::VTABLE_RVA])?;
         let groups = array(memory, theatre, 0x80, 8)?;
-        // Traverse every original signed vector count to its end.
         for index in 0..groups.count {
             let group = pointer(memory, groups.data, index as usize * 8)?;
             authentic(
@@ -128,9 +120,6 @@ fn parent_commander(
     Ok(0)
 }
 
-/// One combat's preference operands, in native side order. The combat's
-/// commander selections are shared with its other readers
-/// (`cland_combat::Commanders`); `members` are the census's participants.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
@@ -150,9 +139,6 @@ pub fn capture_context(
     )
 }
 
-/// [`capture_context`] sharing each general's parent search and preferred
-/// tactics with the pass's other combats through `leaders`: both depend on
-/// the general alone.
 pub fn capture_context_sharing(
     memory: &impl Memory,
     base: usize,
@@ -173,8 +159,6 @@ pub fn capture_context_sharing(
         ];
         let weight_context = ccombat_tactic::WeightContext::read(memory, base)?;
         for (index, side) in sides.into_iter().enumerate() {
-            // The first linked-set node supplies the country reference. Empty sets
-            // remain until combat removal and supply no country scope, preference or weight.
             let first = pointer(memory, side, crate::cland_combatant::COUNTRIES)?;
             if first != 0 {
                 let tag = field::<u32>(memory, first, 0)?;
@@ -182,7 +166,6 @@ pub fn capture_context_sharing(
                     return Err("tactic side country scope is null");
                 }
                 let country = countries.resolve(tag)?;
-                // Tactic weighting does not read the name, regardless of its length.
                 let preferred =
                     ccombat_tactic::preferred_identity(memory, base, country.pointer, country.id);
                 if preferred.outcome != (Outcome::Rows { len: 1 }) {
@@ -229,7 +212,6 @@ pub fn capture_context_sharing(
 mod tests {
     use super::*;
 
-    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
     fn parent_commander_reaches_the_last_native_theatre_and_formation() {
         const COUNT: usize = 65;

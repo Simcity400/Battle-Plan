@@ -26,8 +26,6 @@ fn display_projection_keeps_name_initial_trait_and_include_overrides() {
     assert!(database.notes.is_empty(), "{:?}", database.notes);
 }
 
-/// The include pass visits templates once in creation order, as the trait
-/// tree does: an include created later is copied before it inherits anything.
 #[test]
 fn display_fields_follow_the_one_pass_include_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -44,7 +42,6 @@ fn display_fields_follow_the_one_pass_include_order() {
     assert_eq!(database.display_fields(b"b").unwrap(), inherited);
     assert_eq!(database.display_fields(b"a").unwrap(), (Vec::new(), None));
     assert_eq!(database.display_fields(b"D").unwrap(), inherited);
-    // An include naming no template is skipped.
     assert_eq!(
         database.display_fields(b"e").unwrap(),
         (b"E_NAME".to_vec(), None)
@@ -58,7 +55,6 @@ fn display_fields_follow_the_one_pass_include_order() {
     );
 }
 
-/// The organisations file loop ends at a closing brace, as the trait tree's does.
 #[test]
 fn a_stray_closing_brace_ends_the_organisations_file() {
     engine_executable::executable_tables::initialize_for_tests()

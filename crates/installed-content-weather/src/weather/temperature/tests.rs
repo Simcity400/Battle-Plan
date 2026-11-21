@@ -48,8 +48,6 @@ fn settings_follow_the_native_loader() {
             smoothing: 30_000,
             change_smoothing: 50_000,
             provinces_per_update: 584,
-            // The second block cleared the first; an unknown type is the null terrain's zero,
-            // a missing one keeps -1, and a failed value keeps zero.
             terrain: vec![
                 TerrainModifier {
                     terrain: 4,
@@ -74,7 +72,6 @@ fn settings_follow_the_native_loader() {
             ],
         }
     );
-    // An unknown settings key aborts the native loader: refused by name.
     assert!(settings(b"settings={temperature={unknown=1}}", ordinal).is_err());
     assert_eq!(settings(b"", ordinal).unwrap(), Settings::default());
 }
@@ -129,7 +126,6 @@ fn province_setup_follows_initialize() {
         row(3, "mountain"),
         row(5, "plains"),
     ];
-    // Record 5 is invented: no row. Province 2 is unpainted.
     let content = from_parts(
         |id| vec![id % 5 + 1, 2],
         &geometry(&[1, 3, 4, 5], 6),
@@ -147,13 +143,11 @@ fn province_setup_follows_initialize() {
     );
     assert_eq!(provinces[0].neighbours, Vec::<u32>::new());
     assert_eq!(provinces[3].neighbours, [4, 2]);
-    // Regions are visited by id; the last holding a province wins.
     assert_eq!(
         provinces.iter().map(|p| p.region).collect::<Vec<_>>(),
         [None, Some(9), None, Some(9), Some(12), None]
     );
     assert_eq!(provinces[1].terrain, Ok(Some(1)));
-    // No temperature modifier names the null terrain, so its validity cannot matter.
     assert_eq!(provinces[2].terrain, Ok(None));
     assert_eq!(provinces[3].terrain, Ok(Some(4)));
     assert!(
@@ -195,7 +189,6 @@ fn province_setup_follows_initialize() {
             .unwrap_err()
             .contains("null terrain")
     );
-    // Records numbered otherwise than by position cannot join the weather slots.
     let mut gapped = geometry(&[], 3);
     gapped.centroids.remove(&1);
     assert!(

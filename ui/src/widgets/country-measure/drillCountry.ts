@@ -9,7 +9,6 @@ export interface DrillCountry {
   campaign: string; branch: string; tag: string; originOffset: number; slot: number; countryId: number;
 }
 
-/** An origin and recorded native identity survive aliases, never a replacement holder. */
 export function chooseDrillCountry(histories: readonly CountryIdentityHistory[], track: BoundTrack, tag: string, hour: number): DrillCountry | null {
   const origin = Math.floor(hour);
   const history = historyAt(histories, tag, origin);

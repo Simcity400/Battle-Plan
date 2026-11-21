@@ -153,8 +153,6 @@ fn recover_reader_preserves_prefix_damage_and_propagates_resource_failure() {
         .unwrap_err();
         assert_eq!(error.kind(), kind);
     }
-    // A hostile payload length fails against the actual remaining extent,
-    // before requesting its allocation. No segment-size limit is involved.
     let mut header = good[..RECORD_HEADER_BYTES].to_vec();
     header[6..10].copy_from_slice(&(MAX_RECORD_BYTES as u32).to_le_bytes());
     let mut reader = RecordReader::new(io::Cursor::new(&header), header.len());
@@ -329,8 +327,6 @@ fn partial_capture_control_roundtrips_and_prevents_later_frames() {
     assert!(recovered.damage.is_none());
 }
 
-/// An event loss names its branch's context and two ordered reads; older
-/// formats never held one.
 #[test]
 fn event_loss_control_needs_its_branch_context_and_ordered_reads() {
     let loss = |branch, after_hour, hour| ControlRecord::EventLoss {
@@ -351,7 +347,6 @@ fn event_loss_control_needs_its_branch_context_and_ordered_reads() {
     other.extend_from_slice(&encode_record(&Record::Control(loss(8, 11, 12))).unwrap());
     assert!(recover_prefix(&other).damage.is_some());
     assert!(encode_record(&Record::Control(loss(7, 12, 12))).is_err());
-    // Tag, session, branch, then the reads: a later first read is refused.
     let mut reversed = encoded[RECORD_HEADER_BYTES..].to_vec();
     reversed[17..21].copy_from_slice(&13_i32.to_le_bytes());
     assert!(Record::decode(&mut Decoder::new(&reversed)).is_err());
@@ -398,8 +393,6 @@ fn each_byte_cut_recovers_exactly_the_complete_prefix() {
 #[test]
 fn old_spool_magic_is_refused_before_decoding_any_records() {
     let mut bytes = encode_record(&branch()).unwrap();
-    // The old envelope had no version field. Its payload and CRC are
-    // otherwise valid, so rejection must happen before decoding them.
     bytes.drain(4..6);
     bytes[..4].copy_from_slice(b"H4SP");
     let recovered = recover_prefix(&bytes);
@@ -417,8 +410,6 @@ fn spool_versions_are_checked_on_every_record_before_payload_decoding() {
         for with_prefix in [false, true] {
             let mut wrong = encode_record(&Record::Frame(frame(12, false))).unwrap();
             wrong[4..6].copy_from_slice(&version.to_le_bytes());
-            // Keep the CRC valid. Even an invalid payload must report the
-            // envelope version first, without considering segment context.
             wrong[RECORD_HEADER_BYTES] = u8::MAX;
             let crc = crc32fast::hash(&wrong[RECORD_HEADER_BYTES..]);
             wrong[10..14].copy_from_slice(&crc.to_le_bytes());
@@ -977,7 +968,6 @@ fn pending_periodic_sync_allows_ordered_frames_but_detach_remains_forced() {
     spool.sync_if_due().unwrap();
     assert!(shared.borrow().sync_pending);
     for hour in 11..20 {
-        // A slow request never blocks writes or starts an unbounded queue.
         spool.last_sync = Instant::now() - SYNC_INTERVAL;
         spool.append(&Record::Frame(frame(hour, false))).unwrap();
     }
@@ -1120,7 +1110,6 @@ fn failed_write_flush_or_sync_permanently_abandons_that_segment() {
             Fault::WriteAfter(_) => Fault::WriteAfter(old_length + RECORD_HEADER_BYTES + 5),
             other => other,
         });
-        // Make the sync failure due without sleeping or relying on wall time.
         spool.last_sync = Instant::now() - SYNC_INTERVAL;
         assert!(
             spool
@@ -1371,7 +1360,6 @@ fn periodic_syncs_reuse_one_persistent_durability_thread() {
         spool.append(&Record::Frame(frame(hour, false))).unwrap();
         let requested = spool.background_sync_work().unwrap().requested;
         assert_eq!(requested, u64::from((hour - 10) as u32));
-        // Writes continue while the request runs; an idle poll collects it.
         let deadline = Instant::now() + Duration::from_secs(30);
         while spool.background_sync_work().unwrap().completed < requested {
             assert!(
@@ -1385,7 +1373,6 @@ fn periodic_syncs_reuse_one_persistent_durability_thread() {
     let work = spool.background_sync_work().unwrap();
     assert_eq!((work.requested, work.completed, work.threads), (3, 3, 1));
     assert!(!work.pending);
-    // A request still in flight at close is finished before the forced barrier.
     spool.last_sync = Instant::now() - SYNC_INTERVAL;
     spool.append(&Record::Frame(frame(14, false))).unwrap();
     spool.finish_segment().unwrap();
@@ -1520,8 +1507,6 @@ fn occupation_keyframe_then_delta_spool_preserves_nested_packets_and_carry() {
             source.metrics.table_ns[table.index()] = 1;
         }
         source.tables[table.index()] = TableView::Complete(rows.clone()).into();
-        // Match recording: prepare encoded bytes, write the spool, then
-        // commit the new baseline only after the complete write succeeds.
         let mut prepared = encoder.prepare_bytes(source.into(), hour == 10).unwrap();
         let encoded = prepared.take_frame();
         frames.push(encoded.decode().unwrap());
@@ -1597,7 +1582,6 @@ fn records_decoded_on_several_threads_keep_the_sequential_prefix_and_first_damag
         .unwrap()
     };
     let mut damaged = vec![whole.clone()];
-    // A checksum, a repeated hour and a truncated record, each partway through.
     let mut start = 0;
     for (at, record) in encoded.iter().enumerate() {
         if at == 7 {
@@ -1661,7 +1645,6 @@ fn recovered_frames_keep_their_offsets_and_are_read_again_whole() {
             }
         }
     }
-    // An offset that is not a frame's, or past the valid prefix, is refused.
     let at = |offset| Placement {
         offset,
         ..Default::default()
@@ -1695,7 +1678,6 @@ fn a_frame_record_changed_since_recovery_is_refused() {
     let read =
         |bytes: &[u8]| read_frame_at(&mut io::Cursor::new(bytes), metadata.placement, bytes.len());
     assert_eq!(read(&bytes).unwrap().hour, 11);
-    // The same hour with other rows and its own valid checksum, then truncated and cut short.
     let mut changed = frame(11, false);
     changed.tables[1] = TableUpdate::Unavailable {
         reason: "changed".into(),
@@ -1724,7 +1706,6 @@ fn a_tail_grown_in_steps_finishes_as_the_whole_recovery() {
         .flat_map(|record| encode_record(record).unwrap())
         .collect();
     let whole = bytes.len();
-    // Damage partway: a record that never completes its payload.
     let mut damaged = bytes.clone();
     damaged.truncate(whole - 9);
     let mut corrupt = bytes.clone();
@@ -1768,7 +1749,6 @@ fn a_tail_grown_in_steps_finishes_as_the_whole_recovery() {
             assert_eq!(observed, full.records.len());
         }
     }
-    // A tail read past a shorter committed prefix is not continued.
     let mut tail = Tail::default();
     tail.grow(
         &mut io::Cursor::new(&bytes[..]),

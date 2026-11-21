@@ -13,7 +13,6 @@ impl<'a> Reference<'a> {
         inputs::query_resolved(
             || inputs::Key::World(Query::Token(token)),
             || {
-                // Keep the pre-change map collection independent of Lookup.
                 let literals = get(&self.literals, || {
                     let tokens = self.frame.complete::<tables::LexicalTokens>().map_err(|error| {
                         let failure =

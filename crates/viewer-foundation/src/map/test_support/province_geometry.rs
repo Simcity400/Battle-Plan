@@ -1,4 +1,3 @@
-//! Synthetic province bitmap and centroid inputs for geometry and order rays.
 use installed_content_core::map::MapData;
 use std::collections::BTreeMap;
 

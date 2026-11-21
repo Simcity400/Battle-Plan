@@ -7,10 +7,8 @@ type Element = ReactElement<Record<string, any>>;
 const elements = (value: any): Element[] => Array.isArray(value) ? value.flatMap(elements)
   : value?.props ? [value, ...elements(value.props.children)] : [];
 const settle = () => new Promise(resolve => setImmediate(resolve));
-/** A campaign UUID header's campaign key: the id's bytes in hex. */
 const CAMPAIGN_KEY = [...'00000000-0000-4000-8000-000000000001'].map(character => character.charCodeAt(0).toString(16).padStart(2, '0')).join('');
 
-/** The dashboard with one recording open, its source handed out by `sources`. */
 async function dashboard(run: (view: any) => Promise<void>) {
   const slots: any[] = [];
   let cursor = 0;
@@ -54,7 +52,6 @@ async function dashboard(run: (view: any) => Promise<void>) {
         return Object.entries(replacements).find(([suffix]) => file.endsWith(suffix))?.[1];
       },
     }] });
-  // The recording poll runs when the test says, never on a clock.
   const polls: (() => void)[] = [];
   const intervalBefore = globalThis.setInterval;
   globalThis.setInterval = ((poll: () => void) => { polls.push(poll); return polls.length; }) as unknown as typeof setInterval;
@@ -88,7 +85,6 @@ async function dashboard(run: (view: any) => Promise<void>) {
     render(); sidebar().props.onLoad(next.path, 'Germany 1936.battleplan', 'new');
     await settle(); render(); render();
     saveAircraftChoice(recordingKey(next.path, CAMPAIGN_KEY), 'jet_mesh');
-    // Each render's effect replaces the interval before it, as React clears it.
     const poll = async () => { polls.at(-1)?.(); await settle(); render(); render(); };
     await run({ props, render, sidebar, layout, reconnect, poll, opened, releases: () => releases, storage, recordingKey, loadAircraftChoice,
       metadata: () => metadata, refreshed: () => refreshed, locate: (path: string | null) => { located = path; },
@@ -101,7 +97,6 @@ async function dashboard(run: (view: any) => Promise<void>) {
   }
 }
 
-/** What the dashboard shows of its campaign's recording. */
 function shown(view: any) {
   const campaign = view.sidebar().props.campaigns[0];
   return { path: campaign.path, source: view.sidebar().props.bindings[campaign.id].source.path, metadata: view.metadata()?.path, loading: campaign.loading };
@@ -118,21 +113,17 @@ test("renaming an open recording's file reopens its source there once, the layou
   assert.equal(view.releases(), 1);
   assert.equal(view.sidebar().props.campaigns[0].id, id);
   assert.deepEqual(shown(view), { path: barbarossa, source: barbarossa, metadata: barbarossa, loading: false });
-  // Kept by its folder and campaign, its aircraft choice is the same recording's.
   assert.equal(view.loadAircraftChoice(view.recordingKey(barbarossa, CAMPAIGN_KEY)), 'jet_mesh');
   assert.deepEqual(view.layout(), before, 'the authored layout keeps no path');
-  // A rename of a recording that is not open changes nothing here.
   view.sidebar().props.onRenamed('C:/recordings/Italy 1936.battleplan', 'C:/recordings/Italy 1936–1937.battleplan');
   view.render();
   assert.equal(shown(view).path, barbarossa);
 }));
 
 test('a recording Battle Plan Recorder renames while open shows its new name, and opens by it again', () => dashboard(async view => {
-  // Found in place, nothing changes.
   view.locate('C:/recordings/Germany 1936.battleplan');
   await view.poll();
   assert.equal(view.refreshed(), 0);
-  // Saved under a new name: found again by its folder and campaign.
   const renamed = 'C:/recordings/Germany 1936–1937.battleplan';
   view.locate(renamed);
   view.serve(renamed, '2');
@@ -141,10 +132,8 @@ test('a recording Battle Plan Recorder renames while open shows its new name, an
   assert.deepEqual(shown(view), { path: renamed, source: renamed, metadata: renamed, loading: false });
   assert.equal(view.refreshed(), 1, 'the library lists it by its new name');
   assert.deepEqual(view.opened, ['C:/recordings/Germany 1936.battleplan', renamed], 'reopened once by its new name');
-  // Its new hours open by its name now.
   await view.reconnect();
   assert.equal(view.opened.at(-1), renamed);
-  // Renamed again before the reconnect found it: found first, then opened.
   const again = 'C:/recordings/Germany 1936–1938.battleplan';
   view.locate(again);
   view.serve(again, '3');
@@ -157,7 +146,6 @@ test('a look for the open recordings waits for the one before it to answer', () 
   const looks: ((located: (string | null)[]) => void)[] = [];
   view.props.client.locateRecordings = () => new Promise(resolve => { looks.push(resolve); });
   await view.poll();
-  // Renders replace the interval; the look still pending holds the next ones back.
   await view.poll();
   await view.poll();
   assert.equal(looks.length, 1, 'a slow host is asked once');

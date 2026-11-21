@@ -1,7 +1,4 @@
-//! The lines a map's layers give for the warnings its window shows.
 
-/// The political fill's limitation lines: the political, naval and mode fills layers' own while
-/// the political layer draws (its refusal is the map's own line otherwise).
 pub fn political_lines(side: &crate::playhead_host::MapSide) -> Vec<String> {
     match side.parts().filter(|_| side.draws("political")) {
         Some((_, layers)) => {
@@ -14,10 +11,6 @@ pub fn political_lines(side: &crate::playhead_host::MapSide) -> Vec<String> {
     }
 }
 
-/// The lines the playhead's map gives: its limitation lines (the tables' notes, the drawn layers'
-/// own, the scripts layer's raid arrows, and each refused layer), and the battle plan's, the map
-/// buildings' and the unit models' own reports, each from its layer while it draws (the ships'
-/// within the units layer's while that draws).
 pub fn map_lines(side: &crate::playhead_host::MapSide) -> [Vec<String>; 2] {
     let limitations = crate::playhead_host::limitations::lines(side).unwrap_or_else(|| vec![MAP_LINES_LOADING.to_owned()]);
     let mut lines = Vec::new();
@@ -44,5 +37,4 @@ pub fn map_lines(side: &crate::playhead_host::MapSide) -> [Vec<String>; 2] {
     [limitations, lines]
 }
 
-/// The map's limitation line while its head has reached no hour.
 pub const MAP_LINES_LOADING: &str = "Map limitations: loading, the playback head has reached no hour yet";

@@ -1,7 +1,3 @@
-//! Map events are transient simulation edges; text saves hold none of them.
-//! This is a recording self-check: each interval of the branch continues the
-//! one before it or starts a new epoch with its coverage marked, events stay
-//! in sequence, and the save hour's events join the recorded world.
 use super::Report;
 use replay::campaign::Replay;
 use replay_data::{
@@ -74,7 +70,6 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
     Ok(())
 }
 
-/// One interval against the one before it on the branch.
 fn observe(previous: Option<&MapEventsRow>, row: &MapEventsRow, hour: i32) -> Result<(), String> {
     row.validate().map_err(|error| error.to_string())?;
     if row.to_hour != hour {
@@ -92,7 +87,6 @@ fn observe(previous: Option<&MapEventsRow>, row: &MapEventsRow, hour: i32) -> Re
             row.first_sequence, row.next_sequence, previous.first_sequence, previous.next_sequence
         ));
     }
-    // A new epoch starts with every family's coverage unknown.
     if row
         .health
         .iter()
@@ -128,8 +122,6 @@ fn report_coverage(row: &MapEventsRow, hour: i32, save_hour: i32, report: &mut R
     }
 }
 
-/// The save hour's events name provinces, countries and building types the
-/// recording holds at that hour.
 fn joins(frame: &DecodedFrame, row: &MapEventsRow, report: &mut Report) -> io::Result<()> {
     let provinces = frame
         .complete::<tables::Provinces>()?
@@ -195,7 +187,6 @@ fn joins(frame: &DecodedFrame, row: &MapEventsRow, report: &mut Report) -> io::R
                 }
             }
         }
-        // Zero is the reserved country's raw reference, which has no link.
         for (field, raw) in checked {
             if raw != 0 && !countries.contains(&raw) {
                 report.difference(
@@ -244,16 +235,13 @@ mod tests {
             observe(Some(&first), &row(3, (10, 11), (8, 8), true), 11),
             Ok(())
         );
-        // A gap in the same epoch is a difference.
         assert!(observe(Some(&first), &row(3, (10, 11), (9, 10), true), 11).is_err());
         assert!(observe(Some(&first), &row(3, (11, 12), (8, 9), true), 12).is_err());
-        // A new epoch must not claim complete coverage at its start.
         assert_eq!(
             observe(Some(&first), &row(4, (10, 11), (9, 9), false), 11),
             Ok(())
         );
         assert!(observe(Some(&first), &row(4, (10, 11), (9, 9), true), 11).is_err());
-        // The interval must end at its frame's hour.
         assert!(observe(None, &first, 11).is_err());
     }
 

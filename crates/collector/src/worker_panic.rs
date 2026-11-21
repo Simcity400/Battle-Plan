@@ -1,6 +1,3 @@
-//! The first panic on any collector thread, recorded where and when it happens: its thread,
-//! location and message reach the session's progress log at once and status.json and the
-//! recorder through the teardown it starts. A worker that dies is never silent.
 use std::{
     fmt::{self, Write as _},
     io::Write as _,
@@ -10,7 +7,6 @@ use std::{
     time::Instant,
 };
 
-/// Text formatted without allocating, truncated at capacity on a character boundary.
 struct Text<const N: usize> {
     bytes: [u8; N],
     len: usize,
@@ -40,20 +36,16 @@ impl<const N: usize> fmt::Write for Text<N> {
 
 static FIRST: OnceLock<Text<512>> = OnceLock::new();
 
-/// The first panic recorded since attach, if any.
 pub(crate) fn first() -> Option<&'static str> {
     FIRST.get().map(Text::as_str)
 }
 
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 
-/// Installed before any worker starts; restores the previous hook when dropped, after every
-/// worker has joined, so no hook outlives the collector's code. Retained workers retain it.
 pub(crate) struct Guard(Option<Arc<Hook>>);
 
 impl Guard {
     pub(crate) fn install(progress: &Path, opened: Instant) -> Self {
-        // Opened now, so reporting a panic neither allocates nor converts a path.
         let file = std::fs::OpenOptions::new().append(true).open(progress).ok();
         let previous = Arc::new(std::panic::take_hook());
         let chained = Arc::clone(&previous);

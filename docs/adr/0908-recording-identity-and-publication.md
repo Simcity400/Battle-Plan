@@ -1,0 +1,23 @@
+# Identify recordings independently of their file names and acknowledge durable saves
+
+A folder and the campaign ID in a recording's header identify the recording. Published listings can read size and modification time without opening each file. Operations that find or continue a campaign inspect recording headers and report an unreadable file rather than treating it as absent. Older layouts do not provide continuation identity. Several matching recordings are ambiguous and require the owner to choose. The naming lock covers lookup through publication so another save or user rename cannot take the selected name.
+
+Unsaved work lives in the folder's hidden `.unsaved` subdirectory and is named by campaign. A file that has yet to commit any revision claims only the campaign named by its file name, including when the process died before it wrote a header. A matching current header with no verified root is also uncommitted. Other files claim by verified header and name. Disagreement and multiple claims are refused. Arbitrary unreadable bytes are errors even if the expected name is missing.
+
+Names follow Windows component rules. Stem length is limited in UTF-16 units to leave room for the extension and the largest numeric suffix, preserving Unicode character boundaries. Reserved Windows device names also apply before a dot. The first collision is numbered `(2)`, a file can retain its own case-insensitive name, and renames and new publications never overwrite an occupied name. If a file appears between selection and publication, the publisher retries with the next available name. The temporary sibling's short digest uses the target's lowercased name plus a purpose suffix so long names and case changes do not change the staging contract.
+
+## Save and preference barriers
+
+The recorder and desktop app apply preferences as read, modify and write under a short OS lock since both processes can change independent fields. A campaign can opt in or out of the global auto-record default. It can continue its recording or start a new one while preserving the previous file. Choosing a different capture mode also requires a new recording. `liveCompression` is the active setting, and old `blockCompression` and `compression` keys are ignored. Background Auto Compress brings a saved recording to High and does nothing when live Compression is already High. When Auto Save is off, unsaved hours wait for Save or Discard.
+
+The recorded country tag supplies an optional campaign flag. A campaign's selected folder is relative to the save folder. Previously selected roots remain in the session list until their pending hours are handled, and a session that records in another root can register it again. The apps compare Windows paths across separator, case and verbatim-prefix spelling when recognizing a selected root or user-selected name. An update uses a newly created staging file. If an existing file prevents creation, cleanup may not remove it as though this write owned it.
+
+## Windows publication
+
+POSIX replacement permits delete-sharing readers to continue reading the displaced file while new opens see the replacement. A publisher opens flush-capable handles before changing the name and starts with a closed, synced sibling. Since `FileRenameInfoEx` supplies no write-through flag, success requires syncing both the renamed file and the parent directory. A failure after rename reports that the visible file changed before durability was assured. A retry can complete that barrier on the visible file without rewriting an already matching revision.
+
+Classic write-through replacement is available only when POSIX rename reports an unsupported operation on the volume. Sharing and access failures retain their real error. The recompression path explicitly uses the unopened-file variant so old bytes cannot remain attached to a reader. POSIX deletion hides the name immediately while already-open delete-sharing readers retain their bytes. It syncs the parent and reports unsupported POSIX deletion instead of scheduling deferred deletion. New-name moves use write-through without replacement.
+
+The Win32 paths passed to these functions are absolute UTF-16, reject interior NUL, and have one terminator. The `FILE_RENAME_INFO` byte length excludes that terminator. Its variable-length buffer has the alignment and tail space of the struct and stays live with the file handle through the call. For disposition the live structure's actual size is passed. Classic replacement takes a closed, fully synced sibling on the same volume.
+
+[Recording names](../../crates/replay/src/recording_files.rs) · [Recorder preferences](../../crates/replay/src/recorder_settings.rs) · [Publication helpers](../../crates/replay/src/publication.rs)

@@ -1,5 +1,3 @@
-//! Retained event registry operands. Callers use these once for an observed
-//! world's baseline, then acquire only the entry reached by a native writer.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
 use engine_sites::Rva;
 
@@ -9,7 +7,6 @@ pub const PENDING_DEFINITION: usize = 8;
 pub const PENDING_SCOPE: usize = 0x10;
 pub const PENDING_ORIGINATOR: usize = 0x18;
 pub const PENDING_DUE: usize = 0x28;
-/// A fired-event set's member count.
 pub const SET_COUNT: usize = 0;
 const SET_BUCKET_COUNT: usize = 4;
 const SET_BUCKETS: usize = 8;
@@ -105,7 +102,6 @@ pub fn pending_at(
         due_hour: word(memory, entry, PENDING_DUE)?,
     })
 }
-/// The append writer has just returned: only its final entry is demanded.
 pub fn pending_last(
     memory: &impl Memory,
     state: usize,
@@ -139,8 +135,6 @@ pub fn walk_pending(
     }
     Ok(())
 }
-/// Only the retained set is serialized as fired_event_names. Loaded references
-/// awaiting resolution are separate; successful later insertions are writers.
 pub fn walk_fired(
     memory: &impl Memory,
     state: usize,

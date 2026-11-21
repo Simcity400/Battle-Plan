@@ -8,15 +8,6 @@ pub(super) fn compare_research(
     names: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // Technology rows keep the hour their country's slice read them
-    // (SliceReads). The saved side has no per-owner scope, so the comparison
-    // needs every owner current, including owners with no rows, which rows
-    // cannot show. With read hours supplied (the oracle command) that takes a
-    // proven full refresh; otherwise the technologies are carried, with the
-    // oldest recorded read. Without them (callers that do not scan the branch)
-    // the earlier row check stays. ResearchSlots is a daily table and is
-    // compared whenever its slot was read (its group's own carried check). An
-    // unreadable table is not stale: its comparison below reports the failure.
     let tech = replay_data::rows::TableId::ResearchTechnologies;
     let oldest_read = complete::<tables::SliceReads>(frame)
         .ok()
@@ -42,9 +33,6 @@ pub(super) fn compare_research(
     let spellings = reverse_spellings(names);
     for row in definitions {
         let token = literal(report, "TechnologyDefinitions.id", &row.id);
-        // The technology writer emits its name token.
-        // The lexer interns case aliases and keeps
-        // its first spelling; the authored name need not be those bytes.
         let subject = format!(
             "technology {:?} handle {} lexical binding",
             String::from_utf8_lossy(&row.id),
@@ -77,7 +65,6 @@ pub(super) fn compare_research(
                 String::from_utf8_lossy(writer),
             )));
         }
-        // Separate indexes may share an interned token.
         if row.database_index <= 0
             || name_handles
                 .insert(writer, row.technology_handle)
@@ -99,9 +86,6 @@ pub(super) fn compare_research(
     }
     report.compared("TechnologyDefinitions", 0);
     report.limitation("technology definitions join through the recorded lexical writer spelling; runtime handles, database ordinals, year, max level and authored cost are not directly certified by a text save", "TechnologyDefinitions");
-    // Without read hours (callers that do not scan the branch) a stale
-    // ResearchSlots is a limitation, as before; with them, its comparison
-    // group reports it carried.
     let slots_current =
         report.refresh_is_current(replay_data::rows::TableId::ResearchSlots, frame.hour);
     let mut complete = true;
@@ -125,7 +109,6 @@ pub(super) fn compare_research(
             ),
         );
     }
-    // Active-slot coverage of the technologies depends on ResearchSlots.
     if technologies_current && slots_current {
         complete &= report.attempt("governance ResearchTechnologies", |report| {
             compare_research_technologies(frame, pack, links, &dictionary, report)
@@ -312,7 +295,6 @@ pub(super) fn compare_research_slots(
     report: &mut Report,
 ) -> io::Result<()> {
     let slots = complete::<tables::ResearchSlots>(frame)?;
-    // Serialized technology, research speed, banked days and applied days.
     type ResearchSlotValues<'a> = (&'a [u8], i64, i64, i64);
     let mut captured_slots: BTreeMap<&[u8], Vec<ResearchSlotValues<'_>>> = BTreeMap::new();
     let mut slot_indices: BTreeMap<&[u8], BTreeSet<u32>> = BTreeMap::new();
@@ -368,8 +350,6 @@ pub(super) fn compare_research_slots(
                     )
                 })
                 .collect::<Vec<_>>();
-            // the research writer does not serialize the native slot index. Compare complete
-            // entries with multiplicity, rather than inventing an ordinal join.
             actual.sort_unstable();
             expected.sort_unstable();
             if actual != expected {
@@ -393,8 +373,6 @@ pub(super) fn compare_research_slots(
                         };
                         (token, row)
                     });
-                // Preserve the comparison projection above, while reporting
-                // every captured field and the exact saved optional operands.
                 report.difference(
                     label(tag, "research_slots.values_with_multiplicity"),
                     DebugRows(native),
@@ -466,7 +444,6 @@ pub(super) fn compare_research_technologies(
         if !keys.insert((tag, row.database_index)) {
             return Err(invalid("duplicate research technology occurrence"));
         }
-        // The game: scan native indexed order, filter each exact instance.
         if row.level > 0
             || row.progress_raw > 0
             || (row.level < max_level
@@ -494,9 +471,6 @@ pub(super) fn compare_research_technologies(
             .unwrap_or_default();
         if ambiguous.contains(tag.as_slice()) {
             report.limitation("research occurrence order, multiplicity and serialized fields cannot be certified without exact active-slot filtering", label(tag, "technology"));
-            // The game still requires every positive level/progress or bonus
-            // occurrence. Unknown active instances may interleave them, but
-            // cannot remove or change this ordered serialized subsequence.
             let mut saved = expected.iter();
             for (token, row) in &actual {
                 if !saved.by_ref().any(|(saved_token, saved)| {

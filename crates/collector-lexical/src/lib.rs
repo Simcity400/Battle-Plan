@@ -1,4 +1,3 @@
-//! Lexical capture: the game's interned token dictionary, its owned raw copy and conversion. The host owns dispatch, loans and table assembly.
 
 use collector_memory::read_accounting;
 #[cfg(any(test, feature = "test-support"))]

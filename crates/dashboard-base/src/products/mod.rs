@@ -1,5 +1,3 @@
-//! The product contract and the shared products other products build on. The
-//! dashboard registers every product, these included.
 
 mod product;
 pub use product::*;

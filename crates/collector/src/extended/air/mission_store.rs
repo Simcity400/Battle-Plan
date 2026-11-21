@@ -1,29 +1,3 @@
-//! AirRegionalMissions registrations held between hours per country air
-//! object ([`crate::mission_changes`]).
-//!
-//! The walk still visits every country air object and gathers its regional, all-active and
-//! active-region headers (the strategic air's mission vector headers) each hour. An object's held
-//! registrations (region id, vector ordinal and mission pointer) are carried, without reading its
-//! active-region ids, regional vectors or mission pointers, only when all of these hold at this
-//! boundary: the same object address, canonical slot and gathered header bytes as the held read,
-//! and no hooked writer touched the object since that read registered it (same watch epoch and
-//! sequence; a load, gap, recovery, table change, poison or running writer revokes it). register
-//! mission and unregister mission, both hooked, are the only run-time writers of the regional and
-//! all-active vectors; the carrier mission pass also inserts active-region ids, which moves that
-//! header ([`engine_mutations::regional_mission_mutations`]), so equal headers list the same ids. The walk
-//! still checks each carried registration's wing in this hour's census exactly as it checks a read
-//! one and reads the object afresh on any disagreement
-//! ([`engine_native::cair_regional_mission::walk_carried`]), so the published rows and outcome are a fresh
-//! walk's.
-//!
-//! When the domain's quiet token is the one taken before the held walk's
-//! first registration, no hooked writer ran since: an object with the held
-//! address, slot and headers keeps its held certificate without a lookup.
-//!
-//! The store travels with the AirMissions job's request and
-//! holds only the objects of the latest complete walk, so its size follows
-//! live demand. Allocation is advisory: an object whose registrations cannot
-//! be held is read afresh next hour.
 use crate::mission_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
@@ -46,13 +20,10 @@ struct Entry {
     registrations: Range<usize>,
 }
 
-/// One walk's held registrations.
 #[derive(Default)]
 struct Held {
-    /// Sorted by object address once the walk finishes.
     entries: Vec<Entry>,
     registrations: Vec<Registration>,
-    /// The domain's quiet token before the walk's first registration.
     quiet: Option<(u64, u64)>,
 }
 
@@ -71,15 +42,12 @@ impl Held {
         Some(&self.entries[index])
     }
 
-    /// The held registrations of exactly `certificate`.
     fn find(&self, certificate: &Certificate) -> Option<Range<usize>> {
         self.entry(certificate.root.address)
             .filter(|entry| entry.certificate == *certificate)
             .map(|entry| entry.registrations.clone())
     }
 
-    /// Holds `registrations` for `certificate`; `false` when the storage
-    /// could not grow, which only withholds the certificate.
     fn hold(&mut self, certificate: Certificate, registrations: &[Registration]) -> bool {
         let stored = allocation::advisory(|| {
             allocation::reserve(&mut self.entries, 1)?;
@@ -104,9 +72,6 @@ impl Held {
     }
 }
 
-/// One planned object: its certificate, carryable held registrations and,
-/// when read afresh, where its recorded registrations start in the walk
-/// being made (`None` once one could not be recorded).
 #[derive(Clone, Debug, Default)]
 struct Plan {
     certificate: Option<Certificate>,
@@ -114,17 +79,13 @@ struct Plan {
     recorded: Option<usize>,
 }
 
-/// Registrations of the latest complete walk and the walk being made.
 #[derive(Default)]
 pub(crate) struct MissionStore {
     current: Held,
     previous: Held,
-    /// This walk's plans, indexed by token.
     plans: Vec<Plan>,
     counts: Counts,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walk drops every held registration.
     forgotten: bool,
     orders: order::Orders,
     pub(crate) transfers: super::transfers::Store,
@@ -135,13 +96,10 @@ impl MissionStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next walk reads afresh.
-    /// Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -151,8 +109,6 @@ impl MissionStore {
         self.counts
     }
 
-    /// `quiet` is the domain's token before this walk's first registration.
-    /// Returns whether it proves every held certificate current.
     fn begin(&mut self, quiet: Option<(u64, u64)>) -> bool {
         if std::mem::take(&mut self.forgotten) {
             self.current.clear();
@@ -170,14 +126,11 @@ impl MissionStore {
         unchanged
     }
 
-    /// Keeps this walk's registrations only when it completed, and publishes
-    /// its counts.
     fn finish(&mut self, complete: bool) {
         let countries = self.plans.len();
         if complete {
             let entries = &mut self.current.entries;
             entries.sort_unstable_by_key(|entry| entry.certificate.root.address);
-            // An object occurring twice names no single held read.
             let mut index = 0;
             while index < entries.len() {
                 let address = entries[index].certificate.root.address;
@@ -209,16 +162,13 @@ impl MissionStore {
     }
 }
 
-/// One walk's view of the store and the observation that certifies reuse.
 pub(crate) struct MissionReuse<'a> {
     store: &'a mut MissionStore,
     changes: &'a dyn Changes,
-    /// No hooked writer ran since the held walk began.
     quiet: bool,
 }
 
 impl<'a> MissionReuse<'a> {
-    /// Takes the domain's quiet token before the walk's first registration.
     pub(crate) fn begin(store: &'a mut MissionStore, changes: &'a dyn Changes) -> Self {
         let quiet = store.begin(changes.quiet());
         Self {
@@ -228,14 +178,11 @@ impl<'a> MissionReuse<'a> {
         }
     }
 
-    /// Ends the walk: `complete` when every object was read or carried whole.
     #[cfg(test)]
     pub(crate) fn finish(self, complete: bool) {
         self.store.finish(complete);
     }
 
-    /// The strict registration walk keeps its independent observation contract.
-    /// Only this asynchronous caller also demands the all-active paint order.
     pub(crate) fn finish_with_order(
         self,
         complete: bool,
@@ -260,8 +207,6 @@ impl<'a> MissionReuse<'a> {
         store.measure_transfers();
     }
 
-    /// This hour's certificate for `root`: the held one while the domain is
-    /// quiet, otherwise its registration.
     fn certify(&self, root: &Root) -> Option<Certificate> {
         if self.quiet
             && let Some(entry) = self.store.previous.entry(root.address)
@@ -280,7 +225,6 @@ impl<'a> MissionReuse<'a> {
 }
 
 impl Carry for MissionReuse<'_> {
-    /// Registration precedes every read it certifies.
     fn plan(&mut self, root: &Root) -> (usize, bool) {
         let certificate = self.certify(root);
         let held = certificate.and_then(|certificate| self.store.previous.find(&certificate));
@@ -288,7 +232,6 @@ impl Carry for MissionReuse<'_> {
         let token = self.store.plans.len();
         let planned = allocation::advisory(|| allocation::reserve(&mut self.store.plans, 1));
         if planned.is_err() {
-            // Unplanned: read afresh and held for nothing.
             return (usize::MAX, false);
         }
         let recorded = Some(self.store.current.registrations.len());
@@ -331,7 +274,6 @@ impl Carry for MissionReuse<'_> {
         let registrations = &previous.registrations[range];
         counts.reused += 1;
         counts.reused_rows += registrations.len() as u64;
-        // A failed hold only withholds the next hour's certificate.
         let _ = current.hold(certificate, registrations);
     }
 
@@ -346,7 +288,6 @@ impl Carry for MissionReuse<'_> {
         };
         let registrations = &mut store.current.registrations;
         if allocation::advisory(|| allocation::reserve(registrations, 1)).is_err() {
-            // Not held.
             registrations.truncate(start);
             plan.recorded = None;
             return;
@@ -373,7 +314,6 @@ impl Carry for MissionReuse<'_> {
                 certificate,
                 registrations: fresh,
             }),
-            // Held for nothing: drop what it recorded.
             None => current.registrations.truncate(start),
         }
     }

@@ -47,9 +47,7 @@ fn keyed(rows: &[CombatLogObserverRow]) -> BTreeMap<(u64, bool, u8, u64, u64), u
 fn combat_log_collection_insertions_keep_other_parents_and_kinds_keyed() {
     let first = project(&sample(), &[]).unwrap();
     let mut changed = sample();
-    // A leader added before damage and activities in the native traversal.
     changed.insert(14, row(K::Leader, 1, [17, 2, 0, 0, 0]));
-    // An early activity child must not renumber a later child family or parent.
     changed.insert(18, row(K::ActivityTemplate, 0, [1, 74, 0, 0, 0]));
     let second = project(&changed, &first).unwrap();
     let first = keyed(&first);
@@ -91,11 +89,10 @@ fn combat_log_resets_removals_replacements_and_unbounded_native_indices() {
     let first = project(&native, &[]).unwrap();
     native.retain(|row| row.kind != K::Leader as u8);
     let removed = project(&native, &first).unwrap();
-    native[0].a = 0; // A real counter/damage reset is not inferred or suppressed.
+    native[0].a = 0;
     let reset = project(&native, &removed).unwrap();
     assert_eq!(keyed(&removed), keyed(&reset));
     assert_ne!(removed, reset);
-    // No packed-key width narrows either full native array ordinal.
     native.push(row(
         K::ActivityDamage,
         i32::MAX as u64 - 1,

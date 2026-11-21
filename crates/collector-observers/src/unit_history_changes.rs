@@ -1,6 +1,3 @@
-//! Shared certificates for division careers and medal stores. The army
-//! observer owns their writers; the ship-model observer forwards the existing
-//! medal-modifier rebuild patch. Neither hook reads memory or allocates.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static WATCHES: WatchRegistry = WatchRegistry::marking();
@@ -37,7 +34,6 @@ pub fn edit_sequence(receiver: usize) -> Option<(u64, u64)> {
 pub fn take_edits(visit: impl FnMut(usize)) -> Option<u64> {
     EDITS.take(visit)
 }
-/// The officer, career, history-root and medal receivers a writer touched since the last take.
 pub fn take(visit: impl FnMut(usize)) -> Option<u64> {
     WATCHES.take(visit)
 }
@@ -47,17 +43,12 @@ pub fn entry_demand(entries: usize) {
 pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
     WATCHES.sequence(receiver)
 }
-/// Warm range certification with a checked held slot. Cold/full-table winners
-/// remain with the ordered native acquisition.
 pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
     WATCHES.observed_sequence_at(receiver, slot)
 }
-/// A parallel range's certificate: registers a receiver not yet watched; a full table is
-/// refused and counted by the ordered admission ([`WatchRegistry::range_sequence`]).
 pub fn range_sequence(receiver: usize) -> Option<(u64, u64)> {
     WATCHES.range_sequence(receiver)
 }
-/// The career and medal registry, for the live status.
 pub fn registry() -> &'static WatchRegistry {
     &WATCHES
 }
@@ -90,8 +81,8 @@ pub fn carried() {
 pub fn refused() {
     REFUSED.fetch_add(1, Ordering::Relaxed);
 }
-/// # Safety
-/// All owning and forwarding hooks must be disabled and quiescent.
+#[doc = " # Safety"]
+#[doc = " All owning and forwarding hooks must be disabled and quiescent."]
 pub unsafe fn release() {
     unsafe {
         WATCHES.release();

@@ -10,7 +10,6 @@ thread_local! {
 pub(super) fn owns_observation() -> bool {
     OBSERVATION_OWNER.get()
 }
-/// Serialises these tests and makes this thread the ledger's only driver.
 struct Owner {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
@@ -35,7 +34,6 @@ fn clock(hour: i32) -> Option<Clock> {
     })
 }
 
-/// A clean ledger past its partial first interval, with no strike open.
 fn ready() -> Owner {
     let serial = SERIAL
         .lock()
@@ -45,7 +43,6 @@ fn ready() -> Owner {
     OPEN.store(0, Ordering::SeqCst);
     EQUIPMENT.store(IDLE, Ordering::SeqCst);
     LEDGER.prepare(64);
-    // A drain installs the prepared storage; the first interval is partial.
     assert!(LEDGER.drain(&mut Vec::new()).is_err());
     LEDGER.boundary(clock(1));
     LEDGER.boundary(clock(2));
@@ -76,7 +73,6 @@ fn forwarded_equipment_is_recorded_only_on_the_open_strike_thread() {
         equipment(true, 3, 8, -5);
         equipment_observed();
     }
-    // A call equipment destruction did not observe refuses the part.
     drop(equipment_call(None).unwrap());
     close();
     assert!(equipment_call(None).is_none());
@@ -103,8 +99,6 @@ fn forwarded_equipment_is_recorded_only_on_the_open_strike_thread() {
     );
 }
 
-// Heap-owned objects only; LiveMemory reads them through its normal guard.
-// The fake module root lives in its own allocation.
 struct World {
     storage: Vec<u64>,
     root: Box<u64>,
@@ -190,7 +184,6 @@ fn a_strike_records_its_target_and_refuses_each_part_not_forwarded() {
     }
     open(world.at(NUKE), world.at(PROVINCE));
     assert!(current());
-    // The notification closes the strike before authored effects run.
     close();
     assert!(!current());
     ENABLED.store(false, Ordering::SeqCst);

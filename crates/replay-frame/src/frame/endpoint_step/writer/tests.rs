@@ -1,7 +1,6 @@
 use super::*;
 use crate::rows::{ClockRow, CountryRow};
 
-/// A fixed xorshift sequence, so every run checks the same states.
 struct Sequence(u64);
 impl Sequence {
     fn next(&mut self) -> u64 {
@@ -13,13 +12,11 @@ impl Sequence {
     fn chance(&mut self, one_in: u64) -> bool {
         self.next() % one_in == 0
     }
-    /// Ascending keys below `universe`, each kept one time in `one_in`.
     fn keys(&mut self, universe: u128, one_in: u64) -> Vec<u128> {
         (0..universe).filter(|_| self.chance(one_in)).collect()
     }
 }
 
-/// Any sets the writer can hold, whether or not a recording could reach them.
 fn pending(sequence: &mut Sequence, universe: u128) -> Pending {
     let mut edits = Vec::new();
     for key in sequence.keys(universe, 3) {
@@ -37,8 +34,6 @@ fn pending(sequence: &mut Sequence, universe: u128) -> Pending {
     }
 }
 
-/// Deletions of present and absent keys, and changes of old and new keys,
-/// some of them also deleted.
 fn delta(sequence: &mut Sequence, universe: u128) -> (Vec<DeltaRow>, Vec<u128>) {
     let deleted = sequence.keys(universe, 5);
     let mut changed = Vec::new();
@@ -123,7 +118,6 @@ fn frame(hour: Hour, countries: &[u32]) -> DecodedFrame {
     frame
 }
 
-/// A writer that emitted its first step at hour 1, its decoder and encoder.
 fn emitted() -> (EndpointWriter, FrameEncoder, FrameDecoder) {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(TABLES);
@@ -141,7 +135,6 @@ fn emitted() -> (EndpointWriter, FrameEncoder, FrameDecoder) {
 
 #[test]
 fn emitted_steps_validate_every_new_allocation_and_the_clock_at_every_hour() {
-    // A new allocation is validated however long its table kept the last one.
     let (mut writer, mut encoder, mut decoder) = emitted();
     let raw = encoder.encode(frame(2, &[1, 2]), false).unwrap();
     let decoded = decoder.advance(&raw).unwrap().clone();
@@ -169,7 +162,6 @@ fn emitted_steps_validate_every_new_allocation_and_the_clock_at_every_hour() {
     assert!(error.to_string().contains("ascending"), "{error}");
     assert_eq!(out, [7]);
 
-    // The clock an emitted step validated is checked again at the next hour.
     let (mut writer, mut encoder, mut decoder) = emitted();
     let raw = encoder.encode(frame(2, &[1, 2]), false).unwrap();
     let held = decoder.advance(&raw).unwrap().clone();
@@ -182,7 +174,6 @@ fn emitted_steps_validate_every_new_allocation_and_the_clock_at_every_hour() {
     stale.tables[TableId::Clock.index()] = held.tables[TableId::Clock.index()].clone();
     let error = writer.finish(&stale, &mut Vec::new()).unwrap_err();
     assert!(error.to_string().contains("clock row hour"), "{error}");
-    // The table it validated, still that allocation, is written as before.
     let mut kept = decoded.clone();
     kept.tables[TableId::Countries.index()] = held.tables[TableId::Countries.index()].clone();
     let mut fresh = EndpointWriter::resume(TABLES, &held).unwrap();

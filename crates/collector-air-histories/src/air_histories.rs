@@ -1,4 +1,3 @@
-//! Batched, write-observed air history rings, stored by native slot.
 
 use crate::{
     clock::qpc,
@@ -20,23 +19,17 @@ use std::sync::{
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::AirNavalPatrolHistories];
 
-/// Pool jobs splitting the copies; slot `s` belongs to part `s % PARTS`.
 pub const PARTS: usize = 8;
 
-/// A notification `(epoch, count)`; `None` when unobserved.
 type Sequence = Option<(u64, u64)>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Countries reused and copied afresh.
     pub reused: u64,
     pub read: u64,
-    /// Histories advanced without a read, and copied on their own.
     pub advanced: u64,
     pub refreshed: u64,
-    /// Histories whose daily current record alone was read.
     pub patched: u64,
-    /// Every part reused everything.
     pub quiet: bool,
     pub scenario_refusals: [u64; native::SCENARIO_REFUSALS.len()],
     pub menu_refusals: [u64; engine_air_history::menu_history::REFUSALS.len()],
@@ -63,17 +56,11 @@ impl Counts {
     }
 }
 
-/// Buffer sizes for one part's copies and certificates: its slots from the
-/// registry, the rest grown off-thread from what the hours used. A copy
-/// larger than any before still grows in its hour rather than failing it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
-    /// Slots one part owns.
     countries: usize,
-    /// Histories one part copied or advanced in one hour.
     histories: usize,
-    /// Record channels one part copied in one hour.
     channels: usize,
 }
 
@@ -99,7 +86,6 @@ impl Capacities {
         );
     }
 
-    /// Raise each capacity to a third above what one part used in an hour.
     fn observe(&mut self, staging: &Staging) {
         for (capacity, used) in [
             (&mut self.countries, staging.owned),
@@ -114,7 +100,6 @@ impl Capacities {
     }
 }
 
-/// Raise `list`'s capacity to `capacity`.
 fn reserve<T>(list: &mut Vec<T>, capacity: usize) -> Result<(), &'static str> {
     let additional = capacity.saturating_sub(list.len());
     allocation::reserve(list, additional).map_err(|_| "collector allocation failed")
@@ -132,7 +117,6 @@ fn push<T>(list: &mut Vec<T>, value: T) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// One copied window, its channels at `offset` in the staged channels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Window {
     slot: u32,
@@ -141,19 +125,13 @@ struct Window {
     offset: usize,
 }
 
-/// The hour's verdicts against the last complete hour, the same for every
-/// part.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Verdict {
-    /// The last complete hour's certificates hold.
     complete: bool,
-    /// Besides: no observed writer ran.
     quiet: bool,
-    /// Besides: each writer site made no call.
     sites: [bool; 2],
 }
 
-/// What the AirMissions job left a part.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Input {
     #[default]
@@ -161,48 +139,34 @@ enum Input {
     Supplied,
 }
 
-/// What one part's job did this hour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum State {
-    /// Not dispatched for this frame.
     #[default]
     Idle,
-    /// Every certificate held; nothing copied.
     Quiet,
     Copied,
     Failed(&'static str),
 }
 
-/// One part's worker-owned copies and certificates for the decode thread.
 #[derive(Default)]
 pub struct Staging {
     verdict: Verdict,
     input: Input,
     state: State,
-    /// The manager's country slots, and those this part owns.
     slots: usize,
     owned: usize,
-    /// Countries whose held histories are replaced by this hour's windows.
     replaced: Vec<u32>,
-    /// Slots whose country air object is gone.
     removed: Vec<u32>,
-    /// `(slot, region, advances)` applied without a read.
     advances: Vec<(u32, u32, u64)>,
-    /// Copied histories; a window with a menu copy carries no ring channels.
     windows: Vec<Window>,
     menus: Vec<Option<engine_air_history::menu_history::History>>,
-    /// Histories whose adds since the last hour changed only their daily
-    /// current record; grown in the hour, as few are touched at once.
     patches: Vec<(u32, u32, engine_air_history::menu_history::Current)>,
-    /// `(slot, region)` histories gone from a refreshed country.
     dropped: Vec<(u32, u32)>,
-    /// The hour read every country afresh.
     fresh: bool,
     channels: Vec<[i64; 9]>,
     scenario_failures: Vec<Option<&'static str>>,
     counts: Counts,
     ticks: u64,
-    /// What the job presizes its certificates to.
     capacity: Option<Capacities>,
 }
 
@@ -225,7 +189,6 @@ impl Staging {
         Ok(())
     }
 
-    /// A new frame, awaiting its writer verdict.
     fn clear(&mut self) {
         self.verdict = Verdict::default();
         self.input = Input::Missing;
@@ -250,7 +213,6 @@ impl Staging {
         self.ticks = 0;
     }
 
-    /// A failed job: nothing it staged may be applied.
     pub fn fail(&mut self, reason: &'static str) {
         self.state = State::Failed(reason);
     }
@@ -277,9 +239,6 @@ impl Staging {
             + self.scenario_failures.capacity() * size_of::<Option<&'static str>>()
     }
 
-    /// Copy `histories`, each found at `(slot, region)`: every window with all
-    /// channels, or for a history the menu refuses, its daily ring alone.
-    /// Leaves in `scratch.fallback`, ascending, the histories copied as a ring.
     fn copy_windows(
         &mut self,
         memory: &impl Memory,
@@ -380,9 +339,6 @@ impl Staging {
         )
     }
 
-    /// The daily current record of each of `histories` (held with every
-    /// window, changed only by adds); `retry` names, ascending, those to copy
-    /// whole instead.
     fn patch(
         &mut self,
         memory: &impl Memory,
@@ -415,7 +371,6 @@ impl Staging {
     }
 }
 
-/// The buffers [`Staging::copy_windows`] borrows from a part's certificates.
 struct CopyScratch<'a> {
     windows: &'a mut native::WindowScratch,
     menus: &'a mut engine_air_history::menu_history::Scratch,
@@ -423,16 +378,11 @@ struct CopyScratch<'a> {
     addresses: &'a mut Vec<usize>,
 }
 
-/// Whole-domain certificates shared by all parts at the hourly boundary.
 pub struct Opening {
-    /// The hour they belong to completed in every part and was not dropped.
     complete: bool,
-    /// An hour was opened since attaching.
     opened: bool,
     quiet: Sequence,
-    /// Per writer site, taken with it.
     sites: [Sequence; 2],
-    /// A forget since the last opening: it outlasts a settlement that races it.
     forgotten: bool,
 }
 
@@ -453,14 +403,11 @@ impl Opening {
         }
     }
 
-    /// Nothing observed so far certifies anything: every part copies afresh.
     pub fn forget(&mut self) {
         self.complete = false;
         self.forgotten = true;
     }
 
-    /// The last opened hour failed or was dropped, so the next copies
-    /// every country afresh.
     pub fn withdrawn(&self) -> bool {
         self.opened && !self.complete
     }
@@ -474,7 +421,6 @@ pub fn opening() -> MutexGuard<'static, Opening> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Opens the hour's writer certificates for every allocated regional history.
 pub fn supply(parts: &mut [Staging], changes: &impl Changes, opening: &mut Opening) {
     if parts.is_empty() {
         return;
@@ -499,15 +445,12 @@ pub fn supply(parts: &mut [Staging], changes: &impl Changes, opening: &mut Openi
     opening.sites = sites;
 }
 
-/// What a part's jobs last observed of one history.
 #[derive(Clone, Copy, Default)]
 struct HistoryCertificate {
     region: u32,
     history: usize,
     sequence: Sequence,
-    /// Adds to this region of the country ([`history_changes::touch_key`]).
     touch: Sequence,
-    /// The held copy has every window.
     menu: bool,
 }
 
@@ -515,12 +458,10 @@ struct HistoryCertificate {
 struct CountryCertificate {
     root: usize,
     sequence: Sequence,
-    /// Allocated histories, by region.
     histories: Vec<HistoryCertificate>,
 }
 
 impl CountryCertificate {
-    /// Keeps the histories' capacity.
     fn reset(&mut self, root: usize, sequence: Sequence) {
         self.root = root;
         self.sequence = sequence;
@@ -528,37 +469,25 @@ impl CountryCertificate {
     }
 }
 
-/// One part's certificates, valid while the [`Opening`] is complete.
 pub struct Certificates {
-    /// By slot / [`PARTS`].
     roots: Vec<usize>,
-    /// By slot / [`PARTS`]; entries past `roots` are empty and presized.
     countries: Vec<CountryCertificate>,
-    /// What the lists were last presized to.
     reserved: Capacities,
     scratch: Scratch,
 }
 
-/// Per-hour work lists, kept for their capacity. Countries are indices
-/// into the part's certificates.
 #[derive(Default)]
 struct Scratch {
     roots: Vec<usize>,
     read: Vec<usize>,
-    /// Countries whose air object some add changed: only their touched,
-    /// new or doubted histories are read.
     refresh: Vec<usize>,
     targets: Vec<usize>,
     doubted: Vec<(usize, usize, Sequence)>,
     addresses: Vec<usize>,
     found: Vec<(u32, u32)>,
     sequences: Vec<(Sequence, Sequence)>,
-    /// A refreshed country's histories as region slots name them: its
-    /// index in `refresh`, region and history.
     listed: Vec<(usize, u32, usize)>,
-    /// Certificates being rebuilt for one refreshed country.
     merged: Vec<HistoryCertificate>,
-    /// Copies and patches of refreshed histories: (country, position in its certificates).
     owners: Vec<(usize, usize)>,
     patch_addresses: Vec<usize>,
     patch_found: Vec<(u32, u32)>,
@@ -637,9 +566,6 @@ impl Certificates {
             + scratch.menus.allocated_bytes()
     }
 
-    /// Presize every list the part's job fills; a country's histories grow
-    /// when it first holds one. In the job, which owns them, once per
-    /// capacity change.
     fn reserve(&mut self, capacity: &Capacities) -> Result<(), &'static str> {
         if self.reserved == *capacity {
             return Ok(());
@@ -667,7 +593,6 @@ impl Certificates {
         ] {
             reserve(list, capacity.histories)?;
         }
-        // Also the refreshed countries' air objects, authenticated before any patch.
         reserve(
             &mut scratch.patch_addresses,
             capacity.histories.max(capacity.countries),
@@ -711,26 +636,20 @@ pub fn retained_buffers() -> impl serde::Serialize {
 static CERTIFICATES: [Mutex<Certificates>; PARTS] =
     [const { Mutex::new(Certificates::new()) }; PARTS];
 
-/// Only the part's job locks them.
 pub fn certificates(part: usize) -> MutexGuard<'static, Certificates> {
     CERTIFICATES[part]
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Nothing observed so far certifies anything: every part copies afresh.
 pub fn forget_certificates() {
     opening().forget();
 }
 
-/// The pool refused the part's job, which never runs on the game thread: it
-/// fails without a read, leaving the hour uncertified.
 pub fn refuse(staging: &mut Staging) {
     staging.fail("naval-patrol history worker admission failed");
 }
 
-/// One part's hour: copy what changed since the last complete hour into
-/// `staging`. A failure leaves the hour uncertified ([`Captured::settle`]).
 pub fn stage(
     memory: &impl Memory,
     base: usize,
@@ -818,8 +737,6 @@ fn stage_part(
     } = scratch;
     staging.slots = native::country_air_roots(memory, base, game_state, part, PARTS, live)?;
     staging.owned = live.len();
-    // A quiet hour may skip the part only when every receiver it holds is
-    // watched: a refused one must still be read afresh every hour.
     let watched = || {
         roots.iter().zip(countries.iter()).all(|(&root, country)| {
             root == 0
@@ -852,7 +769,6 @@ fn stage_part(
         reserve(countries, roots.len())?;
         countries.resize_with(roots.len(), Default::default);
     }
-    // Slots the registry no longer has certify nothing if it grows again.
     for country in countries.iter_mut().take(live.len()).skip(roots.len()) {
         country.reset(0, None);
     }
@@ -881,8 +797,6 @@ fn stage_part(
         };
         let held = verdict.complete && country.root == root && sequence.is_some();
         if !(held && sequence == country.sequence) {
-            // Adds name their region: a held country whose every history's
-            // region is watched rereads only what changed.
             if held
                 && country
                     .histories
@@ -892,7 +806,6 @@ fn stage_part(
                 country.sequence = sequence;
                 push(refresh, index)?;
             } else {
-                // A changed or unwatched air object is copied afresh.
                 country.reset(root, sequence);
                 push(read, index)?;
             }
@@ -900,17 +813,12 @@ fn stage_part(
         }
         counts.reused += 1;
         for (at, history) in country.histories.iter_mut().enumerate() {
-            // A quiet site proves a watched history unchanged; a refused one
-            // is still read afresh every hour.
             if histories_quiet && history.sequence.is_some() {
                 continue;
             }
             let now = changes.sequence(history.history);
             match (history.sequence, now) {
                 _ if now.is_some() && now == history.sequence => {}
-                // Each call bumps the history's sequence once, on entry
-                // (`watch_registry`), and a sequence is taken only while no
-                // writer runs, so the difference is the calls that completed.
                 (Some((epoch, old)), Some((current, new))) if epoch == current && new > old => {
                     push(
                         &mut staging.advances,
@@ -930,7 +838,6 @@ fn stage_part(
     staging
         .replaced
         .extend(read.iter().map(|&index| slot(index)));
-    // Histories whose count was not observed, copied on their own.
     addresses.clear();
     found.clear();
     reserve_pushes(addresses, doubted.len())?;
@@ -945,7 +852,6 @@ fn stage_part(
     for (copied, &(index, at, _)) in doubted.iter().enumerate() {
         countries[index].histories[at].menu = copy.fallback.binary_search(&copied).is_err();
     }
-    // Countries read whole.
     targets.clear();
     reserve(targets, read.len())?;
     targets.extend(read.iter().map(|&index| roots[index]));
@@ -999,8 +905,6 @@ fn stage_part(
     if refresh.is_empty() {
         return Ok(State::Copied);
     }
-    // Refreshed countries: each history as its region slot names it now,
-    // against its certificate.
     targets.clear();
     reserve(targets, refresh.len())?;
     targets.extend(refresh.iter().map(|&index| roots[index]));
@@ -1067,8 +971,6 @@ fn stage_part(
                         }
                         _ => None,
                     };
-                    // Adds write only the daily current record; with an
-                    // advance in the same hour the closed records may differ.
                     match (advanced, touch.is_some() && touch == old.touch) {
                         (Some(0), true) => Step::Keep,
                         (Some(count), true) => Step::Advance(count),
@@ -1115,7 +1017,6 @@ fn stage_part(
         &mut *copy.menus,
         retry,
     )?;
-    // A history whose current record the menu refused is copied whole.
     for &at in retry.iter() {
         push(addresses, patch_addresses[at])?;
         push(found, patch_found[at])?;
@@ -1130,10 +1031,8 @@ fn stage_part(
 
 pub struct Captured {
     rows: CaptureRows<AirNavalPatrolHistoryRow>,
-    /// The countries this hour's rows cover.
     selection: SliceSelection,
     parts: Vec<Staging>,
-    /// The parts ran for this frame and their copies await decoding.
     staged: bool,
 }
 
@@ -1149,8 +1048,6 @@ impl Captured {
         }
     }
 
-    /// Game thread, at the start of a frame's hour: its last hour's copies
-    /// were decoded or dropped before the frame was freed.
     pub fn reset(&mut self) {
         debug_assert!(!self.staged, "a frame was reused before its copies settled");
         self.rows.reset();
@@ -1168,8 +1065,6 @@ impl Captured {
                 .sum::<usize>()
     }
 
-    /// Spool thread: grow from this hour's copies, then size the watches
-    /// for every air object and a history in each wanted region.
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.grow_parts(capacity);
         history_changes::observe(self.receivers());
@@ -1198,17 +1093,14 @@ impl Captured {
         )
     }
 
-    /// Start a frame's selection at its hour.
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
     }
 
-    /// The countries whose rows this frame emitted.
     pub fn selection(&self) -> &SliceSelection {
         &self.selection
     }
 
-    /// Loan every part to the AirMissions job for its hourly writer verdict.
     pub fn take_parts(&mut self) -> Vec<Staging> {
         std::mem::take(&mut self.parts)
     }
@@ -1217,37 +1109,27 @@ impl Captured {
         self.parts = parts;
     }
 
-    /// Loan one part's staging to its job.
     pub fn take_part(&mut self, part: usize) -> Staging {
         std::mem::take(&mut self.parts[part])
     }
 
-    /// Return a part's staging after its job.
     pub fn restore_part(&mut self, part: usize, staging: Staging) {
         self.parts[part] = staging;
         self.staged = true;
     }
 
-    /// Game thread, once every part joined and before the next hour opens:
-    /// certify the hour when every part completed, else withdraw every
-    /// part's certificates.
     pub fn settle(&self, opening: &mut Opening) {
         opening.complete = self.parts.iter().all(Staging::completed);
     }
 
-    /// Worker time of the parts' copies.
     pub fn ticks(&self) -> [u64; N] {
         [self.parts.iter().map(|part| part.ticks).sum()]
     }
 
-    /// Whether the parts ran for this frame.
     pub fn staged(&self) -> bool {
         self.staged
     }
 
-    /// The parts did not run for this frame; production always dispatches
-    /// them. Nothing is read or decoded here: the decode thread publishes
-    /// the table unavailable and invalidates the frame's selection.
     pub fn unstaged(&mut self) -> [u64; N] {
         for part in &mut self.parts {
             part.fail("naval-patrol history parts not dispatched");
@@ -1256,16 +1138,12 @@ impl Captured {
         [0]
     }
 
-    /// The frame was dropped before decoding: its copies are lost, so every
-    /// certificate they advanced is withdrawn.
     pub fn dropped(&mut self) {
         if std::mem::take(&mut self.staged) {
             forget_certificates();
         }
     }
 
-    /// Apply the hour's copies to the held histories, then scan and publish
-    /// its slice. Decode thread, in hour order.
     pub fn decode(&mut self) {
         if self.staged {
             self.decode_into(&mut HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
@@ -1310,8 +1188,6 @@ impl Captured {
             State::Failed(reason) => Some(reason),
             State::Quiet | State::Copied => None,
         });
-        // The hour's certificates were withdrawn: none of its copies is
-        // applied, and the next hour copies afresh.
         if let Some(reason) = failure {
             self.rows.fail(Outcome::Unavailable { reason });
             self.selection.invalidate(fingerprints);
@@ -1319,8 +1195,6 @@ impl Captured {
         }
         history_changes::record(&counts);
         if let Err(reason) = held.apply(&mut self.parts) {
-            // The held copy no longer matches the game: the next opened hour
-            // reads every country, and until one decodes nothing publishes.
             held.poisoned = true;
             forget_certificates();
             self.rows.fail(Outcome::Unavailable { reason });
@@ -1362,7 +1236,6 @@ impl Captured {
 struct History {
     region: u32,
     state: WindowState,
-    /// Nonzero records as (slot, channels), by slot.
     records: Vec<(u32, [i64; 9])>,
     scenario_failures: Vec<(u32, &'static str)>,
     menu: Option<engine_air_history::menu_history::History>,
@@ -1415,9 +1288,6 @@ impl History {
         })
     }
 
-    /// Apply `advances` steps: each moves the current slot
-    /// by one, wrapping to zero and setting the wrap flag, and zeroes the
-    /// record at the new current slot.
     fn advance(&mut self, advances: u64) -> Result<(), &'static str> {
         if let Some(menu) = &mut self.menu {
             menu.advance(advances)?;
@@ -1425,7 +1295,6 @@ impl History {
         let capacity = u64::from(self.state.capacity);
         let from = u64::from(self.state.current);
         self.records.retain(|&(slot, _)| {
-            // Advance `distance` (1..=capacity) is the first to land on it.
             let distance = (u64::from(slot) + capacity - from) % capacity;
             let distance = if distance == 0 { capacity } else { distance };
             distance > advances
@@ -1444,22 +1313,15 @@ impl History {
 
 #[derive(Default)]
 struct HeldCountry {
-    /// By region.
     histories: Vec<History>,
-    /// Moves whenever the histories change.
     generation: u64,
 }
 
-/// The decode thread's histories, applied in hour order, and the family's
-/// fingerprints.
 pub struct Held {
     countries: Vec<HeldCountry>,
     generation: u64,
     fingerprints: Option<Box<SliceFingerprints>>,
-    /// Per slot, whether this hour changed its histories.
     changed: Vec<bool>,
-    /// An hour's copies did not fit the held histories: none is trusted
-    /// until an hour that read every country afresh.
     poisoned: bool,
 }
 
@@ -1507,7 +1369,6 @@ impl Held {
                 .sum::<usize>()
     }
 
-    /// Apply one hour's parts, every one of which completed.
     fn apply(&mut self, parts: &mut [Staging]) -> Result<(), &'static str> {
         if self.poisoned {
             if !parts
@@ -1519,7 +1380,6 @@ impl Held {
             self.countries.clear();
             self.poisoned = false;
         }
-        // An hour every part reused changes nothing.
         let Some(_) = parts.iter().find(|part| part.state == State::Copied) else {
             return Ok(());
         };
@@ -1566,7 +1426,6 @@ impl Held {
                 }
             }
             for (menu_index, window) in part.windows.iter().enumerate() {
-                // A menu copy carries every window; only a ring copy has channels.
                 let len = if part.menus.get(menu_index).is_some_and(Option::is_some) {
                     0
                 } else {
@@ -1605,7 +1464,6 @@ impl Held {
         Ok(())
     }
 
-    /// Whether both hold the same histories.
     #[cfg(any(test, feature = "test-support"))]
     fn same(&self, other: &Self) -> bool {
         self.countries.len() == other.countries.len()
@@ -1623,8 +1481,6 @@ impl Held {
                     .map(|(slot, country)| (slot, &country.histories)))
     }
 
-    /// Expand the selected countries' entries in country, region and
-    /// summation order, growing the buffer here on the decode thread.
     fn publish(
         &self,
         selection: &SliceSelection,
@@ -1800,7 +1656,6 @@ pub fn allocation_failure_exercise() {
     if crate::allocation::failed() {
         return;
     }
-    // The next part inserts another region into an existing country's held list.
     part.windows[0].region = 9;
     part.windows.truncate(1);
     let _ = held.apply(std::slice::from_mut(&mut part));
@@ -1837,14 +1692,12 @@ mod tests {
     fn an_advance_zeroes_each_new_current_record_and_wraps() {
         let channels = [[1, 0], [2, 0], [0, 0], [4, 4], [5, 0]].map(test_channels);
         let mut history = History::new(7, state(3, false), &channels).unwrap();
-        // Current 3 -> 4 -> 0: records 4 and 0 are zeroed and the window wraps.
         history.advance(2).unwrap();
         assert_eq!(history.state, state(0, true));
         assert_eq!(
             history.records,
             [(1, test_channels([2, 0])), (3, test_channels([4, 4]))]
         );
-        // A whole lap zeroes every record, the old current one last.
         let mut lap = History::new(7, state(3, true), &channels).unwrap();
         lap.advance(5).unwrap();
         assert_eq!(lap.state, state(3, true));
@@ -2294,9 +2147,6 @@ mod tests {
         assert_eq!(hour.allocated(&frame), before + scratch);
     }
 
-    /// A history changed only by adds takes its daily current record alone;
-    /// one that moved without an observed advance refuses the hour, and the
-    /// held copy stays refused until an hour read every country afresh.
     #[test]
     fn a_current_record_patch_applies_only_where_the_held_windows_stand() {
         use engine_air_history::menu_history::{
@@ -2377,9 +2227,6 @@ mod tests {
     }
 }
 
-/// Bench and test access to hours outside the frame pool: the AirMissions
-/// job's opening, every part (in parallel when `threads`), the game
-/// thread's settlement and the decode, each on a frame of its own.
 #[cfg(any(test, feature = "test-support"))]
 pub mod hour {
     use super::*;
@@ -2390,12 +2237,10 @@ pub mod hour {
         pub held: Held,
     }
 
-    /// A frame's pack, presized as the pool presizes it.
     pub fn frame(capacity: &Capacities) -> Captured {
         Captured::with_capacities(capacity)
     }
 
-    /// Capacities presized for `slots` country slots.
     pub fn capacities(slots: usize) -> Capacities {
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(slots);
@@ -2417,12 +2262,10 @@ pub mod hour {
             }
         }
 
-        /// The AirMissions job opens the hour on `frame`.
         pub fn supply(&mut self, frame: &mut Captured, _regions: &[u64], changes: &impl Changes) {
             supply(&mut frame.parts, changes, &mut self.opening);
         }
 
-        /// Stage every part, returning their wall time.
         pub fn stage<M: Memory + Sync>(
             &mut self,
             frame: &mut Captured,
@@ -2468,8 +2311,6 @@ pub mod hour {
             wall
         }
 
-        /// Stage every part but `refused`, one after another; the pool
-        /// refused that one's job, so it never runs.
         pub fn stage_refusing<M: Memory>(
             &mut self,
             frame: &mut Captured,
@@ -2498,25 +2339,20 @@ pub mod hour {
             frame.staged = true;
         }
 
-        /// One part's job failed after staging.
         pub fn fail(&mut self, frame: &mut Captured, part: usize) {
             frame.parts[part].fail("naval-patrol history acquisition failed");
         }
 
-        /// The game thread once every part joined.
         pub fn settle(&mut self, frame: &Captured) {
             frame.settle(&mut self.opening);
         }
 
-        /// The decode thread's part for one frame, in hour order.
         pub fn decode(&mut self, frame: &mut Captured, at: i32) -> Outcome {
             frame.prepare_hour(at, at == 0);
             frame.decode_into(&mut self.held);
             frame.rows.outcome
         }
 
-        /// One whole hour on `frame`: the parts' wall time, the decode's
-        /// time and the table's outcome.
         #[allow(clippy::too_many_arguments)]
         pub fn run<M: Memory + Sync>(
             &mut self,
@@ -2537,14 +2373,11 @@ pub mod hour {
             (wall, started.elapsed(), outcome)
         }
 
-        /// A recycle: grow `capacity` from the frame's last hour, then
-        /// presize the frame. Returns the watch receivers the spool offers.
         pub fn grow(frame: &mut Captured, capacity: &mut Capacities) -> usize {
             frame.grow_parts(capacity);
             frame.receivers()
         }
 
-        /// Bytes of every list the parts fill, the frame's included.
         pub fn allocated(&self, frame: &Captured) -> usize {
             let certificates: usize = self
                 .certificates
@@ -2554,7 +2387,6 @@ pub mod hour {
             frame.allocated_bytes() + certificates
         }
 
-        /// The frame's counts over every part.
         pub fn counts(frame: &Captured) -> Counts {
             let mut counts = Counts {
                 quiet: true,
@@ -2566,13 +2398,10 @@ pub mod hour {
             counts
         }
 
-        /// Countries the frame's parts copied afresh.
         pub fn copied(frame: &Captured) -> u64 {
             Self::counts(frame).read
         }
 
-        /// Nonzero entries held: every window's of a menu copy, the daily
-        /// ring's of a ring copy.
         pub fn held_rows(&self) -> usize {
             let histories = self
                 .held
@@ -2589,7 +2418,6 @@ pub mod hour {
                 .sum()
         }
 
-        /// Histories held after the last decode, as a fresh copy would hold them.
         pub fn same(&self, other: &Self) -> bool {
             self.held.same(&other.held)
         }

@@ -1,28 +1,14 @@
-//! Additional container widget families.
-//!
-//! Scrollbars, standard and smooth list boxes, edit boxes, drop-downs, browsers and
-//! curve graphs retain their construction state. Map-icon windows supply no input.
-//! List rows are appended through [`list_box_rows`]. Container scrollbars and plain
-//! or extended scrollbar children retain their separate lookup and layout rules.
 
 use super::*;
 
-/// A position and a size.
 type Box2 = ([i32; 2], [i32; 2]);
 
-/// Why a plain scrollbar's part is not found ([`scrollbar_part`]).
 pub(super) enum PartMiss<'b> {
-    /// Its `parent` names no template.
     NoParent,
-    /// Its `parent` template has a kind without a children map.
     ParentKind(&'b Element),
-    /// Neither the scrollbar nor its parent template holds it.
     Neither(&'b Element),
 }
 
-/// Resolve a plain scrollbar part by its last own child of that name, then
-/// one level of its parent template. Construction and asset collection use
-/// the same lookup.
 pub(super) fn scrollbar_part<'b>(
     element: &'b Element,
     bar: &native::Scrollbar,
@@ -47,9 +33,6 @@ pub(super) fn scrollbar_part<'b>(
         .ok_or(PartMiss::Neither(template))
 }
 
-/// Plain scrollbar parts in construction order: right and left buttons, track,
-/// slider, then named minimum and maximum range icons. The third tuple value
-/// names the construction step for diagnostics.
 pub(super) fn scrollbar_part_names(
     bar: &native::Scrollbar,
 ) -> Vec<(&[u8], &'static str, &'static str)> {
@@ -78,11 +61,8 @@ pub(super) fn scrollbar_part_names(
     names
 }
 
-/// A name's bytes to its first NUL, as each C-string consumer reads it.
 use installed_content_core::parser::c_string;
 
-/// `(i64)((x >= 0) + x * 100000.0f - 0.5f)`: a value in the scrollbars' fixed point, rounded half
-/// away from zero.
 pub(super) fn fixed(value: f32) -> i64 {
     let bias = if value >= 0.0 { 1.0f32 } else { 0.0 };
     let scaled = bias + value * 100_000.0 - 0.5;
@@ -93,12 +73,10 @@ pub(super) fn fixed(value: f32) -> i64 {
     }
 }
 
-/// The observers' whole-pixel content offset.
 pub(super) fn scroll_pixels(value: i64) -> i32 {
     truncate_f32(value as f32 / 100_000.0)
 }
 
-/// A scroll range in fixed point: `{min, max, step, count}`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Range {
     pub min: i64,
@@ -108,8 +86,6 @@ pub(super) struct Range {
 }
 
 impl Range {
-    /// Construct the scroll range using wrapping fixed-point arithmetic.
-    /// Zero step and unusable signed spans retain the sentinel quotient.
     pub fn new(min: i64, max: i64, step: i64) -> Self {
         let span = max.wrapping_sub(min);
         let quotient = if step == 0 || [i64::MAX, i64::MIN, i64::MIN + 1].contains(&span) {
@@ -125,9 +101,6 @@ impl Range {
         }
     }
 
-    /// at or past an end, that end; strictly inside, the nearest point
-    /// `min + i * step` for `i` below `count`, a tie going to the lower (a step of exactly 0.001,
-    /// 100, keeps the value).
     pub fn snap(self, value: i64) -> i64 {
         if value >= self.max {
             return self.max;
@@ -152,7 +125,6 @@ impl Range {
         best
     }
 
-    /// The clamp, with no snap: the minimum is tested first.
     pub fn clamp(self, value: i64) -> i64 {
         if value < self.min {
             self.min
@@ -163,10 +135,6 @@ impl Range {
         }
     }
 
-    /// Position a thumb over `travel` pixels. Convert the value and both range ends
-    /// to `f32` and divide each by 100000 before forming the value's range share.
-    /// A zero span gives share zero. Multiply that share by float travel, add 0.5
-    /// away from zero and truncate.
     pub fn thumb(self, value: i64, travel: i32) -> i32 {
         let scaled = |value: i64| value as f32 / 100_000.0;
         let low = scaled(self.min);
@@ -185,14 +153,11 @@ impl Range {
     }
 }
 
-/// A scrollbar part's element and its button fields.
 fn part(part: &Option<Box<Element>>) -> Option<(&Element, &native::Button)> {
     part.as_deref()
         .and_then(|element| Some((element, element.button()?)))
 }
 
-/// Read the seven orientation names without regard to case; unknown text
-/// uses `upper_left`.
 fn parse_gui_orientation(text: &[u8]) -> Orientation {
     [
         Orientation::UpperRight,
@@ -207,8 +172,6 @@ fn parse_gui_orientation(text: &[u8]) -> Orientation {
     .unwrap_or_default()
 }
 
-/// List-box orientation is evaluated against the construction viewport.
-/// Retain that anchor when the object later moves into its parent window.
 fn list_box_anchor(orientation: Orientation, viewport: [i32; 2]) -> [i32; 2] {
     let [w, h] = viewport;
     match orientation.gui_value() {
@@ -222,13 +185,10 @@ fn list_box_anchor(orientation: Orientation, viewport: [i32; 2]) -> [i32; 2] {
     }
 }
 
-/// Convert an `i32` to `float` for scrollbar arithmetic.
 fn float(value: i32) -> f32 {
     value as f32
 }
 
-/// Construct scrollbar buttons with their admitted button or icon template
-/// and preserve the factory-specific geometry.
 #[derive(Clone, Copy)]
 pub(super) enum Knob<'a> {
     Button(&'a Element, &'a native::Button),
@@ -243,47 +203,31 @@ impl<'a> Knob<'a> {
     }
 }
 
-/// Drag-button parts require compatible button-template fields.
 type Drag<'a> = (&'a Element, &'a native::Button);
 
-/// A constructed `scrollbarType`: its parts, their places relative to its node,
-/// and its value.
 pub(super) struct Plain<'a> {
-    /// The `scrollbarType` it is built from.
     element: &'a Element,
     bar: &'a native::Scrollbar,
-    /// The right and left buttons, track and slider.
     right: Knob<'a>,
     left: Knob<'a>,
     track: Drag<'a>,
     slider: Drag<'a>,
-    /// Range icons, constructed when their names are set.
     icons: [Option<Knob<'a>>; 2],
-    /// Whether the scrollbar is horizontal.
     horizontal: bool,
-    /// The scrollbar's size.
     size: [i32; 2],
-    /// The node position from which the parts are laid out.
     origin: [f32; 2],
-    /// The right and left button positions and the track's position and size.
     right_at: [i32; 2],
     left_at: [i32; 2],
     track_at: [i32; 2],
     track_size: [i32; 2],
-    /// The slider's offset.
     offset: [f32; 2],
-    /// The scrollbar's range and current value.
     pub(super) range: Range,
     pub(super) value: f32,
-    /// The two limits and whether limits are enabled.
     limits: [i64; 2],
     limited: bool,
-    /// Retained drawable extents for the right and left buttons and slider.
     extents: [[i32; 2]; 3],
 }
 
-/// Scrollbar state changed after construction: range, value and limits, which
-/// subsequent updates write and the slider's place follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PlainState {
     range: Range,
@@ -292,7 +236,6 @@ pub(super) struct PlainState {
 }
 
 impl<'a> Plain<'a> {
-    /// What its code has changed ([`PlainState`]).
     pub(super) fn state(&self) -> PlainState {
         PlainState {
             range: self.range,
@@ -301,8 +244,6 @@ impl<'a> Plain<'a> {
         }
     }
 
-    /// The bar as its code left it: `state` over its construction, the slider placed from it
-    ///
     pub(super) fn restore(&mut self, state: PlainState) {
         self.range = state.range;
         self.value = state.value;
@@ -310,13 +251,10 @@ impl<'a> Plain<'a> {
         self.place_slider();
     }
 
-    /// The `scrollbarType` it is built from.
     pub(super) fn element(&self) -> &'a Element {
         self.element
     }
 
-    /// Scrollbar parts in construction order: right and left buttons, track,
-    /// slider, then minimum and maximum range icons when their names are set.
     pub(super) fn parts(&self) -> [Option<&'a Element>; 6] {
         let (Knob::Button(right, _) | Knob::Icon(right, _)) = self.right;
         let (Knob::Button(left, _) | Knob::Icon(left, _)) = self.left;
@@ -331,10 +269,6 @@ impl<'a> Plain<'a> {
         ]
     }
 
-    /// The constructor's layout from the node
-    /// position `origin`: vertically the right button at it, the left one the right one's height
-    /// above the far end, the track between them (`size update` to the bar's width by the space
-    /// between), centred across on the right button; horizontally the same across.
     fn lay(&mut self, origin: [f32; 2]) {
         let [px, py] = origin;
         let [sx, sy] = self.size;
@@ -347,7 +281,6 @@ impl<'a> Plain<'a> {
             ];
             self.right_at = [truncate_f32(px), truncate_f32(py)];
             self.track_size = [sx, sy.wrapping_sub(r[1].wrapping_mul(2))];
-            // Centre the control using separately truncated half widths.
             self.track_at[0] = self.track_at[0].wrapping_add((r[0] / 2).wrapping_sub(sx / 2));
         } else {
             self.track_at = [truncate_f32(float(r[0]) + px), truncate_f32(py)];
@@ -360,8 +293,6 @@ impl<'a> Plain<'a> {
         }
     }
 
-    /// Thumb position uses available travel times the normalized value, with
-    /// integer geometry converted to f32 in order and a signed half-pixel bias.
     fn slid(&self) -> f32 {
         let [r, l, s] = self.extents;
         let travel = if !self.horizontal {
@@ -380,7 +311,6 @@ impl<'a> Plain<'a> {
         float(travel) * ((self.value - low) / (high - low))
     }
 
-    /// the slider's offset along the bar from the placed buttons.
     pub(super) fn place_slider(&mut self) {
         let slid = self.slid();
         if !self.horizontal {
@@ -390,10 +320,6 @@ impl<'a> Plain<'a> {
         }
     }
 
-    /// Add `slider_pos_shift` to the slider offset. For a vertical bar, add the
-    /// right button's y position, then its height, to the y offset. For a horizontal
-    /// bar, add the left button's x position, then its width, to the x offset.
-    /// Sum those terms in `f32` order and truncate before adding the shift.
     fn slider_at(&self) -> [i32; 2] {
         let [r, l, _] = self.extents;
         let shift = self.bar.slider_pos_shift();
@@ -411,7 +337,6 @@ impl<'a> Plain<'a> {
         [shift[0].wrapping_add(x), shift[1].wrapping_add(y)]
     }
 
-    /// Retained thumb geometry from the constructed scrollbar.
     pub(super) fn resize(&mut self, width: i32, height: i32) {
         let saved = self.origin;
         self.origin = [0.0; 2];
@@ -429,7 +354,6 @@ impl<'a> Plain<'a> {
         }
         self.size = [width, height];
         self.lay([0.0; 2]);
-        // The slider's cross offset is the zeroed node position's.
         if !self.horizontal {
             self.offset[0] = 0.0;
         } else {
@@ -439,12 +363,10 @@ impl<'a> Plain<'a> {
         self.place_slider();
     }
 
-    /// Move the node to `at`.
     pub(super) fn move_to(&mut self, at: [i32; 2]) {
         self.origin = at.map(float);
     }
 
-    /// The node's place in a parent content at `content`.
     pub(super) fn node(&self, content: [i32; 2]) -> [i32; 2] {
         [
             content[0].wrapping_add(truncate_f32(self.origin[0])),
@@ -452,8 +374,6 @@ impl<'a> Plain<'a> {
         ]
     }
 
-    /// the range and its limits reset to its ends, the value clamped as a
-    /// float into it, the slider placed again.
     pub(super) fn set_range(&mut self, range: Range) {
         self.range = range;
         self.limits = [range.min, range.max];
@@ -467,7 +387,6 @@ impl<'a> Plain<'a> {
         self.place_slider();
     }
 
-    /// Clamp the fixed-point value into the retained limits without snapping.
     pub(super) fn set_value(&mut self, value: i64) {
         let mut value = value;
         if self.limited {
@@ -482,8 +401,6 @@ impl<'a> Plain<'a> {
         self.place_slider();
     }
 
-    /// a button adds the step (0.001 becomes 0.01).
-    /// a wheel adds step * scroll_speed * signed delta.
     pub(super) fn input(&mut self, direction: i32, wheel: bool) {
         if wheel && self.range.max <= 0 {
             return;
@@ -507,20 +424,11 @@ impl<'a> Plain<'a> {
     }
 }
 
-/// Where the code's rows of a list box go ([`list_box_rows`]), and the list box's scrollbar,
-/// which is drawn after them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListBoxRows {
-    /// Each row's top-left in the list box's parent content, `None` for a row the list box hides
-    ///
     pub places: Vec<Option<[i32; 2]>>,
-    /// The scrollbar's parts in the list box's parent content, which a caller places with
-    /// [`Holder::place_scrollbar`] after the rows; empty while it is hidden.
     pub scrollbar: Vec<Part>,
-    /// The far end of the scrollbar's range in the list's own units, pixels for a smooth list and
-    /// rows for a standard one: how far it scrolls, zero while its bar is absent or hidden.
     pub range: i32,
-    /// Retain the list's position-object clip and visible row geometry.
     clipped: bool,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -531,19 +439,11 @@ impl ListBoxRows {
     }
 }
 
-/// A smooth list box's scroll offset advances toward its target by 0.2 of the
-/// remaining distance. The target is the scrollbar's value while shown; only
-/// input changes that value from its initial zero. The offset starts at the
-/// scrollbar type's `startValue` ([`ListBoxRows`] with no `current`).
 #[cfg(any(test, feature = "test-support"))]
 pub fn smooth_list_step(current: f32) -> f32 {
     (0.0 - current) * 0.2 + current
 }
 
-/// List rows retain their own content-sized windows, ordered placement,
-/// scroll offset and clipping. `current` is the bar's value where a scroll came to rest, the rows
-/// placed and the slider drawn there: a smooth list's offset in pixels, a standard list's first
-/// row.
 pub fn list_box_rows(
     element: &Element,
     rows: &[[i32; 2]],
@@ -555,11 +455,6 @@ pub fn list_box_rows(
     list_box_rows_as(element, smooth, rows, current, resources, bindings)
 }
 
-/// [`list_box_rows`] for a factory-built smooth or standard list box. Both
-/// interpret `element` as a list-box template regardless of its declared kind.
-/// A fixed window's smooth factory can therefore build a smooth list box from
-/// the `listBoxType` held under that name, while its standard factory builds
-/// a standard list box ([`super::fixed_window_layout`]).
 pub fn list_box_rows_as(
     element: &Element,
     smooth: bool,
@@ -585,7 +480,6 @@ pub fn list_box_rows_as(
     };
     let border = list.border_size[0];
     let mut places = Vec::with_capacity(rows.len());
-    // The scrollbar's node in the list box's position object, and whether it shows.
     let mut shown = false;
     let mut range = 0;
     if smooth {
@@ -610,7 +504,6 @@ pub fn list_box_rows_as(
         if let Some(bar) = &mut bar
             && !rows.is_empty()
         {
-            // the stack's length against the box's.
             let extent = if horizontal {
                 list.size[0]
             } else {
@@ -619,7 +512,6 @@ pub fn list_box_rows_as(
             let over = run.wrapping_sub(extent);
             if over >= 1 {
                 bar.set_range(Range::new(0, i64::from(over) * 100_000, bar.range.step));
-                // At rest the bar's value is the offset the rows are drawn at.
                 bar.value = cur.clamp(0.0, float(over));
                 bar.place_slider();
                 shown = true;
@@ -632,7 +524,6 @@ pub fn list_box_rows_as(
             Some(last) => truncate_f32(float(list.size[1]) / float(last[1])),
         };
         let over = (rows.len() as i32).wrapping_sub(fit).max(0);
-        // The rows from the bar's whole value on while it shows, as many as fit.
         let first = match current {
             Some(current) if bar.is_some() && over >= 1 => truncate_f32(current).clamp(0, over),
             _ => 0,
@@ -670,7 +561,6 @@ pub fn list_box_rows_as(
         drawn.map_err(|refusal| vec![refusal])?;
         scrollbar = walk.parts.split_off(first);
     }
-    // The scrollbar template's reader refusals and every resource its parts drew with.
     let refused = walk.refused.take();
     walk.refusals.extend(refused);
     if !walk.refusals.is_empty() {
@@ -685,8 +575,6 @@ pub fn list_box_rows_as(
     })
 }
 
-/// Construct the scroll range using wrapping fixed-point arithmetic.
-/// Zero step and unusable signed spans retain the sentinel quotient.
 pub(super) fn list_box_place(
     element: &Element,
     list: &native::ListBox,
@@ -713,18 +601,12 @@ pub(super) fn list_box_place(
     ])
 }
 
-/// Initialize each content scrollbar by snapping zero into its own range.
-/// Notify observers, which move content by the truncated whole-pixel offset,
-/// including when the content is hidden.
 pub(super) struct ContentScroll<'a> {
     bars: Vec<(bool, &'a Element, &'a native::ExtendedScrollbar)>,
-    /// The snapped target `S` per axis.
     targets: [i64; 2],
 }
 
 impl<'a> ContentScroll<'a> {
-    /// The container's own scrollbars its construction builds, the vertical first: whether each
-    /// is vertical, and the `extendedScrollbarType` it is built from.
     pub(super) fn named(
         &self,
     ) -> impl Iterator<Item = (bool, &'a Element, &'a native::ExtendedScrollbar)> + '_ {
@@ -732,20 +614,16 @@ impl<'a> ContentScroll<'a> {
     }
 }
 
-/// One of a container's own scrollbars as its construction leaves it ([`Walk::bars`]).
 pub(super) struct Bar<'a> {
     pub vertical: bool,
     pub template: &'a Element,
     pub bar: &'a native::ExtendedScrollbar,
-    /// Whether the window's show/hide operations should reach this scrollbar.
     pub shown: bool,
-    /// The final constructed range and the value clamped into it.
     pub range: Range,
     pub value: i64,
     pub track_frame: Option<i32>,
 }
 
-/// A container scrollbar's kept range, target and flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ContainerBar {
     pub shown: bool,
@@ -754,7 +632,6 @@ pub(super) struct ContainerBar {
     pub track_frame: Option<i32>,
 }
 
-/// Track frame follows the target value rather than the smoothed current value.
 pub(super) fn track_frame(
     bar: &native::ExtendedScrollbar,
     range: Range,
@@ -772,7 +649,6 @@ pub(super) fn track_frame(
 }
 
 impl<'a> Walk<'a> {
-    /// A `Walk` over `resources` and `bindings` for widgets laid out apart from their window.
     pub(super) fn new(resources: &'a dyn Resources, bindings: &'a Bindings) -> Self {
         Walk {
             resources,
@@ -797,10 +673,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Resolve the container's own scrollbars in vertical-then-horizontal order.
-    /// Each non-empty name is looked up in the global registry and must name an
-    /// `extendedScrollbarType`; failed lookup or a wrong kind creates no scrollbar.
-    /// Return the content offset their construction gives.
     pub(super) fn content_scroll(
         &mut self,
         window: &Element,
@@ -847,7 +719,6 @@ impl<'a> Walk<'a> {
         ContentScroll { bars, targets }
     }
 
-    /// The content's offset: construction's target, else retained whole pixels ([`Bound::scroll`]).
     pub(super) fn scroll_offset(&self, window: &Element, scroll: &ContentScroll) -> [i32; 2] {
         let bound = self.bound(window).map_or([None; 2], |bound| bound.scroll);
         [0, 1].map(|axis| {
@@ -857,7 +728,6 @@ impl<'a> Walk<'a> {
         })
     }
 
-    /// Queried drawable extent includes sprite scale. No drawable returns `None`.
     fn part_extent(&self, path: &str, sprite: &[u8], scale: f32) -> Option<[i32; 2]> {
         [sprite, FALLBACK_SPRITE]
             .into_iter()
@@ -865,8 +735,6 @@ impl<'a> Walk<'a> {
             .map(|info| info.scaled_extent(scale))
     }
 
-    /// Track extent uses the assigned size for cornered tiles, otherwise the
-    /// sprite's own size.
     pub(super) fn sized_extent(
         &self,
         path: &str,
@@ -882,9 +750,6 @@ impl<'a> Walk<'a> {
             })
     }
 
-    /// A draggable button or track part's sprite at `at`, with no orientation,
-    /// centring or scale. Buttons use `frame`; tracks keep their constructed frame.
-    /// When `sized` is given, a cornered tile takes that size and a plain sprite ignores it.
     pub(super) fn drag_part(
         &mut self,
         element: &Element,
@@ -912,9 +777,6 @@ impl<'a> Walk<'a> {
         drawn
     }
 
-    /// A knob's `drawable extent query`, through
-    /// the one extent path ([`Walk::drawable_extent`]); a knob with no drawable is read through
-    /// null.
     fn knob_extent(&self, knob: Knob) -> Result<[i32; 2], Refusal> {
         let (Knob::Button(element, _) | Knob::Icon(element, _)) = knob;
         self.drawable_extent(element)?.ok_or_else(|| {
@@ -926,9 +788,6 @@ impl<'a> Walk<'a> {
         })
     }
 
-    /// A plain scrollbar's part named `name` ([`scrollbar_part`]). A parent the registry lacks
-    /// is read through null, and so is a part neither holds, where the part is used
-    /// (`site`).
     fn plain_part<'b>(
         &self,
         element: &'b Element,
@@ -981,8 +840,6 @@ impl<'a> Walk<'a> {
         })
     }
 
-    /// Scrollbar buttons and range icons require button or icon templates.
-    /// Other kinds provide no compatible object factory and are refused.
     fn knob<'b>(part: &'b Element) -> Result<Knob<'b>, Refusal> {
         match &part.fields {
             Fields::Button(button) => Ok(Knob::Button(part, button)),
@@ -998,8 +855,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// A plain scrollbar's track or slider requires button-compatible template
-    /// fields. Reading another kind as a button is unsupported.
     fn drag<'b>(part: &'b Element) -> Result<Drag<'b>, Refusal> {
         match &part.fields {
             Fields::Button(button) => Ok((part, button)),
@@ -1014,10 +869,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Construct the `scrollbarType` `element`: find and build its parts, convert
-    /// `minValue`, `maxValue` and `stepSize` to a fixed-point range, and retain raw
-    /// `startValue` without snapping or clamping. Apply its limits and lay out its
-    /// parts from `position`; the node itself stays at its parent's origin.
     pub(super) fn plain<'b>(
         &self,
         element: &'b Element,
@@ -1070,7 +921,6 @@ impl<'a> Walk<'a> {
         .into_iter()
         .enumerate()
         {
-            // made only when its name is set, and then it must resolve.
             if !c_string(name).is_empty() {
                 icons[index] = Some(Self::knob(self.plain_part(
                     element,
@@ -1114,13 +964,6 @@ impl<'a> Walk<'a> {
         Ok(plain)
     }
 
-    /// Each range icon's place, or `None` when hidden. With limits enabled, an
-    /// icon shows only when its limit differs from the corresponding range end.
-    /// Start at the track position plus half the slider size (integer division),
-    /// then add the track-minus-slider extent scaled by the limit's range share.
-    /// Convert those terms to floats before addition, add 0.5 and truncate.
-    /// The share uses fixed-point scale 100000, returning 0xFFFFFFFF for an empty
-    /// range or extreme difference; division overflow (`i64::MIN / -1`) faults.
     pub(super) fn icon_places(&self, plain: &Plain) -> Result<[Option<[i32; 2]>; 2], Refusal> {
         let mut places = [None, None];
         if !plain.limited {
@@ -1168,8 +1011,6 @@ impl<'a> Walk<'a> {
         Ok(places)
     }
 
-    /// Draw a knob at the supplied position, replacing its authored position
-    /// and preserving its own drawable extent.
     fn knob_part(&mut self, knob: Knob, at: [i32; 2], clip: Option<Clip>) -> Result<(), Refusal> {
         if !self.shown(knob.element()) {
             return Ok(());
@@ -1198,11 +1039,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// A plain scrollbar's parts from its node at `node`: with `parts` the right and left
-    /// buttons, the track and the slider (creation order, the slider re-appended); then the range
-    /// icons that show. Scrollbar parts take no window opacity. Each part is its own object,
-    /// bound under `owner` (the scrollbar child, or the text or list box that built it) and its
-    /// place in the constructor's order ([`Role::Part`]).
     pub(super) fn plain_parts(
         &mut self,
         plain: &Plain,
@@ -1270,8 +1106,6 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    /// Lay out each scrollbar from its own position, with parts in construction
-    /// order. Window visibility propagates to the bar.
     pub(super) fn scrollbar_child(
         &mut self,
         element: &Element,
@@ -1297,8 +1131,6 @@ impl<'a> Walk<'a> {
         drawn
     }
 
-    /// Resolve a named scrollbar template. Empty names select none; missing or
-    /// incompatible reached templates are refused.
     pub(super) fn named_plain(
         &self,
         owner: &Element,
@@ -1332,8 +1164,6 @@ impl<'a> Walk<'a> {
         Ok(Some(self.plain(self.resolved(template), bar)?))
     }
 
-    /// Resize a list's scrollbar to its height; horizontal lists use their width
-    /// and retain horizontal bar orientation.
     pub(super) fn list_scrollbar(
         &self,
         element: &Element,
@@ -1353,7 +1183,6 @@ impl<'a> Walk<'a> {
             } else {
                 plain.resize(-1, h);
             }
-            // `scrollbar_side` is not read (1422EA0xx).
             plain.move_to(if horizontal {
                 [ox, oy.wrapping_add(h)]
             } else {
@@ -1363,7 +1192,6 @@ impl<'a> Walk<'a> {
             plain.set_range(Range::new(0, 0, plain.range.step));
         } else {
             plain.resize(-1, h);
-            // Place a right-side bar at the far edge; a left-side bar subtracts its width.
             plain.move_to(if list.scrollbar_side != 0 {
                 [w.wrapping_add(ox), oy]
             } else {
@@ -1375,12 +1203,6 @@ impl<'a> Walk<'a> {
         Ok(Some(plain))
     }
 
-    /// Construct a list box with its background first, using the named sprite or
-    /// its fallback and updating it to the box size. Then build the row holder
-    /// ([`list_box_rows`], which also provides the scrollbar); a smooth list clips
-    /// rows when `clipping` is set. Window opacity does not reach the list box: its
-    /// background keeps opacity 1 and its rows have their own window opacity.
-    /// The scrollbar is built here; a missing or wrong kind is refused.
     pub(super) fn list_box(
         &mut self,
         element: &Element,
@@ -1393,8 +1215,6 @@ impl<'a> Walk<'a> {
         self.list_box_as(element, list, smooth, origin, parent, clip)
     }
 
-    /// [`Walk::list_box`] built as smooth or standard by interpreting `element`
-    /// as a list-box template regardless of its kind ([`list_box_rows_as`]).
     pub(super) fn list_box_as(
         &mut self,
         element: &Element,
@@ -1428,8 +1248,6 @@ impl<'a> Walk<'a> {
         self.hold(element, origin, parent, clip, 1.0, Some(place))
     }
 
-    /// The box used to test a template child against the viewport at construction:
-    /// its content position and size for that kind. `Ok(None)` means the child is not tested.
     pub(super) fn overflow_box(
         &self,
         child: &Element,
@@ -1451,7 +1269,6 @@ impl<'a> Walk<'a> {
             .and_then(|bound| bound.layout_parent)
             .unwrap_or(content);
         Ok(Some(match &child.fields {
-            // Use the control's authored anchor and measured extent.
             Fields::Container(_) => {
                 let bound = self.bound(child);
                 let frame = bound
@@ -1463,7 +1280,6 @@ impl<'a> Walk<'a> {
                     frame.size,
                 )
             }
-            // the anchored place before centring.
             Fields::Icon(icon) => {
                 let anchor = control_anchor(icon.orientation, content);
                 (
@@ -1474,15 +1290,11 @@ impl<'a> Walk<'a> {
                     drawable(&icon.sprite, icon.scale)?,
                 )
             }
-            // Check boxes are the list the game does not test.
             Fields::Button(_) if child.kind == Kind::Checkbox => return Ok(None),
-            // the place before the orientation; its
-            // drawable's size (a text object's for a text-only button).
             Fields::Button(button) => (
                 button.position,
                 self.knob_extent(Knob::Button(child, button))?,
             ),
-            // no adjustment yet.
             Fields::Grid(grid) => {
                 let (position, size, _) = grid_geometry(child, grid, content).map_err(no_parent)?;
                 let bound = self.bound(child);
@@ -1499,16 +1311,12 @@ impl<'a> Walk<'a> {
                 }
             }
             Fields::List(list) => (list.position, list.size),
-            // Use the control's authored anchor and measured extent.
             Fields::ExtendedScrollbar(bar) => {
                 let (at, size) = extended_frame(child, bar, content).map_err(no_parent)?;
                 (at, size)
             }
-            // The edit box's stored position and size.
             Fields::EditBox(edit) => (edit.position(), edit.size()),
             Fields::PositionType(_) => return Ok(None),
-            // Start at the origin, and lay out the text as
-            // constructed.
             Fields::TextBox(text_box) => {
                 let bytes = self
                     .resources
@@ -1527,13 +1335,10 @@ impl<'a> Walk<'a> {
                     )?,
                 )
             }
-            // Use the control's truncated drawable dimensions.
             Fields::Scrollbar(bar) => (
                 bar.position.map(|value| truncate_f32(float(value))),
                 bar.size,
             ),
-            // The position before any row: the raw template position for a standard list
-            // box, anchored twice for a smooth one. The rows have no extent yet.
             Fields::ListBox(list) => {
                 let place = if child.kind == Kind::SmoothListBox {
                     list_box_place(child, list, true, self.bindings.viewport)?
@@ -1542,17 +1347,12 @@ impl<'a> Walk<'a> {
                 };
                 (place, [0, 0])
             }
-            // Compose the local control transform with its outer object's translation
-            // while preserving the construction-time position object.
             Fields::DropDown(drop) => {
                 let position =
                     evaluate_position(&drop.position, Some(content), path).map_err(no_parent)?;
                 (position, self.drop_down_screen(child, drop)?)
             }
-            // `(0, 0)` and the sprite's size at scale 1 (`sprite drawable construction` of
-            // `spriteType`).
             Fields::Browser(browser) if child.kind == Kind::CurveGraph => {
-                // Graph construction writes its size into the shared sprite type.
                 let info = [browser.sprite.as_slice(), FALLBACK_SPRITE]
                     .into_iter()
                     .find_map(|name| self.info(path, name))
@@ -1579,8 +1379,6 @@ impl<'a> Walk<'a> {
         }))
     }
 
-    /// Drop-down header placement combines its constructed local position and
-    /// outer translation with signed integer truncation.
     fn drop_down_screen(
         &self,
         element: &Element,
@@ -1595,7 +1393,6 @@ impl<'a> Walk<'a> {
         Ok([truncate_f32(x), truncate_f32(-y)])
     }
 
-    /// Construction viewport retained by the drop-down position object.
     fn drop_down_viewport(&self, element: &Element) -> Result<[i32; 2], Refusal> {
         self.bindings.viewport.ok_or_else(|| {
             Refusal::new(
@@ -1606,13 +1403,6 @@ impl<'a> Walk<'a> {
         })
     }
 
-    /// The container's own scrollbars, built on the window's outer object after
-    /// its content (so drawn after every child), each shown with its flag ([`Walk::bars`]), its
-    /// thumb placed by its value in its range. With `setTrackFrameOnChange` the construction's
-    /// `set_target` also set the track's frame from the value in its own range. A shown bar of a
-    /// `smooth_scrolling` window moves its content on the clock, which its window's lifecycle
-    /// instance runs ([`Bound::scroll`]); without a slider that reads a null pointer
-    ///
     pub(super) fn container_scrollbars(
         &mut self,
         window: &Element,
@@ -1649,9 +1439,6 @@ impl<'a> Walk<'a> {
                     ),
                 ));
             }
-            // The track retains its last frame independently of smoothing. Lay out the
-            // scrollbar against the window's full size with one axis set to content length,
-            // then place the outer object beyond the margin.
             let no_parent = |why: String| Refusal::new(&template.path, RefusalKind::NoParent, why);
             let position = evaluate_position(
                 &bar.position,
@@ -1681,7 +1468,6 @@ impl<'a> Walk<'a> {
                 origin[0] + anchor[0] + position[0] + margin[0],
                 origin[1] + anchor[1] + position[1] + margin[1],
             ];
-            // Each bar is its own object, and so is each part it builds ([`Role::Bar`]).
             self.built(window, Role::Bar(vertical), |walk| {
                 walk.extended_parts(
                     template,
@@ -1698,10 +1484,6 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    /// Show each container scrollbar only when its display flag is set and child
-    /// geometry strictly overflows the corresponding viewport axis. Build the
-    /// range from overflowing near and far edges, retaining a zero bound where
-    /// applicable. Clamp the construction value into that range without snapping.
     pub(super) fn bars(
         &self,
         window: &Element,
@@ -1712,7 +1494,6 @@ impl<'a> Walk<'a> {
         self.bars_for(window, container, scroll, frame, None)
     }
 
-    /// The game measures the current children, optionally hidden ones.
     pub(super) fn bars_for(
         &self,
         window: &Element,
@@ -1739,7 +1520,6 @@ impl<'a> Walk<'a> {
                 let Some((at, size)) = self.overflow_box(child, view)? else {
                     continue;
                 };
-                // Axis 0 horizontal, 1 vertical.
                 for axis in 0..2 {
                     let far = at[axis].wrapping_add(size[axis]);
                     if (view[axis] < far || at[axis] < 0) && has(axis) {
@@ -1787,9 +1567,6 @@ impl<'a> Walk<'a> {
             .collect())
     }
 
-    /// An `extendedScrollbarType` child : at its evaluated,
-    /// anchored position with its evaluated size in the content, at its `startValue` (not
-    /// snapped or clamped) in its own range.
     pub(super) fn extended_child(
         &mut self,
         element: &Element,
@@ -1813,8 +1590,6 @@ impl<'a> Walk<'a> {
         )
     }
 
-    /// Retain the distinct track lengths used by construction and relayout when
-    /// placing the thumb between the decrease and increase buttons.
     #[allow(clippy::too_many_arguments)]
     fn extended_parts(
         &mut self,
@@ -1926,8 +1701,6 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    /// Build the edit text sprite from its text, size, border, orientation and
-    /// multiline flag. Cursor and selection remain hidden without active input.
     pub(super) fn edit_box(
         &mut self,
         element: &Element,
@@ -1979,9 +1752,6 @@ impl<'a> Walk<'a> {
         )
     }
 
-    /// An edit box's caret, while its code shows one: the `cursor` sprite where its text buffer
-    /// puts it, the text's own origin (the box's orientation, position and border) plus the
-    /// measured width of the line's text before the caret.
     fn edit_caret(
         &mut self,
         element: &Element,
@@ -2001,9 +1771,6 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    /// A drop-down retains its viewport-evaluated position after parenting.
-    /// Its expanded window inherits clipping and shows only while open; the
-    /// header's own hidden state remains independent.
     pub(super) fn drop_down(
         &mut self,
         element: &Element,
@@ -2035,8 +1802,6 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    /// Browser construction retains no recorded web texture; showing it needs
-    /// that runtime input.
     pub(super) fn browser(&mut self, element: &Element) -> Result<(), Refusal> {
         Err(Refusal::new(
             &element.path,
@@ -2045,10 +1810,7 @@ impl<'a> Walk<'a> {
         ))
     }
 
-    /// Curve graphs begin hidden. A shown graph requires runtime point data
-    /// that the recording does not hold.
     pub(super) fn curve_graph(&mut self, element: &Element) -> Result<(), Refusal> {
-        // Shown only when its instance's code showed it (a layout with no lifecycle has no code).
         let shown = self
             .bound(element)
             .and_then(|bound| bound.shown)
@@ -2064,9 +1826,6 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// An `extendedScrollbarType`'s place and size in a parent of `parent` pixels:
-/// evaluate its position and anchor by `orientation` and `origo` (`set_pixels`),
-/// and evaluate its size.
 fn extended_frame(
     element: &Element,
     bar: &native::ExtendedScrollbar,
@@ -2085,7 +1844,6 @@ fn extended_frame(
 }
 
 impl Walk<'_> {
-    /// Resolve the text sprite and lay it out at its authored position.
     fn edit_text_sprite(
         &mut self,
         element: &Element,
@@ -2172,8 +1930,6 @@ impl Walk<'_> {
     }
 }
 
-/// Where an edit box's text starts in its parent's content at `origin`: its position as its
-/// orientation anchors it in `parent`, then its border.
 fn edit_text_origin(edit: &native::EditBox, origin: [i32; 2], parent: [i32; 2]) -> [i32; 2] {
     let [x, y] = [origin[0] + edit.position()[0], origin[1] + edit.position()[1]];
     let [w, h] = parent;
@@ -2190,8 +1946,6 @@ fn edit_text_origin(edit: &native::EditBox, origin: [i32; 2], parent: [i32; 2]) 
     [anchored[0] + bx, anchored[1] + by]
 }
 
-/// The width the edit box's font measures for `text`, as its text buffer measures the line
-/// before the caret.
 fn edit_measure(
     resources: &dyn Resources,
     refused: &RefCell<Refusals>,
@@ -2225,9 +1979,6 @@ fn edit_measure(
     .unwrap_or(0))
 }
 
-/// The caret a press at `point` (in the box's parent content, the box at `origin` there) puts
-/// in an edit box showing `text`: the first prefix whose measured width reaches the press, or
-/// the one before it when that is nearer, as the game's text buffer chooses.
 pub fn edit_caret_at(
     resources: &dyn Resources,
     element: &Element,

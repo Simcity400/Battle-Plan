@@ -1,4 +1,3 @@
-//! Standing naval accident and mine report serializer output.
 use super::{
     CountriesView, GameDate, block, boolean, bytes, field, integer, invalid, required_bytes,
     typed_handle,
@@ -13,7 +12,6 @@ pub struct Report {
     pub equipment: u64,
     pub ship: u64,
     pub sunk: bool,
-    /// Mine reports serialize victim then mine owner using repeated country keys.
     pub countries: Vec<Vec<u8>>,
     pub expire_date: GameDate,
 }

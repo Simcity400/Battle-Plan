@@ -1,40 +1,7 @@
-//! Characters rows carried between hours by the roster job
-//! ([`crate::character_changes`]).
-//!
-//! A carried character's row is published from the held read without copying its name-token span
-//! (from `ccharacter::NAME_TOKEN_ID` up to `ccharacter::NAME`, which holds the template pointer),
-//! its two name strings and their heap payloads, its gender or its template. Its identity, country
-//! and roster position are still read every hour, so the row's id, country, roster and ordinal are
-//! this hour's. A character is carried only when its pointer and id equal the held read's and no
-//! hooked writer touched it since that read registered it (same watch epoch and sequence). Every
-//! writer of those fields is a hooked site: the character name setter and Character identity repair
-//! ([`engine_mutations::character_role_mutations`]), the character parser, merge and destructor (advisor
-//! family); a character the character definition builder writes is a new object, and an address is
-//! reused only after the hooked destructor ran. A template's identity is a database value for its
-//! pointer ([`super::TemplateCache`]).
-//!
-//! The set of carried characters keys the roster job's prepared read program
-//! (`generation`): the program omits exactly their name reads, and a changed
-//! set rediscovers the roster. Each hour first re-certifies the set; a
-//! character a writer touched leaves it, and characters certified since are
-//! promoted at a later rediscovery, at once when the set is empty. The decode
-//! worker rebuilds the held rows only from a rediscovering pass, whose
-//! visits pair each roster occurrence with its certificate.
-//!
-//! The re-certification is looked up entry by entry only when the character
-//! domain's quiet token ([`Changes::quiet`]) moved since the last lookup: an
-//! unchanged token means no observed writer ran, so every held certificate
-//! certifies as it did. A full pass's roster walk still reads every
-//! occurrence's identity, country and roster position and the unit leaders
-//! it reaches. A quiet roster hour ([`super::quiet`]) walks no roster: when
-//! every occurrence of the held census is certified it carries all of them
-//! ([`Carry::certifies`], [`Carry::carry_certified`]), each row taking this
-//! hour's country from the role census.
 use super::*;
 use crate::character_changes::{Changes, Counts, Table};
 use std::ops::Range;
 
-/// An `order` position without a held entry.
 const UNHELD: usize = usize::MAX;
 
 #[derive(Clone, Debug)]
@@ -42,12 +9,10 @@ struct Entry {
     pointer: usize,
     id: u32,
     certificate: (u64, u64),
-    /// Text offsets relative to `bytes.start`.
     row: ccharacter::Row,
     bytes: Range<usize>,
 }
 
-/// One roster occurrence of a rediscovering pass.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Visit {
     pointer: usize,
@@ -57,34 +22,18 @@ pub(super) struct Visit {
 pub(crate) struct Carry {
     entries: Vec<Entry>,
     bytes: Vec<u8>,
-    /// Roster order of the latest rediscovering pass.
     order: Vec<usize>,
-    /// Per `order` position, the index of its held entry; [`UNHELD`] for
-    /// an occurrence without one. A quiet roster hour visits the census in
-    /// roster order, so its lookups follow this instead of searching.
     order_entries: Vec<usize>,
-    /// Pointers whose rows this hour's acquisition carries, sorted.
     carried: Vec<usize>,
-    /// Keys the prepared program with the carried set.
     pub(super) generation: u64,
-    /// Names the held entries and text: a fresh value, unique across jobs,
-    /// whenever they change ([`Self::hold`], [`Self::forget`]).
     pub(super) version: u64,
-    /// [`Self::census_demand`] of the census generation and version it was
-    /// summed for.
     demand: Option<((u64, u64), (usize, usize))>,
-    /// Per entry: certified at this hour's start.
     certified: Vec<bool>,
-    /// The domain's quiet token taken before `certified` was last looked up
-    /// entry by entry. While it repeats no observed writer ran, so every
-    /// sequence, and `certified`, is unchanged.
     certified_quiet: Option<(u64, u64)>,
     promote: bool,
     visits: Vec<Visit>,
     visits_failed: bool,
-    /// The payload came from a rediscovering pass.
     producer: bool,
-    /// This payload's Characters rows follow the carried set.
     pub(super) active: bool,
     changes: &'static dyn Changes,
     counts: Counts,
@@ -151,8 +100,6 @@ impl Carry {
             .ok()
     }
 
-    /// [`Self::position`] of the occurrence at roster `index` (historical
-    /// array first): read from the held order when it names `pointer` there.
     fn position_at(&self, index: usize, pointer: usize) -> Option<usize> {
         match (self.order.get(index), self.order_entries.get(index)) {
             (Some(&held), Some(&entry)) if held == pointer => (entry != UNHELD).then_some(entry),
@@ -178,9 +125,6 @@ impl Carry {
         self.drop_carried();
     }
 
-    /// Copy side, before the program key: certify every held row against
-    /// this hour's sequences and settle the carried set. `active` is whether
-    /// this pass reads Characters as the roster job's hourly pass.
     pub(super) fn begin_hour(&mut self, active: bool) {
         self.active = active;
         self.producer = false;
@@ -192,7 +136,6 @@ impl Carry {
             return;
         }
         let changes = self.changes;
-        // Taken before any lookup it stands for.
         let token = changes.quiet();
         let quiet = token.is_some()
             && token == self.certified_quiet
@@ -214,8 +157,6 @@ impl Carry {
         if quiet {
             self.counts.quiet = true;
         } else {
-            // Registration of every held pointer precedes the reads it
-            // certifies.
             for entry in &self.entries {
                 self.certified
                     .push(changes.sequence(entry.pointer) == Some(entry.certificate));
@@ -223,8 +164,6 @@ impl Carry {
             self.certified_quiet = token;
         }
         let promote = std::mem::take(&mut self.promote) || self.carried.is_empty();
-        // The carried set is a sorted subset of the entries' pointers, so
-        // one merge finds each entry's membership.
         let mut carried = self.carried.iter().peekable();
         for (entry, &certified) in self.entries.iter().zip(&self.certified) {
             let held = carried.next_if_eq(&&entry.pointer).is_some();
@@ -238,9 +177,6 @@ impl Carry {
         }
     }
 
-    /// Quiet roster hour ([`super::quiet`]), after [`Self::begin_hour`]:
-    /// whether every occurrence of the held census names a held character
-    /// with the same pointer and id whose certificate holds this hour.
     pub(super) fn certifies(&self, occurrences: &[ccharacter_manager::PortraitIdentity]) -> bool {
         self.active
             && self.certified.len() == self.entries.len()
@@ -252,9 +188,6 @@ impl Carry {
             })
     }
 
-    /// Quiet roster hour, after [`Self::certifies`]: carry every certified
-    /// character this pass, keying the next program with the new set. False
-    /// when the set cannot be stored (worker storage is advisory).
     pub(super) fn carry_certified(&mut self) -> bool {
         fn certified<'a>(
             entries: &'a [Entry],
@@ -281,20 +214,16 @@ impl Carry {
         {
             return false;
         }
-        // Entries are sorted by pointer, so the set is too.
         next.extend(certified(&self.entries, &self.certified));
         self.carried = next;
         self.generation = self.generation.wrapping_add(1);
         true
     }
 
-    /// Whether this hour's acquisition omits `pointer`'s name reads.
     pub(super) fn carries(&self, pointer: usize) -> bool {
         self.active && self.carried.binary_search(&pointer).is_ok()
     }
 
-    /// The held row of a carried occurrence, with its text; `None` when the
-    /// occurrence is not carried or names another character.
     pub(super) fn carried_row(&self, pointer: usize, id: u32) -> Option<(ccharacter::Row, &[u8])> {
         if !self.carries(pointer) {
             return None;
@@ -303,14 +232,10 @@ impl Carry {
         (entry.id == id).then(|| (entry.row, &self.bytes[entry.bytes.clone()]))
     }
 
-    /// Text bytes a carried occurrence appends.
     pub(super) fn carried_bytes(&self, pointer: usize) -> usize {
         self.text_len(self.position(pointer))
     }
 
-    /// The rows and text bytes a quiet hour that carries every occurrence of
-    /// `census` publishes. A function of the census (its nonzero generation)
-    /// and the held reads (the version), so it is summed once per pair.
     pub(super) fn census_demand(&mut self, census: super::census::Admitted<'_>) -> (usize, usize) {
         let key = (census.generation, self.version);
         if let Some((held, demand)) = self.demand
@@ -331,8 +256,6 @@ impl Carry {
         entry.map_or(0, |index| self.entries[index].bytes.len())
     }
 
-    /// A carried pointer turned out to name another character: read it this
-    /// pass and rediscover the program.
     pub(super) fn uncarry(&mut self, pointer: usize) {
         if let Ok(index) = self.carried.binary_search(&pointer) {
             self.carried.remove(index);
@@ -340,7 +263,6 @@ impl Carry {
         }
     }
 
-    /// Copy side, rediscovering pass: one roster occurrence, registering it.
     pub(super) fn visit(&mut self, pointer: usize, carried: bool) {
         let certificate = if carried {
             self.position(pointer)
@@ -359,15 +281,10 @@ impl Carry {
         });
     }
 
-    /// Copy side: the rediscovering pass visited the whole roster.
     pub(super) fn finish_pass(&mut self, complete: bool) {
         self.producer = self.active && complete && !self.visits_failed;
     }
 
-    /// Decode worker, after the Characters rows of this payload: hold a
-    /// rediscovering pass's rows.
-    /// `quiet`: the rows came from a quiet roster hour, which carries every
-    /// occurrence ([`Self::carry_certified`]), so none was read afresh.
     pub(super) fn rebuild(
         &mut self,
         outcome: Outcome,
@@ -410,8 +327,6 @@ impl Carry {
         crate::character_changes::record(Table::Characters, &self.counts);
     }
 
-    /// The pointers of `len` rows: this pass's visits, or the latest
-    /// rediscovering pass's order, which a prepared pass repeats.
     fn order_for(&self, len: usize) -> impl Iterator<Item = usize> + '_ {
         let visits = self.producer.then_some(&self.visits);
         let held = (!self.producer && self.order.len() == len).then_some(&self.order);
@@ -488,12 +403,8 @@ impl Carry {
         self.order = order;
         self.order_entries = order_entries;
         self.certified.clear();
-        // Characters certified since the set was chosen join it at a later
-        // rediscovery: at once while nothing is carried, otherwise once they
-        // are a thirty-second of the roster.
         self.promote =
             newly != 0 && (self.carried.is_empty() || newly.saturating_mul(32) >= rows.len());
-        // The carried set must still name held rows.
         let entries = &self.entries;
         let before = self.carried.len();
         self.carried
@@ -504,7 +415,6 @@ impl Carry {
     }
 }
 
-/// A carry version no other carry has held.
 fn fresh_version() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -514,9 +424,6 @@ fn fresh_version() -> u64 {
 mod order_tests {
     use super::*;
 
-    /// A quiet hour's lookup at a held roster position takes that position's
-    /// entry without a search; an occurrence the roster moved falls back to
-    /// the search, and an unheld one finds nothing either way.
     #[test]
     fn held_positions_find_their_entries_and_moved_ones_search() {
         let _globals = crate::extended::characters::test_globals();
@@ -525,7 +432,6 @@ mod order_tests {
             ..Carry::default()
         };
         let pointers = [0x3000, 0x1000, 0x2000];
-        // The third occurrence holds no certificate.
         carry.visits = (0..3)
             .map(|index| Visit {
                 pointer: pointers[index],
@@ -545,8 +451,6 @@ mod order_tests {
         assert_eq!(carry.entries[carry.position_at(0, 0x3000).unwrap()].id, 10);
         assert_eq!(carry.entries[carry.position_at(1, 0x1000).unwrap()].id, 11);
         assert_eq!(carry.position_at(2, 0x2000), None);
-        // The roster moved: another pointer at a held position, or a
-        // position past the held order.
         assert_eq!(carry.entries[carry.position_at(1, 0x3000).unwrap()].id, 10);
         assert_eq!(carry.entries[carry.position_at(7, 0x1000).unwrap()].id, 11);
         assert_eq!(carry.position_at(0, 0x2000), None);

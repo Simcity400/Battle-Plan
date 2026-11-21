@@ -14,13 +14,11 @@ fn row(hour: i32, kind: u8, identity: &Identity, final_raw: i64) -> Step {
 fn a_threat_source_is_one_event_from_its_listing_to_its_drop_across_a_stretch() {
     let (a, b, twin) = (source(1, "annexed", 0), source(2, "justified", 0), source(1, "annexed", 1));
     let (events, unmatched) = join([
-        // Listed at the stretch's first hour, where the log writes no rows.
         Step::Stretch { first: 10, last: 19, listed: vec![(a.clone(), 500, Some(1001))] },
         row(12, ThreatEventRow::LISTED, &b, 300),
         row(13, ThreatEventRow::LISTED, &twin, 500),
         row(14, ThreatEventRow::CHANGED, &a, 700),
         row(15, ThreatEventRow::DROPPED, &b, 300),
-        // A load: `a` is still listed, `twin` is not.
         Step::Stretch { first: 30, last: 39, listed: vec![(a.clone(), 700, Some(1001))] },
         row(31, ThreatEventRow::DROPPED, &source(9, "never listed", 0), 0),
     ]);
@@ -116,7 +114,6 @@ fn a_game_score_part_is_its_value_or_the_named_reason_it_was_not_recorded_never_
     assert_eq!(shown.air.missing.as_deref(), Some(CountryGameScoreRow::REASONS[usize::from(CountryGameScoreRow::NO_WING)]));
     assert_eq!(shown.total.missing.as_deref(), Some(CountryGameScoreRow::REASONS[usize::from(CountryGameScoreRow::TOTAL_PARTS)]));
     assert!(game_score::cell(&Recorded::NotRecorded, CountryGameScoreRow::KNOWN).missing.is_some(), "an unrecorded value with no reason is still not a zero");
-    // Only recorded scores are live cells: a score not known stays the structure's reason, never a value.
     let cells = dashboard_follow::live::Cells::default();
     game_score::name_cells(&cells, "GER", &score, &[5, 0, 1, 2, 3, 4]);
     let live = cells.finish();

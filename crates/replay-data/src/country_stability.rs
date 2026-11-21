@@ -1,4 +1,3 @@
-//! Shared displayed stability, war support and command-power arithmetic over recorded inputs.
 use crate::rows::{CountryCommandPowerRow, CountryStabilityInputRow};
 
 pub use crate::fixed_point::{fixed5_to_q15, q15_to_fixed5};
@@ -13,7 +12,6 @@ fn clamp(value: i64, minimum: i64, maximum: i64) -> i64 {
     }
 }
 
-/// Named additive terms, the unclamped sum and the displayed value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Terms {
     pub terms: Vec<(&'static str, Option<i64>)>,
@@ -27,9 +25,6 @@ fn sum(terms: &[(&'static str, Option<i64>)]) -> Option<i64> {
         .try_fold(0_i64, |total, (_, term)| Some(total.wrapping_add((*term)?)))
 }
 
-/// The ruling-party popularity term. The overflow sentinel (u32::MAX when
-/// the quotient is i64::MAX, MIN or MIN + 1) is kept although a quotient by
-/// 100000 cannot reach it.
 pub fn popularity_term(factor: i64, popularity: i64) -> i64 {
     let product = factor.wrapping_mul(popularity) / 100_000;
     if [i64::MAX, i64::MIN, i64::MIN + 1].contains(&product) {
@@ -39,7 +34,6 @@ pub fn popularity_term(factor: i64, popularity: i64) -> i64 {
     }
 }
 
-/// Displayed stability from the recorded operands.
 pub fn stability(row: &CountryStabilityInputRow) -> Terms {
     let at_war = row.at_war != 0;
     let offensive = at_war && row.offensive_war != 0;
@@ -89,8 +83,6 @@ pub fn stability(row: &CountryStabilityInputRow) -> Terms {
     }
 }
 
-/// The war-support interception term: sum, Q15 conversion, scaling, fixed5
-/// conversion, then clamp to the impact.
 pub fn interception_term(row: &CountryStabilityInputRow) -> i64 {
     let scaled = fixed5_to_q15(row.interception_sum_raw)
         .wrapping_mul(row.interception_war_support_scale_q15)
@@ -107,7 +99,6 @@ pub fn interception_term(row: &CountryStabilityInputRow) -> i64 {
     }
 }
 
-/// Displayed war support from the recorded operands.
 pub fn war_support(row: &CountryStabilityInputRow) -> Terms {
     let at_war = row.at_war != 0;
     let terms = vec![
@@ -154,12 +145,6 @@ pub fn war_support(row: &CountryStabilityInputRow) -> Terms {
     }
 }
 
-/// The maximum command power the game shows and clamps the balance to,
-/// minus allocated command power. Not additive; the terms are its operands
-/// and nothing is clamped. `launch` is the country's CountryCommandPower row
-/// at the same frame, the one record of max_command_power,
-/// max_command_power_mult and allocated power; without it those terms are
-/// unknown, never zero.
 pub fn max_command_power(
     row: &CountryStabilityInputRow,
     launch: Option<&CountryCommandPowerRow>,

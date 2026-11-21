@@ -1,4 +1,3 @@
-//! Absolute typed patches. Recording wire deltas never enter this codec.
 use super::rows::Row;
 use crate::{
     codec::{Decoder, invalid_static as invalid},

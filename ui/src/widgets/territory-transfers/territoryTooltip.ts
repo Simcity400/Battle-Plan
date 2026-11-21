@@ -12,12 +12,10 @@ export interface TransferTipRequest { countries: NameAt[]; states: TransferState
 type Label = { nameFailure?: Error; nameDetail?: string; name: string; flag?: string; flagPending?: boolean; flagReason?: string };
 export interface TransferLabels {
   country: (side: TransferSide) => Label;
-  /** The country's dated name for a tag at an hour, such as an overlord. */
   tag: (tag: string, hour: number) => Label;
   state: (occurrence: Pick<TransferOccurrence, 'state' | 'afterHour'>) => string;
 }
 
-/** Names and flags a set of rows or one tooltip needs, each at its own read. */
 export function transferRequest(occurrences: readonly TransferOccurrence[], balances: readonly CountryBalance[] = []): TransferTipRequest {
   const countries = new Map<string, NameAt>();
   const states = new Map<string, TransferStateAt>();
@@ -42,7 +40,6 @@ function counterparts(list: ReadonlyMap<string, Counterpart>, labels: TransferLa
     .map(({ side, count }) => ({ label: labels.country(side).name, countryFlag: labels.country(side), value: usNumber.format(count), indent: true }));
 }
 
-/** Who a country gained from and lost to, one line per counterpart. */
 export function countryTooltip(balance: CountryBalance, labels: TransferLabels): TooltipContent {
   const label = labels.country(balance.side);
   const rows: TooltipRow[] = [];
@@ -55,8 +52,6 @@ export function countryTooltip(balance: CountryBalance, labels: TransferLabels):
   return { title: label.name, countryFlag: label, rows, scrollable: true, scrollId: `country:${balance.key}` };
 }
 
-/** One state's transfer: date, war, how and victory points. A comparison of two
- * reads dates the change "by" its later read and says when it was still unchanged. */
 export function transferTooltip(occurrence: TransferOccurrence, deal: PeaceDeal | undefined, labels: TransferLabels): TooltipContent {
   const giver = occurrence.from ? labels.country(occurrence.from).name : 'Former owner not recorded';
   const taker = labels.country(occurrence.to).name;

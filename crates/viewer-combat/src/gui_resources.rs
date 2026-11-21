@@ -1,4 +1,3 @@
-//! Combat's recorded sprite and flag operands over the shared native GUI resources.
 use super::{Assets, Values, binding::Bindings, gui::CombatResources};
 use installed_content_core::gui::native;
 use installed_content_localisation::localisation::Localisation;
@@ -80,8 +79,6 @@ impl GuiAssets {
                 .chain(&self.sprites)
                 .map(Vec::as_slice),
         );
-        // A portrait replaces its drawable with decoded artwork. Fixed-clock exports
-        // still have to publish newly loaded sheets.
         self.portrait_stamp = Some(stamp);
     }
 }
@@ -228,7 +225,6 @@ impl Resources for GuiResources<'_> {
         let key = self.inventory.selectors.get(&index).ok_or_else(|| {
             format!("shield selector {index} has no resolved combat flag binding")
         })?;
-        // Sample the raw atlas cell through the authored mask, then draw its overlay.
         Ok(self.flag_texture(key, small).map(|cell| {
             let [u0, v0, u1, v1] = cell.uv;
             (

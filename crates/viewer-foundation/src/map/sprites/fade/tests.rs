@@ -1,6 +1,5 @@
 use super::*;
 
-/// A clip-space point through `affine`, back to device pixels of a target of `out`.
 fn through(affine: ClipAffine, ndc: [f32; 2], w: f32, out: [u32; 2]) -> [f32; 2] {
     let x = (affine.scale[0] * ndc[0] * w + affine.offset[0] * w) / w;
     let y = (affine.scale[1] * ndc[1] * w + affine.offset[1] * w) / w;
@@ -10,7 +9,6 @@ fn through(affine: ClipAffine, ndc: [f32; 2], w: f32, out: [u32; 2]) -> [f32; 2]
     ]
 }
 
-/// A device point of a target of `size` in normalised device coordinates.
 fn ndc([x, y]: [f32; 2], size: [u32; 2]) -> [f32; 2] {
     [
         x / size[0] as f32 * 2.0 - 1.0,
@@ -55,12 +53,11 @@ fn the_clip_map_lands_where_the_device_map_does() {
 
 #[test]
 fn a_matrix_takes_the_map_after_its_projection() {
-    // A projection that maps (x, y) to (x / 100 - 1, 1 - y / 50) with w = 1.
     let mut constants = [
-        0.01, 0.0, 0.0, 0.0, //
-        0.0, -0.02, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, //
-        -1.0, 1.0, 0.0, 1.0, //
+        0.01, 0.0, 0.0, 0.0,
+        0.0, -0.02, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        -1.0, 1.0, 0.0, 1.0,
         9.0, 9.0,
     ];
     let affine = ClipAffine {
@@ -74,10 +71,8 @@ fn a_matrix_takes_the_map_after_its_projection() {
             constants[1] * x + constants[5] * y + constants[13],
         ]
     };
-    // (30, 10) projects to (-0.7, 0.8), which the map takes to (-0.1, 1.1).
     let [x, y] = project(30.0, 10.0);
     assert!((x - -0.1).abs() < 1e-6 && (y - 1.1).abs() < 1e-6, "{x} {y}");
-    // The constants after the matrix are left alone.
     assert_eq!(&constants[16..], &[9.0, 9.0]);
 }
 
@@ -90,12 +85,10 @@ fn scissors_are_placed_and_cut() {
         size: [400, 400],
         out: [400, 400],
     };
-    // [60, 60, 80x80] scales to [80, 80, 40x40], then moves 10 right.
     assert_eq!(
         placement.scissor([60, 60, 80, 80], [0, 0, 400, 400]),
         Some([90, 80, 40, 40])
     );
-    // Cut to a cell.
     assert_eq!(
         placement.scissor([60, 60, 80, 80], [100, 90, 120, 100]),
         Some([100, 90, 20, 10])
@@ -104,7 +97,6 @@ fn scissors_are_placed_and_cut() {
         placement.scissor([60, 60, 80, 80], [200, 200, 300, 300]),
         None
     );
-    // Fractional edges round outwards.
     assert_eq!(
         cut([1.5, 2.25, 3.5, 4.0], [0, 0, 10, 10]),
         Some([1, 2, 3, 2])
@@ -118,16 +110,13 @@ fn shelves_place_cells_apart_and_open_pages_when_full() {
     for size in [[40, 20], [40, 30], [30, 10], [90, 25], [10, 10]] {
         placed.push((shelves.place(size), size));
     }
-    // Two cells share the first row; the third starts the second row; the fourth the second page.
     assert_eq!(placed[0].0, (0, [0, 0]));
     assert_eq!(placed[1].0, (0, [42, 0]));
     assert_eq!(placed[2].0, (0, [0, 32]));
     assert_eq!(placed[3].0, (1, [0, 0]));
     assert_eq!(placed[4].0, (1, [0, 27]));
     assert_eq!(shelves.pages, 2);
-    // Each page reaches as far as its cells, gaps left out.
     assert_eq!(shelves.extents, [[82, 42], [90, 37]]);
-    // No two cells on a page overlap, gaps included.
     for (i, ((page_a, a), size_a)) in placed.iter().enumerate() {
         for ((page_b, b), size_b) in &placed[i + 1..] {
             if page_a != page_b {
@@ -140,7 +129,6 @@ fn shelves_place_cells_apart_and_open_pages_when_full() {
             assert!(apart, "{a:?} {size_a:?} and {b:?} {size_b:?}");
         }
     }
-    // A cell as large as a page takes a page alone, gaps falling outside it.
     let mut whole = Shelves::new([100, 60]);
     assert_eq!(whole.place([100, 60]), (0, [0, 0]));
     assert_eq!(whole.place([1, 1]), (1, [0, 0]));

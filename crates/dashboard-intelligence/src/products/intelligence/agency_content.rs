@@ -1,7 +1,3 @@
-//! What agency comparison shows of the recorded content, by the agency screen's own keys: the name
-//! of an agency not created (`AGENCY_NAME`), the defence line's label and number
-//! (`AGENCY_DEFENSE_LEVEL` with its fixed5 `LEVEL`), and acquired upgrades' names. Each is missing
-//! with why, never guessed.
 
 use crate::Source;
 use dashboard_base::{
@@ -13,15 +9,11 @@ use installed_content_core::intelligence::AgencyUpgrades;
 use installed_content_localisation::localisation::Argument;
 use std::sync::Arc;
 
-/// A text, or why it is not shown.
 pub type Shown = Result<String, String>;
 
 const DEFENSE: &str = "AGENCY_DEFENSE_LEVEL";
-/// Copied by the LEVEL argument's text branch with no precision, sign or suffix: it marks where the
-/// number goes, so the label and the number are told apart without parsing digits.
 const MARKER: &str = "\u{e000}";
 
-/// The defence line around its number.
 struct DefenseTemplate {
     prefix: String,
     suffix: String,
@@ -32,15 +24,12 @@ pub struct AgencyContent {
     catalogue: Arc<Catalogue>,
     upgrades: Result<AgencyUpgrades, String>,
     defense: Result<DefenseTemplate, String>,
-    /// What the game shows for an agency not created.
     pub default_name: Shown,
     pub warnings: Vec<String>,
 }
 
-/// The content of the binding last asked, kept for the source.
 type Kept = Option<(usize, Arc<AgencyContent>)>;
 
-/// The agency content of `load`'s binding, made once for it; why there is none.
 pub fn content(source: &Source, load: &LoadContext) -> Result<Arc<AgencyContent>, String> {
     let options = load.content().map_err(|error| error.to_string())?;
     let politics = politics_content::politics_content(source, options).map_err(|error| error.to_string())?;
@@ -72,13 +61,10 @@ impl AgencyContent {
         Self { catalogue, upgrades, defense, default_name, warnings }
     }
 
-    /// The defence column's label: the template without its number.
     pub fn defense_label(&self) -> Result<&str, String> {
         self.defense.as_ref().map(|template| template.label.as_str()).map_err(Clone::clone)
     }
 
-    /// The defence line for `raw` as the agency screen shows it, and its number alone, with the
-    /// content's own precision and suffix.
     pub fn defense(&self, raw: i64) -> (Shown, Shown) {
         let text = catalogue::localised_with(&self.catalogue.localisation, DEFENSE, &[("LEVEL", Argument::Fixed5(raw))], View::Plain);
         let value = match (&text, &self.defense) {
@@ -92,7 +78,6 @@ impl AgencyContent {
         (text, value)
     }
 
-    /// An acquired upgrade's name: its branch's definition's name key, localised.
     pub fn upgrade_name(&self, branch: &str, token: &str) -> Shown {
         let upgrades = self.upgrades.as_ref().map_err(Clone::clone)?;
         let definition = upgrades
@@ -101,8 +86,6 @@ impl AgencyContent {
         catalogue::localised_with(&self.catalogue.localisation, &definition.name, &[], View::Plain)
     }
 
-    /// Every text the comparison can show without a recording, each refused by name where the
-    /// content cannot give it.
     pub fn check(&self) -> Vec<(String, String)> {
         let mut refused: Vec<(String, String)> = Vec::new();
         refused.extend(self.default_name.as_ref().err().map(|why| ("AGENCY_NAME".to_owned(), why.clone())));

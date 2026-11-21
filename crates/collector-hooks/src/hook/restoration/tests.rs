@@ -68,9 +68,6 @@ fn prepared_restore_and_final_quiet_need_no_allocations_after_capture_stop() {
     );
 }
 
-/// Two families restore under one suspension; a family's later publication
-/// waits for the next batch, so each batch restores one publication of every
-/// family that has one left.
 #[test]
 fn a_batch_restores_every_family_under_one_suspension_without_allocating() {
     if !child("a_batch_restores_every_family_under_one_suspension_without_allocating") {

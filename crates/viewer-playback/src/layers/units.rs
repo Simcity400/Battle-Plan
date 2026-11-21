@@ -1,17 +1,3 @@
-//! The land unit models from the mirrors: the divisions grouped into stacks by province, owner slot
-//! and the route's next two hops, as today's model layer groups them; per stack its oldest member,
-//! what the model selection reads of it, and its figure placed as today places it
-//! ([`unit_models::land_figure`]) but for its mesh. In the window each admitted figure's mesh is
-//! chosen on the layer's own worker over the rows at the head, on a cadence, handed the stacks a
-//! settle touched ([`meshes`]): the selection joins templates, variants, equipment, the census and
-//! trigger-evaluated graphics limits over any table, which needs a frame of rows the frame thread
-//! does not hold. Today's unit models, without their land stacks, give the ships, raid units and
-//! convoys ([`models`]).
-//!
-//! Which divisions the viewer sees is the vision's (P6's layer): the window's layer reads each
-//! division's sight from the vision layer registered before it and reads again only the divisions
-//! its changes name; elsewhere a vision is given whole ([`Units::set_vision`]). A stack no member of
-//! which is seen has no figure, as today. Without a vision the layer is refused by name.
 
 pub mod meshes;
 pub mod models;
@@ -50,8 +36,6 @@ use viewer_world::map::{
 
 const NONE: u32 = u32::MAX;
 
-/// A multiply-rotate hasher for the layer's integer keys: the default SipHash is several times
-/// slower and its resistance buys nothing for keys the recording gives.
 #[derive(Clone, Copy, Default)]
 struct Fast(u64);
 
@@ -94,22 +78,14 @@ impl std::hash::Hasher for Fast {
 
 type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Fast>>;
 
-/// What places a figure on the map: the provinces' unit anchors, the route geometry (none without
-/// the content's movement map) and the transport scale.
 pub trait Ground: Send + Sync {
     fn anchor(&self, province: u32, slot: u32) -> Option<[f32; 3]>;
     fn world(&self) -> Option<RouteWorld<'_>>;
     fn transport_scale(&self) -> f32;
-    /// Each province's box that the camera's admission tests.
     fn bounds(&self) -> &BTreeMap<u32, [f32; 4]>;
-    /// The camera height at and above which no land unit model is drawn.
     fn units_cutoff(&self) -> f32;
-    /// The camera height at and above which no ship model is drawn.
     fn ships_cutoff(&self) -> f32;
-    /// The map a camera placement is put on.
     fn map(&self) -> (MapSize, MapDefines);
-    /// The unit models' assets the field the install hands the scene is made against; none for a
-    /// ground that holds no model content, which stages no field and so installs none.
     fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets>;
 }
 
@@ -148,12 +124,8 @@ impl Ground for crate::document::Content {
     }
 }
 
-/// What a stack is keyed by: its province, its owner's canonical slot and its route's next two
-/// hops, the triple a counter groups by.
 pub type StackKey = (u32, u32, Option<[u32; 2]>);
 
-/// What today's model selection reads of a stack: the key it keeps its answers by, and whether the
-/// oldest member's status is recorded (a land figure without one has no model).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
     pub transport: bool,
@@ -164,13 +136,9 @@ pub struct Selection {
     pub status: bool,
 }
 
-/// What the model picker reads of one division in a province with a figure
-/// ([`Units::pick_divisions`]): the facts the game's picker and stack-mate rule test, each none
-/// where the hour does not settle it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PickDivision {
     pub id: u64,
-    /// Its logical owner's canonical slot.
     pub owner: u32,
     pub roster: Option<u32>,
     pub kind: Option<u32>,
@@ -178,18 +146,13 @@ pub struct PickDivision {
     pub unrouted: Option<bool>,
 }
 
-/// Why a stack has no figure though the selection may choose its model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Withheld {
     Unplaced(Unplaced),
-    /// A land stack whose oldest seen member's status is not recorded this hour.
     Status,
-    /// No member of the stack is seen by the viewer.
     Unseen,
 }
 
-/// What places a figure: the oldest member's route, combat side, exercise and texture motion, and
-/// the scale.
 #[derive(Clone, Debug)]
 struct Placing {
     province: u32,
@@ -202,7 +165,6 @@ struct Placing {
     scale: f32,
 }
 
-/// A placing but for its route.
 #[derive(Clone, Copy, Debug)]
 struct Scalars {
     province: u32,
@@ -239,10 +201,6 @@ fn same_route(a: &DivisionRoute, b: &DivisionRoute) -> bool {
         == (&b.path, b.eta, b.naval_transfer, b.retreat, b.combat_role, b.combat_count, b.stack_kind, b.kind_resolved, b.idle)
 }
 
-/// One stack: what the selection reads, whether the camera admits it, and the target as the field
-/// draws it (mesh 0) with the position its animator starts from, or why it has none; `placed` is
-/// none while the figure waits to be made, which only an admitted stack's is, and meanwhile it is
-/// drawn and animated where it was last placed (`last`), never left out of a frame.
 #[derive(Clone, Debug)]
 pub struct Figure {
     pub selection: Selection,
@@ -253,7 +211,6 @@ pub struct Figure {
 }
 
 impl Figure {
-    /// Where it is drawn: its placing, or while it waits to be placed again, its last.
     fn drawn(&self) -> Option<&(Target, Position)> {
         match &self.placed {
             Some(Ok(placed)) => Some(placed),
@@ -266,28 +223,21 @@ impl Figure {
 #[derive(Debug)]
 struct Stack {
     key: StackKey,
-    /// Its divisions' slots in Divisions.
     members: Vec<u32>,
     admitted: bool,
     figure: Option<Figure>,
-    /// The oldest member its figure asked a mesh for.
     asked: Option<u64>,
 }
 
-/// One Divisions slot: its stack and place in it, its id, whether the viewer sees it, and whether
-/// its own values changed since its stack last read them.
 #[derive(Clone, Debug)]
 struct Member {
     stack: u32,
     at: u32,
     id: u64,
-    /// The province and owner slot its sight was read at, and the province whose byte it read
-    /// (`NONE` while it is in no stack).
     sighted: Option<(u32, u32)>,
     read_at: u32,
     seen: bool,
     stale: bool,
-    /// What the model picker reads of its route, with its roster owner's canonical slot.
     pick: Option<(PickRoute, Option<u32>)>,
 }
 
@@ -297,10 +247,6 @@ impl Default for Member {
     }
 }
 
-/// What the game's model picker and stack-mate rule read of a division's route: its map stack
-/// kind (none where the content cannot place its route), the first hop of its ordinary route or 0
-/// without one (none when the hop is not captured), and whether it rides a naval transfer with no
-/// ordinary route, which the picker passes over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PickRoute {
     kind: Option<u32>,
@@ -308,7 +254,6 @@ struct PickRoute {
     unrouted: bool,
 }
 
-/// Where a division's sight is read: the vision layer's arrays in place, or a vision given whole.
 #[derive(Clone, Copy)]
 enum Seer<'a> {
     Layer(&'a VisionLayer),
@@ -316,8 +261,6 @@ enum Seer<'a> {
 }
 
 impl Seer<'_> {
-    /// Whether the viewer sees any of a land unit standing in `province`, and the province whose
-    /// byte that read.
     fn sees(self, unit: u64, owner: u32, province: u32) -> (bool, u32) {
         match self {
             Seer::Layer(vision) => (vision.sees_land(unit, owner, province).is_some_and(|sight| sight != Sight::None), vision.sight_province(unit, province)),
@@ -326,12 +269,8 @@ impl Seer<'_> {
     }
 }
 
-/// What the window's figures are drawn with besides the layer's own: the selection and the rows its
-/// meshes and models are made from, and the tables each learned it reads, kept while the view draws
-/// no land figure.
 struct Window {
     select: Arc<dyn models::Select>,
-    /// The map side's view store: its makers' rows, made from the side's own mirrors in the step.
     views: Option<crate::playhead_host::views::Views>,
     tables: Vec<TableId>,
     meshes: Vec<TableId>,
@@ -361,7 +300,6 @@ struct Columns {
     link_slot: Num<u32>,
 }
 
-/// The rows a table holds at the head: none when unavailable, not recorded or in a gap.
 fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
@@ -382,103 +320,67 @@ fn path_of(mirror: &Mirror, column: List, slot: u32, out: &mut Vec<u32>) {
     }
 }
 
-/// The land unit models' arrays and what keeps them.
-/// The tables the layer reads while it draws.
 const TABLES: [TableId; 6] = [TableId::Divisions, TableId::DivisionMovement, TableId::ArmyIconInputs, TableId::DivisionStatus, TableId::LandCombats, TableId::CountryLinks];
 
 pub struct Units {
     ground: Arc<dyn Ground>,
-    /// In the window: what its models are made from, and while the view draws land figures the
-    /// meshes, ships, raid units and convoys it draws them with.
     window: Option<Window>,
     models: Option<models::Models>,
-    /// In the window, while the view draws land figures: each admitted figure's mesh, chosen on the
-    /// layer's own worker; the stacks it was handed, by oldest member with the stack that asked;
-    /// the stacks whose figure a settle touched, and the asks not sent yet.
     meshes: Option<meshes::Meshes>,
     asking: FastMap<u64, (u32, meshes::Asked)>,
     touched: Vec<u32>,
     asks: Vec<meshes::Ask>,
-    /// Figures or models changed since the field was last installed.
     to_upload: bool,
-    /// The models changed since the field was last installed; and the land figures it was
-    /// installed with, so that a settle that placed the same figures installs nothing.
     models_new: bool,
     uploaded: Vec<Target>,
-    /// The field the install hands the scene and the land figures it holds, made on the side's
-    /// thread ([`Layer::stage`]).
     staged: Option<(viewer_world::map::unit_history::Field, Vec<Target>)>,
-    /// It reads the vision layer registered before it; otherwise a vision is given whole.
     reading: bool,
-    /// The vision given and not yet taken, flagged when new.
     given: Mutex<Option<(Choice, Arc<Vision>)>>,
     fresh_vision: AtomicBool,
-    /// The vision the arrays are settled with, when given whole.
     vision: Option<(Choice, Arc<Vision>)>,
-    /// Reading the vision layer: its perspective and sight epoch as last taken.
     choice: Option<Choice>,
     sight_epoch: Option<u64>,
-    /// Divisions whose sight is read again; per province whose byte a sight read, the divisions
-    /// that read it; and the sights read again since the layer was made.
     sights: Dirty,
     readers: FastMap<u32, Vec<u32>>,
     sighted: usize,
     columns: Option<Columns>,
-    /// Why nothing is drawn: a refused input or a core table not recorded.
     refused: Option<String>,
     members: Vec<Member>,
     stacks: Vec<Stack>,
     free: Vec<u32>,
     by_key: FastMap<StackKey, u32>,
-    /// Each division's combat side, from LandCombats in key order, defenders over attackers.
     combat: FastMap<u64, u32>,
     links: FastMap<u32, u32>,
     divisions: Dirty,
-    /// Divisions whose row, route or owner a step changed: a settle re-keys those it admits.
     moved: Dirty,
-    /// Rows the steps changed in DivisionMovement, ArmyIconInputs and DivisionStatus, resolved by a
-    /// settle to the divisions they name; and every division to be placed again.
     route_rows: Rows,
     icon_rows: Rows,
     status_rows: Rows,
     every: bool,
     dirty_stacks: Dirty,
-    /// Admitted stacks whose figure waits to be made, the costly part.
     figures: Dirty,
-    /// The camera and viewport the stacks are admitted at; none, or a viewport not given yet,
-    /// admits every stack.
     camera: Option<(Placement, [u32; 2])>,
     admission: Option<Admission>,
     camera_dirty: bool,
-    /// The view draws land unit models: below the units' cutoff, in a map mode that shows them.
-    /// Its columns are declared at every height, so crossing the cutoff resets no table and
-    /// composes nothing; above it the layer holds no stack and draws no figure.
     showing: bool,
-    /// Per province id at this camera: whether admission was asked, and its answer.
     province_known: Vec<u64>,
     province_in: Vec<u64>,
-    /// Divisions changed while neither their old nor their new province was admitted, by slot,
-    /// re-keyed once one is; and how many.
     deferred: Vec<u64>,
     deferred_count: usize,
     combat_dirty: bool,
     links_dirty: bool,
-    /// Each read table's status as last seen, by table index.
     statuses: HashMap<usize, Status>,
     frame: u64,
-    /// Divisions and stacks the steps have marked, and figures placed anew.
     marked: [usize; 3],
     path: Vec<u32>,
     alternate: Vec<u32>,
     items: Vec<u64>,
-    /// Divisions placed, and rows its `apply` read, since the layer was made: none, by the contract.
     #[cfg(any(test, feature = "test-support"))]
     placed: usize,
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
-/// Why the layer draws nothing above the units' cutoff, or in a map mode without land models.
 const NOT_DRAWN: &str = "no land unit model is drawn at this view";
 
 impl Units {
@@ -543,7 +445,6 @@ impl Units {
         }
     }
 
-    /// Divisions placed, and rows `apply` read, since the layer was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn placed(&self) -> usize {
         self.placed
@@ -554,8 +455,6 @@ impl Units {
         self.applied_reads
     }
 
-    /// A layer of the same content and inputs, made from scratch: one that reads the vision layer
-    /// composes with it ([`Layer::compose_with`]).
     pub fn fresh(&self) -> Self {
         let fresh = Self { reading: self.reading, columns: self.columns, camera: self.camera, camera_dirty: true, showing: self.showing, ..Self::new(Arc::clone(&self.ground)) };
         if let Some((choice, vision)) = &self.vision {
@@ -564,38 +463,25 @@ impl Units {
         fresh
     }
 
-    /// What the viewer sees at the head and the perspective it is for; every division's sight is
-    /// read again with it at the next settle. Not for a layer that reads the vision layer.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         *self.given.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((choice, vision));
         self.fresh_vision.store(true, Ordering::Release);
     }
 
-    /// A layer that reads each division's sight from the vision layer registered before it, as the
-    /// window's does: the proof tool's units line and the tests.
     pub fn reading_vision(ground: Arc<dyn Ground>) -> Self {
         Self { reading: true, ..Self::new(ground) }
     }
 
-    /// Drawn in the window: its figures with the meshes it chooses on its own worker over `rows`,
-    /// and the ships, raid units and convoys of today's unit models made over `rows`, its vision
-    /// read from the vision layer before it.
     pub fn in_window(mut self, select: Arc<dyn models::Select>) -> Self {
-        // Each declares the tables it is known to read ([`models::tables`], [`meshes::TABLES`]) and learns the rest.
         self.window = Some(Window { select, views: None, tables: Vec::new(), meshes: Vec::new() });
         self.reading = true;
         self
     }
 
-    /// In the window, the unit models its field was made with: the frame poses their raid units
-    /// and sailing convoys.
     pub fn prepared(&self) -> Option<&Arc<viewer_world::map::unit_models::PreparedModels>> {
         self.models.as_ref()?.prepared.as_ref().map(|(_, prepared)| prepared)
     }
 
-    /// The unit models' omitted stacks by reason, worded as today's: the land figures withheld from
-    /// the meshes it chose, then the ships' from the models its field was made with; loading by name
-    /// while it draws the models and has made none.
     pub fn warnings(&self) -> Vec<String> {
         let mut lines = match (self.prepared(), self.refused()) {
             (Some(prepared), _) => prepared.report.warnings(),
@@ -622,43 +508,33 @@ impl Units {
         lines
     }
 
-    /// The perspective of the vision the arrays are settled with.
     pub fn perspective(&self) -> Option<&Choice> {
         self.vision.as_ref().map(|(choice, _)| choice).or(self.choice.as_ref())
     }
 
-    /// Divisions' sights read again since the layer was made, beside those its steps placed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn sighted(&self) -> usize {
         self.sighted
     }
 
-    /// Whether the view draws land unit models, so the layer holds stacks and figures.
     pub fn drawn(&self) -> bool {
         self.showing
     }
 
-    /// Why the layer draws nothing, by name; none when it draws.
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }
 
-    /// What the window's animators read of the figures: each admitted land figure placed at the
-    /// applied hour ([`unit_models::land_movement`]), mesh or none yet, and the formations of its
-    /// models.
     pub fn movement_positions(&self) -> impl Iterator<Item = (viewer_foundation::unit_handle::Unit, &Position, f32, f32)> {
         let land = self.stacks.iter().filter(|stack| stack.admitted).filter_map(|stack| stack.figure.as_ref()?.drawn()).map(|(target, position)| unit_models::land_movement(target, position));
         let ships = self.prepared().into_iter().flat_map(|prepared| prepared.ship_movement_positions());
         land.chain(ships)
     }
 
-    /// Every stack with its figure, in key order.
     pub fn figures(&self) -> BTreeMap<StackKey, &Figure> {
         self.stacks.iter().filter_map(|stack| Some((stack.key, stack.figure.as_ref()?))).collect()
     }
 
-    /// Every division standing in a province where a figure stands, by province, in Divisions
-    /// order: what the model picker reads to find the units behind a figure and their stack mates.
     pub fn pick_divisions(&self) -> HashMap<u32, Vec<PickDivision>> {
         let provinces: std::collections::HashSet<u32> =
             self.stacks.iter().filter(|stack| stack.figure.is_some()).map(|stack| stack.key.0).collect();
@@ -686,12 +562,10 @@ impl Units {
         divisions
     }
 
-    /// Stacks held, settled or not.
     pub fn stack_count(&self) -> usize {
         self.by_key.len()
     }
 
-    /// The cell of `size` world units holding most stacks that move or fight: its centre and count.
     pub fn front(&self, size: f32) -> Option<([f32; 2], usize)> {
         let mut cells: HashMap<(i32, i32), usize> = HashMap::new();
         for stack in self.by_key.values().map(|&stack| &self.stacks[stack as usize]) {
@@ -705,27 +579,22 @@ impl Units {
         cells.into_iter().max_by_key(|&(cell, count)| (count, std::cmp::Reverse(cell))).map(|((x, z), count)| ([(x as f32 + 0.5) * size, (z as f32 + 0.5) * size], count))
     }
 
-    /// The camera height at and above which no land unit model is drawn.
     pub fn cutoff(&self) -> f32 {
         self.ground.units_cutoff()
     }
 
-    /// Stacks the camera admits.
     pub fn admitted(&self) -> usize {
         self.by_key.values().filter(|&&stack| self.stacks[stack as usize].admitted).count()
     }
 
-    /// Whether the camera admits `province`: only an admitted stack's figure is made and drawn.
     pub fn admits(&self, province: u32) -> bool {
         self.admission.as_ref().is_none_or(|admission| admission.admits_province(self.ground.bounds(), province))
     }
 
-    /// Divisions whose re-keying waits for their province to be admitted.
     pub fn deferred(&self) -> usize {
         self.deferred_count
     }
 
-    /// Whether `province` is admitted at this camera, asked once per province per camera.
     fn province_admitted(&mut self, province: u32) -> bool {
         if self.admission.is_none() {
             return true;
@@ -744,15 +613,12 @@ impl Units {
         self.province_in[word] & bit != 0
     }
 
-    /// Whether division `slot` stands, or stood, in an admitted province.
     fn wanted(&mut self, slot: u32, divisions: Option<&Mirror>) -> bool {
         let old = self.members.get(slot as usize).filter(|member| member.stack != NONE).map(|member| self.stacks[member.stack as usize].key.0);
         let new = divisions.filter(|divisions| divisions.live(slot)).and_then(|divisions| divisions.number(self.columns().province, slot).value()).filter(|&province| province != 0);
         old.is_some_and(|province| self.province_admitted(province)) || new.is_some_and(|province| self.province_admitted(province))
     }
 
-    /// A division's row, route or owner changed: re-keyed now if it is, or was, where the camera
-    /// admits; otherwise one bit, taken when its province is admitted.
     fn mark_moved(&mut self, slot: u32, divisions: Option<&Mirror>) {
         if self.admission.is_none() || self.wanted(slot, divisions) {
             self.mark_division(slot);
@@ -761,7 +627,6 @@ impl Units {
         self.defer(slot);
     }
 
-    /// One bit for a division whose re-keying waits for its province to be admitted.
     fn defer(&mut self, slot: u32) {
         let (word, bit) = (slot as usize / 64, 1u64 << (slot % 64));
         if word >= self.deferred.len() {
@@ -773,9 +638,6 @@ impl Units {
         }
     }
 
-    /// Every stack admitted again at the camera; one newly admitted whose figure is not made is
-    /// marked to make it, and a deferred division now in or out of an admitted province is marked
-    /// to re-key.
     fn readmit(&mut self, mirrors: &Mirrors) {
         self.camera_dirty = false;
         let (size, defines) = self.ground.map();
@@ -818,8 +680,6 @@ impl Units {
         }
     }
 
-    /// Divisions and stacks the steps have marked since the layer was made, and figures placed
-    /// anew.
     pub fn marked(&self) -> [usize; 3] {
         self.marked
     }
@@ -834,8 +694,6 @@ impl Units {
         }
     }
 
-    /// Marks the stack holding division `slot`, for a change that leaves its route and stack key
-    /// alone.
     fn mark_stack_of(&mut self, slot: u32) {
         let Some(member) = self.members.get_mut(slot as usize) else { return };
         member.stale = true;
@@ -851,7 +709,6 @@ impl Units {
         }
     }
 
-    /// Everything dropped and every division marked: the settle that follows makes it whole.
     fn mark_all(&mut self, mirrors: &Mirrors) {
         self.members.clear();
         self.stacks.clear();
@@ -890,7 +747,6 @@ impl Units {
         }
     }
 
-    /// Every division a stack holds: its sight is read again.
     fn mark_sights(&mut self) {
         for slot in 0..self.members.len() as u32 {
             if self.members[slot as usize].stack != NONE {
@@ -899,9 +755,6 @@ impl Units {
         }
     }
 
-    /// The vision layer's changes since this layer last settled (the host keeps them until every
-    /// dependent has): the divisions whose sight read a province whose byte moved, or whose own
-    /// sight moved; every division when the viewer, the fog or another whole part did.
     fn take_upstream(&mut self, vision: &VisionLayer, upstream: &Upstream<'_>, mirrors: &Mirrors) {
         let moved = self.choice.as_ref() != Some(vision.choice());
         if moved {
@@ -933,7 +786,6 @@ impl Units {
         }
     }
 
-    /// Keeps division `slot` among the readers of province `read_at` (none: of no province).
     fn index(&mut self, slot: u32, read_at: u32) {
         let old = std::mem::replace(&mut self.members[slot as usize].read_at, read_at);
         if old == read_at {
@@ -952,7 +804,6 @@ impl Units {
         }
     }
 
-    /// Division `slot`'s sight read again; its stack is marked when it changed.
     fn resight(&mut self, slot: u32, seer: Seer<'_>) {
         let Some(&Member { stack, id, sighted: Some((province, owner)), .. }) = self.members.get(slot as usize) else { return };
         if stack == NONE {
@@ -965,7 +816,6 @@ impl Units {
         }
     }
 
-    /// CountryLinks wholly recorded and the status table read, or why not.
     fn check(&self, mirrors: &Mirrors, layer: Option<&VisionLayer>) -> Result<(), String> {
         if self.reading {
             let vision = layer.ok_or("The units layer is refused: the vision layer is not registered before it")?;
@@ -997,7 +847,6 @@ impl Units {
         }
     }
 
-    /// Each division's combat side; marks the divisions whose side changed.
     fn read_combat(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         let mut combat = FastMap::with_capacity_and_hasher(self.combat.len(), Default::default());
@@ -1025,9 +874,6 @@ impl Units {
         }
     }
 
-    /// The next two hops of a division's route the content can place from `province`, which key its
-    /// stack (none when it does not move or the route cannot be placed), and what the model picker
-    /// reads of its route (none without a DivisionMovement row).
     fn signature(&mut self, mirrors: &Mirrors, id: u64, province: u32) -> (Option<[u32; 2]>, Option<PickRoute>) {
         let columns = self.columns();
         let Some(movement) = rows(mirrors.get(TableId::DivisionMovement)) else { return (None, None) };
@@ -1063,7 +909,6 @@ impl Units {
         (signature, Some(pick))
     }
 
-    /// One division's route from its DivisionMovement row standing in `province`.
     fn route(&mut self, mirrors: &Mirrors, id: u64, province: u32) -> Option<DivisionRoute> {
         let columns = self.columns();
         let movement = rows(mirrors.get(TableId::DivisionMovement))?;
@@ -1093,8 +938,6 @@ impl Units {
         Some(route)
     }
 
-    /// One division's stack from its row, route and owner link; moves it between stacks when its key
-    /// changed and marks the stacks it touched.
     fn place_division(&mut self, slot: u32, mirrors: &Mirrors, seer: Seer<'_>) {
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -1183,7 +1026,6 @@ impl Units {
         }
     }
 
-    /// One stack's oldest member and figure; an empty stack is dropped.
     fn place_stack(&mut self, stack: u32, mirrors: &Mirrors) {
         let columns = self.columns();
         let at = stack as usize;
@@ -1264,8 +1106,6 @@ impl Units {
         self.touched.push(stack);
     }
 
-    /// `held`'s figure under `selection`: the same placing kept (`placing` none), or one made anew
-    /// for `placing`, drawn where `held` was until it is placed.
     fn refigured(&mut self, stack: u32, held: Option<Figure>, (selection, admitted, transport): (Selection, bool, bool), placing: Option<Placing>) -> Figure {
         match (held, placing) {
             (Some(held), None) => Figure { selection, admitted, ..held },
@@ -1277,13 +1117,9 @@ impl Units {
         }
     }
 
-    /// Its section of the flight record ([`viewer_foundation::view_record`]): the stacks asking a
-    /// mesh, and those of them placed and admitted whose figure has no mesh yet and no reason it has
-    /// none, `entered_unready` (a figure late into the view: the bar is zero); and the meshes' levels.
     fn record_view(&self) {
         use viewer_foundation::view_record::{add, set};
         set("units", "stacks_admitted", self.asking.len() as u64);
-        // Why an admitted stack draws no figure: no member seen, or waiting to be placed again.
         let figures = || self.by_key.values().filter_map(|&stack| self.stacks.get(stack as usize)).filter(|held| held.admitted).filter_map(|held| held.figure.as_ref());
         set("units", "figures_unseen", figures().filter(|figure| matches!(figure.placed, Some(Err(Withheld::Unseen)))).count() as u64);
         set("units", "figures_placing", figures().filter(|figure| figure.placed.is_none()).count() as u64);
@@ -1301,9 +1137,6 @@ impl Units {
         meshes.record_view();
     }
 
-    /// The stacks a settle touched handed to the meshes' worker: a figure placed and admitted asks
-    /// the mesh of its oldest member where it stands, under its selection; one that no longer does
-    /// lets its oldest member go.
     fn ask_meshes(&mut self) {
         let mut touched = std::mem::take(&mut self.touched);
         touched.sort_unstable();
@@ -1314,10 +1147,7 @@ impl Units {
                 continue;
             }
             let held = &self.stacks[at];
-            // Today's models give no figure to a stack whose province has no content bounds.
             let bounded = self.ground.bounds().contains_key(&held.key.0);
-            // A figure whose placing changed waits to be placed again, within a later frame's
-            // settling: it keeps what it asked, and asks again only once its new placing is made.
             if bounded && held.admitted && held.asked.is_some() && held.figure.as_ref().is_some_and(|figure| figure.placed.is_none()) {
                 continue;
             }
@@ -1329,7 +1159,6 @@ impl Units {
             if let Some(oldest) = asked.filter(|&oldest| wants.is_none_or(|(wanted, _)| wanted != oldest)) {
                 self.gone(oldest, stack);
             }
-            // Asked again only for a new place or selection: a stack renumbered asks nothing.
             if let Some((oldest, asked)) = wants
                 && self.asking.insert(oldest, (stack, asked)).is_none_or(|(_, before)| before != asked)
             {
@@ -1340,7 +1169,6 @@ impl Units {
         self.touched = touched;
     }
 
-    /// `stack` no longer asks the mesh of `oldest`, unless another stack took it over.
     fn gone(&mut self, oldest: u64, stack: u32) {
         if self.asking.get(&oldest).is_some_and(|&(held, _)| held == stack) {
             self.asking.remove(&oldest);
@@ -1348,8 +1176,6 @@ impl Units {
         }
     }
 
-    /// A stack's figure for a placing that changed: withheld without a status, else waiting to be
-    /// made (marked when admitted), drawn meanwhile where it was (`last`).
     fn placed_anew(&mut self, stack: u32, selection: Selection, admitted: bool, transport: bool, placing: Placing, last: Option<(Target, Position)>) -> Figure {
         match () {
             () if !transport && !selection.status => Figure { selection, admitted, placed: Some(Err(Withheld::Status)), last: None, placing },
@@ -1362,7 +1188,6 @@ impl Units {
         }
     }
 
-    /// An admitted stack's figure made from its placing, the route's spline included.
     fn place_figure(&mut self, stack: u32) {
         let at = stack as usize;
         let live = at < self.stacks.len() && self.by_key.get(&self.stacks[at].key) == Some(&stack) && self.stacks[at].admitted;
@@ -1393,10 +1218,6 @@ impl Units {
         Ok((unit_models::drawn(target, &position), position))
     }
 
-    /// Recomputes what is dirty within `settling`: the links and combat sides whole, then divisions,
-    /// then stacks, the rest carried.
-    /// Marks made while it settles (rows resolved, groups and plans expanded) carry the frame of the
-    /// steps that brought them: the frame advances once the settle is done.
     fn settle_dirty(&mut self, mirrors: &Mirrors, layer: Option<&VisionLayer>) {
         self.settle_marks(mirrors, layer);
         self.frame += 1;
@@ -1418,7 +1239,6 @@ impl Units {
                 self.divisions.clear();
                 self.refused = Some(why);
             }
-            // Refused, it reads no sight; accepted again, it places every division.
             self.sights.clear();
             return;
         }
@@ -1468,14 +1288,12 @@ impl Units {
         self.figures = dirty;
     }
 
-    /// Everything made whole from the mirrors and the vision.
     fn compose_from(&mut self, mirrors: &Mirrors, layer: Option<&VisionLayer>) {
         if self.columns.is_none() {
             return;
         }
         let (marked, sighted) = (self.marked, self.sighted);
         self.refused = Some(if self.showing { "composing".into() } else { NOT_DRAWN.to_owned() });
-        // The models held are the old picture's: drawn until ones made after the reset arrive.
         if let Some(models) = &mut self.models {
             models.composed();
         }
@@ -1483,7 +1301,6 @@ impl Units {
         (self.marked, self.sighted) = (marked, sighted);
     }
 
-    /// Marks every division the mirror holds and every one a stack holds.
     fn mark_every(&mut self, divisions: Option<&Mirror>) {
         self.deferred.clear();
         self.deferred_count = 0;
@@ -1492,9 +1309,6 @@ impl Units {
         all.into_iter().for_each(|slot| self.mark_division(slot));
     }
 
-    /// Changes the steps marked, resolved within `settling`: every division when one changed for all,
-    /// the divisions the by-division rows name, and the moved divisions re-keyed where the camera
-    /// admits them (the rest deferred).
     fn resolve(&mut self, mirrors: &Mirrors) {
         let divisions = mirrors.get(TableId::Divisions);
         if std::mem::take(&mut self.every) {
@@ -1526,7 +1340,6 @@ impl Units {
                 _ => self.status_rows = rows,
             }
         }
-        // Counted as marked when the step marked it.
         let mut moved = std::mem::take(&mut self.moved);
         let _ = moved.settle(|slot| {
             if self.admission.is_none() || self.wanted(slot, divisions) {
@@ -1543,7 +1356,6 @@ impl Units {
         self.moved.len() + self.route_rows.len() + self.icon_rows.len() + self.status_rows.len() + usize::from(self.every)
     }
 
-    /// The admitted land figures as the field draws them, each with its mesh.
     fn land(&self, meshes: &HashMap<u64, usize>) -> Vec<Target> {
         self.stacks
             .iter()
@@ -1553,8 +1365,6 @@ impl Units {
             .collect()
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described; a figure is compared
-    /// only while its stack is admitted (one kept from an earlier camera is not drawn).
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -1597,10 +1407,6 @@ impl Units {
         (differing, first)
     }
 
-    /// What the camera decides: where it stands, whether land figures are drawn at its height
-    /// and in this map mode, and whether the movers' models are. Above the cutoff the layer holds
-    /// no stack and its figures leave the field; below it again every division is keyed anew from
-    /// the mirrors, which are still declared, so nothing is reset and nothing composes.
     fn place(&mut self, view: &View) {
         let camera = view.camera.map(|camera| (camera, view.viewport));
         if camera != self.camera {
@@ -1608,7 +1414,6 @@ impl Units {
             self.camera_dirty = true;
         }
         let showing = view.camera.is_none_or(|camera| camera.height < self.ground.units_cutoff()) && visibility::of(&view.map_mode).land_models;
-        // The ships, raid units and convoys of its models are drawn below the ships' cutoff too.
         let movers = view.camera.is_none_or(|camera| camera.height < self.ground.ships_cutoff().max(self.ground.units_cutoff()));
         if showing {
             self.showing = true;
@@ -1633,7 +1438,6 @@ impl Units {
         self.moved = Dirty::default();
         (self.route_rows, self.icon_rows, self.status_rows, self.every) = (Rows::default(), Rows::default(), Rows::default(), false);
         self.staged = None;
-        // Its models kept, their field is uploaded again without the land figures it held.
         if movers && self.models.is_some() {
             self.to_upload |= !self.uploaded.is_empty();
         } else {
@@ -1660,8 +1464,6 @@ impl Units {
         }
     }
 
-    /// Its models' worker, started once in the window; none until the side has given it the view
-    /// store its rows are made in.
     fn start_models(&mut self) {
         if let Some(window) = &self.window
             && let Some(views) = &window.views
@@ -1671,8 +1473,6 @@ impl Units {
         }
     }
 
-    /// The land figures' own work: the divisions' sights, stacks and figures, and each stack whose
-    /// figure the settle touched handed on to the meshes' worker with the hour it settled.
     fn mark_land(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) {
         let layer = upstream.get::<VisionLayer>().filter(|_| self.reading);
         if let Some(vision) = layer {
@@ -1689,9 +1489,6 @@ impl Units {
         }
     }
 
-    /// The viewer and the stacks the settle touched handed to the meshes' worker with the step's
-    /// apply: it waits for the rows of the step's hour itself, so its session runs beside the
-    /// step's other makers.
     fn hand_meshes(&mut self, upstream: &Upstream<'_>) {
         let layer = upstream.get::<VisionLayer>().filter(|_| self.reading);
         let ours = layer.and_then(VisionLayer::ours).or_else(|| self.vision.as_ref().map(|(_, vision)| vision.ours()));
@@ -1701,7 +1498,6 @@ impl Units {
         }
     }
 
-    /// The meshes of the stacks asked, joined to the step.
     fn join_meshes(&mut self, mirrors: &Mirrors, settling: Settling) {
         let hour = mirrors.get(TableId::Divisions).and_then(Mirror::head);
         if let (Some(meshes), Some(hour), None) = (&mut self.meshes, hour, &self.refused) {
@@ -1713,14 +1509,9 @@ impl Units {
         }
     }
 
-    /// What today's models of the ships, raid units and convoys are made for, told to its worker
-    /// with the step's apply: it waits for the rows of the step's hour itself, so its build runs
-    /// beside the step's other makers.
     fn ask_models(&mut self, upstream: &Upstream<'_>) {
         let convoys = upstream.get::<crate::layers::convoys::Convoys>().filter(|convoys| convoys.refused().is_none()).map(|convoys| (convoys.product_seq(), &convoys.product().convoys[..]));
-        // The ships layer's ships, while it stands in for today's, are joined to the models.
         let ships = upstream.get::<crate::layers::ships::Ships>();
-        // With no land figure drawn it holds no sight: the viewer is the vision layer's.
         let layered = upstream.get::<VisionLayer>().filter(|_| self.reading && !self.showing).map(VisionLayer::choice);
         let choice = layered.or(self.vision.as_ref().map(|(choice, _)| choice)).or(self.choice.as_ref());
         if let (Some(models), Some(choice)) = (&mut self.models, choice) {
@@ -1728,8 +1519,6 @@ impl Units {
         }
     }
 
-    /// Today's models of the ships, raid units and convoys joined to the step, the ships layer's
-    /// ships joined to them while it stands in for today's.
     fn join_models(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) {
         let ships = upstream.get::<crate::layers::ships::Ships>();
         if let Some(models) = &mut self.models {
@@ -1750,11 +1539,9 @@ impl Layer for Units {
 
     fn placed(&mut self, view: &View) -> Option<u64> {
         self.place(view);
-        // Its declaration is the same at every height: a camera move never declares it again.
         Some(0)
     }
 
-    /// The side's view store, kept for the makers it starts when the camera first draws them.
     fn views(&mut self, store: &crate::playhead_host::views::Store) -> io::Result<()> {
         if let Some(window) = &mut self.window {
             window.views = Some(store.handle());
@@ -1899,9 +1686,6 @@ impl Layer for Units {
         Ok(())
     }
 
-    /// Its stacks and figures made, and the meshes they ask for handed to the worker: it chooses
-    /// them while the layers that join no maker settle. A view that draws no land figure does no
-    /// land work; its models go on below the ships' cutoff.
     fn ask(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<bool> {
         if self.showing {
             self.mark_land(mirrors, upstream);
@@ -1910,7 +1694,6 @@ impl Layer for Units {
         Ok(true)
     }
 
-    /// The meshes and today's models join the step.
     fn join(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         if self.showing {
             self.join_meshes(mirrors, settling);
@@ -1924,12 +1707,9 @@ impl Layer for Units {
         self.join(mirrors, upstream, settling)
     }
 
-    /// The model field the install hands the scene, made here on the side's thread: the figures'
-    /// land targets over the models the worker made.
     fn stage(&mut self) -> io::Result<()> {
         let Some(models) = &self.models else { return Ok(()) };
         let Some((_, prepared)) = models.prepared.as_ref().filter(|_| self.to_upload) else { return Ok(()) };
-        // Placed again where they stood, with the same meshes, the figures need no new field.
         let none = HashMap::new();
         let land = self.land(self.meshes.as_ref().map_or(&none, |meshes| &meshes.meshes));
         if !self.models_new && land == self.uploaded {
@@ -1959,8 +1739,6 @@ impl Layer for Units {
         match &models.prepared {
             None if models.waiting() => Published::Nothing,
             _ if self.refused.is_none() && meshes.is_some_and(meshes::Meshes::waiting) => Published::Nothing,
-            // The figures are at the head; their models and meshes are made on their own workers
-            // from the side's views: the hour those rows stand at is the lag, never the map's hour.
             Some((hour, _)) if self.uploaded() && self.carried().entities == 0 => {
                 let models = models.stands().unwrap_or(*hour);
                 Published::Cadence(meshes.and_then(|meshes| meshes.hour).map_or(models, |meshes| meshes.min(models)))
@@ -1970,7 +1748,6 @@ impl Layer for Units {
     }
 
     fn carried(&self) -> Carried {
-        // A models job out is the worker's, on the rows' cadence: counted here it froze the shown hour while playing.
         let entities = self.divisions.len() + self.rows_carried() + self.sights.len() + self.dirty_stacks.len() + self.figures.len() + usize::from(self.combat_dirty) + usize::from(self.links_dirty);
         Carried { entities }
     }
@@ -2004,7 +1781,6 @@ impl Layer for Units {
         self
     }
 
-    /// Mutably for a test only: no host call asks the units layer.
     #[cfg(any(test, feature = "test-support"))]
     fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
@@ -2012,29 +1788,24 @@ impl Layer for Units {
 }
 
 impl Units {
-    /// What its meshes' worker answered since the last call; none outside the window.
     pub fn take_mesh_counts(&self) -> Option<meshes::Counts> {
         self.meshes.as_ref().map(meshes::Meshes::take_counts)
     }
 
-    /// What the models' worker (the ships, raid units and convoys) did since the last call.
     pub fn take_model_counts(&self) -> Option<models::Counts> {
         self.models.as_ref().map(models::Models::take_counts)
     }
 
-    /// Each admitted figure's mesh by its oldest member, as the worker last answered.
     #[cfg(any(test, feature = "test-support"))]
     pub fn meshes(&self) -> Option<&HashMap<u64, usize>> {
         self.meshes.as_ref().map(|meshes| &meshes.meshes)
     }
 
-    /// The hour of the rows its meshes stand for.
     #[cfg(any(test, feature = "test-support"))]
     pub fn mesh_hour(&self) -> Option<replay_data::Hour> {
         self.meshes.as_ref().and_then(|meshes| meshes.hour)
     }
 
-    /// The meshes' asks, rows and waits, and the stacks asked by oldest member, for a test's message.
     #[cfg(any(test, feature = "test-support"))]
     pub fn mesh_state(&self) -> String {
         let asking: BTreeMap<u64, u32> = self.asking.iter().map(|(&oldest, &(stack, _))| (oldest, stack)).collect();
@@ -2043,12 +1814,6 @@ impl Units {
 }
 
 impl Units {
-    /// Whether the figures, their models and their meshes all stand at `hour`: what a frame that
-    /// is saved waits for, since the models and the meshes are made on workers at a cadence of
-    /// their own, which the frame's own settling does not gate on, and the layer owes the figures
-    /// of the stacks it has not placed yet. Every stack handed to the meshes' worker must have
-    /// been chosen too ([`meshes::Meshes::stand`]): a stack still owed draws no figure, however
-    /// late an hour the meshes' rows stand at. A refused layer stands at every hour.
     pub fn figures_stand(&self, hour: replay_data::Hour) -> bool {
         if self.refused.is_some() {
             return true;
@@ -2064,7 +1829,6 @@ impl Units {
         models.stands().unwrap_or(*made) >= hour && self.meshes.as_ref().and_then(|meshes| meshes.hour).is_none_or(|meshes| meshes >= hour)
     }
 
-    /// What the figures, models and meshes stand at, for a refusal that names it.
     pub fn figures_state(&self) -> String {
         let models = self.models.as_ref();
         let meshes = self.meshes.as_ref();
@@ -2081,14 +1845,11 @@ impl Units {
     }
 }
 
-/// `side`'s units layer.
 pub fn of(side: &crate::playhead_host::MapSide) -> Option<&Units> {
     let (_, layers) = side.parts()?;
     layers.iter().find_map(|layer| layer.any().downcast_ref::<Units>())
 }
 
-/// The unit models `side`'s units layer made, which carry the raid units and convoys it draws;
-/// none while it makes none.
 pub fn prepared(side: &crate::playhead_host::MapSide) -> Option<&Arc<viewer_world::map::unit_models::PreparedModels>> {
     of(side).and_then(Units::prepared)
 }

@@ -1,16 +1,3 @@
-//! The game's minimap (`mini_map_interface`), hosted through the same retained native GUI walk
-//! as the picker.
-//!
-//! - `worldmap_bg` is a static picture of the world; a press on it moves the camera's target
-//!   there, and so does the pointer while the press is held. The wheel over it zooms about the
-//!   target ([`viewer_foundation::map::camera::motion::Motion::zoom_step`]).
-//! - The `camera_quad_*` lines outline the camera's ground footprint, with wrap copies a map
-//!   width over, inside `border_container`, which clips them to the picture.
-//! - The handle (and its shortcut) slides the window by `MINIMAP_TOGGLE_SHIFT` over
-//!   `MINIMAP_TOGGLE_DURATION`.
-//! - The ping buttons arm ping mode, as Ctrl and Alt held do ([`ping_mode`]); a ping placed
-//!   in it is a game command, which the replay never posts. The recording holds no pings, so
-//!   the pinged handle and the ping circle never show, and the window names that refusal.
 
 use super::{
     Drawn, HoverText, Values, Widget,
@@ -30,11 +17,8 @@ const WORLD: &str = "worldmap_bg";
 const BORDER: &str = "border_container";
 const WORLD_SPRITE: &[u8] = b"GFX_minimap_world";
 
-/// Why the recorded pings are withheld.
 pub const PINGS_REFUSED: &str = "the recording holds no pings, so the pinged handle and the ping      circle never show";
 
-/// An executable constant: the game sets every minimap tooltip's anchor in code, 90 pixels above
-/// the hovered control's top-left.
 pub const TOOLTIP_ANCHOR: super::TooltipAnchor =
     super::TooltipAnchor::Authored(installed_content_core::gui::native::TooltipAnchor {
         set: true,
@@ -44,12 +28,8 @@ pub const TOOLTIP_ANCHOR: super::TooltipAnchor =
         below: true,
     });
 
-/// Which ping button is armed: the offensive one, the defensive one, or none.
 pub type Armed = Option<bool>;
 
-/// Whether the minimap is in ping mode, and if so whether the ping is offensive: a ping button
-/// armed, or Ctrl and Alt held. Shift makes a held-key ping offensive, and an armed defensive
-/// ping too.
 pub fn ping_mode(armed: Armed, ctrl: bool, alt: bool, shift: bool) -> Option<bool> {
     let keys = ctrl && alt;
     if !keys && armed.is_none() {
@@ -58,10 +38,8 @@ pub fn ping_mode(armed: Armed, ctrl: bool, alt: bool, shift: bool) -> Option<boo
     Some(armed == Some(true) || shift)
 }
 
-/// A control of the minimap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
-    /// The world picture.
     World,
     Handle,
     OffensivePing,
@@ -79,7 +57,6 @@ impl Control {
     }
 }
 
-/// `NInterface.MINIMAP_TOGGLE_DURATION` and `MINIMAP_TOGGLE_SHIFT`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Defines {
     pub duration: f32,
@@ -102,12 +79,10 @@ impl Defines {
     }
 }
 
-/// The slide's ease: `(1 - (1 + 4t)^-2) / (1 - 5^-2)`, 0 at the start and 1 at the end.
 pub fn ease(t: f32) -> f32 {
     (1.0 - (t * 4.0 + 1.0).powf(-2.0)) * (1.0 / (1.0 - 5.0f32.powf(-2.0)))
 }
 
-/// Whether the minimap is open, and the time its slide started.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Slide {
     open: bool,
@@ -128,8 +103,6 @@ impl Slide {
         self.open
     }
 
-    /// Flips open and closed at `now`. A slide turned mid-way starts again from where it stands,
-    /// its clock set back so the ease continues from the mirrored progress.
     pub fn toggle(&mut self, now: f32, duration: f32) {
         let progress = match self.start {
             None => 0.0,
@@ -141,8 +114,6 @@ impl Slide {
         self.start = Some(now - (1.0 / left - 1.0) * 0.25 * duration);
     }
 
-    /// How far right of its authored place the window stands at `now`, ending a slide that has
-    /// run its course.
     pub fn offset(&mut self, now: f32, defines: Defines) -> i32 {
         let shift = defines.shift;
         let Some(start) = self.start else {
@@ -167,15 +138,12 @@ impl Slide {
     }
 }
 
-/// One outline line: its centre in the window and its length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Line {
     pub at: [i32; 2],
     pub length: i32,
 }
 
-/// The camera outline: four lines and the wrap copies of the far vertical line and both
-/// horizontal ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Outline {
     pub left: Line,
@@ -201,10 +169,6 @@ impl Outline {
     }
 }
 
-/// The outline of a camera whose ground `footprint` (top-left, top-right, bottom-left,
-/// bottom-right and middle, as world `(x, z)`) is drawn over a picture at `image` (`x, y, w,
-/// h` in the window) of a `map` sized world. `None` for a footprint less than a tenth of a unit
-/// deep, for which the game leaves the outline as it was.
 pub fn outline(footprint: [[f32; 2]; 5], map: [i32; 2], image: [i32; 4]) -> Option<Outline> {
     let [top_left, top_right, bottom_left, bottom_right, middle] = footprint;
     let top = (top_left[1] + top_right[1]) * 0.5;
@@ -265,7 +229,6 @@ pub fn outline(footprint: [[f32; 2]; 5], map: [i32; 2], image: [i32; 4]) -> Opti
     })
 }
 
-/// The handle's first authored shortcut, which toggles the minimap.
 pub fn handle_shortcut(content: &super::content::Content, extent: [f32; 2]) -> io::Result<Option<String>> {
     let windows = content.window_cache.at(extent.map(|value| value as u32))?;
     let root = gui::template(&windows, WINDOW).map_err(super::invalid)?;
@@ -275,15 +238,10 @@ pub fn handle_shortcut(content: &super::content::Content, extent: [f32; 2]) -> i
         .and_then(|shortcut| String::from_utf8(shortcut).ok()))
 }
 
-/// The clip of the outline's container: the world picture at `image` (`x, y, w, h` in the
-/// window), as left, top, right and bottom.
 fn picture_clip([x, y, w, h]: [i32; 4]) -> [i32; 4] {
     [x, y, x + w, y + h]
 }
 
-/// The world `(x, z)` the pointer at interface point `pointer` stands for over a picture at
-/// `image` (`x, y, w, h` on screen): across the picture wraps round the world, down it is held
-/// within the map's rows.
 pub fn world_point(pointer: [f32; 2], image: [i32; 4], map: [i32; 2]) -> [f32; 2] {
     let [x, y, w, h] = image.map(|value| value as f32);
     let mut u = ((pointer[0] as i32) as f32 - x) / w;
@@ -298,32 +256,23 @@ pub fn world_point(pointer: [f32; 2], image: [i32; 4], map: [i32; 2]) -> [f32; 2
     [map[0] as f32 * u, map[1] as f32 * v]
 }
 
-/// What the minimap shows this frame.
 pub struct State<'a> {
-    /// The camera's ground footprint; `None` keeps the outline last drawn.
     pub footprint: Option<[[f32; 2]; 5]>,
     pub map: [i32; 2],
-    /// How far right of its authored place the window stands.
     pub slide: i32,
-    /// Each tooltip's text; `None` where the localisation refused it.
     pub handle_tooltip: Option<&'a str>,
     pub offensive_tooltip: [Option<&'a str>; 2],
     pub defensive_tooltip: [Option<&'a str>; 2],
-    /// Ping mode, and whether its ping is offensive.
     pub ping: Option<bool>,
 }
 
-/// One frame of the minimap: its quads and tooltips, its controls in paint order, and where its
-/// world picture landed on screen.
 #[derive(Clone, Default)]
 pub struct MinimapDrawn {
     pub controls: Vec<Placed>,
     pub clicked: Vec<(PickerControl, usize)>,
-    /// The world picture, `x, y, w, h` in interface pixels.
     pub image: Option<[i32; 4]>,
 }
 
-/// The minimap's retained window; a new content or viewport rebuilds it.
 #[derive(Default)]
 pub struct Minimap {
     built: Option<(
@@ -350,7 +299,6 @@ impl Minimap {
         self.window.as_ref().is_some_and(Retained::pointing)
     }
 
-    /// Lays out and draws the minimap for `state`.
     #[allow(clippy::too_many_arguments, reason = "one frame's view, pointer and clock, as the picker's draw takes them")]
     pub fn draw(
         &mut self,
@@ -454,8 +402,6 @@ impl Minimap {
                     &why,
                 );
             }
-            // As the game does each frame, the outline's container clips to the world picture, so
-            // the lines and their seam copies show only on it.
             if let Some(border) = root.path_named(BORDER) {
                 match retained.instance.control(root, border) {
                     Ok(bound) => bound.clip = Some(picture_clip(image)),
@@ -538,13 +484,11 @@ impl Minimap {
         Ok(out)
     }
 
-    /// Whether a window of the minimap draws differently next frame without a call from the code.
     pub fn active(&self) -> bool {
         self.window.as_ref().is_some_and(Retained::active)
     }
 }
 
-/// The bindings: the outline lines, the plain handle, and the withheld ping controls.
 fn values(state: &State<'_>, outline: Option<&Outline>) -> Values {
     let mut values = Values::new();
     let hidden = Widget {
@@ -569,7 +513,6 @@ fn values(state: &State<'_>, outline: Option<&Outline>) -> Values {
         values.insert(
             name.to_owned(),
             Widget {
-                // The armed button shows its second frame.
                 frame: Some(u32::from(state.ping == Some(offensive))),
                 tooltip: hover(title),
                 tooltip_description: hover(description),
@@ -579,7 +522,6 @@ fn values(state: &State<'_>, outline: Option<&Outline>) -> Values {
             },
         );
     }
-    // Each line's stretch is half its length, as the game sets it on its two-pixel sprite.
     for (name, line) in outline
         .map(Outline::lines)
         .into_iter()
@@ -614,7 +556,6 @@ fn values(state: &State<'_>, outline: Option<&Outline>) -> Values {
 mod tests {
     use super::*;
 
-    /// A footprint of the box `left..right`, `bottom..top`, centred.
     fn footprint(left: f32, right: f32, bottom: f32, top: f32) -> [[f32; 2]; 5] {
         [
             [left, top],
@@ -631,8 +572,6 @@ mod tests {
     #[test]
     fn a_centred_camera_gives_a_symmetric_outline_north_up() {
         let drawn = outline(footprint(2016.0, 3616.0, 512.0, 1536.0), MAP, IMAGE).unwrap();
-        // x: 2016 / 5632 * 268 = 95.9, 3616 / 5632 * 268 = 172.1; y flips: z 1536 is row 24.
-        // The middle row 48.5 rounds half away from zero.
         assert_eq!(drawn.left.at, [96, 49]);
         assert_eq!(drawn.right.at, [171, 49]);
         assert_eq!(drawn.top.at, [134, 24]);
@@ -646,7 +585,6 @@ mod tests {
     fn a_tiny_footprint_grows_to_the_least_height_and_its_aspect_width() {
         let drawn = outline(footprint(2800.0, 2810.0, 1000.0, 1005.0), MAP, IMAGE).unwrap();
         assert_eq!(drawn.left.length, 6);
-        // Six pixels times the footprint's width over its depth.
         assert_eq!(drawn.top.length, 12);
         assert!(outline(footprint(2800.0, 2810.0, 1000.0, 1000.05), MAP, IMAGE).is_none());
     }
@@ -670,13 +608,10 @@ mod tests {
     fn the_pointer_wraps_across_and_holds_down_the_picture() {
         let image = [100, 50, 268, 97];
         assert_eq!(world_point([234.0, 98.5], image, MAP)[0], 5632.0 * 0.5);
-        // Off the left edge wraps round to the east.
         let wrapped = world_point([90.0, 60.0], image, MAP);
         assert!((wrapped[0] - 5632.0 * (1.0 - 10.0 / 268.0)).abs() < 0.01);
-        // Above the picture holds at the north edge, below at the south.
         assert_eq!(world_point([150.0, 0.0], image, MAP)[1], 2048.0);
         assert_eq!(world_point([150.0, 400.0], image, MAP)[1], 0.0);
-        // Down the picture runs north to south.
         assert_eq!(world_point([150.0, 50.0], image, MAP)[1], 2048.0);
     }
 
@@ -705,7 +640,6 @@ mod tests {
         assert_eq!(ping_mode(None, true, false, false), None);
         assert_eq!(ping_mode(Some(true), false, false, false), Some(true));
         assert_eq!(ping_mode(Some(false), false, false, false), Some(false));
-        // Shift turns an armed defensive ping offensive, as the game reads its keys.
         assert_eq!(ping_mode(Some(false), false, false, true), Some(true));
         assert_eq!(ping_mode(None, true, true, false), Some(false));
         assert_eq!(ping_mode(None, true, true, true), Some(true));
@@ -727,7 +661,6 @@ mod tests {
         assert_eq!(slide.offset(10.0, defines), 0);
         let half = slide.offset(10.25, defines);
         assert_eq!(half, (270.0 * ease(0.5)) as i32);
-        // Turned at the half way, it opens from where it stood.
         slide.toggle(10.25, defines.duration);
         assert!(slide.open());
         assert!((slide.offset(10.25, defines) - half).abs() <= 1);

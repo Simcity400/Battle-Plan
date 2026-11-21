@@ -1,32 +1,18 @@
-//! The steps built and not yet taken by every consumer, the steps consumers still hold, and the
-//! steps made for one consumer alone. A step is shared, never copied: each consumer takes its own
-//! reference, and a step comes back to the stepper once only the ring holds it.
 
 use crate::{changes::Changes, playhead::Reader, step::Step};
 use replay_data::Hour;
 use std::{collections::VecDeque, sync::Arc};
 
-/// One consumer: its reader, its next shared step, and the steps made for it alone, each handed
-/// once every shared step before `before` is taken. A parked one ([`Ring::park_behind`]) takes
-/// nothing and holds no step of its piece; it keeps the hour it stood at, and only steps past a
-/// reset or a gap after that hour wait for it.
 struct Seat {
     reader: Reader,
     next: u64,
     own: VecDeque<(u64, Arc<Step>)>,
     parked: Option<Hour>,
-    /// The last step it took left every table at its last hour (one that took none holds no table):
-    /// its tables stand where it stands.
     whole: bool,
-    /// It has said where its frames stand ([`crate::Consumer::advance`]). One that never has takes
-    /// steps at hours another reader gives it (a request on a map's behalf), so it is never parked:
-    /// its steps are as far behind as that reader's, which is.
     asks: bool,
-    /// It lands itself when far behind ([`crate::Consumer::lands_itself`]): never parked.
     lands_itself: bool,
 }
 
-/// A step built past the hour the frames are at: its seq, hours, and whether it is a gap.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Span {
     pub(crate) seq: u64,
@@ -38,29 +24,20 @@ pub(crate) struct Span {
 pub(crate) struct Ring {
     pub(crate) epoch: u64,
     size: usize,
-    /// The most bytes the steps built past the head hold; one step past it is always built.
     ahead: usize,
     budget: Option<Arc<crate::ByteBudget>>,
     next_seq: u64,
     built: VecDeque<Arc<Step>>,
-    /// Wrapping byte offsets of the built steps, including the boundary after the last.
     payload_offsets: VecDeque<usize>,
-    /// Taken by every consumer; back with the stepper once no consumer holds it.
     lent: Vec<Arc<Step>>,
     consumers: Vec<Option<Seat>>,
-    /// Steps made for a reader none of whose consumers had joined yet: the first that joins takes them.
     orphans: Vec<(Reader, u64, Arc<Step>)>,
-    /// The last hour of the newest shared step any consumer took in this epoch.
     taken: Option<Hour>,
-    /// The epoch's newest reset (the seek's, or a piece's first hour): its seq and hour.
     reset: Option<(u64, Hour)>,
-    /// The last hour of the newest step built.
     published: Option<Hour>,
-    /// The most bytes it keeps for a consumer behind: the lanes' cells, the state its steps change.
     bound: usize,
 }
 
-/// Every table of `step` stands at its last hour.
 fn whole(step: &Step) -> bool {
     step.tables.iter().all(|changes| changes.short() == 0 && changes.head().is_none_or(|head| head >= step.last))
 }
@@ -69,7 +46,6 @@ fn next_of(built: &VecDeque<Arc<Step>>, next: u64) -> usize {
     built.partition_point(|step| step.seq < next)
 }
 
-/// Where `before` goes among `own`, after every step already there for the same place.
 fn place(own: &VecDeque<(u64, Arc<Step>)>, before: u64) -> usize {
     own.partition_point(|(held, _)| *held <= before)
 }
@@ -114,19 +90,11 @@ impl Ring {
         Ok(())
     }
 
-    /// Fewer than its size of the steps built end past `head`, and fewer than its size are not yet
-    /// taken by the consumer furthest on. The head bounds how far ahead of the clock the stepper
-    /// builds; the furthest consumer bounds how far ahead of every reader, so a head driven to the
-    /// newest step does not chase the stepper. A step the head has passed and a slower consumer has
-    /// not taken waits for it, shared, and takes no room: a consumer late to take holds nobody, and
-    /// once those steps hold more than the lanes' state it is parked ([`Self::park_behind`]).
-    /// Past the head, the steps built hold fewer bytes than its bound ahead, once one is built.
     pub(crate) fn room(&self, head: Hour) -> bool {
         let past = self.past(head);
         past < self.size && self.untaken() < self.size && (past == 0 || (self.past_bytes(head) < self.ahead && self.budget.as_ref().is_none_or(|b| b.used() < b.limit())))
     }
 
-    /// Steps built past the head, at most `size`, holding at most `ahead` bytes.
     pub(crate) fn resize(&mut self, size: usize, ahead: usize) {
         (self.size, self.ahead) = (size, ahead);
     }
@@ -135,13 +103,11 @@ impl Ring {
         self.size
     }
 
-    /// The steps built past `head`, their bytes, and whether its bound ahead stops it short of its size.
     pub(crate) fn lead(&self, head: Hour) -> (usize, usize, bool) {
         let (past, bytes) = (self.past(head), self.past_bytes(head));
         (past, bytes, past > 0 && past < self.size && (bytes >= self.ahead || self.budget.as_ref().is_some_and(|b| b.used() == b.limit())))
     }
 
-    /// The bytes of the steps built past `head`.
     fn past_bytes(&self, head: Hour) -> usize {
         self.payload_between(self.built.partition_point(|step| step.last <= head), self.built.len())
     }
@@ -154,8 +120,6 @@ impl Ring {
         self.consumers.iter().flatten().filter(|seat| seat.parked.is_none()).map(|seat| seat.next).max()
     }
 
-    /// Where a seat holds the steps from: its next, or for a parked one the first reset or gap past
-    /// the hour it stood at.
     fn holds_from(&self, seat: &Seat) -> u64 {
         match seat.parked {
             None => seat.next,
@@ -163,29 +127,23 @@ impl Ring {
         }
     }
 
-    /// The first step built after `from` that leaves its piece: a reset or a gap.
     fn piece_end(&self, from: Hour) -> Option<&Arc<Step>> {
         self.built.iter().find(|step| step.first > from && (step.reset || step.piece.is_none()))
     }
 
-    /// The steps built that no consumer has taken yet (with no consumer, every one).
     fn untaken(&self) -> usize {
         self.built.len() - next_of(&self.built, self.furthest().unwrap_or(0))
     }
 
-    /// The steps built that end past `head` (steps are in the order of their hours).
     pub(crate) fn past(&self, head: Hour) -> usize {
         self.built.len() - self.built.partition_point(|step| step.last <= head)
     }
 
-    /// The steps built and not yet taken by every consumer.
     #[cfg(test)]
     pub(crate) fn steps_kept(&self) -> usize {
         self.built.len()
     }
 
-    /// The bytes of the steps the consumer furthest on has taken and a slower one has not: what
-    /// the ring keeps for consumers behind (the steps past the furthest are its read-ahead).
     #[cfg(test)]
     pub(crate) fn trailing_bytes(&self) -> usize {
         self.built.range(..self.trailing_end()).map(|step| step.payload()).sum()
@@ -200,18 +158,11 @@ impl Ring {
         self.built.iter().map(|step| step.payload()).max().unwrap_or(0)
     }
 
-    /// The place after the steps the consumer furthest on has taken: one that is there, not parked
-    /// and holding no landing it has not taken yet.
     fn trailing_end(&self) -> usize {
         let furthest = self.consumers.iter().flatten().filter(|seat| seat.parked.is_none() && seat.own.is_empty()).map(|seat| seat.next).max();
         furthest.map_or(0, |next| next_of(&self.built, next))
     }
 
-    /// Each consumer for whom it keeps more than its bound (the bytes of the steps the consumer
-    /// furthest on has taken and it has not) is parked: it lets go of them and takes nothing until [`Self::land_at`] or
-    /// [`Self::jump`]. Not one that never said where it stands, holds a step made for it alone,
-    /// stands before a reset, or was left short by the last step it took (its tables stand before
-    /// the hour it does).
     fn park_behind(&mut self) {
         let end = self.trailing_end();
         if self.payload_between(0, end) <= self.bound {
@@ -234,7 +185,6 @@ impl Ring {
         }
     }
 
-    /// Every step of the epoch is abandoned, those made for one consumer included: a new one begins.
     pub(crate) fn abandon(&mut self) -> u64 {
         self.epoch += 1;
         retire(&mut self.lent, self.budget.is_none(), self.built.drain(..));
@@ -250,7 +200,6 @@ impl Ring {
         self.epoch
     }
 
-    /// The step built, unless its epoch was abandoned: then it comes back.
     pub(crate) fn publish(&mut self, mut step: Arc<Step>) -> std::io::Result<Result<(), Arc<Step>>> {
         if step.epoch != self.epoch {
             return Ok(Err(step));
@@ -268,10 +217,6 @@ impl Ring {
         Ok(Ok(()))
     }
 
-    /// A step no consumer holds any more, to be built again, and the others no consumer holds, to
-    /// be freed: one whose buffers are far larger than what it last held, and every free one past
-    /// the ring's size, which stay for the builds to come (a burst of them after a frame let go of
-    /// several makes none anew).
     pub(crate) fn reclaim(&mut self) -> (Option<Arc<Step>>, Vec<Arc<Step>>) {
         let (mut kept, mut spare, mut free) = (None, Vec::new(), 0);
         let mut at = 0;
@@ -293,8 +238,6 @@ impl Ring {
         (kept, spare)
     }
 
-    /// A consumer of `reader`, from the oldest step kept on, with the steps made for its reader
-    /// before it joined.
     pub(crate) fn join(&mut self, reader: Reader) -> usize {
         let start = self.built.front().map_or(self.next_seq, |step| step.seq);
         let mut own = VecDeque::new();
@@ -318,7 +261,6 @@ impl Ring {
         self.trim();
     }
 
-    /// The steps made for `reader` and not yet given to a consumer are let go.
     pub(crate) fn forget(&mut self, reader: Reader) {
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.orphans).into_iter().partition(|(held, _, _)| *held == reader);
         self.orphans = kept;
@@ -331,7 +273,6 @@ impl Ring {
         }
     }
 
-    /// Consumer `id` says where its frames stand.
     pub(crate) fn asks(&mut self, id: usize) {
         if let Some(seat) = self.consumers.get_mut(id).and_then(Option::as_mut) {
             seat.asks = true;
@@ -342,9 +283,6 @@ impl Ring {
         self.consumers.get(id)?.as_ref().map(|seat| seat.reader)
     }
 
-    /// The hour consumer `id` stands at by the steps it took: before the first shared step it has not
-    /// taken, or the newest step's last. None when parked, left short by its last step, or standing
-    /// before a reset.
     pub(crate) fn stands_at(&self, id: usize) -> Option<Hour> {
         let seat = self.consumers.get(id)?.as_ref().filter(|seat| seat.parked.is_none() && seat.whole)?;
         match self.built.get(next_of(&self.built, seat.next)) {
@@ -353,13 +291,10 @@ impl Ring {
         }
     }
 
-    /// The consumers holding `step`, made for them alone.
     pub(crate) fn holding(&self, step: &Arc<Step>) -> Vec<usize> {
         self.consumers.iter().enumerate().filter(|(_, seat)| seat.as_ref().is_some_and(|seat| seat.own.iter().any(|(_, held)| Arc::ptr_eq(held, step)))).map(|(id, _)| id).collect()
     }
 
-    /// Consumer `id`, still standing at `hour` and holding `revoke`, takes `step` before anything
-    /// else, and `revoke` no more. Given back otherwise.
     pub(crate) fn land_standing(&mut self, id: usize, hour: Hour, step: Arc<Step>, revoke: &Arc<Step>) -> std::io::Result<Result<(), Arc<Step>>> {
         if self.stands_at(id) != Some(hour) {
             return Ok(Err(step));
@@ -372,18 +307,14 @@ impl Ring {
         Ok(Ok(()))
     }
 
-    /// The hour parked consumer `id` stood at.
     pub(crate) fn parked(&self, id: usize) -> Option<Hour> {
         self.consumers.get(id)?.as_ref()?.parked
     }
 
-    /// Every parked consumer, its reader and the hour it stood at.
     pub(crate) fn parked_seats(&self) -> Vec<(usize, Reader, Hour)> {
         self.consumers.iter().enumerate().filter_map(|(id, seat)| seat.as_ref().and_then(|seat| Some((id, seat.reader, seat.parked?)))).collect()
     }
 
-    /// Where the frames are, for parked consumer `id`: the hour the consumer furthest on stands at
-    /// (with none, the newest step's), no later than the end of the piece it stood in.
     pub(crate) fn catch_hour(&self, id: usize) -> Option<Hour> {
         let from = self.parked(id)?;
         let hour = match self.furthest() {
@@ -393,9 +324,6 @@ impl Ring {
         Some(self.piece_end(from).map_or(hour, |step| hour.min(step.first - 1)))
     }
 
-    /// Parked consumer `id` takes `steps` first, then the steps built after `hour`: from the first
-    /// step built past it (after any of no hours ending there, which caught a table up to it), or
-    /// from the next built when `hour` is the newest step's last. Given back when neither holds.
     pub(crate) fn land_at(&mut self, id: usize, hour: Hour, steps: Vec<Arc<Step>>) -> std::io::Result<Result<(), Vec<Arc<Step>>>> {
         let position = match self.built.iter().find(|step| step.last > hour) {
             Some(step) if step.first == hour + 1 => step.seq,
@@ -411,9 +339,6 @@ impl Ring {
         Ok(Ok(()))
     }
 
-    /// The steps consumer `id` has not taken whose last hour `head` has reached, in order: the
-    /// shared ones and those made for it alone, each of these once every shared step before its
-    /// place is taken.
     pub(crate) fn take(&mut self, id: usize, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
         let Some(seat) = self.consumers[id].as_mut().filter(|seat| seat.parked.is_none()) else { return 0 };
         let mut taken = 0;
@@ -449,8 +374,6 @@ impl Ring {
         taken
     }
 
-    /// The steps consumer `id` has not taken, in the order its takes bring them, each shared and
-    /// none taken by looking.
     pub(crate) fn ahead(&self, id: usize, out: &mut Vec<Arc<Step>>) {
         let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else { return };
         let mut next = seat.next;
@@ -465,7 +388,6 @@ impl Ring {
         out.extend(own.map(|(_, held)| Arc::clone(held)));
     }
 
-    /// Whether a step consumer `id` has not taken ends at or before `head`.
     pub(crate) fn reaches(&self, id: usize, head: Hour) -> bool {
         let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else { return false };
         match seat.own.front().filter(|(before, _)| *before <= seat.next) {
@@ -474,8 +396,6 @@ impl Ring {
         }
     }
 
-    /// Where the frames are: the place after every shared step any consumer took, and never before
-    /// the epoch's reset; and the last hour of the step before that place. None before the reset.
     pub(crate) fn frames(&self) -> Option<(u64, Hour)> {
         let (reset, hour) = self.reset?;
         let position = self.furthest().unwrap_or(0).max(reset + 1);
@@ -486,7 +406,6 @@ impl Ring {
         Some((position, before.map(|step| step.last).or(self.taken).unwrap_or(hour)))
     }
 
-    /// [`Self::frames`] and every step built past that place, unless one is a reset.
     pub(crate) fn plan(&self, epoch: u64) -> Option<(u64, Hour, Vec<Span>)> {
         if epoch != self.epoch {
             return None;
@@ -499,9 +418,6 @@ impl Ring {
         Some((position, hour, past.map(|step| Span { seq: step.seq, first: step.first, last: step.last, gap: step.piece.is_none() }).collect()))
     }
 
-    /// Each step `seq` takes the change sets given (replacing those of the same tables, given back).
-    /// No consumer has taken it; one that only looked at it ([`Self::ahead`]) keeps what it was
-    /// lent: the ring holds a copy changed in its place.
     pub(crate) fn complete(&mut self, sets: Vec<(u64, Vec<Changes>)>) -> std::io::Result<Vec<Changes>> {
         let mut reservations = VecDeque::new();
         if let Some(budget) = &self.budget {
@@ -552,8 +468,6 @@ impl Ring {
         Ok(replaced)
     }
 
-    /// `steps`, in order, for every consumer of `reader` alone, each handed once every shared step
-    /// before `before` is taken; kept for the first consumer of it to join when none has.
     pub(crate) fn give(&mut self, reader: Reader, before: u64, steps: &[Arc<Step>]) -> std::io::Result<()> {
         for step in steps { self.admit(step)?; }
         let mut given = false;
@@ -570,13 +484,10 @@ impl Ring {
         Ok(())
     }
 
-    /// Whether `step`, made for one consumer alone, is still to be taken by a consumer of its reader.
     pub(crate) fn holds_own(&self, step: &Arc<Step>) -> bool {
         self.consumers.iter().flatten().any(|seat| seat.own.iter().any(|(_, held)| Arc::ptr_eq(held, step))) || self.orphans.iter().any(|(_, _, held)| Arc::ptr_eq(held, step))
     }
 
-    /// Consumer `id` passes over every step built and every step made for it alone; the next it
-    /// takes is `step`, once its head reaches it, then the steps built after.
     pub(crate) fn jump(&mut self, id: usize, step: Arc<Step>) -> std::io::Result<()> {
         self.admit(&step)?;
         let next = self.next_seq;
@@ -592,11 +503,6 @@ impl Ring {
         Ok(())
     }
 
-    /// Every step built from `position` on (none taken by any consumer) leaves: the stepper builds
-    /// them again from the hour before it. A step made for one consumer alone placed past it (a
-    /// landing at the newest step built) leaves too, as does the place of a consumer that landed
-    /// there: the readers and the tables of those steps, and the consumers that landed, are given
-    /// back to be landed again.
     pub(crate) fn cut(&mut self, position: u64) -> (Vec<(Reader, Vec<usize>)>, Vec<usize>) {
         let at = next_of(&self.built, position);
         retire(&mut self.lent, self.budget.is_none(), self.built.drain(at..));
@@ -626,12 +532,10 @@ impl Ring {
         (owed, landing)
     }
 
-    /// The seq the next step built will have.
     pub(crate) fn next_seq(&self) -> u64 {
         self.next_seq
     }
 
-    /// Steps every consumer has taken leave the ring. With no consumer, none does.
     fn trim(&mut self) {
         let Some(least) = self.consumers.iter().flatten().map(|seat| self.holds_from(seat)).min() else { return };
         while self.built.front().is_some_and(|step| step.seq < least) {
@@ -640,7 +544,6 @@ impl Ring {
         }
     }
 
-    /// Every step it holds: built, lent, and made for one consumer.
     pub(crate) fn steps(&self) -> Vec<Arc<Step>> {
         let own = self.consumers.iter().flatten().flat_map(|seat| seat.own.iter().map(|(_, step)| step));
         self.built.iter().chain(self.lent.iter()).chain(own).chain(self.orphans.iter().map(|(_, _, step)| step)).cloned().collect()

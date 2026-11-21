@@ -9,7 +9,6 @@ use dashboard_core::config::LoadContext;
 use dashboard_follow::panel::Panel;
 use serde_json::Value;
 
-/// The panel the follow query `asked` names, when a rows-at-an-hour product has its key.
 pub fn panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
     let kind = asked.get("panel")?.as_str()?;
     let entry = super::AT_HOUR.iter().find(|entry| entry.registered.key == kind)?;

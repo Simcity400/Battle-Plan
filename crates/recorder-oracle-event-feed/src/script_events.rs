@@ -1,4 +1,3 @@
-//! Save-certified retained state, separate from unsaved occurrence history.
 use installed_content_save::{SaveDocument, script_events as saved};
 use recorder_oracle_support::{
     report::Report,
@@ -61,8 +60,6 @@ fn scopes(
         return Err(invalid(format!("{subject} scope graph empty")));
     }
     let mut pending = vec![(0_usize, 0_usize)];
-    // The save is a tree even where native links share a node. Its finite
-    // node count bounds this iterative comparison without a selected depth cap.
     while let Some((a, b)) = pending.pop() {
         let a_node = actual
             .get(a)
@@ -121,8 +118,6 @@ fn scopes(
                 pending.push((child as usize, saved_child));
             }
         }
-        // Target storage is independently refused; it does not erase known
-        // membership, duration or other scope operands. Combat contexts are unsaved.
         if a_node.bindings[1] as usize == a && a_node.target_storage_unrecorded {
             return Err(invalid(format!(
                 "{label}.saved_event_target storage is unrecorded"
@@ -138,12 +133,8 @@ fn scopes(
     Ok(())
 }
 
-/// A comparison owner: its tag and, when the frame witnesses its instance,
-/// its native identity.
 pub(super) type Owner<'a> = (&'a [u8], Option<EventFeedCountry>);
 
-/// Compare one domain, recording its refusal under its own group so the
-/// other domains are still compared.
 fn domain(
     report: &mut Report,
     group: &str,
@@ -154,7 +145,6 @@ fn domain(
     }
 }
 
-/// Uncertified owners: one entry per reason, naming every owner it refuses.
 pub(super) fn uncertified(
     report: &mut Report,
     group: &str,
@@ -173,8 +163,6 @@ pub(super) fn uncertified(
     }
 }
 
-/// Only an unnamed save country or a frame context that cannot be read fails the
-/// group as a whole; every retained domain and owner is otherwise compared.
 pub fn compare(
     frame: &DecodedFrame,
     document: &SaveDocument,
@@ -386,9 +374,6 @@ mod tests {
             (b"CCC".as_slice(), Some(owner(3))),
         ]
     }
-    /// One Complete interval: pending certified and empty, fired never
-    /// baselined, AAA's delayed queue and decisions never baselined, BBB and
-    /// CCC each certified with one 30-hour timer and empty decisions.
     fn state() -> ScriptEventState {
         let mut changes = vec![
             (owner(0), Change::PendingBaseline, None),
@@ -448,7 +433,6 @@ mod tests {
         state.observe(&row).unwrap();
         state
     }
-    /// The saved counterpart of `state`'s 30-hour timers.
     fn timer() -> saved::Delayed {
         saved::Delayed {
             definition: Some(saved::Definition::Name(b"synthetic.1".to_vec())),
@@ -491,7 +475,6 @@ mod tests {
         saved
             .delayed
             .insert(b"CCC".to_vec(), Err("synthetic unreadable queue".into()));
-        // The readable sibling's own difference must still be reported.
         queue(&mut saved, b"BBB")[0].days = Some(2);
         let mut report = Report::default();
         compare_retained(&saved, &owners(), &BTreeMap::new(), &state, &mut report);
@@ -601,7 +584,6 @@ mod tests {
             "{failed:?}"
         );
         assert_eq!(failed.len(), 3, "{failed:?}");
-        // The certified owner's difference survives every refusal beside it.
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("BBB.delayed_event[0].duration"));
         assert_eq!(report.compared_tables["EventFeedHistory decision registry"], 2);

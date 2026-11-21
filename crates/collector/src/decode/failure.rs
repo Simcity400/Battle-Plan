@@ -1,4 +1,3 @@
-//! Failure-only panic text. Context follows the decode lease, never live state.
 
 use std::{
     any::Any,
@@ -66,8 +65,6 @@ fn confirm(payload: &(dyn Any + Send), fallback: &'static str) -> &'static str {
     })
 }
 
-/// Join/drain fallback also retains payloads when no scoped hook ran. Never
-/// drop an arbitrary panic payload: its destructor can panic during teardown.
 pub(super) fn joined(payload: Box<dyn Any + Send>, fallback: &'static str) -> &'static str {
     let message = confirm(&*payload, fallback);
     std::mem::forget(payload);
@@ -76,8 +73,6 @@ pub(super) fn joined(payload: Box<dyn Any + Send>, fallback: &'static str) -> &'
 
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 
-/// Installed before workers start; restored verbatim after they join. A pinned
-/// collector retains this owner with its workers, so no hook outlives DLL code.
 pub(crate) struct HookGuard(Option<Arc<Hook>>);
 
 impl HookGuard {
@@ -86,8 +81,6 @@ impl HookGuard {
         let chained = previous.clone();
         std::panic::set_hook(Box::new(move |info| {
             if let Some(context) = CONTEXT.get() {
-                // All formatting/allocation is on this failure path. The hook
-                // runs before unwind erases the exact stage and source site.
                 let Context {
                     worker,
                     stage,
@@ -122,9 +115,6 @@ impl HookGuard {
 
 impl Drop for HookGuard {
     fn drop(&mut self) {
-        // Workers are joined before this owner is released. Removing our hook
-        // drops its only other Arc; restore the original closure, not a wrapper
-        // that would still point into the unloaded DLL.
         drop(std::panic::take_hook());
         let previous = Arc::try_unwrap(self.0.take().unwrap())
             .unwrap_or_else(|_| unreachable!("decode panic hook still borrowed"));
@@ -167,8 +157,6 @@ impl Scope {
     }
 }
 
-/// Confirm only an escaping worker panic. An internally contained panic's
-/// hook invocation must not become the cause of a later terminal failure.
 pub(super) fn worker(run: impl FnOnce()) {
     let _scope = Scope::worker("decode worker");
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {

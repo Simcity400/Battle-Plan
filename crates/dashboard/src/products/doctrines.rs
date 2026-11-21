@@ -1,4 +1,3 @@
-//! A selected country's complete doctrine state at the requested replay hour.
 use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Product};
 use crate::{
@@ -37,8 +36,6 @@ pub const TABLES: [TableId; 13] = [
 ];
 
 fn selected_tables() -> Vec<TableId> {
-    // Authored effects and generated prose can reach every effect operand,
-    // including through scripted effects and localisation.
     let mut selected = BTreeSet::from(TABLES);
     selected.extend(crate::effect_description::recorded_tables());
     selected.into_iter().collect()
@@ -154,7 +151,6 @@ struct State {
         Arc<installed_content_core::doctrines::Database>,
     )>,
 }
-/// The doctrine content of `resolved`, read once per resolved content.
 pub(crate) fn database(source: &Source, resolved: &Arc<installed_content_core::content::ResolvedContent>) -> io::Result<Arc<installed_content_core::doctrines::Database>> {
     let shared = source.state::<State>();
     let mut state = shared.lock().map_err(|_| invalid("Doctrine content cache poisoned"))?;
@@ -284,7 +280,6 @@ fn text(bytes: &[u8]) -> io::Result<String> {
         .map_err(|_| dashboard_core::refused("1 doctrine text value has unsupported UTF-8 bytes"))
 }
 
-/// The country holding `tag` this hour, as every per-country product resolves it.
 fn doctrine_country<'a>(
     frame: &'a DecodedFrame,
     country: &Country,
@@ -820,8 +815,6 @@ mod tests {
             .unwrap()
             .set_synthetic_environment(Default::default());
         let selected = selected_tables();
-        // Exercise exactly the loader's selection, rather than a complete frame
-        // that would hide missing authored-description dependencies.
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 7,
@@ -839,7 +832,6 @@ mod tests {
             }),
         };
         for rows in [
-            // An earlier holder of the tag the links do not resolve is never the selected country.
             TableRows::Countries(vec![
                 CountryRow {
                     id: 5,
@@ -1042,7 +1034,7 @@ mod tests {
             "{:?}",
             reply.warnings
         );
-        assert!(rewards[1].description.is_empty()); // Optional generated prose is absent.
+        assert!(rewards[1].description.is_empty());
         let completed = reply
             .inventory
             .iter()
@@ -1252,7 +1244,6 @@ mod tests {
                 token: 1,
                 literal: b"slot_seven".to_vec(),
             }]),
-            // The unlinked row's slot has a status of its own that must not be read.
             TableRows::DoctrineCountries(vec![
                 DoctrineCountryRow {
                     slot: 7,

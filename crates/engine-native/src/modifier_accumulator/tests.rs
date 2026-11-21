@@ -39,7 +39,6 @@ fn requested_operand_keeps_lazy_disabled_presence_separate_from_raw_and_clamped_
         &4_u32.to_le_bytes(),
     );
     memory.put(definition::ELIGIBILITY_CALLBACK_RVA.0, &0_u64.to_le_bytes());
-    // No raw payload or clamp word exists: a disabled present key must not read it.
     assert_eq!(
         requested_operand_at(&memory, 0, 0x1000, 1),
         Ok(RequestedOperand {
@@ -676,8 +675,6 @@ fn raw_lookup_batches_preserve_the_first_error_and_only_its_good_output_prefix()
         } else {
             "modifier accumulator entry unreadable"
         };
-        // This reader uses Memory's default per-field implementation, as
-        // observation-recording wrappers do; it has no batch override.
         assert_eq!(
             lookup_many(&source, 0x1000, &keys, &mut output),
             Err(reason)
@@ -1033,8 +1030,6 @@ fn demand_counts_entries_read_not_a_header_count_nothing_backs() {
     assert_eq!(arena.capacity().entries, 70);
 }
 
-/// An observation held from an earlier capture serves its address without a
-/// read, and the capture reports it as observed for the next one.
 #[test]
 fn held_observations_serve_their_address_without_reading() {
     let memory = SnapshotMemory::new(70, None);
@@ -1097,7 +1092,7 @@ fn requested_lookup_does_not_require_the_capacity_word() {
                 (0x10c, 4) => out.copy_from_slice(&self.0.to_le_bytes()),
                 (0x200, 4) => out.copy_from_slice(&7_u32.to_le_bytes()),
                 (0x208, 8) => out.copy_from_slice(&123_i64.to_le_bytes()),
-                _ => return false, // Capacity is unreadable, including a combined header.
+                _ => return false,
             }
             true
         }

@@ -2,16 +2,12 @@ use super::*;
 
 #[test]
 fn the_native_wrapped_distance_gives_fixed5_pixels() {
-    // The square root stops once its square is within a hundredth of the input
-    // (value * 1000 / 100000), so a root sits near, not at, the true one.
     let close = |value: i64, expected: i64| (value - expected).abs() * 10_000 <= expected;
-    // x 95 and 5 on a 100-wide map are 10 apart across the wrap.
     let wrapped = wrapped_distance(100, (1, [95, 0]), (2, [5, 4]));
     assert!(close(wrapped, 1_077_033), "{wrapped}");
     let plain = wrapped_distance(100, (1, [0, 0]), (2, [3, 4]));
     assert!(close(plain, 500_000), "{plain}");
     assert_eq!(wrapped_distance(100, (7, [0, 0]), (7, [3, 4])), 0);
-    // Past 2^21 the input is shifted ten bits and the root five.
     let large = wrapped_distance(10_000, (1, [0, 0]), (2, [2_000, 0]));
     assert!((199_900_000..=200_100_000).contains(&large), "{large}");
 }
@@ -34,12 +30,9 @@ fn the_first_candidate_is_taken_and_only_a_greater_score_replaces_it() {
         position: &position,
         victory_points: &victory_points,
     };
-    // 1 VP at distance 5 scores 20.0; at 10 it scores 10.0.
     assert_eq!(picker.pick(1, &[11, 10]), Ok(Some(10)));
-    // No victory points score zero, below the cutoff: the region's name.
     assert_eq!(picker.pick(1, &[12]), Ok(None));
     assert_eq!(picker.pick(1, &[]), Ok(None));
-    // The battle province itself is at distance zero and scores 0xFFFFFFFF.
     let own = BTreeMap::from([(1, 0)]);
     let own_points = |id: u32| Ok(own.get(&id).copied().unwrap_or(1));
     let picker_own = Picker {
@@ -71,15 +64,10 @@ fn candidates_are_the_regions_states_in_first_appearance_order() {
         (8, state(8, &[31, 30])),
     ]);
     let valid = |province: u32| province != 404;
-    // Sea province 5 has no state and 404 is no map province; state 8
-    // comes first through province 30 and brings 31, which lies outside
-    // the region; state 7's repeat of 21 is dropped.
     assert_eq!(
         battle_name_candidates(&regions, &states, &valid)[&1],
         vec![31, 30, 20, 21, 22]
     );
-    // Province 20 listed by states 7 and 9 belongs to state 9, the later
-    // one initialised, yet stays in both lists.
     let states = BTreeMap::from([(7, state(7, &[20, 21])), (9, state(9, &[20, 23]))]);
     let regions = BTreeMap::from([(1, region(1, &[20, 21]))]);
     assert_eq!(

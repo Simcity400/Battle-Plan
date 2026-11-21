@@ -1,14 +1,3 @@
-//! The naval hover source trees against the diagnostic oracle.
-//!
-//! A recording from a collector built with `naval_tree_oracle` holds, beside
-//! NavalModifierTrees, one NavalModifierTreeSamples row per source occurrence
-//! a live combat reached: the native tree read afresh at that hour through
-//! the occurrence's own accumulator. Playback joins each occurrence to its
-//! trees by recorded identities ([`replay_data::naval_trees`]); this check makes
-//! that join from NavalCombatDetails and NavalCombatShips, as the viewer
-//! does, and requires the identity the capture filed and the trees the
-//! recording holds for it (carried or read) to equal the fresh read.
-//! Recordings without samples report that no oracle was captured.
 
 use replay_data::{
     naval_trees, naval_trees::Owner, naval_trees::SideSource, naval_trees::Trees,
@@ -16,23 +5,17 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-/// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
 
 #[derive(Default)]
 pub(super) struct Checker {
     hours: u64,
-    /// Hours whose samples were not recorded (production builds), by reason.
     unsampled: std::collections::BTreeMap<String, u64>,
-    /// Hours with samples whose trees or combat tables are incomplete.
     incomplete: u64,
     samples: u64,
     equal: u64,
-    /// Samples whose playback join names another identity.
     identity_mismatches: u64,
-    /// Samples whose recorded trees differ from the fresh read.
     tree_mismatches: u64,
-    /// Samples whose occurrence playback cannot find.
     unjoined: u64,
     listed: Vec<String>,
 }
@@ -153,7 +136,6 @@ impl Checker {
     }
 }
 
-/// The identity playback joins for one sampled occurrence.
 fn join(
     sample: &NavalModifierTreeSampleRow,
     details: &[replay_data::rows::NavalCombatDetailsRow],
@@ -279,10 +261,8 @@ mod tests {
         checker.observe(&frame(5_000, 5_000, Kind::Country));
         assert_eq!(checker.counts(), [2, 2, 0, 0, 0]);
         assert_eq!(checker.failures(), [0, 0]);
-        // A carried tree that drifted from the fresh read is a mismatch.
         checker.observe(&frame(5_000, 6_000, Kind::Country));
         assert_eq!(checker.counts(), [4, 2, 0, 2, 0]);
-        // A capture that filed the source under another kind is named.
         checker.observe(&frame(5_000, 5_000, Kind::Commander));
         assert_eq!(checker.counts(), [6, 2, 2, 2, 0]);
         assert_eq!(checker.failures(), [4, 0]);

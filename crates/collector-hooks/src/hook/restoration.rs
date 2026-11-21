@@ -1,12 +1,3 @@
-//! Prepared loader-thread storage for restoration and final IP quiescence.
-//!
-//! A [`Batch`] restores many families under one suspension: its collect pass
-//! records each family's first unrestored publication and reports it not ready,
-//! so the family stops before any step that depends on the outcome; one
-//! suspension checks and restores every recorded publication, each with exactly
-//! the checks its own restore makes; the report pass answers each from the
-//! recording, and a later publication of a family that restored waits for the
-//! next batch.
 use super::*;
 use std::cell::RefCell;
 
@@ -39,8 +30,6 @@ enum Outcome {
     Refused(Refusal),
 }
 
-/// One recorded publication: its hooks in `references` and the ranges of
-/// those it owns in `ranges`.
 struct Group {
     start: usize,
     len: usize,
@@ -157,7 +146,6 @@ impl Scratch {
             }
             self.references.push(hook as *mut Hook);
         }
-        // The iterator lends disjoint hooks only for this call; no reference survives it.
         let hooks = unsafe {
             std::slice::from_raw_parts_mut(
                 self.references.as_mut_ptr().cast::<&mut Hook>(),
@@ -169,7 +157,6 @@ impl Scratch {
         ready
     }
 
-    /// Collect pass: keep the publication for the batch and report it not ready.
     fn record<'a>(&mut self, hooks: impl Iterator<Item = &'a mut Hook>) -> bool {
         let start = self.references.len();
         for hook in hooks {
@@ -185,7 +172,6 @@ impl Scratch {
             }
             self.references.push(hook as *mut Hook);
         }
-        // SAFETY: the pointers were exclusive references lent by this call.
         if self.references[start..]
             .iter()
             .all(|hook| !unsafe { &**hook }.is_enabled())
@@ -210,8 +196,6 @@ impl Scratch {
         false
     }
 
-    /// Report pass: the recorded outcome of these hooks' publication. One the
-    /// batch did not record waits for the next.
     fn answer<'a>(&mut self, hooks: impl Iterator<Item = &'a mut Hook>) -> bool {
         let (mut first, mut len, mut enabled) = (ptr::null_mut(), 0, false);
         for hook in hooks {
@@ -403,7 +387,6 @@ impl Scratch {
         }
     }
 
-    /// Every recorded publication under one suspension; the number restored.
     fn publish_batch(&mut self) -> usize {
         self.mode = Mode::Report;
         if self.groups.is_empty() {
@@ -429,9 +412,6 @@ impl Scratch {
             threads,
             ..
         } = self;
-        // SAFETY: each pointer was an exclusive reference to a distinct hook
-        // lent to the collect pass; nothing else reaches those hooks until the
-        // report pass.
         let hooks = unsafe {
             std::slice::from_raw_parts_mut(references.as_mut_ptr().cast::<&mut Hook>(), references.len())
         };
@@ -536,7 +516,6 @@ impl Scratch {
         if written {
             let restored = |group: &Group| group.outcome == Some(Outcome::Restored);
             if let Err(code) = shared::real_flush() {
-                // Put every written publication back before any thread runs.
                 for group in groups.iter_mut().filter(|group| restored(group)) {
                     for index in group.start..group.start + group.len {
                         let (enabled, owned) = previous[index];
@@ -686,14 +665,9 @@ pub fn active() -> bool {
     SCRATCH.with_borrow(|scratch| scratch.is_some())
 }
 
-/// A batch over the prepared restoration: [`Batch::collect`] starts the
-/// collect pass, [`Batch::publish`] restores what it recorded and starts the
-/// report pass, and dropping it ends the batch. Not `Send`: the batch is the
-/// calling thread's.
 pub struct Batch(std::marker::PhantomData<*const ()>);
 
 impl Batch {
-    /// `None` without prepared restoration or inside another batch.
     pub fn collect() -> Option<Self> {
         SCRATCH.with_borrow_mut(|scratch| {
             let scratch = scratch.as_mut()?;
@@ -707,8 +681,6 @@ impl Batch {
         })
     }
 
-    /// Restore every recorded publication under one suspension; the number
-    /// restored.
     pub fn publish(&mut self) -> usize {
         SCRATCH.with_borrow_mut(|scratch| {
             scratch

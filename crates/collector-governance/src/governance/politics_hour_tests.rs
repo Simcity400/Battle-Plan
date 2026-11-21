@@ -1,12 +1,3 @@
-//! A quiet politics hour ([`super::politics_hour`]): it publishes what a walk
-//! of the same memory publishes while reading no country's politics; a
-//! hooked structure write, a moved party-leader certificate or a new country
-//! walks; a popularity write gathers only popularity; and the party and
-//! party-leader stores still carry per country after quiet hours.
-//!
-//! The domains are each test's own (`Watches`), so parallel tests never share
-//! a token; the hooks' global domains are exercised in
-//! [`crate::political_status_changes`].
 use super::*;
 use crate::{
     character_changes, party_changes, party_leader_changes,
@@ -19,16 +10,12 @@ use engine_native::{
 };
 use std::cell::RefCell;
 
-/// The game state at zero with its country table and links; each country in
-/// its own region, the `CCountry` at its start (its fields end below 0x1600)
-/// and its politics objects from [`POLITICS`] on.
 const GS: usize = 0;
 const CTAB: usize = 0x1000;
 const LTAB: usize = 0x1200;
 const FIRST: usize = 0x4000;
 const REGION: usize = 0x4000;
 const POLITICS: usize = 0x2000;
-/// The sentinel, two countries and a slot a dynamic country takes later.
 const SLOTS: usize = 4;
 const COUNTRIES: usize = 3;
 const SIZE: usize = FIRST + COUNTRIES * REGION;
@@ -63,7 +50,6 @@ fn leader(index: usize, which: usize) -> usize {
 fn character(index: usize, which: usize) -> usize {
     status(index) + 0xb00 + which * 0x100
 }
-/// A character's leader map head; its one node follows it.
 fn map(index: usize, which: usize) -> usize {
     status(index) + 0xd00 + which * 0x80
 }
@@ -73,10 +59,6 @@ struct World {
 }
 
 impl World {
-    /// Countries 1 and 2 in slots 1 and 2, and country 3's objects with slot
-    /// 3 still empty. Each country: parties 3 (ruling) and 7, each with one
-    /// leader whose character lists it under role key -7, and ideas `idea_a`
-    /// and `idea_b`.
     fn new() -> Self {
         let mut world = Self {
             bytes: vec![0; SIZE],
@@ -105,7 +87,6 @@ impl World {
         self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
 
-    /// An inline MSVC string.
     fn string(&mut self, at: usize, text: &[u8]) {
         assert!(text.len() <= 15);
         self.bytes[at..at + 16].fill(0);
@@ -121,7 +102,6 @@ impl World {
         );
     }
 
-    /// The role key under which a character's leader map lists its leader.
     fn role(&mut self, index: usize, which: usize, key: i32) {
         self.word(map(index, which) + 0x40 + 0x20, u64::from(key as u32));
     }
@@ -207,7 +187,6 @@ impl World {
     }
 }
 
-/// Every guarded copy's address and length.
 struct Counted<'a> {
     memory: SliceMemory<'a>,
     reads: RefCell<Vec<(usize, usize)>>,
@@ -220,11 +199,6 @@ impl Memory for Counted<'_> {
     }
 }
 
-/// Reads of the fields only the Politics walk reads, beyond the status
-/// authentication TimedIdeas shares: the capital, the status's party and
-/// idea arrays, last election and ruling party, and every
-/// party, ideology, idea, leader, character and leader map; and separately
-/// reads of exactly one party's popularity.
 fn classify(reads: &[(usize, usize)]) -> (usize, usize) {
     let (mut politics, mut popularity) = (0, 0);
     for &(address, len) in reads {
@@ -291,9 +265,7 @@ impl Domains {
     }
 }
 
-/// What one hour published.
 struct Published {
-    /// Politics, PoliticalParties, ActiveIdeas and PartyLeaders.
     tables: Vec<TableView>,
     buffers: Buffered,
     counts: Counts,
@@ -301,7 +273,6 @@ struct Published {
     popularity_reads: usize,
 }
 
-/// The four tables' buffers as the spool reads them.
 #[derive(Debug, PartialEq)]
 struct Buffered {
     outcomes: [Outcome; 4],
@@ -349,7 +320,6 @@ fn tables(captured: &Captured) -> Vec<TableView> {
         .collect()
 }
 
-/// The old behaviour: the same memory walked with no store.
 fn walked(world: &World, hour: i32) -> (Vec<TableView>, Buffered) {
     let memory = SliceMemory {
         base: 0,
@@ -374,7 +344,6 @@ fn parties(published: &Published) -> &[rows::PoliticalPartyRow] {
     rows
 }
 
-/// One Governance job's stores across hours.
 struct Session<'d> {
     domains: &'d Domains,
     captured: Captured,
@@ -394,7 +363,6 @@ impl<'d> Session<'d> {
         }
     }
 
-    /// One hour, then the next boundary.
     fn hour(&mut self, world: &World, hour: i32) -> Published {
         let memory = Counted {
             memory: SliceMemory {
@@ -440,8 +408,6 @@ impl<'d> Session<'d> {
         published
     }
 
-    /// The first hour walks every country and holds its tables; the second is
-    /// quiet.
     fn start(&mut self, world: &World) {
         let first = self.hour(world, 1);
         assert!(first.counts.read && !first.counts.quiet);
@@ -463,7 +429,6 @@ fn a_quiet_hour_publishes_what_a_walk_of_the_same_memory_publishes() {
         assert!(quiet.counts.quiet, "hour {hour}");
         assert_eq!(politics(&quiet).len(), 2);
         assert_eq!(parties(&quiet).len(), 4);
-        // The same tables and the same buffers, arenas and demand.
         assert_eq!((quiet.tables, quiet.buffers), walked(&world, hour));
     }
 }
@@ -485,7 +450,6 @@ fn a_quiet_hour_reads_no_country_politics() {
     }
 }
 
-/// A named structure write and how a test world performs it.
 type Write = (&'static str, fn(&mut World));
 #[test]
 fn each_hooked_structure_write_walks_and_publishes_its_value() {
@@ -503,16 +467,12 @@ fn each_hooked_structure_write_walks_and_publishes_its_value() {
                 party(1, 1) as u64,
             )
         }),
-        // Each array header's word after the data pointer is the capacity (low) and the count
-        // (high): keep capacity 2 and list one element. A count above the capacity is an invalid
-        // header, which refuses the table, so that hour's walk is incomplete and holds nothing.
         ("party array", |world| {
             world.word(status(0) + cpolitical_status::PARTIES + 8, (1 << 32) | 2)
         }),
         ("idea array", |world| {
             world.word(status(1) + cpolitical_status::IDEAS + 8, (1 << 32) | 2)
         }),
-        // Set politics stores the elections byte.
         ("elections", |world| {
             world.bytes[status(0) + cpolitical_status::ELECTIONS_ALLOWED] = 0
         }),
@@ -526,7 +486,6 @@ fn each_hooked_structure_write_walks_and_publishes_its_value() {
         assert_ne!(walk.politics_reads, 0, "{name}");
         assert_eq!((walk.tables, walk.buffers), walked(&world, hour), "{name}");
         hour += 1;
-        // Held again: the next hour is quiet with the new values.
         let quiet = session.hour(&world, hour);
         assert!(quiet.counts.quiet, "{name}");
         assert_eq!(quiet.politics_reads, 0, "{name}");
@@ -560,7 +519,6 @@ fn a_popularity_write_gathers_only_popularity() {
     let domains = Domains::new();
     let mut session = Session::new(&domains);
     session.start(&world);
-    // AddPopularity (or the daily update) on country 2's second party.
     world.popularity(1, 1, 77_777);
     domains.status.write(Domain::Popularity);
     let refreshed = session.hour(&world, 3);
@@ -570,12 +528,10 @@ fn a_popularity_write_gathers_only_popularity() {
     assert_eq!(refreshed.popularity_reads, 4, "once per held party");
     assert_eq!(parties(&refreshed)[3].popularity, 77_777);
     assert_eq!((refreshed.tables, refreshed.buffers), walked(&world, 3));
-    // The new popularity is held under the new token.
     let quiet = session.hour(&world, 4);
     assert!(quiet.counts.quiet);
     assert_eq!((quiet.politics_reads, quiet.popularity_reads), (0, 0));
     assert_eq!(parties(&quiet)[3].popularity, 77_777);
-    // A structure write still walks.
     domains.status.write(Domain::Both);
     let walk = session.hour(&world, 5);
     assert!(walk.counts.read);
@@ -587,8 +543,6 @@ fn a_revoked_leader_certificate_walks() {
     let domains = Domains::new();
     let mut session = Session::new(&domains);
     session.start(&world);
-    // A role-map write on country 2's first leader's character, which only
-    // the character domain observes.
     let notification = domains.characters.notify(Some(character(1, 0)), 2);
     world.role(1, 0, -8);
     drop(notification);
@@ -609,7 +563,6 @@ fn a_new_country_walks() {
     let domains = Domains::new();
     let mut session = Session::new(&domains);
     session.start(&world);
-    // A dynamic country takes slot 3; no politics hook ran.
     world.word(CTAB + 3 * 8, country(2) as u64);
     let walk = session.hour(&world, 3);
     assert!(walk.counts.read && !walk.counts.quiet);
@@ -627,8 +580,6 @@ fn quiet_hours_leave_the_stores_carrying_per_country() {
     let mut session = Session::new(&domains);
     session.start(&world);
     assert!(session.hour(&world, 3).counts.quiet);
-    // set_party_name on country 2's second party: only the party domain sees
-    // it, so the hour walks and the stores carry every other country.
     let notification = domains.parties.notify(party(1, 1), 0);
     world.string(party(1, 1) + cpolitical_party::NAME, b"RENAMED");
     drop(notification);
@@ -649,12 +600,10 @@ fn an_invalidating_hour_or_a_forgotten_store_walks() {
     let domains = Domains::new();
     let mut session = Session::new(&domains);
     session.start(&world);
-    // A load, gap or recovery starts an epoch in every domain.
     domains.boundary(true);
     let reloaded = session.hour(&world, 3);
     assert!(reloaded.counts.read);
     assert!(session.hour(&world, 4).counts.quiet);
-    // A failed Governance job forgets both stores.
     session.parties.forget();
     session.leaders.forget();
     let forgotten = session.hour(&world, 5);

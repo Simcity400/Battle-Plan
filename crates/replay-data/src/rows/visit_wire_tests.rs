@@ -25,7 +25,6 @@ fn ship() -> ShipRow {
     }
 }
 
-/// The recorded fields `visit_wire` hands over, encoded one after another.
 fn visited(row: &impl RowCodec) -> (Vec<u8>, u64, Vec<usize>) {
     let mut bytes = Vec::new();
     let mut skipped = 0;
@@ -50,12 +49,10 @@ fn visited_wire_fields_are_the_fields_the_row_encodes() {
     let mut expected = Vec::new();
     let skipped = ship.encode_recorded_fields(&mut expected).unwrap();
     let (bytes, unrecorded, order) = visited(&ship);
-    // Stepped experience goes in its step's units, as the row path writes it.
     assert_eq!(bytes, expected);
     assert_eq!(unrecorded, skipped);
     assert_eq!(skipped, 1 << 8);
     assert_eq!(order, (0..ShipRow::SCHEMA.len()).collect::<Vec<_>>());
-    // A shared row visits what its row does.
     let shared = std::sync::Arc::new(DivisionHistoryRow {
         division: 4,
         name: b"First".to_vec(),
@@ -68,7 +65,6 @@ fn visited_wire_fields_are_the_fields_the_row_encodes() {
     assert_eq!(visited(&shared).0, expected);
 }
 
-/// The wire fields of a country, as `CountryRow`'s schema orders them.
 fn country_wire(index: usize) -> io::Result<Field<'static>> {
     Ok(match index {
         1 => Field::Bytes(b"GER"),
@@ -81,15 +77,12 @@ fn country_wire(index: usize) -> io::Result<Field<'static>> {
     })
 }
 
-/// A row is read from the wire only at a key its table's width holds.
 #[test]
 fn rows_are_read_from_the_wire_only_at_keys_their_table_holds() {
     assert!(CountryRow::from_wire(1 << 32, &mut country_wire).is_err());
     assert_eq!(CountryRow::from_wire(7, &mut country_wire).unwrap().id, 7);
 }
 
-/// An unrecorded wire field reads as the field's own absence, which only a field that can
-/// be unrecorded holds.
 #[test]
 fn unrecorded_wire_fields_read_as_unrecorded() {
     assert_eq!(
@@ -99,8 +92,6 @@ fn unrecorded_wire_fields_read_as_unrecorded() {
     assert!(from_wire_field::<i64>(Field::NotRecorded, None).is_err());
 }
 
-/// A derived row holds a cell its writer left unrecorded as not recorded and every other as its
-/// value, and a row recorded throughout writes the bytes of plain numbers.
 #[test]
 fn derived_rows_hold_their_unrecorded_cells_as_not_recorded() {
     fn holds<T: RowCodec + Fields>(table: &str) {
@@ -136,7 +127,6 @@ fn derived_rows_hold_their_unrecorded_cells_as_not_recorded() {
     holds::<StabilityPartRow>("StabilityParts");
 }
 
-/// A patch sets the fields its mask names, from their wire form, and no other.
 #[test]
 fn patches_set_only_the_fields_their_mask_names() {
     let mut row = CountryRow::from_wire(7, &mut country_wire).unwrap();

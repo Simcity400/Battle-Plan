@@ -1,6 +1,3 @@
-//! The proof tool's line for the intel icons layer (`--layers intel_icons --map-mode operatives`):
-//! the icons evaluated over rows at the head against today's `intel_icons::icons` over today's frame
-//! of the same hour, and against the same evaluation of the newest rows the layer holds.
 
 use super::Compared;
 use crate::{
@@ -30,8 +27,6 @@ pub(super) fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("evaluations", stats.evaluations.values().sum()), ("rows skipped", stats.skipped), ("discarded learning", stats.learning)]
 }
 
-/// The tables the rows at the head refuse because a text cell's string was never told (the known
-/// recorder-side gap of these unit files).
 fn untold(frame: &DecodedFrame) -> Vec<String> {
     frame.tables.iter().filter(|view| !view.is_not_declared()).filter_map(|view| match &**view {
         TableView::Unavailable { reason } if reason.contains("rows at the head could not be made") => Some(reason.clone()),
@@ -56,8 +51,6 @@ fn first_difference(today: &IntelIcons, ours: &IntelIcons) -> String {
     format!("report: today {:?}, the layer {:?}", today.report, ours.report)
 }
 
-/// The layer's icons against today's at the document's hour, for the layer's viewing choice. A
-/// sample whose icons are not of the hour (a table learned joins later) is skipped, said so.
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = of(layer);
     let frame = document.frame()?;
@@ -88,8 +81,6 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-/// The icons drawn against the same evaluation of the newest rows the layer holds: the result
-/// installed is that of the rows it last took.
 pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = of(layer);
     let (Some((icons, hour)), Some(rows)) = (layer.icons(), layer.newest_rows()) else {
@@ -103,7 +94,6 @@ pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::la
     Ok(Compared { entries: entries(&again), differing, first: (differing > 0).then(|| first_difference(&again, icons)), notes: Value::Null })
 }
 
-/// What the layer measured and what its rows hold, for the summary.
 pub(super) fn summary(side: &MapSide) -> Value {
     crate::layers::intel_icons::summary(side)
 }

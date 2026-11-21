@@ -1,0 +1,9 @@
+# Give dashboard widgets a shared runtime and a fixed registry
+
+The dashboard owns campaign loading and the playback clock. Widgets query recording products through their runtime, can seek within a bound track, and request layout changes through that runtime. A widget rendered outside a layout cannot save options. Changes that must agree, such as migrated values and their marker, can be written together. The normal header can receive separate live-summary and country-selection content. Widget diagnostics report named, counted causes when a value cannot be shown.
+
+Keep widget metadata importable without loading component renderers. A registration of the same kind augments the existing definition. Once registered, the catalogue evaluates preset hooks in stable order. Presets and content-supplied entries create their own cards while saving the original kind with initial values. A native map cannot add a simultaneous live preview. A data availability product holds a gated widget disabled until availability is proven. Capture mode eligibility defaults to Full.
+
+Metadata declares the recorded inputs a widget supports and the controls it can expose. Follow-only widgets omit Live switching. Country configuration identifies defaults and any ranking, aggregation, fixed choice and whole-world support. A migration can keep the previous spec unchanged. Open controls can request content-derived choices without constructing all widget bodies. A mounted resource can survive React's immediate effect cleanup/setup replay when its owner remains the same. Disposal waits until that replay can be distinguished from a real unmount.
+
+[Dashboard widget contract](../../ui/src/dashboard/definitions.ts) · [Widget catalogue](../../ui/src/dashboard/WidgetPicker.tsx) · [Effect lifetime](../../ui/src/dashboard/effectLifetime.ts)

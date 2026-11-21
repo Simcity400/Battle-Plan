@@ -1,9 +1,3 @@
-//! Every content reader over one gathered stack, with every diagnostic it
-//! gives: each installed-content reader called as its consumers call it, every
-//! channel it reports through (returned warnings, refusal fields, per-entry
-//! refusals, a refused read), and the viewer's and dashboard's content
-//! preparation on top (the combat content, the scripted text content, the
-//! state neighbours and resource bonuses the trigger environment reads).
 
 use std::collections::BTreeSet;
 #[cfg(test)]
@@ -29,7 +23,6 @@ use super::report::{Diagnostic, Kind, ReaderRun};
 #[path = "map_assets.rs"]
 mod map_assets;
 
-/// The readers' runs and diagnostics, in call order.
 #[derive(Default)]
 struct Log {
     runs: Vec<ReaderRun>,
@@ -69,8 +62,6 @@ fn read_states(
 }
 
 impl Log {
-    /// Runs one reader and records its time; a refused read is a
-    /// [`Kind::ReaderError`] and gives `None`.
     fn read<T: Debug>(&mut self, reader: &str, read: impl FnOnce() -> io::Result<T>) -> Option<T> {
         let started = Instant::now();
         let result = read();
@@ -101,7 +92,6 @@ impl Log {
         }
     }
 
-    /// Records `readers` as not run: `needs` refused the stack.
     fn not_run(&mut self, readers: &[&str], needs: &str) {
         for reader in readers {
             self.runs.push(ReaderRun {
@@ -124,7 +114,6 @@ impl Log {
             .push(Diagnostic::about(reader, kind, &subject.to_string(), why));
     }
 
-    /// Each message of a channel with the producer's declared kind.
     fn notes<'a>(
         &mut self,
         reader: &str,
@@ -154,9 +143,6 @@ fn raid_type_notes(log: &mut Log, raid: &installed_content_raids::raids::RaidTyp
     }
 }
 
-/// A native GUI reader's refusal in `file`: a walk the game does not define
-/// leaves everything after it unknown; a value of the reading client's
-/// session the corpus does not have is only a warning.
 fn gui_refusal(log: &mut Log, reader: &str, file: &str, refusal: &Refusal) {
     let kind = match refusal.cause {
         Cause::Unread => Kind::Refused,
@@ -172,7 +158,6 @@ fn gui_refusal(log: &mut Log, reader: &str, file: &str, refusal: &Refusal) {
     ));
 }
 
-/// Only the defines and the map audio's readers ([`sounds`]).
 pub fn run_sounds(
     content: installed_content_core::GatheredContent,
     values: Option<super::values::Writer>,
@@ -187,8 +172,6 @@ pub fn run_sounds(
     (log.runs, log.diagnostics, log.state_history)
 }
 
-/// Every reader over `content`; `decode` is the reading client's texture
-/// decode state, which the font pages and map texture files load under.
 pub fn run(
     content: installed_content_core::GatheredContent,
     decode: installed_content_image::native::Decode,
@@ -212,7 +195,6 @@ pub fn run(
     };
     let layers: &ResolvedLayers = &resolved.layers;
     let defines = log.read("defines", || installed_content_core::defines::read(layers));
-    // The map camera's zoom law and height limits, as the window reads them from the stack.
     match &defines {
         Some(defines) => {
             log.read("viewer.zoom_defines", || {
@@ -279,8 +261,6 @@ pub fn run(
         }
         _ => None,
     };
-    // The viewer's combat content, completed with the count trigger names
-    // as the document completes it.
     match (&defines, counts) {
         (Some(defines), Some((buildings, ideologies, resources))) => {
             if let Some(mut combat) = log.read("viewer.combat", || {
@@ -344,7 +324,6 @@ pub fn run(
     (log.runs, log.diagnostics, log.state_history)
 }
 
-/// Localisation, interface resources, GUI files, model and particle descriptors.
 fn interface(
     log: &mut Log,
     layers: &ResolvedLayers,
@@ -374,10 +353,6 @@ fn interface(
             );
         }
     }
-    // The native GUI resources: every `.gfx` file's sprites and font
-    // declarations as the game reads them, then the sprite set the viewer
-    // and dashboard look sprites up in, and every registered font as the
-    // viewer loads it (viewer_foundation::map::text::load) for the language.
     let interface = log
         .read("gui.resources", || {
             installed_content_core::gui::native::resources::Registry::load(layers)
@@ -507,8 +482,6 @@ fn interface(
                     .collect();
                 log.notes("weather", Kind::Refused, &withheld);
             }
-            // Every pdxparticle object's emitters as the viewer's particle
-            // assets read them: each subsystem through RenderDescriptor::read.
             let mut refused = Vec::new();
             let values = log.values.clone();
             log.read("particles.emitters", || {
@@ -577,7 +550,6 @@ fn interface(
     (interface, localisation)
 }
 
-/// What the map readers give the later ones.
 struct Map {
     terrain: Option<(
         installed_content_core::terrain::TerrainDefinitions,
@@ -596,8 +568,6 @@ struct Map {
     regions: Option<BTreeMap<u32, installed_content_regions::regions::StrategicRegion>>,
 }
 
-/// The map and what the viewer's document and the trigger environment read
-/// with it.
 fn map(
     log: &mut Log,
     layers: &ResolvedLayers,
@@ -747,8 +717,6 @@ fn map(
             );
         }
     }
-    // The arrival estimates' organisation term and the railway and task-force domains
-    // refuse independently of the common movement defines.
     if let Some(movement) = log.read("movement.defines", || {
         installed_content_core::movement::MovementDefines::read(defines)
     }) {
@@ -800,8 +768,6 @@ fn map(
                     );
                 }
             }
-            // The trigger environment's neighbour states
-            // (dashboard::scripted_text, raids).
             match &graph {
                 Some((graph, _)) => {
                     let members = states
@@ -828,16 +794,12 @@ fn map(
     }
 }
 
-/// Ideas, characters, traits, names, focus, technology and the modifier
-/// definitions: the dashboard's politics and artwork content.
 fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some((_, warnings)) = log.read("modifier_definitions", || {
         installed_content_core::modifier_definitions::read(layers)
     }) {
         log.typed("modifier_definitions", warnings);
     }
-    // The officer corps groups (NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU)
-    // the dashboard hands the idea reader.
     let officers = match defines {
         Some(defines) => log.read("ideas.officers", || {
             defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")
@@ -865,7 +827,6 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
         None => log.not_run(&["characters"], "ideas"),
     }
-    // The viewer's counter portraits (army, large), file by file.
     let values = log.values.clone();
     if let Some(stops) = log.read("characters.portraits", || {
         let names = layers.key_names()?;
@@ -936,8 +897,6 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     }
 }
 
-/// Equipment, division names, unit leaders and sub-units, and the train
-/// database.
 fn units(
     log: &mut Log,
     layers: &ResolvedLayers,
@@ -971,8 +930,6 @@ fn units(
     }
     match &map.terrain {
         Some((definitions, _)) => {
-            // The commander content's terrain lookup: the
-            // registered spelling of a type found without case.
             let names: Vec<String> = definitions
                 .categories
                 .iter()
@@ -1020,8 +977,6 @@ fn units(
         }
         None => log.not_run(&["unit_leader"], "terrain"),
     }
-    // The viewer's unit model content: model selection, equipment
-    // graphics, geography, camouflage and ships.
     match (defines, &map.data, &map.terrain) {
         (Some(defines), Some(data), Some((_, default_map))) => {
             let mut warnings = Vec::new();
@@ -1057,8 +1012,6 @@ fn units(
     }) {
         log.notes("unit_leader.sub_units", Kind::Misread, sub_units.warnings());
     }
-    // The train database with the registries the viewer's train assets give
-    // it: the country tags, the graphical cultures and the entity roster.
     let cultures = log.read("train_gfx.cultures", || {
         installed_content_core::train_gfx::cultures(layers)
     });
@@ -1099,10 +1052,6 @@ fn units(
     }
 }
 
-/// The content the land-model fallback's option labels read: the dynamic
-/// country tags, the display language's first-row label and each equipment
-/// type's variant name keys. A key the language leaves undefined labels its
-/// rows with the key's own text, as the game's localiser does.
 fn model_labels(
     log: &mut Log,
     layers: &ResolvedLayers,
@@ -1162,10 +1111,6 @@ fn model_labels(
     }
 }
 
-/// Map audio as the viewer resolves it: the sound definitions and `NSound`
-/// defines, every entity event's sound effect, and every sample an effect can
-/// choose. Samples a DLC or mod layer supplies are decoded; the base game's
-/// are only looked up.
 fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     let Some(catalog) = log.read("viewer.sounds", || {
         installed_content_sound::sound::Catalog::read(layers)
@@ -1186,7 +1131,6 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
                     format!("NSound defines: {error}"),
                 );
             }
-            // The battle ambience: its defines and distant effect.
             match installed_content_sound::combat_sounds::BattleDefines::load(defines) {
                 Ok(battle) if catalog.effect(&battle.effect).is_none() => log.about(
                     "viewer.sounds",
@@ -1204,7 +1148,6 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
         None => log.not_run(&["viewer.sounds.defines"], "defines"),
     }
-    // The battle ambience layers of sound/combat_sounds.
     if let Some(combat_sounds) = log.read("viewer.battle_sounds", || {
         installed_content_sound::combat_sounds::Layers::read(layers)
     }) {
@@ -1296,7 +1239,6 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
             ),
         }
     }
-    // Music: every song's track is found, and a DLC or mod track opens and decodes.
     if let Some(music) = log.read("viewer.music", || {
         installed_content_sound::music::Music::read(layers)
     }) {
@@ -1358,7 +1300,6 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     );
 }
 
-/// The trigger readers, scripted localisation, combat tactics and raids.
 fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some(scripted) = log.read("scripted_triggers", || {
         installed_content_core::scripted_triggers::read(layers)
@@ -1425,8 +1366,6 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some(groups) = log.read("raids.names", || {
         installed_content_raids::raids::names::Groups::read(layers)
     }) {
-        // Each refused file names itself and its line in its warning; the
-        // groups it declares or could declare are refused by name.
         log.typed("raids.names", groups.warnings.iter().cloned());
         for (name, why) in groups.refused() {
             log.about(
@@ -1447,11 +1386,6 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     }
 }
 
-/// The viewer's other map content loaders that need no device: trains,
-/// bridges and orders from the defines, aircraft, map buildings and raids
-/// from the map too, each with its warnings and the refusals its prepared
-/// content holds. A loader whose input another reader refused is not run,
-/// by name.
 fn viewer_map_assets(
     log: &mut Log,
     layers: &ResolvedLayers,
@@ -1545,7 +1479,6 @@ fn viewer_map_assets(
         log.not_run(&["viewer.raids", "viewer.map_text"], "gui.resources");
         return;
     };
-    // The floating map text's two types, their fonts' shader and its cutoff.
     if let Some(refusals) = log.read("viewer.map_text", || {
         Ok(viewer_world::map::animated_map_text::Assets::load(
             layers,

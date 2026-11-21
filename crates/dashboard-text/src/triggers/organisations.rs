@@ -1,7 +1,3 @@
-//! The coded triggers of an industrial organisation's scope, each read from
-//! the organisation's recorded details and its definition in the recorded
-//! content stack. Every one of them accepts the organisation scope alone, which
-//! the shared scope check already decides, and reads the current organisation.
 use std::{cell::RefCell, rc::Rc};
 
 use crate::triggers::{Failure, refusal::refused};
@@ -19,9 +15,6 @@ use super::{
 };
 use crate::{scripted_text::EventScopes, state_resources::ONE};
 
-/// The text of a token operand: a scalar, bare. A quoted operand loads as a
-/// generic string token, not the registered token of the same text, and
-/// which recorded token that is, is not reproduced.
 fn token_text<'i>(item: &'i Item, name: &str) -> Result<&'i [u8], Failure> {
     if item.quoted() {
         return Err(refused(format!(
@@ -34,10 +27,6 @@ fn token_text<'i>(item: &'i Item, name: &str) -> Result<&'i [u8], Failure> {
         .ok_or_else(|| format!("{name} needs a scalar operand").into())
 }
 
-/// A trait leaf's operand: a scalar trait token, or a block whose `trait`
-/// names it, beside tooltip-only `show_modifiers` and, for trait
-/// availability, the two check toggles. A block without `trait` names token
-/// zero, which no trait has.
 fn trait_operand<'i>(
     item: &'i Item,
     name: &str,
@@ -67,7 +56,6 @@ fn trait_operand<'i>(
     Ok(wanted)
 }
 
-/// Which of an organisation's two conditions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrganisationCondition {
     Available,
@@ -83,13 +71,9 @@ impl OrganisationCondition {
     }
 }
 
-/// Why a composition of conditions has no result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Undecided {
-    /// The recording does not decide it: a later proven blocker still can.
     Unknown(String),
-    /// The game recurses without end in it: nothing after it is reached, so
-    /// nothing can decide it.
     Diverged(String),
 }
 
@@ -120,9 +104,6 @@ impl From<Undecided> for String {
     }
 }
 
-/// A MIO Boolean leaf's expected value. The reader clears it to false, then
-/// reads exact `yes` or `no`; a scope selector it recognises instead (or any
-/// other text) leaves it false.
 fn expected(item: &Item) -> bool {
     if scope_selector(item).is_some() {
         return false;
@@ -131,8 +112,6 @@ fn expected(item: &Item) -> bool {
 }
 
 impl Evaluator<'_, '_> {
-    /// A coded trigger in an industrial organisation's scope; `None` for one
-    /// this evaluator does not reproduce, which is refused by name.
     pub(super) fn organisation_trigger(
         &self,
         name: &str,
@@ -142,12 +121,7 @@ impl Evaluator<'_, '_> {
     ) -> Result<Option<Eval>, Failure> {
         let world = self.world();
         Ok(Some(match name {
-            // The organisation's size, compared as an integer trigger compares (the class of
-            // the controlled-state count): `=` is equality, a variable operand is truncated
-            // to whole units, and a scope selector leaves the threshold zero. The reader has
-            // no block form; how it recovers from one is not reproduced.
             "has_mio_size" => {
-                // The game takes an opening brace as a scalar, then reads the block's fields.
                 if item.kind == installed_content_core::parser::Kind::Open {
                     return Err(refused(
                         "has_mio_size takes a block's opening brace as its operand, and how the reader recovers is not reproduced",
@@ -170,34 +144,25 @@ impl Evaluator<'_, '_> {
             "has_mio_number_of_completed_traits" => {
                 self.completed_trait_count(item, reference, scopes)?
             }
-            // The operand's lexer token among the organisation's allowed policies; the
-            // attached policy and the policies' own conditions take no part.
             "has_mio_policy" => {
                 let token = world.token_of(token_text(item, name)?)?;
                 let (allowed, _) = world.organisation_policies(reference)?;
                 Eval::from_bool(token.is_some_and(|token| allowed.contains(&token)))
             }
-            // The attached policy's token is the operand's, compared raw: the no-selection
-            // value is a token like any other, and allowed membership is not required.
             "has_mio_policy_active" => {
                 let token = world.token_of(token_text(item, name)?)?;
                 let (_, attached) = world.organisation_policies(reference)?;
                 Eval::from_bool(token == Some(attached))
             }
-            // The organisation's definition token is the operand's: any instance of that
-            // definition passes.
             "is_military_industrial_organization" => {
                 let token = world.token_of(token_text(item, name)?)?;
                 let definition = world.industrial_organisation(reference)?.token;
                 Eval::from_bool(token == Some(definition))
             }
-            // Any task slot, as the game counts its task array: a retained empty slot counts.
             "is_mio_assigned_to_task" => {
                 let assigned = !world.organisation_tasks(reference)?.is_empty();
                 Eval::from_bool(assigned == expected(item))
             }
-            // The definition holds an ordinary trait of that token (first match); completion
-            // and the separate initial trait take no part.
             "has_mio_trait" => {
                 let wanted = trait_operand(item, name, &[])?;
                 let (template, catalog) = self.organisation_definition(reference)?;
@@ -206,7 +171,6 @@ impl Evaluator<'_, '_> {
                     None => false,
                 })
             }
-            // An ordinary trait of that token exists and its token is completed.
             "is_mio_trait_completed" => {
                 let Some(wanted) = trait_operand(item, name, &[])? else {
                     return Ok(Some(Eval::False));
@@ -218,8 +182,6 @@ impl Evaluator<'_, '_> {
                 Eval::from_bool(self.unlocked(reference, wanted)?)
             }
             "is_mio_trait_available" => self.trait_available(item, reference)?,
-            // The operand among the definition's equipment types, expanded through the
-            // equipment groups with the group names kept, compared without case.
             "has_mio_equipment_type" => {
                 let wanted = installed_content_core::parser::c_string(
                     item.value
@@ -236,7 +198,6 @@ impl Evaluator<'_, '_> {
                         .any(|member| member.eq_ignore_ascii_case(wanted)),
                 )
             }
-            // The operand among the definition's research categories, without case.
             "has_mio_research_category" => {
                 let wanted = installed_content_core::parser::c_string(
                     item.value
@@ -252,7 +213,6 @@ impl Evaluator<'_, '_> {
                 )
             }
             "has_mio_flag" => self.organisation_flag(item, reference, scopes)?,
-            // `available`, then `visible` only if it holds.
             "is_mio_available" | "is_mio_visible" => {
                 let (template, catalog) = self.organisation_definition(reference)?;
                 let tree = organisation_tree(catalog, &template)?;
@@ -271,8 +231,6 @@ impl Evaluator<'_, '_> {
         }))
     }
 
-    /// The organisation's definition token's spelling and the recorded stack's
-    /// organisation definitions.
     fn organisation_definition(&self, reference: u64) -> Result<(String, &Catalog), Failure> {
         let world = self.world();
         let token = world.industrial_organisation(reference)?.token;
@@ -285,7 +243,6 @@ impl Evaluator<'_, '_> {
         Ok((template, catalog))
     }
 
-    /// Whether the organisation's completed traits hold the trait of this text.
     fn unlocked(&self, reference: u64, wanted: &[u8]) -> Result<bool, Failure> {
         let world = self.world();
         let unlocked = world.organisation_unlocked(reference)?;
@@ -294,12 +251,6 @@ impl Evaluator<'_, '_> {
             .is_some_and(|token| unlocked.contains(&token)))
     }
 
-    /// The completed-trait count, an integer comparison: `<` and `>` read a
-    /// scalar operand, while `=` reads a block whose `value` field, by its own
-    /// operator, sets the threshold and the test (`=` is equality). Outer `=`
-    /// with a scalar, or a block without `value`, keeps threshold zero and
-    /// tests equality; a scope selector operand leaves the threshold zero. The
-    /// count is the game's set of completed traits, whose members are unique.
     fn completed_trait_count(
         &self,
         item: &Item,
@@ -336,8 +287,6 @@ impl Evaluator<'_, '_> {
             }
         };
         let wanted = match operand {
-            // The integer reader clears its threshold to zero; a scope selector it
-            // recognises leaves it there.
             Some(operand) if scope_selector(operand).is_some() => 0,
             Some(operand) => self.required(
                 operand.value.scalar().unwrap_or_default(),
@@ -350,12 +299,6 @@ impl Evaluator<'_, '_> {
         Ok(Eval::from_bool(compare(count, wanted, comparison, false)))
     }
 
-    /// Trait availability, in the game's order: the ordinary trait exists; with
-    /// `check_mio_parent_completed` (default yes) every parent group is met;
-    /// with `check_mio_mutually_exclusive` (default yes) no exclusive trait is
-    /// completed; then the trait's `visible`, then its `available`. Whether the
-    /// trait itself is completed, and the organisation's own conditions, take
-    /// no part.
     fn trait_available(&self, item: &Item, reference: u64) -> Result<Eval, Failure> {
         const PARENTS: &str = "check_mio_parent_completed";
         const EXCLUSIVE: &str = "check_mio_mutually_exclusive";
@@ -394,10 +337,6 @@ impl Evaluator<'_, '_> {
         ))
     }
 
-    /// Every parent group is met: walking its parents in order, a completed
-    /// one (each occurrence) adds one to the count, and the group is met once
-    /// the count equals the number needed after any occurrence, or ends equal
-    /// to it.
     fn parents_completed(&self, definition: &TraitName, reference: u64) -> Result<bool, Failure> {
         for group in &definition.parents {
             let mut count = 0_i32;
@@ -418,11 +357,6 @@ impl Evaluator<'_, '_> {
         Ok(true)
     }
 
-    /// Whether the organisation's conditions in `order` hold, as the game
-    /// composes them ([`Self::conditions`]): the row gate takes `available`
-    /// then `visible`, the attach quote's traits `visible` then `available`.
-    /// A condition the game never returns from is [`Undecided::Diverged`],
-    /// which no later part of a caller's composition can decide.
     pub fn organisation_conditions(
         &self,
         reference: u64,
@@ -435,7 +369,6 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// [`Self::organisation_conditions`] as a trigger value.
     fn organisation_conditions_value(
         &self,
         reference: u64,
@@ -455,10 +388,6 @@ impl Evaluator<'_, '_> {
         )
     }
 
-    /// Conditions of the organisation, each named for its frame, evaluated in
-    /// order while the ones before hold: a false one decides, an undecided
-    /// one lets a later false one decide, and a reached endless recursion
-    /// decides nothing, since the game never returns from it.
     fn conditions<'b>(
         &self,
         reference: u64,
@@ -484,12 +413,6 @@ impl Evaluator<'_, '_> {
         result
     }
 
-    /// One of the organisation's or a trait's conditions, as the game
-    /// evaluates it: an empty body holds; any other is evaluated in a fresh
-    /// pair of scopes, the organisation (ROOT and PREV itself, FROM its owner,
-    /// unknown when the owner does not resolve) and its owner country (every
-    /// link itself), whatever the caller's. The game guards no depth, so a
-    /// body reached inside itself recurses without end ([`Self::diverge`]).
     fn organisation_condition(&self, reference: u64, body: &[Item], what: String) -> Eval {
         if body.is_empty() {
             return Eval::True;
@@ -511,8 +434,6 @@ impl Evaluator<'_, '_> {
         run().unwrap_or_else(|why| Eval::unknown(why.context(|why| format!("{what}: {why}"))))
     }
 
-    /// `has_mio_flag`: the shared flag test ([`FlagTest`]) on the
-    /// organisation's own flags.
     fn organisation_flag(
         &self,
         item: &Item,
@@ -535,13 +456,10 @@ impl Evaluator<'_, '_> {
     }
 }
 
-/// A body's result compared with the trigger's expected yes or no.
 fn expect(value: Eval, expected: bool) -> Eval {
     if expected { value } else { value.negate() }
 }
 
-/// The organisation's resolved definition; a definition the recorded stack
-/// lacks is a missing input, not the game's empty fallback.
 fn organisation_tree<'c>(
     catalog: &'c Catalog,
     template: &str,
@@ -552,7 +470,6 @@ fn organisation_tree<'c>(
     })
 }
 
-/// The definition's first ordinary trait of this token.
 fn ordinary_trait<'c>(
     catalog: &'c Catalog,
     template: &str,

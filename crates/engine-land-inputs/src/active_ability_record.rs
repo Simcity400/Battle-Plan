@@ -1,28 +1,15 @@
-//! Persistent value record in a country's active-ability array. Its concrete
-//! type is unknown; the embedded date has its own vtable.
 
-/// Active-ability record stride.
 pub const STRIDE: usize = 0x58;
-/// Ability-definition pointer.
 pub const DEFINITION: usize = 0x00;
-/// Raw country tag, u32, supplying the record's event scope.
 pub const COUNTRY: usize = 0x08;
-/// Resolved unit-leader pointer.
 pub const CASTER: usize = 0x10;
-/// Division count at activation, i32.
 #[cfg(test)]
 pub const DIVISION_COUNT: usize = 0x18;
-/// Target strategic-region pointer.
 pub const STRATEGIC_REGION: usize = 0x20;
-/// Raw activation hour, i32, preserving the game epoch.
 pub const ACTIVATION_HOUR: usize = 0x30;
-/// Phase byte; zero means active.
 pub const PHASE: usize = 0x48;
-/// Active phase value.
 pub const ACTIVE: u8 = 0;
-/// Phase value written on deactivation.
 pub const COOLDOWN: u8 = 1;
-/// Allocated cost, i64 fixed5; initialized to zero.
 pub const ALLOCATED_COMMAND_POWER: usize = 0x50;
 
 use crate::{
@@ -32,26 +19,17 @@ use crate::{
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Owner of the native vector.
     pub country: u32,
-    /// Native vector position, not an identity: removal swaps in the final record.
     pub ordinal: u32,
-    /// The record's own event-scope country, which need not equal its vector owner.
     pub scope_country: u32,
     pub token_start: usize,
     pub token_len: usize,
-    /// CUnitLeader's own packed type/id; not its copied CCharacter reference.
     pub caster: Option<u64>,
-    /// Native ID of the authenticated CStrategicRegion target, if present.
     pub strategic_region: Option<u32>,
-    /// Activation count, initialized to one.
     pub division_count: i32,
     pub activation_hour: i32,
-    /// Native byte, including values other than the known active/cooldown phases.
     pub phase: u8,
-    /// Native definition allocation flag; the allocation path supplies recorded cost.
     pub allocate_cost: u8,
-    /// Native signed fixed5 amount, initialized to zero even without allocation.
     pub allocated_command_power: i64,
     pub duration_hours: i32,
     pub cooldown_hours: i32,
@@ -61,12 +39,7 @@ pub struct Row {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenWalk {
     pub outcome: Outcome,
-    /// Bytes copied for returned rows; row offsets refer to the supplied arena.
     pub bytes_len: usize,
-    /// Exact token bytes on completion. On truncation every unread row's token
-    /// length is still counted, so one growth step fits the whole array; a
-    /// count-only read that fails or is invalid stops counting there, leaving
-    /// a lower bound (that row then fails the next full walk on its own).
     pub required_bytes: usize,
 }
 
@@ -161,8 +134,6 @@ pub fn walk_buffer(
     })
 }
 
-/// The live array count and exact token descriptor lengths; no token payload
-/// or caster/region operands are copied for this storage hint.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -195,9 +166,6 @@ pub fn demand(
     Ok((array.count as usize, bytes))
 }
 
-/// Adds the token length of every record from `first` on, reading only what
-/// sizing needs. Consecutive records naming the same definition reuse its
-/// length from this call. Stops at the first unreadable or invalid source.
 fn count_tokens(
     memory: &impl Memory,
     base: usize,
@@ -374,7 +342,6 @@ fn definition(
     }
     let token_len = usize::try_from(length).map_err(|_| "active ability token length overflow")?;
     let token = if capacity == msvc_string::INLINE_CAPACITY {
-        // The complete inline payload and terminator are already in the header.
         if token[token_len] != 0 {
             return Err("active ability token terminator unreadable or invalid");
         }
@@ -642,9 +609,6 @@ mod tests {
                 required_bytes: 14
             }
         );
-        // Counting reads only the record's definition pointer, the definition
-        // vtable and its string header: no other record field, no caster or
-        // region identity and no token payload.
         struct Observed<'a>(SliceMemory<'a>, std::cell::RefCell<Vec<usize>>);
         impl Memory for Observed<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -811,8 +775,6 @@ mod tests {
             }
         );
         assert_eq!(result.bytes_len, 0);
-        // Both initializer-backed scalars remain state even without a caster
-        // or allocation flag. A fault in either record must remain a failure.
         for (offset, length) in [(DIVISION_COUNT, 4), (ALLOCATED_COMMAND_POWER, 8)] {
             for index in 0..2 {
                 let address = RECORDS + index * STRIDE + offset;

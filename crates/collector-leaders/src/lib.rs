@@ -1,4 +1,3 @@
-//! Leader capture: leader portrait paths and leader portraits. The host owns dispatch, loans and table assembly.
 
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;

@@ -36,26 +36,17 @@ import type { SpendingData } from '../production-spending/spendingData';
 
 type Options = Readonly<Record<string, OptionValue>>;
 
-/** A widget of IC spent by purpose: Dockyard spending or Military factory spending. Both read one country's
- * production spending reply, split by purpose, with one column of purpose amounts per month. */
 export interface PurposeSpendingKind {
-  /** The widget's name, as its charts and view switch are labelled. */
   name: string;
-  /** What the amounts are, such as "dockyard IC". */
   measure: string;
   root: SunburstKey;
-  /** The months' bands, in column order; the ring's purposes take their colours too. */
   bands: readonly { id: string; label: string }[];
   options: readonly OptionField[];
-  /** Whether the reply carries repair rates. */
   repairs: boolean;
   validate: (data: unknown) => ProductionSpendingReply;
-  /** Whether the reply holds amounts besides production reads. */
   read?: (data: SpendingData) => boolean;
   items: (data: SpendingData, options: Options, window: SpendingWindow, colours: readonly string[]) => SunburstItem[];
-  /** The reply's own amount shown beside production at a window, known zero or not: an empty chart says why. */
   other?: (data: SpendingData, window: SpendingWindow) => Exact;
-  /** One month's columns, through `last`. */
   month: (data: SpendingData, options: Options, first: number, last: number, branchFirst: number) => PurposeMonth;
   note?: string;
 }
@@ -77,10 +68,7 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
-  // The circle renders when its empty state or words change; the months only when their structure does.
   headKey.current = at => view === 'months' || !data || end == null ? view : JSON.stringify(emptyAt(kind, data, { from, hour: at, end }));
-  // The view switch sits beside Live, where the frame never clips it; a frame without header actions (the
-  // catalogue preview) shows it beside the title.
   const actions = useContext(HeaderActionsSlot);
   const slot = actions ?? headerSlot;
   const header = slot && setOption && createPortal(<Segmented value={view} options={VIEWS}
@@ -103,14 +91,12 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
   return <>{header}{body}</>;
 }
 
-/** Whether nothing was spent yet at a window's hour, and the words an empty chart shows then. */
 function emptyAt(kind: PurposeSpendingKind, data: SpendingData, window: SpendingWindow): [boolean, string] {
   const other = kind.other?.(data, window) ?? ZERO;
   return [noProductionAt(data, window.hour) && other.exact === 0n,
     other.exact == null ? reasonLabel(other.reason) : `No ${kind.measure} spent in this view.`];
 }
 
-/** Each band takes a category colour by its place, in both views. */
 function usePurposeColours(bands: readonly unknown[]): string[] {
   const tokens = useChartTokens();
   return useMemo(() => bands.map((_, index) => tokens.categories[index % tokens.categories.length]), [tokens, bands]);
@@ -128,14 +114,11 @@ export function PurposeCircle({ kind, data, window, options, decimals, digits, h
   const valuesAt = (at: number): SunburstValues => ({ items: kind.items(data, options, { from, hour: at, end }, colours) });
   const build = useRef(valuesAt);
   build.current = valuesAt;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const values = useMemo(() => valuesAt(hour), [kind, data, options, from, hour, end, colours]);
   const live = useMemo(() => headAt ? liveAt(runtime.clock, position => Math.floor(headAt(position) ?? hour), at => build.current(at)) : undefined,
-    // Made again whenever what the values are made from changes; the head's hour is read each frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [headAt, runtime.clock, kind, data, options, from, end, colours]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
-  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
   const [empty, emptyLabel] = emptyAt(kind, data, window);
   const text = useMemo<SunburstText>(() => ({
     format: (value, exact, denominator) => exact == null ? formatAppliedIc(value, null, decimals, digits)
@@ -147,7 +130,6 @@ export function PurposeCircle({ kind, data, window, options, decimals, digits, h
       live={live} hoursPerSecond={hoursPerSecond} active={active} />;
 }
 
-/** The months' columns, the playhead's month drawn through the head's hour in the chart's own frame. */
 function headMonthLayer(columns: readonly ColumnPeriod[], colours: readonly string[], through: (index: number, hour: number) => ColumnPeriod): ChartLayer {
   const base = columnsLayer(columns, colours);
   let held: { hour: number; layer: ChartLayer } | null = null;
@@ -184,7 +166,7 @@ export function PurposeMonths({ kind, data, options, extent, last, playhead, hea
   }, [headAt, runtime.clock, playhead]);
   const monthThrough = (index: number, hour: number) => kind.month(data, options, months[index].firstHour, Math.min(months[index].lastHour, hour), branchStart);
   const layers = useMemo(() => [headMonthLayer(columns, colours, (index, hour) => monthColumns([monthThrough(index, hour)], decimals)[0])],
-    [columns, colours]); // eslint-disable-line react-hooks/exhaustive-deps
+    [columns, colours]);
   const keyHours = useMemo(() => columns.map(column => column.firstHour), [columns]);
   const label = `${kind.name} by month`;
   const write = ({ exact, reason, denominator }: Exact) => exact == null ? reasonLabel(reason)

@@ -23,24 +23,16 @@ use std::{
 
 pub(crate) const LOG: [Kind; 4] = [Kind::I64, Kind::OptionalU32, Kind::Bytes, Kind::U32List];
 
-/// The block nothing is appended to or forgotten from.
 pub(crate) const QUIET: u32 = 2;
 
-/// What a log did at an hour, as a reader shows it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Did {
     Appended { ordinal: Ordinal, key: u128, cells: Vec<String> },
     Forgotten(Ordinal),
 }
 
-/// What the writer did, in the game's order within each hour: (game hour, appended, ordinal).
 pub(crate) type Done = Vec<(i32, bool, Ordinal)>;
 
-/// The log's hour `hour` into `changes`, what it does pushed to `done`: every 7th hour first
-/// forgets its oldest listed row; then `hour % 4` rows of every cell kind (some not given, a text
-/// naming the hour's string), one more appended and forgotten within the hour every 13th hour;
-/// every 50th hour every other row of the oldest ten forgotten; then the oldest while more than
-/// 30 are listed, consecutive ones as runs. Nothing in block [`QUIET`].
 pub(crate) fn log_hour(hour: u32, game: i32, changes: &mut replay_columnar::store::TableChanges<'_>, done: &mut Done) {
     static ITEMS: [u32; 6] = [3, 1, 4, 1, 5, 9];
     if hour / BLOCK == QUIET {
@@ -86,8 +78,6 @@ pub(crate) fn log_hour(hour: u32, game: i32, changes: &mut replay_columnar::stor
     }
 }
 
-/// A run of `hours` hours from game hour `first` of a log of [`LOG`] (table 0), its hours by
-/// [`log_hour`] (hour `n` names string `n`): its frames and pages, and what the writer did.
 pub(crate) fn record_log(settings: Settings, first: i32, hours: u32) -> (Vec<u8>, Run, Done) {
     let kinds = vec![LOG.to_vec()];
     let mut store = Store::new(kinds.clone(), vec![false]);
@@ -117,8 +107,6 @@ fn recording(settings: Settings, hours: u32) -> (Arc<Recording>, Done) {
     (Arc::new(Recording { bytes, runs: vec![run], kinds: vec![LOG.to_vec()] }), done)
 }
 
-/// Everything the log did by game hour, read directly by span; and its live set at every block
-/// end, read directly by state.
 pub(crate) fn read_directly(pages: &dyn Pages, run: usize, table: usize) -> (BTreeMap<i32, Vec<Did>>, Vec<(Ordinal, Vec<Ordinal>)>) {
     let held = &pages.runs()[run];
     let kinds = pages.kinds(table).unwrap();
@@ -142,7 +130,6 @@ pub(crate) fn read_directly(pages: &dyn Pages, run: usize, table: usize) -> (BTr
     (did, ends)
 }
 
-/// The count and rows listed at the end of every game hour, from what the log did.
 pub(crate) fn states(did: &BTreeMap<i32, Vec<Did>>, first: i32, last: i32) -> BTreeMap<i32, (Ordinal, BTreeSet<Ordinal>)> {
     let (mut count, mut listed, mut out) = (0, BTreeSet::new(), BTreeMap::new());
     for hour in first..=last {
@@ -161,7 +148,6 @@ pub(crate) fn states(did: &BTreeMap<i32, Vec<Did>>, first: i32, last: i32) -> BT
     out
 }
 
-/// What a log step handed over, as [`read_directly`] shows it, by hour.
 pub(crate) fn handed(changes: &Changes) -> BTreeMap<i32, Vec<Did>> {
     let log = changes.log().expect("a log's change set");
     let mut did: BTreeMap<i32, Vec<Did>> = BTreeMap::new();
@@ -179,10 +165,6 @@ fn lane(recording: &Arc<Recording>) -> Lane {
     Lane::new(Arc::clone(recording) as Arc<dyn Pages>, 0, 0, &(0..LOG.len()).collect::<Vec<_>>(), true).unwrap()
 }
 
-/// Steps the lane from its head through `to` in steps of `step` hours, every part given first:
-/// each step's rows appended and forgotten, its count and live set, and the strings named, equal
-/// to the log read directly; a step of no new hours reports nothing.
-/// Steps compared, steps that both appended and forgot, and runs of more than one row forgotten.
 fn step_and_compare(lane: &mut Lane, did: &BTreeMap<i32, Vec<Did>>, states: &BTreeMap<i32, (Ordinal, BTreeSet<Ordinal>)>, step: i32, to: i32, named: &mut BTreeSet<u32>) -> (usize, usize, usize) {
     lane.fetch_through(i32::MAX).unwrap();
     let mut changes = Changes::default();
@@ -216,10 +198,6 @@ fn step_and_compare(lane: &mut Lane, did: &BTreeMap<i32, Vec<Did>>, states: &BTr
     (compared, both, runs)
 }
 
-/// The rule a log's report keeps within an hour, against what the writer did in the game's order:
-/// the hour's appends, in ordinal order, then its forgets, ascending, whatever order the game did
-/// them in; every row appended and forgotten is there with its hour. The writer's hours include a
-/// forget before an append, a row appended and forgotten in one hour, and runs.
 fn follows_the_rule(done: &Done, did: &BTreeMap<i32, Vec<Did>>) {
     let mut by_hour: BTreeMap<i32, Vec<(bool, Ordinal)>> = BTreeMap::new();
     for &(hour, appended, ordinal) in done {
@@ -244,11 +222,6 @@ fn follows_the_rule(done: &Done, did: &BTreeMap<i32, Vec<Did>>) {
     assert_eq!(did.len(), by_hour.len(), "no hour the writer did not write");
 }
 
-/// Over a log of four blocks of several parts each (appends and forgets in every block but one,
-/// a forget in the hour of its append, forgotten runs and lone forgets), a lane stepped at 1, 24
-/// and 240 hours from the run's first hour hands over exactly what the log's span read directly
-/// gives (ordinals, hours, keys, cells) and holds its count and live set, which equal its state
-/// at every block end.
 #[test]
 fn a_log_lane_steps_equal_the_logs_span_and_state() {
     let (recording, done) = recording(Settings { cap: 48, ..Settings::at(3) }, 4 * BLOCK);
@@ -278,8 +251,6 @@ fn a_log_lane_steps_equal_the_logs_span_and_state() {
     }
 }
 
-/// A seek to 20 hours (block starts, block ends, the quiet block and hours inside) gives the
-/// count and live set the log has there, and the steps after it hand over what the span gives.
 #[test]
 fn a_log_lane_seek_equals_the_logs_span_and_state() {
     let (recording, _) = recording(Settings { cap: 48, ..Settings::at(3) }, 4 * BLOCK);
@@ -305,9 +276,6 @@ fn a_log_lane_seek_equals_the_logs_span_and_state() {
     }
 }
 
-/// Rows asked by ordinal, spread over every block with rows (the first, the last, either side of
-/// a block's end), read on demand equal the span's, with the strings their text cells name; an
-/// ordinal past the log's rows and a table holding state are refused by name.
 #[test]
 fn listed_rows_by_ordinal_equal_the_logs_span() {
     let (recording, _) = recording(Settings { cap: 48, ..Settings::at(3) }, 4 * BLOCK);
@@ -353,8 +321,6 @@ fn listed_rows_by_ordinal_equal_the_logs_span() {
     assert!(refused.contains("Table 0 holds state"), "{refused}");
 }
 
-/// The live set holds what is listed and lets go of words as they empty, whatever was appended
-/// before: a row listed alone after a hundred million appended takes one word.
 #[test]
 fn a_live_set_follows_the_rows_listed_not_the_rows_appended() {
     let mut set = LiveSet::default();

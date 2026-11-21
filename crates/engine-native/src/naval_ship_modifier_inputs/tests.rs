@@ -174,9 +174,6 @@ fn doctrine_sources(memory: &Fixture) -> Result<Vec<SourceRow>, &'static str> {
     Ok(sources)
 }
 
-/// A capture's later ship of a task force re-emits the doctrine rows its
-/// first ship's walk emitted, in order, without reading the tree again; a
-/// walk that fails keeps nothing and fails again.
 #[test]
 fn a_task_forces_doctrine_is_walked_once_per_capture() {
     let memory = doctrine_fixture(5);
@@ -323,8 +320,6 @@ fn dictionary_exceeds_65536_nodes() {
     assert_eq!(doctrine_keys::<true>(&f, IMAGE, 1), Ok([0; 2]));
 }
 
-/// A capture walks the modifier-key dictionary once per selector, and a
-/// failed walk is not kept.
 #[test]
 fn kept_doctrine_keys_walk_the_dictionary_once_per_selector() {
     let mut f = doctrine_fixture(1);
@@ -490,9 +485,6 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
     }
 }
 
-/// The ocean fallback is content: a capture resolves it once, and a later
-/// template without a terrain of its own reads only that template. A failed
-/// scan is not kept.
 #[test]
 fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
     const DATABASE: usize = 0x2100;
@@ -642,13 +634,10 @@ fn native_modifier_sources_share_owned_terms_per_accumulator() {
     }
 }
 
-/// A capture that keeps a metadata memo reads the definition table header
-/// and each key's metadata once, however many accumulators hold the key.
 #[test]
 fn a_capture_reads_each_keys_metadata_once() {
     use crate::modifier_definition as md;
     let mut memory = fixture();
-    // A second accumulator over the same entries.
     memory.put(0x1810, &0x2000u64.to_le_bytes());
     memory.put(0x1818, &3u32.to_le_bytes());
     memory.put(0x181c, &2u32.to_le_bytes());

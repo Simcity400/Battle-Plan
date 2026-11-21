@@ -1,0 +1,11 @@
+# Bound intel disclosures to their recorded observer and sample
+
+The army intel ledger takes its gates from the supplying CountryIntel sample. An hour requested later than that sample does not establish a newer observation. The basic gate controls whether there is any template entry. Below the standard gate, a recorded nonnull fake template stands in for the standard one. The ledger includes deployed templates only. Complete template and icon rosters are recorded separately. Map tooltips apply their own disclosure gates.
+
+Sharing tests distinguish the actual country object ID, a canonical identity, and a literal raw zero. In particular, a positive raw alias that resolves to canonical zero remains distinct in raw subject predicates. Receiver-zero affiliation and intel are taken from the actual receiver. Raw self-reference resolves before the directed sharing rule, and an active war can veto sharing before incomplete target or subject information would otherwise be considered.
+
+Province fog rebuilds in simulation country order. Stamp neighbours and apply occupied-state and radar contributions with saturating arithmetic so addition order matches the game. Index complete input tables by their actual owners and name an input that cannot be resolved. Stop the native area iteration at its first empty area. A missing sparse modifier contributes zero when the table itself is complete.
+
+Base icon detail gates use the observed DLC feature and the authored values. Search detail thresholds in reverse index order, since their contents need not be numerically sorted. Shared vision contributes full intel and still goes through the threshold search. The air-base count spread uses a separate, seeded calculation and applies independently of that feature. For the army cutoff, take the value paired with the first threshold strictly above the intel fraction, or the last value. Ignore an orphaned trailing entry, as the original content loader does.
+
+[Province visibility](../../crates/viewer-foundation/src/map/visibility.rs) · [Template disclosure](../../crates/viewer-foundation/src/map/visibility/template_reveal.rs) · [Receiver-zero tests](../../crates/viewer-foundation/src/map/visibility/reverse_zero_tests.rs)

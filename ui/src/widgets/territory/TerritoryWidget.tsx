@@ -24,19 +24,15 @@ import type { TerritoryShareReply } from '../../generated/dashboard';
 const NO_WARNINGS: string[] = [];
 const SHARE_SETTINGS = { growth: 'share', labels: true, legend: true, breadcrumb: false, dimming: true } as const;
 
-/** Territory: the declared `territory` series raced and drawn per country, its share of every country's territory,
- * or the factions' sums. */
 export default function TerritoryWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, props.widget.options);
   const measure = measureOf(options.measure), rule = ruleOf(options.rule);
   if (props.widget.countries.kind === 'factions') return <FactionTotalsView {...props} options={options} kind="territory"
     measure={territorySeriesMeasure(measure, rule)} label="Territory" measureLabel={territoryMeasureLabel(measure, rule)}
     note={territoryNote(measure)} format={formatTerritory} />;
-  // A group shown as one total sums its members (a faction its own total); a share shows the members instead.
   if (aggregated(props.widget.countries) && options.view !== 'share') return <AggregateTotalsView {...props} options={options} kind="territory"
     measure={territorySeriesMeasure(measure, rule)} label="Territory" measureLabel={territoryMeasureLabel(measure, rule)}
     note={territoryNote(measure)} format={formatTerritory} />;
-  // A world share of occupied land means nothing: the Occupied rule shows its race.
   if (options.view === 'share' && rule !== 'occupied') return <TerritoryShareView {...props} measure={measure} rule={rule} />;
   return <TerritoryRaceView {...props} options={options} measure={measure} rule={rule} />;
 }
@@ -59,7 +55,6 @@ function TerritoryShareView({ widget, runtime, active, onDiagnostics, measure, r
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const name = territorySeriesMeasure(measure, rule);
   const count = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : 10;
-  // The panel carries who holds some and in what order; the amounts are its cells, painted each frame they move.
   const share = useHeadProduct<TerritoryShareReply>(runtime, widget, 'territory-share', track ? { measure: name } : null,
     { active, validate: validateShareReply, structure: reply => shareStructure(reply, count) });
   const hour = share.at ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
@@ -77,7 +72,7 @@ function TerritoryShareView({ widget, runtime, active, onDiagnostics, measure, r
     shown(share.shownAt());
     const made = shareItems(share.data!, count, values, look, rest);
     return { items: made.items, unavailableReason: made.unavailableReason };
-  }) : undefined, [share.data, share.live, share.shownAt, count, look, rest, shown]); // eslint-disable-line react-hooks/exhaustive-deps
+  }) : undefined, [share.data, share.live, share.shownAt, count, look, rest, shown]);
   useEffect(() => { if (!share.data) shown(null); }, [share.data, shown]);
   const text = useMemo(() => ({ format: (value: number) => formatTerritory(value), unit: measure === 'area' ? AREA_UNIT : measure === 'victoryPoints' ? 'victory points' : measure,
     valueLabel: measureName, emptyLabel: 'No share to show.', missingLabel: 'Not recorded' }), [measure, measureName]);

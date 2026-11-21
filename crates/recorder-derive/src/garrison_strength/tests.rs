@@ -37,7 +37,6 @@ fn assigned(controller: u32, state: u32, ordinal: u32, occupied: u32, amount: i3
     StateAssignedManpowerRow { controller, state, ordinal, occupied, source_country: controller, amount }
 }
 
-/// Each garrison's (key, strength, reason).
 fn strengths(run: &Run) -> Vec<(u128, Recorded<i64>, u8)> {
     run.rows::<GarrisonStrengthRow>(TableId::GarrisonStrengths).into_iter().map(|row| (GarrisonStrengthRow::key_of(row.controller, row.state), row.strength, row.reason)).collect()
 }
@@ -50,10 +49,6 @@ fn unknown(controller: u32, state: u32, reason: u8) -> (u128, Recorded<i64>, u8)
     (GarrisonStrengthRow::key_of(controller, state), Recorded::NotRecorded, reason)
 }
 
-/// GER (10, alias 11) garrisons POL-occupied (20) state 1, half equipped, manned by rows on both of
-/// its links; state 2 lacking its operands; state 3 occupied from a country no link names; state 5
-/// with nothing assigned; state 6 whose operands' capture failed. ROM (30) holds state 4 under a
-/// failed requirement.
 fn hour_zero() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits)
@@ -71,10 +66,6 @@ fn hour_zero() -> Edits {
     edits
 }
 
-/// The strength is the game's arithmetic over the garrison's operands, its assigned manpower summed
-/// over its state's rows resolving to its own countries; an hour moving one state's assignment
-/// writes its garrison alone; and a strength not known says why by name, never zero, while a
-/// failed requirement or nothing assigned is the game's zero.
 #[test]
 fn garrison_strengths_follow_their_inputs_and_say_why_one_is_not_known() {
     let mut run = run();
@@ -127,8 +118,6 @@ fn garrison_strengths_follow_their_inputs_and_say_why_one_is_not_known() {
     );
 }
 
-/// Without the content's strength powers the table is unavailable by the define's name, and it is
-/// written whole once they are held.
 #[test]
 fn absent_strength_powers_withhold_the_table_by_name() {
     let mut run = Run::new(writers, INPUTS);
@@ -142,7 +131,6 @@ fn absent_strength_powers_withhold_the_table_by_name() {
     assert_eq!(strengths(&run).first(), Some(&known(10, 1, 87_500)));
 }
 
-/// A resume reads every input whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let mut hours = vec![hour_zero()];

@@ -87,7 +87,6 @@ impl<'a> ObservationSpans<'a> {
     pub fn false_hours(self) -> u64 {
         self.hours.hours() - self.holds_hours - self.unknown_hours
     }
-    // Accessors clip borrowed runs to this delivery; false is the complement of both lists within hours.
     pub fn holds(self) -> impl Iterator<Item = Interval> + 'a {
         self.holds.intersection(self.hours)
     }
@@ -106,18 +105,15 @@ impl<'a> ObservationSpans<'a> {
 }
 
 pub trait ObservationStream {
-    // Truth is final through the metadata watermark, independently of the owner's delivered calls.
     fn known_hours(&self) -> Option<Interval>;
     fn metadata_watermark(&self) -> Option<Hour> {
         self.known_hours().map(Interval::last)
     }
-    // Visit clipped true and unknown runs in order; false is their complement within known hours.
     fn visit(
         &self,
         hours: Interval,
         visitor: &mut dyn FnMut(ObservationRun<'_>) -> io::Result<()>,
     ) -> io::Result<()>;
-    // None means outside known hours: before the stream's start or past its metadata watermark.
     fn truth_at(&self, hour: Hour) -> io::Result<Option<Truth<'_>>>;
 }
 

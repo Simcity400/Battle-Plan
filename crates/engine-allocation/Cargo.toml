@@ -10,13 +10,9 @@ license.workspace = true
 doctest = false
 
 [features]
-# Before-growth hooks that let tests deny chosen allocations.
 alloc-fault-injection = []
-# The denying global allocator, for other crates' tests.
 test-support = []
-# The counting global allocator and its labels, for measurement runs only.
 memory-labels = []
-# zstd contexts allocating through the global allocator.
 zstd = ["dep:zstd-sys"]
 
 [dependencies]

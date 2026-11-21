@@ -120,8 +120,6 @@ fn operative_scopes() -> EventScopes {
     ])
 }
 
-// Freeing operatives reads the carried country directly, unlike the actions
-// that require a character carrier.
 fn country_scopes() -> EventScopes {
     let mut scopes = operative_scopes();
     scopes.scopes[0].this = EventObject::Country(1);
@@ -138,7 +136,6 @@ fn event(key: &str) -> Arc<installed_content_events::events::Event> {
     })
 }
 
-// Each action resolves its authored country operand and copies the selected name.
 #[test]
 fn operative_actions_resolve_country_operands() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -178,7 +175,6 @@ fn explicit_operative_uses_country_roster_and_exact_leader_name() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// A captured-reference roster is required before selecting an operative.
 #[test]
 fn free_random_operative_refuses_the_missing_captured_reference_roster() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -196,7 +192,6 @@ fn free_random_operative_refuses_the_missing_captured_reference_roster() {
     assert_eq!(out.refusals, BTreeMap::from([("synthetic effect free_random_operative: key free_random_operative: hour 1 CapturedOperativeReferences is unavailable: captured references not recorded".into(), 1)]));
 }
 
-// Positive hiding durations reach codename lookup.
 #[test]
 fn hide_operative_refuses_codename_only_after_gates() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -220,7 +215,6 @@ fn hide_operative_refuses_codename_only_after_gates() {
     }
 }
 
-// Positive harm durations reach codename lookup.
 #[test]
 fn harm_operative_refuses_codename_only_after_gates() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -239,8 +233,6 @@ fn harm_operative_refuses_codename_only_after_gates() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Substitute NAME, CODENAME and DAYS, then expand;
-// only harm appends LF. Direct and registry-only roles carry operands.
 #[test]
 fn format98_codename_days_use_direct_and_referenced_roles() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -318,7 +310,6 @@ fn format98_codename_days_use_direct_and_referenced_roles() {
     }
 }
 
-// All three actions copy the selected leader name.
 #[test]
 fn operative_actions_use_format98_registry_only_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -385,7 +376,6 @@ fn operative_actions_use_format98_registry_only_name() {
     }
 }
 
-// The fresh title scope's FROM is caller ROOT.
 #[test]
 fn unit_leader_event() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -471,7 +461,6 @@ fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
     assert_eq!(out.refusals, BTreeMap::from([("synthetic effect unit_leader_event: key unit_leader_event:  event synthetic.1 has different eligible title keys; title selection needs an unrecorded high-resolution seed".into(), 1)]));
 }
 
-// The operative event uses a fresh character scope.
 #[test]
 fn operative_leader_event() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -492,8 +481,6 @@ fn operative_leader_event() {
             ..Default::default()
         },
     );
-    // Installing the caster character clears the carried country,
-    // so fresh ROOT.GetTag is empty.
     assert_eq!(out.text, "Event Operative AAA/BBB/ [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert_eq!(scopes.scopes[0].random_seed, 124);

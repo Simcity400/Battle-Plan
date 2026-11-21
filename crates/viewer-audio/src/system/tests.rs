@@ -9,7 +9,6 @@ const ASSETS: &str = r#"
     soundeffect = { name = crackle sounds = { sound = broken } }
 "#;
 
-/// A content stack with one playable tone and one sound whose file is garbage.
 fn source(name: &str) -> (Stack, Arc<Source>) {
     let stack = Stack::new(name);
     let base = stack.base();
@@ -52,7 +51,6 @@ fn frame(effect: &str, key: u64) -> Frame {
     }
 }
 
-/// Steps `control` until `done` holds, for at most five seconds.
 fn step_until(control: &mut Control, done: impl Fn(&Control) -> bool) {
     let start = Instant::now();
     while !done(control) {
@@ -89,8 +87,6 @@ fn one_owner_sounds_and_a_release_or_drop_frees_the_audio() {
     );
 }
 
-/// Without a device, a claimed view's frames still start voices, which load,
-/// play by the clock and finish; a release silences everything at once.
 #[test]
 fn the_silent_path_plays_by_the_clock_and_a_release_silences() {
     let (_stack, source) = source("audio_system_silent");
@@ -102,17 +98,14 @@ fn the_silent_path_plays_by_the_clock_and_a_release_silences() {
     step_until(&mut control, |control| !control.engine.active());
     assert!(control.output.is_none());
     assert_eq!(status.lock().unwrap().device, None);
-    // A start, then a release: nothing sounds afterwards.
     control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 2)));
     assert!(control.engine.active());
     control.apply(Command::Release(1));
     assert!(!control.engine.active());
-    // Frames of a view that no longer owns are dropped.
     control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 3)));
     assert!(!control.engine.active());
 }
 
-/// A mute sent between frames applies to the next mixed block.
 #[test]
 fn a_mix_applies_without_a_frame() {
     let (_stack, source) = source("audio_system_mix");
@@ -142,8 +135,6 @@ fn a_mix_applies_without_a_frame() {
     assert!(out.iter().all(|value| *value == 0));
 }
 
-/// A file the decoder refuses is named, its voices finish, and the loader
-/// keeps serving later requests.
 #[test]
 fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
     let (_stack, source) = source("audio_system_unreadable");
@@ -165,8 +156,6 @@ fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
     step_until(&mut control, |control| control.engine.loaded(0));
 }
 
-/// Notes describe the content stack they came from: another stack starts,
-/// and publishes, without the old one's.
 #[test]
 fn another_content_stack_drops_the_old_ones_notes() {
     let (_old_stack, old) = source("audio_system_notes_old");
@@ -195,8 +184,6 @@ fn another_content_stack_drops_the_old_ones_notes() {
     assert!(status.lock().unwrap().notes.is_empty());
 }
 
-/// A loader that is gone refuses its files by name instead of leaving
-/// voices waiting forever.
 #[test]
 fn a_request_to_a_stopped_loader_is_refused_by_name() {
     let (_stack, source) = source("audio_system_dead_loader");
@@ -215,8 +202,6 @@ fn a_request_to_a_stopped_loader_is_refused_by_name() {
     );
 }
 
-/// A decoder that panics refuses that file by name instead of ending the
-/// loader thread.
 #[test]
 fn a_decoder_panic_is_refused_by_name() {
     let (_stack, source) = source("audio_system_panic");
@@ -261,32 +246,24 @@ fn the_ring_hands_whole_frames_over_in_order_and_refuses_when_full() {
     assert_eq!(ring.consumed(), 6);
 }
 
-/// The callback takes only whole frames: an underrun, or a buffer that ends
-/// mid-frame, is silence for whole frames, and the next frame still starts
-/// on its left channel.
 #[test]
 fn the_device_callback_keeps_channels_aligned_across_underruns() {
     let ring = Ring::new(8, 2);
     ring.push_frame(&[0.1, 0.2]);
-    // An underrun: one frame queued, two asked for.
     let mut out = [9.0f32; 4];
     drain(&ring, &mut out, |value| value);
     assert_eq!(out, [0.1, 0.2, 0.0, 0.0]);
     ring.push_frame(&[0.3, 0.4]);
     ring.push_frame(&[0.5, 0.6]);
-    // A buffer ending mid-frame takes no half frame...
     let mut odd = [9.0f32; 3];
     drain(&ring, &mut odd, |value| value);
     assert_eq!(odd, [0.3, 0.4, 0.0]);
-    // ...so the next frame is still left then right.
     let mut next = [9.0f32; 2];
     drain(&ring, &mut next, |value| value);
     assert_eq!(next, [0.5, 0.6]);
     assert_eq!(ring.len() % 2, 0);
 }
 
-/// The stream error callback records a failure without locking or
-/// allocating; errors after which the stream plays on are not failures.
 #[test]
 fn stream_errors_that_leave_the_stream_playing_are_not_failures() {
     let failure = AtomicU8::new(0);
@@ -303,9 +280,6 @@ fn stream_errors_that_leave_the_stream_playing_are_not_failures() {
     );
 }
 
-/// A device that reports an error, or stops taking samples, is dropped: the
-/// status says why, mixing continues by the clock and the device is opened
-/// again later.
 #[test]
 fn a_lost_device_is_reported_and_dropped() {
     let status = Arc::new(Mutex::new(Status::default()));
@@ -322,7 +296,6 @@ fn a_lost_device_is_reported_and_dropped() {
         ))
     );
     assert!(control.next_open > Instant::now(), "the reopen waits");
-    // A reported stream error is lost at once.
     let (output, converter) = fake_output(Ring::new(8, 2), Instant::now());
     record_failure(&output.failure, cpal::ErrorKind::DeviceNotAvailable);
     control.output = Some((output, converter));
@@ -335,7 +308,6 @@ fn a_lost_device_is_reported_and_dropped() {
             cpal::ErrorKind::DeviceNotAvailable
         )))
     );
-    // A device that keeps taking samples stays.
     control.output = Some(fake_output(Ring::new(8, 2), Instant::now() - STALLED * 2));
     control.step();
     assert!(control.output.is_some());

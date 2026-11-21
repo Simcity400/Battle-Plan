@@ -19,10 +19,8 @@ export function validateDivisionTemplates(value: unknown): DivisionTemplatesRepl
   return reply;
 }
 
-/** What a followed roster renders on: its templates, their order and what each shows. */
 export const templateStructure = (reply: DivisionTemplatesReply) => JSON.stringify([reply.templates, reply.fieldedMissing, reply.warnings]);
 
-/** Current templates in roster order, then one closed group of the obsolete ones. */
 export function templateRows(reply: DivisionTemplatesReply): TemplateRow[] {
   const current: TemplateRow[] = [], obsolete: TemplateRow[] = [];
   for (const entry of reply.templates)
@@ -33,10 +31,8 @@ export function templateRows(reply: DivisionTemplatesReply): TemplateRow[] {
 export const templateName = (entry: TemplateEntry) => entry.name ?? 'Template name unavailable';
 export const unitName = (unit: TemplateUnit) => unit.name ?? 'Unit name unavailable';
 
-/** Whether the template's composition was recorded. */
 const compositionKnown = (entry: TemplateEntry) => entry.unitsMissing === null || entry.units.length > 0;
 
-/** Battalions with their counts, then the support companies. */
 export function battalionSummary(entry: TemplateEntry): string | null {
   if (!compositionKnown(entry)) return null;
   const line = entry.units.filter(unit => !unit.support).map(unit => `${unitName(unit)} ×${unit.count}`);
@@ -45,12 +41,9 @@ export function battalionSummary(entry: TemplateEntry): string | null {
   return [line.join(', '), support.join(', ')].filter(Boolean).join(' · ');
 }
 
-/** How many battalions (not support companies) the template has; unknown when its composition was not recorded. */
 export const battalionCount = (entry: TemplateEntry): number | null =>
   compositionKnown(entry) ? entry.units.reduce((sum, unit) => unit.support ? sum : sum + unit.count, 0) : null;
 
-/** The game's name for the template's stored priority, resolved by the product
- * through the content stack; never the stored number itself. */
 export const priorityLabel = (entry: TemplateEntry): string | null => entry.priorityName;
 
 export function baseWidth(entry: TemplateEntry): string | null {

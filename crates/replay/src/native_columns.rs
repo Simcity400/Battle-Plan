@@ -1,4 +1,3 @@
-//! Recording column kinds; capture adapters are enabled with the journal.
 use replay_columnar::state::Kind as Column;
 use replay_data::rows::Kind;
 use std::io;
@@ -8,7 +7,6 @@ mod capture;
 #[cfg(any(test, feature = "journal", feature = "test-support"))]
 pub use capture::*;
 
-/// A schema field's column kind.
 pub fn column(kind: Kind) -> Column {
     match kind {
         Kind::U8 => Column::U8,
@@ -31,7 +29,6 @@ pub fn column(kind: Kind) -> Column {
     }
 }
 
-/// A table's column kinds, in schema order.
 pub fn columns(schema: &[Kind]) -> io::Result<Vec<Column>> {
     engine_allocation::collect_vec(schema.iter().map(|&kind| column(kind)))
 }

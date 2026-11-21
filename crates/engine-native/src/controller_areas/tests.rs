@@ -14,8 +14,6 @@ fn area(n: usize) -> usize {
     BASE + 0x6000 + n * 0x200
 }
 
-/// One synthetic world: provinces with ids, definitions with neighbours, and
-/// controller areas with members, representative and contacts.
 struct World(Vec<u8>);
 
 impl World {
@@ -46,8 +44,6 @@ impl World {
             self.u32(entry + province_neighbour::PROVINCE_ID, neighbour);
         }
     }
-    /// Area `n` with `members` in native (id) order, `representative` and
-    /// `contacts` (other areas' numbers) in list order.
     fn area(&mut self, n: usize, members: &[u32], representative: u32, contacts: &[usize]) {
         let at = area(n);
         self.u64(at, ccontroller_area::VTABLE_RVA.0);
@@ -101,8 +97,6 @@ impl World {
     }
 }
 
-/// Rows and pointers for provinces `1..=n` with each one's controller and
-/// owner area (`None` null).
 fn walk(areas: &[(Option<usize>, Option<usize>)]) -> (Vec<cprovince::Row>, Vec<Pointers>) {
     let rows = (1..=areas.len() as u32)
         .map(|id| cprovince::Row {
@@ -145,7 +139,6 @@ fn nodes(output: &Output) -> Vec<(u32, Option<u32>, Option<Vec<u32>>)> {
 
 const TAKE: Option<[u64; 2]> = Some([3, 4]);
 
-/// Provinces 1 and 6 are sea; area 0 holds 2 and 3, area 1 holds 4 and 5.
 fn baseline() -> (World, Vec<cprovince::Row>, Vec<Pointers>) {
     let mut world = World::new(6);
     world.area(0, &[2, 3], 3, &[1]);
@@ -227,7 +220,6 @@ fn a_quiet_hour_publishes_the_held_areas_without_reading_them() {
         )
         .unwrap();
     let held = nodes(&output);
-    // A read would refuse area 0 now; the quiet hour reads nothing.
     world.u64(area(0), 0);
     let mut fresh = rows.clone();
     for row in &mut fresh {
@@ -247,7 +239,6 @@ fn a_quiet_hour_publishes_the_held_areas_without_reading_them() {
     assert_eq!((counts.read, counts.carried), (0, 2));
     assert_eq!(nodes(&output), held);
     assert_eq!(labels(&fresh), labels(&rows));
-    // Another epoch reads everything.
     let counts = store
         .capture(
             &world.memory(),
@@ -262,9 +253,6 @@ fn a_quiet_hour_publishes_the_held_areas_without_reading_them() {
     assert_eq!(output.nodes[0].first_land, None);
 }
 
-/// A marked hour need compare only the provinces a controller change can
-/// re-point: the marked one, its neighbours and the held members of its
-/// area and of its neighbours' areas. Before, every province was compared.
 #[test]
 fn the_repointable_provinces_are_the_marked_ones_areas_and_neighbours() {
     let (world, mut rows, pointers) = baseline();
@@ -285,16 +273,10 @@ fn the_repointable_provinces_are_the_marked_ones_areas_and_neighbours() {
         )
         .unwrap();
     let mut scope = Vec::new();
-    // Nothing marked: no bound to give.
     assert_eq!(store.repointable(&memory, &rows, &mut scope), Ok(false));
     store.marks().push(4);
     assert_eq!(store.repointable(&memory, &rows, &mut scope), Ok(true));
-    // Province 4, its neighbours 2 and 5, and the members of areas 0 (its
-    // neighbour 2's) and 1 (its own); sea province 6, a neighbour of 5
-    // only, and sea province 1 are left alone.
     assert_eq!(scope, [2, 3, 4, 5]);
-    // A marked province given no controller, or a held null area of a
-    // controlled province, bounds nothing.
     rows[3].controller = 0;
     assert_eq!(store.repointable(&memory, &rows, &mut scope), Ok(false));
     assert!(scope.is_empty());
@@ -318,8 +300,6 @@ fn a_marked_hour_follows_the_moved_province_and_relabels_both_areas() {
             TAKE,
         )
         .unwrap();
-    // Province 2 changes controller: it leaves area 0 for area 1, so area 0's
-    // smallest member is 3 and area 1's is 2.
     world.area(0, &[3], 3, &[1]);
     world.area(1, &[2, 4, 5], 4, &[0]);
     pointers[1].controller = area(1);
@@ -356,9 +336,7 @@ fn a_marked_hour_follows_the_moved_province_and_relabels_both_areas() {
 #[test]
 fn node_faults_refuse_only_their_operands_and_a_short_walk_labels_nothing() {
     let (mut world, mut rows, pointers) = baseline();
-    // Deferred removal: the contacts refuse, the representative stands.
     world.put(area(0) + 0xa4, &[1]);
-    // A member count the provinces' links do not match refuses the node.
     world.u32(area(1) + 0x3c, 3);
     let mut store = Store::new();
     let mut output = Output::default();
@@ -373,7 +351,6 @@ fn node_faults_refuse_only_their_operands_and_a_short_walk_labels_nothing() {
         )
         .unwrap();
     assert_eq!(nodes(&output), [(2, Some(3), None), (4, None, None)]);
-    // A contact outside the provinces' areas has no label.
     world.put(area(0) + 0xa4, &[0]);
     world.u32(area(1) + 0x3c, 2);
     world.u64(BASE + 0xb000, area(5));

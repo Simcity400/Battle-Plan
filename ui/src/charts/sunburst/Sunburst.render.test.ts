@@ -6,7 +6,6 @@ import { createServer } from 'vite';
 import { tokensFromValues } from '../tokens.ts';
 import type { SunburstProps } from './Sunburst';
 
-/** An element's style as the chart reads and writes it. */
 function styleOf() {
   const values = new Map<string, string>();
   return { getPropertyValue: (name: string) => values.get(name) ?? '', setProperty: (name: string, value: string) => { values.set(name, value); } };

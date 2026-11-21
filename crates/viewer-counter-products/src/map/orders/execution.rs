@@ -1,6 +1,3 @@
-//! Read-only execution state: local prerequisites, then ordinary successors
-//! in stored order. Results live for this build's current frame. Selection,
-//! animation time and the arrow's derived cache stay viewer-local.
 
 use std::{
     cell::RefCell,
@@ -60,7 +57,6 @@ impl<'a, 'c> Context<'a, 'c> {
         if order.active == 0 {
             return Ok(State::default());
         }
-        // A visible healthy prefix cannot certify the recursive graph.
         self.frame.complete::<tables::ArmyOrders>().map_err(error)?;
         self.frame
             .complete::<tables::ArmyOrderPlans>()
@@ -137,7 +133,6 @@ impl<'a, 'c> Context<'a, 'c> {
             demand = demand.wrapping_add(naval_count(weight));
         }
         let allocated = transport_counts::invasion(plan)?;
-        // Evaluate preparation even after a convoy shortage.
         let rows = self
             .frame
             .complete::<tables::InvasionPreparations>()
@@ -203,7 +198,6 @@ impl<'a, 'c> Context<'a, 'c> {
         if ((preparation.progress / ONE) as i32) < required {
             return Ok(false);
         }
-        // Use the signed source province, separately from the first-path destination.
         if (order.paradrop_target as i32) < 1 {
             return Ok(true);
         }
@@ -221,8 +215,6 @@ impl<'a, 'c> Context<'a, 'c> {
             if eligible == 0 || unit.province != order.paradrop_target {
                 continue;
             }
-            // Capture is an explicit bounded acquisition superset. The viewer
-            // needs weight terms only for eligible units at this source.
             let modifiers = pack
                 .paradrop_modifiers
                 .as_ref()
@@ -244,8 +236,6 @@ impl<'a, 'c> Context<'a, 'c> {
         Ok(missing_transports(demand, capacity) < 1)
     }
 
-    /// The optional relation term is a successfully captured native
-    /// contribution. None is a known skipped/null row, not a read failure.
     fn validate_relation(
         &self,
         group: &OrdersGroupRow,
@@ -257,8 +247,6 @@ impl<'a, 'c> Context<'a, 'c> {
         }
         let own_slot = self.slot(group.country)?;
         let native_id = if own_slot == 0 {
-            // Healthy captured terms independently authenticated native id0.
-            // Reserved naming/positive census data is not this source.
             0
         } else {
             self.frame
@@ -314,8 +302,6 @@ impl<'a, 'c> Context<'a, 'c> {
             .complete::<tables::ArmyOrderPlans>()
             .map_err(error)?;
         let orders = self.frame.complete::<tables::ArmyOrders>().map_err(error)?;
-        // Own primary first, then only the immediate parent's primary list.
-        // Fallback roots, successor orders and further ancestors never match.
         for owner in [group.handle, group.parent] {
             if owner == 0 {
                 break;
@@ -362,7 +348,6 @@ fn unit_transport(row: &DivisionMovementRow) -> Result<&DivisionOrderTransportIn
         .ok_or_else(|| "DivisionMovement.order_transport class0 operands are unavailable".into())
 }
 
-/// Native id0 deliberately skips same_country, even if target aliases slot0.
 fn relation_gate(
     target: u32,
     native_id: u32,
@@ -373,8 +358,6 @@ fn relation_gate(
         && (native_id == 0 || slot(target)? != slot(native_id)?))
 }
 
-/// Local-first ordered DFS. The first false/unknown ends this path; a cycle
-/// encountered before a later false stays an explicit refusal.
 fn ordered_conditions(
     root: OrderKey,
     orders: &BTreeMap<OrderKey, &ArmyOrderRow>,
@@ -454,8 +437,6 @@ fn ordered_conditions(
     }
 }
 
-/// Ceiling towards positive infinity, preserving the rounded fixed5
-/// product's overflow before division and the final low-i32 cast.
 fn naval_count(weight: i64) -> i32 {
     (ceil_fixed(weight) / ONE) as i32
 }
@@ -485,8 +466,6 @@ fn transport_weight(base: i64, country: i64, commander: i64) -> i64 {
         / ONE
 }
 
-/// The extreme sentinel is an intermediate unsigned 0xFFFFFFFF fixed5
-/// value, which rounds/divides to 42950, not final -1.
 fn missing_transports(demand: i64, capacity: i64) -> i32 {
     let delta = demand.wrapping_sub(capacity);
     let fixed = if matches!(delta, i64::MIN | i64::MAX) || delta == i64::MIN + 1 {

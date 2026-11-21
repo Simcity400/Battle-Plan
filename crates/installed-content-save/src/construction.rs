@@ -1,4 +1,3 @@
-//! Exact construction, building and occupation values serialized in text saves.
 
 use std::{collections::BTreeMap, io};
 
@@ -8,7 +7,6 @@ use super::{
 };
 
 pub type BuildingKey = (u32, Vec<u8>);
-/// Owning country tag and building type of an offsite building.
 pub type OffsiteKey = (Vec<u8>, Vec<u8>);
 pub type LawKey = (Vec<u8>, Vec<u8>, u32);
 pub type GarrisonKey = (Vec<u8>, u32);
@@ -20,7 +18,6 @@ pub struct Building {
     pub ordinal: u32,
     pub level: i16,
     pub healthy_level: i16,
-    /// Native fixed5 health toward the next repaired level; 100 means one level.
     pub partial_health: Decimal,
 }
 
@@ -28,7 +25,6 @@ pub struct Building {
 pub struct Production {
     pub id: u64,
     pub country: Vec<u8>,
-    /// Position in the shared building/railway queue, independent of priority.
     pub queue_ordinal: u32,
     pub active_factories: i32,
     pub cost: Decimal,
@@ -43,11 +39,8 @@ pub struct Production {
 pub struct BuildingConstruction {
     pub production: Production,
     pub building_type: Vec<u8>,
-    /// Building-reference location, -1 for a country target.
     pub target_location: i32,
-    /// The writer emits only a signed-positive reference; location targets omit it.
     pub target_country: Option<Vec<u8>>,
-    /// The writer emits only positive repair counts; omission proves <= 0.
     pub repair_levels: Option<i32>,
 }
 
@@ -58,7 +51,6 @@ pub struct RailwayConstruction {
     pub target_level: i32,
     pub cancelled: bool,
     pub current_segment: i32,
-    /// Save spelling is remaining_hours; the value measures remaining work.
     pub remaining_cost: Decimal,
     pub route: Vec<u32>,
 }
@@ -68,9 +60,7 @@ pub struct OccupationSettings {
     pub country: Vec<u8>,
     pub garrison_template: Option<u64>,
     pub default_law: Option<Vec<u8>>,
-    /// Occupied-country entries in the order written by the settings writer.
     pub occupied: Vec<Vec<u8>>,
-    /// Occupied-country membership and each nullable occupation-law pointer.
     pub group_laws: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -78,7 +68,6 @@ pub struct OccupationSettings {
 pub struct StateOccupationLaw {
     pub controller: Vec<u8>,
     pub occupied: Vec<u8>,
-    /// Literal integer key, including zero; not a guessed state association.
     pub state: u32,
     pub law: Vec<u8>,
 }
@@ -92,11 +81,8 @@ pub struct StateGarrison {
     pub strength_ratio: Decimal,
     pub garrison_required: Decimal,
     pub serialized_flag: bool,
-    /// The manpower writer serializes positive rows only, retaining their relative order.
     pub manpower: Vec<Manpower>,
-    /// The garrison writer always writes both equipment objects. Absence is retained for the oracle.
     pub equipment: Option<super::production::Pool>,
-    /// The equipment-need writer saves nonzero token/amount entries in native order.
     pub equipment_need: Option<Vec<(Vec<u8>, Decimal)>>,
 }
 
@@ -109,11 +95,9 @@ pub struct Manpower {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateResistance {
     pub state: u32,
-    /// The resistance writer emits only a signed-positive country link.
     pub country: Option<Vec<u8>>,
     pub level: Decimal,
     pub speed: Decimal,
-    /// Stored suppression target; native omission certifies fixed5 zero.
     pub target: Decimal,
     pub compliance: Decimal,
     pub compliance_speed: Decimal,
@@ -122,7 +106,6 @@ pub struct StateResistance {
     pub definitions: ActiveOccupationDefinitions,
 }
 
-/// Active definition names in serializer order, independently for both families.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActiveOccupationDefinitions {
     pub resistance: Vec<Vec<u8>>,
@@ -169,11 +152,8 @@ pub struct CountryCollaboration {
     pub progress: Decimal,
 }
 
-/// One `modify_building_resources` entry: the building's name and its
-/// (one-based resource database index, amount) elements in native order.
 pub type BuildingOverride = (Vec<u8>, Vec<(i32, Decimal)>);
 
-/// A saved trade route (`delivery_route`): `kind` 0 none, 1 land, 2 naval.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedRoute {
     pub kind: u8,
@@ -181,53 +161,33 @@ pub struct SavedRoute {
     pub to_state: Option<u32>,
     pub from_port: Option<u32>,
     pub to_port: Option<u32>,
-    /// `land_path`: state ids.
     pub land_path: Vec<u32>,
-    /// `naval_path`: strategic region ids.
     pub naval_path: Vec<u32>,
 }
 
-/// State endpoints of a shared country delivery route, keyed by its receiving country.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedDeliveryRoute {
     pub from_state: Option<u32>,
     pub to_state: Option<u32>,
 }
 
-/// One saved resource origin, as the resources map reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedOrigin {
     pub state: Option<u32>,
-    /// The convoy client's two efficiency factors: its first `efficiency` and its
-    /// `efficiency_due_to_lost_convoys`.
     pub client_efficiency: [Option<Decimal>; 2],
-    /// The convoy client's `convoys_subscriber`.
     pub convoys: super::economy::ConvoyCounts,
-    /// The convoy client's `request`: its convoy requirement before the naval-dominance
-    /// route cost reduction.
     pub request: Option<i32>,
-    /// The origin's stored efficiency product: its second `efficiency`.
     pub efficiency: Option<Decimal>,
     pub route: Option<SavedRoute>,
-    /// `given_resource_rights`: (resource name, holder tag), in the serializer's
-    /// resource-name order, which does not retain the live list order.
     pub rights: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
-/// A country's saved `resources` block, reduced to what the raid state
-/// inputs and the resources map read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryResources {
-    /// Each `origin`'s `state`, written only when not null, in native order.
     pub origin_states: Vec<u32>,
-    /// Each `origin`, in native order.
     pub origins: Vec<SavedOrigin>,
-    /// Each `extra_resource_origin`: the origin this country holds by resource rights,
-    /// and the giving country's tag.
     pub rights_origins: Vec<(SavedOrigin, Vec<u8>)>,
-    /// `delivery_routes`: receiver tag to the shared route's saved state endpoints.
     pub delivery_routes: BTreeMap<Vec<u8>, SavedDeliveryRoute>,
-    /// `modify_building_resources` in native order. An entry can be empty.
     pub building_overrides: Vec<BuildingOverride>,
 }
 
@@ -235,10 +195,6 @@ pub struct CountryResources {
 pub struct Pack {
     pub state_buildings: BTreeMap<BuildingKey, Building>,
     pub province_buildings: BTreeMap<BuildingKey, Building>,
-    /// A country's offsite buildings, which the writer saves as its
-    /// `buildings` block and omits when empty,
-    /// so a country without one has none. They have no location: `location`
-    /// is zero.
     pub country_buildings: BTreeMap<OffsiteKey, Building>,
     pub building_construction: BTreeMap<u64, BuildingConstruction>,
     pub railway_construction: BTreeMap<u64, RailwayConstruction>,
@@ -247,14 +203,10 @@ pub struct Pack {
     pub state_garrisons: BTreeMap<GarrisonKey, StateGarrison>,
     pub country_reserve_manpower: BTreeMap<Vec<u8>, Vec<Manpower>>,
     pub state_resistance: BTreeMap<u32, StateResistance>,
-    /// Per-controller occupied-country active definition lists, before map concatenation.
     pub occupation_definitions: BTreeMap<(Vec<u8>, Vec<u8>), ActiveOccupationDefinitions>,
     pub country_collaboration: BTreeMap<(Vec<u8>, Vec<u8>), CountryCollaboration>,
-    /// A state's `resources` block: its own pool by name.
     pub state_resources: BTreeMap<(u32, Vec<u8>), Decimal>,
-    /// A state's `dynamic_modifier` block: its modifier container in order.
     pub state_dynamic_modifiers: BTreeMap<u32, Vec<super::governance::DynamicModifier>>,
-    /// Each country's `resources` block, when it has one.
     pub country_resources: BTreeMap<Vec<u8>, CountryResources>,
 }
 
@@ -320,8 +272,6 @@ fn country_resources(fields: &[Item]) -> io::Result<CountryResources> {
     Ok(out)
 }
 
-/// An `origin` block. Its convoy client and the origin itself each write `efficiency`:
-/// the first is the client's, the second the origin's stored product.
 fn saved_origin(fields: &[Item]) -> io::Result<SavedOrigin> {
     let mut out = SavedOrigin {
         convoys: super::economy::convoy_counts(fields)?,
@@ -423,7 +373,6 @@ fn false_omitted(items: &[Item], key: &[u8]) -> io::Result<bool> {
 }
 
 fn production(country: &[u8], queue_ordinal: u32, items: &[Item]) -> io::Result<Production> {
-    // The production writer omits these three values exactly when their stored integer is zero.
     Ok(Production {
         id: typed_handle(field(items, b"id")?.ok_or_else(|| invalid("production line lacks id"))?)?,
         country: country.to_vec(),
@@ -434,7 +383,6 @@ fn production(country: &[u8], queue_ordinal: u32, items: &[Item]) -> io::Result<
         produced: zero_omitted_fixed(items, b"produced")?,
         priority: number(items, b"priority")?,
         amount: number(items, b"amount")?,
-        // Creation date retains its saved calendar representation.
         created_date: GameDate::parse(&required_bytes(items, b"created_date")?)?,
     })
 }
@@ -449,7 +397,6 @@ fn railway(country: &[u8], ordinal: u32, items: &[Item]) -> io::Result<RailwayCo
             route.push(integer(scalar(&item.value)?)?);
         }
     }
-    // The railway writer emits all four numeric values unconditionally; cancel is bool.
     Ok(RailwayConstruction {
         production: production(country, ordinal, items)?,
         base_level: number(items, b"base")?,
@@ -470,8 +417,6 @@ pub(crate) fn manpower(items: &[Item], key: &[u8]) -> io::Result<Vec<Manpower>> 
     Ok(rows)
 }
 
-/// Entry grammar shared by single-wrapper pools and the faction's repeated
-/// wrappers. Appending preserves raw country spelling and occurrence order.
 pub(crate) fn append_manpower(items: &[Item], rows: &mut Vec<Manpower>) -> io::Result<()> {
     for item in items {
         if item.key.as_deref() != Some(b"value") {
@@ -495,7 +440,6 @@ pub(crate) fn append_manpower(items: &[Item], rows: &mut Vec<Manpower>) -> io::R
 fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()> {
     let settings = OccupationSettings {
         country: country.to_vec(),
-        // The settings writer emits the template only for a nonnull pointer.
         garrison_template: field(items, b"division_template_id")?
             .map(typed_handle)
             .transpose()?,
@@ -719,8 +663,6 @@ pub(super) fn parse_with_countries(
                             return Err(invalid("duplicate full railway construction handle"));
                         }
                     }
-                    // Railway-gun repair lines: no construction table records
-                    // it; its position still counts toward later ordinals.
                     Some(b"railway_gun") => {}
                     _ => {
                         return Err(invalid(
@@ -743,7 +685,6 @@ pub(super) fn parse_with_countries(
                 .insert(country.to_vec(), country_resources(block(value)?)?);
         }
         if let Some(value) = field(fields, b"collaboration")? {
-            // The country and status writers use the same literal at two levels.
             if let Some(value) = field(block(value)?, b"collaboration")? {
                 for item in block(value)? {
                     let target = item
@@ -855,8 +796,6 @@ pub(super) fn parse_with_countries(
     Ok(pack)
 }
 
-/// Initial state-history resource declarations from the independently verified
-/// content. They are not the runtime state resource pool serialized by a save.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BaseResources {
     pub rows: BTreeMap<(u32, Vec<u8>), (u32, i64)>,
@@ -864,8 +803,6 @@ pub struct BaseResources {
 }
 
 impl BaseResources {
-    /// Initial resources already read by the state-history reader:
-    /// ordered, repeated blocks appended, decimal i32 amounts.
     pub fn add_state_history(
         &mut self,
         state: &installed_content_states::states::StateDefinition,
@@ -895,8 +832,6 @@ impl BaseResources {
     }
 }
 
-/// Initial resource rows for clean state templates. Consumers report exclusions
-/// through the membership returned by `super::read_partial_state_history`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartialBaseResources {
     pub known: BaseResources,

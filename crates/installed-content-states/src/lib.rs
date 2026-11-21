@@ -1,4 +1,3 @@
-//! State history and authored content membership.
 
 use installed_content_core::{
     Diagnostic, DiagnosticKind, ResolvedLayers, crt, defines, effect_keys, fields, fixed5,

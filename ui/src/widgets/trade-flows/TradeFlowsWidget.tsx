@@ -63,7 +63,6 @@ import { DELIVERY_KINDS } from '../../dashboard/marketLedger';
 import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
-/** Ribbons the screen-reader description lists, largest first. */
 const DESCRIBED = 24;
 
 type Label = CountryFlagLook & { name: string; color: readonly [number, number, number] | null };
@@ -71,9 +70,6 @@ type TradeNode = FlowNode & { trade: { selection: TradeSelection; node: SideNode
 type TradeLink = FlowLink & { trade: { selection: TradeSelection; link: SideLink; source: SideNode; target: SideNode; hour: number; from: number } };
 const ALL_CONTRIBUTORS: TradeSelection = { kind: 'all' };
 
-/** The hour the widget renders while following: the start of the look grid's step holding the head
- * (names, flags and colours are read on that grid), so it renders when the step moves, never each
- * hour; the amounts are painted at the head itself. Not following, the clock's hour as rendered. */
 function useLookHour(runtime: WidgetRuntime, enabled: boolean, origin: number): number {
   const held = useRef<{ step: number; hour: number } | null>(null);
   const subscribe = useCallback((changed: () => void) => {
@@ -91,9 +87,6 @@ function useLookHour(runtime: WidgetRuntime, enabled: boolean, origin: number): 
   return enabled && held.current ? held.current.hour : runtime.clock.getHour();
 }
 
-/** Who sells what to whom: a Sankey of sellers to buyers, one ribbon per seller, buyer and
- * resource, sized by the chosen measure. The flows are one reply over the span shown; while
- * following, the diagram, its caption and the open breakdown are painted at the head each frame. */
 export default function TradeFlowsWidget({ widget, runtime, active, countrySlot, onDiagnostics, setOption }: WidgetProps) {
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
   const [selection, setSelection] = useState<TradeSelection | null>(null);
@@ -106,7 +99,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const viewport = useViewportHeight();
   const measure = (options.measure as Measure) ?? 'current';
   const asked = Number(options.perSide ?? 12);
-  // As many countries a side as the diagram fits at this size (the flow kit says), one slot kept for the rest summed.
   const [capacity, setCapacity] = useState<number | null>(null);
   const perSide = capacity == null ? asked : Math.max(1, Math.min(asked, capacity - 1));
   const incoming = useTradeFlows(widget, runtime, active);
@@ -116,8 +108,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const axisOffset = track?.axisOffset ?? 0;
   const lookHourNow = useLookHour(runtime, active && !!track && (following || drill.breakdown !== null && drill.follow), track ? track.branch.firstHour - axisOffset : 0);
   const window = track && resolveWindow(widget, track, runtime.tracks, lookHourNow);
-  const clampHour = useCallback((hour: number) => Math.min(extent[1], Math.max(extent[0], Math.floor(hour))), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The head's track hour, each frame.
+  const clampHour = useCallback((hour: number) => Math.min(extent[1], Math.max(extent[0], Math.floor(hour))), [extent[0], extent[1]]);
   const headAt = useCallback((position: number) => clampHour(position + axisOffset), [clampHour, axisOffset]);
   const playhead = window && (following || widget.time.mode === 'pin') ? Math.floor(window.lastHour) : null;
   const moment = clampHour(playhead ?? extent[1]);
@@ -131,15 +122,12 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const resourceIds = useMemo(() => {
     if (!trade || !chosen.length) return null;
     return new Set(trade.reply.resources.filter(item => chosen.includes(item.token)).map(item => item.id));
-  }, [trade, chosenKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [trade, chosenKey]);
   const flows = useMemo(() => trade && scope ? selectFlows(trade, scope, resourceIds) : [], [trade, scope, resourceIds]);
-  // One scale all campaign, read from the flows already held; never the moment's fit instead.
-  const scale = useMemo(() => options.scale !== 'moment' ? campaignScale(flows, measure, from, extent[1]) : null, [options.scale, flows, measure, from, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Each country's fixed place for ribbons inside the other side's nodes.
-  const ranks = useMemo(() => sideRanks(flows, extent[0], extent[1]), [flows, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scale = useMemo(() => options.scale !== 'moment' ? campaignScale(flows, measure, from, extent[1]) : null, [options.scale, flows, measure, from, extent[1]]);
+  const ranks = useMemo(() => sideRanks(flows, extent[0], extent[1]), [flows, extent[0], extent[1]]);
   const fallback = defaultCountryKey(track);
 
-  // Every trading holder's look, read at the look grid's hour of the moment: one batch of reads per step.
   const lookFacts = useMemo(() => {
     const facts = new Map<string, NameAt & { stretch: number }>();
     if (trade && track) for (const flow of flows) for (const identity of [flow.sellerIdentity, flow.buyerIdentity]) {
@@ -179,7 +167,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     const colours = correctedColours ?? heldTradeColours(heldColours.current.colours, heldColours.current.selection, colourPlan.selection);
     heldColours.current.colours = colours; heldColours.current.selection = colourPlan.selection;
     return colours;
-  }, [correctedColours, colourPlan, colourContext, runtime.client]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [correctedColours, colourPlan, colourContext, runtime.client]);
   const labelOf = useCallback((identity: string): Label => {
     const fact = lookFacts.get(identity);
     const look = heldLooks.get(identity);
@@ -203,7 +191,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }, [track?.source.id, track?.source.revision, track?.branch.id, options.view]);
   useEffect(() => { if (!active) { hoverKey.current = ''; setHoverWanted([]); } }, [active]);
 
-  // What the diagram draws: nodes named and coloured, ribbons by resource or seller.
   const shownResources = useMemo(() => {
     const ids = new Set(flows.map(flow => flow.resource.id));
     return trade ? trade.reply.resources.filter(item => ids.has(item.id)) : [];
@@ -217,7 +204,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
 
   const lastHour = track?.branch.lastHour ?? 0;
   const groupUnobserved = widget.countries.kind === 'group' && widget.countries.membership === 'hour' ? resolved?.unobserved ?? null : null;
-  // Why the diagram is empty at an hour, if it is: never "no trade" for what was not recorded.
   const messageAt = useCallback((hour: number, drawn: number): string | null => {
     if (!data) return null;
     const unrecorded = unrecordedMessage(data.known, measure, from, hour);
@@ -228,8 +214,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     if (drawn) return null;
     return scope?.kind === 'countries' && scope.identityNote ? scope.identityNote : emptyMessage(data, measure, from, hour, groupUnobserved);
   }, [data, measure, from, widget.countries, fallback, groups.data, lastHour, identities, resolved, scope, groupUnobserved]);
-  // Totals and averages cover recorded hours only: unrecorded deals, and hours a group counted at each
-  // hour has no recorded membership, are said, never counted as none.
   const coverageAt = useCallback((hour: number) => {
     if (!data) return '';
     const groupHours = groupUnobserved ? knownHours(groupUnobserved, from, hour) : 0;
@@ -305,7 +289,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     if (!track) return;
     const at = headNow();
     const items: MenuItem[] = [jumpItem(runtime, track.id, at)];
-    // The country's own view, also from the keyboard (the context-menu key on its node).
     if (hit?.kind === 'node') {
       const drawn = (hit.node as TradeNode).trade;
       const holder = drawn?.node.identity;
@@ -318,7 +301,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       if (sums.last != null && sums.last !== sums.first) items.push({ ...jumpItem(runtime, track.id, sums.last), hint: 'Last recorded in the time shown' });
     }
     menu.open(x, y, items);
-  }, [track, runtime, headNow, extent[0], extent[1], menu.open, openCountry]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [track, runtime, headNow, extent[0], extent[1], menu.open, openCountry]);
 
   const savedSelection = useMemo(() => track ? readSelection(options.tradeSelection, tradeContext(track)) : null, [options.tradeSelection, track]);
   const chosenSelection = pinnedView ? (options.tradeSelection ? savedSelection : ALL_CONTRIBUTORS) : selection;
@@ -326,11 +309,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const known = useMemo(() => observedTradeSpans(data?.known ?? [], scope?.kind === 'countries' ? scope.unobserved : undefined), [data, scope]);
   const effectiveDrill = drill.breakdown ? drill : pinnedView ? { breakdown: 'contributions', follow: following, hour: moment } : CLOSED;
   const drillFollows = effectiveDrill.breakdown !== null && effectiveDrill.follow && !!track;
-  // The breakdown's hour: the look grid's while following (its names), the picked day otherwise.
   const drillAt = effectiveDrill.breakdown === null ? null : drillFollows ? clampHour(lookHourNow + axisOffset) : effectiveDrill.hour;
 
-  // One country's view needs its whole trade: the reply has it for every country or when one of its
-  // tags was asked for; otherwise that country's own reply is read over the same span.
   const countryHolder = chosenSelection?.kind === 'country' ? chosenSelection.holder : null;
   const requested = all ? null : resolved ? [...resolved.tags] : [];
   const countryTags = trade && countryHolder ? countryTradeTags(trade, requested, countryHolder) : null;
@@ -342,7 +322,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const countryTitle = useCountryLabelsAt(runtime.client, track, countryFact ? [{ tag: countryFact.tag, hour: countryFact.hour }] : [], active);
   const drillTitle = !countryHolder ? 'Trade contributors'
     : countryFact ? `${countryTitle.labelAt(countryFact.hour)(countryFact.tag).name}: imports and exports` : 'Imports and exports';
-  // Following, the breakdown's amounts, day and notes are painted at the head.
   const drillLive = useMemo<LiveHour | null>(() => {
     if (!drillFollows || !trade) return null;
     const hour = () => headAt(runtime.clock.getSnapshot().position);
@@ -365,14 +344,12 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     setSelection(drawn.selection);
     dispatchDrill(openContributions(widget, hour, runtime.clock.getSnapshot().playing, following ? headNow() : playhead));
   }, [track, widget, runtime.clock, following, headNow, playhead]);
-  // A country's flag or name opens its whole trade; the summed rest opens its contributors.
   const openLabel = useCallback((node: FlowNode, hour: number) => {
     const drawn = (node as TradeNode).trade;
     if (drawn?.node.identity) openCountry(drawn.node.identity, hour);
     else openDrill({ kind: 'node', node }, hour);
   }, [openCountry, openDrill]);
 
-  // The market and lend-lease at the head, followed as a panel; a pinned or picked day asks for it.
   const marketTags = useMemo(() => {
     if (!marketView) return [];
     const filter = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, moment, lastHour);
@@ -383,7 +360,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const marketReady = !!track && marketView && !marketReason && (all || !!groups.data && marketTags.length > 0);
   const market = useHeadProduct<MarketLendLeaseReply>(runtime, widget, 'market-lendlease', marketReady ? { countries: (marketTags).map(countryFromKey)} : null,
     { active: active && marketView, validate: validateMarketReply, hoverHour: !marketView || drill.breakdown === null ? null
-      // A breakdown following playback in a widget that does not follows the look grid's hour of the head.
       : drill.follow ? following ? null : clampHour(lookHourNow + axisOffset) : drill.hour });
 
   useEffect(() => {
@@ -436,7 +412,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <>{groupFailure}<WidgetState kind="empty" message={selectionReason} /></>;
   if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
-  // A group with no member found yet asks for nothing, so no reply will come: the moment shown says why.
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
   if (none && !pinnedView && !drill.breakdown) return <>{groupFailure}{pinnedHeader}<NoMembersState reason={none.reason} icon="flows" /></>;
   if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;

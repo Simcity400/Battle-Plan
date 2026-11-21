@@ -1,7 +1,3 @@
-//! Modded content stacks for the Politics, resource, sprite, GUI and building
-//! readers: a base game layer and a mod layer as `ResolvedLayers::from_folders`
-//! stacks them, so additions, overrides, removals and refused forms are read
-//! through the same layer resolution as recorded content.
 
 use crate::test_support::Stack;
 
@@ -17,7 +13,6 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
         "idea_categories = { political_advisor = { character_slot = political_advisor } \
          economy = { slot = economy_slot } }",
     );
-    // The mod replaces the base file at the same path: `economy` is gone.
     stack.write(
         &addon,
         "common/idea_tags/00_idea.txt",
@@ -33,7 +28,6 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
         "common/ideas/b_base.txt",
         "ideas = { country = { base_spirit = { modifier = { stability_factor = 0.1 } } } }",
     );
-    // Named before the base file, so it loads first; the base file's definition wins.
     stack.write(
         &addon,
         "common/ideas/a_mod.txt",
@@ -42,13 +36,11 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
          modifier = { stability_factor = [?mod_value]  } } } \
          country = { base_spirit = { modifier = { stability_factor = 0.5 } } } }",
     );
-    // `common/ideas` loads only its direct files.
     stack.write(
         &addon,
         "common/ideas/nested/ignored.txt",
         "ideas = { country = { nested_spirit = { } } }",
     );
-    // Native database loaders take direct files; a nested file is ignored.
     stack.write(
         &addon,
         "common/idea_tags/extra/ignored.txt",
@@ -66,7 +58,6 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
     assert_eq!(names, ["political_advisor", "mod_council"]);
     assert!(content.tags.resolve("economy").unwrap().is_none());
     assert!(content.tags.resolve("nested_category").unwrap().is_none());
-    // An unknown `@variable` is refused by name, not read as a missing cost.
     assert_eq!(
         content.tags.resolve("mod_council").unwrap().unwrap().cost,
         None
@@ -74,7 +65,6 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
     let law = content.idea("mod_law").unwrap().unwrap();
     assert_eq!((law.cost, law.removal_cost), (Some(150.0), None));
     assert!(content.idea("nested_spirit").unwrap().is_none());
-    // By name across layers: a_mod.txt before b_base.txt, so the base definition is last.
     assert_eq!(
         content
             .idea("base_spirit")
@@ -142,14 +132,12 @@ fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() 
         added.group_of("futurism").unwrap().unwrap().token,
         "technocracy"
     );
-    // The refused colour form is named, never converted by guesswork.
     assert!(
         warnings
             .iter()
             .any(|w| w.1.contains("mystic") && w.1.contains("packed colour 16711680")),
         "{warnings:?}"
     );
-    // replace_path hides every base ideology.
     let (replaced, _) = crate::ideologies::read(&stack.layers(&["common/ideologies"])).unwrap();
     assert!(replaced.get("democratic").unwrap().is_none());
     assert!(replaced.get("technocracy").unwrap().is_some());
@@ -228,7 +216,6 @@ fn one_unreadable_mod_sprite_costs_only_itself_and_keys_match_without_case() {
     );
     let layers = stack.layers(&[]);
     let set = crate::gfx::read(&layers).unwrap();
-    // The mod's later declaration wins, whatever case its keys are written in.
     let idea = set.lookup("GFX_idea_x").unwrap();
     assert_eq!(
         (idea.texture.as_deref(), idea.frames),
@@ -257,8 +244,6 @@ fn a_refused_sprite_override_withdraws_the_earlier_declaration() {
         "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/base_x.dds } \
          spriteType = { name = GFX_idea_y texturefile = gfx/interface/base_y.dds } }",
     );
-    // The mod redeclares both; its GFX_idea_x cannot be read, and its GFX_idea_y
-    // is refused and then declared again readably later in the same file.
     stack.write(
         &addon,
         "interface/zz_mod.gfx",
@@ -268,13 +253,11 @@ fn a_refused_sprite_override_withdraws_the_earlier_declaration() {
            spriteType = { name = GFX_idea_y texturefile = gfx/interface/mod_y2.dds } }",
     );
     let set = crate::gfx::read(&stack.layers(&[])).unwrap();
-    // Never the base art the refused override replaced: the name is unavailable, with its reason.
     let reason = set.lookup("GFX_idea_x").unwrap_err();
     assert!(
         reason.contains("zz_mod.gfx") && reason.contains("GFX_idea_x"),
         "{reason}"
     );
-    // A later readable declaration is read as usual.
     assert_eq!(
         set.lookup("GFX_idea_y").unwrap().texture.as_deref(),
         Some("gfx/interface/mod_y2.dds")
@@ -295,14 +278,11 @@ fn a_tree_unreadable_sprite_file_keeps_its_native_prefix_and_later_replacements(
          spriteType = { name = GFX_idea_y texturefile = gfx/interface/base_y.dds } \
          spriteType = { name = GFX_idea_z texturefile = gfx/interface/base_z.dds } }",
     );
-    // The mod redeclares GFX_idea_x and GFX_idea_z before an unrelated
-    // stray closing brace. The native file reader stops there, retaining its prefix.
     let broken = "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/mod_x.dds } \
                   spriteType = { name = \"GFX_idea_z\" texturefile = gfx/interface/mod_z.dds } } } \
                   spriteTypes = { spriteType = { name = GFX_other } }";
     assert!(crate::parser::parse(broken.as_bytes()).is_err());
     stack.write(&addon, "interface/mod.gfx", broken);
-    // A file after it declares GFX_idea_z readably again.
     stack.write(
         &addon,
         "interface/zz_mod.gfx",
@@ -355,7 +335,6 @@ fn a_mod_resource_takes_its_frame_through_a_file_variable() {
     );
 }
 
-/// `window_button_sprite` for `resources_info_entry` → `resources_icon`.
 fn resource_icon(stack: &Stack) -> (std::io::Result<String>, Vec<String>) {
     let mut warnings = Vec::new();
     let sprite = crate::gui::native::window_button_sprite(
@@ -381,8 +360,6 @@ fn a_gui_window_is_found_in_whichever_file_declares_it_and_a_later_file_replaces
     let (sprite, warnings) = resource_icon(&stack);
     assert_eq!(sprite.unwrap(), "GFX_mod_resources_strip");
     assert!(warnings.is_empty(), "{warnings:?}");
-    // The base file loads first (files before subfolders), so the mod's
-    // declaration replaces it, and the replacement is reported.
     stack.write(
         &stack.base(),
         "interface/countrytradeview.gui",
@@ -400,7 +377,6 @@ fn a_gui_window_is_found_in_whichever_file_declares_it_and_a_later_file_replaces
         warnings[0].contains("interface/mod/mod_trade.gui"),
         "{warnings:?}"
     );
-    // load_screen.gui is read before every other file, so it is replaced too.
     stack.write(
         &stack.addon(),
         "interface/load_screen.gui",
@@ -428,8 +404,6 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
              buttonType = {{ name = resources_icon spriteType = {sprite} }} }}"
         )
     };
-    // Two declarations alone in a block: the registry inserts the second
-    // first, so the first is kept, and both are named.
     stack.write(
         &stack.addon(),
         "interface/mod_trade.gui",
@@ -442,7 +416,6 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
         warnings[0].contains("resources_info_entry is declared 2 times"),
         "{warnings:?}"
     );
-    // A third after them in the block is inserted last, so it is kept.
     stack.write(
         &stack.addon(),
         "interface/mod_trade.gui",
@@ -459,7 +432,6 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
         warnings[0].contains("resources_info_entry is declared 3 times"),
         "{warnings:?}"
     );
-    // A later guiTypes block in the same file replaces the earlier one.
     stack.write(
         &stack.addon(),
         "interface/mod_trade.gui",
@@ -476,7 +448,6 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
         warnings[0].contains("resources_info_entry is declared 3 times"),
         "{warnings:?}"
     );
-    // The native registry names unnamed templates and establishes their order too.
     stack.write(
         &stack.addon(),
         "interface/mod_trade.gui",
@@ -492,7 +463,6 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
         warnings[0].contains("resources_info_entry is declared 2 times"),
         "{warnings:?}"
     );
-    // A later block replaces the earlier batch like any other.
     stack.write(
         &stack.addon(),
         "interface/mod_trade.gui",
@@ -504,7 +474,6 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
         ),
     );
     assert_eq!(resource_icon(&stack).0.unwrap(), "GFX_C");
-    // So does a later file.
     stack.write(
         &stack.addon(),
         "interface/mod_trade.gui",
@@ -548,7 +517,6 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
         );
         (sprite, warnings)
     };
-    // The override leaves out its final closing braces; the game closes them.
     stack.write(
         &stack.addon(),
         "interface/zz_mod.gui",
@@ -556,8 +524,6 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
          buttonType = { name = player_flag quadTextureSprite = GFX_mod_shield } }",
     );
     assert_eq!(flag(&stack).0.unwrap(), "GFX_mod_shield");
-    // A stray close ends the native file. Its declared top bar replaces
-    // the base window, so the missing button never falls back to base art.
     let broken = "guiTypes = { containerWindowType = { name = topbar } } } \
                   guiTypes = { containerWindowType = { name = other } }";
     assert!(crate::parser::parse(broken.as_bytes()).is_err());
@@ -569,7 +535,6 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
         warnings[0].contains("topbar is declared 2 times"),
         "{warnings:?}"
     );
-    // A later file that declares it readably settles it.
     stack.write(
         &stack.addon(),
         "interface/zzz_mod.gui",
@@ -577,7 +542,6 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
          buttonType = { name = player_flag quadTextureSprite = GFX_later } } }",
     );
     assert_eq!(flag(&stack).0.unwrap(), "GFX_later");
-    // A later file declaring only another name leaves the top bar alone.
     stack.write(
         &stack.addon(),
         "interface/zzz_mod.gui",
@@ -610,8 +574,6 @@ fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
         "guiTypes = { containerWindowType = { name = topbar \
          buttonType = { name = player_flag quadTextureSprite = GFX_shield_medium } } }",
     );
-    // Another window's child of the same name, with other art, is not the top
-    // bar's (the file names `topbar`, so it is read).
     stack.write(
         &stack.addon(),
         "interface/mod_diplomacy.gui",
@@ -629,20 +591,16 @@ fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
     };
     assert_eq!(flag(&stack).unwrap(), "GFX_shield_medium");
     for (window, expected) in [
-        // Window and control names match without regard to case.
         (
             "containerWindowType = { name = TopBar \
              buttonType = { name = Player_Flag quadTextureSprite = GFX_cased } }",
             Ok("GFX_cased"),
         ),
-        // A button in a nested window is in that window's list, not the top bar's.
         (
             "containerWindowType = { name = topbar containerWindowType = { name = inner \
              buttonType = { name = player_flag quadTextureSprite = GFX_nested } } }",
             Err("has no player_flag"),
         ),
-        // The shared element-name tree discards the later button before the
-        // button lookup searches its own array.
         (
             "containerWindowType = { name = topbar \
              iconType = { name = player_flag spriteType = GFX_icon } \
@@ -655,7 +613,6 @@ fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
              buttonType = { name = player_flag quadTextureSprite = GFX_second } }",
             Ok("GFX_first"),
         ),
-        // Only a containerWindowType opens as a window.
         (
             "windowType = { name = topbar \
              buttonType = { name = player_flag quadTextureSprite = GFX_window } }",
@@ -763,7 +720,6 @@ fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
             "{notes:?}"
         );
     }
-    // Both database paths use the same scalar scanner and lossy display.
     std::fs::write(
         stack.addon().join("common/resources/mod.txt"),
         b"resources = { mod_value = { icon_frame = \"\xfe\" } }",
@@ -805,12 +761,10 @@ fn a_mod_may_blank_a_base_building_file() {
         "common/buildings/01_extra.txt",
         "buildings = { mod_removed = { max_level = 1 } }",
     );
-    // The mod replaces 01_extra.txt with an empty file, removing its building.
     stack.write(&stack.addon(), "common/buildings/01_extra.txt", "");
     let buildings = crate::buildings::read(&stack.layers(&[])).unwrap();
     assert!(buildings.types.contains_key("infrastructure"));
     assert!(!buildings.types.contains_key("mod_removed"));
-    // An empty native file declares nothing, including when parsed alone.
     assert!(
         crate::buildings::parse(b"", &crate::key_names::KeyNames::default())
             .unwrap()
@@ -819,9 +773,6 @@ fn a_mod_may_blank_a_base_building_file() {
     );
 }
 
-/// Scalar redeclarations are read by each native object reader, with their
-/// recovery named. Categories and resources append, groups replace, traits
-/// and modifier registrations keep their first match, and characters agree.
 #[test]
 fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -892,7 +843,6 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     let layers = stack.layers(&[]);
 
     let (ideas, _, warnings) = crate::ideas::read(&layers, &[]).unwrap();
-    // Categories append; resolve selects the first matching category.
     assert_eq!(
         ideas.tags.resolve("economy").unwrap().unwrap().slots,
         ["economy"]
@@ -901,7 +851,6 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     assert!(!warnings.is_empty(), "{warnings:?}");
 
     let (ideologies, warnings) = crate::ideologies::read(&layers).unwrap();
-    // Ideology lookup keeps the first native match, including after a scalar redeclaration.
     assert_eq!(
         ideologies.get("democratic").unwrap().unwrap().color,
         Ok([0.0, 0.0, 1.0, 1.0])
@@ -910,7 +859,6 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     assert!(!warnings.is_empty(), "{warnings:?}");
 
     let (traits, warnings) = crate::leader_traits::read(&layers).unwrap();
-    // Trait lookup selects the first native match.
     assert_eq!(
         traits.get("tough").unwrap().unwrap().modifiers.values[0].value,
         10_000
@@ -918,13 +866,10 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     assert!(!warnings.is_empty(), "{warnings:?}");
 
     let (definitions, warnings) = crate::modifier_definitions::read(&layers).unwrap();
-    // Modifier definitions keep the first registered name.
     assert_eq!(definitions.get("mod_speed").unwrap().precision, 1);
     assert!(!warnings.is_empty(), "{warnings:?}");
 
     let (characters, warnings) = crate::characters::read(&layers, Default::default()).unwrap();
-    // Character projections agree across definitions, never resurrecting
-    // the earlier portrait when the later template disagrees.
     assert!(matches!(
         characters.portraits("MOD_hero").unwrap().unwrap()
             [&("civilian".to_owned(), "small".to_owned())],
@@ -933,8 +878,6 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     assert!(!warnings.is_empty(), "{warnings:?}");
 
     let (resources, warnings) = crate::resources::read(&layers).unwrap();
-    // The resource loop has no brace guard: the scalar body consumes the
-    // following declaration as its fields, keeping only the missing-frame entry.
     assert_eq!(
         resources
             .declarations
@@ -944,7 +887,6 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
         [("oil", Some(1)), ("oil", None)]
     );
     assert!(!warnings.is_empty(), "{warnings:?}");
-    // A later file still appends its declaration; no earlier entry is revived.
     stack.write(
         &addon,
         "common/resources/zzz_later.txt",

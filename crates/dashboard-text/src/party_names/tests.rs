@@ -25,17 +25,14 @@ fn a_party_is_named_as_the_game_names_it() {
             original_tag: original.map(str::to_owned),
             key: key.map(str::to_owned),
         };
-    // The tag's key; the original tag is not needed when it exists.
     assert_eq!(
         name(&naming("fascism", Some("GER"), None, None)).as_deref(),
         Some("Copper Circle")
     );
-    // A dynamic country takes its original tag's key.
     assert_eq!(
         name(&naming("fascism", Some("D01"), Some("GER"), None)).as_deref(),
         Some("Copper Circle")
     );
-    // Neither: the ideology group's own name, or its token.
     assert_eq!(
         name(&naming("fascism", Some("ITA"), Some(""), None)).as_deref(),
         Some("Fixture ideology")
@@ -44,10 +41,8 @@ fn a_party_is_named_as_the_game_names_it() {
         name(&naming("modism", Some("ITA"), Some(""), None)).as_deref(),
         Some("modism")
     );
-    // Not recorded: not guessed.
     assert_eq!(name(&naming("fascism", Some("D01"), None, None)), None);
     assert_eq!(name(&naming("fascism", None, Some(""), None)), None);
-    // set_party_name: the stored key, shown as itself when undefined.
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("SOV_x_party"))).as_deref(),
         Some("Quartz League")
@@ -56,18 +51,15 @@ fn a_party_is_named_as_the_game_names_it() {
         name(&naming("x", Some("GER"), None, Some("MOD_key"))).as_deref(),
         Some("MOD_key")
     );
-    // A literal name is its raw bytes: an authored `§` is not a stored colour control.
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("§YCustom Party§!"))).as_deref(),
         Some("§YCustom Party§!")
     );
     assert!(refused.borrow().lines("x").is_empty());
-    // Party names reach their text boxes plain: brackets are glyphs.
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("scoped_party"))).as_deref(),
         Some("[ROOT.GetAdjective] Party")
     );
-    // A refused name is not shown, and why is noted by key.
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("gap_party"))),
         None
@@ -89,9 +81,7 @@ fn exact_selected_empty_party_tag_keeps_the_legacy_absence_contract() {
         key: None,
     };
     let defines = |key: &str| key == "_mod_group_party";
-    // Legacy consumers' empty original still means known absence.
     assert_eq!(party_key(&naming, defines).as_deref(), Some("mod_group"));
-    // The exact empty selection is a real prefix.
     assert_eq!(
         party_key_with_selected_tag(&naming, "", defines).as_deref(),
         Some("_mod_group_party")

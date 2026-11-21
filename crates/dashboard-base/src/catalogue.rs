@@ -1,6 +1,3 @@
-//! The content catalogue (`dashboard-text`) and its
-//! loader: one catalogue per source, folders and presentation, held in the source's own
-//! cache.
 
 pub use dashboard_text::catalogue::*;
 
@@ -12,9 +9,6 @@ use crate::{
 use kept::Keeping;
 use std::{io, sync::Arc};
 
-/// The recording's catalogue for these folders over `presented`, a mount already resolved
-/// outside every cache lock: its verified content with the visual mods mounted over it, the
-/// localisation in the recording's language and the client's texture settings.
 fn load(
     source: &Source,
     options: &ContentOptions,
@@ -31,7 +25,6 @@ fn load(
     )
 }
 
-/// A source's catalogue slot: the shown one ([`Cached`]) or the recording's own.
 trait Slot: Default + Send + 'static {
     fn slot(&mut self) -> &mut Cached;
 }
@@ -42,8 +35,6 @@ impl Slot for Cached {
     }
 }
 
-/// The recording's own catalogue slot, apart so neither it nor the catalogue of the visual mods
-/// requests show displaces the other.
 #[derive(Default)]
 struct Recorded(Cached);
 
@@ -53,13 +44,10 @@ impl Slot for Recorded {
     }
 }
 
-/// Whether `options` read the recording's own catalogue: recorded-only work, or work showing
-/// no visual mod, which share it ([`recorded_slot`]).
 pub fn reads_recorded(options: &ContentOptions) -> bool {
     options.presentation.is_recorded() || options.presentation.identity().is_empty()
 }
 
-/// `change` run on the catalogue slot `options` read, under its lock.
 fn with_slot<R>(
     source: &Source,
     options: &ContentOptions,
@@ -83,9 +71,6 @@ fn with_slot<R>(
     }
 }
 
-/// The catalogue the source's `S` slot keeps for `key`, loaded on first use over the mount
-/// `presented` gives. The mount is resolved before the catalogue's cell is entered, and only
-/// when nothing is loaded yet, so no cache lock is ever held while a mount is computed.
 fn kept_in<S: Slot>(
     key: Binding,
     source: &Source,
@@ -109,7 +94,6 @@ fn kept_in<S: Slot>(
     result.get_or_init(|| load(source, options, &settings, presented?))
 }
 
-/// The recording's own catalogue for these folders.
 fn recorded_slot(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
     kept_in::<Recorded>(
         binding_with(options, Presentation::default()),
@@ -119,9 +103,6 @@ fn recorded_slot(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
     )
 }
 
-/// [`load`] over the recorded content `resolved` gives and the presentation `presented`
-/// mounts. With `keeping`, what the recording's facts alone decide (the localisation and, under
-/// no visual mod, the interface sprites) is read from its kept files, or built into them.
 fn load_with(
     source: &Source,
     options: &ContentOptions,
@@ -155,8 +136,6 @@ fn load_with(
             .layers
             .artwork("interface sprites", installed_content_gfx::gfx::read)
     };
-    // What the read drew from the recording is credited to every later user of the
-    // catalogue's memo ([`CachedResult`]).
     let sprites = match keeping {
         Keeping::On if presented.presentation.is_empty() => {
             let (sprites, noted) = kept::kept(
@@ -184,9 +163,6 @@ fn load_with(
     ))
 }
 
-/// The recording's own catalogue for these folders, built from the recording and the
-/// installation now, never read from or written to its kept files and held by no cache: what
-/// the kept files must equal.
 pub fn built_catalogue(source: &Source, options: &ContentOptions) -> io::Result<Catalogue> {
     load_with(
         source,
@@ -198,9 +174,6 @@ pub fn built_catalogue(source: &Source, options: &ContentOptions) -> io::Result<
     )
 }
 
-/// What a catalogue, and every cache derived from one, is bound to: the folders, the
-/// unverified-content choice, the cache folder, the presentation the request's artwork shows
-/// (`ContentOptions::presentation`) and the game settings it reads ([`Settings`]).
 pub type Binding = (
     content::ContentKey,
     std::path::PathBuf,
@@ -209,18 +182,14 @@ pub type Binding = (
 );
 type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
 
-/// What a catalogue reads from the user folder's `settings.txt`, which decides how art is drawn
-/// and nothing else: `force_pow2_textures`, or why the file cannot be read.
 pub type Settings = Result<bool, String>;
 
-/// The [`Settings`] the user folder of `options` holds now.
 fn settings(options: &ContentOptions) -> Settings {
     installed_content_settings::settings::read_keys(&options.options.user_dir)
         .map(|keys| keys.force_pow2_textures())
         .map_err(|why| why.to_string())
 }
 
-/// The binding of the catalogue [`catalogue`] gives for these options.
 pub fn binding(options: &ContentOptions) -> Binding {
     binding_with(options, options.presentation.identity().clone())
 }
@@ -234,8 +203,6 @@ fn binding_with(options: &ContentOptions, presentation: Presentation) -> Binding
     )
 }
 
-/// What a cache of recorded facts alone (no artwork, interface or game-look text) is bound to:
-/// [`Binding`] without the presentation, which cannot change a recorded fact.
 pub type RecordedBinding = (content::ContentKey, std::path::PathBuf);
 
 pub fn recorded_binding(options: &ContentOptions) -> RecordedBinding {
@@ -249,17 +216,7 @@ pub fn binding_matches(key: &Binding, options: &ContentOptions) -> bool {
     *key == binding(options)
 }
 
-/// The shared catalogue for these options (folders and presentation), loaded on first use and
-/// replaced when the folders, the cache folder, the unverified-content choice or the
-/// presentation change. A request admitted under a presentation the source has since left
-/// gets a catalogue of its own, which displaces nothing.
-///
-/// Recorded-only work (preparation) gets the recording's own catalogue and never mounts a
-/// visual mod. A catalogue showing visual mods keeps the recording's own
-/// ([`Catalogue::recorded`]), which art the mods cannot draw is drawn from ([`draw`]).
 pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
-    // Without a visual mod the recording's own catalogue is the one shown: recorded-only work
-    // and requests share it, so caches built from it serve both.
     if reads_recorded(options) {
         return recorded_slot(source, options);
     }
@@ -278,8 +235,6 @@ pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
     keeping_recorded(source, options, shown)
 }
 
-/// `shown`, a catalogue showing visual mods, keeping the recording's own catalogue for these
-/// folders ([`Catalogue::recorded`]), which [`draw`] draws what the mods cannot from.
 fn keeping_recorded(
     source: &Source,
     options: &ContentOptions,
@@ -291,10 +246,6 @@ fn keeping_recorded(
     Ok(shown)
 }
 
-/// The catalogue of these folders drawing the recording's own artwork whatever visual mods the
-/// request shows: what preparation reads, so the prepared store keeps payloads by recorded
-/// content alone, and what a reply's art falls back to ([`present`]). It credits nothing.
-/// Without visual mods it is [`catalogue`]'s.
 pub fn recorded_catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
     if options.presentation.is_empty() {
         return catalogue(source, options);
@@ -302,19 +253,6 @@ pub fn recorded_catalogue(source: &Source, options: &ContentOptions) -> io::Resu
     recorded_slot(source, options)
 }
 
-/// Art a reply draws from the operands a prepared payload kept, as the request's selection shows
-/// it. `draw` is the whole operation, run against one catalogue: acquiring its GUI selector,
-/// choosing among candidates by what is declared, looking the sprite up and rendering it. It runs
-/// against the request's `admitted` catalogue first, as one transaction: strictly, with no
-/// loader falling back to the recording ([`installed_content_core::content::strict`]), and isolated, its
-/// notes kept from the reply ([`capture_isolated`]). When it draws, its notes are published;
-/// when any stage fails, they are dropped and the whole operation runs again against the
-/// recording's own catalogue, so the recording's own choice is made again, and the reply names
-/// the fallback once, as `what` with the stage that failed (decision 5). When the recording
-/// cannot draw it either, the recording's failure is the result: the art is unavailable, as it
-/// always was. Everything runs in one capture, so the memo names its notes on every reply that
-/// shows it. Inside another transaction's strict attempt it draws `admitted` alone, strictly:
-/// falling back to the recording is that transaction's.
 pub fn present<T, E: std::fmt::Display>(
     what: &str,
     admitted: &Catalogue,
@@ -347,13 +285,6 @@ pub fn present<T, E: std::fmt::Display>(
     })
 }
 
-/// Art a reply draws when it answers, through `shown`, the catalogue its request shows
-/// ([`catalogue`]): one transaction ([`present`]) against `shown` and then, when any stage of
-/// `operation` fails there, against the recording's own catalogue `shown` keeps
-/// ([`Catalogue::recorded`]), named as `what` gives it. `operation` is the whole draw, every
-/// choice that depends on what the catalogue declares included. A catalogue showing no visual
-/// mod draws it once, as it is. A memo keeping the result keeps it per artwork mode
-/// (`installed_content_core::content::ByMode`) when another transaction's strict attempt can reach it.
 pub fn draw<T, E: std::fmt::Display>(
     what: impl FnOnce() -> String,
     shown: &Catalogue,
@@ -370,9 +301,6 @@ mod present_tests {
     use super::*;
     use crate::test_fixtures::visual_mods::{Machine, RED, fallback_line, png, select};
 
-    /// The admitted attempt runs strictly and keeps its notes to itself: a failed one leaves no
-    /// note of its own on the reply or the memo, only the fallback named once; a drawn one
-    /// publishes its notes.
     #[test]
     fn present_is_one_transaction() {
         let machine = Machine::new("present_transaction");
@@ -417,8 +345,6 @@ mod present_tests {
         assert!(line.is_some_and(|line| line.contains("kept selector note")));
     }
 
-    /// A catalogue showing visual mods keeps the recording's own, which [`draw`] falls back to as
-    /// a whole; without a selection the catalogue is the recording's, keeps none, and draws once.
     #[test]
     fn draw_falls_back_through_the_recorded_catalogue_the_shown_one_keeps() {
         let machine = Machine::new("draw_keeps_recorded");
@@ -473,9 +399,6 @@ mod present_tests {
         );
     }
 
-    /// A transaction reached inside another's strict attempt draws the selection alone,
-    /// strictly, and names nothing: when the outer attempt fails, only the outer fallback is
-    /// named, and the outer operation, not the inner one, makes the recording's choice again.
     #[test]
     fn a_nested_transaction_leaves_falling_back_to_the_outer_one() {
         let machine = Machine::new("nested_present");
@@ -533,16 +456,11 @@ thread_local! {
     static PRESENTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many art operations [`present`] has drawn on this thread: what a test counts a reply's
-/// renders by, memo hits drawing none.
 #[cfg(any(test, feature = "test-support"))]
 pub fn presented() -> usize {
     PRESENTED.with(std::cell::Cell::get)
 }
 
-/// What a family's redraw keeps for one selection: the request's admitted catalogue, the
-/// recording's own, and each key's art drawn by [`present`]; one per kind of catalogue
-/// ([`ByCatalogue`]), replaced when either catalogue is.
 pub struct Redrawn<K, T> {
     pub admitted: Arc<Catalogue>,
     pub recorded: Arc<Catalogue>,
@@ -550,7 +468,6 @@ pub struct Redrawn<K, T> {
 }
 
 impl<K: Ord, T> Redrawn<K, T> {
-    /// The memo `slot` keeps for these catalogues, bound anew for others.
     pub fn bind<'a>(
         slot: &'a mut Option<Self>,
         admitted: &Arc<Catalogue>,
@@ -568,7 +485,6 @@ impl<K: Ord, T> Redrawn<K, T> {
         slot.as_mut().expect("presented art bound")
     }
 
-    /// `key`'s art, drawn by [`present`] on first use; its notes are credited on every use.
     pub fn get(
         &mut self,
         key: K,
@@ -583,9 +499,6 @@ impl<K: Ord, T> Redrawn<K, T> {
     }
 }
 
-/// The catalogues a redraw for `options` reads: the request's admitted one and the recording's
-/// own, or `None` when the request shows no visual mods (its stored art is already the one it
-/// shows).
 pub fn presenting(
     source: &Source,
     options: Option<&ContentOptions>,
@@ -599,11 +512,6 @@ pub fn presenting(
     )))
 }
 
-/// A source cache built from one catalogue at a time, kept once for the recording's own
-/// catalogue (what preparation reads, and requests while no visual mod is shown) and once for
-/// the catalogue showing the source's visual mods: preparation and requests showing visual
-/// mods each keep their entry, under the cache's own retention rules, instead of displacing
-/// each other's.
 #[derive(Default)]
 pub struct ByCatalogue<T> {
     recorded: T,
@@ -611,13 +519,10 @@ pub struct ByCatalogue<T> {
 }
 
 impl<T> ByCatalogue<T> {
-    /// The cache kept for catalogues of `catalogue`'s kind.
     pub fn of(&mut self, catalogue: &Catalogue) -> &mut T {
         self.of_optional(Some(catalogue))
     }
 
-    /// [`Self::of`] for a cache that may be built from no catalogue, which reads as the
-    /// recording's.
     pub fn of_optional(&mut self, catalogue: Option<&Catalogue>) -> &mut T {
         if catalogue.is_none_or(|catalogue| catalogue.presentation.is_empty()) {
             &mut self.recorded
@@ -626,20 +531,12 @@ impl<T> ByCatalogue<T> {
         }
     }
 
-    /// Both caches, the recording's first.
     #[cfg(any(test, feature = "test-support"))]
     pub fn both(&self) -> [&T; 2] {
         [&self.recorded, &self.shown]
     }
 }
 
-/// The catalogue for these options only when reading it binds nothing a request did not: the
-/// source's content must already be resolved for them ([`Source::bound_content`]), they must
-/// show the source's presentation now, and its catalogue must be bound to them or to none; the
-/// presentation is mounted over the bound content if no request has yet
-/// ([`Source::bound_presented_for`]). Otherwise `None`, having read and published
-/// nothing. Work done ahead of a request uses it, so content or a presentation a request has
-/// since replaced is never bound again for its replies to report.
 pub fn bound_catalogue(
     source: &Source,
     options: &ContentOptions,
@@ -647,21 +544,16 @@ pub fn bound_catalogue(
     bound_catalogue_with(source, options, || {})
 }
 
-/// [`bound_catalogue`], running `before_load` once the binding is decided and before the
-/// catalogue is read (a test holds the read there).
 pub(crate) fn bound_catalogue_with(
     source: &Source,
     options: &ContentOptions,
     before_load: impl FnOnce(),
 ) -> Option<io::Result<Arc<Catalogue>>> {
     let content = source.bound_content(&options.options)?;
-    // The binding's mount, computed outside the catalogue's slot, and only while `options` still
-    // hold the source's binding.
     let presented = source.bound_presented_for(options)?;
     let key = binding(options);
     let settings = key.3.clone();
     let result = with_slot(source, options, |slot| {
-        // A catalogue a request bound to anything else is left alone.
         if slot.as_ref().is_some_and(|(cached, _)| *cached != key) {
             return None;
         }
@@ -718,10 +610,6 @@ mod parity_tests;
 mod loader_tests {
     use super::*;
 
-    /// The catalogue's text is the recording's, in its language, whatever `settings.txt` says or
-    /// whether it can be read at all: the file decides only how art is drawn. Without it art is
-    /// drawn with the game's constructed settings; one that cannot be read refuses that art by
-    /// name and nothing else.
     #[test]
     fn text_never_reads_settings_and_unreadable_settings_refuse_only_art() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -797,8 +685,6 @@ mod loader_tests {
             if unreadable {
                 std::fs::remove_dir(&settings).unwrap();
             }
-            // Settings that change since are read again, with the catalogue bound to them; the
-            // language they name is not the text's.
             std::fs::write(&settings, "language=l_french force_pow2_textures=yes").unwrap();
             let changed = crate::catalogue::catalogue(&source, &options).unwrap();
             assert!(
@@ -811,10 +697,6 @@ mod loader_tests {
             std::fs::remove_file(&settings).unwrap();
         }
     }
-    /// A read-ahead of the content a source opened with is held inside its catalogue load
-    /// while a request binds newer content. It binds nothing back: the source's content, the
-    /// catalogue every request gets and the warnings every reply reports stay the newer
-    /// content's. Without content bound for its folders it reads nothing at all.
     #[test]
     fn a_read_ahead_never_rebinds_content_a_request_replaced() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -856,13 +738,10 @@ mod loader_tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        // Nothing bound yet: the read-ahead reads and publishes nothing.
         assert!(bound_catalogue(&source, &old).is_none());
         assert!(source.bound_content(&old.options).is_none());
-        // The source opened with the old content bound.
         source.content(&old.options).unwrap();
         let (requested, warnings_before) = std::thread::scope(|scope| {
-            // Either side failing drops its sender, which ends the other's wait.
             let (entered, has_entered) = mpsc::channel();
             let (release, released) = mpsc::channel::<()>();
             let (source, old) = (&source, &old);
@@ -875,12 +754,10 @@ mod loader_tests {
             has_entered
                 .recv()
                 .expect("the read-ahead reached its catalogue load");
-            // A request of the newer content, while the read-ahead is inside its load.
             let requested = catalogue(source, &new).unwrap();
             let mut warnings = Vec::new();
             source.append_content_warnings(&mut warnings);
             drop(release);
-            // The read-ahead read the old catalogue for itself, publishing nothing.
             ahead.join().unwrap().unwrap().unwrap();
             (requested, warnings)
         });
@@ -899,12 +776,10 @@ mod loader_tests {
             warnings, warnings_before,
             "replies report the newer content's reads"
         );
-        // And once the newer content is bound, a read-ahead of the old one reads nothing.
         assert!(bound_catalogue(&source, &old).is_none());
     }
 }
 
-/// The recorded content stack's equipment types, read once per stack.
 pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<installed_content_core::equipment::Database>, String> {
     catalogue
         .content

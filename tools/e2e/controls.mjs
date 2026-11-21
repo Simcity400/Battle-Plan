@@ -1,7 +1,3 @@
-// Control cases. Each case is { id, page, run }: `page` is the sidebar label it runs on ('*' for every
-// page, null for whichever is open) and `run(s, page)` drives the app through `s`, a Session, wrapping
-// each user action in `s.step('controls', id, label, action, options)`. A case that cannot find its
-// control throws, and the suite reports it as failed with that reason. To add a control, add a case.
 import { existsSync } from 'node:fs';
 import { mkdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,10 +10,8 @@ const CLOSED_POPOVER = sel => `!document.querySelector(${JSON.stringify(`${sel}:
 const LABELLED = label => `button[aria-label=${JSON.stringify(label)}]`;
 const widgetSel = title => `article.dash-widget[aria-label=${JSON.stringify(title)}]`;
 
-/** A click that must leave `done` holding. */
 const press = (s, id, label, selector, done, options = {}) =>
   s.step('controls', id, label, () => s.click(selector, options.locate ?? {}), { done, ...options });
-/** The revisit that puts a control back: reported beside its first use, which the rule judges. */
 const back = control => ({ check: false, control });
 const option = index => `.select-menu:popover-open [role=option][data-option-index="${index}"]`;
 
@@ -30,7 +24,6 @@ export const CASES = [
   { id: 'header/play-pause', page: 'Overview', async run(s) {
     const was = (await s.timeline()).value;
     await press(s, this.id, 'play', LABELLED('Play recording'), `document.querySelector('button[aria-label="Pause playback"]')`);
-    // Paused once it is playing: the clock has moved.
     await s.until(`Number(document.querySelector('input.header-timeline').value) > ${was}`, 4000);
     await press(s, this.id, 'pause', LABELLED('Pause playback'), `document.querySelector('button[aria-label="Play recording"]')`);
   } },
@@ -56,7 +49,6 @@ export const CASES = [
     const shown = `document.querySelector('.header-date .date-time-value')?.textContent.trim()`;
     const before = await s.app.evaluate(shown);
     await press(s, this.id, 'open', '.header-date button.date-time-trigger', OPEN_POPOVER('.date-time-popover'));
-    // The calendar must move: from the recording's first month, forward first, then back.
     const month = `document.querySelector('.date-time-popover:popover-open .calendar-grid')?.getAttribute('aria-label')`;
     const arrow = label => `.date-time-popover:popover-open button[aria-label="${label}"]`;
     if (await s.holds(`document.querySelector(${JSON.stringify(arrow('Previous month'))})?.disabled`)) {
@@ -77,7 +69,6 @@ export const CASES = [
     const listed = `Number(document.querySelector('.country-picker:popover-open [role=option]')?.getAttribute('aria-setsize') ?? 0)`;
     const names = `[...document.querySelectorAll('.country-picker:popover-open [role=option] small')].map(e => e.previousElementSibling?.textContent.trim() ?? '')`;
     const narrowed = (query, all) => `(${listed}) > 0 && (${listed}) < ${all} && ${names}.some(name => name.includes(${JSON.stringify(query)}))`;
-    // Every row a search leaves must match it, by name or tag, as the search box says it searches.
     const onlyMatches = async (query, label) => {
       const rows = await s.app.evaluate('__e2e.countryRows()');
       const wanted = query.toLowerCase();
@@ -90,7 +81,6 @@ export const CASES = [
     const shownName = `document.querySelector(${JSON.stringify(trigger)})?.textContent.trim()`;
     await press(s, this.id, 'open', trigger, OPEN_POPOVER('.country-picker'));
     const all = await s.app.evaluate(listed);
-    // The country it shows, as the picker names it: the row it marks chosen, anywhere in its list.
     const chosen = (await s.app.evaluate('__e2e.countryRows()'))?.rows.find(row => row.selected) ?? null;
     if (!chosen) throw new Error(`the picker marks no row as the country shown (${was})`);
     const { name, tag } = chosen;
@@ -101,7 +91,6 @@ export const CASES = [
     await press(s, this.id, 'open again', trigger, OPEN_POPOVER('.country-picker'), back('open'));
     await s.step('controls', this.id, 'search back', () => s.type(name), { done: narrowed(name, all), ...back('search') });
     await onlyMatches(name, 'search back');
-    // That exact country, by its tag: two countries can share a name.
     await s.step('controls', this.id, 'choose back', async () => {
       if (!await s.app.evaluate(`__e2e.revealCountry(${JSON.stringify(tag)})`)) throw new Error(`no row for ${tag} in its results`);
       await s.click('.country-picker:popover-open [role=option] small', { text: tag });
@@ -131,7 +120,6 @@ export const CASES = [
     const line = await s.timeline();
     if (!line) throw new Error('no timeline');
     const at = f => ({ x: Session.timelineX(line, f), y: line.y });
-    // Released at a fraction of the track, the clock must stand within two pixels' worth of hours of it.
     const near = f => `Math.abs(Number(document.querySelector('input.header-timeline').value) - ${line.min + f * (line.max - line.min)}) <= ${2 * (line.max - line.min) / (line.width - 14) + 1}`;
     await s.step('controls', this.id, 'drag 30% to 70%', () => s.drag(at(0.3), at(0.7), 40), { timeout: 8000, from: 'last', done: near(0.7) });
     await s.step('controls', this.id, 'drag 70% to 20%', () => s.drag(at(0.7), at(0.2), 40), { timeout: 8000, from: 'last', done: near(0.2) });
@@ -145,7 +133,6 @@ export const CASES = [
     await s.app.evaluate(`document.querySelector('.dash-grid-scroll').scrollTo({ top: 0 })`);
     await s.frames(2);
     const grip = await s.need('.dash-drag-grip', { index: 1 });
-    // The widget dragged must move, and the one resized must change size.
     const box = (key, test) => `(r => ${test})(document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})?.getBoundingClientRect())`;
     const moved = await s.app.evaluate(`(() => { const e = [...document.querySelectorAll('.dash-drag-grip')].filter(e => e.getClientRects().length)[1]?.closest('.dash-grid-cell')?.querySelector('article.dash-widget');
       const r = e?.getBoundingClientRect(); return e && { key: e.dataset.widget, left: r.left, top: r.top }; })()`);
@@ -160,15 +147,12 @@ export const CASES = [
     const handleOf = `.dash-grid-cell:has(article.dash-widget[data-widget=${JSON.stringify(resized.key)}]) .react-resizable-handle-se`;
     await s.step('controls', this.id, 'resize bigger', () => s.drag({ x: handle.x - 2, y: handle.y - 2 }, { x: handle.x + 180, y: handle.y + 140 }), { timeout: 6000, from: 'last',
       done: sized(`r.width > ${resized.width + 4} && r.height > ${resized.height + 4}`) });
-    // The grid snaps a resize to its columns and rows: the handle is wherever the snapped size left it.
     const grown = await s.need(handleOf);
     await s.step('controls', this.id, 'resize smaller', () => s.drag({ x: grown.x - 2, y: grown.y - 2 }, { x: handle.x - 2, y: handle.y - 2 }), { timeout: 6000, from: 'last',
       done: sized(`Math.abs(r.width - ${resized.width}) <= 4 && Math.abs(r.height - ${resized.height}) <= 4`), ...back('resize bigger') });
-    // Saved as a new layout, then the default chosen again and the new one: switching layouts.
     await press(s, this.id, 'open save', LABELLED('Save layout'), OPEN_POPOVER('.layout-save-menu'));
     const before = await s.app.evaluate(`document.querySelectorAll('.layout-save-menu button').length`);
     if (!before) throw new Error('no save options');
-    // A new layout needs a name of its own: the field starts with the current layout's.
     const name = `Acceptance ${Date.now()}`;
     await s.click('.layout-save-menu:popover-open input[aria-label="Layout name"]');
     await s.app.evaluate(`document.querySelector('.layout-save-menu:popover-open input[aria-label="Layout name"]').select()`);
@@ -198,7 +182,6 @@ export const CASES = [
   } },
   { id: 'tooltips/chart', page: '*', run: chartTooltips },
   { id: 'tooltips/app', page: 'Overview', async run(s) {
-    // Hover intent: the app waits TOOLTIP_DELAY_MS on purpose, so the budget is that plus the rule.
     const at = await s.need(LABELLED('Next hour'));
     await s.hover(5, 5);
     await s.until(`!document.querySelector('.app-tooltip:popover-open')`, 1000);
@@ -220,18 +203,12 @@ const CONTROL = {
   range: IN_MENU('input[type=range]'),
   check: IN_MENU('input[type=checkbox]:not([role=switch])'),
 };
-/** The map's graphics settings are a draft until Apply, which the host saves and the viewer then draws. */
 const DRAFT = `document.querySelector('.map-appearance-actions')`;
 const APPLY = IN_MENU('.map-appearance-actions button.button:not(.quiet)');
-/** Every saved graphics, sound, counter and visual-mod setting the open menu shows, as [setting, JSON value]: what its map
- * must report drawing with (`DashboardMapState.applied`). A value not known yet (null for a parent still loading) is left out. */
 const MAP_EXPECTED = `[...document.querySelectorAll(${JSON.stringify(IN_MENU('[data-map-setting]'))})]
   .map(e => [e.getAttribute('data-map-setting'), e.getAttribute('data-map-value')]).filter(([setting, value]) => value !== 'null' || setting.startsWith('graphics.'))`;
-/** The `index`th shown element of the open menu matching `selector`, as `Session.locate` counts them. */
 const shown = (selector, index) => `[...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.getClientRects().length)[${index}]`;
 
-/** The controls the open settings menu shows now, counted as `Session.locate` counts them (shown ones only), each with what
- * identifies it across a change elsewhere in the menu. */
 const discover = s => s.app.evaluate(`(() => {
   const menu = document.querySelector(${JSON.stringify(SETTINGS_MENU)}); if (!menu) return [];
   const text = e => e && [...e.childNodes].filter(n => !n.classList?.contains('sr-only')).map(n => n.textContent).join('');
@@ -239,7 +216,6 @@ const discover = s => s.app.evaluate(`(() => {
   const all = selector => [...menu.querySelectorAll(selector)].filter(e => e.getClientRects().length);
   const draft = e => !!e.closest('.map-appearance');
   const context = e => e.closest('[data-setting]')?.getAttribute('data-setting') ?? '';
-  // A graphics setting set here, not inherited; one that inherits goes back to inheriting.
   const overridden = e => !!e.closest('.map-option-row, .map-mod-list')?.hasAttribute('data-overridden');
   all('input[role=switch]').forEach((e, i) => out.push({ kind: 'switch', index: i, label: label(e), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled, state: e.checked }));
   all('input[type=range]').forEach((e, i) => out.push({ kind: 'range', index: i, label: e.getAttribute('aria-label') || label(e), context: context(e), draft: draft(e), overridden: overridden(e),
@@ -256,7 +232,6 @@ const discover = s => s.app.evaluate(`(() => {
     chips: [...g.querySelectorAll('button.chip')].map((x, j) => ({ index: j, label: x.textContent.trim(), pressed: x.getAttribute('aria-pressed') === 'true',
       disabled: x.getAttribute('aria-disabled') === 'true', reason: x.getAttribute('data-tooltip') })) }));
   if (menu.querySelector('[aria-label="Widget size"] button[aria-label=Larger]:not([disabled])')) out.push({ kind: 'size', label: 'size' });
-  // Controls with a case of their own, each named by what stays the same while its value changes.
   const fieldLabel = e => (e.closest('.date-time-field')?.querySelector(':scope > span')?.textContent ?? '').trim();
   const special = [
     ['check', 'input[type=checkbox]:not([role=switch])', e => label(e)],
@@ -265,11 +240,9 @@ const discover = s => s.app.evaluate(`(() => {
     ['refresh', '.map-mod-tools > button', e => e.textContent.trim()],
     ['export', 'button.map-menu-action:not(.map-appearance *)', e => e.textContent.trim()],
     ['country', 'button.widget-country-trigger', e => { const named = e.getAttribute('aria-label') ?? '';
-      // A picker of several countries, the map's counter filter's too, is named apart from how many it holds.
       return named.startsWith('Widget campaign:') ? 'Widget campaign' : named.startsWith('Up to ') || / add or remove$/.test(named) ? 'Add or remove a country' : named; }],
     ['pin', '.setting-row button.button.small', e => e.textContent.trim()],
     ['date', 'button.date-time-trigger', fieldLabel],
-    // A faction by its id: its name is what the next control renames.
     ['colour', 'input[type=color]', e => 'Colour of faction ' + (e.closest('li[data-faction]')?.getAttribute('data-faction') ?? '?')],
     ['faction-name', 'input.faction-name', e => 'Display name of faction ' + (e.closest('li[data-faction]')?.getAttribute('data-faction') ?? '?')],
     ['icon', '[aria-label="Header icon"] button', e => e.getAttribute('aria-label')],
@@ -279,10 +252,8 @@ const discover = s => s.app.evaluate(`(() => {
     .filter(e => kind !== 'export' || /^Export map image$/.test(e.textContent.trim()))
     .forEach((e, i) => claimed.add(e) && out.push({ kind, index: i, label: (name(e) || kind).slice(0, 80), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled,
       ...(kind === 'check' ? { state: e.checked } : {}), ...(kind === 'country' ? { trigger: e.getAttribute('aria-label') } : {}) }));
-  // Anything else a user can operate here has no case: it is reported by name, never passed over.
   const handled = 'input[role=switch], input[type=range], .segmented button, .select-trigger, .option-number input[type=number], label.field input:not([type]), '
     + '.content-set-picker > button[aria-haspopup=dialog], .chip-set button.chip, [aria-label="Widget size"] button';
-  // The menu's own frame, and what the sweep itself uses to reach and restore controls.
   const frame = '.ui-popover-heading, summary, .map-option-inherit, .map-appearance-actions, .select-menu, .content-picker, .country-picker, .campaign-picker, .date-time-popover';
   all('button, input, select, textarea, [role=switch], [tabindex="0"]').filter(e => !e.matches(handled) && !claimed.has(e) && !e.closest(frame) && !e.matches('.folder-info'))
     .forEach(e => out.push({ kind: 'unsupported', label: label(e), what: e.tagName.toLowerCase() + (typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : '') }));
@@ -291,7 +262,6 @@ const discover = s => s.app.evaluate(`(() => {
   return out;
 })()`);
 const identity = c => `${c.kind}|${c.label}|${c.context ?? ''}|${c.nth}|${(c.buttons ?? c.chips)?.map(b => b.label).join('/') ?? ''}`;
-/** A page expression for a control's state, as discovery reads it, at its current place in the menu. */
 function stateOf(c) {
   const at = selector => shown(IN_MENU(selector), c.kind === 'segment' || c.kind === 'chips' ? c.group : c.index);
   switch (c.kind) {
@@ -307,14 +277,8 @@ function stateOf(c) {
   }
 }
 
-/** The kinds the quick tier's one setting prefers: those a user changes in one click. */
 const QUICK_KINDS = ['switch', 'segment', 'select', 'check', 'chips'];
 
-/** Every control in every widget's settings menu on `page`: each changed, and each change must show on the widget (or be
- * drawn by its map), then changed back. Controls a change reveals are exercised while it holds, each of their values once
- * across the menu's states (`Coverage`). Widgets are followed by their layout id, so a setting that renames one keeps it in
- * view. A placement that is the same case as one already exercised (`placementKey`) is not exercised again, unless a step
- * of it ever failed. The quick tier exercises one setting of the first placement of each widget kind. */
 async function settingsSweep(s, page) {
   const widgets = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].map(a => { const r = a.getBoundingClientRect();
     return { key: a.dataset.widget, title: a.getAttribute('aria-label'), view: a.classList.contains('kind-map') ? a.dataset.widget : null,
@@ -328,7 +292,6 @@ async function settingsSweep(s, page) {
     await inView(s, widget);
     const opened = await press(s, 'widget/settings', `${placement}: open`, triggerOf(widget), `document.querySelector(${JSON.stringify(SETTINGS_MENU)})`, { control: `${placement}: open` });
     if (!opened.pass && opened.reasons.some(r => r.startsWith('could not act') || r.startsWith('never finished'))) continue;
-    // The map's graphics settings load after the menu opens; their controls are disabled until then.
     const graphics = await reopen(s, widget);
     let controls = await discover(s);
     if (graphics !== 'none' && graphics !== 'ready') {
@@ -353,7 +316,6 @@ async function settingsSweep(s, page) {
     for (const c of controls) {
       if (ctx.cover.full) break;
       await exercise(s, page, widget, c, ctx, null);
-      // The quick tier changes one setting and leaves it: its session ends with its profile, and its back is the full tier's.
       if (!quick) await reconcile(s, page, widget, before, c);
     }
     if (ctx.cover.skipped && !quick) await s.record({ area: 'controls', item: 'widget/settings', label: `${placement}: ${ctx.cover.skipped} values already exercised under another setting of its menu, not repeated`,
@@ -362,9 +324,6 @@ async function settingsSweep(s, page) {
   }
 }
 
-/** Puts the menu back as `before` held it, after `exercised` was changed and restored. A setting the app reset when its
- * parent changed, as a user would see it reset, is set again; `exercised` itself not coming back fails by name, as does
- * any setting the sweep cannot set again. */
 async function reconcile(s, page, widget, before, exercised) {
   const fixed = [];
   for (let pass = 0; pass <= before.length; pass++) {
@@ -390,7 +349,6 @@ async function reconcile(s, page, widget, before, exercised) {
     control: `${page}: ${widget.title}: ${exercised.label}`, ms: null, pass: true, reasons: [], screenshot: false });
 }
 
-/** Sets one control, as `current` shows it now, to the state `target` held: unmeasured, through the user's own input. */
 async function putBack(s, target, current) {
   const centre = expression => s.app.evaluate(`(() => { const e = ${expression}; if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   const press = async expression => { const at = await centre(expression); if (!at) throw new Error('it is not on screen'); await s.app.click(at.x, at.y); await s.frames(2); };
@@ -422,13 +380,10 @@ async function putBack(s, target, current) {
 }
 
 const widgetAt = key => `article.dash-widget[data-widget=${JSON.stringify(key)}]`;
-/** Scrolls the widget whose settings are exercised into the grid's view, its top first: a widget below the fold draws
- * nothing there, so no setting could show on it (run 14: every Overview widget under the map, "no visible change"). */
 const inView = (s, widget) => s.app.evaluate(`(() => { const a = document.querySelector(${JSON.stringify(widgetAt(widget.key))}); const grid = document.querySelector('.dash-grid-scroll');
   if (!a || !grid) return; const r = a.getBoundingClientRect(), g = grid.getBoundingClientRect();
   if (r.top < g.top || r.bottom > g.bottom) grid.scrollBy({ top: r.top - g.top, behavior: 'instant' }); })()`).then(() => s.frames(2));
 const triggerOf = widget => `${widgetAt(widget.key)} [data-widget-settings], ${widgetAt(widget.key)} button[aria-label="Map settings"]`;
-/** Opens the menu's collapsed sections, so the controls in them can be reached as a user reaches them. */
 async function openSections(s) {
   for (let open = 0; open < 50; open++) {
     const summary = await s.locate(IN_MENU('details:not([open]) > summary'));
@@ -437,11 +392,9 @@ async function openSections(s) {
     await s.frames(2);
   }
 }
-/** The map's graphics draft: none in this menu, loading (its controls disabled), ready, or failed with the menu's words. */
 const graphicsState = `(() => { const section = document.querySelector('.map-controls-menu:popover-open .map-appearance');
   if (!section) return 'none'; const alert = section.querySelector('[role=alert]');
   return alert ? 'failed: ' + alert.textContent.trim() : section.querySelector('.graphics-inheritance') ? 'ready' : 'loading'; })()`;
-/** Opens the menu if it closed, and its sections; returns the graphics draft's state once it has loaded or after 8 s. */
 const reopen = async (s, widget) => {
   if (!await s.holds(`document.querySelector(${JSON.stringify(SETTINGS_MENU)})`)) {
     await inView(s, widget);
@@ -453,10 +406,6 @@ const reopen = async (s, widget) => {
   return s.app.evaluate(graphicsState);
 };
 
-/** One control: changed and back. `ctx.known` holds the controls already visited, so each is visited once however deep it
- * is revealed, and `ctx.cover` which of its values were exercised, so each value runs once across the menu's states (and
- * again where its case ever failed); `under` names the change a revealed control is exercised under. Every step of one
- * control shares its name. */
 async function exercise(s, page, widget, c, ctx, under) {
   try { await exerciseOnce(s, page, widget, c, ctx, under); } catch (error) {
     if (!error.gone) throw error;
@@ -471,18 +420,13 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
   const changes = widget.view ? { key, view: widget.view } : { key };
   const name = `${page}: ${title}: ${c.label}${under ? ` (with ${under})` : ''}`;
   const id = { control: name };
-  /** Whether to exercise `value` of this control now, the case named `label`: see `Coverage`. */
   const take = (value, label = name) => cover.take(controlBase(c), value, s.everFailed('controls', 'widget/settings', label));
   const step = (label, action, options = {}) => s.step('controls', 'widget/settings', label, action, { widget: key, ...id, ...options });
-  /** A change to the control: shown on its widget or drawn by its map; a graphics draft is applied, then drawn. */
   const set = async (label, action, options = {}) => {
     if (!c.draft && !widget.view) return step(label, action, { changes, timeout: 3000, ...options });
-    // An open menu hides the native map, which draws nothing while hidden: the setting must change its control, and the
-    // map is then timed from the menu's dismissal to its first frame of the new request.
     if (!c.draft) {
       const since = s.app.lastSent('set_dashboard_maps');
       const was = (await discover(s)).find(x => identity(x) === identity(c))?.state;
-      // The control's own state, read in the page each frame, until it differs from what it was.
       const changedState = was === undefined ? null : `(() => { const now = ${stateOf(c)}; return now !== undefined && JSON.stringify(now) !== ${JSON.stringify(JSON.stringify(was))}; })()`;
       const result = await step(label, action, { timeout: 3000, awaits: false, ...options,
         done: options.done && changedState ? `(${options.done}) && ${changedState}` : options.done ?? changedState });
@@ -499,28 +443,22 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     const saved = await step(`${label}: apply`, () => s.click(APPLY), { check: options.check, done: `!${DRAFT}`, timeout: 8000, control: options.control ?? name });
     if (!saved.pass && saved.reasons.some(reason => reason.startsWith('could not act') || reason.startsWith('never finished'))) return saved;
     if (!widget.view) { await s.fail('controls', 'widget/settings', `${label}: drawn`, 'its menu saves map graphics, but its widget shows no map to draw them'); return saved; }
-    // The map draws nothing behind its open menu: every saved row must then be what its next frame reports drawing with.
     const expected = await s.app.evaluate(MAP_EXPECTED);
-    // Texture quality and visual mods rebuild the map's artwork: long enough to see that finish, judged on its time.
     await step(`${label}: drawn`, () => s.key('Escape'), { drew: { view: widget.view, expected }, timeout: 20_000, check: options.check, control: `${options.control ?? name}: drawn` });
     return saved;
   };
-  /** Whether the control already holds what it had (a reset it revealed put it back): then nothing is put back. */
   const alreadyBack = async label => {
     const now = (await discover(s)).find(x => identity(x) === identity(c));
     if (!now || now.state === undefined || JSON.stringify(now.state) !== JSON.stringify(c.state) || (c.draft && !!now.overridden !== !!c.overridden)) return false;
     await s.record({ area: 'controls', item: 'widget/settings', label: `${label}: already back`, ...id, ms: null, pass: true, reasons: [], screenshot: false });
     return true;
   };
-  /** Puts a control back: `reverse` undoes the change, but a graphics setting that inherited goes back to inheriting,
-   * through its row's reset; a select inherits through its own Inherit option, which it had. */
   const restore = async (label, reverse) => {
     if (s.tier === 'quick') return;
     await reopenHere();
     if (await alreadyBack(label)) return;
     if (!c.draft || c.overridden || c.kind === 'select') return reverse();
     return set(label, async () => {
-      // Visual mods inherit as a whole, through the list's own way back.
       if (c.kind === 'check') { await s.click(IN_MENU('.map-mods-inherit')); return; }
       const at = await s.app.evaluate(`(() => { const e = ${shown(CONTROL[c.kind], c.index)}?.closest('.map-option-row')?.querySelector('.map-option-inherit');
         if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
@@ -528,7 +466,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       await s.app.click(at.x, at.y);
     }, { check: false });
   };
-  /** The controls a change revealed, exercised while it holds, and those they reveal in turn: each control once. */
   const revealed = async change => {
     if (cover.full) return;
     await reopen(s, widget);
@@ -540,18 +477,15 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       await reopen(s, widget);
     }
   };
-  /** Reopens the menu and finds the control again by its identity: a change elsewhere can move it. */
   const reopenHere = async () => {
     await reopen(s, widget);
     const now = (await discover(s)).find(x => identity(x) === identity(c));
     if (!now) throw Object.assign(new Error('the control left its menu'), { gone: true });
     Object.assign(c, { index: now.index, group: now.group });
   };
-  // A control with values takes each value as it comes to it; any other is one case.
   if (!['segment', 'select', 'chips'].includes(c.kind) && !take('')) return;
   await reopenHere();
   if (c.kind === 'unsupported') { await s.fail('controls', 'widget/settings', name, `not exercised: the sweep has no case for this control (${c.what})`); return; }
-  // A control the app disables is shown as such, not used, as a user cannot use it.
   if (c.disabled) { await s.record({ area: 'controls', item: 'widget/settings', label: `${name}: disabled`, ...id, ms: null, pass: true, reasons: [], disabled: true, screenshot: false }); return; }
   if (c.kind === 'switch') {
     await set(name, () => s.click(CONTROL.switch, { index: c.index }));
@@ -582,8 +516,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     if (!listed) { await s.fail('controls', 'widget/settings', name, 'its menu never opened'); return; }
     if (listed.options.length !== listed.size) await s.fail('controls', 'widget/settings', name, `its menu lists ${listed.size} options but showed only ${listed.options.length}`);
     const was = listed.options.find(entry => entry.selected) ?? null;
-    // Each option it offers, then the one it had; a disabled option says why, and is never chosen.
-    /** The option's place in the list as it stands now, found by its label: a change elsewhere can rebuild the list. */
     const reveal = async entry => {
       if (await s.app.evaluate(`__e2e.revealOption(${entry.index}) && document.querySelector(${JSON.stringify(option(entry.index))})?.textContent.trim() === ${JSON.stringify(entry.label)}`)) return entry.index;
       if (!await s.holds(OPEN_POPOVER('.select-menu'))) await open(`open for ${entry.label} again`, { check: false });
@@ -611,7 +543,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       });
     }
   } else if (c.kind === 'chips') {
-    // Each chip pressed or released, then back; one the app disables says why and is not used.
     const chipAt = index => `(${shown(IN_MENU('.chip-set'), c.group)}?.querySelectorAll('button.chip') ?? [])[${index}]`;
     const chip = index => async () => {
       const at = await s.app.evaluate(`(() => { const e = ${chipAt(index)}; if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
@@ -630,14 +561,12 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       await set(`${chipName} back`, chip(entry.index), { done: pressed(entry.index, entry.pressed), check: false, control: chipName });
     }
   } else if (c.kind === 'range') {
-    // A step along it by keyboard, then the step back, which returns it to exactly the value it had.
     const [forth, backward] = c.value >= c.max ? ['ArrowLeft', 'ArrowRight'] : ['ArrowRight', 'ArrowLeft'];
     const nudge = key => async () => { await s.app.evaluate(`${shown(CONTROL.range, c.index)}.focus()`); await s.key(key); };
     await set(name, nudge(forth));
     await reopenHere();
     await restore(`${name} back`, () => set(`${name} back`, nudge(backward), { check: false }));
   } else if (c.kind === 'number') {
-    // Up a step, then back to exactly what it held, blank (automatic) included, typed as a user would.
     await s.click(CONTROL.number, { index: c.index });
     await set(`${name}: up`, () => s.key('ArrowUp'));
     await reopenHere();
@@ -654,10 +583,8 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await reopenHere();
     await restore(`${name} back`, () => set(`${name} back`, () => s.click(CONTROL.check, { index: c.index }), { check: false }));
   } else if (c.kind === 'reset') {
-    // Every setting of its scope (or its visual mods) back to the parent's: saved, then drawn by the map.
     await set(name, () => s.click(IN_MENU('.map-appearance button.map-menu-action'), { index: c.index }));
   } else if (c.kind === 'search') {
-    // A word of the first mod's name narrows the list to the mods whose names hold it; cleared, the whole list is back.
     const field = IN_MENU('input.map-mod-search');
     const rows = `[...document.querySelectorAll(${JSON.stringify(IN_MENU('.map-mod-row'))})].filter(e => e.getClientRects().length)`;
     const names = `(${rows}).map(e => (e.querySelector('span')?.firstChild?.textContent ?? '').toLowerCase())`;
@@ -674,12 +601,10 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       await s.key('Backspace');
     }, { done: `(${rows}).length === ${every}`, from: 'last', awaits: false, check: false, control: `${name}: search` });
   } else if (c.kind === 'refresh') {
-    // The installed mods read again; the button is usable again once they are, and no error shows.
     const button = IN_MENU('.map-mod-tools > button');
     await step(name, () => s.click(button), { done: `document.querySelector(${JSON.stringify(button)})?.disabled === false && !document.querySelector(${JSON.stringify(IN_MENU('.map-menu-error'))})`,
       awaits: false, timeout: 8000 });
   } else if (c.kind === 'export') {
-    // As the map pictures export: the host's save dialog filled by the suite's native input, then the file must exist.
     if (!s.native || !s.work) { await s.fail('controls', 'widget/settings', name, "not exercised: the controls phase was given no native input for the host's save dialog"); return; }
     const folder = path.join(s.work, 'control-exports');
     await mkdir(folder, { recursive: true });
@@ -695,7 +620,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
   } else if (c.kind === 'country') {
     await exerciseCountry(s, c, name, id, step, set, reopenHere);
   } else if (c.kind === 'pin') {
-    // Pinned again a day later than it holds: it must hold the new moment; then a day back, pinned again.
     const pin = IN_MENU('.setting-row button.button.small');
     const held = `${shown(pin, c.index)}?.closest('.setting-row')?.textContent ?? null`;
     const before = await s.app.evaluate(held);
@@ -708,7 +632,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await reopenHere();
     await set(`${name} back`, () => s.click(pin, { index: c.index }), { done: `${held} === ${JSON.stringify(before)}`, check: false });
   } else if (c.kind === 'date') {
-    // Another day chosen in its calendar, then its end of the campaign again, as a new date range starts.
     const trigger = IN_MENU('button.date-time-trigger');
     const popover = '.date-time-popover:popover-open';
     const value = `${shown(trigger, c.index)}?.querySelector('.date-time-value')?.textContent ?? null`;
@@ -726,7 +649,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       { done: `${value} === ${JSON.stringify(before)}`, check: false });
     if (await s.holds(OPEN_POPOVER('.date-time-popover'))) await s.escape();
   } else if (c.kind === 'colour') {
-    // A faction's colour through its native colour dialog, filled by the suite's native input; then its reset, or the colour it had.
     if (!s.native) { await s.fail('controls', 'widget/settings', name, 'not exercised: the controls phase was given no native input for the colour dialog'); return; }
     const input = shown(IN_MENU('input[type=color]'), c.index);
     const colour = `(${input}?.value ?? '').toLowerCase()`;
@@ -747,7 +669,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     };
     await set(`${name}: back`, !hadOwn ? reset : choose(before), { done: `${colour} === ${JSON.stringify(before)}`, check: false, timeout: 15_000 });
   } else if (c.kind === 'faction-name') {
-    // Typed and left (a name saves on blur), timed from the Tab that leaves it; then the name it had, blank for the game's.
     const field = shown(IN_MENU('input.faction-name'), c.index);
     const before = await s.app.evaluate(`${field}?.value ?? ''`);
     const placeholder = await s.app.evaluate(`${field}?.placeholder ?? ''`);
@@ -768,7 +689,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await reopenHere();
     await set(`${name}: smaller`, () => s.click(size('Smaller')), { check: false });
   } else if (c.kind === 'title') {
-    // Typed, then Enter: timed from the Enter to the widget showing its new title.
     const rename = async (to, label, options = {}) => {
       await reopenHere();
       return step(label, async () => {
@@ -784,7 +704,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await rename(title, `${name}: rename back`, { check: false });
     await s.escape();
   } else if (c.kind === 'content-set') {
-    // A choice made in it must show on the widget; then what it had comes back: automatic, or the choice it held.
     const picker = '.content-picker:popover-open';
     const isOpen = `document.querySelector('${picker}')`;
     const openPicker = (label, options = {}) => step(`${name}: ${label}`, () => s.click(CONTROL['content-set'], { index: c.index }),
@@ -792,7 +711,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     const close = () => step(`${name}: close`, () => s.key('Escape'), { done: `!${isOpen}`, control: `${name}: close` });
     const opened = await openPicker('open');
     if (!opened.pass && opened.reasons.some(reason => reason.startsWith('could not act') || reason.startsWith('never finished'))) { await s.escape(); return; }
-    // The whole list, by each row's value: labels can repeat, and the list shows only a window of its rows.
     const listed = await s.app.evaluate('__e2e.pickerRows()');
     if (!listed) { await s.fail('controls', 'widget/settings', name, 'its list never showed: no rows and no word that it has none'); return; }
     if (listed.rows.length !== listed.size) await s.fail('controls', 'widget/settings', name, `its list holds ${listed.size} rows but showed only ${listed.rows.length}`);
@@ -819,7 +737,6 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     else if (multiple) await set(`${name}: back`, pick(choice.value), { check: false });
     else if (original.length) await set(`${name}: back`, pick(original[0]), { check: false });
     else await s.fail('controls', 'widget/settings', `${name}: back`, 'it had neither a choice nor automatic, so there is nothing to put back');
-    // What it held must be what it holds again.
     await ensureOpen();
     const after = await s.app.evaluate('__e2e.pickerRows()');
     if (!after) await s.fail('controls', 'widget/settings', `${name}: back`, 'its list never showed again, so whether its selection came back is unobserved');
@@ -835,13 +752,11 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
 const NO_OTHER = (s, id, label) => s.record({ area: 'controls', item: 'widget/settings', label, ...id, ms: null, pass: true, reasons: [], screenshot: false });
 const couldNotAct = result => !result.pass && result.reasons.some(reason => reason.startsWith('could not act') || reason.startsWith('never finished'));
 
-/** Moves the paused clock `hours` hours through the header's own buttons, the settings menu closed; why it could not. */
 async function moveClock(s, hours) {
   await s.escape();
   const was = (await s.timeline())?.value;
   if (was === undefined) return 'there is no timeline';
   const at = `Number(document.querySelector('input.header-timeline')?.value)`;
-  // Each click once the last has moved the clock, so none is lost.
   for (let step = 1; step <= Math.abs(hours); step++) {
     await s.click(LABELLED(hours > 0 ? 'Next hour' : 'Previous hour'));
     if (!await s.until(`${at} === ${was + Math.sign(hours) * step}`, 2000)) break;
@@ -850,9 +765,6 @@ async function moveClock(s, hours) {
   return now === was + hours ? null : `the clock stood at ${now}, not ${was + hours}`;
 }
 
-/** A widget's country or campaign picker: another choice made, shown on the widget, then the one it had again. For several
- * countries, one added, then removed (or, at its limit, one removed, then added back). A campaign chosen by name may be the
- * recording the default shows: that choice shows in its picker's label. */
 async function exerciseCountry(s, c, name, id, step, set, reopenHere) {
   const trigger = IN_MENU('button.widget-country-trigger');
   const opened = picker => `document.querySelector('${picker}')`;
@@ -895,15 +807,12 @@ async function exerciseCountry(s, c, name, id, step, set, reopenHere) {
   if (await s.holds(opened(picker))) await s.escape();
 }
 
-/** The header icon every widget of its kind shares: another icon, or colour, chosen in its picker must show in the widget's
- * header; then its default again through the picker's reset, or what it had. */
 async function exerciseIcon(s, c, name, id, step, reopenHere, key) {
   const header = `document.querySelector(${JSON.stringify(`[data-widget-icon="${key}"]`)})`;
   const look = `(e => e ? e.innerHTML + '|' + (e.getAttribute('style') ?? '') : null)(${header})`;
   const before = await s.app.evaluate(look);
   const button = IN_MENU('[aria-label="Header icon"] button');
   if (c.label === 'Reset icon') {
-    // Shown only while the kind has an icon of its own, which the sweep cannot know to give back.
     await step(name, () => s.click(button, { index: c.index }), { done: `${look} !== ${JSON.stringify(before)}`, awaits: false });
     return;
   }
@@ -943,11 +852,8 @@ async function exerciseIcon(s, c, name, id, step, reopenHere, key) {
 }
 const opened = picker => `document.querySelector('${picker}')`;
 
-/** The charts that show a tooltip for the point nearest the pointer, so their centre always shows one; decorative graphics
- * and charts whose tooltips belong to single marks are not this case's. */
 const CHART_SURFACE = '.dash-widget-content .time-chart canvas';
 
-/** Hovering each widget's time chart: how soon its tooltip shows. */
 async function chartTooltips(s, page) {
   const titles = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].map(a => a.getAttribute('aria-label'))`);
   for (const title of titles) {
@@ -957,7 +863,6 @@ async function chartTooltips(s, page) {
     await s.hover(5, 5);
     await s.until(`!document.querySelector('.chart-tooltip:popover-open')`, 1000);
     await s.frames(2);
-    // The first hover is timed: a time chart shows the nearest point's tooltip at once.
     await s.step('controls', 'tooltips/chart', `${page}: ${title}`, () => s.hover(box.x, box.y),
       { done: `document.querySelector('.chart-tooltip:popover-open')`, timeout: 2000, quiet: 50, widget: title });
   }

@@ -1,4 +1,3 @@
-//! Offline observer/staging/census benchmark; no native gameplay is executed.
 use super::*;
 use engine_land_inputs::{active_ability_record as active, cability};
 use engine_native::{ccountry, cgame_state, cpolitical_status, crelation, cunit_leader};
@@ -14,7 +13,6 @@ struct World {
 }
 impl World {
     fn new(countries: usize) -> Self {
-        // Allocate once: every stored native pointer remains stable.
         let slots = countries + 1;
         let mut bytes = vec![0u8; HEAP + slots * 0x3000 + slots * 12];
         let base = bytes.as_ptr() as usize;
@@ -88,7 +86,6 @@ impl World {
                 politics + cpolitical_status::COUNTRY,
                 &((base + pointer) as u64).to_le_bytes(),
             );
-            // Four populated relation receivers and two MIO assignments.
             for record in 0..4 {
                 let at = pointer + 0x2200 + record * 0x60;
                 put(
@@ -128,8 +125,6 @@ impl World {
                 );
                 receivers.push(base + at);
             }
-            // Active records link real definition/leader layouts. The observer
-            // copies the ability string while these receivers remain alive.
             for record in 0..2 {
                 let definition = pointer + 0x2600 + record * 0x100;
                 let leader = pointer + 0x2800 + record * 0x40;
@@ -285,7 +280,6 @@ fn politics_daily_tap_profile() {
             hooks::bench_begin(world.base, countries * 3, 1);
             let start = Instant::now();
             for receivers in world.receivers.chunks_exact(8) {
-                // Fixture relation0 sits 0x200 bytes after politics in each country block.
                 hooks::bench_daily_taps(receivers[0] - 0x200, modifier_frame, rate_frame);
             }
             if iteration >= 10 {
@@ -496,6 +490,5 @@ fn native_operand_rows_are_byte_identical_to_guarded_rows() {
     });
     assert_eq!(a, b);
     assert_eq!(akeys, bkeys);
-    // The ledger/codec equivalence regression below covers all five encoded tables.
     super::tests::compact_handoff_rows_are_byte_identical_to_original_event_stream();
 }

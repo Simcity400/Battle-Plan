@@ -1,11 +1,9 @@
-//! Refuse unverified recorded content unless the user explicitly allows it.
 
 use crate::{Source, catalogue::kept::Keeping, invalid, products::ContentOptions};
 use installed_content_localisation::localisation::Localisation;
 use replay_data::identity::Verification;
 use std::{io, path::PathBuf, sync::Arc};
 
-/// What a resolved country name depends on besides the recording.
 pub type ContentKey = (PathBuf, PathBuf, bool);
 
 pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
@@ -18,8 +16,6 @@ pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
     })
 }
 
-/// Everything a source's localisation depends on besides the recording: the folders and the
-/// cache folder. Its language is the recording's own ([`recorded_language`]).
 pub type LocalisationKey = (ContentKey, PathBuf);
 
 pub fn localisation_key(content: &ContentOptions) -> LocalisationKey {
@@ -29,8 +25,6 @@ pub fn localisation_key(content: &ContentOptions) -> LocalisationKey {
     )
 }
 
-/// The recording's localisation in its own language, read once per source and key and shared by
-/// every product that names anything.
 pub fn localisation(source: &Source, content: &ContentOptions) -> io::Result<Arc<Localisation>> {
     localisation_with_key(source, content, localisation_key(content))
 }
@@ -49,9 +43,6 @@ pub(crate) fn localisation_with_key(
     )
 }
 
-/// [`localisation_with_key`] reading, when it is not cached, its kept file or else the content
-/// `resolved` gives. Without `keeping` it is built from that content alone, and neither read
-/// from nor left in the source's cache.
 pub(crate) fn localisation_in(
     source: &Source,
     content: &ContentOptions,
@@ -101,10 +92,6 @@ pub(crate) fn localisation_in(
     Ok(localisation)
 }
 
-/// The replay's shared setup under `content`: the localisation and the presented catalogue,
-/// each done once per open replay into the source's shared state, so no product's first ask
-/// does them. A failure is left for the product that needs the part to report with
-/// its reason.
 pub fn warm(source: &Source, content: &ContentOptions) {
     let _warm = installed_content_core::content::Generation::inherit();
     let resolved = source.content(&content.options).ok();
@@ -113,7 +100,6 @@ pub fn warm(source: &Source, content: &ContentOptions) {
     let _ = crate::catalogue::catalogue(source, content);
 }
 
-/// [`localisation`] for naming countries, or the warning that says why names show tags.
 pub fn name_localisation(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -125,7 +111,6 @@ pub fn name_localisation(
     }
 }
 
-/// Playback's text language: the recording's own, the only one its facts carry, never `settings.txt`'s.
 pub fn recorded_language(replay: &replay::campaign::Replay) -> String {
     let language = &replay.identity.language;
     language.strip_prefix("l_").unwrap_or(language).to_owned()
@@ -151,10 +136,6 @@ pub fn check_verification(
     Ok(())
 }
 
-/// Verifies the recording and every session; used by products that read game assets.
-/// The strategic regions `layers` define ([`installed_content_regions::regions::read`]), read once for
-/// the content stack and shared by every product reading them; each later use credits the
-/// read's refusals as its own read would.
 pub fn strategic_regions(
     layers: &installed_content_core::ResolvedLayers,
 ) -> io::Result<Arc<installed_content_regions::regions::StrategicRegions>> {

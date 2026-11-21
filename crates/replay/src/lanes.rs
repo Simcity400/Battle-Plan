@@ -1,12 +1,3 @@
-//! The reads every dashboard reply is made of, at the storage level, each reading one table's
-//! lane: [`at`] (a table at an hour), [`at_each`] (rows at many hours), [`runs`] (a column's
-//! values hour by hour over a span), [`history`] (any columns' cells over a span, at the hours
-//! they change), [`chart`] (a column's buckets over a span from its summary pieces), [`next`]
-//! (the next hour a column changes), [`log`] (a log's inserted rows counted per bin and facet),
-//! [`lifetimes`] (every key a table held, with its first and last hour), [`reads`] (the hours a
-//! table was read), [`statuses`] (its status as runs of hours) and [`logged_hours`] (the six-hour
-//! buckets a log inserted rows in). Each takes a run of the recording and game hours; timelines,
-//! identity and products are built on them elsewhere.
 
 use crate::{cells::TableReader, columnar_frames::Recording, rows::TableId};
 use replay_columnar::{
@@ -29,21 +20,15 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The rows of a table a read at an hour asks for.
 #[derive(Clone, Copy, Debug)]
 pub enum Keys<'a> {
     All,
     These(&'a [u128]),
-    /// Every key from the first through the second: for a table whose key holds its owner in its
-    /// high bits, every row of one owner.
     Range(u128, u128),
-    /// Keys within any of these ranges (first and last), ascending and apart: every row of
-    /// several owners.
     Ranges(&'a [(u128, u128)]),
 }
 
 impl Keys<'_> {
-    /// Whether it asks for the row keyed `key`; `sorted` is [`Keys::These`]' keys sorted.
     fn asks(&self, sorted: &[u128], key: u128) -> bool {
         match *self {
             Keys::All => true,
@@ -54,45 +39,30 @@ impl Keys<'_> {
     }
 }
 
-/// A table as it stood after an hour: its cells (the columns read; the others hold no value),
-/// the strings they name, its status, and the rows asked.
 pub struct Snapshot {
     pub table: TableState,
     pub strings: Strings,
     pub kinds: Vec<Kind>,
     pub status: Status,
-    /// The hour of the read its rows hold; none when not known.
     pub sampled_at: Option<i32>,
-    /// The hour read the table.
     pub was_read: bool,
-    /// The rows asked that the hour shows, each key and slot, ascending by key: of a complete
-    /// table its live rows, of one read in part the rows the hour read; none otherwise.
     pub rows: Vec<(u128, u32)>,
 }
 
 impl Snapshot {
-    /// Its cells as the store's readers read a table: every live row, asked or not; the rows
-    /// asked are [`Self::rows`].
     pub fn view(&self) -> TableView<'_> {
         TableView::new(&self.table, &self.kinds, &self.strings)
     }
 }
 
-/// Run `run`'s ordinal of game hour `hour`.
 fn ordinal_of(recording: &Recording, run: u32, hour: i32) -> io::Result<u32> {
     recording.run(run)?.ordinal(hour).ok_or_else(|| invalid("The run holds no such hour"))
 }
 
-/// `table` of run `run` after hour `hour`, `columns` of it only when given (the others' cells
-/// hold no value: never read them), every row: [`at_keys`] with [`Keys::All`].
 pub fn at(recording: &Recording, run: u32, table: TableId, hour: i32, columns: Option<&[usize]>) -> io::Result<Snapshot> {
     at_keys(recording, run, table, hour, columns, Keys::All)
 }
 
-/// `table` of run `run` after hour `hour`, `columns` of it only when given (the others' cells
-/// hold no value: never read them), the rows `keys` asks for: restored at its last restore before the hour, its parts
-/// advanced to the hour. The cells are decoded whole (a unit is column-major); only the rows
-/// asked are listed for a reader to build.
 pub fn at_keys(recording: &Recording, run: u32, table: TableId, hour: i32, columns: Option<&[usize]>, keys: Keys<'_>) -> io::Result<Snapshot> {
     let ordinal = ordinal_of(recording, run, hour)?;
     let mut reader = TableReader::new(recording, run, table, columns)?;
@@ -103,8 +73,6 @@ pub fn at_keys(recording: &Recording, run: u32, table: TableId, hour: i32, colum
     Ok(Snapshot { table, strings, kinds, status, sampled_at, was_read, rows })
 }
 
-/// The rows `keys` asks for that `reader`'s hour shows, each key and slot, ascending by key: of a
-/// complete table its live rows, of one read in part the rows the hour read; none otherwise.
 pub(crate) fn asked_rows(reader: &TableReader, keys: Keys<'_>) -> io::Result<Vec<(u128, u32)>> {
     let table = reader.table();
     let mut sorted = Vec::new();
@@ -130,11 +98,6 @@ pub(crate) fn asked_rows(reader: &TableReader, keys: Keys<'_>) -> io::Result<Vec
     Ok(rows)
 }
 
-/// `table` of run `run` at each of `asks` (an hour and a key), `columns` of it only when given:
-/// one reader moved forward through the hours asked in order, each block advanced through once
-/// and a restore lying between two hours sought. `each` is given each ask's hour and key, and its
-/// row when the hour shows it (live, its table available and, read in part, read), in hour then
-/// key order.
 pub fn at_each(
     recording: &Recording,
     run: u32,
@@ -160,13 +123,8 @@ pub fn at_each(
     Ok(())
 }
 
-/// One key's runs of a column: each run's first and last hour and its value, none where the
-/// row was not live, its cell not recorded or its table not available.
 pub type Runs = Vec<(i32, i32, Option<i64>)>;
 
-/// Column `column` of `table` of run `run` from `from` through `to`, by key: its runs of equal
-/// value, read from the column's tracks ([`crate::points`]). A text column's value is a string id
-/// of its text, equal values equal texts within the read; [`history`] gives the texts.
 pub fn runs(recording: &Recording, run: u32, table: TableId, column: usize, from: i32, to: i32) -> io::Result<Vec<(u128, Runs)>> {
     let held = keyed_runs(recording, run, table, summary::Source::Cell(column), None, from, to)?;
     let mut out: Vec<(u128, Runs)> = held.into_iter().collect();
@@ -174,8 +132,6 @@ pub fn runs(recording: &Recording, run: u32, table: TableId, column: usize, from
     Ok(out)
 }
 
-/// `source` of `table`'s rows from `from` through `to`, for `keys` (every key the hours hold
-/// when none), by key: each key's runs of equal value, from its columns' tracks.
 pub fn keyed_runs(
     recording: &Recording,
     run: u32,
@@ -207,28 +163,21 @@ pub fn keyed_runs(
     Ok(held)
 }
 
-/// One key's cells from an hour on, as [`history`] reads them: none while its row is not shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
     pub hour: i32,
     pub cells: Option<Box<[Cell]>>,
 }
 
-/// Some columns of a table's rows over a span ([`history`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct History {
-    /// The columns read, ascending: each step's cells in their order.
     pub columns: Vec<usize>,
-    /// The span's last hour: each key's last step holds through it.
     pub to: i32,
-    /// The texts a [`Cell::Text`] names, by its index.
     pub texts: Vec<Box<[u8]>>,
-    /// By key ascending, its steps in hour order.
     pub keys: Vec<(u128, Vec<Step>)>,
 }
 
 impl History {
-    /// A text cell's text.
     pub fn text(&self, cell: Cell) -> Option<&[u8]> {
         match cell {
             Cell::Text(index) => self.texts.get(index as usize).map(|text| &**text),
@@ -236,8 +185,6 @@ impl History {
         }
     }
 
-    /// Column `column`'s runs by key: each run's first and last hour and its cell, none where the
-    /// row is not shown, equal cells one run; none when the history holds no such column.
     pub fn runs(&self, column: usize) -> Option<Vec<(u128, Vec<(i32, i32, Option<Cell>)>)>> {
         let at = self.columns.binary_search(&column).ok()?;
         Some(
@@ -260,12 +207,6 @@ impl History {
     }
 }
 
-/// Columns `columns` of `table` of run `run` from `from` through `to`, for the keys `keys` asks
-/// for: each key's cells at `from` (each key named, live or not; each live key asked otherwise)
-/// and at every hour after at which one of them changes, its row comes or goes, or the table's
-/// status or partial read hides or shows it, read from the tracks a block at a time
-/// ([`crate::points::cells`]). Numbers and texts come with their values; a list or opaque cell
-/// comes with the hour its value was written, to read it then with [`at_each`].
 pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
     let mut held: HashMap<u128, Vec<Step>, foldhash::fast::RandomState> = HashMap::default();
     let (columns, texts) = crate::points::cells(recording, run, table, columns, keys, from, to, &mut |hour, key, cells| {
@@ -277,9 +218,6 @@ pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize
     Ok(History { columns, to, texts, keys })
 }
 
-/// The hours `table` of run `run` was read from `from` through `to`, as runs of first and last
-/// hour, ascending: those whose sample hour is the hour itself (what a writer watching every read
-/// is told), from the blocks' page entries, no row decoded.
 pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
@@ -312,18 +250,13 @@ pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32
     Ok(out)
 }
 
-/// A stretch of hours over which a table held one status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusRun {
     pub first: i32,
     pub last: i32,
-    /// An unavailable table's reason is its string id: its text is read with [`at`] at the run's
-    /// first hour.
     pub status: Status,
 }
 
-/// [`reads`] less the hours `table` was not available (its [`statuses`]): an hour read but refused
-/// holds no rows, and is not a read of them.
 pub fn available_reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
     let reads = reads(recording, run, table, from, to)?;
     let available: Vec<(i32, i32)> = statuses(recording, run, table, from, to)?
@@ -343,8 +276,6 @@ pub fn available_reads(recording: &Recording, run: u32, table: TableId, from: i3
     Ok(out)
 }
 
-/// The statuses of `table` of run `run` from `from` through `to`, as runs of one status covering
-/// the span, ascending: from the blocks' page entries, no row decoded.
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<StatusRun>> {
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
@@ -377,9 +308,6 @@ pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: 
     Ok(out)
 }
 
-/// The hours of the six-hour buckets in which a log of run `run` inserted rows from `from`
-/// through `to`, as runs of first and last hour clipped to the span, ascending: from its level-0
-/// summary pieces, no row decoded.
 pub fn logged_hours(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
@@ -435,10 +363,6 @@ pub fn logged_hours(recording: &Recording, run: u32, table: TableId, from: i32, 
     Ok(out)
 }
 
-/// The summary pieces of `table` of run `run` covering the blocks `blocks`, each of the highest
-/// level up to `level` the file holds for its part: whole spans' pieces from their span rows, a
-/// finished run's last span from its directory's tail, the rest from their blocks'. A value
-/// table's blocks hold none: a part no piece covers is the walk's.
 pub(crate) fn pieces(recording: &Recording, run: u32, table: usize, blocks: std::ops::Range<u32>, level: u8) -> io::Result<Vec<Extent>> {
     let held = recording.run(run)?;
     let closed = held.directory().spans.len() as u32 * SPAN_BLOCKS;
@@ -474,14 +398,12 @@ fn cover(
         out.extend(found.into_iter().flatten());
         return Ok(());
     }
-    // A level whose pieces span more blocks than the run has closed holds none yet.
     let group = u64::from(SPAN_BLOCKS) * (FANOUT as u64).saturating_pow(u32::from(level) - 1);
     if group > u64::from(closed) {
         return cover(recording, run, table, blocks, level - 1, closed, out);
     }
     let group = group as u32;
     let groups: Vec<u32> = (blocks.start - blocks.start % group..blocks.end).step_by(group as usize).collect();
-    // Each closed group's span row read on its own thread.
     let found = groups
         .par_iter()
         .map(|&start| -> io::Result<Option<Extent>> {
@@ -500,15 +422,12 @@ fn cover(
         let part = start.max(blocks.start)..(start + group).min(blocks.end);
         match piece {
             Some(extent) => out.push(extent),
-            // A group whose pieces held no key, or not closed yet, is read from the level below.
             None => cover(recording, run, table, part, level - 1, closed, out)?,
         }
     }
     Ok(())
 }
 
-/// The ordinal ranges of run `run`'s blocks `blocks` that none of `covered` (game-hour ranges
-/// of pieces read) holds, clipped to ordinals `first..=last`.
 fn uncovered(recording: &Recording, run: u32, blocks: std::ops::Range<u32>, covered: &[(i64, i64)], first: u32, last: u32) -> io::Result<Vec<(u32, u32)>> {
     let held = recording.run(run)?;
     let first_hour = i64::from(held.first_hour);
@@ -531,17 +450,13 @@ fn uncovered(recording: &Recording, run: u32, blocks: std::ops::Range<u32>, cove
     Ok(out)
 }
 
-/// One key's bin: what its hours with a value held. None held a value when `hours` is 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Bin {
-    /// Hours with a value.
     pub hours: u32,
     pub first: i64,
     pub last: i64,
     pub min: i64,
     pub max: i64,
-    /// The level-0 buckets of the first, last, least and greatest value; read from a coarser level,
-    /// the first level-0 bucket of the bucket holding the first, least and greatest, the last of the last.
     pub first_bucket: i32,
     pub last_bucket: i32,
     pub min_bucket: i32,
@@ -549,7 +464,6 @@ pub struct Bin {
 }
 
 impl Bin {
-    /// `fold`, the hours after those it holds, added.
     fn add(&mut self, fold: &Fold) {
         let bucket = |bucket: i64| bucket as i32;
         if self.hours == 0 {
@@ -577,13 +491,10 @@ impl Bin {
     }
 }
 
-/// A bin's aggregates, for a column that declares them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
-    /// The hour-weighted sum of the value, and of its magnitude.
     pub sum: i128,
     pub abs: u128,
-    /// Hour-to-hour decreases and changes.
     pub falls: u64,
     pub changes: u64,
 }
@@ -597,44 +508,33 @@ impl Totals {
     }
 }
 
-/// A chart of one column: per key, each bin's values, aggregates and covered hours, key after
-/// key in one buffer.
 #[derive(Debug)]
 pub struct Chart {
-    /// The summary level read; [`WALKED`] when the hours were walked.
     pub level: u8,
-    /// Hours per bin, and the first bin's first hour.
     pub bin_hours: i64,
     pub first_bin_hour: i64,
     pub bins: usize,
     pub keys: Vec<u128>,
     values: Vec<Bin>,
-    /// Empty when the column declares no aggregates.
     totals: Vec<Totals>,
     life: Vec<u32>,
-    /// Pieces read.
     pub pieces: usize,
-    /// Blocks walked where no piece answered.
     pub walked: usize,
 }
 
 impl Chart {
-    /// The `at`th key's bins.
     pub fn values(&self, at: usize) -> &[Bin] {
         &self.values[at * self.bins..(at + 1) * self.bins]
     }
 
-    /// The `at`th key's bins' aggregates; none when the column declares none.
     pub fn totals(&self, at: usize) -> Option<&[Totals]> {
         (!self.totals.is_empty()).then(|| &self.totals[at * self.bins..(at + 1) * self.bins])
     }
 
-    /// The `at`th key's covered hours by bin.
     pub fn life(&self, at: usize) -> &[u32] {
         &self.life[at * self.bins..(at + 1) * self.bins]
     }
 
-    /// The row of `key`, made when it has none.
     fn row(&mut self, key: u128, rows: &mut HashMap<u128, usize, foldhash::fast::RandomState>) -> usize {
         let bins = self.bins;
         let declares = !self.totals.is_empty();
@@ -649,7 +549,6 @@ impl Chart {
         })
     }
 
-    /// `fold` added to the `at`th key's bin `bin`.
     fn add(&mut self, at: usize, bin: usize, fold: &Fold) {
         let index = at * self.bins + bin;
         self.values[index].add(fold);
@@ -659,10 +558,6 @@ impl Chart {
     }
 }
 
-/// Column `source` (a column, or a computed column's id) of value table `table` of run `run` from
-/// `from` through `to` drawn `width` bins wide, for `keys` (every key when none), on the absolute
-/// grid. Bins of the coarse summary level's buckets or wider are read from summary pieces, a part
-/// no piece covers walked; finer bins walk the blocks in view.
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn chart(
     recording: &Recording,
@@ -686,12 +581,8 @@ pub fn chart(
     chart_at(recording, run, table, source, keys, from, to, level, bin_hours)
 }
 
-/// The level [`chart_at`] answers from the table's lane alone, walked.
 pub const WALKED: u8 = u8::MAX;
 
-/// [`chart`] in bins of `bin_hours`: from pieces of `level` (or the levels below where the file
-/// holds none), `bin_hours` a multiple of its bucket, the hours no piece covers walked; or with
-/// [`WALKED`], every hour walked.
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn chart_at(
     recording: &Recording,
@@ -733,7 +624,6 @@ pub fn chart_at(
         walked: 0,
     };
     let mut rows: HashMap<u128, usize, foldhash::fast::RandomState> = HashMap::default();
-    // Every piece read, then each one's column decoded on its own thread.
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
@@ -761,7 +651,6 @@ pub fn chart_at(
         bin_hours,
         bins,
     };
-    // Each key's bins on its own thread, into its own slice: nothing is merged across threads.
     chart.values = vec![Bin::default(); asked.len() * bins];
     chart.life = vec![0; asked.len() * bins];
     if column.aggregates != 0 {
@@ -807,8 +696,6 @@ pub fn chart_at(
     Ok(chart)
 }
 
-/// Every key `table` of run `run` held, with the first and last hour it was covered, from the
-/// highest summary pieces the file holds, a value table's hours no piece covers walked.
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
     let held = recording.run(run)?;
     let blocks = held.pages() as u32;
@@ -856,7 +743,6 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
     Ok(out)
 }
 
-/// The columns a summarized column's value reads.
 fn inputs(source: summary::Source) -> Vec<usize> {
     match source {
         summary::Source::Cell(column) => vec![column],
@@ -864,8 +750,6 @@ fn inputs(source: summary::Source) -> Vec<usize> {
     }
 }
 
-/// Reads `table`'s `columns` over each of run `run`'s ordinal ranges `ranges` into `walk`, from
-/// their tracks ([`crate::points`]); the blocks read.
 fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize], ranges: &[(u32, u32)], walk: &mut Walk<'_>) -> io::Result<usize> {
     let first_hour = recording.run(run)?.first_hour;
     let mut blocks = 0;
@@ -873,8 +757,6 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
         blocks += (last / UNIT_ORDINALS - first / UNIT_ORDINALS + 1) as usize;
         let start = i64::from(first_hour) + i64::from(first);
         walk.tracks.clear();
-        // From the hour before the range, its state is where the walk starts; at a run's first
-        // hour nothing is held before.
         let before = first.checked_sub(1);
         let from = first_hour + before.unwrap_or(0) as i32;
         let to = first_hour + last as i32;
@@ -891,13 +773,10 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
     Ok(blocks)
 }
 
-/// One key's bins as a walk folds them.
 struct Row {
     values: Vec<Option<Fold>>,
     life: Vec<u32>,
-    /// Changes and falls counted at the hour they happen, by bin.
     counts: Vec<(u64, u64)>,
-    /// The first and last hour it was covered.
     lived: Option<(i64, i64)>,
 }
 
@@ -910,8 +789,6 @@ impl Row {
     }
 }
 
-/// One key as a walk passes its hours: whether it is covered since when, and its value since
-/// when with the value the hour before.
 struct Track {
     covered: bool,
     since: i64,
@@ -920,9 +797,6 @@ struct Track {
     before: Option<i64>,
 }
 
-/// A table's hours folded into bins as a walk passes them, exactly as the summary builder folds
-/// them: a key is covered while live, its table available and, read in part, read; a value is
-/// none where not covered or not recorded; a change counts where both sides hold a value.
 struct Walk<'a> {
     source: Option<summary::Source>,
     keys: Option<&'a [u128]>,
@@ -960,7 +834,6 @@ impl<'a> Walk<'a> {
         })
     }
 
-    /// Each bin's part of the hours `[from, to)`, as (bin, start, end).
     fn parts(&self, from: i64, to: i64) -> Vec<(usize, i64, i64)> {
         let mut out = Vec::new();
         let mut at = from.max(self.first_bin);
@@ -1047,7 +920,6 @@ impl<'a> Walk<'a> {
         });
     }
 
-    /// A key's state the hour before the walk's first, `hour`.
     fn begin(&mut self, key: u128, covered: bool, value: Option<i64>, hour: i64) {
         if !covered || !self.wanted(key) {
             return;
@@ -1056,7 +928,6 @@ impl<'a> Walk<'a> {
         self.tracks.insert(key, Track { covered: true, since: hour, value, value_since: hour, before: value });
     }
 
-    /// A key's state from `hour` on.
     fn point(&mut self, key: u128, covered: bool, value: Option<i64>, hour: i64) {
         if !self.wanted(key) {
             return;
@@ -1068,7 +939,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// The walk ends before `hour`.
     fn end(&mut self, hour: i64) {
         let keys: Vec<u128> = self.tracks.keys().copied().collect();
         for key in keys {
@@ -1079,13 +949,10 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// The rows a log of run `run` inserted from `from` through `to`, by facet key, counted per bin of
-/// `bin_hours` hours (a multiple of six) on the absolute grid.
 pub fn log(recording: &Recording, run: u32, table: TableId, from: i32, to: i32, bin_hours: i64) -> io::Result<Vec<(u128, Vec<u64>)>> {
     log_of(recording, run, table, (from, to), bin_hours, &|_| true)
 }
 
-/// [`log`] of the facet keys `keep` takes: no other key's counts are decoded or held.
 pub fn log_of(recording: &Recording, run: u32, table: TableId, (from, to): (i32, i32), bin_hours: i64, keep: &dyn Fn(u128) -> bool) -> io::Result<Vec<(u128, Vec<u64>)>> {
     let bin_hours = bin_hours.max(summary::bucket_hours(0));
     let mut level = 0u8;
@@ -1124,10 +991,6 @@ pub fn log_of(recording: &Recording, run: u32, table: TableId, (from, to): (i32,
     Ok(out)
 }
 
-/// The first hour after `from` at which column `column` of `key` of `table` of run `run` holds
-/// another value than at `from` (or holds one, or stops holding one); none through the run's end.
-/// The coarse summary pieces pass the buckets it holds steady in; the table's lane is walked from
-/// the first that is not, or from where no piece covers.
 pub fn next(recording: &Recording, run: u32, table: TableId, column: usize, key: u128, from: i32) -> io::Result<Option<i32>> {
     let held = recording.run(run)?;
     let last_hour = held.first_hour + (held.ordinals - 1) as i32;
@@ -1140,7 +1003,6 @@ pub fn next(recording: &Recording, run: u32, table: TableId, column: usize, key:
         let view = start.view();
         available.then(|| view.slot(key).and_then(|slot| view.number(column, slot))).flatten()
     };
-    // The first hour not yet known to hold `now`.
     let mut cursor = i64::from(from) + 1;
     let first_block = ordinal_of(recording, run, from + 1)? / UNIT_ORDINALS;
     for extent in pieces(recording, run, table.index(), first_block..held.pages() as u32, 1)? {
@@ -1151,7 +1013,6 @@ pub fn next(recording: &Recording, run: u32, table: TableId, column: usize, key:
             break;
         }
         let size = summary::bucket_hours(directory.level);
-        // A column the summaries do not hold is read from its tracks alone.
         let Some(column_at) = piece.column_of(column as u32) else { break };
         let frame = piece.column(column_at)?;
         let mut tokens = piece.key_at(key).map(|at| frame.tokens(at));
@@ -1181,8 +1042,6 @@ pub fn next(recording: &Recording, run: u32, table: TableId, column: usize, key:
     walk_to_change(recording, run, table, column, key, (cursor - 1) as i32, last_hour)
 }
 
-/// The first hour after `after` at which `key`'s column `column` of `table` holds another value
-/// than at `after` (a row gone or the table unavailable holding none), from the column's tracks.
 fn walk_to_change(recording: &Recording, run: u32, table: TableId, column: usize, key: u128, after: i32, last_hour: i32) -> io::Result<Option<i32>> {
     if after >= last_hour {
         return Ok(None);
@@ -1201,7 +1060,6 @@ fn walk_to_change(recording: &Recording, run: u32, table: TableId, column: usize
     Ok(found)
 }
 
-/// The bins a chart folds a piece's buckets into.
 struct Grid {
     from: i64,
     to: i64,
@@ -1211,7 +1069,6 @@ struct Grid {
 }
 
 impl Grid {
-    /// The bin piece bucket `bucket` of `directory` falls in; none outside the view.
     fn bin(&self, directory: &summary::Directory, bucket: u32) -> Option<usize> {
         let size = summary::bucket_hours(directory.level);
         let start = (directory.first_bucket + i64::from(bucket)) * size;
@@ -1223,10 +1080,6 @@ impl Grid {
             .filter(|&bin| bin < self.bins)
     }
 
-    /// `key`'s bins, aggregates when asked and covered hours from `pieces`, into `values`,
-    /// `totals` and `life`, and when asked into `marks` the [`mark`] of the bucket of each bin's
-    /// last value: a run of buckets without a value is passed, a run holding one value added once
-    /// per bin it meets.
     fn fold_key(
         &self,
         pieces: &[(Piece<'_>, ColumnFrame)],
@@ -1236,8 +1089,6 @@ impl Grid {
         mut totals: Option<&mut [Totals]>,
         mut marks: Option<&mut [u64]>,
     ) -> io::Result<()> {
-        // A piece's folds name buckets of its level: each made level-0, the last value at its
-        // bucket's last level-0 bucket, the others at its first.
         let mut merge = |bin: usize, mut fold: Fold, level: u8, at: u64| {
             if let Some(marks) = marks.as_deref_mut() {
                 marks[bin] = at;
@@ -1320,14 +1171,10 @@ impl Grid {
     }
 }
 
-/// What [`top`] ranks a bin's keys by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum By {
-    /// The value at the bin's last hour with one.
     Last,
-    /// The greatest value in the bin.
     Max,
-    /// The least value in the bin.
     Min,
 }
 
@@ -1341,21 +1188,10 @@ impl By {
     }
 }
 
-/// Where bucket `bucket` of the `piece`th piece read lies among them all, in time order; 0 is
-/// before any.
 fn mark(piece: usize, bucket: u32) -> u64 {
     ((piece as u64) << 32 | u64::from(bucket)) + 1
 }
 
-/// The `n` keys of value table `table`'s column `source` of run `run` ranking first by `by` in
-/// each bin of the view from `from` through `to` drawn `width` bins wide, greatest first (ties by
-/// key), each with its bin: the top-N of every key without holding every key's bins. From the
-/// view's summary pieces of six-hour bins or wider; none narrower.
-///
-/// By [`By::Last`] a bin ranks the keys holding a value in its last bucket read that holds any
-/// (a bucket split between two pieces counts as two), by their last value there: a key gone
-/// earlier in the bin is not ranked. A column whose pieces rank at least `n` keys per bucket is
-/// read from those ranks and then only their keys' buckets; any other view folds every key.
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, column, view, count and order")]
 pub fn top(
     recording: &Recording,
@@ -1371,7 +1207,6 @@ pub fn top(
     top_with(recording, run, table, source, from, to, width, n, by, true)
 }
 
-/// [`top`], from the column's ranks only when `ranked` allows it.
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, column, view, count and order")]
 fn top_with(
     recording: &Recording,
@@ -1433,14 +1268,11 @@ fn top_with(
     }
 }
 
-/// Greater by `by` first, then the lesser key.
 fn better(by: By) -> impl Fn(&(u128, Bin), &(u128, Bin)) -> std::cmp::Ordering + Copy + Send + Sync {
     move |a, b| by.of(&b.1).cmp(&by.of(&a.1)).then(a.0.cmp(&b.0))
 }
 
 impl Grid {
-    /// [`top`] from the ranks of `pieces` (each piece's own, in its order): each bin's last bucket
-    /// ranking a key names its first `n` keys, whose bins alone are folded.
     fn top_ranked(&self, pieces: &[(Piece<'_>, ColumnFrame)], ranks: &[summary::Ranks], n: usize) -> io::Result<Vec<Vec<(u128, Bin)>>> {
         let mut chosen: Vec<Vec<u128>> = vec![Vec::new(); self.bins];
         for ((piece, _), ranks) in pieces.iter().zip(ranks) {
@@ -1477,9 +1309,6 @@ impl Grid {
             .collect())
     }
 
-    /// [`top`] folding every key of `pieces`: each thread folds its keys one at a time into one
-    /// scratch row and keeps its own best `n` per bin (by [`By::Last`], of the keys of the latest
-    /// bucket it saw holding a value); the threads' lists are merged per bin.
     fn top_folded(&self, pieces: &[(Piece<'_>, ColumnFrame)], n: usize, by: By) -> io::Result<Vec<Vec<(u128, Bin)>>> {
         use std::cmp::Ordering;
         let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).collect();

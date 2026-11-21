@@ -1,11 +1,7 @@
-//! The head between anchors. A seek holds the head at the hour sought until its reset is taken,
-//! and the clock runs from that moment: the hour sought is the first one shown. A pause or a speed
-//! asked for during a seek applies from then.
 
 use replay_data::Hour;
 use std::time::{Duration, Instant};
 
-/// Maps timestamps from the page's monotonic clock to the native clock.
 #[derive(Default)]
 pub struct PageTime {
     quickest: Option<(f64, Instant)>,
@@ -13,10 +9,8 @@ pub struct PageTime {
 }
 
 impl PageTime {
-    /// The native instant the page composed an anchor, estimated from its compose and send times in milliseconds.
     pub fn composed(&mut self, stamps: Option<(f64, f64)>, received: Instant) -> Instant {
         let Some((composed, sent)) = stamps else { return received };
-        // A reload restarts performance.now(); nearby out-of-order messages still share its origin.
         if sent + 1_000.0 < self.newest {
             self.quickest = None;
             self.newest = sent;
@@ -35,11 +29,9 @@ impl PageTime {
 pub struct Clock {
     position: f64,
     page_anchored: bool,
-    /// When the clock was at `position`; a local seek starts counting when its reset lands.
     since: Option<Instant>,
     speed: f64,
     playing: bool,
-    /// The seek whose reset is awaited, and the last frame that asked the head meanwhile.
     held: Option<(u64, Hour)>,
     asked: Option<Instant>,
     first: Hour,
@@ -47,7 +39,6 @@ pub struct Clock {
 }
 
 impl Clock {
-    /// Paused at `first`, of hours `first` to `last`.
     pub fn new(first: Hour, last: Hour, speed: f64) -> Self {
         Self { position: f64::from(first), page_anchored: false, since: Some(Instant::now()), speed, playing: false, held: None, asked: None, first, last }
     }
@@ -72,13 +63,10 @@ impl Clock {
         self.playing
     }
 
-    /// The seek whose reset is awaited, if any.
     pub fn held(&self) -> Option<u64> {
         self.held.map(|(epoch, _)| epoch)
     }
 
-    /// [`Self::head`] asked by a frame at `now`: while held, the moment the clock will run from
-    /// when that frame takes the reset.
     pub fn frame(&mut self, now: Instant) -> Hour {
         if self.held.is_some() {
             self.asked = Some(now);
@@ -86,7 +74,6 @@ impl Clock {
         self.head(now)
     }
 
-    /// Held at `hour` until the reset of seek `epoch` is taken; a seek under way is replaced.
     pub fn seek(&mut self, hour: Hour, epoch: u64) {
         let hour = hour.clamp(self.first, self.last);
         self.position = f64::from(hour);
@@ -96,7 +83,6 @@ impl Clock {
         self.asked = None;
     }
 
-    /// The head stands at `hour` from `now`, running on from there while playing.
     pub fn place(&mut self, hour: Hour, now: Instant) {
         self.position = f64::from(hour.clamp(self.first, self.last));
         self.page_anchored = false;
@@ -116,7 +102,6 @@ impl Clock {
         self.playing = false;
     }
 
-    /// The page was at this position at `at`, including while the native reader awaited a reset.
     pub fn anchor(&mut self, position: f64, playing: bool, speed: f64, at: Instant) {
         self.position = position;
         self.page_anchored = true;
@@ -125,9 +110,6 @@ impl Clock {
         self.speed = speed;
     }
 
-    /// The reset of seek `epoch` is taken at `now`: the clock runs from the hour sought, from the
-    /// frame that took it (the last that asked the head), or from `now`. A reset of any other seek
-    /// changes nothing.
     pub fn shown(&mut self, epoch: u64, now: Instant) {
         if self.held() == Some(epoch) {
             self.held = None;

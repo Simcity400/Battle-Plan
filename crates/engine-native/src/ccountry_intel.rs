@@ -1,39 +1,20 @@
-//! Country intel with sparse raw four-lane capture. Serialization writes a
-//! positional complete list when the signed count is positive, with one block
-//! per stored record. Displayed intel fractions are derived by consumers.
 
 use crate::{
     Memory, ccountry, country_intel_row, cpdx_array::Array, memory::read_slice, read, walk::Outcome,
 };
 use engine_sites::Rva;
 
-/// Intel-state primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_bb28);
-/// Constructor publishing the country-owned intel object.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d6_3480);
-/// Allocation size.
 pub const SIZE: usize = 0xf0;
-/// Owner raw country id, u32.
 pub const OWNER: usize = 0x08;
-/// First-vector data pointer.
 pub const DATA: usize = 0x10;
-/// First-vector capacity, i32.
 pub const CAPACITY: usize = 0x18;
-/// First-vector row count, i32.
 pub const COUNT: usize = 0x1c;
 
-/// Sum every canonical country's intel count, including the independently
-/// authenticated reserved owner. This dense total bounds kept sparse rows.
-/// Off-thread sizing reads only pointers and headers and records nothing;
-/// an unreadable census returns None.
-///
-/// Headers acquired while the game runs must be consistent. Copying and
-/// serialization retain the full count without a registry ceiling. Failed
-/// selectors are not retried and invalid spans add no hint.
 pub fn native_rows(memory: &impl Memory, base: usize, game_state: usize) -> Option<usize> {
     let countries = ccountry::Reader::new(memory, base, game_state).ok()?;
     let expected = engine_sites::at(base, VTABLE_RVA)? as u64;
-    // One sticky result, shared with any physical aliases the positive loop sees.
     let reserved = countries.reserved();
     let mut total = 0_usize;
     for slot in 1..countries.count() {
@@ -68,23 +49,6 @@ pub fn native_rows(memory: &impl Memory, base: usize, game_state: usize) -> Opti
     Some(total)
 }
 
-/// Reads every canonical country's intel table in bulk copies and keeps its
-/// four lanes sparse (see [`country_intel_row::Row`]), because the native array
-/// holds one record per country slot for every country. A record is kept when
-/// any lane is nonzero, and the owner's last record (index `count - 1`) is
-/// always kept, so the owner's native count is its greatest kept index plus one
-/// and an unkept index below it has four zero lanes. A country with a null table, or a table
-/// whose signed count is not positive, has no rows, which is exactly when
-/// serialization writes no list. Native record order is preserved, and the
-/// index is the target's canonical country-link slot rather than a raw
-/// reference; see `country_intel_row`.
-///
-/// Every record is read even once `output` is full, so a truncated walk
-/// reports exactly the kept rows it could not store and the caller grows to
-/// the sparse demand, not the dense one.
-///
-/// `scratch` is caller-owned; the walk allocates nothing and calls no engine
-/// function. A scratch buffer shorter than one record refuses the whole table.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -197,22 +161,14 @@ fn walk_in_reader(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Optional owner-zero admission leaves the established positive outcome intact
-/// on refusal. Only the published outcome's prefix is usable; a refused suffix
-/// may have written scratch rows beyond it. Growth is independent of publication.
 #[derive(Clone, Copy, Debug)]
 pub struct ReservedCapture {
     pub outcome: Outcome,
     pub vector_count: Result<u32, &'static str>,
     pub reserved_required: usize,
-    /// The reserved guard was reached, not a claim of an extra native root read.
     pub reserved_reached: bool,
 }
 
-/// Append the actual reserved owner's sparse vector only after a complete
-/// positive walk. CountryMemory reuses the same-pass reserved root or fault.
-/// Serialization visits every physical country occurrence, so a reserved
-/// country alias in a positive physical slot can be saved.
 #[cfg(test)]
 pub fn walk_with_reserved(
     memory: &impl Memory,
@@ -241,10 +197,6 @@ pub fn walk_with_reserved_buffer(
     walk_with_reserved_visit(memory, base, game_state, output, scratch, &mut |_, _, _| {})
 }
 
-/// Share already-authenticated source roots, including a native empty headline
-/// vector and the reserved root. The visitor owns its independent failure
-/// boundary and cannot turn an auxiliary failure into a headline failure.
-/// It runs only where the caller already schedules this census.
 pub fn walk_with_reserved_visit(
     memory: &impl Memory,
     base: usize,
@@ -293,7 +245,6 @@ pub fn walk_with_reserved_visit(
         written = stored;
         Ok(count)
     })();
-    // A later body failure must retain the whole already known header bound.
     if required == 0 {
         required = known_count.map_or(0, |count| len.saturating_add(count as usize));
     }
@@ -344,8 +295,6 @@ fn reserved_vector_at(
         return Err("reserved country intel vector count or capacity invalid");
     }
     let count = count as u32;
-    // The getter supplies four zero lanes for nonnegative targets at or beyond
-    // count. A valid nonnull zero-count table is empty; a null table is not.
     if count == 0 {
         *known_count = Some(0);
         return Ok((0, 0));
@@ -358,8 +307,6 @@ fn reserved_vector_at(
     if data == 0 || data.checked_add(span).is_none() {
         return Err("reserved country intel data pointer is null or overflows");
     }
-    // Only a valid full header can bound a later failed body copy. Invalid
-    // selecting spans must not force an allocation from an untrusted count.
     *known_count = Some(count);
     Ok((data, count))
 }
@@ -438,7 +385,6 @@ mod tests {
         }
     }
 
-    /// Two countries; the first has three records, the second an empty vector.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0_u8; 0xc000];
         p64(&mut bytes, GS + cgame_state::COUNTRIES, 0x3000);
@@ -489,7 +435,6 @@ mod tests {
         SliceMemory { base: 0, bytes }
     }
 
-    /// A named way to corrupt one synthetic byte span before a walk.
     type Case<'a> = (&'a str, &'a dyn Fn(&mut Vec<u8>));
 
     fn run(bytes: &[u8], rows: usize) -> (Outcome, Vec<country_intel_row::Row>) {
@@ -516,7 +461,6 @@ mod tests {
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 2 });
         assert_eq!(roots, [(1, TABLES[0]), (2, TABLES[1])]);
-        // No reserved object is fabricated from a missing reserved root.
         assert!(result.vector_count.is_err());
     }
 
@@ -571,7 +515,6 @@ mod tests {
     #[test]
     fn nonzero_records_keep_their_native_index_and_all_signed_lanes() {
         let (outcome, rows) = run(&fixture(), 8);
-        // Record 0 is four exact zeros and not the last record: omitted.
         assert_eq!(outcome, Outcome::Rows { len: 2 });
         assert_eq!(
             rows[0],
@@ -595,7 +538,6 @@ mod tests {
                 navy: i64::MAX,
             }
         );
-        // The raid tooltip selects civilian and navy lanes too.
         let mut bytes = fixture();
         lanes(&mut bytes, RECORDS[0], 1, [5, 0, -5, 0]);
         let (_, rows) = run(&bytes, 8);
@@ -650,7 +592,6 @@ mod tests {
         }
     }
 
-    /// One address that refuses to read, leaving every other byte valid.
     struct FailAt<'a> {
         bytes: &'a [u8],
         address: usize,
@@ -712,7 +653,6 @@ mod tests {
 
     #[test]
     fn one_bulk_copy_per_scratch_fill_preserves_native_order() {
-        // A one-record scratch forces three copies and must still keep order.
         let bytes = fixture();
         let mut output = vec![country_intel_row::Row::default(); 8];
         let mut scratch = [0_u8; country_intel_row::STRIDE];
@@ -727,8 +667,6 @@ mod tests {
         );
     }
 
-    /// A zero last record is still kept, so the count stays recoverable; zero
-    /// records before it are omitted, and a nonzero lane anywhere keeps its record.
     #[test]
     fn the_last_record_is_kept_even_when_its_lanes_are_zero() {
         let mut bytes = fixture();
@@ -836,7 +774,7 @@ mod tests {
 
     #[test]
     fn reserved_vector_appends_exact_signed_row_zero_and_final_zero_sentinel() {
-        let bytes = reserved_fixture(5); // Longer than this fixture's country census.
+        let bytes = reserved_fixture(5);
         let positive = run(&bytes, 8).1;
         let (capture, rows) = run_reserved(&bytes, 8);
         assert_eq!(capture.outcome, Outcome::Rows { len: 4 });
@@ -940,8 +878,8 @@ mod tests {
     #[test]
     fn reserved_cached_root_result_is_reused_for_faults_and_physical_aliases() {
         let mut bytes = reserved_fixture(3);
-        p64(&mut bytes, 0x3010, RESERVED_COUNTRY as u64); // Positive physical alias.
-        p64(&mut bytes, RESERVED_COUNTRY, 1); // Cached authentication remains authoritative.
+        p64(&mut bytes, 0x3010, RESERVED_COUNTRY as u64);
+        p64(&mut bytes, RESERVED_COUNTRY, 1);
         let memory = cached_reserved(&bytes);
         let mut rows = vec![country_intel_row::Row::default(); 8];
         let mut scratch = [0_u8; 64];
@@ -1131,9 +1069,6 @@ mod tests {
             assert_eq!(observation.physical_alias(COUNTRIES[0]), None);
             assert_eq!(native_rows(&view, BASE, GS), Some(3));
 
-            // The unrelated positive owner keeps its exact signed rows. The
-            // selected alias retains the failed root instead of recovering it
-            // through a second identity attempt that this memory would allow.
             let reader = ccountry::Reader::new(&view, BASE, GS).unwrap();
             assert_eq!(reader.reserved(), Err(reason));
             assert!(reader.at(1).unwrap().is_some());
@@ -1154,8 +1089,6 @@ mod tests {
             assert_eq!(&rows[..positive.len()], positive.as_slice());
             assert_eq!(source.attempts.get(), 1);
 
-            // A new callback clears the failed selection and may acquire the
-            // now-readable identity. It never promotes the old failed seed.
             let next = cache.prepare(&source, BASE, GS);
             assert_eq!(next.seed_status(), crate::country_memory::SeedStatus::Ready);
             assert!(

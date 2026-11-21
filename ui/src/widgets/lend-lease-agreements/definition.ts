@@ -7,7 +7,6 @@ export const AGREEMENT = { id: 'agreement', label: 'Agreement' };
 export const DIRECTIONS = [{ value: 'sent', label: 'Sent' }, { value: 'received', label: 'Received' }] as const;
 export const SORT_COLUMNS = [{ key: 'delivered', label: 'Delivered' }, { key: 'since', label: 'Since' }, { key: 'last', label: 'Last delivery' },
   { key: 'lost', label: 'Lost' }, { key: 'partner', label: 'Countries' }] as const;
-// Since hides as the table narrows; the sorted column never does, so the default sorts by Delivered.
 export const DEFAULT_SORT = { column: 'delivered', direction: 'descending' } as const;
 
 export const OPTIONS: readonly OptionField[] = [

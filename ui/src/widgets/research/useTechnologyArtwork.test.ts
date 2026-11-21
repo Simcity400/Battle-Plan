@@ -50,8 +50,6 @@ test('technology artwork reports failed batches without losing successful text a
   };
   const host = globalThis as typeof globalThis & { __technologyArtworkHooks?: typeof fixture };
   host.__technologyArtworkHooks = fixture;
-  // Only React dispatch is synthetic. The actual artwork hook, dated stores,
-  // request queues, envelope checks and reply validation run together.
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'technology-artwork-hooks-fixture', enforce: 'pre',
       transform(source, id) {

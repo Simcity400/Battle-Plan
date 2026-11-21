@@ -1,9 +1,3 @@
-//! Passive first-edge ETA operands for class-13 units.
-//!
-//! Transfer or sea edges use transport speed; land edges add current
-//! variant stat 0x3E to the directed rail contribution. The land branch
-//! applies outer scale, then the fresh supply factor. No client duration
-//! or path cache is read, and no engine getter is called.
 
 use engine_sites::Rva;
 use super::{EtaOperands, FreshEtaObservations, Row, at, key};
@@ -14,13 +8,10 @@ use crate::{
 };
 use std::cell::OnceCell;
 
-// The retained variant reference is on the gun.
 const VARIANT: usize = 0x338;
-// Independent supply storage, separate from the supply consumer's received ratio.
 const SUPPLY_CAPACITY: usize = 0x400;
 const SUPPLY_REMAINING: usize = 0x410;
 const OUT_OF_SUPPLY_SPEED_RVA: Rva = Rva(0x033e_36d0);
-// Signed fixed5 speed globals.
 const LAND_SCALE_RVA: Rva = Rva(0x033e_10c8);
 const NAVAL_SCALE_RVA: Rva = Rva(0x033e_2cc0);
 const RAIL_MAX_RVA: Rva = Rva(0x033e_0ae0);
@@ -57,7 +48,6 @@ fn variant(
     registry: &mut HeaderResolver,
 ) -> Result<Option<usize>, &'static str> {
     let handle = field::<u64>(memory, gun, VARIANT)?;
-    // An absent or deleted reference contributes zero.
     let Some(variant) = registry.resolve(memory, base, handle)? else {
         return Ok(None);
     };
@@ -123,8 +113,6 @@ fn supply_factor(
         0
     } else {
         let remaining = field::<i64>(memory, gun, SUPPLY_REMAINING)?;
-        // Native exceptional numerators take the full-supply branch rather
-        // than the fraction helper's positive 0xffffffff sentinel.
         if (remaining as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
             fixed5::SCALE
         } else {
@@ -215,7 +203,6 @@ pub(super) fn capture(
     let from_definition = definition(memory, from, row.province)?;
     let from_land =
         field::<u8>(memory, from_definition, province_definition::TERRAIN_FLAGS)? & 1 != 0;
-    // The terrain predicate stops at a nonland departure.
     let to_land = from_land
         && field::<u8>(
             memory,

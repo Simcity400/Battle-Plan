@@ -9,9 +9,6 @@ import { COUNTS } from './producedView.ts';
 import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
 
-/** The shared race settings without what this widget does not draw: one country's
- * mix (the breakdown shows a country) and bars split by group (one type at a time,
- * or IC, which the breakdown splits). */
 const RACE_OPTIONS: readonly OptionField[] = partsRaceOptions('equipment').flatMap((field): OptionField[] => {
   if (field.key === 'split') return [];
   if (field.key === 'show') return [breakdownOption([{ id: 'breakdown', label: 'Equipment types' }], 'Equipment produced')];

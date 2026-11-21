@@ -37,7 +37,6 @@ fn tooltip_uses_native_bake_and_ignores_authored_height() {
     assert_eq!(layout.parts[0].shading.time, 5.0);
 }
 
-/// Prewrap enables indentation before the ordinary text-sprite bake.
 #[test]
 fn tooltip_bake_keeps_soft_wrap_indent_and_hard_line_start() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -206,11 +205,9 @@ fn resolved_flag_text_reaches_native_walk_and_tooltip_only_when_bound() {
 }
 
 thread_local! {
-    /// The view's graphics clock `Time` of the test's frames, one per test thread.
     static TIME: Cell<f32> = const { Cell::new(0.0) };
 }
 
-/// The test's next frame, `seconds` after the last: the view's one clock advanced.
 fn dt(seconds: f32) -> Tick {
     let time = TIME.with(|time| {
         time.set(time.get() + seconds);
@@ -219,7 +216,6 @@ fn dt(seconds: f32) -> Tick {
     Tick { time, dt: seconds }
 }
 
-/// One sheet for every sprite.
 struct One(SpriteSheet);
 
 impl Sheets for One {
@@ -241,7 +237,6 @@ fn one() -> One {
     One(even_sheet())
 }
 
-/// `GFX_even`'s sheet: one 20 x 10 frame.
 fn even_sheet() -> SpriteSheet {
     SpriteSheet {
         name: "GFX_even".into(),
@@ -251,12 +246,10 @@ fn even_sheet() -> SpriteSheet {
     }
 }
 
-/// The window `w` holding `body`, and the rest of the file's templates.
 fn gui(body: &str) -> native::Gui {
     read(format!("guiTypes = {{ containerWindowType = {{ name = \"w\" {body} }} }}\n").as_bytes())
 }
 
-/// Every refusal's text, for matching.
 fn reasons(refusals: &[Refusal]) -> String {
     refusals
         .iter()
@@ -265,7 +258,6 @@ fn reasons(refusals: &[Refusal]) -> String {
         .join("; ")
 }
 
-/// A visibility request the code makes on `element`, on its flags as its code leaves them.
 fn request(bindings: &mut Bindings, element: &Element, change: impl FnOnce(&mut lifecycle::Shown)) {
     let bound = bindings.bind(element);
     let mut shown = bound
@@ -318,7 +310,6 @@ fn rect(part: &PartKind) -> Rect {
     }
 }
 
-/// A sprite part's frame index, from its offset along the strip.
 fn frame_of(part: &PartKind) -> i32 {
     match part {
         PartKind::Sprite { uv, offsets, .. } => {
@@ -348,8 +339,6 @@ fn size(width: &str, height: &str, extra: &str) -> native::Size {
     .size
 }
 
-/// Percentages of the parent, negative lengths from its far edge past the position, `%%` less
-/// the position, bounds only once assigned, and the aspect refit.
 #[test]
 fn sizes_evaluate_against_the_parent() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -381,13 +370,10 @@ fn sizes_evaluate_against_the_parent() {
         ),
         Ok([60, 30])
     );
-    // A percentage, or a length from the far edge, needs the parent's size.
     assert!(evaluate(&size("50%", "4", ""), None).is_err());
     assert!(evaluate(&size("-5", "4", ""), None).is_err());
 }
 
-/// The orientation from the parent's size, the origo from the window's own, halves truncated
-/// toward zero.
 #[test]
 fn anchors_halve_toward_zero() {
     use Orientation::*;
@@ -418,8 +404,6 @@ fn anchors_halve_toward_zero() {
     }
 }
 
-/// A child window is placed by its evaluated position and anchor, its children in its
-/// content, which its margins inset.
 #[test]
 fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -431,16 +415,13 @@ fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
          margin = { left = 2 top = 10% } \
          iconType = { name = \"i\" spriteType = \"GFX_even\" } }",
     );
-    // (3 + 50 - 10, 4 + 25 - 5), then the margin (2, 1).
     assert_eq!(rect(&parts[0]), [45.0, 25.0, 20.0, 10.0]);
 }
 
-/// A root the game's code places refuses a size it cannot evaluate without a parent.
 #[test]
 fn a_root_is_placed_as_the_code_places_it() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // A root is laid out from its own top-left; a size in its parent needs the parent's.
     assert!(laid("origo = center size = { width = 4 height = 4 }", None).is_ok());
     let refused = laid("size = { width = 50% height = 4 }", None).unwrap_err();
     assert_eq!(refused[0].kind, RefusalKind::NoParent);
@@ -451,7 +432,6 @@ fn a_root_is_placed_as_the_code_places_it() {
     );
     let window = gui.template("w").unwrap();
     let viewport = [101, 51];
-    // Constructed: (3 + 50 - 10, 4 + 25 - 5).
     assert_eq!(
         root_origin(window, viewport, RootPlacement::Constructed),
         Ok([43, 24])
@@ -466,8 +446,6 @@ fn a_root_is_placed_as_the_code_places_it() {
     );
 }
 
-/// An icon: its position plus its orientation's offset from the window, then centred on it
-/// (less half its scaled, truncated extent) or on its sprite's anchor, which wins.
 #[test]
 fn an_icon_is_placed_as_the_game_places_it() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -484,19 +462,13 @@ fn an_icon_is_placed_as_the_game_places_it() {
          iconType = { name = \"e\" spriteType = \"GFX_bar\" orientation = center \
          centerPosition = yes }",
     );
-    // (1 + 16, -30 + 21) less (15 / 2, 9 / 2).
     assert_eq!(rect(&parts[0]), [10.0, -13.0, 15.0, 9.0]);
-    // Less the anchor, truncated.
     assert_eq!(rect(&parts[1]), [6.0, 8.0, 20.0, 10.0]);
-    // Half of the truncated 7 x 4 extent, the 7.5 x 4.5 quad up from its truncated height.
     assert_eq!(rect(&parts[2]), [-3.0, -2.5, 7.5, 4.5]);
-    // The frame lies one pixel below its supplied place on Direct3D 11.
     assert_eq!(rect(&parts[3]), [5.0, 6.0, 154.0, 14.0]);
     assert_eq!(rect(&parts[4]), [-61.0, 15.0, 154.0, 14.0]);
 }
 
-/// Queried extent truncates the frame size for placing and centring, while drawing retains the
-/// fractional frame. Vertical strips divide height and step down.
 #[test]
 fn the_queried_extent_and_the_drawn_frame_differ() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -511,13 +483,10 @@ fn the_queried_extent_and_the_drawn_frame_differ() {
          position = { x = 10 y = 10 } frame = 2 } \
          iconType = { name = \"b\" spriteType = \"GFX_column\" frame = 3 }",
     );
-    // Centred on the truncated 3 x 4: (10 - 1, 10 - 2); 10/3 wide.
     let [x, y, w, h] = rect(&parts[0]);
     assert_eq!([x, y, h], [9.0, 8.0, 4.0]);
     assert!((w - 10.0 / 3.0).abs() < 1e-6);
     assert_eq!(frame_of(&parts[0]), 1);
-    // Three 6 x 4 frames down a 6 x 12 texture: extent 6 x 4, the third frame a third
-    // Down.
     let PartKind::Sprite {
         geometry,
         uv,
@@ -532,7 +501,6 @@ fn the_queried_extent_and_the_drawn_frame_differ() {
     assert!((uv[3] - 1.0 / 3.0).abs() < 1e-6);
     assert_eq!(offsets[0], 0.0);
     assert!((offsets[1] - 2.0 / 3.0).abs() < 1e-6);
-    // What the code queries: the extent times the scale, truncated, with its bound sprite.
     let gui = gui("iconType = { name = \"bar\" spriteType = \"GFX_even\" scale = 0.69 }");
     let window = gui.template("w").unwrap();
     let bar = window.find(Kind::Icon, "bar").unwrap();
@@ -544,8 +512,6 @@ fn the_queried_extent_and_the_drawn_frame_differ() {
     );
 }
 
-/// Frames use an icon's explicit one-based frame or a button's state. Beyond the strip,
-/// offsets continue and sampler addressing determines the sample.
 #[test]
 fn frames_follow_the_sprite_draw() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -562,8 +528,6 @@ fn frames_follow_the_sprite_draw() {
         authored.iter().map(frame_of).collect::<Vec<_>>(),
         [0, 2, 0, 0, 1, 4]
     );
-    // Drawn past the strip: the quad's coordinates are the first frame's, moved by the
-    // offset in the pass, where the effect's clamp reads the strip's edge.
     let layout = laid(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" frame = 5 }",
         None,
@@ -578,8 +542,6 @@ fn frames_follow_the_sprite_draw() {
     assert_eq!(exact.offsets[0], 4.0 * du);
 }
 
-/// A custom effect is refused as one and counted, every refusal reported; an icon's text
-/// sprite, made with no font, is never baked and draws nothing.
 #[test]
 fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -591,7 +553,6 @@ fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
         None,
     )
     .unwrap_err();
-    // Every refusal is reported, not only the first.
     assert_eq!(refused.len(), 2, "{}", reasons(&refused));
     assert_eq!(refused[0].kind, RefusalKind::CustomEffect);
     let mut counts = Counts::default();
@@ -600,8 +561,6 @@ fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
     assert!(parts("iconType = { name = \"a\" spriteType = \"GFX_tile\" }").is_empty());
 }
 
-/// A cornered background is sized during relayout, split into corners, repeated edges and a
-/// stretched centre. Window opacity replaces the tile's own alpha.
 #[test]
 fn a_cornered_tile_slices_its_texture() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -617,18 +576,14 @@ fn a_cornered_tile_slices_its_texture() {
     let PartKind::Tiles { ref quads, .. } = layout.parts[0].kind else {
         panic!("not a tile");
     };
-    // 38 x 27: 4 corners, 7 whole edges and a remainder across, 4 and a remainder down.
     assert_eq!(quads.len(), 4 + 2 * 8 + 2 * 5 + 1);
     let third = 4.0f32 / 12.0;
     assert_eq!(quads[0], ([2.0, 3.0, 4.0, 4.0], [0.0, 0.0, third, third]));
-    // The remainder across ends 2 texels past the border: (2 + 4) / 12.
     assert_eq!(quads[18].0, [2.0 + 32.0, 3.0, 2.0, 4.0]);
     assert_eq!(quads[18].1[2], 6.0 / 12.0);
     assert_eq!(layout.parts[0].color[3], 0.5);
 }
 
-/// A plain tile repeats its texture in whole spans over its size; a resizeable sprite draws
-/// nothing.
 #[test]
 fn tiles_repeat_and_resizeables_draw_nothing() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -644,8 +599,6 @@ fn tiles_repeat_and_resizeables_draw_nothing() {
     assert_eq!(quads[0], ([0.0, -6.0, 25.0, 10.0], [0.0, 0.0, 2.0, 2.0]));
 }
 
-/// A frame-animated sprite draws its clock's frame and blend; one that plays on show needs
-/// its clock.
 #[test]
 fn a_frame_animated_sprite_follows_its_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -658,23 +611,18 @@ fn a_frame_animated_sprite_follows_its_clock() {
     let resources = fixture();
     let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
     instance.gui_show(window, window).unwrap();
-    // Not ticked yet: as its constructor leaves it, frame 1 at no time.
     let laid = instance.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(frame_of(&laid.parts[0].kind), 0);
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance.tick(window, &resources, dt(0.6)).unwrap();
     let layout = instance.layout(window, &resources, None).unwrap().unwrap();
-    // Frame 2 of four (zero-based 1), 0.1 s into its half-second.
     assert_eq!(frame_of(&layout.parts[0].kind), 1);
     assert!((layout.parts[0].shading.animation - 0.2).abs() < 1e-5);
-    // Past the duration it wraps.
     instance.tick(window, &resources, dt(1.6)).unwrap();
     let layout = instance.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(frame_of(&layout.parts[0].kind), 0);
 }
 
-/// A masked shield: the flag cut by the mask, centred in the overlay, drawn before the
-/// overlay; both a pixel below their place.
 #[test]
 fn a_masked_shield_draws_its_flag_under_its_overlay() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -711,9 +659,6 @@ fn a_masked_shield_draws_its_flag_under_its_overlay() {
     assert_eq!(exact.offsets, [0.5, 0.25, 0.125, 0.25]);
 }
 
-/// A masked shield overlay writes zero Time and AnimationTime in b0 bytes 96..104. The same
-/// compiled program on an ordinary icon receives the view clock. Constants reach both paths
-/// through ordinary bindings.
 #[test]
 fn a_shield_overlay_draws_with_zero_clocks() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -764,8 +709,6 @@ fn a_shield_overlay_draws_with_zero_clocks() {
     assert_eq!(clocks(icon), [now.time, first.time]);
 }
 
-/// An empty or unknown sprite draws the fallback texture; with no fallback defined the game
-/// makes no drawable, which is noted and counted per element.
 #[test]
 fn an_unknown_sprite_draws_the_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -795,8 +738,6 @@ fn an_unknown_sprite_draws_the_fallback() {
     assert_eq!(counts.0["missing_fallback_sprite"], 2);
 }
 
-/// What the code binds replaces what is authored; a Show does not show what `hide` keeps
-/// hidden, and a Hide hides.
 #[test]
 fn bound_state_overrides_the_authored() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -832,9 +773,6 @@ fn bound_state_overrides_the_authored() {
     assert!(matches!(layout.parts[1].kind, PartKind::Progress { state, .. } if state == 0.4));
 }
 
-/// Button replacement resets rotation and orientation, centres on the unscaled extent and sets
-/// a frame of at least one. Icon replacement resets rotation and frame; the simple-button
-/// setter preserves both.
 #[test]
 fn sprite_setters_rebuild_as_the_game_does() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -859,12 +797,9 @@ fn sprite_setters_rebuild_as_the_game_does() {
         PartKind::Sprite { geometry, .. } => geometry,
         _ => panic!("not a sprite"),
     };
-    // An undefined name keeps the authored sprite, not the fallback.
     let kept = with(SpriteSetter::ButtonStandard, "GFX_undefined");
     assert!(matches!(&kept[0].kind, PartKind::Sprite { sprite, .. } if sprite == b"GFX_odd"));
     assert_eq!(geometry(&kept[0]).rotation, 1.0);
-    // GFX_even 20 x 10 at the raw (5, 5), less half the unscaled 20 x 10, scaled by 2 up
-    // from its scaled height.
     let standard = with(SpriteSetter::ButtonStandard, "GFX_even");
     let rebuilt = geometry(&standard[0]);
     assert_eq!(rebuilt.rotation, 0.0);
@@ -875,13 +810,10 @@ fn sprite_setters_rebuild_as_the_game_does() {
     assert_eq!(frame_of(&icon[1].kind), 0);
     let button = with(SpriteSetter::Button, "GFX_even");
     assert_eq!(geometry(&button[0]).rotation, 1.0);
-    // Orientation and scaled centring as construction: (5 + 50 - 20, 5 + 50 - 10).
     assert_eq!(geometry(&button[0]).rect[0], 35.0);
     assert_eq!(frame_of(&button[1].kind), 2);
 }
 
-/// Returns while the hide bit is set; the code can clear the bit and then show, and a bit set
-/// after a Show leaves the element shown.
 #[test]
 fn show_requests_and_the_hide_bit_are_separate() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -890,7 +822,6 @@ fn show_requests_and_the_hide_bit_are_separate() {
     let window = gui.template("w").unwrap();
     let hidden = window.find(Kind::Icon, "h").unwrap();
     let shown = window.find(Kind::Icon, "s").unwrap();
-    // The requests in order, from the element's constructed flags.
     #[derive(Clone, Copy)]
     enum Request {
         Show,
@@ -924,9 +855,6 @@ fn show_requests_and_the_hide_bit_are_separate() {
     assert!(after(shown, &[Hide, Show, HideFlag(true)]));
 }
 
-/// A button's states: Disable draws its technique on frame 4 when the strip has it (the
-/// first otherwise), and its own frame above 0 wins; with no sprite and no font the game
-/// reads an uninitialised drawable; a text without a font is dropped.
 #[test]
 fn a_button_draws_its_state() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -956,14 +884,11 @@ fn a_button_draws_its_state() {
         parts("buttonType = { name = \"b\" spriteType = \"GFX_odd\" text = \"KEY\" }").len(),
         1
     );
-    // A font and no sprite: the fallback, and its (empty) text draws nothing.
     let fallback = parts("buttonType = { name = \"b\" buttonFont = \"Main_14\" }");
     assert!(matches!(&fallback[0], PartKind::Sprite { sprite, .. } if sprite == FALLBACK_SPRITE));
     assert_eq!(fallback.len(), 1);
 }
 
-/// A technique the effect lacks is the null record: the previous draw's program and
-/// samplers, blending off; with nothing drawn before it, refused as the unknown input it is.
 #[test]
 fn a_missing_technique_keeps_the_previous_program() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1008,9 +933,6 @@ fn a_missing_technique_keeps_the_previous_program() {
     assert_eq!(second.blend, Blend::Off);
 }
 
-/// A button's text is a text object at its unscaled, uncentred position, the drawable's
-/// frame less the border (case a), or alone in its `size` with its orientation applied twice
-/// (case c).
 #[test]
 fn a_button_lays_out_its_text() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1031,9 +953,6 @@ fn a_button_lays_out_its_text() {
             })
             .unwrap()
     };
-    // GFX_even is 20 x 10: the box 18 x 8 from (5, 5), single-line, so cut to "M" in
-    // 18 - 2 * 2, centred both ways by default: x = 5 + 2 + (18 / 2 - 7 / 2),
-    // y = 5 + 2 + ((8 - 2) - 14) / 2.
     let a = glyphs(
         "spriteType = \"GFX_even\" buttonFont = \"Main_14\" buttonText = \"MOD_MISSING\" \
          position = { x = 5 y = 5 } borderSize = { x = 2 y = 2 } centerPosition = yes \
@@ -1041,8 +960,6 @@ fn a_button_lays_out_its_text() {
     );
     assert_eq!(a[0].at, [13.0, 3.0]);
     assert_eq!(a.len(), 1);
-    // The box at the window's centre (50, 30), and the font draw's centred orientation from
-    // there again: (50 + 100 / 2, 30 + 60 / 2).
     let c = glyphs(
         "font = \"Main_14\" text = \"MOD_KEY\" size = { x = 40 y = 20 } \
          orientation = center format = left vertical_alignment = top",
@@ -1050,8 +967,6 @@ fn a_button_lays_out_its_text() {
     assert_eq!(c[0].at, [100.0, 60.0]);
 }
 
-/// `parent` gives an empty sprite its parent's, through a chain; a missing parent and a
-/// chain without a sprite are what the game cannot finish.
 #[test]
 fn a_button_takes_its_sprite_from_its_parent() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1077,8 +992,6 @@ fn a_button_takes_its_sprite_from_its_parent() {
             b"GFX_odd".to_vec()
         ]
     );
-    // The reader's post-load pass refuses what the game does there: a missing parent crashes
-    // it, a cycle hangs it.
     for (body, what) in [
         (
             "buttonType = { name = \"b\" parent = \"nobody\" }",
@@ -1105,9 +1018,6 @@ fn a_button_takes_its_sprite_from_its_parent() {
     }
 }
 
-/// A check box: its sprite at its position plus the orientation offset, unscaled and
-/// uncentred; checked draws Down (frame 2) on its drawable's effect clock from the check,
-/// which a layout with no instance does not have; a window mid-fade hides it.
 #[test]
 fn a_check_box_draws_its_state() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1147,10 +1057,6 @@ fn a_check_box_draws_its_state() {
     assert!(faded.parts.is_empty());
 }
 
-/// The pointer: the topmost button under it draws Over (frame 3), restarting its effect clock
-/// unless its instance ticked it in that state; a pressed one Down wherever the pointer is; a
-/// control the map's hit test names takes Over without a hit list; a sprite that passes the
-/// pointer through is never hit, and one that tests alpha needs its texels.
 #[test]
 fn the_pointer_hovers_and_presses_buttons() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1193,13 +1099,10 @@ fn the_pointer_hovers_and_presses_buttons() {
     assert_eq!(hovered[0], (0, shading(&effect, "Up", 0.0)));
     assert_eq!(hovered[1], (2, shading(&effect, "Over", 0.0)));
     assert_eq!(hovered[2], (0, shading(&effect, "Up", 0.0)));
-    // Its instance ticked it Over: the clock runs from that tick.
     let ticked = states(pointer.clone(), Some(("high", 3)));
     assert_eq!(ticked[1], (2, shading(&effect, "Over", 1.0)));
-    // Ticked in another state, the change restarts it.
     let changed = states(pointer.clone(), Some(("high", 2)));
     assert_eq!(changed[1], (2, shading(&effect, "Over", 0.0)));
-    // Pressed on `away`, held while the pointer is elsewhere: `high` takes no Over meanwhile.
     let pressed = states(
         Pointer {
             pressed: Some("w.away".into()),
@@ -1209,7 +1112,6 @@ fn the_pointer_hovers_and_presses_buttons() {
     );
     assert_eq!(pressed[3], (1, shading(&effect, "Down", 1.0)));
     assert_eq!(pressed[1], (0, shading(&effect, "Up", 0.0)));
-    // The map's hit test names `away`; nothing under `at` is hit.
     let named = states(
         Pointer {
             at: [f32::NAN; 2],
@@ -1220,7 +1122,6 @@ fn the_pointer_hovers_and_presses_buttons() {
     );
     assert_eq!(named[1], (0, shading(&effect, "Up", 0.0)));
     assert_eq!(named[3], (2, shading(&effect, "Over", 0.0)));
-    // Alpha-tested sprites need their texels.
     let gui = gui("buttonType = { name = \"a\" spriteType = \"GFX_alpha\" }");
     let bindings = Bindings {
         pointer: Some(Pointer {
@@ -1232,8 +1133,6 @@ fn the_pointer_hovers_and_presses_buttons() {
     assert!(layout(gui.template("w").unwrap(), None, &fixture(), &bindings).is_err());
 }
 
-/// Map icons have no hit list. Without a bound pointer, their buttons remain unhovered and
-/// unpressed.
 #[test]
 fn a_map_icon_takes_no_pointer() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1250,10 +1149,7 @@ fn a_map_icon_takes_no_pointer() {
     );
 }
 
-/// Rotation preserves floating corners at every angle. The batch receives those corners and
-/// the whole-pixel clip as its scissor.
 #[test]
-// 1.5708 is the angle the files author, not the constant.
 #[allow(clippy::approx_constant)]
 fn turns_keep_their_floating_corners() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1273,8 +1169,6 @@ fn turns_keep_their_floating_corners() {
     assert_eq!(geometry.pivot, [24.0, 13.0]);
     let mut batch = Batch::default();
     draw(&layout, [100, 200], &one(), &mut batch).unwrap();
-    // Counter-clockwise about (24, 13): the top-left (14, 8) lands at (19, 23) and the
-    // Texture's top-right at (19, 3), within float error, not snapped.
     let exact = batch.quads[0].exact.as_ref().unwrap();
     let (sin, cos) = 1.5708f32.sin_cos();
     let turn = |[x, y]: [f32; 2]| {
@@ -1289,17 +1183,13 @@ fn turns_keep_their_floating_corners() {
     assert!(
         (exact.corners[0][0] - 119.0).abs() < 1e-3 && (exact.corners[0][1] - 223.0).abs() < 1e-3
     );
-    // The clip is the window's whole-pixel content, moved by the origin.
     assert_eq!(exact.scissor, Some([100, 200, 105, 205]));
-    // Any other turn is clipped the same way.
     assert_eq!(
         batch.quads[1].exact.as_ref().unwrap().scissor,
         Some([100, 200, 105, 205])
     );
 }
 
-/// A counter bar fill moves with progress, stretches about its height centre and rotates. The
-/// quad retains fractional corners.
 #[test]
 fn a_stretched_bar_keeps_its_geometry() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1319,15 +1209,10 @@ fn a_stretched_bar_keeps_its_geometry() {
     let PartKind::Sprite { geometry, .. } = layout.parts[0].kind else {
         panic!("not a sprite");
     };
-    // 17 tall from the bottom at 19 + 17, 16 of it kept about the centre.
     assert_eq!(geometry.rect, [21.0, 19.5, 3.0, 16.0]);
     assert_eq!(geometry.pivot, [22.5, 27.5]);
 }
 
-/// A progress bar: its quad a pixel below its place, turned about its own bottom-left; `u`
-/// along it when horizontal, up it when not; its colours times the element's; the value
-/// divided by `steps` in `f32`, negative values kept and zero steps dividing by zero; its
-/// own scale and stretch unused; no button shading.
 #[test]
 fn a_progress_bar_runs_its_own_pipeline() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1349,7 +1234,6 @@ fn a_progress_bar_runs_its_own_pipeline() {
     assert_eq!(geometry.pivot, [0.0, 14.0]);
     assert_eq!(uv[3], [0.0, 0.0]);
     assert_eq!(uv[1], [1.0, 1.0]);
-    // The icon's own frame (the constructor's 1) is the value, over the 100 steps.
     assert_eq!(*state, 1.0f32 / 100.0);
     assert_eq!(colors[1], [0.0, 0.0, 1.0, 0.5]);
     assert!(!textured);
@@ -1370,7 +1254,6 @@ fn a_progress_bar_runs_its_own_pipeline() {
     };
     let negative = bound(-30, "GFX_bar");
     assert!(matches!(negative.kind, PartKind::Progress { state, .. } if state == -0.3));
-    // The bar's technique, not the button's state.
     assert_eq!(
         negative.shading,
         shading(&synthetic::progress(), "Color", 0.0)
@@ -1379,23 +1262,17 @@ fn a_progress_bar_runs_its_own_pipeline() {
         panic!("not a progress bar");
     };
     assert_eq!(colors[0], [0.5, 0.0, 0.0, 0.5]);
-    // Zero steps divide by zero.
     let upright = bound(7, "GFX_upright_bar");
     let PartKind::Progress { state, uv, .. } = upright.kind else {
         panic!("not a progress bar");
     };
-    // Clamps 7 to the 0 steps first: 0 / 0.
     assert!(state.is_nan());
-    // Not horizontal: `u` runs from the bottom up.
     assert_eq!(uv, [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]);
     assert_eq!(
         upright.shading,
         shading(&synthetic::progress(), "Texture", 0.0)
     );
-    // Clamped above to `steps`.
     assert!(matches!(bound(400, "GFX_bar").kind, PartKind::Progress { state, .. } if state == 1.0));
-    // A code-written flip replaces authored rotation, turns the bar about its origin and binds
-    // a move by drawable width and negative height.
     for kind in ["iconType", "buttonType"] {
         let layout = laid_bound(
             &format!(
@@ -1419,7 +1296,6 @@ fn a_progress_bar_runs_its_own_pipeline() {
         assert_eq!(geometry.rect, [164.0, 27.0, 154.0, 14.0]);
         assert_eq!(geometry.pivot, [164.0, 40.0]);
     }
-    // Its textures reach the pass: slot 0 and slot 1, the state and colours as constants.
     let layout = laid(
         "iconType = { name = \"p\" spriteType = \"GFX_upright_bar\" }",
         None,
@@ -1433,7 +1309,6 @@ fn a_progress_bar_runs_its_own_pipeline() {
     assert_eq!(exact.second, Some(3));
 }
 
-/// The glyphs a text box draws: codepoint, top-left, colour.
 fn text_glyphs(body: &str, text: &str) -> Result<Vec<DrawnGlyph>, Refusals> {
     let layout = laid_bound(
         &format!("size = {{ width = 100 height = 50 }} instantTextBoxType = {{ name = \"t\" font = \"Main_14\" {body} }}"),
@@ -1453,16 +1328,12 @@ fn text_at(body: &str, text: &str) -> Result<[f32; 2], Refusals> {
     Ok(text_glyphs(body, text)?[0].at)
 }
 
-/// Text alignment uses whole pixels: left starts at the border, centre in the box, right at
-/// the borderless edge, and vertical alignment within maxHeight less the border. Absent
-/// MaxWidth gives 200; centred orientation uses the parent centre.
 #[test]
 fn text_aligns_as_the_bitmap_font_draws_it() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let box_ =
         "position = { x = 10 y = 20 } maxWidth = 40 maxHeight = 30 borderSize = { x = 2 y = 3 }";
-    // "ab" is 14 wide, 14 tall.
     assert_eq!(text_at(box_, "ab"), Ok([12.0, 23.0]));
     assert_eq!(
         text_at(&format!("{box_} format = centre"), "ab"),
@@ -1472,7 +1343,6 @@ fn text_aligns_as_the_bitmap_font_draws_it() {
         text_at(&format!("{box_} format = right"), "ab"),
         Ok([36.0, 23.0])
     );
-    // ((30 - 3) - 14) / 2 in C division.
     assert_eq!(
         text_at(&format!("{box_} vertical_alignment = center"), "ab"),
         Ok([12.0, 29.0])
@@ -1485,7 +1355,6 @@ fn text_aligns_as_the_bitmap_font_draws_it() {
         text_at("orientation = center format = center", "ab"),
         Ok([143.0, 25.0])
     );
-    // Right in a centred orientation adds the border and half the parent.
     assert_eq!(
         text_at(
             &format!("{box_} orientation = center_up format = right"),
@@ -1495,8 +1364,6 @@ fn text_aligns_as_the_bitmap_font_draws_it() {
     );
 }
 
-/// Text wraps at the box less its border, a word too wide breaking inside it; a single-line
-/// box cuts at its width and truncates with three dots.
 #[test]
 fn text_wraps_and_cuts_as_the_game_does() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1514,21 +1381,16 @@ fn text_wraps_and_cuts_as_the_game_does() {
             ('c', [12.0, 34.0])
         ]
     );
-    // Single-line (and truncating, the default): "abcd" in 26 keeps "abc", 5 short of
-    // three 7-wide dots, which take its three places.
     let cut = text_glyphs(
         "maxWidth = 30 borderSize = { x = 2 y = 0 } multiline = no",
         "abcd",
     )
     .unwrap();
     assert_eq!(cut.iter().map(|glyph| glyph.ch).collect::<String>(), "...");
-    // Two codepoints or fewer take no dots.
     let short = text_glyphs(&format!("{box_} multiline = no"), "abcd").unwrap();
     assert_eq!(short.iter().map(|glyph| glyph.ch).collect::<String>(), "ab");
 }
 
-/// Colours: the font's own (`color`), a `text_color_code`'s, and the special sequences'
-/// stack; an inline icon is its sprite's frame at the pen.
 #[test]
 fn text_colours_follow_the_codes() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1554,8 +1416,6 @@ fn text_colours_follow_the_codes() {
     else {
         panic!("the icon first");
     };
-    // "abc " is 3 * 7 + the space's 7 before the icon: the texture's 45 over 3 frames, the
-    // first frame's raw coordinates, drawn with the text's technique.
     assert_eq!(
         (sprite.as_slice(), rect),
         (b"GFX_odd".as_slice(), [28.0, 3.0, 15.0, 9.0])
@@ -1572,13 +1432,9 @@ fn text_colours_follow_the_codes() {
     assert_eq!(colours[0], ('a', own));
     assert_eq!(colours[1], ('b', [1.0, 0.0, 0.0, 1.0]));
     assert_eq!(colours[2], ('c', own));
-    // The icon's 15 advance after it.
     assert_eq!(glyphs[3].at[0], 28.0 + 15.0);
 }
 
-/// A text's flag is the caller's cell for the tag, 10 by 7 at the pen, drawn with the text's
-/// technique; a cell that draws nothing is skipped and a tag the recording cannot resolve is
-/// refused by name; an undefined inline icon is counted.
 #[test]
 fn text_flags_and_icons_resolve_through_the_caller() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1609,7 +1465,6 @@ fn text_flags_and_icons_resolve_through_the_caller() {
     let PartKind::Text { ref glyphs, .. } = layout.parts[1].kind else {
         panic!("not a text");
     };
-    // Two flags' 24, then `a`; the undefined icon takes nothing.
     assert_eq!(glyphs[0].at[0], 24.0);
     assert_eq!(glyphs[1].at[0], 31.0);
     assert_eq!(
@@ -1628,9 +1483,6 @@ fn text_flags_and_icons_resolve_through_the_caller() {
     assert_eq!(error[0].kind, RefusalKind::MissingInput);
 }
 
-/// Submits its glyph vertices past `0xBFF` (512 glyphs of six) and draws an inline icon at
-/// once: an icon after 511 glyphs lies under all of them, one after 512 covers the first batch
-/// and lies under the rest.
 #[test]
 fn long_text_flushes_its_glyphs_before_later_icons() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1662,8 +1514,6 @@ fn long_text_flushes_its_glyphs_before_later_icons() {
     assert_eq!(kinds(512), ["text 512", "icon", "text 1"]);
 }
 
-/// A missing font texture keeps a zero-sized page and binds the null texture; layout continues
-/// and diagnoses the glyph.
 #[test]
 fn a_null_font_page_draws_nothing_and_keeps_the_window() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1690,8 +1540,6 @@ fn a_null_font_page_draws_nothing_and_keeps_the_window() {
     assert_eq!(counts.0.get("null_font_page"), Some(&1));
 }
 
-/// What the reader refused of a sprite's or a font's declaration reaches the layout as a
-/// named, counted refusal, whether the sprite is drawn or only measured.
 #[test]
 fn reader_refusals_reach_the_layout() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1716,7 +1564,6 @@ fn reader_refusals_reach_the_layout() {
             .iter()
             .any(|refusal| refusal.detail.contains("a font refusal"))
     );
-    // A scrollbar part measured, not drawn, is refused the same way.
     let document = read(
         format!(
             "guiTypes = {{ {SCROLLBAR} containerWindowType = {{ name = \"w\" \
@@ -1738,10 +1585,6 @@ fn reader_refusals_reach_the_layout() {
     );
 }
 
-/// An unbound text box shows its authored key through the content's localisation the entry with
-/// its substitutions, the key itself when no layer defines it, nothing for an empty key;
-/// scripted text, evaluated from game state the recording does not hold, is refused as a
-/// missing input.
 #[test]
 fn authored_text_shows_its_localisation() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1757,13 +1600,10 @@ fn authored_text_shows_its_localisation() {
         })
         .collect::<Vec<String>>()
     };
-    // The space draws no quad.
     assert_eq!(shown("MOD_KEY"), ["abc"]);
     assert_eq!(shown("MOD_MISSING"), ["MOD_MISSING"]);
     assert!(shown("").is_empty());
-    // Text setters do not evaluate scripted text; brackets draw as glyphs.
     assert_eq!(shown("MOD_SCRIPTED"), ["[GetDateText]"]);
-    // Undecodable text draws nothing and is diagnosed.
     let gui = read(
         b"guiTypes = { containerWindowType = { name = \"w\" \
           instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"a\x80b\" } } }",
@@ -1783,23 +1623,17 @@ fn authored_text_shows_its_localisation() {
     assert_eq!(counts.0["undecodable_text"], 1);
 }
 
-/// A window's own keys that need an input this module has not got are refused; a fade that
-/// never runs draws nothing.
 #[test]
 fn a_window_refuses_what_needs_run_time() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(laid("fade_type = linear fade_time = 0", None), Ok(None));
     for body in [
-        // Unbound: the viewer's clock drives these.
         "fade_type = linear",
         "animation_type = linear show_position = { x = 4 }",
     ] {
         assert!(laid(body, None).is_err(), "{body}");
     }
-    // Any show or hide kind moves the window on the clock (a map icon's snaps to its old
-    // target on each show), so its position is bound; a scrollbar no template defines is
-    // none, which is counted.
     assert!(laid("animation_type = linear", None).is_err());
     assert!(
         laid_bound("animation_type = linear", None, |window, bindings| {
@@ -1814,9 +1648,6 @@ fn a_window_refuses_what_needs_run_time() {
     assert_eq!(layout.diagnostics[0].kind, DiagnosticKind::MissingScrollbar);
 }
 
-/// A background is a sprite on the window's outer object at its raw position, before the
-/// content, clipped only by the parent; `background_margin` moves it; an unset `clipping`
-/// clips a window with backgrounds.
 #[test]
 fn backgrounds_draw_under_the_content() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1833,7 +1664,6 @@ fn backgrounds_draw_under_the_content() {
     assert_eq!(layout.parts[0].child, None);
     assert_eq!(rect(&layout.parts[0].kind), [1.0, 2.0, 20.0, 10.0]);
     assert_eq!(layout.parts[0].clip, None);
-    // The content clips to the window less its margins.
     assert_eq!(layout.parts[1].clip, Some([5, 5, 40, 30]));
     let moved = laid(
         "size = { width = 40 height = 30 } clipping = no \
@@ -1848,9 +1678,6 @@ fn backgrounds_draw_under_the_content() {
     assert_eq!(moved.parts[1].clip, None);
 }
 
-/// A content scale multiplies positions and sizes about the content's origin, nested scales
-/// compose, and the grid holders carry it; clips stay unscaled; a text's glyphs scale
-/// through the world matrix.
 #[test]
 fn a_content_scale_scales_positions_and_sizes() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1866,9 +1693,7 @@ fn a_content_scale_scales_positions_and_sizes() {
     )
     .unwrap()
     .unwrap();
-    // (10 + 2 * 5, 10 + 2 * 5), 40 x 20.
     assert_eq!(rect(&layout.parts[0].kind), [20.0, 20.0, 40.0, 20.0]);
-    // Inner: (30 + 0.5 * 4, 10) scaled about (10, 10) by 2: (54, 10), 20 x 10.
     assert_eq!(rect(&layout.parts[1].kind), [54.0, 10.0, 20.0, 10.0]);
     let holder = &layout.holders[0];
     assert_eq!((holder.origin, holder.scale), ([50.0, 10.0], 1.0));
@@ -1887,7 +1712,6 @@ fn a_content_scale_scales_positions_and_sizes() {
         panic!("not a text");
     };
     assert_eq!(scale, 2.0);
-    // At (3, 1), doubled about the content's origin.
     assert_eq!(glyphs[0].at, [6.0, 2.0]);
     let mut batch = Batch::default();
     draw(&text, [0, 0], &one(), &mut batch).unwrap();
@@ -1897,10 +1721,6 @@ fn a_content_scale_scales_positions_and_sizes() {
     );
 }
 
-/// A written font viewport scales text and inline-icon positions by the GUI-to-font viewport
-/// ratio; missing GUI viewport refuses. Zero keeps infinite or NaN coordinates while siblings
-/// still draw. A written auxiliary colour refuses text-sprite baking until ordinary text
-/// drawing restores it; ordinary text objects set their modulation colour directly.
 #[test]
 fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1931,8 +1751,6 @@ fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
     else {
         panic!("not a text");
     };
-    // The text object's own `ModColor`, not the font's written one; the font's absolute
-    // viewport, its unwritten axis the GUI viewport's.
     assert_eq!((projection, modulate), ([2.0, 1.0], [1.0; 4]));
     assert_eq!(font_viewport, Some([400, 600]));
     let mut batch = Batch::default();
@@ -1941,7 +1759,6 @@ fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
     let unwritten = laid(body, None).unwrap().unwrap();
     draw(&unwritten, [10, 4], &one(), &mut plain).unwrap();
     let [x, y] = plain.quads[0].exact.as_ref().unwrap().corners[2];
-    // GUI x doubled about the viewport's left; y kept.
     assert_eq!(
         batch.quads[0].exact.as_ref().unwrap().corners[2],
         [x * 2.0, y]
@@ -1950,7 +1767,6 @@ fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
     let refused = layout_refusals(layout_of(window, &halved, &bindings));
     assert!(refused.contains("missing_input"), "{refused}");
     bindings.viewport = Some([800, 600]);
-    // A text sprite's bake takes the font's auxiliary colour as it stands.
     let bake = gui(
         "buttonType = { name = \"b\" spriteType = \"GFX_text\" font = \"Main_14\" \
          text = \"MOD_KEY\" }",
@@ -1962,9 +1778,6 @@ fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
     assert!(layout_of(bake, &white, &bindings).is_ok());
 }
 
-/// A zero written font viewport produces floating-point division results without failing the
-/// game. Text coordinates may be infinite or NaN; sibling icons, the other axis and the
-/// written viewport remain unchanged.
 #[test]
 fn a_zero_font_viewport_keeps_its_siblings() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2017,7 +1830,6 @@ fn a_zero_font_viewport_keeps_its_siblings() {
                     .all(|value| value.is_finite())
             })
     };
-    // The icon draws exactly as without the font's write; the glyph's x does not stay finite.
     let icons: Vec<_> = drawn.quads.iter().filter(|quad| finite(quad)).collect();
     assert!(!icons.is_empty());
     for quad in &icons {
@@ -2045,8 +1857,6 @@ fn layout_refusals(laid: Result<Option<Layout>, Refusals>) -> String {
     }
 }
 
-/// A window's bound opacity multiplies every sprite's alpha below it and becomes its texts'
-/// `ModColor` alpha; a bound position places a child window.
 #[test]
 fn a_bound_opacity_and_position_apply() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2077,9 +1887,6 @@ fn a_bound_opacity_and_position_apply() {
     assert_eq!(modulate, [1.0, 1.0, 1.0, 0.25]);
 }
 
-/// On an instance's clock: a show fades in from transparent, linear moving by the time past the
-/// delay over the fade time each step, decelerated reaching 1 at once; a hide fades out and
-/// hides the window when it reaches 0.
 #[test]
 fn fades_run_on_the_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2093,21 +1900,16 @@ fn fades_run_on_the_clock() {
     state.show(window, window).unwrap();
     assert!(state.drawn());
     let tick = |state: &mut Instance| state.tick(window, &resources, dt(0.1)).unwrap();
-    // Within the delay: nothing moves.
     tick(&mut state);
     assert_eq!(state.opacity(), 0.0);
-    // 0.2 in: 0.1 past the delay, a step of 0.1.
     tick(&mut state);
     assert!((state.opacity() - 0.1).abs() < 1e-6, "{}", state.opacity());
-    // 0.3 in: a step of 0.2, 0.3 in all.
     tick(&mut state);
     assert!((state.opacity() - 0.3).abs() < 1e-6, "{}", state.opacity());
     for _ in 0..10 {
         tick(&mut state);
     }
     assert_eq!(state.opacity(), 1.0);
-    // Hidden: the elapsed time restarts past the delay, and it fades out alike, drawn until
-    // it reaches 0.
     state.hide(window, window).unwrap();
     tick(&mut state);
     assert_eq!(state.opacity(), 1.0);
@@ -2126,9 +1928,6 @@ fn fades_run_on_the_clock() {
     assert_eq!(state.opacity(), 1.0);
 }
 
-/// On an instance's clock: from the constructed position to the anchored show position,
-/// truncated per axis, and at it once the time is up; a hide moves to the hide position and
-/// hides the window the tick after it arrives.
 #[test]
 fn movements_run_on_the_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2145,8 +1944,6 @@ fn movements_run_on_the_clock() {
     assert_eq!(state.position(), [0, 0]);
     state.show(window, window).unwrap();
     state.tick(window, &resources, dt(0.05)).unwrap();
-    // At one quarter, multiply the remaining share 0.75 by 100 and 50, truncate each,
-    // then subtract from 100 and 50 to get 25 and 13.
     assert_eq!(state.position(), [25, 13]);
     state.tick(window, &resources, dt(0.2)).unwrap();
     assert_eq!(state.position(), [100, 50]);
@@ -2159,9 +1956,6 @@ fn movements_run_on_the_clock() {
     assert!(!state.drawn());
 }
 
-/// Hides at once without a hide movement even as a fade out begins; a looping cornered tile's
-/// pulse is a doubled triangle wave; a code-played clock plays; a grid's items take its opacity
-/// and an item's offset is its constructed place in the viewport.
 #[test]
 fn run_time_helpers_follow_the_game() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2180,7 +1974,6 @@ fn run_time_helpers_follow_the_game() {
     assert_eq!(pulse.alpha(), 0.5);
     pulse.update(1.0, 0.5).unwrap();
     assert_eq!(pulse.alpha(), 0.5);
-    // An infinite or huge rate never leaves the wrap.
     assert!(
         lifecycle::Pulse::default()
             .update(f32::INFINITY, 0.1)
@@ -2222,8 +2015,6 @@ fn gui_item(body: &str) -> native::Gui {
     )
 }
 
-/// A clipping window's content is its parts' scissor, whole pixels moved by the root's
-/// origin; the quad itself is not cropped.
 #[test]
 fn a_clipping_window_scissors_its_children() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2242,14 +2033,12 @@ fn a_clipping_window_scissors_its_children() {
     assert_eq!(exact.corners[0], [105.0, 205.0]);
     assert_eq!(exact.corners[2], [125.0, 215.0]);
     assert_eq!(exact.scissor, Some([100, 200, 110, 210]));
-    // The device's scissor: each coordinate times the scale, truncated.
     assert_eq!(
         crate::map::sprites::device_scissor([100, 200, 110, 210], 1.25, [1000, 1000]),
         Some([125, 250, 12, 12])
     );
 }
 
-/// Drawing is all or nothing: a part whose sheet is missing leaves the batch as it was.
 #[test]
 fn a_refused_draw_pushes_nothing() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2283,7 +2072,6 @@ fn a_refused_draw_pushes_nothing() {
     assert_eq!(batch.quads.len(), 1);
 }
 
-/// Grid slots retain fill order, limits and every format in whole pixels.
 #[test]
 fn grid_slots_follow_the_formats_and_limits() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2310,7 +2098,6 @@ fn grid_slots_follow_the_formats_and_limits() {
         ),
         Ok(vec![[0, 0], [0, 10], [20, 0]])
     );
-    // The limit across refuses the third.
     assert_eq!(
         slots(
             "add_horizontal = no max_slots_vertical = 1 max_slots_horizontal = 2",
@@ -2325,7 +2112,6 @@ fn grid_slots_follow_the_formats_and_limits() {
     assert_eq!(slots("format = RIGHT", 1), Ok(vec![[81, 20]]));
     assert_eq!(slots("format = LOWER_LEFT", 1), Ok(vec![[0, 41]]));
     assert_eq!(slots("format = UPPER_RIGHT", 1), Ok(vec![[81, 0]]));
-    // An orientation offsets the grid in its parent; `center_left` adds nothing.
     assert_eq!(
         slots("format = UPPER_LEFT orientation = center", 1),
         Ok(vec![[150, 150]])
@@ -2336,10 +2122,6 @@ fn grid_slots_follow_the_formats_and_limits() {
     );
 }
 
-/// Items at their slots plus the offset construction saved against the viewport; the bounds
-/// from the origin give the relayout's position adjustment (left and top padding) and the
-/// extent's growth (right and bottom); the grid object itself stays at its constructed place
-/// until a relayout.
 #[test]
 fn a_grid_finalises_its_items() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2361,7 +2143,6 @@ fn a_grid_finalises_its_items() {
     assert_eq!(finalised.origin, [7, 8]);
     assert_eq!(finalised.relaid, [10, 12]);
     assert_eq!(finalised.extent, [105, 56]);
-    // An item anchored in the viewport keeps that anchor as its offset.
     let gui = read(
         b"guiTypes = { containerWindowType = { name = \"w\" \
           gridBoxType = { name = \"g\" size = { width = 100 height = 50 } \
@@ -2373,10 +2154,8 @@ fn a_grid_finalises_its_items() {
     let grid = gui.template("w").unwrap().find(Kind::Grid, "g").unwrap();
     let item = gui.template("item").unwrap();
     let finalised = finalize_grid(grid, [300, 300], [800, 600], &[item, item], None).unwrap();
-    // The cell is half the grid's own 100, not the parent's 300.
     assert_eq!(finalised.items, [[400, 300], [450, 300]]);
     assert_eq!(finalised.places(), [[400, 300], [450, 300]]);
-    // Through the holder the layout gives the grid, at the position the code set.
     let window = gui.template("w").unwrap();
     let mut bindings = Bindings::default();
     bindings.bind(grid).position = Some([5, 6]);
@@ -2443,8 +2222,6 @@ fn explicit_grid_positions_keep_the_format_and_viewport_constructor_offset() {
     assert_eq!(explicit.places(), [[357, 338]]);
 }
 
-/// A holder's items are drawn where it is in attach order, moved by its origin and scale and
-/// cut by its clip; a window with only its background still draws it.
 #[test]
 fn holder_items_compose_in_attach_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2496,8 +2273,6 @@ fn layout_item(gui: &native::Gui) -> Layout {
     .unwrap()
 }
 
-/// Positions the code sets on a list or a grid reach their holders and replace the authored
-/// ones.
 #[test]
 fn bound_holder_positions_replace_the_authored() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2526,7 +2301,6 @@ fn bound_holder_positions_replace_the_authored() {
     );
 }
 
-/// A positionType holds the window the code places at it, in its parent's content.
 #[test]
 fn a_position_holds_a_code_placed_window() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2543,7 +2317,6 @@ fn a_position_holds_a_code_placed_window() {
     assert_eq!(holder.content, [50, 50]);
 }
 
-/// The step, compressed to fit, each format's origin and order, and the paint order.
 #[test]
 fn list_places_follow_the_layout() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2561,7 +2334,6 @@ fn list_places_follow_the_layout() {
         )
     };
     assert_eq!(places("", 2), Ok(vec![(0, [0, 0]), (1, [43, 0])]));
-    // Three do not fit in 100: the step is (100 - 42) / 2.
     assert_eq!(
         places("", 3),
         Ok(vec![(0, [0, 0]), (1, [29, 0]), (2, [58, 0])])
@@ -2583,14 +2355,12 @@ fn list_places_follow_the_layout() {
         places("first_on_top = yes", 2),
         Ok(vec![(1, [43, 0]), (0, [0, 0])])
     );
-    // One entry wider than the box divides by zero: integer conversion of NaN.
     let gui = gui("OverlappingElementsBoxType = { name = \"l\" size = { x = 10 y = 50 } }");
     let list = gui.template("w").unwrap().find(Kind::List, "l").unwrap();
     assert_eq!(
         list_places(list, [300, 200], [42, 20], 1, None),
         Ok(vec![(0, [i32::MIN, 0])])
     );
-    // The orientation offsets from the parent's extent; `center_up` adds nothing.
     assert_eq!(places("orientation = center", 1), Ok(vec![(0, [150, 100])]));
     assert_eq!(
         places("orientation = lower_right", 1),
@@ -2599,8 +2369,6 @@ fn list_places_follow_the_layout() {
     assert_eq!(places("orientation = center_up", 1), Ok(vec![(0, [0, 0])]));
 }
 
-/// Each part names the laid-out window's child it is drawn for, a child window's parts
-/// included, and a holder the part its items draw before.
 #[test]
 fn parts_name_their_top_level_child() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2621,8 +2389,6 @@ fn parts_name_their_top_level_child() {
     assert_eq!(layout.holders[0].before, 1);
 }
 
-/// A bound texture draws in the sprite's place at its own size, centred and turned as the
-/// sprite would be.
 #[test]
 fn a_bound_texture_replaces_the_frame() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2658,8 +2424,6 @@ fn a_bound_texture_replaces_the_frame() {
     };
     assert_eq!((page, uv), (7, texture.uv));
     assert_eq!(geometry.rect, [10.0, 14.0, 20.0, 12.0]);
-    // 7.5 x 4.5 up from the bottom-left at the truncated height `int_h` = 4,
-    // with fractional quad dimensions preserved.
     assert_eq!(rect(&layout.parts[1].kind), [0.0, -0.5, 7.5, 4.5]);
     let mut batch = Batch::default();
     draw(&layout, [0, 0], &one(), &mut batch).unwrap();
@@ -2672,8 +2436,6 @@ fn a_bound_texture_replaces_the_frame() {
     assert_eq!(exact.uv[0], [0.5, 0.25]);
 }
 
-/// The walk lists every sprite and font a template names, backgrounds and the fallback
-/// included.
 #[test]
 fn assets_list_every_named_sprite_and_font() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2700,7 +2462,6 @@ fn assets_list_every_named_sprite_and_font() {
         assets.fonts.into_iter().collect::<Vec<_>>(),
         [b"F".to_vec(), b"Main_14".to_vec()]
     );
-    // Every family's own assets, and those of the templates it names in the registry.
     let document = read(
         format!(
             "guiTypes = {{ {SCROLLBAR} containerWindowType = {{ name = \"w\" \
@@ -2719,7 +2480,6 @@ fn assets_list_every_named_sprite_and_font() {
         assert!(assets.sprites.contains(sprite.as_bytes()), "{sprite}");
     }
     assert!(assets.fonts.contains(b"E".as_slice()));
-    // Windows' assets merge whole: sprites, fonts and texture files.
     let mut merged = Assets {
         textures: [b"gfx/edit.dds".to_vec()].into(),
         ..Assets::default()
@@ -2730,9 +2490,6 @@ fn assets_list_every_named_sprite_and_font() {
     assert!(merged.sprites.is_superset(&assets.sprites));
 }
 
-/// A container template takes the container factory, a windowType the fixed-window path,
-/// another kind is read as a `window declaration` (type confusion), and an undefined name takes
-/// the GUI's own object.
 #[test]
 fn list_entries_choose_the_native_factory() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2760,12 +2517,6 @@ fn list_entries_choose_the_native_factory() {
     );
 }
 
-/// A mod's list box entry made of a `windowType`: its place from its orientation against the
-/// viewport; its background, a `guiButtonType` only its `parent` template holds, first, sized
-/// to the window; then its children in attach order, each against the window's size: an icon, a
-/// `guiButtonType`, a `textBoxType` baked into a text sprite of its own name, a check box and a
-/// nested `windowType` placed against the outer window; the `multiSpriteButtonType` is never
-/// attached.
 const FIXED_ENTRY: &[u8] = b"guiTypes = {
     windowType = { name = \"base\"
         guiButtonType = { name = \"frame\" spriteType = \"GFX_cornered\" position = { x = 2 y = 3 } }
@@ -2796,7 +2547,6 @@ fn a_window_type_entry_lays_out_as_its_fixed_window() {
         list_entry("l", b"entry", &|name| resources.gui_type(name)),
         Ok(ListEntry::Fixed(window)) if std::ptr::eq(window, entry)
     ));
-    // `center` against the viewport.
     assert_eq!(
         fixed::fixed_window_origin(entry, [800, 600]),
         Ok([410, 320])
@@ -2808,7 +2558,6 @@ fn a_window_type_entry_lays_out_as_its_fixed_window() {
     let layout = fixed_window_layout(entry, &resources, &bindings)
         .unwrap()
         .unwrap();
-    // The cornered background the window's size sized.
     assert_eq!(layout.size, [60, 40]);
     let drawn: Vec<(Option<usize>, Rect)> = layout
         .parts
@@ -2818,15 +2567,11 @@ fn a_window_type_entry_lays_out_as_its_fixed_window() {
     assert_eq!(
         drawn,
         [
-            // The background, raw at its position.
             (None, [2.0, 3.0, 4.0, 4.0]),
-            // `lower_right` against the window's size.
             (Some(0), [64.0, 45.0, 20.0, 10.0]),
             (Some(1), [1.0, 2.0, 20.0, 10.0]),
-            // The bake of "c" in the box, 50 by 14.
             (Some(2), [0.0, 30.0, 50.0, 14.0]),
             (Some(4), [30.0, 0.0, 20.0, 10.0]),
-            // `upper_right` against the outer window's size.
             (Some(5), [65.0, 6.0, 20.0, 10.0]),
         ]
     );
@@ -2838,15 +2583,12 @@ fn a_window_type_entry_lays_out_as_its_fixed_window() {
     let PartKind::Tiles { quads, .. } = &layout.parts[0].kind else {
         panic!("a cornered background");
     };
-    // Sized to the window: its far corner at the window's size from its place.
     let far = quads.iter().fold([0.0f32; 2], |far, (rect, _)| {
         [far[0].max(rect[0] + rect[2]), far[1].max(rect[1] + rect[3])]
     });
     assert_eq!(far, [62.0, 43.0]);
 }
 
-/// The instance shows the fixed window and dispatches its layout through
-/// [`fixed_window_layout`]; hidden children remain hidden.
 #[test]
 fn a_window_type_entry_draws_through_its_instance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2866,8 +2608,6 @@ fn a_window_type_entry_draws_through_its_instance() {
     assert!(without.parts.iter().all(|part| part.child != Some(0)));
 }
 
-/// Fixed-window sprites receive the view clock. A synthetic compiled program with half-second
-/// saturation receives its first-draw restart and settles after that interval.
 #[test]
 fn a_window_type_root_draws_on_the_views_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2933,10 +2673,6 @@ fn a_window_type_root_draws_on_the_views_clock() {
     assert!((time - animation) * 2.0 >= 1.0, "saturated once settled");
 }
 
-/// The attach loop: a name is looked up in the built objects in its fixed priority, arrays
-/// giving the first of a lowered name and the name tree the last child of it whatever its
-/// kind; an object attached again moves to the end; drop-downs and multi-sprite buttons are
-/// never attached; a factory given a type of another class is refused.
 #[test]
 fn a_fixed_window_attaches_as_the_game_attaches() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2974,7 +2710,6 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
         .iter()
         .map(|part| (part.child, rect(&part.kind)))
         .collect();
-    // The button list's `b` builds an ordinary button from the retained multi-sprite type.
     assert_eq!(
         drawn,
         [
@@ -2982,7 +2717,6 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
             (Some(3), [4.0, 4.0, 20.0, 10.0])
         ]
     );
-    // What the window's own lookups return: the type each object was built from.
     let window = resources.gui_type(b"dup").unwrap();
     let find = |find, name: &str| fixed::fixed_window_find(window, find, name);
     assert!(std::ptr::eq(
@@ -2994,7 +2728,6 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
         &window.children[1]
     ));
     assert!(find(fixed::FixedFind::InstantTextBox, "a").is_none());
-    // A name the window lacks: every lookup's null.
     for lookup in [
         fixed::FixedFind::Button,
         fixed::FixedFind::InstantTextBox,
@@ -3027,9 +2760,7 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
     assert_eq!(kinds(b"confused"), [RefusalKind::TypeConfusion]);
     assert_eq!(kinds(b"lost"), [RefusalKind::NullRead]);
     assert_eq!(kinds(b"icon_background"), [RefusalKind::TypeConfusion]);
-    // An unset max_resolution axis uses the load-time viewport.
     assert_eq!(kinds(b"inheriting"), [RefusalKind::MissingInput]);
-    // `max_resolution`: the viewport less the position read before it.
     assert_eq!(laid(b"wide").unwrap().unwrap().size, [700, 50]);
     let unbound = fixed_window_layout(
         resources.gui_type(b"wide").unwrap(),
@@ -3039,8 +2770,6 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
     assert_eq!(unbound.unwrap_err()[0].kind, RefusalKind::NoParent);
 }
 
-/// A `windowType`'s scrollbar is shown and hidden again as it is built: it draws when
-/// the window shows it, and nothing while its own `hide` keeps it hidden.
 #[test]
 fn a_fixed_window_scrollbar_draws_only_when_shown() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3059,7 +2788,6 @@ fn a_fixed_window_scrollbar_draws_only_when_shown() {
         .as_bytes(),
     ));
     let window = resources.gui_type(b"bars").unwrap();
-    // As its code shows it: every element whose own `hide` is clear.
     let bindings = Bindings {
         viewport: Some([800, 600]),
         ..Bindings::default()
@@ -3077,17 +2805,12 @@ fn a_fixed_window_scrollbar_draws_only_when_shown() {
         ]
     );
     assert!(layout.parts.iter().all(|part| part.child == Some(0)));
-    // Through its instance: the window's Show shows the bar and its parts, not the hidden one.
     let mut row = Instance::construct(window, [800, 600], &resources).unwrap();
     row.gui_show(window, window).unwrap();
     let through = row.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(rects_of(&through.parts), rects_of(&layout.parts));
 }
 
-/// A sprite name the content does not define that a `textBoxType` has: registers a text sprite
-/// under it whenever the recording client built that text box, which the recording does not
-/// hold, so a lookup of it is refused; with no such text box the lookup finds nothing and the
-/// fallback draws. The text box's own lookup is unaffected.
 #[test]
 fn a_text_box_name_used_as_a_sprite_is_session_history() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3115,8 +2838,6 @@ fn a_text_box_name_used_as_a_sprite_is_session_history() {
     assert!(fixed_window_layout(entry, &resources, &bindings).is_ok());
 }
 
-/// `assets_in` of a `windowType` root: its children's, its background's where the
-/// constructor finds it (the `parent` template's child here), and a `textBoxType`'s bake.
 #[test]
 fn a_window_type_entry_collects_what_it_draws() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3153,7 +2874,6 @@ fn a_window_type_entry_collects_what_it_draws() {
     }
 }
 
-/// The fixture, noting every sprite and font a layout asks for.
 struct Asked<'r> {
     inner: &'r Fixture,
     sprites: RefCell<BTreeSet<Vec<u8>>>,
@@ -3198,9 +2918,6 @@ impl Resources for Asked<'_> {
     }
 }
 
-/// Acquisition follows construction, including inherited scrollbar parts and range icons. A
-/// part button's localized inline artwork is included. Every sprite and font requested by
-/// layout was collected.
 #[test]
 fn acquisition_follows_construction() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3259,8 +2976,6 @@ fn acquisition_follows_construction() {
     assert!(!asked.sprites.borrow().is_empty());
 }
 
-/// Scrollbar parts inherited from a parent template retain reader refusals just like the
-/// window subtree. Named list scrollbars and their parts use the same rule.
 #[test]
 fn externally_resolved_parts_carry_their_refusals() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3308,7 +3023,6 @@ fn externally_resolved_parts_carry_their_refusals() {
             assert!(laid.unwrap().is_some());
         }
     }
-    // A list box's `scrollbarType`, found by name, and a sprite its parts draw with.
     let document = read(
         format!(
             "guiTypes = {{ {} containerWindowType = {{ name = \"w\" \
@@ -3333,8 +3047,6 @@ fn externally_resolved_parts_carry_their_refusals() {
     );
 }
 
-/// A displayed text's inline icons add both names the lookup tries; a sprite that draws its
-/// animation records needs them loaded and its clock bound.
 #[test]
 fn text_icons_are_acquired_and_animations_refused() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3359,8 +3071,6 @@ fn text_icons_are_acquired_and_animations_refused() {
     assert_eq!(error[0].kind, RefusalKind::MissingResource);
 }
 
-/// A grid's background is a sprite at the grid's place plus its own raw position, drawn for
-/// the grid before its items.
 #[test]
 fn a_grid_background_draws_under_its_items() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3480,10 +3190,6 @@ Effect Text { VertexShader = V PixelShader = P }
     );
 }
 
-/// A 16-bit GUI texture (`B5G6R5`, `textures::upload`'s exact `Rgba32Float`) sampled by a
-/// compiled effect through a filtering sampler reads `c / 31` and `c / 63` at full `f32`:
-/// A threshold between each and its half float passes, as it does on the game's UNORM
-/// format. The page is two equal texels, so the linear filter blends them to the same value.
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_samples_sixteen_bit_texels_at_full_precision() {
@@ -3544,7 +3250,6 @@ Effect Up { VertexShader = V PixelShader = P }
     let mut batch = Batch::default();
     draw(&layout, [0, 0], &one(), &mut batch).unwrap();
     let (_serial, device, queue) = gpu::device();
-    // Red, green and blue 1 of 31, 63 and 31, twice; `even_sheet`'s page is 3.
     let sixteen = dds::Texture {
         format: dds::TextureFormat::B5G6R5,
         width: 2,
@@ -3566,7 +3271,6 @@ Effect Up { VertexShader = V PixelShader = P }
     let (pixels, refused, _) =
         crate::map::sprites::oracle::render_images(&device, &queue, &batch, &pages);
     assert!(refused.is_empty(), "{refused:?}");
-    // The 20 x 10 frame covers the top ten rows of the 16 x 16 target.
     for y in 0..10 {
         for x in 0..16 {
             assert_eq!(
@@ -3579,12 +3283,6 @@ Effect Up { VertexShader = V PixelShader = P }
     println!("PASS 16-bit page: 160/160 pixels read c/31 and c/63 at f32 through a linear sampler");
 }
 
-/// The GUI draws through the shared core's arena, which binds every constant buffer at a
-/// dynamic offset: a compiled GUI effect using more constant buffers than the device's
-/// `max_dynamic_uniform_buffers_per_pipeline_layout` is refused by name where it is
-/// submitted and counted in the sprite pass's refusals (the diagnostics' path), and the
-/// draws around it still draw. The device here asks for wgpu's default limit, so the
-/// program stays within D3D11's fourteen constant-buffer registers.
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_past_the_dynamic_offset_limit_is_refused_and_counted() {
@@ -3677,9 +3375,6 @@ Effect Up {{ VertexShader = V PixelShader = P }}
     );
 }
 
-/// A sprite b0 has a 0x70-byte allocation, with bytes 0..104 initialized. Synthetic programs
-/// reading the unwritten tail refuse by name and count; those reading through AnimationTime
-/// draw. The physical allocation remains distinct from initialized bytes.
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_reads_past_the_written_sprite_constants_are_refused() {
@@ -3757,8 +3452,6 @@ Effect Up {{ VertexShader = V PixelShader = P }}
         assert_eq!((native.constants.len() * 4, native.known), (0x100, 104));
         crate::map::sprites::oracle::render_batch(&device, &queue, &batch)
     };
-    // Past the 0x70 uploaded, inside the 256-byte pooled slot the binding shows: unknown too,
-    // never D3D11's out-of-range zero.
     for (pixel, bytes) in [
         ("float4(tail.x, 0, 0, 1)", "104..108"),
         ("float4(tail.y, 0, 0, 1)", "108..112"),
@@ -3785,9 +3478,6 @@ Effect Up {{ VertexShader = V PixelShader = P }}
             .any(|pixel| pixel == [255, 0, 0, 255])
     );
     println!("PASS sprite b0: reads of bytes 104, 108 and 112 refused by name, 0..104 drawn");
-    // Retained: a text binds b0 to its vertex stage only, so its pixel program reads the
-    // sprite's pooled b0 the draw before it left; reading past the sprite's written bytes there
-    // is refused the same way.
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_even").unwrap().effect =
         Ok(effect("float4(1, 0, 0, 1) + animation * 0 + time * 0"));
@@ -3847,7 +3537,6 @@ Effect Text { VertexShader = V PixelShader = P }
     println!("PASS retained b0: a text's pixel read of the sprite's pooled slot refused");
 }
 
-/// A compiled GUI program from `source`, its effect's techniques compiled as the draw asks.
 fn compiled_effect(file: &str, source: &str) -> Arc<crate::map::native_shader::library::Effect> {
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
@@ -3867,7 +3556,6 @@ fn compiled_effect(file: &str, source: &str) -> Arc<crate::map::native_shader::l
     )
 }
 
-/// The part `kind` drawn with `effect`'s `technique`.
 fn compiled_part(
     kind: PartKind,
     effect: Arc<crate::map::native_shader::library::Effect>,
@@ -3894,8 +3582,6 @@ fn compiled_part(
     }
 }
 
-/// A sprite draws four records as a triangle strip. A synthetic SV_VertexID colour probe sees
-/// IDs 0 through 3 and no later vertex.
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_sprite_draws_four_records_as_a_strip() {
@@ -3962,8 +3648,6 @@ Effect Up { VertexShader = V PixelShader = P }
     );
 }
 
-/// A masked-shield flag initializes its entire 0x60-byte b0: matrix, FlagCoords and a zero
-/// tail. A synthetic vertex program reading bytes 80..96 sees zero and draws.
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_flag_reads_its_zeroed_constant_tail() {
@@ -4013,10 +3697,6 @@ Effect Up { VertexShader = V PixelShader = P }
     println!("PASS masked flag: b0 bytes 80..96 read as the initialized zeros");
 }
 
-/// Animation b1 has two 80-byte records in a 0xA0-byte upload and a physical 256-byte pooled
-/// slot. The first 48 bytes of each record start initialized; active records extend
-/// initialized bytes to 68. Programs reading unknown active tails or unwritten inactive bytes
-/// refuse by name and count; known ranges draw.
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_animation_reads_past_the_written_records_are_refused() {
@@ -4093,7 +3773,6 @@ Effect Up {{ VertexShader = V PixelShader = P }}
         ("float4(A4.y, 0, 0, 1)", "68..72"),
         ("float4(A4.w, 0, 0, 1)", "76..80"),
         ("float4(B3.x, 0, 0, 1)", "128..132"),
-        // Past the 0xA0 uploaded, inside the pooled slot's 256 bytes.
         ("float4(C0.x, 0, 0, 1)", "160..164"),
     ] {
         let (pixels, refused, _) = run(pixel);
@@ -4109,7 +3788,6 @@ Effect Up {{ VertexShader = V PixelShader = P }}
             "{pixel}: draws nothing"
         );
     }
-    // The written bytes: the record's last float (64), the unused record's zeros (80..128).
     let (pixels, refused, _) = run("float4(A4.x, B0.x + B2.w, 0, 1)");
     assert!(refused.is_empty(), "{refused:?}");
     assert!(
@@ -4198,15 +3876,15 @@ Effect Up { VertexShader = V PixelShader = P }
     let mut missing = batch.quads[0].clone();
     let payload = Arc::make_mut(missing.exact.as_mut().unwrap().native.as_mut().unwrap());
     payload.effect.technique = "Down".into();
-    payload.constants[17] = 0.; // Different c0, with the preceding Up program retained.
+    payload.constants[17] = 0.;
     missing.layer = 2;
     batch.quads[0].layer = 1;
-    batch.quads.insert(0, missing); // Resolution must happen after the GPU pass sorts.
+    batch.quads.insert(0, missing);
     let (_serial, device, queue) = gpu::device();
     let (pixels, refused, pipelines) =
         crate::map::sprites::oracle::render_batch(&device, &queue, &batch);
     assert!(refused.is_empty(), "{refused:?}");
-    assert_eq!(pipelines, 1); // Both use device-default blend.
+    assert_eq!(pipelines, 1);
     for y in 0..16 {
         for x in 0..16 {
             assert_eq!(
@@ -4252,8 +3930,6 @@ Effect Up { VertexShader = V PixelShader = P }
             "effect mod-owned.shader technique Up: deliberate compiler diagnostic".into(),
         )],
     );
-    // Compilation happens at sorted submission: the layout draws, and only the failing quad
-    // is refused and counted, between valid ones that still draw.
     let layout = super::layout(window, None, &resources, &bindings)
         .unwrap()
         .unwrap();
@@ -4261,7 +3937,6 @@ Effect Up { VertexShader = V PixelShader = P }
     draw(&layout, [0, 0], &one(), &mut failing).unwrap();
     let mut failing = failing.quads.remove(0);
     failing.layer = 4;
-    // The Up quad, with its own program: no retained state from the refused draw.
     let mut valid = batch.quads.iter().find(|q| q.layer == 1).unwrap().clone();
     valid.layer = 5;
     batch.quads.push(valid);
@@ -4276,9 +3951,6 @@ Effect Up { VertexShader = V PixelShader = P }
             .all(|reason| reason.contains("deliberate compiler diagnostic"))
     );
     assert_eq!(pixels, without, "the refused draw changes nothing else");
-    // A valid Up draw `a`, a refused draw `b`, then `c`, whose missing Down runs the program
-    // bound before it, submitted unsorted. A refused draw leaves the binds the game makes for
-    // it, less what the replay lacks.
     let up = batch.quads.iter().find(|q| q.layer == 1).unwrap().clone();
     let kept = batch.quads.iter().find(|q| q.layer == 2).unwrap().clone();
     let sequence = |middle: Option<crate::map::sprites::Quad>| {
@@ -4309,20 +3981,13 @@ Effect Up { VertexShader = V PixelShader = P }
         payload.textures = vec![(0, Some(1000))];
         quad
     };
-    // `b` an Up whose texture is not resident: the game binds its program, the same as
-    // `a`'s, and `c` runs it; only `b` is refused.
     let (pixels, refused, _) = sequence(Some(not_resident(&up)));
     assert_eq!(refused.values().sum::<u64>(), 1, "{refused:?}");
     assert!(refused.keys().all(|reason| reason.contains("not resident")));
     assert_eq!(pixels, kept_pixels, "`c` runs the program `b` bound");
-    // `b` a missing technique whose texture is not resident: its null record binds no program,
-    // so `c` runs `a`'s.
     let (pixels, refused, _) = sequence(Some(not_resident(&kept)));
     assert_eq!(refused.values().sum::<u64>(), 1, "{refused:?}");
     assert_eq!(pixels, kept_pixels, "`c` runs the program `a` bound");
-    // A declared technique that fails compilation still replaces the retained program record.
-    // A later missing technique inherits that unavailable program and refuses rather than
-    // resuming an earlier successful draw.
     let (pixels, refused, _) = sequence(Some(failing.clone()));
     assert_eq!(refused.values().sum::<u64>(), 2, "{refused:?}");
     assert!(
@@ -4338,7 +4003,6 @@ Effect Up { VertexShader = V PixelShader = P }
     assert_eq!(pixels, up_pixels, "only `a` draws");
 }
 
-/// The shipped naval combat window lays out with nothing refused.
 #[test]
 fn the_shipped_naval_combat_window_lays_out() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4392,8 +4056,6 @@ fn the_shipped_naval_combat_window_lays_out() {
     );
 }
 
-/// `w` of `document` laid out with every template of the document registered (a mod's own
-/// `guiTypes`), under `viewport`.
 fn laid_document(
     document: &str,
     viewport: Option<[i32; 2]>,
@@ -4412,8 +4074,6 @@ fn laid_document(
     layout(&window, None, &resources, &bindings)
 }
 
-/// A mod's extended scrollbar template, `sb`: a 10-wide bar whose buttons are 10 by 10
-/// (`GFX_four`), the increase button `(-10, -10)` from the far corner.
 const SCROLLBAR: &str = "extendedScrollbarType = { name = \"sb\" \
      size = { width = 10 height = 50 } \
      background = { name = \"bg\" spriteType = \"GFX_even\" } \
@@ -4422,7 +4082,6 @@ const SCROLLBAR: &str = "extendedScrollbarType = { name = \"sb\" \
      decreaseButton = { name = \"dec\" spriteType = \"GFX_four\" } \
      increaseButton = { name = \"inc\" spriteType = \"GFX_four\" position = { x = -10 y = -10 } } }";
 
-/// The rectangles of `layout`'s parts drawn for the scrollbar's parts, in draw order.
 fn scrollbar_rects(layout: &Layout) -> Vec<(String, Rect)> {
     layout
         .parts
@@ -4432,11 +4091,6 @@ fn scrollbar_rects(layout: &Layout) -> Vec<(String, Rect)> {
         .collect()
 }
 
-/// A container's `verticalScrollbar` is the global `extendedScrollbarType`, shown with
-/// `autohide_scrollbars = no`, on the outer object after the content, as long as the content
-/// (the window less its margins) at the window's top margin: background, track (from the
-/// decrease button's far edge to the increase button), increase and decrease buttons, and the
-/// slider at the track's start (the range is empty).
 #[test]
 fn a_container_shows_its_extended_scrollbar() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4448,7 +4102,6 @@ fn a_container_shows_its_extended_scrollbar() {
          iconType = {{ name = \"i\" spriteType = \"GFX_even\" }} }} }}"
     );
     let layout = laid_document(&document, None, |_, _| {}).unwrap().unwrap();
-    // The icon first, then the scrollbar's five parts.
     assert_eq!(layout.parts[0].path, "w.i");
     let rects = scrollbar_rects(&layout);
     let names: Vec<&str> = rects.iter().map(|(path, _)| path.as_str()).collect();
@@ -4457,21 +4110,15 @@ fn a_container_shows_its_extended_scrollbar() {
         ["sb.bg", "sb.track", "sb.inc", "sb.dec", "sb.slider"]
     );
     assert_eq!(rects[0].1, [0.0, 5.0, 20.0, 10.0]);
-    // The track below the decrease button (10 high).
     assert_eq!(rects[1].1, [0.0, 15.0, 3.0, 17.0]);
-    // The increase button at (W - 10, H - 10) of the 10 x 70 bar.
     assert_eq!(rects[2].1, [0.0, 65.0, 10.0, 10.0]);
     assert_eq!(rects[3].1, [0.0, 5.0, 10.0, 10.0]);
     assert_eq!(rects[4].1, [0.0, 15.0, 3.0, 17.0]);
-    // Autohidden and nothing overflows: no scrollbar.
     let hidden = document.replace("autohide_scrollbars = no", "");
     let layout = laid_document(&hidden, None, |_, _| {}).unwrap().unwrap();
     assert!(scrollbar_rects(&layout).is_empty());
 }
 
-/// In a window with backgrounds: a child past the viewport shows an autohidden scrollbar; one
-/// above the content's top makes the range `[-20, 0]`, so the value 0 is its end and the slider
-/// sits at the track's end (`round_away(travel * 1)`).
 #[test]
 fn overflowing_children_show_and_move_the_scrollbar() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4494,17 +4141,11 @@ fn overflowing_children_show_and_move_the_scrollbar() {
     assert!(rects("position = { x = 0 y = 10 }").is_empty());
     let below = rects("position = { x = 0 y = 75 }");
     assert_eq!(below.len(), 5);
-    // Past the bottom: the range is [0, 5]; the value 0 keeps the slider at the start.
     assert_eq!(below[4].1, [0.0, 10.0, 3.0, 17.0]);
     let above = rects("position = { x = 0 y = -20 }");
-    // The track runs from 10 to 70 (60), less the slider's 17: 43.
     assert_eq!(above[4].1, [0.0, 10.0 + 43.0, 3.0, 17.0]);
 }
 
-/// An `extendedScrollbarType` child sits at its evaluated, anchored position at its
-/// `startValue`, its constructor's thumb over the whole track; a `scrollbarType` child lays its
-/// buttons, track and slider out from its own position and size, and one without `minValue`
-/// reads the uninitialised field.
 #[test]
 fn scrollbar_children_draw_as_constructed() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4522,7 +4163,6 @@ fn scrollbar_children_draw_as_constructed() {
     .unwrap();
     let rects = scrollbar_rects(&layout);
     assert_eq!(rects.len(), 5);
-    // The track from 10 below the bar's top to 50 - 10 = 40, 30 long; the thumb half of it.
     assert_eq!(rects[1].1, [5.0, 16.0, 3.0, 17.0]);
     assert_eq!(rects[4].1, [5.0, 16.0 + 15.0, 3.0, 17.0]);
     let plain = |min: &str| {
@@ -4544,17 +4184,12 @@ fn scrollbar_children_draw_as_constructed() {
     assert_eq!(error[0].kind, RefusalKind::UndefinedRead);
     let layout = plain("minValue = 0").unwrap().unwrap();
     let rects: Vec<Rect> = layout.parts.iter().map(|part| rect(&part.kind)).collect();
-    // Right (up) button, left (down) button, then the track between them. Subtract both
-    // 10-pixel buttons and the 17-pixel slider from 60 to leave 23 pixels of travel.
-    // Add 0.25 times 23 to 13 and truncate to place the slider at 18.
     assert_eq!(rects[0], [2.0, 3.0, 10.0, 10.0]);
     assert_eq!(rects[1], [2.0, 53.0, 10.0, 10.0]);
     assert_eq!(rects[2], [2.0, 13.0, 3.0, 17.0]);
     assert_eq!(rects[3], [2.0, 18.0, 3.0, 17.0]);
 }
 
-/// A mod's plain scrollbar template `lsb`: a 10 by 60 bar, its buttons 10 by 10
-/// (`GFX_four`), its track and slider 3 by 17 (`GFX_bar3x17`), `[0, 1]`.
 const PLAIN: &str = "scrollbarType = { name = \"lsb\" size = { x = 10 y = 60 } minValue = 0 \
      maxValue = 1 slider = \"s\" track = \"t\" leftButton = \"d\" rightButton = \"u\" \
      buttonType = { name = \"u\" spriteType = \"GFX_four\" } \
@@ -4562,14 +4197,10 @@ const PLAIN: &str = "scrollbarType = { name = \"lsb\" size = { x = 10 y = 60 } m
      guiButtonType = { name = \"t\" spriteType = \"GFX_bar3x17\" } \
      guiButtonType = { name = \"s\" spriteType = \"GFX_bar3x17\" } }";
 
-/// The rectangles of `parts`.
 fn rects_of(parts: &[Part]) -> Vec<Rect> {
     parts.iter().map(|part| rect(&part.kind)).collect()
 }
 
-/// A list draws its sized background then row holder, without inherited window opacity.
-/// Standard lists admit the integer number of rows that fit. A last row with zero height gives
-/// INT_MIN and hides all rows without a crash. Orientation uses the supplied GUI viewport.
 #[test]
 fn list_boxes_hold_their_rows() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4588,7 +4219,6 @@ fn list_boxes_hold_their_rows() {
     let PartKind::Tiles { quads, .. } = &layout.parts[0].kind else {
         panic!("not a cornered tile");
     };
-    // The tile spans the box at the viewport-anchored place.
     let right = quads
         .iter()
         .map(|(rect, _)| rect[0] + rect[2])
@@ -4614,9 +4244,6 @@ fn list_boxes_hold_their_rows() {
     assert_eq!(rows(&[[10, 10], [10, 0]]).places, [None, None]);
 }
 
-/// List scrollbars resize to box height and begin at value zero. Standard lists show overflow
-/// beside the selected side; smooth lists show overflow at the right, apply anchoring twice,
-/// and offset rows from their border by the smooth value.
 #[test]
 fn list_box_scrollbars_show_as_their_rows_leave_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4649,8 +4276,6 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
                     offset = { x = 1 y = 2 } scrollbarType = \"lsb\" }";
     let (rows, placed) = run(standard, &[[10, 10], [10, 10], [10, 10]], None);
     assert_eq!(rows.places, [Some([6, 8]), Some([6, 18]), None]);
-    // Resized to 25: the left button 25 - 10 below the right one, the track between, the
-    // slider at the track's start; the node at the box's place plus (30 + 1, 2).
     assert_eq!(
         rects_of(&placed),
         [
@@ -4661,12 +4286,9 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
         ]
     );
     assert_eq!(rows.range, 1);
-    // At the bar's value 1 the rows from the second show where the first did, and the slider
-    // is drawn at that value.
     let (scrolled, moved) = run(standard, &[[10, 10]; 3], Some(1.0));
     assert_eq!(scrolled.places, [None, Some([6, 8]), Some([6, 18])]);
     assert_ne!(rects_of(&moved)[3], rects_of(&placed)[3]);
-    // Two rows fit two: hidden.
     assert!(run(standard, &[[10, 10], [10, 10]], None).1.is_empty());
     let left = standard.replace("scrollbarType", "scrollbar_side = left scrollbarType");
     assert_eq!(
@@ -4677,7 +4299,6 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
                   size = { x = 30 y = 25 } borderSize = { x = 2 y = 9 } \
                   orientation = \"center\" scrollbarType = \"lsb\" }";
     let (rows, placed) = run(smooth, &[[10, 10], [10, 10], [10, 12]], None);
-    // `P + 2 * (100, 50)`.
     assert_eq!(
         rows.places,
         [Some([206, 108]), Some([206, 118]), Some([206, 128])]
@@ -4686,19 +4307,12 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
     assert!(placed.iter().all(|part| part.clip.is_none()));
     let (rows, moved) = run(smooth, &[[10, 10], [10, 10], [10, 12]], Some(5.0));
     assert_eq!(rows.places[0], Some([206, 103]));
-    // The slider is drawn where the rows came to rest.
     assert_eq!(rows.range, 7);
     assert_ne!(rects_of(&moved)[3], rects_of(&placed)[3]);
     assert_eq!(widgets::smooth_list_step(5.0), 4.0);
-    // Rows that fit: hidden.
     assert!(run(smooth, &[[10, 10]], None).1.is_empty());
 }
 
-/// An edit box draws its text as an instant text object by default (flag 0x2), with no
-/// cursor; without it, as a text sprite of the empty name (a new untextured type, not fixed:
-/// Its target the text's measure) that only a shader pipeline renders; a closed drop-down
-/// draws its header and its expand button; a browser's page and a shown curve graph's
-/// points are what a recording lacks, and a curve graph is hidden until its code shows it.
 #[test]
 fn edit_boxes_drop_downs_browsers_and_curves() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4737,8 +4351,6 @@ fn edit_boxes_drop_downs_browsers_and_curves() {
     let PartKind::TextSprite { bake, geometry, .. } = &layout.parts[0].kind else {
         panic!("not a text sprite");
     };
-    // A box of both sizes is fixed (`border_draw`): the target is the box, the glyphs from
-    // the border (0, 0), left-aligned.
     assert_eq!(bake.size, [50, 20]);
     assert!(bake.background.is_none());
     assert_eq!(
@@ -4746,7 +4358,6 @@ fn edit_boxes_drop_downs_browsers_and_curves() {
         [[0.0, 0.0], [7.0, 0.0], [21.0, 0.0]]
     );
     assert_eq!(geometry.rect, [3.0, 4.0, 50.0, 20.0]);
-    // With no size it is the text's measure, "ab c" 28 by 14.
     let measured = parts(
         "editBoxType = { name = \"e\" font = \"Main_14\" text = \"MOD_KEY\" \
          instantTextBoxType = no }",
@@ -4792,10 +4403,6 @@ fn edit_boxes_drop_downs_browsers_and_curves() {
     assert_eq!(shown[0].kind, RefusalKind::MissingInput);
 }
 
-/// A drop-down's header is built in a position object the viewport's size so its percentages
-/// and anchors are the viewport's; its expand button sits on the header's outer object,
-/// anchored against the header's full size and not reached by its margin, and draws even when
-/// the header's own `hide` keeps it hidden. With no viewport bound it is refused.
 #[test]
 fn drop_down_headers_take_the_viewport() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4813,8 +4420,6 @@ fn drop_down_headers_take_the_viewport() {
     let layout = laid_document(&body(""), Some([200, 100]), |_, _| {})
         .unwrap()
         .unwrap();
-    // The header 100 by 40 at (10, 20), its icon past the margin; the button at (10, 20)
-    // plus (1, 1) plus the centre of (100, 40).
     assert_eq!(rect(&layout.parts[0].kind), [15.0, 23.0, 15.0, 9.0]);
     assert_eq!(rect(&layout.parts[1].kind), [61.0, 41.0, 20.0, 10.0]);
     let hidden = laid_document(&body("hide = yes"), Some([200, 100]), |_, _| {})
@@ -4826,8 +4431,6 @@ fn drop_down_headers_take_the_viewport() {
     assert_eq!(error[0].kind, RefusalKind::NoParent);
 }
 
-/// The scroll range's snap: the ends outside, the nearest step point inside with a tie to the
-/// lower, a step of 0.001 kept.
 #[test]
 fn scroll_values_snap_as_the_game_snaps_them() {
     use widgets::Range;
@@ -4843,10 +4446,6 @@ fn scroll_values_snap_as_the_game_snaps_them() {
     assert_eq!(widgets::fixed(-1.5), -150_000);
 }
 
-/// A pie chart without `size` reads the constructor's uninitialised field; with one, and a line
-/// chart, the code has set no data, so nothing draws. A looping cornered tile without a rate
-/// reads its uninitialised pulse rate each frame; a still one takes the window's opacity
-/// as its alpha, replacing the drawable's previous alpha.
 #[test]
 fn charts_and_cornered_tiles_follow_their_native_state() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4900,10 +4499,6 @@ fn charts_and_cornered_tiles_follow_their_native_state() {
     assert_eq!(faded.parts[0].color[3], 0.25);
 }
 
-/// A circular progress bar: a fan of radius `size` about the drawable's bottom-left, the
-/// remaining sector then the completed sector of the assigned amount, normalised to 100
-/// units; one triangle per unit from `rotation`, counter-clockwise on screen, each carrying its
-/// sector for the program.
 #[test]
 fn circular_progress_bars_draw_their_fan() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -4953,7 +4548,6 @@ fn circular_progress_bars_draw_their_fan() {
     draw(&layout, [0, 0], &one(), &mut batch).unwrap();
     assert_eq!(batch.quads.len(), 100);
     let first = batch.quads[0].exact.as_ref().unwrap();
-    // The previous rim point at angle 0 (east), the centre, the next a hundredth of a turn on.
     assert_eq!(first.corners[0], [40.0, 50.0]);
     assert_eq!(first.corners[1], [30.0, 50.0]);
     let step = 6.283_185_5f32 / 100.0;
@@ -4964,17 +4558,12 @@ fn circular_progress_bars_draw_their_fan() {
     assert_eq!(first.uv[1], [0.0, 0.0]);
     assert_eq!(first.inputs[2], 0.0);
     assert_eq!(batch.quads[75].exact.as_ref().unwrap().inputs[2], 1.0);
-    // The code's percentage replaces the authored amount.
     let PartKind::Fan { weights, .. } = run(Some(60)).parts[0].kind else {
         panic!("not a fan");
     };
     assert_eq!(weights, [40, 60]);
 }
 
-/// Plain scrollbar parts resolve locally or one parent-template level. Missing parts cause
-/// null reads; button orientation uses zero extent. An icon button is an icon, but an icon
-/// slider is read as a button. Range-limit icons draw at their placed positions even if the
-/// scrollbar itself is hidden.
 #[test]
 fn plain_scrollbar_parts_follow_their_constructor() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5004,16 +4593,10 @@ fn plain_scrollbar_parts_follow_their_constructor() {
     };
     let own = run("", &bar("", parts)).unwrap().unwrap();
     let rects = rects_of(&own.parts);
-    // The centred orientation of `up` adds nothing; the track (a cornered tile sized 10 by
-    // 40) is at (2, 13). Add 0.25 times 23 to 3, then add 10 and truncate to place the
-    // slider at 18, a quarter of the way along its travel.
     assert_eq!(rects[0], [2.0, 3.0, 10.0, 10.0]);
     assert_eq!(rects[1], [2.0, 53.0, 10.0, 10.0]);
     assert_eq!(rects[2], [2.0, 13.0, 4.0, 4.0]);
     assert_eq!(rects[3], [2.0, 18.0, 3.0, 17.0]);
-    // A fully specified template whose parts come from its parent draws like one holding those
-    // parts directly. The slider is five eighths along its track; a missing parent causes a
-    // null read.
     let full = |extra: &str, children: &str| {
         format!(
             "scrollbarType = {{ name = \"bar\" position = {{ x = 2 y = 3 }} \
@@ -5033,7 +4616,6 @@ fn plain_scrollbar_parts_follow_their_constructor() {
     assert_eq!(rects_of(&inherited.parts), own_full);
     let error = run("", &full("parent = \"nothing\"", "")).unwrap_err();
     assert_eq!(error[0].kind, RefusalKind::NullRead);
-    // An icon button, and an icon slider.
     let icon = parts.replace(
         "buttonType = { name = \"up\" spriteType = \"GFX_four\" orientation = center }",
         "iconType = { name = \"up\" spriteType = \"GFX_four\" }",
@@ -5050,9 +4632,6 @@ fn plain_scrollbar_parts_follow_their_constructor() {
         run("", &bar("", &slider)).unwrap_err()[0].kind,
         RefusalKind::TypeConfusion
     );
-    // Range icons: the limits 1 and 3 of [0, 4] at a quarter and three quarters of the
-    // track's 40 less the slider's 17 along it, from the slider's half on the track:
-    // Multiply 23 by 0.25 or 0.75, add 21, then add 0.5 before truncating to get 27 and 38.
     let icons = format!(
         "{parts} iconType = {{ name = \"lo\" spriteType = \"GFX_four\" }} \
          iconType = {{ name = \"hi\" spriteType = \"GFX_four\" }}"
@@ -5070,16 +4649,10 @@ fn plain_scrollbar_parts_follow_their_constructor() {
         .unwrap()
         .unwrap();
     assert_eq!(rects_of(&hidden.parts), [rects[4], rects[5]]);
-    // A range icon's name that resolves to nothing is read through null, limits or not.
     let error = run("", &bar(&off.replace("\"hi\"", "\"none\""), &icons)).unwrap_err();
     assert_eq!(error[0].kind, RefusalKind::NullRead);
 }
 
-/// A text box's scrollbar: shown when its text is more than a pixel taller than the box (the
-/// range `[0, (42 - 20) * 100000]`), its node beside the box at `(x + maxWidth, y)`, its parts
-/// laid out from it at the box's height; the text is then clipped to its own box. A text that
-/// fits leaves it hidden, a text the code sets refreshes it, and a template the registry lacks
-/// or of another kind is refused as the game fails.
 #[test]
 fn text_box_scrollbars_show_when_the_text_overflows() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5253,7 +4826,6 @@ fn runtime_container_size_keeps_flag_zero_child_geometry() {
             .rect,
         [0.0, 0.0, 80.0, 40.0]
     );
-    // The mutation preserves native percentage flags and min/max bounds.
     let resources = fixture_with(read(br#"guiTypes = {
         containerWindowType = { name = "w" size = { width = 50% height = 3 min = { width = 40 height = 20 } } }
     }"#));
@@ -5297,7 +4869,6 @@ fn finalized_grid_resolved_offsets_keep_runtime_extents() {
         instance.scroll_range(window, window, true).unwrap(),
         Some([-7.0, 60.0])
     );
-    // Empty refill clears the retained extent and hides its old scrollbar.
     instance
         .finalize_grid_resolved(window, grid, &layout.holders[0], &[])
         .unwrap();
@@ -5357,7 +4928,6 @@ fn scrollbar_regions_keep_native_owner_and_action() {
     );
 }
 
-/// Finalize's extent reaches synchronize_scroll, and a hidden bar resets only the offset.
 #[test]
 fn finalized_grid_extents_synchronize_container_scrolling() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5405,7 +4975,6 @@ fn finalized_grid_extents_synchronize_container_scrolling() {
     );
 }
 
-/// Arrow steps read the smoothed current; wheel reads the target and immediately moves content.
 #[test]
 fn native_scroll_inputs_keep_current_and_target_distinct() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5488,7 +5057,6 @@ fn native_scroll_inputs_keep_current_and_target_distinct() {
     assert_eq!(origin(&instance), [0.0, 0.0]);
 }
 
-/// A newly shown bar smooths; synchronization can include or exclude hidden filled grids.
 #[test]
 fn finalized_grid_scrolling_runs_on_the_instance_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5546,10 +5114,6 @@ fn finalized_grid_scrolling_runs_on_the_instance_clock() {
     );
 }
 
-/// A container's own scrollbar moves its content at construction by its target snapped in its
-/// own range (`minValue = 2` gives 2), shown or not, the backgrounds and the clip staying; a
-/// shown bar of a `smooth_scrolling` window moves it on the clock towards the clamped target,
-/// and without a slider that reads null.
 #[test]
 fn container_scrollbars_move_their_content() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5572,13 +5136,9 @@ fn container_scrollbars_move_their_content() {
             bind,
         )
     };
-    // Autohidden, nothing overflows: no bar drawn, the content still 2 up.
     let hidden = run(&bar(""), "", &|_, _| {}).unwrap().unwrap();
     assert_eq!(rect(&hidden.parts[0].kind), [0.0, 8.0, 20.0, 10.0]);
     assert!(scrollbar_rects(&hidden).is_empty());
-    // Smoothing towards a target of 2 in [0, 5] at half the distance a frame, on the window's
-    // Instance: 1, 1.5, 1.75, 1.875, 1.9375, then within 0.1 of the target, the target. The
-    // content moves by the truncated value.
     let smooth = format!(
         "guiTypes = {{ {} containerWindowType = {{ name = \"w\"              size = {{ width = 100 height = 80 }} verticalScrollbar = \"sb\"              smooth_scrolling = yes background = {{ spriteType = \"GFX_even\" }}              iconType = {{ name = \"far\" spriteType = \"GFX_even\"              position = {{ x = 0 y = 75 }} }}              iconType = {{ name = \"i\" spriteType = \"GFX_even\"              position = {{ x = 0 y = 10 }} }} }} }}",
         bar("smooth_scrolling = 0.5")
@@ -5589,11 +5149,9 @@ fn container_scrollbars_move_their_content() {
     instance.gui_show(window, window).unwrap();
     let far = |instance: &Instance| {
         let laid = instance.layout(window, &resources, None).unwrap().unwrap();
-        // The background first, then the content.
         assert_eq!(rect(&laid.parts[0].kind)[1], 0.0);
         rect(&laid.parts[1].kind)[1]
     };
-    // As constructed: the content 2 up.
     assert_eq!(far(&instance), 73.0);
     let mut moved = Vec::new();
     for _ in 0..6 {
@@ -5603,7 +5161,6 @@ fn container_scrollbars_move_their_content() {
     }
     assert_eq!(moved, [74.0, 74.0, 74.0, 74.0, 74.0, 73.0]);
     assert!(!instance.active());
-    // Hidden with its window, the bar does not smooth.
     let mut hidden = Instance::construct(window, [800, 600], &resources).unwrap();
     hidden.tick(window, &resources, dt(0.016)).unwrap();
     hidden.gui_show(window, window).unwrap();
@@ -5620,8 +5177,6 @@ fn container_scrollbars_move_their_content() {
     )
     .unwrap_err();
     assert_eq!(error[0].kind, RefusalKind::NullRead);
-    // `setTrackFrameOnChange`: the track's frame from 2 in [2, 5] as a percentage,
-    // Add 0.5 to 66.67, then truncate to get 67, one-based.
     let framed = run(
         &bar("setTrackFrameOnChange = yes"),
         "autohide_scrollbars = no",
@@ -5637,9 +5192,6 @@ fn container_scrollbars_move_their_content() {
     assert_eq!(frame_of(&track.kind), 66);
 }
 
-/// Overflow extents depend on kind: text boxes measure text from the origin, standard lists
-/// use position without size, plain scrollbars use position and size, text-only buttons
-/// measure text, and curve graphs measure their sprite at its size.
 #[test]
 fn overflow_boxes_measure_each_kind() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5685,7 +5237,6 @@ fn overflow_boxes_measure_each_kind() {
     ));
 }
 
-/// Cornered tiles retain a turn but draw unturned.
 #[test]
 fn a_turned_cornered_tile_draws_unturned() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5695,17 +5246,11 @@ fn a_turned_cornered_tile_draws_unturned() {
     assert_eq!(turned, still);
 }
 
-/// Replacement and extent queries use the retained drawable. Failed replacement keeps authored
-/// geometry. Text-sprite replacement bakes button text at its raw position and explicit frame;
-/// text-only buttons measure their text object. Text-sprite glyphs submit once per frame
-/// without the ordinary 512-glyph flush, so a later inline icon lies beneath the whole glyph
-/// batch.
 #[test]
 fn text_bakes_submit_each_frames_glyphs_once() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let icon = native_text::ICON;
-    // Two 4,500-wide frames: room for 600 glyphs of the 7-wide fixture font on one line.
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_text").unwrap().texture = [9000, 20];
     let gui = gui("buttonType = { name = \"b\" spriteType = \"GFX_text\" font = \"Main_14\" }");
@@ -5719,7 +5264,6 @@ fn text_bakes_submit_each_frames_glyphs_once() {
     let PartKind::TextSprite { bake, .. } = &laid.parts[0].kind else {
         panic!("not a text sprite");
     };
-    // Two frames of the strip, each one submission point: its icon, then all its glyphs.
     assert_eq!(bake.frame_ends.len(), 2);
     let [glyphs, icons] = bake.frame_ends[0];
     assert!(
@@ -5742,13 +5286,10 @@ fn text_sprites_follow_the_setter_and_measure_their_bake() {
     let t = window.find(Kind::Button, "t").unwrap();
     let resources = fixture();
     let authored = drawable_extent(b, &resources, &Bindings::default()).unwrap();
-    // An absent name preserves the authored drawable.
     let mut bindings = Bindings::default();
     bindings.bind(b).sprite = Some(b"GFX_undefined".to_vec());
     bindings.bind(b).setter = SpriteSetter::ButtonStandard;
     assert_eq!(drawable_extent(b, &resources, &bindings).unwrap(), authored);
-    // A replacement text sprite: baked with the button's text, at the raw position,
-    // unturned, in the frame the code sets; its extent is the bake's frame.
     bindings.bind(b).sprite = Some(b"GFX_text".to_vec());
     bindings.bind(b).frame = Some(2);
     assert_eq!(
@@ -5767,8 +5308,6 @@ fn text_sprites_follow_the_setter_and_measure_their_bake() {
     assert_eq!(geometry.rect[..2], [5.0, 6.0]);
     assert_eq!(geometry.rotation, 0.0);
     assert_eq!(offsets[0], 0.5);
-    // A text-only button's drawable is its text object: the box's 200 wide (0 made 200)
-    // by its lines.
     let mut bindings = Bindings::default();
     bindings.bind(t).text = Some("abc".into());
     assert_eq!(
@@ -5777,11 +5316,6 @@ fn text_sprites_follow_the_setter_and_measure_their_bake() {
     );
 }
 
-/// Text sprites: a button with a font on a registered `textSpriteType` bakes its text into
-/// the target (format 2, the box the texture's frame, its lines centred vertically), drawn
-/// as a frame of it; `centerPosition` centres it on its text's measure; a check box with a
-/// font on an unknown name bakes nothing; an icon's is never baked, and one of 0 frames
-/// divides by zero.
 #[test]
 fn text_sprites_bake_as_the_game_bakes_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5806,7 +5340,6 @@ fn text_sprites_bake_as_the_game_bakes_them() {
     };
     assert_eq!(bake.size, [120, 20]);
     assert_eq!(bake.background.as_ref().unwrap().quads.len(), 9);
-    // "ab c" (28 wide) centred in each 60-wide frame, (20 - 14) / 2 down.
     assert_eq!(
         bake.glyphs.iter().map(|glyph| glyph.at).collect::<Vec<_>>(),
         [
@@ -5856,9 +5389,6 @@ fn text_sprites_bake_as_the_game_bakes_them() {
     assert_eq!(error[0].kind, RefusalKind::DivideByZero);
 }
 
-/// An eagerly loaded sprite's animation records: a rotating record a quarter of its second in
-/// turns a quarter clockwise; the part carries the records' textures and constants for the
-/// `ANIMATED` set, which only a shader pipeline renders.
 #[test]
 fn animation_records_run_on_the_instance_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5879,10 +5409,8 @@ fn animation_records_run_on_the_instance_clock() {
     assert_eq!(rotating.constants[1], [1.0, 1.0, 0.5, 0.5]);
     assert_eq!(rotating.constants[3], [0.0, 1.0, 2.0, 0.0]);
     assert_eq!(rotating.constants[4][0], 0.0);
-    // Pulsing: 0.5 - 0.5 cos(pi) at half its time.
     let pulse = animation::record_draw(&record(4, true), 0.5, 0.0, 1, [10, 10]).unwrap();
     assert_eq!(pulse.constants[3][0], 1.0);
-    // Not looping, past its time: inactive.
     assert!(animation::record_draw(&record(4, false), 1.5, 0.0, 1, [10, 10]).is_none());
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_even").unwrap().animated = true;
@@ -5905,9 +5433,6 @@ fn animation_records_run_on_the_instance_clock() {
     assert_eq!((animated.records[0].mask, animated.technique), (21, "Up"));
 }
 
-/// A map icon's window: the map's point each frame, then, not visible, `gui_show`; a window
-/// that is not `moveable` snaps to its old target first, so its show movement runs from there
-/// and replaces the map's point until it ends, after which the map's point holds again.
 #[test]
 fn a_map_icon_window_moves_over_the_map_point() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -5933,7 +5458,6 @@ fn a_map_icon_window_moves_over_the_map_point() {
     assert_eq!(frame(&mut instance), [50, 0]);
     assert_eq!(frame(&mut instance), [50, 0]);
     assert_eq!(frame(&mut instance), [30, 40]);
-    // A `moveable` one runs from the map's point.
     let moveable = self::gui(
         "size = { width = 20 height = 20 } show_animation_type = linear moveable = yes \
          show_animation_time = 100 show_position = { x = 50 y = 0 }",
@@ -5946,9 +5470,6 @@ fn a_map_icon_window_moves_over_the_map_point() {
     assert_eq!(instance.position(), [40, 20]);
 }
 
-/// The text object's UTF-8 conversion: valid text as Rust reads it, a lone continuation byte,
-/// a cut sequence or a surrogate fails, and `ED`/`F4` bound only their second byte's top, each
-/// such sequence leaving a U+0000 after the text.
 #[test]
 fn text_bytes_decode_as_the_game_converts_them() {
     assert_eq!(
@@ -5974,9 +5495,6 @@ fn text_bytes_decode_as_the_game_converts_them() {
     );
 }
 
-/// A mod's nested window with its own `fade_type`: the root's starts its fade through and shows
-/// it, its own tick fades it on the instance's clock, and the walk draws it with that opacity
-/// while the root draws opaque.
 #[test]
 fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6004,7 +5522,6 @@ fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
     assert_eq!(alpha(".own"), Some(1.0));
     assert!((alpha(".inner").unwrap() - 0.5).abs() < 1e-6);
     assert!(instance.active());
-    // A fading root writes opacity recursively into its descendant windows each tick.
     let fading = self::gui(
         "size = { width = 100 height = 100 } fade_type = linear fade_time = 1000 \
          containerWindowType = { name = \"c\" size = { width = 50 height = 50 } \
@@ -6025,9 +5542,6 @@ fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
     let _ = child;
 }
 
-/// The hide bit guards every Show: a rejected Show starts no fade, no movement and shows
-/// nothing; a child window the bit keeps hidden is not shown by its parent, though the parent's
-/// fade start still reaches it (`begin_show_fade` does not test it).
 #[test]
 fn a_rejected_show_changes_nothing() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6056,7 +5570,6 @@ fn a_rejected_show_changes_nothing() {
     instance.tick(window, &resources, dt(0.05)).unwrap();
     assert_eq!(instance.position(), before.2);
     assert!(!instance.active());
-    // Cleared, the root shows and moves; the hidden child stays hidden and still.
     instance.set_hide_flag(window, window, false).unwrap();
     instance.gui_show(window, window).unwrap();
     assert!(instance.drawn());
@@ -6066,9 +5579,6 @@ fn a_rejected_show_changes_nothing() {
     assert_eq!(bound.position, Some([0, 0]));
 }
 
-/// Immediate hiding reaches every child control and window. A later gui_show shows them again
-/// unless guarded by hide bits, including controls hidden by earlier calls. Reached grids
-/// report their item Shows.
 #[test]
 fn an_immediate_hide_and_a_show_reach_every_child() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6116,8 +5626,6 @@ fn an_immediate_hide_and_a_show_reach_every_child() {
     );
 }
 
-/// Drawable clocks run only while shown. A sprite that never plays preserves its code-written
-/// frame and derives AnimationTime from it, with or without an instance.
 #[test]
 fn drawable_clocks_run_on_the_instance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6140,7 +5648,6 @@ fn drawable_clocks_run_on_the_instance() {
     let window = gui.template("w").unwrap();
     let still = window.find(Kind::Icon, "s").unwrap();
     let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
-    // The shown flag starts clear until the code shows it: no clock runs.
     instance.tick(window, &resources, dt(1.0)).unwrap();
     instance.gui_show(window, window).unwrap();
     instance.set_frame(window, still, 2).unwrap();
@@ -6151,7 +5658,6 @@ fn drawable_clocks_run_on_the_instance() {
     assert_eq!(frame_of(&laid.parts[1].kind), 1);
     assert_eq!(laid.parts[1].shading.animation, 0.0);
     assert!(instance.active());
-    // Without an instance a never-played sprite still draws its bound frame.
     let alone = self::gui("iconType = { name = \"s\" spriteType = \"GFX_still\" }");
     let window = alone.template("w").unwrap();
     let mut bindings = Bindings::default();
@@ -6163,8 +5669,6 @@ fn drawable_clocks_run_on_the_instance() {
     assert_eq!(stateless.parts[0].shading.animation, 0.0);
 }
 
-/// A looping cornered tile pulses on the instance clock while shown. A rate whose wrap cannot
-/// finish refuses as the game hang.
 #[test]
 fn a_looping_tile_pulses_on_the_instance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6200,8 +5704,6 @@ fn a_looping_tile_pulses_on_the_instance() {
     assert_eq!(refused[0].kind, RefusalKind::Hang);
 }
 
-/// Code-written checking without a pointer selects Down. The effect restart and a Down trigger
-/// begin at the next draw.
 #[test]
 fn a_code_check_restarts_the_drawables_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6251,9 +5753,6 @@ fn a_code_check_restarts_the_drawables_clock() {
     assert_eq!(animated.records.len(), 1);
 }
 
-/// A new instance is active until its first (`dt = 0`) tick; a movement keeps it active
-/// while it runs, even when a tick leaves its place unchanged, and until the tick that
-/// settles it; then it rests.
 #[test]
 fn an_instance_is_active_while_anything_runs() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6276,9 +5775,6 @@ fn an_instance_is_active_while_anything_runs() {
     assert!(!instance.active());
 }
 
-/// Pool requests follow the round-robin cursor. Owners retain slots until erased; released
-/// Windows preserve control state and hide. Exhaustion returns none and reports asynchronous
-/// growth by 16 on the next tick.
 #[test]
 fn a_pool_reuses_released_windows_with_their_state() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6339,10 +5835,6 @@ fn a_pool_reuses_released_windows_with_their_state() {
     );
 }
 
-/// The manager's pass: an icon inside the viewport is set at its point and shown; one that
-/// leaves it is erased that frame (its window hidden, the Hide's lists reported, the owner's
-/// pointer cleared) and its owner's next request takes the slot the cursor gives, shown again
-/// when it returns.
 #[test]
 fn an_icon_leaves_and_reenters_the_viewport() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6368,7 +5860,6 @@ fn an_icon_leaves_and_reenters_the_viewport() {
     assert!(instance.drawn());
     assert_eq!(instance.position(), [30, 40]);
     instance.take_held();
-    // Off screen: erased, hidden, the list's items hidden with it.
     let pass = pool.update(window, |_, _| Admission::Outside).unwrap();
     assert!(pass.updated.is_empty());
     assert_eq!(pass.erased.len(), 1);
@@ -6381,7 +5872,6 @@ fn an_icon_leaves_and_reenters_the_viewport() {
         }]
     );
     assert_eq!(pool.slot_of(&7), None);
-    // Still off screen: asked for again, erased again, the cursor moving on.
     let next = pool.request(7).unwrap();
     assert_ne!(next, slot);
     assert_eq!(
@@ -6391,20 +5881,16 @@ fn an_icon_leaves_and_reenters_the_viewport() {
             .len(),
         1
     );
-    // Back on screen: a new slot, shown at the point.
     let back = pool.request(7).unwrap();
     pool.update(window, |_, _| Admission::Inside([5, 6]))
         .unwrap();
     let instance = pool.get(back).unwrap();
     assert!(instance.drawn());
     assert_eq!(instance.position(), [5, 6]);
-    // An empty icon is erased alike.
     let pass = pool.update(window, |_, _| Admission::Empty).unwrap();
     assert_eq!(pass.erased.len(), 1);
 }
 
-/// A released fading window hides children when its fade completes later. Its list Hide is
-/// then reported from the free slot.
 #[test]
 fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6431,7 +5917,6 @@ fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
         pool.tick(window, &resources, dt(0.05)).unwrap();
     }
     assert!(pool.drain_held().is_empty());
-    // Erased while opaque: the fade out begins, nothing is hidden yet.
     assert!(pool.erase(window, &1).unwrap().is_empty());
     assert!(pool.get(slot).is_none());
     let mut taken = Vec::new();
@@ -6452,9 +5937,6 @@ fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
     assert!(pool.take_held(slot).is_empty());
 }
 
-/// Visible-list rebuild includes only admitted live icons with visible windows. Erased fading
-/// icons never draw but still tick and hide lists when fading ends. Live icons stay visible
-/// through their fade and leave the list at its completion.
 #[test]
 fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6492,7 +5974,6 @@ fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
             .collect::<Vec<_>>()
     };
     assert_eq!(visible(&pool), [1, 2, 3]);
-    // Owner 1 erased while opaque: its fade begins; owner 3's window hidden by code.
     let erased = pool.slot_of(&1).unwrap();
     assert!(pool.erase(window, &1).unwrap().is_empty());
     let three = pool.slot_of(&3).unwrap();
@@ -6500,11 +5981,7 @@ fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
     instance.hide(window, window).unwrap();
     pool.tick(window, &resources, dt(0.01)).unwrap();
     assert!(pool.active());
-    // Mid-fade: the erased icon is gone (its place in the live list taken by the last,
-    // `erase_icon`'s swap); owner 3 is live and its window, fading out, still visible.
     assert_eq!(visible(&pool), [3, 2]);
-    // The fades end: the erased window's list is reached, on its free slot, and owner 3's
-    // window is hidden.
     let mut taken = Vec::new();
     for _ in 0..5 {
         pool.tick(window, &resources, dt(0.05)).unwrap();
@@ -6514,11 +5991,6 @@ fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
     assert_eq!(visible(&pool), [2]);
 }
 
-/// A refusal stands on the window until later updates write again every part it left
-/// unknown: its own calls by any update that makes them all, a named part only by the write
-/// that makes that part known (itself an update), and nothing after a call that does not
-/// apply. The latest refusal's reason is the one counted. On a pool the refusal is the slot's
-/// window's: the icon stays in the visible list with it, and a freed slot keeps it for its next owner.
 #[test]
 fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6528,8 +6000,6 @@ fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
     assert_eq!(withheld.why(&'a'), Some("an operand"));
     withheld.rewrote(&'a', Rewrote::Update);
     assert_eq!(withheld.why(&'a'), None);
-    // A named part: an ordinary update leaves it; another part's write leaves it; its own
-    // write lifts it, together with the update's own calls.
     withheld.refuse('b', Unknown::Part("bar"), "a bar".into());
     withheld.refuse('b', Unknown::Update, "an operand".into());
     withheld.rewrote(&'b', Rewrote::Update);
@@ -6538,12 +6008,10 @@ fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
     assert!(withheld.why(&'b').is_some());
     withheld.rewrote(&'b', Rewrote::Part("bar"));
     assert_eq!(withheld.why(&'b'), None);
-    // Until rebuilt: no write lifts it.
     withheld.refuse('c', Unknown::UntilRebuilt, "a call does not apply".into());
     withheld.rewrote(&'c', Rewrote::Update);
     withheld.rewrote(&'c', Rewrote::Part("bar"));
     assert_eq!(withheld.why(&'c'), Some("a call does not apply"));
-    // On a pool.
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();
@@ -6564,7 +6032,6 @@ fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
         .map(|icon| (*icon.owner, icon.withheld))
         .collect();
     assert_eq!(listed, [(7, Some("a bar"))]);
-    // Freed, the window keeps it for the slot's next owner.
     pool.erase(window, &7).unwrap();
     assert_eq!(pool.visible().count(), 0);
     assert_eq!(pool.withheld(slot), Some("a bar"));
@@ -6572,8 +6039,6 @@ fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
     assert_eq!(pool.withheld(slot), None);
 }
 
-/// The pass walks the live array as it stood: an icon swapped into an erased one's place is
-/// reached where it stood.
 #[test]
 fn the_pass_walks_the_live_array_as_it_stood() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6604,8 +6069,6 @@ fn the_pass_walks_the_live_array_as_it_stood() {
     assert_eq!(live, vec!['c', 'b']);
 }
 
-/// Owners off screen take their slots every frame between their request and the pass: more
-/// of them than the pool holds exhaust it while nothing is drawn, and it grows.
 #[test]
 fn a_pool_exhausts_while_its_icons_are_off_screen() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6639,8 +6102,6 @@ fn a_pool_exhausts_while_its_icons_are_off_screen() {
     assert_eq!(pool.live().count(), 0);
 }
 
-/// Grid append synchronizes differing item opacity through every descendant window. A direct
-/// opacity call without children affects only the window.
 #[test]
 fn a_window_takes_an_opacity_set_on_it() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6658,7 +6119,6 @@ fn a_window_takes_an_opacity_set_on_it() {
     item.gui_show(window, window).unwrap();
     item.tick(window, &resources, dt(2.0)).unwrap();
     assert_eq!(item.opacity(), 1.0);
-    // The grid's opacity 0.25 differs from the item's 1: set with its children.
     item.set_opacity(window, window, 0.25, true).unwrap();
     let laid = item.layout(window, &resources, None).unwrap().unwrap();
     let alpha = |laid: &Layout, path: &str| {
@@ -6669,18 +6129,15 @@ fn a_window_takes_an_opacity_set_on_it() {
     };
     assert_eq!(alpha(&laid, ".own"), Some(0.25));
     assert_eq!(alpha(&laid, ".inner"), Some(0.25));
-    // Without its children, only the window's own.
     item.set_opacity(window, window, 0.5, false).unwrap();
     let laid = item.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(alpha(&laid, ".own"), Some(0.5));
     assert_eq!(alpha(&laid, ".inner"), Some(0.25));
-    // A child window alone, and not a control.
     item.set_opacity(window, child, 0.75, true).unwrap();
     let laid = item.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(alpha(&laid, ".inner"), Some(0.75));
     let own = window.find(Kind::Icon, "own").unwrap();
     assert!(item.set_opacity(window, own, 0.5, true).is_err());
-    // As a prepared call.
     let mut instances = HashMap::from([(1u8, item)]);
     let mut calls = Calls::default();
     calls.push(1, window, Call::SetOpacity(0.125, true));
@@ -6688,9 +6145,6 @@ fn a_window_takes_an_opacity_set_on_it() {
     assert_eq!(instances[&1].opacity(), 0.125);
 }
 
-/// Fixed-window roots start hidden. Their guarded Show reaches attached children in order,
-/// each with its own guard, and Hide reaches all children. They retain no container fade or
-/// movement.
 #[test]
 fn a_window_type_root_shows_and_hides_its_children() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6727,15 +6181,11 @@ fn a_window_type_root_shows_and_hides_its_children() {
     assert_eq!(row.opacity(), 1.0);
     row.hide(window, window).unwrap();
     assert!(!row.drawn() && !shown(&row, a) && !shown(&row, nested) && !shown(&row, c));
-    // Its hide bit keeps its Show from running.
     row.set_hide_flag(window, window, true).unwrap();
     row.show(window, window).unwrap();
     assert!(!row.drawn() && !shown(&row, a));
 }
 
-/// A control Show or Hide reaches its related drawables. Plain-scrollbar parts start hidden,
-/// Show with gui_show, follow later Hide and Show calls, and drop-down expand buttons do the
-/// same.
 #[test]
 fn a_controls_show_reaches_its_parts() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6770,8 +6220,6 @@ fn a_controls_show_reaches_its_parts() {
     assert!(parts(&instance).is_empty());
     instance.show(window, bar).unwrap();
     assert_eq!(parts(&instance).len(), 4);
-    // The window's immediate Hide hides the scrollbar and its parts; its next Show shows
-    // them again.
     instance.hide(window, window).unwrap();
     instance.gui_show(window, window).unwrap();
     assert_eq!(parts(&instance).len(), 4);
@@ -6797,8 +6245,6 @@ fn a_controls_show_reaches_its_parts() {
     assert_eq!(laid.parts.len(), 2);
 }
 
-/// The sprite, zero-based frame and left edge of every sprite part of `layout` whose path
-/// is `path`.
 fn sprites_at(layout: &Layout, path: &str) -> Vec<(Vec<u8>, i32, f32)> {
     layout
         .parts
@@ -6813,10 +6259,6 @@ fn sprites_at(layout: &Layout, path: &str) -> Vec<(Vec<u8>, i32, f32)> {
         .collect()
 }
 
-/// A mod's plain scrollbars whose right button is inherited from their `parent` template and
-/// plays on show: the stateless layout cannot draw it, the instance can, and each scrollbar's
-/// button is its own object with its own clock (ticked while its own shown flag is set), shown,
-/// hidden and shown again.
 #[test]
 fn inherited_scrollbar_parts_run_on_their_own_clocks() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6844,7 +6286,6 @@ fn inherited_scrollbar_parts_run_on_their_own_clocks() {
     let resources = fixture_with(read(document.as_bytes()));
     let window = resources.gui_type(b"w").unwrap();
     let a = window.find(Kind::Scrollbar, "a").unwrap();
-    // Laid out with no lifecycle, the inherited play-on-show button has no clock.
     let error = layout(window, None, &resources, &Bindings::default()).unwrap_err();
     assert_eq!(error[0].kind, RefusalKind::MissingInput);
     let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
@@ -6857,24 +6298,18 @@ fn inherited_scrollbar_parts_run_on_their_own_clocks() {
                 .collect::<Vec<_>>()
         })
     };
-    // Not shown yet: no clock runs.
     instance.tick(window, &resources, dt(1.0)).unwrap();
     instance.gui_show(window, window).unwrap();
     assert_eq!(ups(&instance), [(2.0, 0), (40.0, 0)]);
     instance.tick(window, &resources, dt(0.6)).unwrap();
-    // Frame 2 of four, each half a second.
     assert_eq!(ups(&instance), [(2.0, 1), (40.0, 1)]);
     assert!(instance.active());
-    // `a`'s code Hide hides its parts: its button's clock stops while `b`'s runs on, 1.1 s in:
-    // Frame 3.
     instance.hide(window, a).unwrap();
     instance.tick(window, &resources, dt(0.5)).unwrap();
     assert_eq!(ups(&instance), [(40.0, 2)]);
-    // Shown again it goes on from where it stopped: 0.85 s, frame 2; `b` 1.35 s, frame 3.
     instance.show(window, a).unwrap();
     instance.tick(window, &resources, dt(0.25)).unwrap();
     assert_eq!(ups(&instance), [(2.0, 1), (40.0, 2)]);
-    // The window's Hide stops both; its next Show reuses them where they were.
     instance.hide(window, window).unwrap();
     instance.tick(window, &resources, dt(5.0)).unwrap();
     assert_eq!(ups(&instance), []);
@@ -6883,9 +6318,6 @@ fn inherited_scrollbar_parts_run_on_their_own_clocks() {
     assert_eq!(ups(&instance), [(2.0, 1), (40.0, 2)]);
 }
 
-/// A list box's background plays on show on its own drawable, made from `background`,
-/// shown, hidden and shown again through the instance; a window's own scrollbar's parts
-/// do the same with the window.
 #[test]
 fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6917,7 +6349,6 @@ fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
     instance.show(window, list).unwrap();
     instance.tick(window, &resources, dt(0.0)).unwrap();
     assert_eq!(background(&instance), [(b"GFX_animated".to_vec(), 1, 4.0)]);
-    // A window's own scrollbar whose slider plays on show.
     let animated = SCROLLBAR.replace(
         "slider = { name = \"slider\" spriteType = \"GFX_bar3x17\" }",
         "slider = { name = \"slider\" spriteType = \"GFX_animated\" }",
@@ -6953,9 +6384,6 @@ fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
     assert_eq!(slider(&instance)[0].1, 1);
 }
 
-/// A sprite the content does not define draws the fallback whose clock the instance keeps like
-/// any other: a mod's play-on-show fallback animates, stops while hidden and goes on when shown
-/// again.
 #[test]
 fn a_fallback_sprite_runs_on_the_instance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -6965,8 +6393,6 @@ fn a_fallback_sprite_runs_on_the_instance() {
     resources
         .sprites
         .insert("GFX_default_fallback_texture", animated);
-    // An undefined sprite, and a button with a font, no sprite and empty text,
-    // which creates the fallback drawable.
     let gui = gui(
         "iconType = { name = \"i\" spriteType = \"GFX_undefined\" }              buttonType = { name = \"b\" font = \"Main_14\" buttonText = \"\"              position = { x = 30 y = 0 } }",
     );
@@ -7000,13 +6426,9 @@ fn a_fallback_sprite_runs_on_the_instance() {
     assert_eq!(drawn(&instance), []);
     instance.gui_show(window, window).unwrap();
     instance.tick(window, &resources, dt(0.5)).unwrap();
-    // 1.1 s shown: frame 3.
     assert_eq!(drawn(&instance), fallback(2));
 }
 
-/// State effects use the view clock and restart at the first draw after change. This test
-/// fixture declares Down settled after 0.0625 seconds. Missing techniques inherit the
-/// preceding fixture technique and use their own restart metadata.
 #[test]
 fn state_effects_run_on_the_graphics_clock_for_as_long_as_they_change() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7023,7 +6445,6 @@ fn state_effects_run_on_the_graphics_clock_for_as_long_as_they_change() {
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance.tick(window, &resources, dt(1.0)).unwrap();
     assert!(!instance.active());
-    // The code checks `c`: Down, restarted at the next draw.
     instance.control(window, check).unwrap().checked = Some(true);
     let restart = dt(0.5);
     instance.tick(window, &resources, restart).unwrap();
@@ -7045,9 +6466,6 @@ fn state_effects_run_on_the_graphics_clock_for_as_long_as_they_change() {
     assert!(instance.active());
     instance.tick(window, &resources, dt(0.02)).unwrap();
     assert!(!instance.active());
-    // `n`'s effect declares no `Down`: its null record keeps the program `c` drew with `c`'s
-    // timed Down, on `n`'s own clock, restarted now: a sixteenth of a second more
-    // (`a_missing_technique_changes_for_as_long_as_the_previous_program`).
     instance.control(window, none).unwrap().checked = Some(true);
     instance.tick(window, &resources, dt(0.01)).unwrap();
     assert!(instance.active());
@@ -7057,10 +6475,6 @@ fn state_effects_run_on_the_graphics_clock_for_as_long_as_they_change() {
     assert!(laid.parts.len() >= 2);
 }
 
-/// Ticks an instance of one icon drawn with `effect` every 0.1 s for `seconds`, through the
-/// Instance alone: after each tick, whether it is still active, and the part's `Time` and
-/// `AnimationTime` as the layout binds them. The first draw (the state effect's restart)
-/// is the `dt = 0` tick, at the returned time.
 fn clocked_icon(effect: Effect, seconds: usize) -> (f32, Vec<(bool, f32, f32)>) {
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_even").unwrap().effect = Ok(effect);
@@ -7081,12 +6495,6 @@ fn clocked_icon(effect: Effect, seconds: usize) -> (f32, Vec<(bool, f32, f32)>) 
     (first.time, steps)
 }
 
-/// A compiled effect's program answers `Effect::settles`, and its instance keeps presenting
-/// frames for as long as that says, on the view's own clock: an `Up` that reads `Time` (the
-/// pixel stage's `b0` bytes 96..100, binding 1) stays active past a quarter second and
-/// every layout binds the advancing `Time` over the restart's `AnimationTime`; one whose
-/// `Time - AnimationTime` saturates at half a second settles then; one reading only
-/// `AnimationTime` settles at once. No bindings are made by hand.
 #[test]
 fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7127,8 +6535,6 @@ fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
     let active: Vec<bool> = steps.iter().map(|step| step.0).collect();
     assert!(active[..4].iter().all(|active| *active), "{active:?}");
     assert!(!active[5..].iter().any(|active| *active), "{active:?}");
-    // A program whose values could overflow at a clock the GUI may yet read never settles for
-    // good: it keeps presenting frames past its duration.
     let mut overflowing = fading;
     overflowing.bounded[0].peak = 1e38;
     let (_, steps) = clocked_icon(effect(overflowing), 1);
@@ -7143,10 +6549,6 @@ fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
     assert!(!steps.iter().any(|step| step.0));
 }
 
-/// A compiled `Up` computing `step(0, 0.5 - (Time - AnimationTime))` draws 1 up to and at
-/// half a second after its restart and 0 only after it (`step` is `x >= edge`): at exactly
-/// half a second its instance is still active, so the frame showing the change is
-/// presented; past it, it settles. No bindings are made by hand.
 #[test]
 fn a_descending_step_keeps_its_instance_active_at_its_edge() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7185,9 +6587,6 @@ fn a_descending_step_keeps_its_instance_active_at_its_edge() {
     assert!(!instance.active());
 }
 
-/// The same through programs DXC compiles: an `Up` reading `Time` stays active past a
-/// quarter second on the advancing clock, one saturating `(Time - AnimationTime) * 2`
-/// settles at half a second.
 #[test]
 #[ignore = "requires the shader compiler"]
 fn compiled_programs_reading_time_keep_their_instance_active() {
@@ -7237,10 +6636,6 @@ fn compiled_programs_reading_time_keep_their_instance_active() {
     assert!(!active[5..].iter().any(|active| *active), "{active:?}");
 }
 
-/// A missing technique inherits the preceding fixture technique and uses its own clock. Here
-/// the Down fixture settles after 0.0625 seconds: a later checked control remains active until
-/// that interval passes from its own first draw. A first part has unknown preceding state
-/// outside its window and remains active.
 #[test]
 fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7260,7 +6655,6 @@ fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance.tick(window, &resources, dt(0.1)).unwrap();
     assert!(!instance.active());
-    // `n` is first drawn now: its clock restarts, and it runs `c`'s Down.
     instance.show(window, kept).unwrap();
     instance.tick(window, &resources, dt(0.1)).unwrap();
     assert!(instance.active());
@@ -7272,7 +6666,6 @@ fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
     assert_eq!(second.technique, first.technique);
     assert_eq!(second.samplers, first.samplers);
     assert_eq!(second.blend, Blend::Off);
-    // `c` restarted 0.2 s ago, `n` just now.
     assert!((first.inputs[0] - 0.2).abs() < 1e-5, "{:?}", first.inputs);
     assert_eq!(second.inputs[0], 0.0);
     instance.tick(window, &resources, dt(0.05)).unwrap();
@@ -7281,7 +6674,6 @@ fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
     assert!((laid.parts[1].shading.since - 0.05).abs() < 1e-5);
     instance.tick(window, &resources, dt(0.02)).unwrap();
     assert!(!instance.active());
-    // Alone: the previous draw is not this window's.
     let alone = gui("checkboxType = { name = \"n\" spriteType = \"GFX_no_down\" }");
     let window = alone.template("w").unwrap();
     let kept = window.find(Kind::Checkbox, "n").unwrap();
@@ -7293,8 +6685,6 @@ fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
     assert!(instance.active());
 }
 
-/// A compiled effect over `techniques` (each with no program source) whose pixel stage
-/// has `clock`: the analysis's answer without a compiler.
 fn clocked_effect(techniques: &str, clock: crate::map::native_shader::clock::Clock) -> Effect {
     use crate::map::native_shader::{Compiled, Shader, clock::Clock, library};
     use std::sync::Arc;
@@ -7342,13 +6732,6 @@ fn clocked_effect(techniques: &str, clock: crate::map::native_shader::clock::Clo
     }
 }
 
-/// On the compiled path, an icon `k` whose effect lacks `Up` (the zeroed record whose null
-/// program does not bind) is drawn after a text `t` whose compiled `Text` program is the one it
-/// runs: its quad carries the missing technique, after the text's, with its own `Time` and
-/// `AnimationTime` (the sprite constants the kept program reads). The text has no state clock
-/// of its own, so what keeps the instance presenting frames is `k`: while the kept program
-/// reads `Time`, always; while it saturates `(Time - AnimationTime) * 2`, half a second from
-/// `k`'s own first draw, shown a second after the text's. No manual bindings.
 #[test]
 fn a_missing_compiled_technique_runs_on_the_previous_program() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7391,7 +6774,6 @@ fn a_missing_compiled_technique_runs_on_the_previous_program() {
         assert!(last.effect.asset.source.technique("Up").is_none());
         let text = native(&batch.quads[batch.quads.len() - 2]);
         assert_eq!(text.effect.technique, "Text");
-        // `Time` and `AnimationTime`: `k` restarted at this tick.
         assert_eq!(last.constants[24..26], [shown.time, shown.time]);
         let mut active = vec![instance.active()];
         for _ in 0..10 {
@@ -7404,7 +6786,6 @@ fn a_missing_compiled_technique_runs_on_the_previous_program() {
         direct: vec![(1, 96, 100)],
         bounded: Vec::new(),
     });
-    // The text alone has no state clock; `k`, on its program, keeps changing.
     assert!(!before);
     assert!(active.iter().all(|active| *active), "{active:?}");
     let (before, active) = run(Clock {
@@ -7422,14 +6803,10 @@ fn a_missing_compiled_technique_runs_on_the_previous_program() {
         }],
     });
     assert!(!before);
-    // 0, 0.1, ... 0.4 s after `k`'s first draw; then from 0.6 s settled.
     assert!(active[..5].iter().all(|active| *active), "{active:?}");
     assert!(!active[6..].iter().any(|active| *active), "{active:?}");
 }
 
-/// A declared technique that fails compilation replaces the retained record. A subsequent
-/// missing technique refuses the unavailable inherited program and draws nothing; it does not
-/// keep frames running for an earlier text program.
 #[test]
 fn a_kept_draw_after_a_refused_one_does_not_keep_frames_coming() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7479,9 +6856,6 @@ fn a_kept_draw_after_a_refused_one_does_not_keep_frames_coming() {
     }
 }
 
-/// Sprite lookup resolves against the retained drawable. Unknown or unchanged names preserve
-/// it and its clock; later frame writes, drawing and extent queries all use it. A new name
-/// creates a drawable with the setter-selected frame.
 #[test]
 fn a_failed_replacement_keeps_the_retained_drawable() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7499,7 +6873,6 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
         let extent = instance.drawable_extent(window, hull, &resources).unwrap();
         (sprites_at(&laid, "w.type"), extent)
     };
-    // Full intel: X through the button setter.
     let mut calls = Calls::default();
     calls.push((), window, Call::GuiShow);
     calls.push(
@@ -7515,7 +6888,6 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
         drawn(instance),
         (vec![(b"GFX_odd".to_vec(), 0, 0.0)], Some([15, 9]))
     );
-    // Low intel: the no-intel sprite the content does not define, then its frame.
     let mut calls = Calls::default();
     calls.push(
         (),
@@ -7525,13 +6897,10 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
     calls.push((), hull, Call::SetFrame(2));
     calls.apply(window, &mut instances, &resources).unwrap();
     let instance = instances.get_mut(&()).unwrap();
-    // Before and after the tick, drawing and the extent keep X, at the code's frame.
     let kept = (vec![(b"GFX_odd".to_vec(), 1, 0.0)], Some([15, 9]));
     assert_eq!(drawn(instance), kept);
     instance.tick(window, &resources, dt(0.1)).unwrap();
     assert_eq!(drawn(instance), kept);
-    // A write through the control is the next call, in order: X again changes nothing; a
-    // defined other name replaces it, its frame the icon setter's (-1, the state's).
     let control = instance.control(window, hull).unwrap();
     control.sprite = Some(b"GFX_odd".to_vec());
     control.setter = SpriteSetter::Button;
@@ -7548,7 +6917,6 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
         drawn(instance),
         (vec![(b"GFX_four".to_vec(), 0, 0.0)], Some([10, 10]))
     );
-    // A frame-animated replacement keeps its clock through a failed call and the same name.
     instance
         .set_sprite(window, hull, b"GFX_animated", SpriteSetter::Icon)
         .unwrap();
@@ -7561,13 +6929,9 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
         .set_sprite(window, hull, b"GFX_animated", SpriteSetter::Icon)
         .unwrap();
     instance.tick(window, &resources, dt(0.0)).unwrap();
-    // Made by the call, ticked by both frames since: 1.2 s on its own clock, frame 3.
     assert_eq!(drawn(instance).0, [(b"GFX_animated".to_vec(), 2, 0.0)]);
 }
 
-/// A drop-down registers its fading header outside the normal window child list. It starts
-/// transparent; gui_show reaches it through the drop-down and its own transitions fade it and
-/// nested windows.
 #[test]
 fn a_drop_down_headers_fade_runs_on_the_instance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7601,8 +6965,6 @@ fn a_drop_down_headers_fade_runs_on_the_instance() {
     assert_eq!(opacity(&instance, header), 0.0);
     instance.gui_show(window, window).unwrap();
     instance.tick(window, &resources, dt(0.5)).unwrap();
-    // Last registered first: the header writes its 0.5 into the window under it, whose own
-    // fade then adds its step.
     assert!((opacity(&instance, header) - 0.5).abs() < 1e-6);
     assert_eq!(opacity(&instance, nested), 1.0);
     assert!(instance.active());
@@ -7620,11 +6982,6 @@ fn a_drop_down_headers_fade_runs_on_the_instance() {
     assert!(!instance.active());
 }
 
-/// A replacement's compiled effect runs on the new drawable's own restart: replacing a
-/// sprite restarts its state effect at its first draw, so its sprite constants'
-/// `AnimationTime` is that draw's `Time`, and a program saturating `(Time - AnimationTime) * 2`
-/// keeps the settled instance presenting frames for another half second. No bindings are made
-/// by hand.
 #[test]
 fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7674,7 +7031,6 @@ fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
     instance.tick(window, &resources, first).unwrap();
     instance.tick(window, &resources, dt(1.0)).unwrap();
     assert!(!instance.active());
-    // The same name keeps the drawable, its restart and its settled clock.
     instance
         .set_sprite(window, icon, b"GFX_even", SpriteSetter::Icon)
         .unwrap();
@@ -7682,7 +7038,6 @@ fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
     instance.tick(window, &resources, kept).unwrap();
     assert!(!instance.active());
     assert_eq!(clocks(&instance), [kept.time, first.time]);
-    // A new drawable restarts at its first draw.
     instance
         .set_sprite(window, icon, b"GFX_odd", SpriteSetter::Icon)
         .unwrap();
@@ -7696,9 +7051,6 @@ fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
     assert!(!instance.active());
 }
 
-/// Successful replacement creates fresh first-draw history, triggers and tile pulse before the
-/// next tick. An old refused pulse does not carry to the new drawable. Preserving the drawable
-/// preserves all of that state.
 #[test]
 fn a_replaced_drawable_starts_its_own_history() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7715,7 +7067,6 @@ fn a_replaced_drawable_starts_its_own_history() {
         texture: 22,
         texture_size: [20, 20],
     };
-    // The old drawable's record starts on Down only, the new one's on Up.
     resources.sprites.get_mut("GFX_four").unwrap().animated = true;
     resources
         .animations
@@ -7726,7 +7077,6 @@ fn a_replaced_drawable_starts_its_own_history() {
     let window = gui.template("w").unwrap();
     let icon = window.find(Kind::Icon, "i").unwrap();
     let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
-    // The animation age and the trigger starts, the age to the clock's rounding.
     let history = |instance: &Instance, age: f32, triggers: Option<Vec<f32>>| {
         let bindings = instance.bindings(window, &resources).unwrap();
         let bound = bindings.at(Site::new(icon, None)).unwrap();
@@ -7737,7 +7087,6 @@ fn a_replaced_drawable_starts_its_own_history() {
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance.tick(window, &resources, dt(10.0)).unwrap();
     history(&instance, 10.0, Some(vec![-1.0]));
-    // A name the registry lacks, or the one shown, keeps the drawable and its history.
     instance
         .set_sprite(window, icon, b"GFX_undefined", SpriteSetter::Icon)
         .unwrap();
@@ -7746,7 +7095,6 @@ fn a_replaced_drawable_starts_its_own_history() {
         .unwrap();
     instance.tick(window, &resources, dt(1.0)).unwrap();
     history(&instance, 11.0, Some(vec![-1.0]));
-    // A new drawable: as its constructor leaves it until it is drawn, then drawn from now.
     instance
         .set_sprite(window, icon, b"GFX_odd", SpriteSetter::Icon)
         .unwrap();
@@ -7756,7 +7104,6 @@ fn a_replaced_drawable_starts_its_own_history() {
     instance.tick(window, &resources, dt(2.0)).unwrap();
     history(&instance, 2.0, Some(vec![0.0]));
 
-    // A looping cornered tile replaced by another: the new pulse starts at 0.
     let tile = |rate: f32| SpriteInfo {
         texture: [12, 12],
         kind: SpriteKind::CorneredTile {
@@ -7789,7 +7136,6 @@ fn a_replaced_drawable_starts_its_own_history() {
     assert_eq!(alpha(&instance).unwrap(), 0.0);
     instance.tick(window, &resources, dt(0.125)).unwrap();
     assert_eq!(alpha(&instance).unwrap(), 0.25);
-    // A hung pulse is the old drawable's: its replacement pulses.
     instance
         .set_sprite(window, cornered, b"GFX_hang", SpriteSetter::Icon)
         .unwrap();
@@ -7802,9 +7148,6 @@ fn a_replaced_drawable_starts_its_own_history() {
     assert_eq!(alpha(&instance).unwrap(), 0.25);
 }
 
-/// Play reaches the drawable left by earlier calls. After replacement it starts the new
-/// drawable; before replacement it starts the old one and the new one begins stopped. Failed
-/// replacement preserves playback. These sprites do not play on show.
 #[test]
 fn a_play_reaches_the_drawable_its_earlier_calls_left() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7838,7 +7181,6 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
             .map(|(_, elapsed)| elapsed)
             .unwrap()
     };
-    // A replacement, then `Play`, after the old drawable's first tick: the new one plays.
     let mut instance = shown();
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance
@@ -7847,8 +7189,6 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
     instance.play(window, icon).unwrap();
     instance.tick(window, &resources, dt(0.6)).unwrap();
     assert!((elapsed(&instance) - 0.6).abs() < 1e-6);
-    // `Play` before the first tick starts the authored drawable; a replacement a frame later
-    // starts stopped.
     let mut instance = shown();
     instance.play(window, icon).unwrap();
     instance.tick(window, &resources, dt(0.6)).unwrap();
@@ -7859,7 +7199,6 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
     instance.tick(window, &resources, dt(0.6)).unwrap();
     assert_eq!(elapsed(&instance), 0.0);
     assert!(!instance.active());
-    // `Play`, then a replacement in the same frame: the new drawable starts stopped.
     let mut instance = shown();
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance.play(window, icon).unwrap();
@@ -7868,7 +7207,6 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
         .unwrap();
     instance.tick(window, &resources, dt(0.6)).unwrap();
     assert_eq!(elapsed(&instance), 0.0);
-    // A replacement that fails keeps the drawable `Play` started.
     let mut instance = shown();
     instance.tick(window, &resources, dt(0.0)).unwrap();
     instance.play(window, icon).unwrap();
@@ -7879,9 +7217,6 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
     assert!((elapsed(&instance) - 0.6).abs() < 1e-6);
 }
 
-/// The frame-animation clock writes AnimationTime. Play after replacement advances the new
-/// drawable; Play before replacement leaves the new drawable stopped, so its clock does not
-/// keep the instance active.
 #[test]
 fn a_compiled_frame_animation_plays_only_the_drawable_play_reached() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7934,19 +7269,14 @@ fn a_compiled_frame_animation_plays_only_the_drawable_play_reached() {
         instance.tick(window, &resources, dt(0.6)).unwrap();
         (first, (animation_time(&instance), instance.active()))
     };
-    // `Play` after the replacement: the new drawable plays.
     let ((first, active), (then, still_active)) = run(false);
     assert!(active && still_active);
     assert_ne!(first, then);
-    // `Play` before it: the new drawable starts stopped.
     let ((first, active), (then, still_active)) = run(true);
     assert!(!active && !still_active);
     assert_eq!(first, then);
 }
 
-/// Looping frame animation repeatedly subtracts duration plus pause. A nonpositive period or a
-/// subtraction that cannot change elapsed time hangs, refused where the sprite draws. Valid
-/// periods still wrap.
 #[test]
 fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -7957,7 +7287,6 @@ fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
         play_on_show: true,
         pause,
     };
-    // Four frames of 0.25 s: a duration of 1 s.
     let wraps = |pause: f32, dt: f32| {
         let mut clock = lifecycle::FrameClock::new();
         clock
@@ -7980,7 +7309,6 @@ fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
     let gui = gui("iconType = { name = \"a\" spriteType = \"GFX_zero_period\" }");
     let window = gui.template("w").unwrap();
     let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
-    // Never shown, its clock never runs.
     instance.tick(window, &resources, dt(0.1)).unwrap();
     instance.gui_show(window, window).unwrap();
     instance.tick(window, &resources, dt(0.0)).unwrap();
@@ -7996,13 +7324,6 @@ fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
     );
 }
 
-/// Runs every shown drawable's clock before the GUI lifecycle's transitions: across a map icon's
-/// window and the item windows its list holds, the frame in which the icon's fade out ends and
-/// hides its items still advances an item's play-on-show clock. Run as separate instances, each
-/// phase goes across all of them ([`Instance::tick_clocks`], [`Instance::tick_transitions`] in
-/// descending [`lifecycle::Registration`], the hides reaching the items, then
-/// [`Instance::tick_draws`]); ticking the icon's instance whole before the items' would lose
-/// that frame's time. A phase out of order is refused by name.
 #[test]
 fn several_instances_tick_in_the_games_phase_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -8025,7 +7346,6 @@ fn several_instances_tick_in_the_games_phase_order() {
             .map(|(_, elapsed)| elapsed)
             .unwrap()
     };
-    // Both frames in the game's phases, or each instance whole in turn.
     let run = |phased: bool| {
         let mut icon = Instance::construct(root, [800, 600], &resources).unwrap();
         let mut entry = Instance::construct(item, [800, 600], &resources).unwrap();
@@ -8049,7 +7369,6 @@ fn several_instances_tick_in_the_games_phase_order() {
             if phased {
                 icon.tick_clocks(root, &resources, tick).unwrap();
                 entry.tick_clocks(item, &resources, tick).unwrap();
-                // Last registered first: the item's window, then the icon's.
                 entry.tick_transitions(item).unwrap();
                 icon.tick_transitions(root).unwrap();
                 reach(&mut icon, &mut entry);
@@ -8065,8 +7384,6 @@ fn several_instances_tick_in_the_games_phase_order() {
         assert!(!entry.drawn());
         elapsed(&entry)
     };
-    // Shown for the frames of 0.5 and 0.6 s: the fade out ends in the second, and the
-    // hidden item's clock stops.
     assert!((run(true) - 1.1).abs() < 1e-5);
     assert!((run(false) - 0.5).abs() < 1e-5);
     let mut instance = Instance::construct(item, [800, 600], &resources).unwrap();
@@ -8077,7 +7394,6 @@ fn several_instances_tick_in_the_games_phase_order() {
     instance.tick_transitions(item).unwrap();
     assert!(instance.tick_transitions(item).is_err());
     instance.tick_draws(item, &resources).unwrap();
-    // A pool's windows are registered in the order they are built.
     let pool = Pool::<u32>::new(
         root,
         [800, 600],
@@ -8091,9 +7407,6 @@ fn several_instances_tick_in_the_games_phase_order() {
     assert!(registrations[0].0 > instance.registration());
 }
 
-/// A window holding the text box `t` (`maxWidth = 50 maxHeight = 20`, 14-pixel lines) with
-/// the plain scrollbar `lsb`, whose slider is `slider`'s sprite and whose template adds
-/// `extra`.
 fn text_box_window(key: &str, slider: &str, extra: &str) -> Fixture {
     let bar = PLAIN.replace("maxValue = 1", extra).replace(
         "guiButtonType = { name = \"s\" spriteType = \"GFX_bar3x17\" }",
@@ -8111,7 +7424,6 @@ fn text_box_window(key: &str, slider: &str, extra: &str) -> Fixture {
     ))
 }
 
-/// The slider parts of `lsb` an instance's layout draws: frame and top.
 fn text_bar_slider(instance: &Instance, window: &Element, resources: &Fixture) -> Vec<(i32, f32)> {
     instance
         .layout(window, resources, None)
@@ -8125,10 +7437,6 @@ fn text_bar_slider(instance: &Instance, window: &Element, resources: &Fixture) -
         })
 }
 
-/// Text writes refresh scrollbar state immediately in call order. A long text can show a
-/// flagged bar while its box is hidden and start its slider clock; a short write in the same
-/// frame hides and flags it again before the clock runs. Instance::control text mutation
-/// refuses because it misses that ordered refresh.
 #[test]
 fn a_text_write_refreshes_its_scrollbar_in_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -8136,7 +7444,6 @@ fn a_text_write_refreshes_its_scrollbar_in_order() {
     let resources = text_box_window("MOD_KEY", "GFX_animated", "maxValue = 1");
     let window = resources.gui_type(b"w").unwrap();
     let text = window.find(Kind::TextBox, "t").unwrap();
-    // Written while the window is hidden: a long text shows the flagged bar.
     let mut shown = Instance::construct(window, [800, 600], &resources).unwrap();
     let mut calls = Calls::default();
     calls.push((), text, Call::SetText("aaaa bbbb cccc".into()));
@@ -8146,9 +7453,7 @@ fn a_text_write_refreshes_its_scrollbar_in_order() {
     shown.tick(window, &resources, dt(1.0)).unwrap();
     shown.gui_show(window, window).unwrap();
     shown.tick(window, &resources, dt(0.0)).unwrap();
-    // 1 s on its clock: frame 3 of four; at the top of its range.
     assert_eq!(text_bar_slider(&shown, window, &resources), [(2, 17.0)]);
-    // Long then short in one frame: shown, then flagged and hidden; its clock never ran.
     let mut hidden = Instance::construct(window, [800, 600], &resources).unwrap();
     hidden
         .set_text(window, text, "aaaa bbbb cccc", &resources)
@@ -8158,8 +7463,6 @@ fn a_text_write_refreshes_its_scrollbar_in_order() {
     hidden.gui_show(window, window).unwrap();
     hidden.tick(window, &resources, dt(0.0)).unwrap();
     assert_eq!(text_bar_slider(&hidden, window, &resources), []);
-    // Short, long, short, a frame apart, with the window shown: shown with the text clipped
-    // to its box, then hidden with the clip gone.
     hidden
         .set_text(window, text, "aaaa bbbb cccc", &resources)
         .unwrap();
@@ -8189,7 +7492,6 @@ fn a_text_write_refreshes_its_scrollbar_in_order() {
     hidden.tick(window, &resources, dt(0.1)).unwrap();
     assert_eq!(text_bar_slider(&hidden, window, &resources), []);
     assert_eq!(clip(&hidden), None);
-    // Through the control, the write has no place in the order.
     hidden.control(window, text).unwrap().text = Some("aaaa bbbb cccc".into());
     assert!(hidden.tick(window, &resources, dt(0.1)).is_err());
     assert!(hidden.layout(window, &resources, None).is_err());
@@ -8215,11 +7517,6 @@ fn resolved_flag_text_setter_keeps_native_scroll_range() {
         if rect[2..] == [10.0, 7.0])));
 }
 
-/// A text box's scrollbar keeps what each refresh did to it: its value, set through its limits
-/// at construction (`useRangeLimit`, 10 in `[0, 22]`, so the text moves up 10), is clamped by a
-/// shorter text's smaller range (1 in `[0, 1]`) and stays there when a longer text restores the
-/// range, the slider placed from it: `trunc(10 - 17 * 1 / 22)` below the node, not `trunc(10 -
-/// 17 * 10 / 22)`.
 #[test]
 fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -8233,8 +7530,6 @@ fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
     let text = window.find(Kind::TextBox, "t").unwrap();
     let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
     instance.gui_show(window, window).unwrap();
-    // The authored text's range is the template's: no refresh changed it, the bar stays
-    // flagged and hidden.
     instance.tick(window, &resources, dt(0.0)).unwrap();
     assert_eq!(text_bar_slider(&instance, window, &resources), []);
     let top = |instance: &Instance| {
@@ -8248,9 +7543,7 @@ fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
         .unwrap();
     instance.tick(window, &resources, dt(0.0)).unwrap();
     assert_eq!(text_bar_slider(&instance, window, &resources), [(0, 16.0)]);
-    // The clamp notifies nothing: the text keeps its construction's offset.
     assert_eq!(top(&instance), moved);
-    // Written straight to the long text, the value keeps its 10.
     let mut direct = Instance::construct(window, [800, 600], &resources).unwrap();
     direct.gui_show(window, window).unwrap();
     direct
@@ -8289,7 +7582,6 @@ fn retained_result_text_scroll_moves_glyphs_by_the_native_line_step() {
     };
     let before = top(&instance);
     let slider = text_bar_slider(&instance, window, &resources);
-    // Four 14-pixel lines overflow a 20-pixel box by 36; three LFs give step 12.
     instance
         .scroll_text(window, text, 1, false, &resources)
         .unwrap();
@@ -8339,8 +7631,6 @@ fn retained_result_text_scroll_moves_glyphs_by_the_native_line_step() {
     );
 }
 
-/// The prepared hour records the code's calls without touching an instance; the presented
-/// frame applies them once.
 #[test]
 fn calls_prepared_off_the_view_apply_once() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -8390,8 +7680,6 @@ fn calls_prepared_off_the_view_apply_once() {
     assert!(unknown.apply(window, &mut instances, &resources).is_err());
 }
 
-/// A root the code gives no parent object is built in the GUI viewport: a percentage size and
-/// a far-edge orientation evaluate against it.
 #[test]
 fn a_root_is_built_in_the_viewport() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -8494,8 +7782,6 @@ fn normalized_progress_uses_double_scaling_and_native_float_half_rounding() {
     assert_eq!(normalized_progress_value(1.0, i32::MAX), i32::MIN);
 }
 
-/// A dragged slider stays on its rail, and the value is its share of the range, rounded half away
-/// from zero.
 #[test]
 fn a_dragged_slider_gives_its_share_of_the_range() {
     let slide = Slide {
@@ -8505,18 +7791,13 @@ fn a_dragged_slider_gives_its_share_of_the_range() {
     };
     assert_eq!(slide.dragged(0, [0, 400]), 80);
     assert_eq!(slide.dragged(30, [0, 400]), 200);
-    // Past either end the slider is held on its rail.
     assert_eq!(slide.dragged(-50, [0, 400]), 0);
     assert_eq!(slide.dragged(500, [0, 400]), 400);
-    // 0.25 of 2 rounds half away from zero.
     assert_eq!(slide.dragged(5, [0, 2]), 1);
-    // A rail with no travel gives the range's start.
     let still = Slide { travel: 0, ..slide };
     assert_eq!(still.dragged(10, [3, 9]), 3);
 }
 
-/// A clip the code sets on a window bounds what its children draw, though the window itself
-/// would not clip: the minimap's outline stays inside its world picture.
 #[test]
 fn a_clip_the_code_sets_bounds_a_windows_children() {
     engine_executable::executable_tables::initialize_for_tests()

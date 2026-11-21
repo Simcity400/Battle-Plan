@@ -1,0 +1,9 @@
+# Keep sunburst interactions aligned with the drawn slices
+
+A live frame can update the slices, centre and legend amounts without rerendering the chart. Keep the legend structure from the last render until the set of rows changes. Paint current values into that structure before the browser shows it. A stable numeric source and zoom shape can reuse the previous tree. Finish motion inside a subpixel threshold and settle colours in unrounded channels so the frame loop stops. Movement between known stretches snaps across identity or data breaks.
+
+A slice can be opened even if some children lack measured area. This keeps their reasons reachable through the legend. A pick uses the tree and callback that produced the drawn slice, since a later render may have different content or a different hour. A fading slice must be sufficiently visible to receive a pointer hit. The keyboard moves clockwise or counterclockwise around the ring and inward or outward through drawn relations. Use the same tooltip for the legend and the canvas, and keep its keyboard readout at the selected slice.
+
+Refresh a stationary pointer's tooltip as the clock advances only while the pointer still owns it. A keyboard tooltip can retain ownership until the pointer moves again. Dismissal suppresses stationary-pointer reopening, and a missing legend row releases its tooltip. Refit an open legend tooltip after a resize. Fit tangent labels using the text box's radial and angular bounds, including the outer corners. A long straight label can cross the ring's outer edge even if its arc is wide enough. Preserve the centre's exact amount by reducing its type size when needed, and truncate secondary text to fit.
+
+[Sunburst component](../../ui/src/charts/sunburst/Sunburst.tsx) · [Interaction geometry](../../ui/src/charts/sunburst/layout.ts) · [Pick ownership](../../ui/src/charts/sunburst/pick.ts)

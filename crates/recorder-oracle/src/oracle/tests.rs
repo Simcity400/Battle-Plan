@@ -55,8 +55,6 @@ fn comparison_error(result: io::Result<Report>) -> String {
     }
 }
 
-/// A combat's transfer vector and a named live transfer's units compare in writer order;
-/// a province entry joins the census of its class.
 #[test]
 fn naval_combat_transfers_and_units_compare_in_writer_order() {
     use replay_data::{
@@ -133,8 +131,6 @@ fn naval_combat_transfers_and_units_compare_in_writer_order() {
         report.differences.len()
     };
     assert_eq!(differences(&frame), 0);
-    // Another order, an extra unit, a row for the stale transfer, a missing units row and a
-    // province entry of the wrong class each differ.
     set(
         &mut frame,
         TableId::NavalCombatTransfers,
@@ -298,7 +294,6 @@ fn province_names_compare_sparse_add_remove_and_exact_bytes() {
     let mut report = Report::default();
     compare_province_names(&frame, &save, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
-    // Read every hour: any other hour compares too.
     frame.hour = 2;
     let mut report = Report::default();
     compare_province_names(&frame, &save, &mut report).unwrap();
@@ -367,7 +362,6 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         queued_actions: Recorded::Value(Some(0)),
         ..Default::default()
     };
-    // A recording before `camouflage` compares its entries.
     let status = DivisionStatusRow {
         division: id,
         experience: Recorded::Value(Some(0)),
@@ -411,9 +405,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
                 .iter()
                 .any(|subject| subject == "DivisionMovement arrival estimates")
     }));
-    // Defined move_flags bits and the known-absent exact-organisation pair add two checks; panel-source absence adds one.
     assert_eq!(report.scalar_checks, 22);
-    // The fuel and days out of supply compare exactly, absence being zero.
     for (fuel, days, differences) in [
         (Some(&b"604.80001"[..]), Some(30), 1),
         (None, Some(30), 1),
@@ -435,9 +427,6 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
             report.differences
         );
     }
-    // The exact remaining grace compares below its display step, and is kept exactly
-    // when days out of supply are nonzero; the exact pair holds the shown ratio, so the
-    // row keeps no stepped one beside it.
     for (grace, exact, ratio, stepped, difference) in [
         (
             &b"0.5"[..],
@@ -505,8 +494,6 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     let mut report = Report::default();
     compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
-    // A changed weight or a stated maximum of 100 differs; an unreadable
-    // acclimatization is only that field's limitation.
     for (maximum, weight, differences) in [
         (Some(save::Acclimatization::OMITTED_MAXIMUM_RAW), 1, 1),
         (Some(1), 848_376_000, 1),
@@ -527,10 +514,6 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
             report.differences
         );
     }
-    // The game writes the block only when an entry weighs above zero
-    // whatever the maximum: without one the save's
-    // omission agrees, and a written block or a positive weight without
-    // one differs.
     for (weights, maximum, block, differences) in [
         ([0, 0], save::Acclimatization::OMITTED_MAXIMUM_RAW, false, 0),
         ([0, -5], 1, false, 0),
@@ -591,9 +574,6 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     );
 }
 
-/// The recorded camouflage is the capture's category-selection decision; the oracle
-/// makes it again over the saved block (nonzero weights in order, the
-/// maximum unless it is 100) with the content's define.
 #[test]
 fn division_camouflage_oracle_decides_again_from_the_saved_block() {
     let (mut frame, mut saved, _, _) = division_fixture();
@@ -628,7 +608,6 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
                  show_at: Result<i64, String>| {
         *frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
-                // The day count compares only where a test names it.
                 out_of_supply_days: Recorded::NotRecorded,
                 division: id,
                 experience: Recorded::Value(Some(0)),
@@ -651,9 +630,7 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
     let none = Recorded::Value(Some(replay_data::rows::DivisionCamouflage {
         category: None,
     }));
-    // (saved block, recorded camouflage, differences)
     let cases = [
-        // The first of the greatest weights wins at half the maximum of 100.
         (
             block(&[("cold_climate", "60"), ("hot_climate", "60")], None),
             shown(7),
@@ -671,10 +648,8 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
         ),
         (block(&[("cold_climate", "49.99999")], None), shown(7), 1),
         (block(&[("cold_climate", "50")], None), shown(7), 0),
-        // A stated maximum moves the threshold.
         (block(&[("hot_climate", "50")], Some("200")), none, 0),
         (block(&[("hot_climate", "100")], Some("200")), shown(8), 0),
-        // An omitted block shows nothing.
         (None, none, 0),
         (None, shown(7), 1),
     ];
@@ -695,8 +670,6 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
         );
         assert_eq!(report.scalar_checks, base + 1, "{camouflage:?}");
     }
-    // A refused capture, a missing define or an unknown token is only that
-    // field's limitation.
     for (camouflage, show_at, reason) in [
         (
             Recorded::Value(None),
@@ -740,12 +713,8 @@ fn division_supply_grace_compares_at_display_precision() {
     let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
     presentation.max_supply = Some(Decimal::parse(b"72").unwrap());
     presentation.army_current_supply_ratio = Some(Decimal::parse(b"36.71999").unwrap());
-    // The remaining grace is stored at the whole percent of its share over
-    // the content's SUPPLY_GRACE (72 hours: 0.72), toward zero
-    // (DivisionStatusRow::displayed_grace); the maximum stays exact.
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
-            // The day count compares only where a test names it.
             out_of_supply_days: Recorded::NotRecorded,
             division: id,
             experience: Recorded::Value(Some(0)),
@@ -771,8 +740,6 @@ fn division_supply_grace_compares_at_display_precision() {
         report.display_precision_lines()[1..],
         ["  DivisionStatus.supply_grace_remaining: whole percent of the share over NMilitary.SUPPLY_GRACE (72 hours), toward zero".to_owned()]
     );
-    // A save value inside the same percent agrees; the next percent, the
-    // previous one and a comparison without the define differ.
     let at = |value: &[u8]| {
         let mut other = saved.clone();
         other
@@ -814,7 +781,6 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_at_display_pr
     presentation.max_supply = Some(Decimal::parse(b"90071992547.40993").unwrap());
     presentation.army_current_supply_ratio = Some(Decimal::parse(b"-12.34567").unwrap());
     let row = DivisionStatusRow {
-        // The day count compares only where a test names it.
         out_of_supply_days: Recorded::NotRecorded,
         division: id,
         experience: Recorded::Value(Some(0)),
@@ -845,10 +811,8 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_at_display_pr
             .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     }
-    // Zero is also unconditionally serialized: absence cannot prove zero.
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
-            // The day count compares only where a test names it.
             out_of_supply_days: Recorded::NotRecorded,
             supply_grace_maximum: Recorded::Value(0),
             supply_grace_remaining: Recorded::Value(0),
@@ -905,7 +869,6 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
     let set = |frame: &mut DecodedFrame, naming| {
         *frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
-                // The day count compares only where a test names it.
                 out_of_supply_days: Recorded::NotRecorded,
                 division: id,
                 experience: Recorded::Value(Some(0)),
@@ -1005,7 +968,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             origin_type: None,
             template,
             country: b"GER".to_vec(),
-            name: b"A".to_vec(), // The text writer omits the captured NUL suffix.
+            name: b"A".to_vec(),
             name_present: true,
             name_key: b"FALLBACK".to_vec(),
             name_key_present: true,
@@ -1029,7 +992,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     };
     *frame.tables[TableId::DivisionTemplates.index()] =
         TableView::Complete(TableRows::DivisionTemplates(vec![row]));
-    frame.hour = 4; // Off slot3, but a forced refresh has measured work.
+    frame.hour = 4;
     frame.metrics.table_ns[TableId::DivisionTemplates.index()] = 1;
     let countries = country_context(&frame).unwrap();
     let mut report = Report::default();
@@ -1058,10 +1021,8 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     let mut report = Report::default();
     report.record_tables(&frame);
     compare_division_templates(&frame, &saved, &countries, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 1); // Missing unused template cannot pass.
+    assert_eq!(report.differences.len(), 1);
 
-    // The hourly inputs compare the saved icon choice, the template's
-    // country operands and its composition.
     let tokens = BTreeMap::from([(7, b"infantry".as_slice())]);
     {
         let settings = &mut saved
@@ -1162,7 +1123,6 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             .flatten()
             .any(|subject| subject.contains("foreign_template_tag"))
     );
-    // The same battalion count at another cell is a spatial difference.
     let mut renamed_group = icons.clone();
     std::sync::Arc::make_mut(
         renamed_group
@@ -1239,7 +1199,6 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             .iter()
             .any(|line| line.contains(".is_locked"))
     );
-    // A null template country is a stated limitation, never an assumed tag.
     hourly(
         &mut frame,
         vec![replay_data::rows::DivisionTemplateIconRow {
@@ -1266,8 +1225,6 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
         }],
     );
     assert_eq!(compare(&frame).differences.len(), 3);
-    // Each grid compares with its own saved grid: a regiment recorded in
-    // the support grid differs twice although the grouped entries agree.
     let misfiled = replay_data::rows::TemplateGrids {
         support: icons.grids.require("grids").unwrap().regiments.clone(),
         ..Default::default()
@@ -1288,7 +1245,6 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             report.differences
         );
     }
-    // Unrecorded grids are a limitation; the grouped entries still compare.
     hourly(
         &mut frame,
         vec![replay_data::rows::DivisionTemplateIconRow {
@@ -1303,7 +1259,6 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             .limitations
             .contains_key("DivisionTemplateIcons.grids not recorded")
     );
-    // Unreadable model inputs cannot waive saved operands.
     hourly(
         &mut frame,
         vec![replay_data::rows::DivisionTemplateIconRow {
@@ -1315,7 +1270,6 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     let report = compare(&frame);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("model inputs"));
-    // Its country operands still compare: a wrong country is reported.
     hourly(
         &mut frame,
         vec![replay_data::rows::DivisionTemplateIconRow {
@@ -1438,7 +1392,6 @@ fn relations_fixture() -> (
             second_unknown_casualties: -17,
             first_was_instigator: 0,
         }]));
-    // Both partial-zero handles are valid; do not collapse them to null or a shared type.
     save.factions.insert(
         88,
         save::Faction {
@@ -1448,7 +1401,6 @@ fn relations_fixture() -> (
             name: None,
             members: vec![b"ENG".to_vec(), b"GER".to_vec()],
             icon: None,
-            // A template faction, coloured from its leader's colour.
             template: Some(b"faction_template_axis".to_vec()),
             color: Some(vec![127, 63, 255]),
             color_overridden: Some(false),
@@ -1465,7 +1417,6 @@ fn relations_fixture() -> (
             name: Some(b"Literal".to_vec()),
             members: Vec::new(),
             icon: None,
-            // No template; an overridden colour with its alpha written, since it is not 1.0.
             template: None,
             color: Some(vec![255, 0, 63, 127]),
             color_overridden: Some(true),
@@ -1586,7 +1537,6 @@ fn relations_fixture() -> (
     (frame, save, membership, equipment)
 }
 
-/// The fixture's faction template token (any id the dictionary names).
 const TEMPLATE_TOKEN: u32 = 0x4c1a;
 
 fn war_row_mut(frame: &mut DecodedFrame) -> &mut WarRelationRow {
@@ -1627,7 +1577,6 @@ fn table_counts_collect_all_issues_and_unproved_sources_remain_incomplete() {
     let counts = recorded_table_counts(&frame);
     let error = counts[&TableId::Stockpiles].as_ref().unwrap_err();
     assert!(error.contains("Stockpiles") && error.contains("failed native walk"));
-    // Retired tables are named absences, never availability issues.
     assert_eq!(
         counts
             .iter()
@@ -1805,8 +1754,6 @@ fn occupation_dispatch_requires_raw_saved_tags_and_same_read_retained_keys() {
         report
     };
     for occupied in [101, 102] {
-        // Both references resolve to GER's object. Only its own ID has a
-        // captured raw tag spelling, so the alias cannot supply a saved tag.
         *frame.tables[TableId::StateResistance.index()] =
             TableView::Complete(TableRows::StateResistance(vec![StateResistanceRow {
                 state: 1,
@@ -1934,8 +1881,6 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
             other => panic!("StateGarrisons is {other:?}"),
         };
     let group = "construction equipment StateGarrisons";
-    // The same mismatched requirements are compared on their slot or a forced read,
-    // but retained daily rows are not compared against a later save.
     for (hour, forced, carried) in [
         (read_hour, false, false),
         (read_hour + 1, false, true),
@@ -1998,7 +1943,6 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
                     )
             );
         }
-        // The save writes variants, not the allocation cache.
         assert_eq!(
             report.limitations.iter().any(|(reason, subjects)| {
                 reason.contains("allocation cache")
@@ -2224,7 +2168,6 @@ fn relations_compare_full_integer_precision_aliases_and_ordered_faction_members(
 #[test]
 fn omitted_relation_dates_check_the_proven_writer_conditions() {
     let (mut frame, mut save, membership, equipment) = relations_fixture();
-    // Omission permits any end <= start, not only the constructor sentinel.
     let row = war_row_mut(&mut frame);
     row.end_hour = row.start_hour - 1;
     assert!(
@@ -2372,8 +2315,6 @@ fn faction_names_handles_and_membership_order_are_exact() {
     );
 }
 
-/// The template is named by the lexer dictionary, the colour compared through
-/// colour's own write (a truncating cast of the f32 product) and the override byte.
 #[test]
 fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
     let (frame, save, membership, equipment) = relations_fixture();
@@ -2385,7 +2326,6 @@ fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
     else {
         unreachable!()
     };
-    // 0.3 * 255 is 76.5 in f32: written as 76, never rounded to 77.
     rows[0].color_red = 0.3_f32.to_bits();
     rows[0].template_token = Some(TEMPLATE_TOKEN + 1);
     rows[1].color_overridden = 0;
@@ -2411,8 +2351,6 @@ fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
             .any(|line| line.contains(".is_color_overridden")),
         "{differences:?}"
     );
-    // Without the dictionary the spelling of two present templates is a limitation,
-    // not a difference.
     let spelling =
         "faction template tokens cannot be spelled without a complete LexicalTokens table";
     let unavailable = TableView::Unavailable {
@@ -2428,9 +2366,6 @@ fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
         let report = compare(&unnamed, &save, &membership, &equipment).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert!(report.limitations.contains_key(spelling));
-        // Presence needs no dictionary: the save writes `template` for every
-        // non-null template, so a template the save lacks is a difference however
-        // the dictionary was recorded.
         let TableView::Complete(TableRows::Factions(rows)) =
             &mut *unnamed.tables[TableId::Factions.index()]
         else {
@@ -2445,7 +2380,6 @@ fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
             report.differences
         );
     }
-    // A saved template the replay lacks, and a raw override byte above one, are named.
     let mut dropped = frame.clone();
     let TableView::Complete(TableRows::Factions(rows)) =
         &mut *dropped.tables[TableId::Factions.index()]
@@ -2475,7 +2409,6 @@ fn a_colour_is_written_as_the_native_float_conversion_does() {
         relations::saved_colour(bits([0.0, 1.0, 0.999, 0.5])),
         [0, 255, 254, 127]
     );
-    // cvttss2si gives the integer indefinite for NaN and out-of-range products.
     assert_eq!(
         relations::saved_colour(bits([f32::NAN, 1e30, -1e30, 1.0])),
         [i64::from(i32::MIN); 3]
@@ -2741,7 +2674,7 @@ fn province_victory_points_compare_native_integer_extremes_and_proven_field_omis
     else {
         unreachable!()
     };
-    rows[0].victory_points = -1; // The whole saved province entry is absent.
+    rows[0].victory_points = -1;
     let report = compare(&frame, &saved, &membership, &equipment).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("province 1.victory_points"));
@@ -2757,7 +2690,6 @@ fn missing_extra_and_changed_province_rows_are_differences() {
     };
     rows.remove(0);
     let province = &mut rows[0];
-    // Explicit saved control cannot be manufactured from captured raw zero.
     province.controller = 0;
     rows.push(ProvinceRow {
         id: 3,
@@ -2784,8 +2716,6 @@ fn state_ownership_and_controller_differences_are_independent_of_provinces() {
     assert_eq!(report.provinces, 2);
 }
 
-/// The rename compares with the stored-length-gated saved `name`;
-/// the unsaved owner name is a named limitation, never compared.
 #[test]
 fn state_rename_compares_with_the_saved_name_and_the_owner_name_is_a_limitation() {
     fn first(frame: &mut replay_frame::frame::DecodedFrame) -> &mut StateRow {
@@ -2915,7 +2845,6 @@ fn division_oracle_compares_display_precision_and_three_distinct_owners() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.divisions, 1);
     assert_eq!(report.scalar_checks, 22);
-    // The report names each column compared at display precision.
     assert_eq!(
         report.display_precision_lines()[1..],
         [
@@ -3132,11 +3061,6 @@ fn convoy_clamp_is_per_row_and_preserves_order() {
     assert_eq!(convoy_add(convoy_add(0, i64::MIN), 10), -CONVOY_LIMIT + 10);
 }
 
-/// A stockpile row counts as a convoy by its variant's flags:
-/// the type's categories, else its
-/// archetype's, within the archetype's `allowed_types`, normalized; the
-/// type is found without case. A modular type is decided only while no
-/// module of the content can add the convoy bit.
 #[test]
 fn convoy_variants_follow_the_variant_category() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3162,9 +3086,7 @@ fn convoy_variants_follow_the_variant_category() {
     let database = load("capital_ship");
     let convoy = |name: &str| convoy_variant(&database, name.as_bytes());
     assert_eq!(convoy("CONVOY_1"), Ok(true));
-    // The screen ship bit clears the convoy bit.
     assert_eq!(convoy("raider"), Ok(false));
-    // The archetype allows armor only.
     assert_eq!(convoy("barge_1"), Ok(false));
     assert_eq!(convoy("hull"), Ok(false));
     assert!(
@@ -3352,7 +3274,6 @@ fn land_combat_side_sets_do_not_infer_history_but_resolve_primary_references() {
             },
         );
     }
-    // Historical sets need not contain the units' current logical owner.
     *frame.tables[TableId::LandCombatSides.index()] =
         TableView::Complete(TableRows::LandCombatSides(vec![
             replay_data::rows::LandCombatSideRow {
@@ -3653,7 +3574,6 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("region_change_penalty"));
 
-    // A stateful rocket base has no carrier stance.
     let TableView::Complete(TableRows::AirSortieSpecialBases(rows)) =
         &mut *frame.tables[TableId::AirSortieSpecialBases.index()]
     else {
@@ -3814,7 +3734,6 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
         (1, 1, 1)
     );
     saved.air_wings.get_mut(&wing).unwrap().mission_active = Some(false);
-    // A wing listed elsewhere in its country's pools is another difference.
     saved.air_wings.get_mut(&wing).unwrap().pool_ordinal = 1;
     saved.air.wings[0].ace = Some(ace + (1 << 32));
     saved
@@ -3835,7 +3754,6 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
             .len(),
         5
     );
-    // An omitted ace must not name a saved ace; a zero reference is none.
     saved.air.wings[0].ace = None;
     saved.air.aces = vec![save::air::Ace {
         id: ace,
@@ -3871,7 +3789,6 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     assert_eq!(differences(&frame, &saved), 4);
 }
 
-// Uses that module's existing fixture and add_country helpers.
 
 fn naval_fixture() -> (
     DecodedFrame,
@@ -3977,7 +3894,6 @@ fn naval_fixture() -> (
             task_force: force,
             strength: 9_007_199_254_740_993,
             organisation: 7_872_001,
-            // The save's 34.32537 at its display step, a hundredth toward zero.
             experience: 3_432_000,
             sunk_convoys: -1,
             category: 9,
@@ -4009,11 +3925,10 @@ fn naval_oracle_checks_precision_full_identity_and_parent_membership() {
         unreachable!()
     };
     let ship = &mut rows[0];
-    ship.id ^= 1; // Same numeric id, different type: missing and unexpected rows.
+    ship.id ^= 1;
     let report = compare(&changed, &saved, &membership, &equipment).unwrap();
     assert_eq!(report.ships, 0);
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
-    // A route length other than the saved path's is a difference.
     let mut changed = frame.clone();
     let TableView::Complete(TableRows::TaskForces(rows)) =
         &mut *changed.tables[TableId::TaskForces.index()]
@@ -4067,7 +3982,7 @@ fn naval_oracle_distinguishes_null_locations_and_expeditionary_omission_predicat
     };
     let force = &mut rows[0];
     force.province = 0;
-    force.expeditionary_owner = u32::MAX; // Signed -1 is omitted, but not certified as raw zero.
+    force.expeditionary_owner = u32::MAX;
     let report = compare(&frame, &saved, &membership, &equipment).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(
@@ -4083,8 +3998,6 @@ fn naval_oracle_distinguishes_null_locations_and_expeditionary_omission_predicat
             .is_err()
     );
 }
-/// A frame and save with two extra countries, so relation and intel rows can
-/// use raw references that are aliases of a canonical slot.
 fn relation_fixture() -> (
     DecodedFrame,
     Save,
@@ -4092,7 +4005,6 @@ fn relation_fixture() -> (
     installed_content_core::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
-    // Tier-4 slot1 refresh hour: advance save and frame together to slot1.
     save.date.hour = 2;
     frame.hour = save.date.engine_hour().unwrap();
     if let TableView::Complete(TableRows::Clock(rows)) = &mut *frame.tables[TableId::Clock.index()]
@@ -4106,8 +4018,6 @@ fn relation_fixture() -> (
     (frame, save, membership, equipment)
 }
 
-/// SliceReads placing every linked country's relation rows at `hour`, as
-/// a read of all their slices at that hour would.
 fn relations_read_at(frame: &mut DecodedFrame, hour: i32) {
     let mut owners: Vec<u32> = frame
         .complete::<tables::CountryLinks>()
@@ -4131,10 +4041,6 @@ fn relations_read_at(frame: &mut DecodedFrame, hour: i32) {
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
 }
 
-/// Saved tags resolve through the context's tag map: aliased links still
-/// name one canonical slot, and the lookup stays a map lookup for a
-/// 5,000-country census. A tag the frame never captured, or one the save
-/// does not declare, is refused rather than guessed.
 #[test]
 fn saved_country_tags_resolve_through_the_tag_map() {
     let (mut frame, mut save, _, _) = relation_fixture();
@@ -4237,9 +4143,6 @@ fn differences(report: &Report) -> Vec<String> {
     report.differences.clone()
 }
 
-/// RelationTuples is registered in the extended pass, which needs verified
-/// content; the comparator itself is exercised directly with the same
-/// country links and recorded dictionary that pass supplies.
 fn tuple_report(frame: &DecodedFrame, save: &Save, tokens: &[(u32, &'static [u8])]) -> Report {
     let mut report = Report::default();
     let context = country_context(frame).unwrap();
@@ -4250,9 +4153,6 @@ fn tuple_report(frame: &DecodedFrame, save: &Save, tokens: &[(u32, &'static [u8]
     report
 }
 
-/// An air-access relation sets its first country's slot toward the second,
-/// an attache relation the second's toward the first; a relation saved
-/// under both endpoints is one slot.
 #[test]
 fn relation_links_match_the_saved_attache_and_air_access_relations() {
     let (frame, mut save, _, _) = relation_fixture();
@@ -4290,7 +4190,6 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
     .collect();
     saved_relation(&mut save, b"D01", b"SOV", None, &[(b"air_base_access", 0)]);
     saved_relation(&mut save, b"D01", b"SOV", None, &[(b"attache", 1)]);
-    // The same air-access relation, saved again under its second endpoint.
     save.relation_tuples.push(save::RelationTuple {
         owner: b"SOV".to_vec(),
         target: b"D01".to_vec(),
@@ -4311,7 +4210,6 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
         links,
         transport_subject: replay_data::rows::Recorded::NotRecorded,
     };
-    // D01 is reference 201 at slot 8, SOV reference 301 at slot 9.
     let exact = vec![row(201, 9, 2), row(301, 8, 1)];
     let report = run(&frame, exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -4326,8 +4224,6 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }
 
-/// A military-access relation sets its first country's slot toward the
-/// second; the offered form sets the second's toward the first.
 #[test]
 fn relation_links_match_the_saved_military_access_relations() {
     let (frame, mut save, _, _) = relation_fixture();
@@ -4395,7 +4291,6 @@ fn relation_links_match_the_saved_military_access_relations() {
     assert_eq!(report.compared_tables["RelationLinks"], 2);
 }
 
-/// An offered air-access relation sets its second country's slot toward the first.
 #[test]
 fn relation_links_match_the_saved_air_access_offer() {
     let (frame, mut save, _, _) = relation_fixture();
@@ -4459,15 +4354,12 @@ fn relation_links_match_the_saved_air_access_offer() {
         visibility::compare_links(&frame, &save, &context, &names, &mut report).unwrap();
         report
     };
-    // D01 is reference 201 at slot 8, SOV reference 301 at slot 9.
     let report = run(vec![(301, 8)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["RelationLinks"], 1);
     assert_eq!(run(vec![(201, 9)]).differences.len(), 2);
 }
 
-/// Signed-positive navy access modes compare with the saved pairs;
-/// high-bit bytes are omitted and remain explicit save limitations.
 #[test]
 fn naval_region_access_matches_the_saved_pairs() {
     let (mut frame, mut save, _, _) = relation_fixture();
@@ -4558,12 +4450,6 @@ fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_row
     );
 }
 
-/// At a load hour each essential archetype's stock is the total the load
-/// rebuilt from the saved stockpile's variant amounts of that archetype, in
-/// whole units capped at its largest raid requirement; away from a load only
-/// a value no history records is compared. A country with a variant the
-/// recorded definitions lack is named, not derived, and a row of an archetype
-/// no raid type lists is a difference.
 #[test]
 fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     let (mut frame, mut save, _, _) = relation_fixture();
@@ -4604,8 +4490,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
         archetype,
         units,
     };
-    // Archetypes 7, 8 and 9 are essential, required up to 3, 1 and 5; a mod
-    // requires 11 up to minus a billion and 12 up to two billion.
     let tokens = BTreeMap::from([
         (7, b"bomber".as_slice()),
         (8, b"convoy".as_slice()),
@@ -4653,21 +4537,14 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
             .map_or_else(Vec::new, |(_, subjects)| subjects.clone())
     };
     let all = [(1, 7), (2, 7), (3, 8), (4, 7)];
-    // D01 (slot 8): archetype 7 is 3 + 1.5, capped at 3; archetype 8 is 2,
-    // capped at 1; SOV (slot 9) has 1 of archetype 7; a zero total without
-    // variants is allowed.
     let exact = vec![row(8, 7, 3), row(8, 8, 1), row(8, 9, 0), row(9, 7, 1)];
     let report = run(&mut frame, &all, exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 3);
-    // A total over its cap, a nonzero total without variants, a missing total.
     let wrong = vec![row(8, 7, 4), row(8, 9, 1), row(9, 7, 1)];
     let report = run(&mut frame, &all, wrong.clone());
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 3);
-    // Away from a load a total keeps its own clamped history, so neither a
-    // mismatch nor agreement is certified; no history records more than the
-    // cap, though, or loses a saved variant's archetype entry.
     let report = run_at(&mut frame, &save, &all, wrong, false);
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 1);
@@ -4682,7 +4559,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
         limited(&report, "away from a load"),
         ["StockpileArchetypes: 4 totals"]
     );
-    // Nor less than the bound allows.
     let report = run_at(
         &mut frame,
         &save,
@@ -4691,7 +4567,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
         false,
     );
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    // The collector caps whole units whatever the cap's sign or size.
     let capped = |extra| {
         let mut rows = vec![row(8, 7, 3), row(8, 8, 1), row(9, 7, 1)];
         rows.push(extra);
@@ -4711,7 +4586,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
             report.differences
         );
     }
-    // Without variant 4's definition SOV is named and not compared.
     let report = run(&mut frame, &all[..3], exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 2);
@@ -4721,14 +4595,12 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
             .keys()
             .any(|reason| reason.contains("no VariantDefinitions row"))
     );
-    // An unknown variant cannot make a value over the cap possible.
     let report = run(
         &mut frame,
         &all[..3],
         vec![row(8, 7, 3), row(8, 8, 1), row(8, 9, 0), row(9, 7, 4)],
     );
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    // A non-essential archetype is not recorded.
     let mut extra = exact;
     extra.push(row(8, 10, 2));
     let report = run(&mut frame, &all, extra);
@@ -4749,10 +4621,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
         .unwrap();
         save
     };
-    // Adding the bound to variant 1, the bound to variant 2 (the total stays
-    // at the bound) and withdrawing variant 2's bound leaves the total at
-    // zero while the saved variant holds the bound: away from a load neither
-    // a recorded 0 nor a recorded 3 is certified.
     let bound = stocked("equipment={id={id=1 type=70} amount=922337202}");
     let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 0)], false);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -4767,13 +4635,11 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
         limited(&report, "away from a load"),
         ["StockpileArchetypes: 1 totals"]
     );
-    // A load inserting that one variant rebuilds the total at the bound.
     let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 0)], true);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 3)], true);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 1);
-    // Amounts of one sign reach the bound and stay there in any order.
     let past = stocked(
         "equipment={id={id=1 type=70} amount=922337202}
         equipment={id={id=2 type=70} amount=1}",
@@ -4781,7 +4647,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     let report = run_at(&mut frame, &past, &all, vec![row(8, 7, 3)], true);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 1);
-    // A repeated variant's last amount replaces its first.
     let repeated = stocked(
         "equipment={id={id=1 type=70} amount=1}
         equipment={id={id=1 type=70} amount=2}",
@@ -4790,10 +4655,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     let report = run_at(&mut frame, &repeated, &all, vec![row(8, 7, 3)], true);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    // Amounts a load could clamp in more than one way derive no total: the
-    // bound, one and minus one end at the bound less one, or at the bound
-    // when the withdrawal comes first; a repeated variant that falls back
-    // after the bound likewise.
     for amounts in [
         "equipment={id={id=1 type=70} amount=922337202}
         equipment={id={id=2 type=70} amount=1}
@@ -4813,7 +4674,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
                 .any(|reason| reason.contains("in more than one way"))
         );
     }
-    // Without the caps nothing is compared.
     *frame.tables[TableId::VariantDefinitions.index()] = definitions(&all);
     let context = country_context(&frame).unwrap();
     let mut report = Report::default();
@@ -4829,9 +4689,6 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     assert_eq!(report.compared_tables["StockpileArchetypes"], 0);
 }
 
-/// Every country's ace rows compare their alive byte and assigned wing
-/// with the saved roster and the wings' `ace` fields, whatever SliceReads
-/// holds: the table is read every hour.
 #[test]
 fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
     let (frame, mut save, _, _) = relation_fixture();
@@ -4895,14 +4752,12 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
     let report = run(exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["AceRangeInputs"], 3);
-    // SOV's wrong row is compared too.
     let report = run(vec![
         row(8, assigned, 0, 1),
         row(8, dead, wing, 1),
         row(9, other, 99, 0),
     ]);
     assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
-    // An unsaved ace, and both saved aces missing.
     let report = run(vec![row(8, assigned, wing, 1), row(8, 4 << 32, 0, 1)]);
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
@@ -4923,7 +4778,6 @@ fn relation_opinions_compare_exactly_and_report_both_one_sided_pairs() {
     assert!(differences(&report).is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["RelationOpinions"], 1);
 
-    // A changed value, a save-only pair and a replay-only pair all fail.
     let mut save = save.clone();
     save.relation_opinions[0].cached_sum = -35;
     saved_relation(&mut save, b"D01", b"GER", Some(7), &[]);
@@ -4954,9 +4808,6 @@ fn relation_opinions_compare_exactly_and_report_both_one_sided_pairs() {
     );
 }
 
-/// A country's relation with itself is ordinary state: the live 2026-09-11
-/// save serializes a self `active_relations` entry with its own cached sum,
-/// so the comparator must compare it instead of refusing the whole group.
 #[test]
 fn a_self_relation_opinion_is_compared_like_any_other_pair() {
     let (mut frame, mut save, membership, equipment) = relation_fixture();
@@ -4981,7 +4832,6 @@ fn a_self_relation_opinion_is_compared_like_any_other_pair() {
     assert!(differences(&report).is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["RelationOpinions"], 2);
 
-    // A wrong self opinion is still an ordinary difference, not a refusal.
     let mut save = save.clone();
     save.relation_opinions[0].cached_sum = -99;
     let report = compare(&frame, &save, &membership, &equipment).unwrap();
@@ -5006,7 +4856,6 @@ fn a_recorded_zero_opinion_or_duplicate_pair_fails_the_comparison() {
     );
     let error = comparison_error(compare(&frame, &save, &membership, &equipment));
     assert!(error.contains("omits a zero cached_sum"), "{error}");
-    // Aliases 101 and 102 resolve to the same tag, so this is one pair twice.
     opinions(
         &mut frame,
         vec![
@@ -5039,13 +4888,11 @@ fn relation_tuples_join_on_the_native_ordinal_and_the_recorded_token_spelling() 
     assert!(differences(&report).is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["RelationTuples"], 1);
 
-    // A different ordinal is a different row on both sides.
     let mut moved = frame.clone();
     tuples(&mut moved, vec![tuple_row(102, 201, 4)]);
     let report = tuple_report(&moved, &save, named);
     assert_eq!(differences(&report).len(), 2, "{:?}", report.differences);
 
-    // A spelling the dictionary contradicts is a named difference.
     let renamed: &[(u32, &'static [u8])] = &[(0x28da, b"embargo")];
     let report = tuple_report(&frame, &save, renamed);
     assert!(
@@ -5056,7 +4903,6 @@ fn relation_tuples_join_on_the_native_ordinal_and_the_recorded_token_spelling() 
         report.differences
     );
 
-    // An unknown token compares every other field and prints the gap.
     let report = tuple_report(&frame, &save, &[]);
     assert!(differences(&report).is_empty(), "{:?}", report.differences);
     assert!(
@@ -5066,7 +4912,6 @@ fn relation_tuples_join_on_the_native_ordinal_and_the_recorded_token_spelling() 
             .any(|reason| reason.contains("no spelling for some relation type tokens"))
     );
 
-    // Endpoints, cancel and the conditional hours all compare exactly.
     let mut changed = frame.clone();
     tuples(&mut changed, {
         let mut row = tuple_row(102, 201, 3);
@@ -5082,7 +4927,6 @@ fn relation_tuples_join_on_the_native_ordinal_and_the_recorded_token_spelling() 
     assert!(lines.iter().any(|line| line.contains(".cancel")));
     assert!(lines.iter().any(|line| line.contains("end_date presence")));
 
-    // A raw cancel byte outside 0/1 cannot be checked against yes/no.
     let mut raw = frame.clone();
     tuples(&mut raw, {
         let mut row = tuple_row(102, 201, 3);
@@ -5097,8 +4941,6 @@ fn relation_tuples_join_on_the_native_ordinal_and_the_recorded_token_spelling() 
 fn forced_full_refresh_compares_every_owner_whatever_its_read_hour() {
     let (mut frame, mut save, _, _) = relation_fixture();
     frame.hour = 0;
-    // SliceReads places every owner earlier, but a daily table walked off
-    // its slot shows that this hour read every owner.
     relations_read_at(&mut frame, -5);
     frame.metrics.table_ns[TableId::ResearchSlots.index()] = 1;
     saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
@@ -5116,7 +4958,6 @@ fn forced_full_refresh_compares_every_owner_whatever_its_read_hour() {
     let context = country_context(&frame).unwrap();
     compare_relation_opinions(&frame, &save, &context, &mut report).unwrap();
     assert!(!report.differences.is_empty());
-    // Without that signal no owner is current, and nothing is compared.
     let mut report = Report::default();
     compare_relation_opinions(&frame, &save, &context, &mut report).unwrap();
     assert!(report.differences.is_empty());
@@ -5160,8 +5001,6 @@ fn owners_read_before_the_oracle_hour_are_not_compared() {
     );
 }
 
-/// CountryIntel's walk can move off its slot when its shared buffer was
-/// held; that is not a full hour, so carried owners stay uncompared.
 #[test]
 fn a_deferred_country_intel_walk_is_not_a_full_hour() {
     let (mut frame, mut save, _, _) = relation_fixture();
@@ -5189,10 +5028,6 @@ fn a_deferred_country_intel_walk_is_not_a_full_hour() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
-/// A country is current by its own ID, never by an alias link: GER (101,
-/// alias 102) whose rows were carried from slice 5 is not current in
-/// alias 102's slice 6, and a carried row whose target link vanished is
-/// skipped before its target is resolved.
 #[test]
 fn an_alias_slice_does_not_make_a_carried_owner_current() {
     let (mut frame, mut save, _, _) = relation_fixture();
@@ -5207,7 +5042,6 @@ fn an_alias_slice_does_not_make_a_carried_owner_current() {
                 target_country: 201,
                 opinion: -100,
             },
-            // A target reference no link names any more.
             replay_data::rows::RelationOpinionRow {
                 owner_country: 101,
                 target_country: 999,
@@ -5230,16 +5064,11 @@ fn an_alias_slice_does_not_make_a_carried_owner_current() {
     assert!(!report.compared_tables.contains_key("RelationOpinions"));
 }
 
-/// Only the owners read at the oracle hour are compared: an owner
-/// SliceReads places at the hour, and an owner without rows whose own
-/// slice is the hour, because its read found none.
 #[test]
 fn a_sliced_hour_compares_exactly_the_owners_it_read() {
     let (mut frame, mut save, _, _) = relation_fixture();
     let ger = 102_u32;
     let d01 = 201_u32;
-    // GER is read at this hour with one row; D01 has no rows and lies
-    // outside this hour's slice; SOV has no rows and lies in it.
     frame.hour = replay_data::cadence::slice_of(301) as i32;
     assert_ne!(
         replay_data::cadence::slice_of(d01),
@@ -5265,14 +5094,12 @@ fn a_sliced_hour_compares_exactly_the_owners_it_read() {
         },
     ]));
     saved_relation(&mut save, b"GER", b"D01", Some(-100), &[]);
-    // D01 is not current: its saved pair is not compared.
     saved_relation(&mut save, b"D01", b"GER", Some(7), &[]);
     let context = country_context(&frame).unwrap();
     let mut report = Report::default();
     compare_relation_opinions(&frame, &save, &context, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["RelationOpinions"], 1);
-    // SOV was read at this hour and found none: a saved SOV pair differs.
     saved_relation(&mut save, b"SOV", b"GER", Some(3), &[]);
     let mut report = Report::default();
     compare_relation_opinions(&frame, &save, &context, &mut report).unwrap();
@@ -5314,7 +5141,6 @@ fn country_intel_compares_every_positional_record_and_both_one_sided_lists() {
     assert!(differences(&report).is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CountryIntel"], 2);
 
-    // One changed lane, one save-only index and one replay-only country.
     let mut save = save.clone();
     save.country_intel
         .get_mut(b"GER".as_slice())
@@ -5344,9 +5170,6 @@ fn country_intel_compares_every_positional_record_and_both_one_sided_lists() {
     assert!(differences.iter().any(|line| line.contains("D01.intel")));
 }
 
-/// The recorded table is sparse: an in-range index without a row compares
-/// as zero lanes, and the greatest recorded index fixes the native count,
-/// so a saved list longer or shorter than it is a difference.
 #[test]
 fn country_intel_reads_absent_in_range_records_as_zero_and_keeps_the_count() {
     let (mut frame, mut save, membership, equipment) = relation_fixture();
@@ -5378,22 +5201,17 @@ fn country_intel_reads_absent_in_range_records_as_zero_and_keeps_the_count() {
     assert!(differences(&report).is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CountryIntel"], 5000);
 
-    // A recorded count short of the saved list leaves saved records absent.
     set(&mut frame, 3999);
     let lines = differences(&compare(&frame, &save, &membership, &equipment).unwrap());
     assert_eq!(lines.len(), 1000, "{:?}", &lines[..3]);
     assert!(lines.iter().all(|line| line.contains("GER.intel[")));
 
-    // A recorded count past the saved list is one named difference.
     set(&mut frame, 5009);
     let lines = differences(&compare(&frame, &save, &membership, &equipment).unwrap());
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("GER.intel[5000..5010]"));
 }
 
-/// The oracle names the session's sample boundary and its instant limits. The frame compared with
-/// a save is one a refresh settled, read after the save in either boundary, and the report says
-/// it takes it to be one.
 #[test]
 fn the_oracle_selects_the_session_sample_boundary() {
     let (mut frame, save, membership, equipment) = relation_fixture();
@@ -5480,9 +5298,6 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
         13
     );
 
-    // Three objects allocated in the save beyond the compared frame: a frame read after the
-    // save cannot show that, in either boundary; the witness names them and the comparison
-    // still passes, because it never waives a difference.
     let mut frame = frame.clone();
     let TableView::Complete(TableRows::Clock(rows)) = &mut *frame.tables[TableId::Clock.index()]
     else {
@@ -5512,7 +5327,6 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     );
     assert!(differences(&report).is_empty());
 
-    // Counters that are not recorded at all leave the boundary unmeasured.
     let mut frame = frame.clone();
     let TableView::Complete(TableRows::Clock(rows)) = &mut *frame.tables[TableId::Clock.index()]
     else {
@@ -5559,7 +5373,6 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
         own_base_speed: Some(Some(400_000)),
-        // A nonempty route records its fuel; the save's absent fuel is zero.
         fuel: Recorded::Value(Some(0)),
         queued_actions: Recorded::Value(Some(0)),
         ..Default::default()
@@ -5663,14 +5476,11 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_a_load_rebuilds() {
             .find(|(reason, _)| reason.starts_with("away from a load"))
             .map_or_else(Vec::new, |(_, subjects)| subjects.clone())
     };
-    // At a load hour the totals were just rebuilt from the saved variants:
-    // planes of archetype 7 are 3.6 + 1.6, whole.
     let exact = run_at(&mut frame, &saved, 5, true);
     assert!(exact.differences.is_empty(), "{:?}", exact.differences);
     assert_eq!(compared(&exact), 1);
     let load = run_at(&mut frame, &saved, 4, true);
     assert_eq!((load.differences.len(), compared(&load)), (1, 1));
-    // Elsewhere each total keeps its own clamped history: nothing is certified.
     let later = run_at(&mut frame, &saved, 4, false);
     assert!(later.differences.is_empty(), "{:?}", later.differences);
     assert_eq!(compared(&later), 0);
@@ -5706,7 +5516,6 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_a_load_rebuilds() {
         .unwrap();
         saved
     };
-    // Plane amounts of one sign reach the bound and stay there in any order.
     let bound = stocked(
         "equipment={id={id=1 type=70} amount=922337202}
         equipment={id={id=2 type=70} amount=1}",
@@ -5714,7 +5523,6 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_a_load_rebuilds() {
     let report = run_at(&mut frame, &bound, 922_337_202, true);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(compared(&report), 1);
-    // Plane amounts a load could clamp in more than one way derive none.
     let ordered = stocked(
         "equipment={id={id=1 type=70} amount=922337202}
         equipment={id={id=2 type=70} amount=1}

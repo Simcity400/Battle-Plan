@@ -1,22 +1,5 @@
 use super::*;
 
-/// Exact per-write daily-history changes.
-/// The key is an increasing event ordinal within this recording branch.
-/// `game_hour` dates the native application, independently of the hourly drain.
-/// Country references resolve through that frame's CountryLinks. `region`
-/// resolves through the recording's verified content region inventory.
-///
-/// `amount_raw` is the signed fixed5 increment at both `family_base` and
-/// `family_base + native_cause` (twice in one word for cause zero). Display
-/// divisor is 100,000. Saturation is refused. The native writer books requested
-/// loss counts, which can exceed actual removals from an exhausted wing pool.
-/// `credited_enemy` distinguishes own losses from enemy credit. `opponent`
-/// retains the opposite tag from the wrapper, with null for nonpositive tags.
-/// `daily_slot` is the authenticated physical daily cursor at the write,
-/// including newly allocated histories; save equality uses it across midnight.
-/// The engine writer map owns ordinal names and source classification.
-/// A complete hourly table certifies zero for country/region pairs with no
-/// events. Lost and first/recovery partial intervals remain unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirLossEventRow {
@@ -49,8 +32,6 @@ typed_codec!(AirLossEventRow, 64,
     Ok(())
 });
 
-/// Exact hourly daily-update roster predicate.
-/// Every canonical country is present; false is distinct from a missing witness.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirDailyRosterRow {
@@ -62,7 +43,6 @@ typed_codec!(AirDailyRosterRow, 32,
 |key| Self { country: key as u32, ..Default::default() },
 { 0 => (eligible): Bool }, |_row| Ok(()));
 
-/// Stable source classes; executable caller addresses stay in engine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -147,29 +127,6 @@ impl NativeValue for BuildingBombingDamageCause {
     }
 }
 
-/// One signed health removal through the shared building-damage writer.
-/// Air bombing and naval damage reach this writer; other callers retain
-/// their source classification. The key is an increasing event ordinal
-/// within this recording branch, never a building handle. `game_hour` dates
-/// the application, independently of the later hourly drain. No-wing damage
-/// retains a null attacker and its source. A wing's attacker is its effective
-/// country, rather than its roster owner. `victim` is the location controller
-/// at application, credited by the air wrapper, rather than the country used
-/// for repair routing. Zero is the reserved null-country reference: retain
-/// such damage with an unknown victim identity, never a guessed country.
-/// `province` distinguishes province buildings from state buildings. Type
-/// tokens resolve through recorded LexicalTokens and effective content.
-/// A province building whose province has no state records state zero as
-/// known absence. State-scoped buildings retain their actual state id.
-///
-/// `amount_raw` is pre-minus-post building health after clamps; a full level
-/// is 10,000,000. `credited_raw` is the returned damage budget and can differ
-/// under damage modifiers. Negative modifiers can increase health; those
-/// gains remain exact negative removals rather than unavailable damage.
-/// `native_cause` preserves the source-kind word independently of the stable
-/// caller class. This is an hourly event ledger: a complete empty table is
-/// zero events, an unavailable interval is unknown. Its first branch interval
-/// and every interval after a lost event are unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct BuildingBombingDamageRow {

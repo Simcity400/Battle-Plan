@@ -1,12 +1,9 @@
-//! Scripted-key presentation cases. The shared reader owns their grammar;
-//! consumers supply the recorded event scope for selection.
 
 use crate::parser::{Item, Value};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Case {
     pub key: String,
-    /// None is the native null trigger, from a scalar or `key = yes`.
     pub trigger: Option<Vec<Item>>,
 }
 
@@ -16,8 +13,6 @@ pub struct ScriptedKey {
 }
 
 impl ScriptedKey {
-    /// Cases append; key strings use raw C-string bytes,
-    /// and a false/invalid bool creates a conjunction, even if it is empty.
     pub fn append(&mut self, value: &Value) -> Result<(), String> {
         if let Some(body) = value.items() {
             for item in body {
@@ -42,8 +37,6 @@ impl ScriptedKey {
         Ok(())
     }
 
-    /// First null/true trigger wins. A single case is evaluated,
-    /// and no match gives no key; an unknown trigger cannot skip to a fallback.
     pub fn select(
         &self,
         mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,

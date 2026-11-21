@@ -54,7 +54,6 @@ fn fixture() -> Fixture {
     memory.put(0x4000 + side::IS_ATTACKER, &[0]);
     memory.array(0x4000 + COUNTRY_ARRAY, 0x9000, 2);
     memory.dword(0x9000, 0x8000_0007);
-    // A later unreadable country must not hide the native first-country read.
     memory.qword(0x5000, cprovince::VTABLE_RVA.0 as u64);
     memory.dword(0x5000 + cprovince::ID, 42);
     memory.qword(0x7000, cprovince::VTABLE_RVA.0 as u64);
@@ -106,7 +105,6 @@ fn combat_wipe_default_country_follows_slot_zero_link_translation() {
     memory.dword(0xa000, 5);
     memory.dword(0xa004, 6);
     memory.dword(0xa008, 0);
-    // Reserved-country link search stops before an unreadable fourth lane.
     assert_eq!(words(&memory, 0x3000).unwrap()[4], 2);
     memory.array(0x1000 + cgame_state::COUNTRY_LINKS, 0, 0);
     assert_eq!(words(&memory, 0x3000).unwrap()[4], 0);
@@ -172,7 +170,6 @@ fn combat_wipe_defender_and_border_side_follow_native_opposite_selection() {
 fn combat_wipe_ignores_authenticated_naval_side_and_refuses_unknown_side() {
     let mut memory = fixture();
     memory.qword(0x3000, cnaval_combatant::VTABLE_RVA.0 as u64);
-    // No unit read is attempted for the known unrelated native domain.
     assert!(WipePlan::read(&memory, 0, 0x3000, 0).unwrap().is_none());
     memory.qword(0x3000, carmy::VTABLE_RVA.0 as u64);
     assert_eq!(words(&memory, 0x3000), Err("combat wipe class unsupported"));

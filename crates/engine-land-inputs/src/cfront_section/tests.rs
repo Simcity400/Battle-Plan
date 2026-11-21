@@ -5,7 +5,6 @@ const PAIRS_AT: usize = 0x1000;
 const FIRST: usize = 0x100;
 const SECOND: usize = 0x400;
 
-/// Two provinces (ids 4 and 8) and `pairs` alternating pairs of them.
 fn image(pairs: usize) -> Vec<u8> {
     let mut bytes = vec![0_u8; PAIRS_AT + pairs * 16];
     for (at, id) in [(FIRST, 4_u32), (SECOND, 8)] {
@@ -29,8 +28,6 @@ fn set_pair(bytes: &mut [u8], pair: usize, left: u64, right: u64) {
     bytes[at + 8..at + 16].copy_from_slice(&right.to_le_bytes());
 }
 
-/// The per-pair walk the batches replace: a guarded read per pair and two
-/// per province.
 fn per_pair(
     memory: &impl Memory,
     base: usize,
@@ -76,8 +73,6 @@ fn a_batch_of_pairs_and_their_provinces_take_two_guarded_reads() {
     copy_pairs(&memory, 0, pairs, &mut output, 0).unwrap();
     assert_eq!(output.len(), PAIR_BATCH * 2);
     assert!(output.chunks_exact(4).all(|words| words == [4, 8, 8, 4]));
-    // One copy of the pair array and one gather of its provinces, where the
-    // per-pair walk made five guarded reads a pair.
     assert_eq!(memory.calls.get(), 2);
 }
 
@@ -85,8 +80,6 @@ fn a_batch_of_pairs_and_their_provinces_take_two_guarded_reads() {
 fn every_fault_keeps_the_per_pair_ids_prefix_and_first_failure() {
     let count = PAIR_BATCH + 5;
     let mut cases = vec![image(count)];
-    // A null, a foreign and an unreadable province, a zero id, and a pair
-    // array that ends early: in the first batch and in the second.
     for pair in [3, PAIR_BATCH + 2] {
         for (left, right) in [
             (FIRST as u64, 0),
@@ -104,8 +97,6 @@ fn every_fault_keeps_the_per_pair_ids_prefix_and_first_failure() {
         bytes.truncate(PAIRS_AT + pair * 16 + 8);
         cases.push(bytes);
     }
-    // A province whose identity reads but whose id lies past the image: its
-    // record cannot complete, and its own id read fails.
     let mut bytes = image(count);
     let province = bytes.len();
     bytes.extend_from_slice(&(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());

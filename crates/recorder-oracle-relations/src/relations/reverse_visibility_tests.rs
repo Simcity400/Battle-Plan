@@ -59,7 +59,6 @@ fn historical_refused_and_known_empty_reverse_matrix_remain_distinct() {
     let mut report = Report::default();
     compare(&frame, &mut report).unwrap();
     assert!(limits(&report, "diplomacy matrix count/order"));
-    // This is a present native count0, not a refusal or a saved comparison.
     assert!(report.limitations.iter().any(|(reason, subjects)| {
         reason.contains("diplomacy matrix count/order")
             && reason.contains("no direct text-save counterpart")

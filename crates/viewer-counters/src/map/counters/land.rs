@@ -1,5 +1,3 @@
-//! Unit counters: division, railway-gun and task-force sources, first-fit plates and their
-//! drawing.
 
 use super::*;
 use replay_data::{rows::ActiveAbilityRow, rows::RailwayGunCounterInputRow};
@@ -26,13 +24,10 @@ use viewer_foundation::unit_handle::Unit;
 
 pub(super) type ColumnIdentity = (Level, u32, u32, u32, u32);
 
-/// The retained column's graphical parent, independently of its items' viewport parent.
 #[derive(Clone, Debug)]
 pub(super) struct ColumnPlacement {
     pub(super) hovered: bool,
-    /// The column's content priority at its grouping level.
     pub(super) priority: i8,
-    /// Where the column stands, for a free eye.
     pub(super) anchor: Option<IconAnchor>,
     pub(super) identity: ColumnIdentity,
     pub(super) count: usize,
@@ -62,7 +57,6 @@ fn column_holder(
                 || container.fade != native::Animation::None
                 || container.peek)
         {
-            // Columns need retained transitions alongside the static land batch.
             return Err(format!(
                 "{} has column movement or fading that the land batch cannot retain",
                 element.path
@@ -96,7 +90,6 @@ fn column_holder(
         .find(|holder| holder.path == grid.path)
         .ok_or_else(|| format!("{} is not shown by {STACK_WINDOW}", grid.path))?;
     if holder.scale != 1.0 || holder.clip.is_some() || holder.opacity != 1.0 {
-        // The game carries these terms; the land batch cannot apply them.
         return Err(format!(
             "{} has column scale, clipping or opacity that the land batch cannot compose",
             grid.path
@@ -146,45 +139,31 @@ pub(super) struct PreparedLand {
     pub(super) stacks: Vec<Stack>,
     pub(super) styles: Vec<StackStyle>,
     pub(super) sprites: Vec<Option<hovers::Sprite>>,
-    /// Each plate's column plan and its place in it, for a plan the view keeps
-    /// ([`PreparedLand::keep_drawn`]).
     pub(super) plans: Vec<Option<(Arc<ColumnProgram>, usize)>>,
-    /// The naval items among the column plates, drawn with the naval window.
     pub(super) flotillas: Vec<Flotilla>,
     pub(super) positions: Vec<counter_move::Position>,
-    /// Each position's unit, whose presentation history moves its counter.
     pub(super) units: Vec<Unit>,
     pub(super) icons: Vec<counter_groups::Icon>,
-    /// Each icon's province visual bucket, distinguishing same-province sources.
     pub(super) source_kinds: Vec<u32>,
     pub(super) groups: Vec<counter_groups::Group>,
     pub(super) items: Vec<Vec<Plate>>,
     pub(super) hovered: Vec<bool>,
-    /// Each icon's grouping level.
     pub(super) levels: Vec<Level>,
     pub(super) extents: Extents,
     pub(super) countries: Arc<Countries>,
     pub(super) templates: Arc<TemplateIcons>,
     pub(super) vision: Arc<Vision>,
-    /// Group indices in draw order, rebuilt by every [`PreparedLand::draw`].
     pub(super) order: Vec<usize>,
-    /// The counter the pointer holds this frame, the ones it left, and the presentation time.
     pub(super) pointer: Option<CounterPointer>,
     pub(super) exits: Vec<super::CounterExit>,
     pub(super) time: f32,
-    /// The left counters whose Up effect still changed on the clock at the last draw.
     pub(super) exits_running: std::cell::RefCell<Vec<Unit>>,
-    /// The pointed plate's effect still changed on the clock at the last draw.
     pub(super) pointer_running: std::cell::Cell<bool>,
-    /// Why the pointed plate drew without its pointer state, for the report.
     pub(super) pointer_refused: std::cell::RefCell<Vec<String>>,
-    /// The pointed plate drew its pointer state.
     pub(super) pointer_drawn: std::cell::Cell<bool>,
 }
 
 impl PreparedLand {
-    /// `member`'s plate state from the pointer: Over or Down (`Some(down)`) while it holds the
-    /// counter, Up (`None`) after it left; with the seconds in that state and the unit.
     pub(super) fn pointed(&self, member: usize) -> Option<(Option<bool>, f32, Unit)> {
         let stack = &self.stacks[member];
         let kind = if stack.gun.is_some() {
@@ -204,10 +183,6 @@ impl PreparedLand {
             })
     }
 
-    /// Takes `old`'s drawn plates for the plates laid out from the same kept column plan: a plate
-    /// draws from its stack and style, which the plan holds, and the hour's countries, templates
-    /// and vision. For a preparation of the same view, camera and tables in which only the layers'
-    /// products changed; the draw still draws a kept plate again at another origin or priority.
     pub(super) fn keep_drawn(&mut self, old: &mut PreparedLand) {
         if !(Arc::ptr_eq(&self.countries, &old.countries)
             && Arc::ptr_eq(&self.templates, &old.templates)
@@ -231,10 +206,6 @@ impl PreparedLand {
         }
     }
 
-    /// Takes `old`'s drawn plates, from another hour's layout of the same view and art, for the
-    /// plates whose stack and style are `old`'s by value and that draw with the same flags,
-    /// template icons and viewing country: all a plate draws from ([`draw_land_counter`]) beside
-    /// the view. The draw still draws a carried plate again at another origin or priority.
     pub(super) fn keep_drawn_by_value(&mut self, old: &mut PreparedLand) {
         if !(self.countries.same_flags(&old.countries)
             && Arc::ptr_eq(&self.templates, &old.templates)
@@ -279,31 +250,14 @@ impl PreparedLand {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             let settled = history.clock_unavailable();
-            // The hour a track's first place stands at is the hour of the rows this layout was
-            // made from, never the hour the window has on screen: a publication is prepared ahead
-            // of what the frame draws, and a track read against that hour would place every mover
-            // one publication further along its route than its own rows do.
-            // The hour of the rows this layout was made from, as an integer: the track's own
-            // second place stands at it, and a display frame's head is differenced against it
-            // before anything is cast to `f32` (a replay hour is about sixty million, where
-            // neighbouring `f32` values are four hours apart).
             let hour = inputs.hour;
             let width = inputs.content.map.x();
             let world = inputs.route_world();
             let mut places: Vec<viewer_foundation::map::free_icons::Place> = Vec::new();
             for ((icon, position), &unit) in self.icons.iter_mut().zip(&self.positions).zip(&self.units) {
-                // Where this hour's rows put the stack, which is what its plate is laid out at.
-                // The stack carries that place and the place the publication before it read, so
-                // the display frame interpolates between the two at its own head and offsets this
-                // plate's window: the counter is placed at the frame's hour on every display frame
-                // and its motion never asks for the overlay to be painted.
                 let drawn = history.sample(unit, position);
                 let placed = drawn.map_or_else(|| position.at(), |drawn| drawn.motion.position());
                 icon.anchor = placed;
-                // The places of the hours this publication's own rows moved the stack at, oldest
-                // first, and this hour's own last: the display frame then stands the counter where
-                // the recording had it at the frame's hour instead of gliding it evenly over the
-                // whole interval, and holds it still over the hours the recording held it still.
                 places.clear();
                 for &(at, province) in inputs.moved.of(unit) {
                     if at >= hour {
@@ -368,9 +322,6 @@ impl PreparedLand {
             };
             count_noted(gaps, STACK_WINDOW, &diagnostics);
         }
-        // Sort the visible icons on `(depth - priority) * 1e6` and re-parents
-        // them last to first, so the nearest group of one priority draws on top. The columns
-        // are emitted farthest first for the same result.
         let view_projection = inputs.camera.view_projection(inputs.viewport);
         let depth = |anchor: [f32; 3]| {
             let offset = inputs.camera.wrap_offset(anchor, inputs.viewport);
@@ -385,7 +336,6 @@ impl PreparedLand {
                 .cmp(&hovered[*b])
                 .then_with(|| depth(groups[*b].anchor).total_cmp(&depth(groups[*a].anchor)))
         });
-        // Land and naval plates share one column and one running icon ordinal.
         let mut ordinal = 0;
         let navy_size = inputs.navy_size();
         let mut placed_columns = Vec::with_capacity(self.groups.len());
@@ -409,9 +359,6 @@ impl PreparedLand {
                 .content
                 .defines
                 .level_priority(level, inputs.visibility.priorities);
-            // Where the group stands over the hours this publication covers goes into the batch,
-            // and its plate's anchor stands on it: the display frame places the plate at its own
-            // head from there, without the overlay being painted again.
             let moving = self.groups[index].track.clone().map(|track| batch.add_track(track));
             let icon = inputs
                 .icon_anchor(
@@ -420,7 +367,6 @@ impl PreparedLand {
                     inputs.content.defines.icons_cutoff,
                 )
                 .map(|anchor| anchor.moving(moving));
-            // Sum every item: an unknown size refuses the whole column.
             plates.clear();
             sizes.clear();
             items.clear();
@@ -454,7 +400,6 @@ impl PreparedLand {
                 .as_ref()
                 .copied()
                 .map_err(Clone::clone)?;
-                // Add the new item's own height first.
                 below = below.wrapping_add(size[1] as i32);
                 items.push((root, [0, below]));
                 Ok::<_, String>(())
@@ -513,7 +458,6 @@ impl PreparedLand {
                     screen[axis] as f32 + column.holder.origin[axis] + place[axis] as f32
                 });
                 let hit_start = report.unit_hits.len();
-                // A hidden kind or owner is still laid out and hit-tested.
                 let shown = match plate {
                     Plate::Land(member) => {
                         let stack = &self.stacks[member];
@@ -538,7 +482,6 @@ impl PreparedLand {
                         (drawn, opacity, member)
                     }
                     Plate::Naval(member) => {
-                        // The presented frame draws it through its window's instance.
                         self.naval_plate(inputs, report, missing_owners, member);
                         at_sea.push(AtSeaPlate {
                             member,
@@ -591,9 +534,6 @@ impl PreparedLand {
         Ok(placed_columns)
     }
 
-    /// Draws one land plate at `origin` into its cached sprite and reports it; `None` when it is
-    /// off screen. `priority` is its column's. `styles` are the kinds' template values
-    /// ([`PlateStyle`]).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn land_plate(
         &mut self,
@@ -664,7 +604,6 @@ impl PreparedLand {
                 .filter(|token| inputs.assets.ability_sheet(&token.token).is_none())
                 .count();
         }
-        // The game observes both the root and its actually presented children.
         let ours = stack.owner == self.vision.ours();
         let style = &styles[usize::from(stack.gun.is_some())];
         let hover = CounterHover {
@@ -690,7 +629,6 @@ impl PreparedLand {
             } else {
                 child.sprite.as_str()
             };
-            // A pass-through plate takes no pointer; an alpha-tested one is refused by name.
             let plain = inputs
                 .assets
                 .gui
@@ -733,10 +671,6 @@ impl PreparedLand {
             stack.flag_owner,
             stack.coarse,
         );
-        // A plate whose quads are the ones it drew, standing where the hours and the camera now
-        // put it: what a draw at the new origin would put there is its own quads moved by the
-        // whole interface pixels between the two origins
-        // ([`viewer_foundation::map::anchored::shift`]), so the plate is moved, not drawn again.
         let step = self.pointed(member).is_none().then_some(()).and_then(|()| {
             let sprite = self.sprites[member].as_ref()?;
             (sprite.priority == priority).then_some(())?;
@@ -765,7 +699,6 @@ impl PreparedLand {
             #[cfg(test)]
             super::preparation::plan_probe::record(|counts| counts.plates_drawn += 1);
             viewer_foundation::map::redraws::note("plates.drawn", 1);
-            // A moved counter redraws into its previous batch's storage.
             let mut sprite = self.sprites[member]
                 .take()
                 .map(|sprite| sprite.batch)
@@ -775,7 +708,6 @@ impl PreparedLand {
             self.sprites[member] = Some(hovers::Sprite {
                 painting: viewer_foundation::map::sprites::next_painting(),
                 stood: [0; 2],
-                // A pointed draw never stands for the plate without the pointer.
                 origin: if self.pointed(member).is_some() {
                     [f32::NAN; 2]
                 } else {
@@ -818,7 +750,6 @@ impl PreparedLand {
         Ok(self.sprites[member].as_ref())
     }
 
-    /// A naval item's counts; its moving window can reach the screen from an off-screen slot.
     fn naval_plate(
         &self,
         inputs: &CounterInputs<'_>,
@@ -840,7 +771,6 @@ impl PreparedLand {
         }
     }
 
-    /// The caller turns these owners into `report.missing_flags`' tags. `coarse` is the plate's.
     fn missing_flag(
         &self,
         inputs: &CounterInputs<'_>,
@@ -849,7 +779,6 @@ impl PreparedLand {
         owner: u32,
         coarse: bool,
     ) {
-        // acquire the selected atlas before drawing.
         let atlas = if coarse {
             &inputs.assets.medium_flags
         } else {
@@ -867,9 +796,6 @@ impl PreparedLand {
     }
 }
 
-/// What every plate of one counter kind takes from the GUI templates alone, read once a draw
-/// rather than once a plate: the window's authored tooltip, whether its `count_bg` button takes
-/// the pointer, and the plate child the code sets a sprite on.
 pub(super) struct PlateStyle<'a> {
     authored: Option<viewer_foundation::map::counter_hovers::gui_authored::Authored>,
     takes_pointer: bool,
@@ -884,7 +810,6 @@ impl<'a> PlateStyle<'a> {
             authored: root.and_then(|root| {
                 viewer_foundation::map::counter_hovers::gui_authored::Authored::read(root, false)
             }),
-            // A `count_bg` button that is `alwaystransparent` or disabled takes no pointer state.
             takes_pointer: root
                 .and_then(|root| root.find(installed_content_core::gui::native::Kind::Button, "count_bg"))
                 .and_then(installed_content_core::gui::native::Element::button)
@@ -898,84 +823,45 @@ impl<'a> PlateStyle<'a> {
     }
 }
 
-/// One first-fit counter item after the geographic group's unit rebuild.
 #[derive(Clone, PartialEq)]
 pub(super) struct Stack {
     pub(super) selected: bool,
     pub(super) owner: u32,
-    /// The representative's logical owner, when it is a linked country.
     pub(super) logical: Option<u32>,
-    /// The plate's colour under the counter colour mode ([`counter_plate_color`]), or why the
-    /// hour cannot give it (the plate is then not drawn).
     pub(super) plate: Result<[f32; 4], String>,
-    /// The representative's flag owner at this zoom; see [`unit_flag_owner`].
     pub(super) flag_owner: u32,
-    /// Whether the plate draws coarse: its column stands beyond the content's coarse grouping
-    /// distance (the camera's height, or a free eye's distance to the column).
     pub(super) coarse: bool,
     pub(super) type_tint: Option<type_tint::Side>,
     pub(super) hq: bool,
     pub(super) portrait: Option<counter_order::Portrait>,
-    /// Whether any member of the stack is below the engine's 250 visibility.
-    ///
-    /// One member whose visibility byte is under 250 is enough to select the
-    /// `type` child's sprite and count text for the whole counter. See
-    /// [`crate::map::perspective`]; fog of war off never sets this flag.
     pub(super) hidden: bool,
-    /// Each member's fixed5 [`counter_status::modified_strength`].
     pub(super) hit_points: Vec<i64>,
-    /// Each member's fixed5 organisation [`counter_status::ratio`].
     pub(super) organisation: Vec<i64>,
-    /// False when a fully visible member's maxima are not recorded: no bars are drawn.
     pub(super) bars: bool,
-    /// Each member's status, in the order the stack was built.
     pub(super) members: Vec<counter_status::Member>,
-    /// Pass every first-fit member to its tooltip, not only visible statuses.
     pub(super) divisions: Arc<[u64]>,
     pub(super) timing: Arc<[viewer_foundation::map::counter_hovers::land::Timing]>,
-    /// First admitted representative, including partial members. Sources follow
-    /// the reconstructed group order; members within a source follow recorded occupant order.
     pub(super) template: u64,
-    /// The same representative's fake-preferred template, for its plain type glyph.
     pub(super) alternate_template: u64,
-    /// Representative-owner disclosure for the type glyph.
     pub(super) disclosure: Result<bool, SharingUnknown>,
-    /// A member whose join the hour could not decide, with the missing input.
     pub(super) grouping_unknown: Option<SharingUnknown>,
-    /// The route every member of this stack is on, when it is moving.
     pub(super) moving: Option<Movement>,
-    /// Representative action, compared with fully visible division members.
     pub(super) action: counter_action::Action,
-    /// `group_marker`'s colour; `None` hides it (not own, no group, or unrecorded operands).
     pub(super) marker: Option<[f32; 4]>,
-    /// Whether a visible HQ provider's group withdraws; `None` unrecorded.
     pub(super) leader_en_route: Option<bool>,
-    /// `defending_area`: the game writes it per member without combining, so the last
-    /// member that has an orders group decides.
     pub(super) defending_area: bool,
-    /// A railway-gun plate and the children only it draws.
     pub(super) gun: Option<GunStack>,
-    /// The ability grid's bound records in native vector order; `None` when the hour
-    /// cannot say which the last fully visible commander-bearing member shows.
     pub(super) abilities: Option<Vec<AbilityIcon>>,
 }
 
-/// What a railway-gun plate draws besides the land counter's shared children.
 #[derive(Clone, PartialEq)]
 pub(super) struct GunStack {
-    /// The representative gun's stat definition name: the authored key names its type icon
-    /// (`GFX_unit_<key>_icon_medium_white`, [`templates::type_icon`]) with no custom icon, as
-    /// Pass -1 for every kind but a division.
     pub(super) name: String,
-    /// The last member's location warning; `None` when its rail operands are unknown.
     pub(super) location_warning: Option<bool>,
-    /// [`guns::aggregate_actions`] over every member.
     pub(super) action: counter_action::Action,
-    /// The representative is on its route this hour.
     pub(super) moving: bool,
 }
 
-/// The per-hour dictionaries a counter reads, bundled so the pass keeps one parameter.
 pub(super) struct CounterTables<'a> {
     pub(super) type_tints: &'a type_tint::Index,
     pub(super) countries: &'a Arc<Countries>,
@@ -984,43 +870,25 @@ pub(super) struct CounterTables<'a> {
     pub(super) movement: &'a Movements,
     pub(super) actions: &'a counter_action::Actions,
     pub(super) vision: &'a Arc<Vision>,
-    /// The recorded occupant order; `None` when the hour's census is incomplete, which
-    /// offers units in cold handle order.
     pub(super) order: Option<&'a counter_order::RecordedOrder>,
-    /// Naval, orders-group and portrait inputs.
     pub(super) native: &'a NativeInputs,
-    /// Orders groups' parents, army-group bytes and colours, and the orders' child bytes.
     pub(super) orders: &'a counter_inputs::OrdersIndex,
     pub(super) guns: &'a GunInputs,
     pub(super) abilities: &'a AbilityInputs,
     pub(super) task_forces: &'a TaskForceMotions,
-    /// Divisions providing a led orders group's HQ.
     pub(super) hq_providers: &'a BTreeSet<u64>,
-    /// [`hq_portraits`].
     pub(super) portraits: &'a BTreeMap<u64, counter_order::Portrait>,
-    /// `ArmyIconInputs` by division.
     pub(super) icon_inputs: &'a IconInputs,
 }
 
-/// One division's `DivisionStatus` row, plus the one `DivisionMovement` byte the glyphs need.
-///
-/// A division without a status row takes [`DivisionStatuses::MISSING`]: no glyph and no bars.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DivisionStatus {
-    /// Maximum strength and organisation as the game shows them, from DivisionPanelStats; `None`
-    /// without its row or for a refused word, which draws no bars.
     pub maxima: Option<[i64; 2]>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
     pub supply_ratio: i64,
-    /// Attrition-presence predicate ([`DivisionStatusRow::has_attrition`]).
-    ///
-    /// [`DivisionStatusRow::has_attrition`]: replay_data::rows::DivisionStatusRow::has_attrition
     pub attrition: bool,
-    /// `DivisionStatus.exercising`, or Map's `DivisionModelInputs.exercising`; `None`
-    /// without a row or for a refused read.
     pub exercising: Option<bool>,
-    /// `DivisionStatus.has_order`; `None` without a row.
     pub has_order: Option<bool>,
     pub invalid_orders: u8,
     pub naval_transfer: bool,
@@ -1028,7 +896,6 @@ pub struct DivisionStatus {
 }
 
 impl DivisionStatus {
-    /// What a division with no recorded row reads as; its counter draws no bars or glyphs from it.
     pub const MISSING: Self = Self {
         maxima: None,
         entrenchment: 0,
@@ -1042,11 +909,6 @@ impl DivisionStatus {
         strength_factor: counter_status::FIXED,
     };
 
-    /// A recorded `DivisionStatus` row's status. `supply_ratio` is the displayed ratio
-    /// ([`DivisionStatusRow::displayed_supply`]); an unknown one draws no supply glyph, as a missing
-    /// row does.
-    ///
-    /// [`DivisionStatusRow::displayed_supply`]: replay_data::rows::DivisionStatusRow::displayed_supply
     pub fn recorded(row: StatusFields, maxima: Option<[i64; 2]>, naval_transfer: bool) -> Self {
         Self {
             maxima,
@@ -1063,12 +925,10 @@ impl DivisionStatus {
     }
 }
 
-/// The values of one `DivisionStatus` row a counter reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StatusFields {
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    /// The displayed supply ratio.
     pub supply_ratio: Option<i64>,
     pub attrition: bool,
     pub exercising: u8,
@@ -1077,11 +937,8 @@ pub struct StatusFields {
     pub strength_factor: i64,
 }
 
-/// A native source bucket: province and recorded visual stack kind.
 pub(super) type StackKey = (u32, u32);
 
-/// What a batch does to a plate's drawn quads as it takes them: the offset added to their sort
-/// key, the icon they stand on and the opacity they are drawn at.
 fn taken(offset: u64, icon: Option<IconAnchor>, opacity: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
@@ -1091,20 +948,14 @@ fn taken(offset: u64, icon: Option<IconAnchor>, opacity: f32) -> u64 {
     hasher.finish()
 }
 
-/// One admitted unit, retained until the geographic group's first-fit rebuild. Its route is
-/// borrowed from the hour's [`Movements`].
 #[derive(Clone)]
 pub(super) struct LandUnit<'m> {
-    /// The ordinal in the province's recorded unit order; zero without a recorded order.
     pub(super) ordinal: u32,
     pub(super) alternate_template: u64,
-    /// Whether the unit's owner shares vision; `Err` when the hour cannot prove
-    /// a negative ([`Vision::shares_vision_proven`]).
     pub(super) shared_vision: Result<bool, SharingUnknown>,
     pub(super) separate: bool,
     pub(super) id: u64,
     pub(super) owner: u32,
-    /// The logical owner, when it is a linked country.
     pub(super) logical: Option<u32>,
     pub(super) flag_owner: u32,
     pub(super) type_tint: Option<type_tint::Side>,
@@ -1112,63 +963,38 @@ pub(super) struct LandUnit<'m> {
     pub(super) orders_group: u64,
     pub(super) hq: bool,
     pub(super) sight: Sight,
-    /// Fixed5 [`counter_status::modified_strength`].
     pub(super) hp: i64,
-    /// [`counter_status::ratio`] of organisation, fixed5.
     pub(super) org: i64,
-    /// Whether `hp` and `org` divide by recorded maxima.
     pub(super) bars: bool,
     pub(super) status: counter_status::Member,
     pub(super) movement: Option<&'m Movement>,
-    /// Division action; ignored for railway guns, which carry their own classifier below.
     pub(super) action: counter_action::Action,
-    /// The orders group's parent; `None` when the group row is not recorded.
     pub(super) group_parent: Option<u64>,
-    /// [`counter_inputs::parent_branch`]; `None` when a group or plan row is missing.
     pub(super) parent_branch: Option<bool>,
-    /// Whether this unit's orders group is withdrawing; `None` when unrecorded.
     pub(super) withdrawing: Option<bool>,
-    /// [`counter_inputs::area_defence`]; `None` when the hour cannot settle it.
     pub(super) defending_area: Option<bool>,
-    /// The member's orders-group commander for the ability grid: `Some(None)` for none,
-    /// `None` when its group row is not recorded.
     pub(super) commander: Option<Option<u64>>,
-    /// Set for a railway gun, which only ever shares a plate with other guns.
     pub(super) gun: Option<GunUnit>,
 }
 
-/// A railway gun's own join and draw operands.
 #[derive(Clone)]
 pub(super) struct GunUnit {
-    /// The stat definition's name: the class-13 join compares it, and it names the icon.
     pub(super) name: String,
-    /// The native first-edge duration and reconstructed map-stack kind for hover text.
     pub(super) timing: viewer_foundation::map::counter_hovers::land::Timing,
     pub(super) location_warning: Option<bool>,
-    /// [`guns::join_action`].
     pub(super) join_action: u8,
-    /// [`guns::action_code`], with a named gap when its operands are unavailable.
     pub(super) action: counter_action::Action,
-    /// Where the gun hangs this hour: the movement layer's route position for its kind.
     pub(super) position: Option<counter_move::Position>,
 }
 
-/// The settings the game reads besides the two units. Local selection is
-/// checked separately by [`CounterInputs::selected_join`] before these rules.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct JoinRules {
-    /// Coarse country-grouping setting.
     pub(super) coarse: bool,
-    /// `counter_color_mode`, which picks the owner test.
     pub(super) color_mode: CounterColorMode,
-    /// NATO icon setting used when comparing custom counter icons.
     pub(super) nato: bool,
 }
 
 impl JoinRules {
-    /// The owner test runs for every kind before its coarse return. In country-colour
-    /// mode, the representative and candidate must have the same canonical roster-owner
-    /// slot; otherwise their allegiance categories must agree.
     pub(super) fn owners_join(self, countries: &Countries, rep: u32, candidate: u32) -> bool {
         match self.color_mode {
             CounterColorMode::Country => rep == candidate,
@@ -1177,16 +1003,11 @@ impl JoinRules {
     }
 }
 
-/// one source icon per province/visual bucket, holding every
-/// class of unit its province's occupant array puts there. Its unit count does not weight the
-/// geographic group's mean.
 #[derive(Default)]
 pub(super) struct Source<'a> {
     pub(super) units: Vec<SourceUnit<'a>>,
 }
 
-/// One member of a source: a land unit (division or railway gun) or a task force. Most
-/// members are land units, so boxing that variant would allocate for nearly every unit.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum SourceUnit<'a> {
     Land(LandUnit<'a>),
@@ -1209,13 +1030,10 @@ impl SourceUnit<'_> {
     }
 }
 
-/// A land plate's opacity in the map mode: the navy mode draws army counters at its own
-/// opacity; railway guns keep theirs.
 pub(super) fn plate_opacity(visibility: &Visibility, gun: bool) -> f32 {
     if gun { 1.0 } else { visibility.army_opacity }
 }
 
-/// One plate of a column: a land stack or a naval item, by index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Plate {
     Land(usize),
@@ -1223,12 +1041,6 @@ pub(super) enum Plate {
 }
 
 impl LandUnit<'_> {
-    /// Test plate sharing in the existing order: kind, owner/allegiance and coarse
-    /// gates, then candidate-owner disclosure and the corresponding template checks.
-    /// Shared disclosure compares real priority definitions and custom indices;
-    /// otherwise fake-preferred priority names can match. Own representatives also
-    /// compare idle state and group inheritance. Missing reached operands leave the
-    /// join unknown, retaining first-fit order.
     pub(super) fn can_join(
         &self,
         rep: &LandUnit<'_>,
@@ -1236,8 +1048,6 @@ impl LandUnit<'_> {
         countries: &Countries,
         rules: JoinRules,
     ) -> Result<bool, SharingUnknown> {
-        // Filter items by unit kind before testing plate sharing: a gun and a division can
-        // share a column but never a plate.
         if self.gun.is_some() != rep.gun.is_some() {
             return Ok(false);
         }
@@ -1265,8 +1075,6 @@ impl LandUnit<'_> {
         }
     }
 
-    /// [`Self::can_join`]'s tests from the disclosure branch on, for a candidate whose owner
-    /// shares vision with the viewer (`shared`) or not.
     fn joins_disclosed(
         &self,
         rep: &LandUnit<'_>,
@@ -1275,9 +1083,6 @@ impl LandUnit<'_> {
         rules: JoinRules,
         shared: bool,
     ) -> bool {
-        // Disclosure is tested for the candidate owner. Shared disclosure uses real
-        // priority-definition identity and real-template custom indices. Otherwise
-        // fake-preferred names and indices permit sharing across country-local templates.
         if shared && rep.owner != self.owner {
             return false;
         }
@@ -1328,7 +1133,6 @@ impl LandUnit<'_> {
 }
 
 impl GunUnit {
-    /// Railway-gun plate sharing after the common allegiance and coarse gates.
     fn can_join(
         &self,
         first: &GunUnit,
@@ -1354,8 +1158,6 @@ impl GunUnit {
     }
 }
 
-/// Keep the first admitted representative. Mixed-plate flags therefore follow
-/// source order rather than a later member.
 pub(super) fn first_fit<T: Copy>(
     units: impl IntoIterator<Item = T>,
     mut joins: impl FnMut(T, T) -> bool,
@@ -1370,9 +1172,6 @@ pub(super) fn first_fit<T: Copy>(
     items
 }
 
-/// [`LandUnit::can_join`] as [`first_fit`]'s test for `unit` against the representative `rep`.
-/// A join it cannot decide is not taken, and `undecided` records the unit (by id) with the
-/// missing input: the plate it stands in may differ from the game's.
 pub(super) fn land_join(
     unit: &LandUnit<'_>,
     rep: &LandUnit<'_>,
@@ -1390,10 +1189,6 @@ pub(super) fn land_join(
     }
 }
 
-/// The representative owner's disclosure as the type glyph needs it (the game takes the
-/// real template's custom picture only when the owner shares vision). An unknown disclosure
-/// is `Err` only where the two glyphs it allows differ, under the view's NATO option and the
-/// sprite registry (`declared`), which the glyph is selected with ([`TemplateIcons::icon`]).
 pub(super) fn glyph_disclosure(
     rep: &LandUnit<'_>,
     icons: &TemplateIcons,
@@ -1411,21 +1206,8 @@ pub(super) fn glyph_disclosure(
     })
 }
 
-/// One division's route this hour, joined to `Divisions.id`.
-///
-/// This route does not keep `DivisionMovement.retreat`: the game uses it for
-/// the 3-D order-arrow ribbon and model animation, which this pass does not draw.
-/// The game also selects action code 10 for a retreat;
-/// [`viewer_foundation::map::counter_action`] consumes that byte independently of this route.
-///
-/// The route's first anchor is the division's own `Divisions.province`, which
-/// also anchors its standing counter. The recorded `DivisionMovement.source`
-/// is not consumed by this pass.
 pub(super) type Movement = counter_move::DivisionRoute;
 
-/// This hour's `DivisionMovement` rows joined to the one ETA source
-/// ([`viewer_foundation::movement_timing::EtaCache`]), cached per hour for the window's per-frame icon
-/// rebuilds.
 #[derive(Clone, Default)]
 pub(super) struct Movements {
     pub(super) by_division: Arc<BTreeMap<u64, Movement>>,
@@ -1433,22 +1215,15 @@ pub(super) struct Movements {
     pub(super) by_key: Option<Arc<KeyedRoutes>>,
 }
 
-/// The hour's routes made by division as the layout admits each ([`Movements::read_by_key`]): one
-/// slot per DivisionMovement row, which never moves, so a route made is lent for the tables' life.
 pub(super) struct KeyedRoutes {
     frame: Arc<DecodedFrame>,
     slots: Vec<std::sync::OnceLock<Option<Box<Movement>>>>,
     lookups: super::Lookups,
 }
 
-/// The routes' estimate counts under [`Movements::read_by_key`]: not counted over the world.
 const ROUTES_BY_KEY: &str = "not recorded: the routes and their estimates are made by key for the divisions the layout admits";
 
 impl Movements {
-    /// No route is made until [`Self::prepare`] makes those of the divisions a layout admits, each
-    /// as the whole read makes it (the same placement through the content's kept placements, the
-    /// same estimate) and kept for the hour. The world's estimate counts are not made: `eta` holds
-    /// one fixed line, so no layout's report depends on what another looked up.
     pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
         let count = rows::<tables::DivisionMovement>(frame)?.rows().len();
         rows::<tables::Divisions>(frame)?;
@@ -1465,10 +1240,6 @@ impl Movements {
         })
     }
 
-    /// Makes the routes of `divisions` not yet made this hour, in one batch on this thread (the
-    /// estimates' hour terms are made once for it), from the content's anchors and kept placements
-    /// and its movement map. Nothing for routes read whole. A route the frame thread makes (the
-    /// worker's fill had not reached it) is counted in the flight record.
     pub(super) fn prepare(&self, divisions: impl IntoIterator<Item = u64>, content: &CounterContent, movement_content: Option<&MovementContent>) {
         let Some(keyed) = &self.by_key else { return };
         let on_frame = !viewer_foundation::map::redraws::apart_now();
@@ -1501,20 +1272,15 @@ impl Movements {
         content.routes.sweep(movement.len(), |division| movement.binary_search_by_key(division, |row| row.division).is_ok());
     }
 
-    /// Makes every route of the hour not yet made: the worker's fill after a keyed build, so a
-    /// layout finds its divisions made ([`Self::prepare`]).
     pub(super) fn fill(&self, content: &CounterContent, movement_content: Option<&MovementContent>) {
         let Some(keyed) = &self.by_key else { return };
         let Ok(movement) = rows::<tables::DivisionMovement>(&keyed.frame) else { return };
         self.prepare(movement.rows().iter().map(|row| row.division), content, movement_content);
     }
 
-    /// Whether the routes are made by key ([`Self::read_by_key`]).
     pub(super) fn by_key(&self) -> bool {
         self.by_key.is_some()
     }
-    /// A division whose route the content map cannot place stands on its province's
-    /// `Standstill` slot and is counted in the report, never dropped.
     pub(super) fn read(
         frame: &DecodedFrame,
         etas: &Etas,
@@ -1549,19 +1315,13 @@ impl Movements {
     }
 }
 
-/// This hour's `DivisionStatus` rows, joined to `Divisions.id` and cached per
-/// hour for the window's per-frame icon rebuilds: whole, or looked up by key as the layout reads
-/// a division ([`Self::read_by_key`]).
 #[derive(Clone, Default)]
 pub(super) struct DivisionStatuses {
     pub(super) by_division: BTreeMap<u64, DivisionStatus>,
-    /// A recording without DivisionStatus: each division's exercise predicate from
-    /// DivisionModelInputs, `None` where its read was refused.
     pub(super) witnessed: BTreeMap<u64, Option<bool>>,
     by_key: Option<Arc<KeyedStatuses>>,
 }
 
-/// The statuses looked up in the hour's rows, each division once ([`DivisionStatuses::read_by_key`]).
 struct KeyedStatuses {
     frame: Arc<DecodedFrame>,
     recorded: bool,
@@ -1599,9 +1359,6 @@ impl DivisionStatuses {
         Ok(Self { by_division, ..Self::default() })
     }
 
-    /// No status is made until the layout reads a division's ([`Self::get`]): one binary search a
-    /// table, each of which is keyed by the division and so ascending by it, then kept for the hour.
-    /// The tables are read here once, so a refusal is the whole read's.
     pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
         let recorded = frame.recorded(replay_data::rows::TableId::DivisionStatus);
         if recorded {
@@ -1636,7 +1393,6 @@ impl DivisionStatuses {
         }
     }
 
-    /// Whether the division's status and maxima are recorded, which its bars need.
     pub(super) fn recorded(&self, division: u64) -> bool {
         match &self.by_key {
             Some(keyed) => keyed.get(division),
@@ -1673,8 +1429,6 @@ impl KeyedStatuses {
     }
 }
 
-/// Each division's `ArmyIconInputs` operands (separate counter, alternate template): whole, or
-/// looked up by key as the layout reads a division ([`Self::read_by_key`]).
 #[derive(Clone, Default)]
 pub(super) struct IconInputs {
     whole: BTreeMap<u64, (u8, u64)>,
@@ -1687,9 +1441,6 @@ impl IconInputs {
         Ok(Self { whole, by_key: None })
     }
 
-    /// Nothing is made until the layout reads a division's: one binary search in the table, which
-    /// is keyed by the division. Nothing is kept, the search being the whole of a lookup. The table
-    /// is read here once, so a refusal is the whole read's.
     pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
         rows::<tables::ArmyIconInputs>(frame)?;
         Ok(Self { whole: BTreeMap::new(), by_key: Some((Arc::clone(frame), lookups)) })
@@ -1710,13 +1461,11 @@ fn icon_input(row: &replay_data::rows::ArmyIconInputRow) -> (u8, u64) {
     (row.separate_counter, row.alternate_template)
 }
 
-/// The row of `T` whose key is `key`, in rows ascending by it.
 fn keyed<T: replay_data::rows::TableSchema>(frame: &DecodedFrame, key: u64, of: impl Fn(&T::Row) -> u64) -> Option<&T::Row> {
     let rows = rows::<T>(frame).ok()?.rows();
     rows.binary_search_by_key(&key, |row| of(row)).ok().map(|at| &rows[at])
 }
 
-/// One division's status from its rows, as the whole read and a lookup both make it.
 fn status_of(
     row: &replay_data::rows::DivisionStatusRow,
     panel: Option<&replay_data::rows::DivisionPanelStatsRow>,
@@ -1740,9 +1489,6 @@ fn status_of(
     status
 }
 
-/// One template's type-icon operands (`DivisionTemplateIcons`): its priority sub-unit's name,
-/// custom icon index and keep-my-custom-icon flag. The icon depends on the view's NATO
-/// counter option, so it is selected when drawn ([`TemplateIcons::icon`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct TemplateIcon {
     pub(super) name: String,
@@ -1750,14 +1496,10 @@ pub(super) struct TemplateIcon {
     pub(super) custom_icon_nato: u8,
 }
 
-/// Prepare pictorial and NATO icon selections per template. Signed narrowing
-/// and sprite existence govern custom icons before sub-unit fallback.
 #[derive(Clone, Default)]
 pub(super) struct TemplateIcons {
     pub(super) by_template: BTreeMap<u64, TemplateIcon>,
 
-    /// Compare the priority sub-unit key and narrowed custom index even when
-    /// low intel later replaces the type icon with a question mark.
     pub(super) grouping: BTreeMap<u64, (Vec<u8>, i32, u8)>,
     pub(super) priorities: BTreeMap<u64, u32>,
 }
@@ -1777,7 +1519,6 @@ impl Default for TemplateIconMemo {
 }
 
 impl TemplateIconMemo {
-    // Refusals are not cached: each hour keeps its own error context.
     pub(super) fn read(&self, frame: &DecodedFrame) -> io::Result<Arc<TemplateIcons>> {
         self.0.get_or_build(frame, (), |projected| {
             TemplateIcons::read(projected).map(Arc::new)
@@ -1786,8 +1527,6 @@ impl TemplateIconMemo {
 }
 
 impl TemplateIcons {
-    /// `DivisionTemplateIcons` is keyed by the full u64 template handle held by
-    /// `Divisions.template`. `priority_unit` is the recorded counter sub-unit.
     pub(super) fn read(frame: &DecodedFrame) -> io::Result<Self> {
         let mut by_template = BTreeMap::new();
         let mut grouping = BTreeMap::new();
@@ -1820,9 +1559,6 @@ impl TemplateIcons {
         })
     }
 
-    /// Select the representative's fake-preferred priority sub-unit icon, preserving
-    /// custom-index narrowing and the NATO frame selection. `declared` is the
-    /// resolved sprite registry lookup.
     pub(super) fn icon(
         &self,
         template: u64,
@@ -1837,8 +1573,6 @@ impl TemplateIcons {
         } else {
             -1
         };
-        // Selection needs the fake-preferred template's priority sub-unit type (`value`)
-        // even when the custom picture is drawn; the icon index is narrowed to 16 bits.
         let plain = self.by_template.get(&alternate)?;
         Some(templates::type_icon(
             &plain.name,
@@ -1849,29 +1583,17 @@ impl TemplateIcons {
     }
 }
 
-/// This hour's railway guns and the rail and name operands their plates read.
 #[derive(Clone, Default)]
 pub(super) struct GunInputs {
-    /// `None` while the gun census is incomplete: first-fit membership cannot be established.
     pub(super) rows: Option<Vec<RailwayGunCounterInputRow>>,
-    /// Guns this hour holds rows for, drawn or not; the report's unavailable count.
     pub(super) recorded: usize,
-    /// Lexical token to the authored sub-unit key it names, for the stat
-    /// definitions the guns name, or why this hour cannot name it.
     pub(super) names: BTreeMap<u32, Result<String, String>>,
-    /// Gun sub-unit tokens this hour cannot name, by reason.
     pub(super) refused: BTreeSet<String>,
-    /// Current raw rail-path count and cooldown, independently of sorted `RailEdges`.
-    /// Missing/refused/stale province domains have no entry.
     pub(super) rail: Option<BTreeMap<u32, guns::RailStatus>>,
-    /// For each moving railway gun, resolve hostility of its last ordinary-route
-    /// province controller. Missing reached relation inputs remain unavailable.
     pub(super) destination_enemy: BTreeMap<u64, Result<bool, &'static str>>,
 }
 
 impl GunInputs {
-    /// The hour of a gun counters layer that draws the guns: only each moving gun's destination
-    /// hostility, which the layer is given until it reads it from its owner.
     pub(super) fn hostility_only(frame: &DecodedFrame, hostility: &counter_action::DestinationHostility<'_>) -> io::Result<Self> {
         let table = rows::<tables::RailwayGunCounterInputs>(frame)?;
         Ok(Self { destination_enemy: destination_enemy(table.rows(), hostility), ..Self::default() })
@@ -1891,10 +1613,6 @@ impl GunInputs {
             });
         }
         let wanted: BTreeSet<u32> = table.rows().iter().map(|gun| gun.subunit_token).collect();
-        // A gun records its stat definition by token. The engine builds a
-        // sub-unit's name and token from one authored key, so the hour's
-        // spelling names the one authored key equal to it under the lexer's
-        // fold, and that key is the name the join compares and the icon uses.
         let mut refused = BTreeSet::new();
         let names = if wanted.is_empty() {
             BTreeMap::new()
@@ -1942,10 +1660,8 @@ fn destination_enemy(guns: &[RailwayGunCounterInputRow], hostility: &counter_act
         .collect()
 }
 
-/// An active-ability record is active when its phase byte is zero.
 const ACTIVE_ABILITY_PHASE: u8 = 0;
 
-/// One grid item's recorded identity and the content token selecting its sprite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AbilityIcon {
     pub(super) country: u32,
@@ -1953,14 +1669,8 @@ pub(super) struct AbilityIcon {
     pub(super) token: Vec<u8>,
 }
 
-/// Every country's active abilities by caster, in recorded vector order.
-///
-/// Fill the grid using the representative's country and the member's commander:
-/// include active records whose caster is exactly that commander.
 #[derive(Clone, Default)]
 pub(super) struct AbilityInputs {
-    /// A truncated or unavailable hour, or one naming an unknown country, cannot say that a
-    /// commander has no active ability.
     complete: bool,
     by_commander: BTreeMap<(u32, u64), Vec<AbilityIcon>>,
 }
@@ -1999,7 +1709,6 @@ impl AbilityInputs {
         })
     }
 
-    /// The commander's active abilities, empty when it has none; `None` when unknown.
     pub(super) fn of(&self, country: u32, commander: u64) -> Option<&[AbilityIcon]> {
         self.complete.then(|| {
             self.by_commander
@@ -2009,10 +1718,6 @@ impl AbilityInputs {
     }
 }
 
-/// One fully visible member's turn at the ability grid. the game repopulates it for each
-/// member above intel 249 that has a commander, so the last such member wins, even when that
-/// commander has nothing active; a member without a commander leaves it alone, and one whose
-/// commander is unrecorded makes it unknown.
 pub(super) fn update_abilities(
     tokens: &mut Option<Vec<AbilityIcon>>,
     sight: Sight,
@@ -2030,13 +1735,6 @@ pub(super) fn update_abilities(
     }
 }
 
-/// Offers each railway gun to its province's source for its visual bucket.
-///
-/// Class 13 shares the native province source walk with class-0 armies, in the
-/// recorded mixed occupant order. Its stack kind and position are the movement layer's class-13
-/// rules ([`counter_move::UnitRoute::railway_gun`]): a moving gun that does not snap hangs at
-/// the settled route point over its `Standstill RG` anchors, the same rule as a division's. A
-/// route the content cannot place stands on its province and is counted.
 fn add_railway_guns(
     inputs: &CounterInputs<'_>,
     owner: &impl Fn(u32) -> Option<u32>,
@@ -2089,7 +1787,6 @@ fn add_railway_guns(
     }
 }
 
-/// [`add_railway_guns`] from the guns a gun counters layer decided.
 fn add_layered_guns(inputs: &CounterInputs<'_>, guns: &LayeredGuns, sources: &mut BTreeMap<StackKey, Source<'_>>, out: &mut CounterFrame) {
     if !guns.complete {
         out.report.unavailable_railway_guns += guns.recorded;
@@ -2120,11 +1817,8 @@ fn add_layered_guns(inputs: &CounterInputs<'_>, guns: &LayeredGuns, sources: &mu
     }
 }
 
-/// The grouping pass's kind for a land counter; see `Icon::kind`.
 pub(super) const LAND_KIND: u32 = 0;
 
-/// Division operands in province and visual-slot order. Movement stays in the hour's
-/// shared movement table and is borrowed only by camera-admitted sources.
 pub(super) type DivisionCounters = BTreeMap<StackKey, Vec<LandUnit<'static>>>;
 
 pub(super) fn division_counters(
@@ -2149,7 +1843,6 @@ pub(super) fn division_counters(
     Ok(sources)
 }
 
-/// The division sources of members a layer keeps, with their actions.
 pub(super) fn division_counters_of(stacks: &LandStacks) -> DivisionCounters {
     stacks
         .iter()
@@ -2171,13 +1864,10 @@ pub(super) fn land_counters<'a>(
     mut retained: Option<&mut ColumnPlans>,
     out: &mut CounterFrame,
 ) -> io::Result<PreparedLand> {
-    // Division sources follow the recorded province occupant order. Units absent
-    // from that array do not contribute to the source.
     let mut sources: BTreeMap<StackKey, Source<'a>> = BTreeMap::new();
     let admission = Admission::new(inputs.camera, inputs.viewport);
     let armies = inputs.visibility.unit_kinds == UnitKinds::All;
     if armies {
-        // Each stack is admitted once, by its province; a province's stacks stand together.
         let mut last: Option<(u32, bool)> = None;
         let admitted: Vec<_> = divisions
             .iter()
@@ -2190,7 +1880,6 @@ pub(super) fn land_counters<'a>(
                 }
             })
             .collect();
-        // Routes made by key are made here, for the divisions the layout admits, before any read.
         land.movement.prepare(
             admitted.iter().flat_map(|(_, units)| units.iter().map(|unit| unit.id)),
             inputs.content,
@@ -2200,15 +1889,12 @@ pub(super) fn land_counters<'a>(
             let source = sources.entry(key).or_default();
             source.units.extend(units.iter().map(|unit| {
                 let unit = unit.clone();
-                // The cached member owns every other operand; admitted sources borrow
-                // their movement from the same hour that supplied those operands.
                 let movement = land.movement.get(unit.id);
                 SourceUnit::Land(LandUnit { movement, ..unit })
             }));
         }
     }
     let unavailable = out.report.unavailable_railway_guns;
-    // Unknown gun geometry still occupies its source: the game refuses the column.
     if armies {
         match layered_guns {
             Some(guns) => add_layered_guns(inputs, guns, &mut sources, out),
@@ -2230,7 +1916,6 @@ pub(super) fn land_counters<'a>(
     let mut units = Vec::new();
     for ((province, kind), mut source) in sources {
         source.units.sort_by_key(SourceUnit::ordinal);
-        // Use each source's selected anchor; ordinary sources use the first member's animator position.
         let naval = matches!(source.units.last(), Some(SourceUnit::Naval(_)));
         let position = if naval && is_land(inputs, province) {
             inputs
@@ -2268,7 +1953,6 @@ pub(super) fn land_counters<'a>(
         positions.push(position);
         admitted.push(source);
     }
-    // Each icon groups at the level its own distance gives: one level for the game's camera.
     let levels: Vec<Level> = icons
         .iter()
         .map(|icon| {
@@ -2286,8 +1970,6 @@ pub(super) fn land_counters<'a>(
     let mut items = Vec::new();
     let mut plans = Vec::new();
     let mut undecided = BTreeMap::new();
-    // Keep only programs used in this preparation; live data, not an arbitrary cache cap,
-    // bounds the memo. Camera admission and geographic grouping above always run afresh.
     let mut previous = retained
         .as_deref_mut()
         .map(|memo| std::mem::take(&mut memo.previous))
@@ -2353,8 +2035,6 @@ pub(super) fn land_counters<'a>(
             let members_equal = before
                 .as_ref()
                 .is_some_and(|(before, _)| before.sources == key.sources);
-            // The program reads the camera only through the key's rule outcomes, each taken at
-            // the group's own distance for a free eye.
             let hit = before.as_ref().is_some_and(|(before, _)| *before == key);
             #[cfg(test)]
             super::preparation::plan_probe::record(|counts| {
@@ -2443,9 +2123,6 @@ pub(super) fn land_counters<'a>(
     })
 }
 
-/// A column's semantic program. It owns values only: no screen coordinates, native instances,
-/// atlas cells, packets or lifecycle clocks. Native requests and setters are still replayed by
-/// the ordinary draw owners on every frame.
 #[derive(Clone, Default)]
 pub(super) struct ColumnProgram {
     stacks: Vec<Stack>,
@@ -2455,18 +2132,14 @@ pub(super) struct ColumnProgram {
     unknown: BTreeMap<u64, SharingUnknown>,
 }
 
-/// Source boundaries and occurrence order both matter, including repeated native handles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OrderedSource {
     province: u32,
     kind: u32,
-    /// The layer's members of the source, whose values the plan is made from.
     values: SourceValues,
     members: Vec<(Unit, u32)>,
 }
 
-/// A layer's members of one source, the same only as the same allocation: a new product keeps
-/// every source's whose members did not change ([`LandStacks`]). Held, so the address is not reused.
 #[derive(Clone)]
 struct SourceValues(Option<Arc<[(Member, counter_action::Action)]>>);
 
@@ -2493,21 +2166,15 @@ struct ColumnKey {
     sources: Vec<OrderedSource>,
     coarse: bool,
     split_selected: bool,
-    // A unit can contribute to more than one geographic group. Earlier first-fit failures
-    // may therefore affect this group's materialized grouping_unknown, even on a cache hit.
     unknown_before: Vec<Option<SharingUnknown>>,
 }
 
 #[derive(Default)]
 pub(super) struct ColumnPlans {
     previous: BTreeMap<(u32, u32), (ColumnKey, Arc<ColumnProgram>)>,
-    /// The divisions the view's last layout admitted, ascending, while the flight record is kept.
     admitted: Vec<u64>,
 }
 
-/// The flight record's land divisions ([`viewer_foundation::view_record`]): admitted by this
-/// layout, and entering and leaving against the view's layout before; a worker's layout under a
-/// section of its own.
 fn record_admitted(sources: &BTreeMap<StackKey, Source<'_>>, retained: Option<&mut ColumnPlans>) {
     use viewer_foundation::view_record;
     let mut admitted: Vec<u64> = sources
@@ -2649,7 +2316,6 @@ fn column_program(
             viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
         };
         stack.selected = inputs.selected.contains(&kind.unit(stack.divisions[0]));
-        // The allegiance palette uses the type icon's relation.
         stack.plate = counter_plate_color(
             inputs.settings.color_mode,
             &inputs.content.defines.tints,
@@ -2677,8 +2343,6 @@ fn column_program(
     }
 }
 
-/// Compare the priority sub-unit key and narrowed custom index even when
-/// low intel later replaces the type icon with a question mark.
 pub(super) fn land_stack(
     item: &[&LandUnit<'_>],
     land: &CounterTables<'_>,
@@ -2699,9 +2363,7 @@ pub(super) fn land_stack(
         portrait: portraits.get(&rep.id).cloned(),
         owner: rep.owner,
         logical: rep.logical,
-        // Set under the counter colour mode by the caller.
         plate: Ok([1.0; 4]),
-        // A coarse plate shows the unit's own flag, a detailed one its expeditionary owner's.
         flag_owner: if coarse { rep.owner } else { rep.flag_owner },
         coarse,
         type_tint: rep.type_tint,
@@ -2738,8 +2400,6 @@ pub(super) fn land_stack(
                 .skip(1)
                 .map(|unit| (unit.sight == Sight::Full, unit.action)),
         ),
-        // an own land representative's orders group, or its parent on
-        // The branch, colours `group_marker`.
         marker: (rep.owner == land.vision.ours())
             .then(|| land.orders.marker(rep.orders_group, rep.parent_branch))
             .flatten(),
@@ -2771,7 +2431,6 @@ pub(super) fn land_stack(
         stack.hq |= unit.hq && unit.sight == Sight::Full;
         if unit.hq && unit.sight == Sight::Full {
             stack.portrait = portraits.get(&unit.id).cloned();
-            // OR the withdrawing flags of the visible HQ providers.
             stack.leader_en_route = match (stack.leader_en_route, unit.withdrawing) {
                 (Some(true), _) | (_, Some(true)) => Some(true),
                 (Some(false), Some(false)) => Some(false),
@@ -2781,7 +2440,6 @@ pub(super) fn land_stack(
         if unit.sight == Sight::Partial {
             stack.hidden = true;
         } else {
-            // The first member's roster owner is the country the game is asked.
             update_abilities(
                 &mut stack.abilities,
                 unit.sight,
@@ -2805,7 +2463,6 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
         stack.members.len().to_string()
     };
     match &stack.gun {
-        // A gun plate has no organisation bar; its strength getter and glyphs are its own.
         Some(gun) => StackStyle {
             organisation: 0.0,
             strength: counter_status::stack_fill(&stack.hit_points),
@@ -2822,8 +2479,6 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
         None => StackStyle {
             organisation: counter_status::stack_fill(&stack.organisation),
             strength: counter_status::stack_fill(&stack.hit_points),
-            // Every glyph but training reads a member's status; one unrecorded withholds them, as
-            // it does the bars. Training also reads Map's DivisionModelInputs.
             glyphs: if stack.bars {
                 counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply))
             } else {
@@ -2837,11 +2492,6 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
     }
 }
 
-/// Each HQ provider's portrait source, keyed by the providing division.
-///
-/// Runtime state follows [`counter_order::hq_portrait`]. An incomplete leader census leaves
-/// portraits undrawn; authored character tokens cannot establish runtime portrait overrides.
-/// `LeaderPortraitPaths.tag` supplies the directory branch of a non-character picture.
 pub(super) fn hq_portraits(
     frame: &DecodedFrame,
     native: &NativeInputs,
@@ -2853,10 +2503,6 @@ pub(super) fn hq_portraits(
     }
     let character_rows = rows::<tables::CharacterPortraits>(frame)?;
     let unit_leaders = rows::<tables::UnitLeaders>(frame)?;
-    // The recorded path needs the leader census; the character holder is consulted
-    // only for character references. A truncated character table preserves portraits
-    // that leader rows settle, while leaders pointing at an unrecorded character
-    // stay undrawn.
     let leaders: BTreeMap<u64, _> = leader_rows.rows().iter().map(|r| (r.leader, r)).collect();
     let character_complete = character_rows.is_complete();
     let characters: BTreeMap<u32, _> = character_rows
@@ -2880,8 +2526,6 @@ pub(super) fn hq_portraits(
         .filter(|group| group.hq_provider != 0 && group.leader != 0)
         .map(|group| {
             let portrait = match leaders.get(&group.leader) {
-                // The portrait census covers every HQ selected by this predicate,
-                // across all views. A missing row is unrecorded, not a null leader.
                 None => counter_order::Portrait::Unrecorded("leader row"),
                 Some(leader) if leader.character != 0 && !character_complete => {
                     counter_order::Portrait::Unrecorded("character census")
@@ -2898,7 +2542,6 @@ pub(super) fn hq_portraits(
         .collect())
 }
 
-/// Draws one land counter, its children keyed by their `mapicons.gui` declaration order.
 pub(super) fn draw_land_counter(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,
@@ -2922,7 +2565,6 @@ pub(super) fn draw_land_counter(
     Ok(controls)
 }
 
-/// Draws `member`'s `count_bg` in the pointer's state when the pointer holds its counter.
 #[allow(clippy::too_many_arguments)]
 fn pointed_plate(
     inputs: &CounterInputs<'_>,
@@ -2958,7 +2600,6 @@ fn pointed_plate(
     }
 }
 
-/// [`draw_land_counter`]'s children, each at the raw declaration index as its layer.
 fn draw_land_children(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,
@@ -2974,7 +2615,6 @@ fn draw_land_children(
     }
     let style = &land.styles[member];
     let (countries, icons_of) = (&land.countries, &land.templates);
-    // `land_plate` counts and skips a plate whose colour the hour cannot give.
     let Ok(plate) = stack.plate else {
         return Ok(None);
     };
@@ -3020,7 +2660,6 @@ fn draw_land_children(
                 plate_drawn,
             },
         )?;
-        // Hide the other children while keeping `low_supply`, so the land supply crate stays.
         if !stack.hidden
             && let Some(frame) = style.glyphs.supply
             && let Some(sheet) = assets.sheet(&layout.supply.sprite)
@@ -3043,8 +2682,6 @@ fn draw_land_children(
         }
         return Ok(None);
     }
-    // count_bg binds a Button; the game uses Up's
-    // strip frame 0 unless a positive authored frame overrides it.
     let hq_sprite = stack.hq.then_some("GFX_onmap_unit_counter_empty");
     let plate_drawn = pointed_plate(
         inputs,
@@ -3108,7 +2745,6 @@ fn draw_land_children(
     if let Some(sheet) = assets.sheet(&layout.overlay.sprite) {
         draw_child(batch, sheet, &layout.overlay, origin, 0, [1.0; 4]);
     }
-    // No bars without a fully visible member, or when a member's maxima are not recorded.
     if !stack.members.is_empty() && stack.bars {
         for (child, fill) in [
             (&layout.bar_org, style.organisation),
@@ -3120,8 +2756,6 @@ fn draw_land_children(
             }
         }
     }
-    // The plate, its allegiance tint and the flag are untouched by the hidden
-    // byte; only the `type` child and the count box change.
     batch.at_layer(u64::from(layout.flag.order));
     draw_flag(
         &assets.flags,
@@ -3140,8 +2774,6 @@ fn draw_land_children(
         if stack.hidden {
             Some(templates::no_intel_icon(inputs.settings.nato))
         } else {
-            // An unknown disclosure whose two glyphs differ draws no glyph; the report counts
-            // it.
             stack.disclosure.ok().and_then(|shared| {
                 icons_of.icon(
                     stack.template,
@@ -3170,7 +2802,6 @@ fn draw_land_children(
         );
     }
     if stack.hq {
-        // Preserve the icon's disabled state through its selected effect technique.
         let en_route = stack.leader_en_route == Some(true);
         if let Some(portrait) = stack
             .portrait
@@ -3220,12 +2851,6 @@ fn draw_land_children(
     Ok(type_refusal)
 }
 
-/// Where the `position`th ability item's sprite lands. The grid steps one `slotsize` right per
-/// item. In the game, `orientation = center`
-/// only puts the sprite's position on the item's centre; the sprite is centred on it only with
-/// `centerPosition = yes` or `origo = center`. Halves are whole pixels, as the naval combat
-/// bubble's. The shipped item is 20 x 20 with a 32 x 32 sprite at 0.8 and no centring, so the
-/// icon hangs right and down from the item's centre.
 pub(super) fn ability_rect(
     sheet: &SpriteSheet,
     grid: &AbilityGrid,
@@ -3249,8 +2874,6 @@ pub(super) fn ability_rect(
     [at[0], at[1], size[0], size[1]]
 }
 
-/// Whether any of a stack's ability items reaches the viewport; the grid hangs above the
-/// plate, so a plate just off screen can still show its abilities.
 fn abilities_on_screen(inputs: &CounterInputs<'_>, stack: &Stack, origin: [f32; 2]) -> bool {
     let (Some(tokens), Some(grid)) = (&stack.abilities, &inputs.assets.layouts.abilities) else {
         return false;
@@ -3266,7 +2889,6 @@ fn abilities_on_screen(inputs: &CounterInputs<'_>, stack: &Stack, origin: [f32; 
     })
 }
 
-/// The window a plate is laid out with: a gun's own when it is drawn, else the land counter's.
 fn plate_size(inputs: &CounterInputs<'_>, stack: &Stack) -> Result<[f32; 2], String> {
     if stack.gun.is_some() {
         inputs
@@ -3287,8 +2909,6 @@ fn plate_size(inputs: &CounterInputs<'_>, stack: &Stack) -> Result<[f32; 2], Str
     }
 }
 
-/// Column width comes from the first item; heights are summed in order.
-/// Centre the column at its anchor using each plate's own dimensions.
 pub(super) fn column_origin(anchor: [f32; 2], sizes: &[[f32; 2]]) -> Option<[i32; 2]> {
     let first = sizes.first()?;
     let total = sizes
@@ -3300,11 +2920,6 @@ pub(super) fn column_origin(anchor: [f32; 2], sizes: &[[f32; 2]]) -> Option<[i32
     ])
 }
 
-/// The railway-gun plate's children in declaration order.
-///
-/// The type icon comes from the gun's own stat definition. The action icon is
-/// derived for every member regardless of intel and shows only on the viewing
-/// country's own plates. The coarse counter leaves the supply strip unchanged.
 fn draw_gun_children(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,
@@ -3346,7 +2961,6 @@ fn draw_gun_children(
         draw(&layout.supply, frame, [1.0; 4]);
     }
     if stack.coarse {
-        // The coarse arm only rewrites the plate, the medium flag and the count.
         let _ = draw_coarse_counter(
             inputs,
             batch,
@@ -3449,16 +3063,6 @@ fn draw_gun_children(
     type_refusal
 }
 
-/// Where one stack's counter hangs: its province's anchor, or a point along its route.
-///
-/// A stack in a combat stand-off kind snaps to that anchor slot; everything
-/// else stands at its route's settled point ([`counter_move::Motion`]). Without the content
-/// movement map it stands on its province.
-/// Where `unit`'s stack stood in `province`, on the route this publication read for it: the route
-/// walked from there and settled as its counter is, or the province's own standstill anchor for its
-/// class without one. The route is the publication's and the province the hour's, because a unit's
-/// place at an hour is where its province's anchor and its route put it then, and the route
-/// columns only bend the path between the anchors.
 fn place_in(
     inputs: &CounterInputs<'_>,
     unit: Unit,
@@ -3492,23 +3096,14 @@ pub(super) fn stack_position(
     }
 }
 
-/// The tint the game gives the `attrition` child once, at bind time: it is the only
-/// counter child the binder colours, and the shipped skull texture is white.
 pub(super) const ATTRITION_TINT: [f32; 4] = [1.0, 0.3, 0.3, 1.0];
 
-/// What a stack contributes to its glyphs besides `DivisionStatus`.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GlyphStack {
-    /// An HQ provider is on the plate, so the left-hanging icons take `unit_counter_hq_x_offset`.
     pub(super) hq: bool,
-    /// [`counter_inputs::area_defence`] of the last member with an orders group.
     pub(super) defending_area: bool,
 }
 
-/// Draws the status glyphs a stack's counter hangs off its plate, each at its
-/// declaration index: the red order icon, the area shield and the yellow order
-/// icon share pixels, so their order matters. Several hang outside the window,
-/// which sets `clipping = no`.
 pub(super) fn draw_glyphs(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,
@@ -3559,8 +3154,6 @@ pub(super) fn draw_glyphs(
     }
 }
 
-/// Draw the selected type icon. An undeclared selection keeps the game's pooled
-/// drawable, which the recording does not hold; refuse that icon by name.
 pub(super) fn draw_type_icon(
     types: &templates::TypeAtlas,
     batch: &mut Batch,
@@ -3594,9 +3187,6 @@ pub(super) fn draw_type_icon(
 mod tests {
     use super::*;
 
-    /// The attrition glyph follows the attrition-presence predicate on the row's
-    /// recorded value and threshold, strictly greater; the retired byte is
-    /// not read.
     #[test]
     fn attrition_comes_from_the_recorded_value_against_its_threshold() {
         let mut frame = test_frame(3);
@@ -3685,7 +3275,6 @@ mod tests {
             panel.panel_stats[1] = Some(3_000_000);
             panel
         };
-        // A panel without a status row, and a status row without a panel.
         test_put(
             &mut frame,
             replay_data::rows::TableRows::DivisionPanelStats(vec![panel(1, Some(1)), panel(2, Some(2_000_000)), panel(9, None)]),
@@ -3703,7 +3292,6 @@ mod tests {
             assert_eq!(keyed.get(division), whole.get(division), "division {division}");
             assert_eq!(keyed.recorded(division), whole.recorded(division), "division {division}");
         }
-        // Each division looked up once; every later read of the hour is answered from it.
         assert_eq!(lookups.counts(), (43, 43));
 
         let mut unrecorded = test_frame(3);

@@ -14,8 +14,6 @@ import { OPTIONS } from './definition';
 const NO_WARNINGS: string[] = [];
 
 export default function BombingDamageBreakdownWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
-  // Following, the sunburst reads its values at the head each frame; the widget renders only when the holder shown,
-  // or whether its damage is complete, changes.
   const following = active && widget.time.mode === 'follow';
   const headKey = useRef<(position: number) => string>(() => '');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -23,7 +21,6 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   const playbackHour = useHeadHour(runtime.clock, following, position => headKey.current(position));
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track);
-  // The country's damage alone is broken down by building and state.
   const { data, pending, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active, { metric: 'total' });
   const index = useMemo(() => data ? militaryAirIndex(data) : null, [data]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
@@ -39,7 +36,6 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
     const at = headAt?.(position);
     if (at == null || !index || !data || !tag) return `outside:${at ?? ''}`;
     const row = ledgerCountryAt(index, tag, from, at, identity);
-    // The header names the holder as it is at the hour shown: the hour moves when its name, colour or flag does.
     return JSON.stringify([row?.tag ?? null, row?.identity ?? null, ledgerComplete(data.observed, from, at, data.incomplete),
       row ? identityKey(at, [row.tag]) : null]);
   };
@@ -51,7 +47,6 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  // The breakdown's final values are the span's end: shown once every window through it is held.
   if (!data || !index || pending) return <WidgetState kind="loading" label="Loading bombing damage…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Bombing damage was not recorded." />;
   return <BombingBreakdown data={data} index={index} runtime={runtime} track={track} tag={tag} identity={identity} countrySlot={countrySlot}

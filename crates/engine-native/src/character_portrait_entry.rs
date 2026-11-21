@@ -1,18 +1,10 @@
-//! CCharacter's portrait-map entry; the concrete native template name is not established.
-//! Identity bytes may be non-UTF-8. Empty heap strings are valid and do not imply inline storage.
 
-/// Portrait entry stride.
 pub const STRIDE: usize = 0x38;
-/// Portrait role enum u32.
 pub const ROLE: usize = 0x00;
-/// Portrait size enum u32.
 pub const SIZE: usize = 0x04;
-/// Portrait icon-kind enum u32.
 pub const KIND: usize = 0x0c;
-/// Portrait identity MSVC string.
 pub const IDENTITY: usize = 0x10;
 
-/// Owned portrait descriptor, with no native pointer or texture-resource cache.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row<T = crate::msvc_string::Text<256>> {
     pub category: u32,
@@ -37,9 +29,6 @@ pub(crate) fn read_buffer<T: crate::capture_text::Value>(
     use crate::cnaval_combatant::field;
     use crate::msvc_string;
     let mut header = [0; 16];
-    // The descriptor has no value-dependent gate before the string layout.
-    // Gather only those three original spans; dependent string reads retain
-    // their ordinary validation and first-fault order.
     output.identity = if pointer != 0
         && pointer
             .checked_add(IDENTITY + msvc_string::STRIDE)
@@ -66,7 +55,6 @@ pub(crate) fn read_buffer<T: crate::capture_text::Value>(
             _ => Err("portrait identity layout unreadable"),
         }
     } else {
-        // A later address overflow must not hide the original descriptor read.
         header = field::<[u8; 16]>(memory, pointer, 0)?;
         T::read(
             memory,
@@ -94,7 +82,6 @@ fn head<T>(header: [u8; 16], output: &mut Row<T>) {
     output.kind = u32::from_le_bytes(header[12..16].try_into().unwrap());
 }
 
-/// The descriptor a writer logged before it changed the holder.
 pub(crate) fn from_image<T: crate::capture_text::Value>(
     holder: &crate::portrait_cache::HolderImage<'_>,
     entry: &crate::portrait_cache::EntryImage,

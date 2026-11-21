@@ -1,6 +1,3 @@
-//! The character and country identity operands names are chosen by: script
-//! tokens and templates of recorded characters, and the tag, look and civil-war
-//! state a country's ideas and advisors are named for.
 
 use replay_data::rows::{
     CharacterRow, CountryAppearanceRow, CountryCivilWarRow, CountryCounterInputRow,
@@ -9,7 +6,6 @@ use replay_data::rows::{
 use replay_frame::frame::{Rowset, Tables};
 use std::{borrow::Cow, collections::HashMap};
 
-/// A LexicalTokens row's spelling, borrowed where the frame holds it.
 fn spelling<'a>(lexical: &Rowset<'a, LexicalTokenRow>, token: u32) -> Option<&'a [u8]> {
     lexical
         .text(u128::from(token), |row| &row.literal, LITERAL)
@@ -19,7 +15,6 @@ fn spelling<'a>(lexical: &Rowset<'a, LexicalTokenRow>, token: u32) -> Option<&'a
 
 const LITERAL: usize = replay_data::rows::column::<LexicalTokenRow>("literal");
 
-/// The fields of a Characters row [`character_script_token_in`] and [`built_template_in`] read.
 pub const CHARACTER_IDENTITY: u64 = mask::<CharacterRow>(&[
     "name_token_id",
     "token",
@@ -30,9 +25,6 @@ pub const CHARACTER_IDENTITY: u64 = mask::<CharacterRow>(&[
     "template_generated",
 ]);
 
-/// A recorded character's script token: its name_token_id resolved through
-/// LexicalTokens. The row's token field is the saved name, not the script
-/// token. None when the id is negative or not in the dictionary.
 pub fn character_script_token<'a>(
     character: &CharacterRow,
     lexical: impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>,
@@ -40,7 +32,6 @@ pub fn character_script_token<'a>(
     character_script_token_in(character, Rowset::Decoded(lexical.into().as_slice()))
 }
 
-/// [`character_script_token`] of any frame's LexicalTokens, a walk's views among them.
 pub fn character_script_token_in<'a>(
     character: &CharacterRow,
     lexical: Rowset<'a, LexicalTokenRow>,
@@ -53,9 +44,6 @@ pub fn character_script_token_in<'a>(
     crate::triggers::refusal::reference(std::str::from_utf8(literal).ok(), token != 0, missing)
 }
 
-/// The template a recorded character holds, from its Characters row's
-/// template columns. Its tag token is spelled by LexicalTokens;
-/// `Err` names what the hour does not hold.
 pub fn built_template<'a>(
     character: &CharacterRow,
     lexical: Option<impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>>,
@@ -66,7 +54,6 @@ pub fn built_template<'a>(
     )
 }
 
-/// [`built_template`] of any frame's LexicalTokens, a walk's views among them.
 pub fn built_template_in(
     character: &CharacterRow,
     lexical: Option<Rowset<'_, LexicalTokenRow>>,
@@ -104,17 +91,10 @@ pub fn built_template_in(
     })
 }
 
-/// Whether the country has a civil war at the frame's hour, as used by idea
-/// naming and has_civil_war: a country in its own CountryCivilWars list has a
-/// positive CountryCounterInputs.owned_state_count, or an existing enemy
-/// holds it in its own civil-war list ([`CivilWars::holds`]). `Err` names
-/// the input the hour lacks.
 pub fn civil_war<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<bool, String> {
     CivilWars::new(frame)?.holds(slot)
 }
 
-/// What [`civil_war`] reads of an hour, for every country: an hour changing
-/// none of it since the hour before leaves every country's answer as it was.
 pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
     use crate::triggers::inputs::TableRead;
     vec![
@@ -127,7 +107,6 @@ pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
     ]
 }
 
-/// The fields [`civil_war_reads`] names, by table.
 const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
 const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
 const TARGET: u64 = mask::<CountryCivilWarRow>(&["target"]);
@@ -136,33 +115,21 @@ const READ: u64 = mask::<CountryWarRow>(&["enemies_read"]);
 const ENEMIES: u64 = mask::<CountryWarRow>(&["enemies_read", "enemies"]);
 const SPAN: u64 = mask::<WarRelationRow>(&["start_hour", "end_hour"]);
 
-/// The civil-war predicate's inputs at one hour, indexed once, so asking it
-/// of every country costs each country only its own rows. Answers, and the
-/// reason an answer is refused, are those of scanning the tables in stored
-/// order: a reference that does not resolve is reported only where that
-/// scan reaches it.
 pub struct CivilWars<'a> {
     links: Rowset<'a, CountryLinkRow>,
-    /// Each canonical slot's first Countries row id.
     raw: HashMap<u32, u32>,
-    /// Each raw country's first owned state count.
     owned: HashMap<u32, i32>,
-    /// Each raw country's civil-war targets, in stored order.
     lists: HashMap<u32, Vec<u32>>,
     wars: Result<Enemies<'a>, String>,
     relations: Result<Relations, String>,
 }
 
-/// The CountryWars rows that read their enemy vector: each slot's first by
-/// stored position with its key, and the first whose country does not resolve.
 struct Enemies<'a> {
     rows: Rowset<'a, CountryWarRow>,
     by_slot: HashMap<u32, (usize, u128)>,
     unlinked: Option<(usize, u32)>,
 }
 
-/// The other country of each ongoing war relation, by slot in stored order,
-/// and the first raw country of one that does not resolve.
 struct Relations {
     by_slot: HashMap<u32, Vec<u32>>,
     unlinked: Option<u32>,
@@ -178,7 +145,6 @@ impl<'a> CivilWars<'a> {
         let counters = frame
             .complete_rows::<tables::CountryCounterInputs>(OWNED)
             .map_err(text)?;
-        // Resolved without refusing: a refusal is reported only where a scan reaches it.
         let slot_of = |raw: u32| -> Result<Option<u32>, String> {
             Ok(links
                 .get(u128::from(raw))
@@ -265,9 +231,6 @@ impl<'a> CivilWars<'a> {
         })
     }
 
-    /// Whether `slot` has a civil war: a country its own list names exists,
-    /// or an existing enemy lists it. Each list is searched only until one
-    /// holds.
     pub fn holds(&self, slot: u32) -> Result<bool, String> {
         for &target in self.targets(self.raw_of(slot)?) {
             if self.exists(self.linked(target, TableId::CountryCivilWars)?)? {
@@ -291,7 +254,6 @@ impl<'a> CivilWars<'a> {
         self.raw.get(&slot).copied().ok_or_else(|| "a country is not among the recorded countries at this hour".to_owned())
     }
 
-    /// Whether `slot` owns a state, the game's existence check.
     pub fn exists(&self, slot: u32) -> Result<bool, String> {
         let raw = self.raw_of(slot)?;
         self.owned
@@ -308,13 +270,9 @@ impl<'a> CivilWars<'a> {
         linked(&self.links, raw, table)
     }
 
-    /// The country's enemy vector: its CountryWars row's where read, else the
-    /// other country of each ongoing war relation. War-relation updates keep
-    /// that vector synchronized.
     fn enemies(&self, slot: u32) -> Result<Vec<u32>, String> {
         let wars = self.wars.as_ref().map_err(Clone::clone)?;
         let found = wars.by_slot.get(&slot).copied();
-        // A row before it whose country does not resolve stops the scan there.
         if let Some((_, raw)) = wars
             .unlinked
             .filter(|&(at, _)| found.is_none_or(|(found, _)| at < found))
@@ -341,15 +299,11 @@ impl<'a> CivilWars<'a> {
     }
 }
 
-/// A raw country reference's canonical slot, or why the hour cannot say.
 fn linked(links: &Rowset<'_, CountryLinkRow>, raw: u32, table: TableId) -> Result<u32, String> {
     crate::metadata::link_slot_in(links, raw)
         .ok_or_else(|| format!("{} names a country that no recorded country link holds", table.words()))
 }
 
-/// A country as idea naming needs it at one hour, owned for the scans that
-/// keep it: its canonical slot and its appearance ([`Look`]), `None` when
-/// the hour lacks its CountryAppearance row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NamingCountry {
@@ -357,20 +311,15 @@ pub struct NamingCountry {
     pub look: Option<Look>,
 }
 
-/// A country's naming operands: dynamic-gated appearance, the independent
-/// original-or-own getter, and whether it has a civil war.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Look {
     pub name_tag: String,
     pub original_or_own_tag: Result<String, String>,
     pub cosmetic_tag: String,
-    /// [`civil_war`] for a dynamic country (name_tag set); Ok(false) for any
-    /// other country, whose idea naming never asks it.
     pub civil_war: Result<bool, String>,
 }
 
-/// The fields of a country's appearance its look reads ([`Look::read`]).
 pub const LOOK: u64 = mask::<CountryAppearanceRow>(&[
     "name_tag",
     "cosmetic_tag",
@@ -379,8 +328,6 @@ pub const LOOK: u64 = mask::<CountryAppearanceRow>(&[
 ]);
 
 impl Look {
-    /// The country's appearance at the frame's hour, `None` without its
-    /// CountryAppearance row.
     pub fn read<F: Tables + ?Sized>(frame: &F, row: &CountryRow) -> Option<Self> {
         let appearances =
             crate::triggers::refusal::complete_table::<F, tables::CountryAppearance>(frame, LOOK)
@@ -406,7 +353,6 @@ impl Look {
         Self::read_with(frame, row, appearance, &|slot| civil_war(frame, slot))
     }
 
-    /// [`Self::read_with_appearance`], a dynamic country's civil war answered by `civil_war`.
     fn read_with<F: Tables + ?Sized>(
         frame: &F,
         row: &CountryRow,
@@ -452,7 +398,6 @@ impl NamingCountry {
         }
     }
 
-    /// The same naming getters with the caller's indexed appearance row.
     pub fn read_with_appearance<F: Tables + ?Sized>(
         frame: &F,
         row: &CountryRow,
@@ -466,8 +411,6 @@ impl NamingCountry {
         }
     }
 
-    /// [`Self::read_with_appearance`], a dynamic country's civil war answered by `civil_war`:
-    /// [`CivilWars::holds`] of the frame's hour, indexed once for every country asked.
     pub fn read_with_civil_war<F: Tables + ?Sized>(
         frame: &F,
         row: &CountryRow,

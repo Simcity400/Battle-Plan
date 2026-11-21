@@ -1,20 +1,12 @@
-//! Complete grant inventory at a certified research-country read. No technology
-//! census, native calls or daily counter capture. The caller carries these rows
-//! with research under the assignment, grant-addition and reset writer marks.
 use super::*;
 use crate::{
     climited_use_tech_bonus as bonus, climited_use_tech_cost_reduction as cost,
     ctechnology_status as status, ctechnology_template as template,
 };
 
-/// Separate from slot indices and the shared modifier scope. Native slot indices
-/// are bounded by the signed native array count.
 pub const INVENTORY_INDEX: u32 = u32::MAX - 1;
-/// Category identity consumed by the grant serializer and eligibility test.
 const CATEGORY_TOKEN: usize = 0x2c;
 
-/// Append the inventory to the same worker-owned modifier arena. Existing slot
-/// capture remains unchanged; even a country without slots has an ID counter.
 pub fn walk_country_buffer<M: Memory>(
     memory: &M,
     base: usize,
@@ -37,7 +29,6 @@ pub fn walk_country_buffer<M: Memory>(
     )
 }
 
-/// Reuse the grant identities and values already authenticated for active research.
 #[allow(
     clippy::too_many_arguments,
     reason = "Reuse the authenticated grant operands and caller-owned output without a second acquisition."
@@ -67,7 +58,6 @@ pub fn walk_country_with_applied<M: Memory>(
     )
 }
 
-/// Combined grant inventory and demanded sharing roster under the caller's epoch.
 #[allow(
     clippy::too_many_arguments,
     reason = "Keep grant reuse and the independent sharing-roster certificate explicit at the capture boundary."

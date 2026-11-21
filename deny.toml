@@ -1,6 +1,3 @@
-# Vulnerabilities are errors; use the default RustSec advisory database.
-# Unmaintained notices fail only for crates the workspace depends on directly;
-# the rest (deep in the desktop toolkit) are reviewed, not blocking.
 [advisories]
 ignore = []
 unmaintained = "workspace"

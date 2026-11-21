@@ -3,9 +3,6 @@ import { checkChord } from './check.ts';
 
 export interface FoldedChord { readonly data: ChordData; readonly nodes: ReadonlyMap<string, readonly string[]>; readonly flows: ReadonlyMap<string, readonly string[]> }
 
-/** The widget chooses which nodes to keep and supplies the aggregate's identity,
- * label and colour. Everything else folds, including flows inside the aggregate.
- * Membership is returned for exact tooltip totals and constituent read dates. */
 export function foldChord(data: ChordData, keep: ReadonlySet<string>, other: ChordNode): FoldedChord {
   checkChord(data);
   if (data.nodes.some(node => node.id === other.id)) throw new Error('Fold node identity collides with a node');
@@ -22,7 +19,6 @@ export function foldChord(data: ChordData, keep: ReadonlySet<string>, other: Cho
     if (!targets) { targets = new Map(); grouped.set(source, targets); }
     let index = targets.get(target);
     if (index === undefined) {
-      // JSON tuples preserve opaque identities, including delimiters and spaces.
       index = result.length;
       const aggregate = { id: JSON.stringify([source, target]), source, target };
       targets.set(target, index); result.push(aggregate); values.push(0); flows.set(aggregate.id, []);

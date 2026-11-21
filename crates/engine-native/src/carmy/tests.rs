@@ -152,11 +152,8 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
         creferenced_division_template::VTABLE_RVA.0 as u64,
     );
     p64(&mut bytes, ALTERNATE + 8, handle(23, 52));
-    // The seed also carries the separate-counter byte and the alternate
-    // pointer: two reads fewer than the identity and template reuse alone.
     for (pointer, calls_saved) in [(0, 10), (T1, 12), (ALTERNATE, 10)] {
         p64(&mut bytes, A1 + FAKE_INTEL_TEMPLATE, pointer as u64);
-        // Seeded at the boundary the inputs are read at.
         let seed = seed_of(&bytes);
         let memory = crate::memory::SliceMemory {
             base: 0,
@@ -271,7 +268,6 @@ fn fixture() -> Vec<u8> {
     array(&mut b, GS + 0x310, COUNTRIES, 4);
     array(&mut b, GS + 0x340, LINKS, 4);
     array(&mut b, GS + 0x2b0, PROVINCES, 2);
-    // Country slot zero is reserved. Slot3 aliases canonical slot1.
     for (slot, ptr) in [u64::MAX, C1 as u64, C2 as u64, C1 as u64]
         .into_iter()
         .enumerate()
@@ -286,7 +282,6 @@ fn fixture() -> Vec<u8> {
         p32(&mut b, country + 8, id);
         array(&mut b, country + 0x290, data, count);
     }
-    // Division rosters include slot zero, and may contain null holes.
     for (slot, ptr) in [A1 as u64, 0, A2 as u64].into_iter().enumerate() {
         p64(&mut b, FIRST + slot * 8, ptr);
     }
@@ -301,10 +296,9 @@ fn fixture() -> Vec<u8> {
         T1,
         creferenced_division_template::VTABLE_RVA.0 as u64,
     );
-    p64(&mut b, T1 + 8, handle(0, 52)); // A one-zero-word handle is not null.
+    p64(&mut b, T1 + 8, handle(0, 52));
     p64(&mut b, G1, corders_group::VTABLE_RVA.0 as u64);
     p64(&mut b, G1 + 8, handle(57, corders_group::REFERENCE_TYPE));
-    // A3 keeps the native null parent, which is not a failed read.
     for (at, id, owner, group) in [
         (A1, handle(9, 9000), 3, G1),
         (A2, handle(9, 51), 3, G1),
@@ -359,13 +353,11 @@ fn raw_fields_and_native_roster_order_survive_country_aliases_and_holes() {
             },
         ]
     );
-    // The two type-distinct id9 rows remain separate and unsorted; alias slot3 adds no copies.
 }
 
 #[test]
 fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
     let mut b = fixture();
-    // An army-group parent uses the derived vtable and the same type word.
     p64(&mut b, G1, carmy_group::VTABLE_RVA.0 as u64);
     let mut out = [Row::default(); 5];
     assert_eq!(run(&b, &mut out), Outcome::Rows { len: 3 });
@@ -373,7 +365,6 @@ fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
         out[0].orders_group,
         handle(57, corders_group::REFERENCE_TYPE)
     );
-    // A foreign vtable at the back-pointer is a failure, never a zero row.
     p64(&mut b, G1, cprovince::VTABLE_RVA.0 as u64);
     assert_eq!(
         run(&b, &mut out),
@@ -381,7 +372,6 @@ fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
             reason: "division orders group vtable mismatch"
         }
     );
-    // So is a group object whose reference type is not type 53.
     p64(&mut b, G1, corders_group::VTABLE_RVA.0 as u64);
     p64(&mut b, G1 + 8, handle(57, 61));
     assert_eq!(
@@ -396,7 +386,6 @@ fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
 fn shared_visitors_preserve_source_identity_and_never_visit_omitted_or_failed_rows() {
     let mut bytes = fixture();
     let mut output = [Row::default(); 3];
-    // Independent walks must report the current row, not retained source data.
     for hit_points in [i64::MIN, 42] {
         p64(&mut bytes, A1 + 0x420, hit_points as u64);
         let mut visited = [(0, Row::default()); 3];
@@ -468,7 +457,7 @@ fn shared_visitors_preserve_source_identity_and_never_visit_omitted_or_failed_ro
         ),
         Outcome::Unavailable { .. }
     ));
-    assert_eq!(count, 1); // Earlier visits do not turn a failed census into complete data.
+    assert_eq!(count, 1);
     p64(&mut bytes, A1 + 0x3b8, u64::MAX);
     assert!(matches!(
         walk_with(
@@ -530,7 +519,7 @@ fn raw_logical_and_expeditionary_country_bits_are_not_replaced_by_roster_owner()
 fn capacity_counts_nonnull_rows_across_later_countries_without_reading_their_fields() {
     let mut b = fixture();
     let mut out = [Row::default(); 1];
-    p64(&mut b, A2, 0); // Beyond capacity: its fields must not be dereferenced.
+    p64(&mut b, A2, 0);
     assert_eq!(
         run(&b, &mut out),
         Outcome::Truncated {
@@ -546,7 +535,6 @@ fn capacity_counts_nonnull_rows_across_later_countries_without_reading_their_fie
             unread_rows: 3
         }
     );
-    // A failed later roster pointer read cannot become an apparently complete row count.
     p64(&mut b, C2 + 0x290, 0xffff_0000);
     assert!(matches!(run(&b, &mut out), Outcome::Unavailable { .. }));
 }
@@ -554,21 +542,21 @@ fn capacity_counts_nonnull_rows_across_later_countries_without_reading_their_fie
 #[test]
 fn invalid_identity_owner_and_array_structure_fail_the_whole_table() {
     let cases: [(usize, u64, bool); 15] = [
-        (A1, 0, true),                            // Division vtable.
-        (A1 + 0x18, 0, true),                     // Both handle words zero.
-        (A1 + 0x1d8, 2, false),                   // Owner resolves to another roster country.
-        (C1, 0, true),                            // Country vtable.
-        (C1 + 8, 0, false),                       // Country object id.
-        (LINKS + 3 * 4, 2, false),                // Alias slot and object no longer agree.
-        (COUNTRIES + 8, C2 as u64, true),         // Canonical pointer differs from alias.
-        (C1 + 0x29c, 4, false),                   // Roster count exceeds capacity.
-        (A1 + 0x1f0, u64::MAX, true),             // Non-null unreadable province.
-        (P1, 0, true),                            // Province vtable.
-        (P1 + 0xa4, 0, false),                    // Non-null province cannot have id zero.
-        (PROVINCES + 8, P1 as u64 + 0x100, true), // Province identity must match array pointer.
-        (A1 + 0x3b8, u64::MAX, true),             // Non-null unreadable template.
-        (T1, 0, true),                            // Template vtable.
-        (T1 + 8, 0, true),                        // Non-null template has null handle.
+        (A1, 0, true),
+        (A1 + 0x18, 0, true),
+        (A1 + 0x1d8, 2, false),
+        (C1, 0, true),
+        (C1 + 8, 0, false),
+        (LINKS + 3 * 4, 2, false),
+        (COUNTRIES + 8, C2 as u64, true),
+        (C1 + 0x29c, 4, false),
+        (A1 + 0x1f0, u64::MAX, true),
+        (P1, 0, true),
+        (P1 + 0xa4, 0, false),
+        (PROVINCES + 8, P1 as u64 + 0x100, true),
+        (A1 + 0x3b8, u64::MAX, true),
+        (T1, 0, true),
+        (T1 + 8, 0, true),
     ];
     for (at, value, wide) in cases {
         let mut b = fixture();
@@ -671,8 +659,6 @@ impl crate::Memory for ScalarBatchMemory<'_> {
         destination: &mut [u8],
     ) -> usize {
         self.batches.set(self.batches.get() + 1);
-        // Exercise the existing ordered scalar fallback while observing
-        // the one batch requested by production. No alternate gather ABI.
         struct ScalarOnly<'a, 'b>(&'a ScalarBatchMemory<'b>);
         impl crate::Memory for ScalarOnly<'_, '_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -701,8 +687,6 @@ fn scalar_tail_test_read(
             }
         }
     } else {
-        // Original field sequence, widths and conversions, independent of
-        // the new RecordField declarations.
         match kind {
             0 => Ok([
                 super::presentation_field::<i64>(memory, army, carmy::COUNTER_ATTRITION)? as i128,
@@ -871,10 +855,6 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
         Outcome::Rows { len: 1 }
     );
     assert_eq!(actual, expected);
-    // Status gathers fixed seeds, the country's modifier snapshot and the
-    // stat block's maxima and exfiltration byte once each, then the supply
-    // footer's scalar spans and origin header in one additional gather. The
-    // fixture's empty origin vector reads no rows and needs no witness.
     assert_eq!(packed.batches.get(), 4);
     for (offset, width) in [
         (crate::cunit_supply_inputs::ASKED, 8),
@@ -932,8 +912,6 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
         *direct.reads.borrow()
     );
 
-    // These test readers own their bounded source preparation. Empty
-    // output skips the Status seed prefix and Movement's private tails.
     let packed = ScalarBatchMemory::new(&source);
     assert!(matches!(
         super::walk_status(
@@ -1006,8 +984,6 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
         ),
         Outcome::Unavailable { .. }
     ));
-    // Fixed seeds, the stat block and the single country modifier capture
-    // precede group admission; an invalid group does not retry any source.
     assert_eq!(packed.batches.get(), 3);
     assert_eq!(
         packed
@@ -1191,7 +1167,6 @@ fn state_movement_modifier_keeps_raw_values_for_aliased_owners_and_fails_each_re
         p64(&mut source.bytes, 0x2a008 + index * 16, value as u64);
     }
     let observed = ScalarBatchMemory::new(&source);
-    // Raw owner 1 aliases owner 3's country; neither selects an override.
     for (owner, key, expected) in [
         (3, 0x2b, i64::MIN),
         (1, 0x2b, i64::MIN),
@@ -1230,7 +1205,6 @@ fn the_static_map_memo_reuses_provinces_until_the_session_changes() {
             (0x18400, 0x18700, 0x17400)
         ]
     );
-    // Repeated lookups inside the same walk are already hits.
     assert_eq!(statics.province(&memory, 0, 1), Ok(cold[0]));
     assert_eq!(
         statics.counters(),
@@ -1240,7 +1214,6 @@ fn the_static_map_memo_reuses_provinces_until_the_session_changes() {
             cleared: 1,
         }
     );
-    // The next hour reuses immutable provinces without reading them again.
     assert!(statics.begin(&memory, 0, GS));
     let warm = ObservedMovementMemory {
         source: &memory,
@@ -1259,7 +1232,6 @@ fn the_static_map_memo_reuses_provinces_until_the_session_changes() {
             cleared: 0,
         }
     );
-    // A reload changes the play session, which clears the whole memo.
     memory.globals.insert(
         crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0,
         8_i64.to_le_bytes().to_vec(),
@@ -1281,8 +1253,6 @@ fn embark_define_refreshes_without_a_session_or_province_census_change() {
     assert!(statics.begin(&memory, 0, GS));
     assert_eq!(statics.embark(&memory, 0), Ok(12_345));
     let key = memory.globals[&crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0].clone();
-    // Reuse within one frozen acquisition, then emulate define reload
-    // between hours without replacing any key field or province array.
     memory
         .globals
         .insert(define, 67_890_i64.to_le_bytes().to_vec());
@@ -1323,8 +1293,6 @@ fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
     assert_eq!((old.distance, old.crossing), (4_321, Some(1)));
     assert_eq!(statics.edge(&memory, 0, 1, 3).unwrap().crossing, None);
 
-    // A straits reload can modify an existing crossing and append an
-    // adjacency, reallocating only the definition's neighbour array.
     array(&mut memory.bytes, header, 0x1e100, 2);
     for (slot, target, length, kind) in [(0, 2, 9_876, 3), (1, 3, 4_567, 2)] {
         let entry = 0x1e100 + slot * stride;
@@ -1376,7 +1344,6 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
         memory.reads.borrow().iter().filter(|&&a| a == P1).count(),
         1
     );
-    // A different width/address cannot use or evict the retained key.
     assert_eq!(cache.read::<u32>(&memory, P1).unwrap(), crate::read(&source, P1));
     assert_eq!(cache.read::<u32>(&memory, P1 + cprovince::ID).unwrap(), Some(1));
     assert_eq!(cache.read::<u64>(&memory, 0xdead).unwrap(), None);
@@ -1461,7 +1428,6 @@ fn owned_movement_fixture_run(
         })
         .collect();
     super::capture_division_seeds(memory, &mut seeds);
-    // Geometry grows from the fixture's original province headers.
     let mut geometry = crate::cprovince::GeometryPacket::with_capacities(
         crate::cprovince::GeometryCapacities::default(),
     );
@@ -1521,8 +1487,6 @@ fn movement_combat_fixture() -> (
     (source, sources)
 }
 
-/// Both movement paths record whether the unit's map-entity bit is set, and a failed read of it
-/// fails the table rather than recording a guess.
 #[test]
 fn movement_records_the_map_entity_bit_and_fails_closed_on_its_read() {
     use crate::cunit;
@@ -1605,7 +1569,6 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
             ]
         })
         .collect::<Vec<_>>();
-    // The reference walk reads the styles after its whole prefix.
     assert!(healthy.reads.borrow().ends_with(&tail));
     for owned in [false, true] {
         let memory = ScalarBatchMemory::new(&source);
@@ -1616,8 +1579,6 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
         );
         assert_eq!(rows, baseline);
         if owned {
-            // The owned pass takes both from the seed's gather: each is read
-            // once there, never again after the prefix.
             for &(address, len) in &tail {
                 assert_eq!(
                     memory
@@ -1674,8 +1635,6 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
     }
 }
 
-/// The owned movement pass publishes each division's arrow styles from its
-/// seed, refusal included, and reads neither field itself.
 #[test]
 fn owned_movement_takes_both_arrow_styles_from_the_seed_without_reading_them() {
     let (mut source, sources) = movement_combat_fixture();
@@ -1707,8 +1666,6 @@ fn owned_movement_takes_both_arrow_styles_from_the_seed_without_reading_them() {
             (Some(0x12), Some(9))
         ]
     );
-    // A seed's own outcome stands: a refused field stays refused, and the
-    // pass never reads the division to repair it.
     seeds[1].withdrawal = None;
     seeds[2].movement_priority = Some(-3);
     let memory = ScalarBatchMemory::new(&source);
@@ -1977,7 +1934,6 @@ fn movement_combat_memo_preserves_membership_laziness_and_context_changes() {
             assert_eq!(packet.combats.entries.len(), 2);
         }
     }
-    // Capture clear must reacquire membership at unchanged pointers.
     p32(&mut source.bytes, 0x18000, 2);
     packet.clear();
     let memory = ScalarBatchMemory::new(&source);
@@ -2029,8 +1985,6 @@ fn movement_combat_hits_do_not_hide_later_first_pointer_failure() {
         assert!(matches!(actual_walk.outcome, Outcome::Unavailable { .. }));
         assert_eq!(actual[0].combat_role, 1);
         assert!(!owned.reads.borrow().contains(&(0x19020, 8)));
-        // A failed prefix reads no style field: the reference walk none, the
-        // owned pass none beyond the seed's one gather of each.
         for (memory, gathered) in [(&direct, 0), (&owned, 1)] {
             for pointer in [A1, A2, A3] {
                 for field in [crate::cunit::WITHDRAWAL, crate::cunit::MOVEMENT_PRIORITY] {
@@ -2131,16 +2085,12 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
     const STATIONARY_STATS: usize = 0x1c000;
     const SPEED: i64 = -412_345;
     let mut source = shared_geometry_fixture();
-    // A1 moves with the fixture's authenticated stat block. The raw signed
-    // value is kept without clamping or scaling.
     p64(
         &mut source.bytes,
         STATS + stats::MAXIMUM_SPEED,
         SPEED as u64,
     );
     let army = source.bytes[A1..A1 + 0x700].to_vec();
-    // A2 moves on a block of another class, A3 moves without a block and the
-    // fourth division has no ordinary route.
     for (at, id, stat) in [
         (A2, 10, FOREIGN_STATS),
         (A3, 11, 0),
@@ -2180,7 +2130,6 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
             ..presentation_source()[0]
         }
     });
-    // An unreadable stat pointer refuses like a null one.
     for fault in [None, Some(A3 + cunit::STAT_BLOCK)] {
         let memory = ObservedMovementMemory {
             source: &source,
@@ -2215,7 +2164,6 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
             rows.map(|row| (row.path_total, row.base_speed)),
             [(2, Some(SPEED)), (2, None), (2, None), (0, None)]
         );
-        // The stationary row's None is outside demand, not a refusal.
         assert_eq!(packet.base_speed_refusals(), 2);
         let reads = memory.reads.borrow();
         for at in [STATS, STATS + stats::MAXIMUM_SPEED] {
@@ -2228,7 +2176,6 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
             "a stationary division never reads its stat block"
         );
         drop(reads);
-        // The reference walk reads its own stat pointer and agrees.
         let mut expected = [super::MovementRow::default(); 4];
         let mut expected_paths = [0; 16];
         let direct = super::walk_movement(
@@ -2276,16 +2223,12 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
         ORIGINS,
         3,
     );
-    // The fixture template's zero-id handle refused the retired selected
-    // transport member sizing; nothing sizes those members any more, so the
-    // census completes without a failure.
     let demand = super::presentation_demand(&memory, 0, GS).unwrap();
     assert_eq!(
         (demand.rows, demand.cached_name_text, demand.supply_origins),
         (3, 10, 5)
     );
     assert_eq!(demand.failure, None);
-    // Every division's supply-footer origin header sizes the status arena.
     struct Recording<'a> {
         source: &'a PresentationMemory,
         reads: std::cell::RefCell<Vec<usize>>,
@@ -2310,12 +2253,10 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
         );
     }
 
-    // A selecting header that changes after it was sized discards the hint.
     struct Changing<'a> {
         source: &'a PresentationMemory,
         header: usize,
         len: usize,
-        /// Reads that still see the stored header.
         stable: usize,
         byte: usize,
         reads: std::cell::Cell<usize>,
@@ -2335,8 +2276,6 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
         }
     }
     for (header, len, stable, byte, reason) in [
-        // The sizing read sees the stored length; the check after the
-        // census sees a longer one.
         (
             name,
             msvc_string::STRIDE,
@@ -2344,8 +2283,6 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
             16,
             "division presentation demand string header changed",
         ),
-        // origin_demand reads its header twice; the check after the census
-        // sees a grown capacity.
         (
             A1 + cunit_supply_inputs::ORIGINS,
             16,
@@ -2381,9 +2318,6 @@ mod movement_pairs;
 #[test]
 fn shared_movement_geometry_matches_direct_caps_and_reduces_repeated_guard_reads() {
     let mut source = shared_geometry_fixture();
-    // The captured ETA denominator no longer consults this province. Give
-    // the movement row non-null source/target references so this legacy
-    // direct-reader comparison still exercises shared province identity.
     p64(&mut source.bytes, A1 + super::MOVEMENT_TARGET, P1 as u64);
     p64(&mut source.bytes, A1 + super::MOVEMENT_SOURCE, P1 as u64);
     let sources = [presentation_source()[0]; 8];
@@ -2545,7 +2479,6 @@ fn movement_routes_are_whole_and_keep_whole_row_capacity() {
     );
     p64(b, A1 + carmy::MOVEMENT_NUMERATOR, 300_000);
     let mut rows = [super::MovementRow::default(); 1];
-    // Both routes are recorded whole; only the arena bounds them.
     let mut paths = [0; 302];
     let result = super::walk_movement(
         &memory,
@@ -2612,14 +2545,12 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
         0x1ff,
     );
     let object = A1 + carmy::ACCLIMATIZATION;
-    // Three entries: a winner, a later weaker one and a negative weight.
     array(
         &mut memory.bytes,
         object + acclimatization_data::DATA,
         0x16000,
         3,
     );
-    // Half of a 150 maximum is 75.
     p64(
         &mut memory.bytes,
         object + acclimatization_data::MAXIMUM,
@@ -2643,7 +2574,6 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
     entry(&mut memory, 0, 0x16100, 9_000_000);
     entry(&mut memory, 1, 0x16200, 8_000_000);
     entry(&mut memory, 2, 0x16200, -1);
-    // The registry lists both categories, in a different order.
     memory.globals.insert(
         acclimatization_category::REGISTRY_RVA.0,
         0x16800_u64.to_le_bytes().to_vec(),
@@ -2686,13 +2616,10 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
         assert_eq!(rows[0].model_number, 0x1ff);
         rows[0].camouflage
     };
-    // A tie keeps the first category; a stronger later entry wins.
     entry(&mut memory, 1, 0x16200, 9_000_000);
     assert_eq!(camouflage(&memory, &mut packet), shown(7));
     entry(&mut memory, 1, 0x16200, 9_000_001);
     assert_eq!(camouflage(&memory, &mut packet), shown(8));
-    // A winner below the threshold shows nothing, nor do zero weights; the
-    // category registry is not needed for either.
     entry(&mut memory, 0, 0x16100, 7_499_999);
     entry(&mut memory, 1, 0x16200, 7_000_000);
     let mut unread = super::StatusPacket::with_capacities(super::StatusCapacities {
@@ -2711,18 +2638,14 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
         entry(&mut memory, 1, 0x16200, weight);
         assert_eq!(camouflage(&memory, &mut unread), none);
     }
-    // The camouflage decision reads only the winner's category: an unregistered
-    // loser is no refusal, and a null winner shows nothing.
     entry(&mut memory, 0, 0x16100, 9_000_000);
     entry(&mut memory, 1, 0x16300, 1);
     assert_eq!(camouflage(&memory, &mut packet), shown(7));
     entry(&mut memory, 0, 0, 9_000_000);
     assert_eq!(camouflage(&memory, &mut unread), none);
-    // An unregistered winner is not a category.
     entry(&mut memory, 0, 0x16300, 9_000_000);
     assert_eq!(camouflage(&memory, &mut packet), None);
     entry(&mut memory, 0, 0x16100, 9_000_000);
-    // An unreadable define refuses only a winner it would decide.
     let define = memory
         .globals
         .remove(&acclimatization_data::CAMO_SHOW_AT_RVA.0)
@@ -2736,14 +2659,10 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
         .insert(acclimatization_data::CAMO_SHOW_AT_RVA.0, define);
     entry(&mut memory, 0, 0x16100, 9_000_000);
     assert_eq!(camouflage(&memory, &mut packet), shown(7));
-    // An unauthenticated object is not an empty acclimatization.
     p64(&mut memory.bytes, object, 0);
     assert_eq!(camouflage(&memory, &mut packet), None);
 }
 
-/// The recorded camouflage equals the full-weight decision a consumer makes
-/// from every entry, maximum and define, for synthetic divisions with ties,
-/// zero, negative and below-threshold weights.
 #[test]
 fn division_status_camouflage_equals_the_full_weight_decision() {
     use crate::{acclimatization_category, acclimatization_data};
@@ -2813,8 +2732,6 @@ fn division_status_camouflage_equals_the_full_weight_decision() {
             p64(&mut memory.bytes, 0x32008 + index * 16, weight as u64);
             entries.push((category as u32 + 1, weight));
         }
-        // The full-weight decision: the first of the greatest positive
-        // weights, shown at maximum * show_at / 100000 or above.
         let highest = entries.iter().map(|entry| entry.1).max().filter(|w| *w > 0);
         let expected = highest.and_then(|highest| {
             let first = entries.iter().find(|entry| entry.1 == highest)?;
@@ -2864,7 +2781,6 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         p32(b, data + 16, carmy_leader::CANNOT_RETREAT_WHILE_ATTACKING);
         p64(b, data + 24, 1);
     }
-    // A second group whose commander lies outside readable memory.
     p64(b, OTHER, corders_group::VTABLE_RVA.0 as u64);
     p32(
         b,
@@ -2872,7 +2788,6 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         corders_group::REFERENCE_TYPE,
     );
     p64(b, OTHER + corders_group::LEADER, 0x50000);
-    // A group without a commander.
     p64(b, OTHER + 0x1000, corders_group::VTABLE_RVA.0 as u64);
     p32(
         b,
@@ -2883,8 +2798,6 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         crate::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
-    // Authenticated, no commander, two non-groups, an unreadable group,
-    // an unreadable commander, and a repeat.
     let groups = [
         G1,
         OTHER + 0x1000,
@@ -2920,7 +2833,6 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
             carmy_leader::RETREAT_BANNED_ATTACKING
         ))
     );
-    // A leader the census already selected skips its group's own fields.
     struct Counted<'a>(&'a PresentationMemory, std::cell::RefCell<Vec<usize>>);
     impl crate::Memory for Counted<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -2947,7 +2859,6 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
     assert!(reads.contains(&LEADER));
 }
 
-/// An upper-half handle fault leaves every census consumer the outcome of its own reads.
 #[test]
 fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults() {
     use crate::{carmy_leader, corders_group_member as membership, cunit_leader};
@@ -2979,7 +2890,6 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
         crate::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
-    /// Fails every copy that covers the faulted byte.
     struct Fault<'a>(&'a PresentationMemory, usize);
     impl crate::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -3011,7 +2921,6 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
         );
         output[0]
     };
-    // Membership as status admits it, beside the census's selection.
     let member = |memory: &Fault<'_>, seed: &carmy::DivisionSeed| {
         let mut packet = membership::MembershipPacket::new(1, 4, 4, 4);
         if super::status_parts::census_authenticated(seed) {
@@ -3032,7 +2941,6 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
         let memory = Fault(&memory, fault);
         let selected = select(&memory);
         let census = selected.selected.unwrap();
-        // The leader authenticates as each consumer's own selection does.
         assert_eq!(census.leader, Some(Ok(LEADER)), "{fault:#x}");
         assert_eq!(
             census.block,
@@ -3068,14 +2976,12 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
             "{fault:#x}"
         );
         assert!(matches!(banned, Ok(Some(_))), "{fault:#x}");
-        // Only the handle's consumers see the handle's own outcome.
         assert_eq!(
             census.handle,
             crate::read::<u64>(&memory, LEADER + cunit_leader::TYPE),
             "{fault:#x}"
         );
         assert_eq!(census.handle.is_none(), fault == leader_upper);
-        // Membership refuses exactly the groups its own identity read refuses.
         assert_eq!(census.group_identity, fault != group_upper);
         assert_eq!(
             member(&memory, &selected),
@@ -3107,7 +3013,6 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         );
         (outcome, rows[0].move_flags)
     };
-    // The bans read, for the owners `owner` maps.
     type Owner<'o> = &'o dyn Fn(u32) -> Result<Option<u32>, &'static str>;
     let seeds_of = |memory: &PresentationMemory| {
         let mut seeds: Vec<_> = presentation_source()
@@ -3144,7 +3049,6 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
     let base_flags =
         super::StatusRow::MOVE_EXILED | super::StatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST;
     assert_eq!(run(&memory), (rows, base_flags));
-    // Only a positive air-supply word selects the air noncore-supply define.
     p64(&mut memory.bytes, A1 + carmy::AIR_SUPPLY, (-1_i64) as u64);
     assert_eq!(run(&memory), (rows, base_flags));
     p64(&mut memory.bytes, A1 + carmy::AIR_SUPPLY, 1);
@@ -3153,11 +3057,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         (rows, base_flags | super::StatusRow::MOVE_NONCORE_AIR)
     );
     p64(&mut memory.bytes, A1 + carmy::AIR_SUPPLY, 0);
-    // No commander bans nothing: no row.
     assert_eq!(bans(&memory, &|_| Ok(Some(3))).0, Outcome::Rows { len: 0 });
-    // The group's commander bans retreat while defending in both blocks; its
-    // ordinary block also holds an army speed entry and its separate-HQ block a
-    // river crossing entry, which the same read keeps raw.
     let b = &mut memory.bytes;
     p64(b, G1 + corders_group::LEADER, LEADER as u64);
     p64(b, LEADER, carmy_leader::VTABLE_RVA.0 as u64);
@@ -3174,7 +3074,6 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
             (crate::modifier_keys::RIVER_CROSSING_FACTOR, 5_000),
         ),
     ] {
-        // The CModifier's value accumulator sits at `carmy_leader::MODIFIER_ACCUMULATOR`.
         array(b, LEADER + block + 0x10, data, 3);
         p32(b, data, movement.0);
         p64(b, data + 8, movement.1 as u64);
@@ -3187,7 +3086,6 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         crate::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
-    // The hourly status never reads the bans, in combat or not.
     assert_eq!(run(&memory), (rows, base_flags));
     array(
         &mut memory.bytes,
@@ -3196,16 +3094,12 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         1,
     );
     assert_eq!(run(&memory), (rows, base_flags));
-    // The bans read has a row for a read owner, whatever its combats.
     let (outcome, row) = bans(&memory, &|_| Ok(Some(3)));
     assert_eq!(outcome, rows);
     assert_eq!(
         (row.owner, row.bans),
         (3, carmy_leader::RETREAT_BANNED_DEFENDING)
     );
-    // The same read keeps each division's commander movement entries: the block
-    // its HQ selects, all absent without a commander, and none for a division
-    // the read did not reach.
     let seeds = seeds_of(&memory);
     let mut packet = super::StatusPacket::new(1).unwrap();
     packet.retreat_bans(
@@ -3234,10 +3128,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         packet.commander_movement(division + 1, super::COMMANDER_BLOCK_ORDINARY),
         None
     );
-    // An owner outside the read has none.
     assert_eq!(bans(&memory, &|_| Ok(None)).0, Outcome::Rows { len: 0 });
-    // An unresolved owner could be a read owner: the read returns no
-    // rows and is truncated, so no earlier ban is replaced.
     let (outcome, row) = bans(&memory, &|_| Err("country link unreadable"));
     assert_eq!(
         (outcome, row),
@@ -3249,7 +3140,6 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
             super::RetreatBanRow::default()
         )
     );
-    // So is an unreadable roster owner field.
     let mut seeds = seeds_of(&memory);
     seeds[0].roster_owner = None;
     assert_eq!(
@@ -3259,14 +3149,11 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
             unread_rows: 1
         }
     );
-    // A commander that is not an army leader fails the read, never zeroes it.
     p64(&mut memory.bytes, LEADER, 0);
     assert!(matches!(
         bans(&memory, &|_| Ok(Some(3))).0,
         Outcome::Unavailable { .. }
     ));
-    // A held commander is not read again: its held bans answer although
-    // the leader no longer reads, and the walk reports them per group.
     let seeds = seeds_of(&memory);
     let mut packet = super::StatusPacket::new(1).unwrap();
     let mut rows = [super::RetreatBanRow::default(); 1];
@@ -3351,7 +3238,7 @@ fn division_status_preserves_maxima_and_distinguishes_training_orders_and_attrit
         Outcome::Rows { len: 1 }
     );
     assert_eq!(rows[0].exercising, 1);
-    p64(&mut memory.bytes, A1 + carmy::STRENGTH, 100_000); // Equality is not enough.
+    p64(&mut memory.bytes, A1 + carmy::STRENGTH, 100_000);
     p64(&mut memory.bytes, A1 + carmy::COUNTER_ATTRITION, 500);
     assert_eq!(
         super::walk_status(
@@ -3961,7 +3848,6 @@ fn division_status_supply_grace_preserves_signed_words_and_owned_seed_failures()
     assert_eq!(seeds[0].name_member, Some(0x12345));
     assert_eq!(seeds[0].supply_grace_maximum, Some(maximum));
     assert_eq!(seeds[0].supply_grace_remaining, Some(remaining));
-    // Projection uses the captured words even when live memory changes.
     p64(&mut memory.bytes, A1 + carmy::MAXIMUM_SUPPLY_GRACE, 0);
     p64(&mut memory.bytes, A1 + carmy::REMAINING_SUPPLY_GRACE, 0);
     let mut packet = super::StatusPacket::new(1).unwrap();
@@ -4063,7 +3949,7 @@ fn exercise_level_gates_honor_ai_stop_at_maximum_and_wrapping_manpower() {
     array(&mut memory.bytes, A1 + carmy::MANPOWER_DATA, 0x16000, 2);
     p32(&mut memory.bytes, 0x16004, 40);
     p32(&mut memory.bytes, 0x1600c, 60);
-    p64(&mut memory.bytes, A1 + carmy::EXPERIENCE, 20_000); // Exactly level2 threshold.
+    p64(&mut memory.bytes, A1 + carmy::EXPERIENCE, 20_000);
     assert_eq!(super::exercise_level(&memory, 0, A1), Ok(2));
     assert_eq!(super::exercising(&memory, 0, GS, A1, G1, 200_000), Ok(true));
     memory.bytes[G1 + corders_group::STOP_AT_MAXIMUM] = 1;
@@ -4072,15 +3958,15 @@ fn exercise_level_gates_honor_ai_stop_at_maximum_and_wrapping_manpower() {
         Ok(false)
     );
     memory.bytes[G1 + corders_group::STOP_AT_MAXIMUM] = 0;
-    memory.bytes[0x15011] = 1; // Owner3 aliases canonical1.
+    memory.bytes[0x15011] = 1;
     assert_eq!(
         super::exercising(&memory, 0, GS, A1, G1, 200_000),
         Ok(false)
     );
-    memory.bytes[0x15001] = 1; // A human controller disables the AI level gate.
+    memory.bytes[0x15001] = 1;
     assert_eq!(super::exercising(&memory, 0, GS, A1, G1, 200_000), Ok(true));
     p32(&mut memory.bytes, 0x16004, i32::MAX as u32);
-    p32(&mut memory.bytes, 0x1600c, 1); // Sum wraps negative, selects zero experience.
+    p32(&mut memory.bytes, 0x1600c, 1);
     assert_eq!(super::exercise_level(&memory, 0, A1), Ok(0));
 }
 
@@ -4311,9 +4197,6 @@ fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace
     );
 }
 
-/// The census gathers the supply and fuel operands of the movement speed and
-/// attrition with the seed: the noncore bypass byte, the air-supply word, the
-/// signed out-of-supply days and the fuel word, each its own field outcome.
 #[test]
 fn division_seeds_gather_supply_days_bypass_and_fuel() {
     use super::*;
@@ -4353,7 +4236,6 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
         (seeds[0].theatre, seeds[0].queued_actions),
         (Some(0x7000_1230), Some(2))
     );
-    // A fuel word past the readable memory refuses only that field.
     let short = crate::memory::SliceMemory {
         base: 0,
         bytes: &bytes[..POINTER + FUEL_CANDIDATE + 4],
@@ -4368,9 +4250,6 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
     assert_eq!(seeds[0].out_of_supply_days, Some(-3));
 }
 
-/// The census gathers the counter icon's separate-counter byte and alternate
-/// template pointer with the seed, so the icon inputs read neither field of a
-/// seeded division; a field the gather failed is not read again.
 #[test]
 fn seeded_icon_inputs_read_no_division_field() {
     use super::*;
@@ -4407,8 +4286,6 @@ fn seeded_icon_inputs_read_no_division_field() {
         country: 25,
         template: 0,
     };
-    // A memory holding only the division's identity: the seeded fields are
-    // never read from it.
     let mut identity = vec![0_u8; 0x800];
     identity[..0x100 + cunit::ROSTER_OWNER + 4]
         .copy_from_slice(&bytes[..0x100 + cunit::ROSTER_OWNER + 4]);
@@ -4440,8 +4317,6 @@ fn seeded_icon_inputs_read_no_division_field() {
             alternate_template: 0,
         })
     );
-    // A field the gather failed stays failed: it is not read again, even
-    // from memory that now holds it.
     for (failed, reason) in [
         (
             DivisionSeed {
@@ -4578,8 +4453,6 @@ fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph()
 
 mod unit_combat_reference_tests;
 
-/// Divisions of one climate share their active category's factor: a pass
-/// reads it once, and a refused read keeps no slot.
 #[test]
 fn a_pass_reads_each_acclimatization_category_factor_once() {
     use super::*;
@@ -4635,9 +4508,6 @@ fn a_pass_reads_each_acclimatization_category_factor_once() {
     assert_eq!(factors.len, 1);
 }
 
-/// The movement speed keys are the movement priority sub-unit's own key when
-/// nonzero, then each nonzero key of its categories in native order with
-/// repeats kept; a refused read appends nothing to the caller's keys.
 #[test]
 fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order() {
     use crate::csub_unit_definition as unit;
@@ -4659,20 +4529,16 @@ fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order()
     let mut keys = vec![7];
     super::movement_speed_keys(&memory, 0, T1, &mut keys).unwrap();
     assert_eq!(keys, [7, 0x31, 0x40, 0x40, 0x41]);
-    // Without its own key, only its categories' keys.
     p32(&mut memory.bytes, UNIT + unit::SPEED_MODIFIER_KEY, 0);
     keys.clear();
     super::movement_speed_keys(&memory, 0, T1, &mut keys).unwrap();
     assert_eq!(keys, [0x40, 0x40, 0x41]);
-    // An unreadable category refuses the whole read.
     p64(&mut memory.bytes, CATEGORIES + 3 * 8, 0x7fff_0000);
     let mut keys = vec![7];
     assert!(super::movement_speed_keys(&memory, 0, T1, &mut keys).is_err());
     assert_eq!(keys, [7]);
-    // Demand keeps healthy earlier category keys while the full list refuses.
     assert!(super::movement_speed_key_demands(&memory, 0, T1, &mut keys).is_err());
     assert_eq!(keys, [7, 0x40, 0x40]);
-    // A refused category header cannot erase the priority unit's own demand.
     p32(&mut memory.bytes, UNIT + unit::SPEED_MODIFIER_KEY, 0x31);
     p32(
         &mut memory.bytes,
@@ -4755,7 +4621,6 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         packet.units[0].movement_organisation,
         Some(Some([0, 1_000_000]))
     );
-    // Lake -> land -> land is not an invasion: preserve the exact pair.
     source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
         crate::province_definition::LAKE_FLAG;
     source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] =
@@ -4770,7 +4635,6 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     );
     source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
         crate::province_definition::LAND_FLAG;
-    // A bad earlier position cannot hide the later readable ordinary edge.
     p32(&mut source.bytes, 0x1f000, 99);
     assert_eq!(
         packet.capture_movement_organisation(&source, 0, GS, &[seed]),
@@ -4780,7 +4644,6 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         packet.units[0].movement_organisation,
         Some(Some([0, 1_000_000]))
     );
-    // Known transfer bypasses organisation, location and owner dependencies.
     let transfer = DivisionSeed {
         naval_transfer_membership: Some(1),
         organisation: None,
@@ -4792,7 +4655,6 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         0
     );
     assert_eq!(packet.units[0].movement_organisation, Some(None));
-    // A wholly sea itinerary needs no pair even if transfer/org fields refused.
     source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
     source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 0;
     p32(&mut source.bytes, 0x1f000, 2);
@@ -4811,8 +4673,6 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     assert_eq!(packet.units[0].movement_organisation, Some(None));
 }
 
-/// The witness's columns for `sources` from a fresh census, as the collector's
-/// Map job reads them.
 fn model_inputs_test_capture(
     memory: &impl crate::Memory,
     sources: &[crate::cequipment_variant_pool::DivisionSource],
@@ -4839,8 +4699,6 @@ fn model_inputs_test_capture(
     (report, rows)
 }
 
-/// DivisionStatus's model number, camouflage and exercising for A1, as the
-/// witness carries them; None when Status refuses the table.
 fn status_model_columns(memory: &PresentationMemory) -> Option<super::ModelInputsRow> {
     let mut rows = [super::StatusRow::default(); 1];
     let outcome = super::walk_status(
@@ -4910,7 +4768,6 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
     };
     let shown = Some(super::Camouflage { category: Some(7) });
 
-    // Idle: the training byte is the only exercise read.
     let idle = status_model_columns(&memory).unwrap();
     assert_eq!(
         (idle.model_number, idle.camouflage, idle.exercising),
@@ -4929,7 +4786,6 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
             && address != 0x11000
     }));
 
-    // Training above, then at, the minimum strength.
     memory.bytes[G1 + corders_group::TRAINING] = 1;
     let training = status_model_columns(&memory).unwrap();
     assert_eq!(training.exercising, Some(1));
@@ -4940,7 +4796,6 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
     assert_eq!(witness(&memory), (weak, 1));
     p64(&mut memory.bytes, A1 + carmy::STRENGTH, 150_000);
 
-    // An empty entry list shows no camouflage; an unreadable one refuses only it.
     array(
         &mut memory.bytes,
         object + acclimatization_data::DATA,
@@ -4969,7 +4824,6 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
         2,
     );
 
-    // A failed exercise read refuses Status whole, but only the witness's exercising.
     let define = memory
         .globals
         .remove(&carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0)
@@ -4986,7 +4840,6 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
         .globals
         .insert(carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0, define);
 
-    // A2 shares the training group but has no stat block: only its exercising fails.
     let sources = [
         presentation_source()[0],
         crate::cequipment_variant_pool::DivisionSource {
@@ -5012,7 +4865,6 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
         }
     );
 
-    // A changed identity is not this division's row.
     p64(&mut memory.bytes, A1 + cunit::HANDLE, handle(9, 9001));
     assert_eq!(status_model_columns(&memory), None);
     assert_eq!(

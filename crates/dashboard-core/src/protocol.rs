@@ -1,13 +1,7 @@
-//! Small control messages between the desktop host and the map it hosts in its own process.
-//!
-//! Map pixels and replay tables never travel as these; data replies use the fragmented channel
-//! in [`crate::transport`]. Handles and branch identifiers use decimal strings so every bit
-//! survives JavaScript.
 
 use serde::{Deserialize, Serialize};
 use std::{io, path::Path, time::UNIX_EPOCH};
 
-/// Requests share the reply transport's byte budget, including their envelope.
 pub const MAX_MESSAGE_BYTES: usize = crate::transport::MAX_REPLY_BYTES;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -16,7 +10,6 @@ pub enum NativeCommand {
     MapAction {
         action: MapAction,
     },
-    /// Show the Campaign map in the window instead of the dashboard's maps.
     CampaignMap,
     Visibility {
         visible: bool,
@@ -29,8 +22,6 @@ pub enum NativeCommand {
     },
     Open {
         path: String,
-        /// The revision the page's analysis read, which the map refuses to open anything else at;
-        /// none when the user chose the file and the map reads the revision itself.
         revision: Option<String>,
     },
     Seek {
@@ -41,13 +32,9 @@ pub enum NativeCommand {
         #[serde(default)]
         playback: Option<MapPlayback>,
     },
-    /// Replaces the complete dashboard map layout and its absolute targets.
     MapViews {
         views: Vec<DashboardMapView>,
     },
-    /// The controller the user last touched, for the map whose window is in front. The host reads
-    /// controllers for every map; mouse and keyboard reach the map's own window directly. The host
-    /// alone decides which map holds the controller ([`GamepadMessage`]).
     Gamepad {
         message: GamepadMessage,
     },
@@ -62,8 +49,6 @@ pub enum NativeEvent {
     },
     Ready {
         hwnd: String,
-        /// The anti-aliasing sample counts the renderer's adapter supports
-        /// ([`crate::map_settings::sample_counts`]); `None` when it did not record them.
         sample_counts: Option<Vec<u32>>,
     },
     State {
@@ -79,53 +64,35 @@ pub enum NativeEvent {
     MapStates {
         states: Vec<DashboardMapState>,
     },
-    /// The user pressed the diagnostics shortcut in the native map. The host
-    /// owns the saved choice, so it toggles it and sends the result back as
-    /// [`MapAction::Diagnostics`].
     ToggleDiagnostics,
-    /// The full map's camera mode or its overlay choice changed, by [`MapAction::CameraMode`] or
-    /// the map's own shortcut; the host's controls follow it.
     CameraMode {
         mode: CameraMode,
-        /// Whether flying and walking draw the map's interface.
         #[serde(default)]
         overlays: bool,
     },
-    /// Where the aircraft [`MapAction::FlyAircraft`] chose stands: loading,
-    /// ready to fly, or refused with why.
     FlyAircraft {
         aircraft: Option<String>,
         state: FlyAircraftState,
     },
-    /// The map picker or its shortcuts changed a view's options (map mode, slots, fog). The
-    /// host stores them, so later layout messages carry them back.
     MapOptions {
         #[serde(rename = "viewId")]
         view_id: String,
         options: MapOptions,
     },
-    /// The modes a view's map mode picker offers, in its order, sent when they change, so the
-    /// host's own map mode control offers the same choices and chooses them through
-    /// [`MapOptions::map_mode`].
     MapModes {
         #[serde(rename = "viewId")]
         view_id: String,
         modes: Vec<MapModeChoice>,
     },
-    /// The map picker clicked a toggle whose setting the host owns.
     MapToggle {
         #[serde(rename = "viewId")]
         view_id: String,
         toggle: MapToggle,
     },
-    /// The [`MapAction::Export`] numbered `request` ended: what it saved (the file, branch and
-    /// hour), or why it was refused.
     Export {
         request: u64,
         answer: Result<String, String>,
     },
-    /// A Ctrl+click switched the view's viewing country, as the game's observer switches the
-    /// observed country. The host owns the choice and sends it back in [`MapOptions`].
     ObserveCountry {
         #[serde(rename = "viewId")]
         view_id: String,
@@ -133,20 +100,15 @@ pub enum NativeEvent {
     },
 }
 
-/// The country a Ctrl+click chose: its canonical slot, which the choice follows, and its tag at
-/// the hour of the click.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObservedCountry {
     pub slot: u32,
     pub tag: String,
-    /// The switch's place among the view's switches, increasing; the host echoes the latest it
-    /// applied in [`MapOptions::observed`].
     #[serde(default)]
     pub sequence: u64,
 }
 
-/// The full map's chosen aircraft and whether it can be flown.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlyAircraftStatus {
@@ -154,63 +116,45 @@ pub struct FlyAircraftStatus {
     pub state: FlyAircraftState,
 }
 
-/// What loading a chosen aircraft came to. No choice is ready at once.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum FlyAircraftState {
-    /// Its files are being read.
     Loading,
     Ready,
-    /// It cannot be flown, and why.
     Refused {
         reason: String,
     },
 }
 
-/// The manual map interface scales the viewer accepts. `RangeInclusive::contains`
-/// is false for NaN, so it also refuses a non-number.
 pub const MAP_UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
-/// The manual map interface scales the settings offer, in percent.
 pub const MAP_UI_SCALE_CHOICES: [u32; 11] = [50, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 
-/// The frame rate limits the maps accept, in frames a second. The floor is one frame a second,
-/// below which a map cannot be watched at all; the ceiling is above every rate a display shows,
-/// so the limit caps nothing a display can do. `RangeInclusive::contains` is false for NaN.
 pub const MAP_FRAME_LIMIT_RANGE: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
 
-/// Small, explicit map controls. No raw tables or image pixels cross this channel.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum MapAction {
-    /// Retire only the Campaign map's cached recording with this canonical path.
     Unload {
         path: String,
     },
     Vsync {
         enabled: bool,
     },
-    /// Frames a second every map presents at most, evenly spaced; `None` draws as the display
-    /// and VSync allow.
     FrameLimit {
         hz: Option<f64>,
     },
-    /// The screen-space map interface's scale; `None` matches the game on screen.
     UiScale {
         scale: Option<f32>,
     },
-    /// Shows or hides technical stats and data limitations over every map.
     Diagnostics {
         enabled: bool,
     },
-    /// Silences or restores every map's audio; the host saves the choice.
     Mute {
         muted: bool,
     },
     Configure {
         options: MapOptions,
     },
-    /// Saves the map's picture to `path`; the host numbers each `request`, which the map's
-    /// [`NativeEvent::Export`] answers once.
     Export {
         path: String,
         #[serde(rename = "viewId")]
@@ -218,50 +162,32 @@ pub enum MapAction {
         request: u64,
     },
     Inspect,
-    /// The host's saved content folders; the viewer applies them without saving.
     Folders {
         game: String,
         user: String,
     },
-    /// The host saved map preferences; the viewer reads them again and reloads
-    /// any map whose artwork, quality or anti-aliasing they change.
     MapSettingsSaved,
-    /// The user asked for installed mods to be read again; the viewer reloads each map whose
-    /// visual mods changed since it loaded.
     RefreshVisualMods,
-    /// How the full map's camera moves: the game's map camera, flying or walking, and whether
-    /// flying and walking draw the map's interface.
     CameraMode {
         mode: CameraMode,
-        /// Fly and walk draw the map's counters, icons, names, borders and plans standing in the
-        /// world; off (the default) they draw the terrain alone. The map mode always draws them.
         #[serde(default)]
         overlays: bool,
     },
-    /// The aircraft the full map's Fly mode flies: the exact name of an entity
-    /// or bare `pdxmesh` its content stack registers, as the aircraft catalogue
-    /// lists it. `None` chooses none; there is no default. The viewer answers
-    /// with [`NativeEvent::FlyAircraft`].
     FlyAircraft {
         aircraft: Option<String>,
     },
 }
 
-/// How the full map's camera moves.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub enum CameraMode {
-    /// The game's map camera; a controller also orbits and tilts it.
     #[default]
     Map,
-    /// A free eye flying over the map.
     Fly,
-    /// A free eye on the ground.
     Walk,
 }
 
 impl CameraMode {
-    /// The mode the map's own shortcut moves to: map, fly, walk, then map again.
     pub fn next(self) -> Self {
         match self {
             Self::Map => Self::Fly,
@@ -271,8 +197,6 @@ impl CameraMode {
     }
 }
 
-/// One handoff of the controller to one viewer: the host's number for that viewer (each viewer it
-/// starts is a new one) and the handoff's own number, which only grows.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GamepadOwner {
@@ -280,33 +204,22 @@ pub struct GamepadOwner {
     pub handoff: u64,
 }
 
-/// The host's controller messages to one viewer, in the order it sends them.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum GamepadMessage {
-    /// The viewer holds the controller under `owner` from now on. `state` is what is held: a
-    /// button already down is held, not pressed, so a handoff never presses anything.
     Take {
         owner: GamepadOwner,
         state: GamepadState,
     },
-    /// The controller held under `owner` changed. `pressed` holds the [`GamepadButton`] bits
-    /// pressed since the host's previous message, also those released again since, so a tap
-    /// between two readings is still a press. A viewer holding it under another handoff, or not
-    /// at all, drops it.
     State {
         owner: GamepadOwner,
         state: GamepadState,
         pressed: u32,
     },
-    /// The viewer no longer holds the controller: it lets go of everything without pressing or
-    /// releasing anything, and drops later states. The host never releases a viewer after
-    /// handing it the controller again, so a release always applies.
     Release,
 }
 
 impl GamepadMessage {
-    /// Refuses a state outside its ranges.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::Take { state, .. } => state.validate(),
@@ -320,10 +233,6 @@ impl GamepadMessage {
         }
     }
 
-    /// The one message to keep when `next` follows `queued` before the receiver reads either. A
-    /// take or a release replaces whatever waits; a state refreshes a waiting take of its owner,
-    /// replaces a waiting state of its owner keeping both presses, and never follows a waiting
-    /// release.
     pub fn merge(queued: Option<Self>, next: Self) -> Self {
         match (queued, next) {
             (
@@ -354,25 +263,19 @@ impl GamepadMessage {
     }
 }
 
-/// One controller's state, before dead zones: sticks with `x` right and `y` up within -1..=1,
-/// triggers within 0..=1 and the held buttons as [`GamepadButton`] bits.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GamepadState {
-    /// Left then right stick.
     pub sticks: [[f32; 2]; 2],
-    /// Left then right trigger.
     pub triggers: [f32; 2],
     pub buttons: u32,
 }
 
 impl GamepadState {
-    /// Whether `button` is held.
     pub fn held(&self, button: GamepadButton) -> bool {
         self.buttons & button.bit() != 0
     }
 
-    /// Refuses values outside their ranges or not numbers.
     pub fn validate(&self) -> Result<(), &'static str> {
         let axes = self.sticks.iter().flatten();
         if !axes.clone().all(|value| (-1.0..=1.0).contains(value))
@@ -388,8 +291,6 @@ impl GamepadState {
     }
 }
 
-/// A controller button, named by its position on a standard layout: the face buttons are
-/// south (Xbox A, PlayStation cross), east (B, circle), west (X, square) and north (Y, triangle).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GamepadButton {
     South,
@@ -398,9 +299,7 @@ pub enum GamepadButton {
     North,
     LeftBumper,
     RightBumper,
-    /// View, Back or Share.
     Select,
-    /// Menu, Start or Options.
     Start,
     LeftStick,
     RightStick,
@@ -438,8 +337,6 @@ impl MapAction {
         match self {
             Self::Unload { path } => validate_local_path(path)?,
             Self::Configure { options } => {
-                // The same check as every product, so any tag a widget can
-                // pick is one the map accepts.
                 if let Some(tag) = &options.country {
                     validate_tag(tag)?;
                 }
@@ -464,8 +361,6 @@ impl MapAction {
                 }
             }
             Self::FlyAircraft { aircraft } => {
-                // A name is looked up in the map's own registered roster, which
-                // refuses one it does not hold by name.
                 if aircraft
                     .as_ref()
                     .is_some_and(|name| name.is_empty() || name.contains('\0'))
@@ -497,9 +392,6 @@ fn validate_local_path(path: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The one check for a requested country tag, shared by products and the map.
-/// Tags are lookup keys compared with recorded tags, never paths. Definition
-/// validity belongs to the content loader; requests refuse only emptiness and NUL.
 pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
     if tag.is_empty() || tag.contains('\0') {
         return Err("Invalid country tag");
@@ -510,38 +402,24 @@ pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapOptions {
-    /// The viewing country by tag; `None` is the recording client's viewpoint.
     pub country: Option<String>,
-    /// The viewing country by canonical slot (the catalogue's country id), which follows that
-    /// country through tag changes. It overrides `country`, which then only names it.
     #[serde(default)]
     pub country_slot: Option<u32>,
-    /// The view's own country choice (a widget's pinned country): Ctrl+click never switches it.
     #[serde(default)]
     pub country_pinned: bool,
     pub fog: bool,
-    /// The view's map mode token (a picker mode's token or `scripted:<name>`); `None` is the
-    /// political map. The viewer echoes picker changes back in [`NativeEvent::MapOptions`].
     #[serde(default)]
     pub map_mode: Option<String>,
-    /// The modes the picker's configurable slots hold, in slot order; empty uses the
-    /// game's defaults.
     #[serde(default)]
     pub map_mode_slots: Vec<String>,
-    /// Hides the map mode picker, as the map-only window does; its keys still work.
     #[serde(default)]
     pub picker_hidden: bool,
-    /// The latest of the view's Ctrl+click switches ([`ObservedCountry::sequence`]) the country
-    /// choice has applied: until it reaches the view's latest, the view keeps its own switch.
     #[serde(default)]
     pub observed: Option<u64>,
 }
 
-/// The view id the desktop's campaign map reports its picker changes under.
 pub const CAMPAIGN_MAP_VIEW: &str = "campaign-map";
 
-/// One mode a view's picker offers: its [`MapOptions::map_mode`] token, the name the picker
-/// shows, and why the recording cannot draw it, if it cannot.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapModeChoice {
@@ -550,16 +428,12 @@ pub struct MapModeChoice {
     pub unavailable: Option<String>,
 }
 
-/// A picker toggle click on a setting the host owns: the host flips its own current value, each
-/// click in order on its one write path, so quick clicks each count and nothing is pending in the
-/// viewer, which shows the value the host last applied.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapToggle {
     pub setting: MapSetting,
 }
 
-/// A view setting the picker's toggles stand for.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum MapSetting {
@@ -569,8 +443,6 @@ pub enum MapSetting {
 }
 
 impl MapOptions {
-    /// Map mode tokens name content modes, whose names a mod chooses, so only their form is
-    /// checked: present and free of control characters. The message's own size bounds them.
     pub fn validate_modes(&self) -> Result<(), &'static str> {
         let token = |token: &String| token.is_empty() || token.chars().any(char::is_control);
         if self.map_mode.as_ref().is_some_and(token) || self.map_mode_slots.iter().any(token) {
@@ -613,21 +485,15 @@ pub struct MapDetails {
     pub messages: Vec<String>,
 }
 
-/// The largest integer a JavaScript number holds exactly.
 pub const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
 
-/// A full-map clock update. Without this, `Seek` is an explicit seek.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapPlayback {
     pub playing: bool,
     pub seek_sequence: u64,
-    /// Position within the target hour, including on a pause.
     pub fraction: f64,
-    /// The host clock's exact rate, in recorded hours per wall-clock second.
     pub hours_per_second: f64,
-    /// The page's own monotonic clock (`performance.now()`), in milliseconds, when it composed
-    /// this anchor: the map places the anchor by that time, so delivery delay moves no clock.
     pub composed_at: f64,
 }
 
@@ -649,9 +515,6 @@ impl MapPlayback {
     }
 }
 
-/// A native map body in physical host-client pixels. `bounds` is the full
-/// projection rectangle; `clip` is its visible portion after scrolling and
-/// host overlays. Only the latter contributes to the native window region.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DashboardMapView {
@@ -662,20 +525,14 @@ pub struct DashboardMapView {
     pub path: String,
     pub revision: String,
     pub branch_id: String,
-    /// Playing: the map may show, and acknowledge, the newest hour built
-    /// before `hour`. Paused targets and exports stay exact.
     #[serde(default)]
     pub playing: bool,
     pub hours_per_second: f64,
     pub hour: i32,
     pub fraction: f32,
     pub sequence: u64,
-    /// Changes only on a seek. Omitted for pinned targets and older clients;
-    /// their hour changes start a new animation history.
     #[serde(default)]
     pub seek_sequence: Option<u64>,
-    /// The page's own monotonic clock (`performance.now()`), in milliseconds, when it composed
-    /// this target: the map places its anchor by that time, so delivery delay moves no clock.
     pub composed_at: f64,
     pub bounds: ViewBounds,
     pub clip: ViewBounds,
@@ -754,8 +611,6 @@ pub fn validate_map_views(views: &[DashboardMapView]) -> Result<(), &'static str
     Ok(())
 }
 
-/// Acknowledges a rendered target, separately from the latest requested one.
-/// An old image retains its actual branch/hour/sequence while another builds.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardMapState {
@@ -768,46 +623,26 @@ pub struct DashboardMapState {
     pub sequence: u64,
     pub requested_sequence: u64,
     pub loading: bool,
-    /// Playing, how many hours the rendered frame trails the map's clock; none when paused, and
-    /// none for a frame of an hour the clock has not reached, which trails it by no hours at all.
     pub behind: Option<u32>,
-    /// Playing, why a newer hour the clock passed is not shown: it failed or waits for memory.
     pub behind_reason: Option<String>,
     pub error: Option<String>,
-    /// The map mode token of the hour on screen; none until a frame is drawn.
     pub map_mode: Option<String>,
-    /// When the viewer drew the latest frame showing this, in milliseconds since the Unix epoch
-    /// (the clock the host's and the page's measurements share). The first state of a new hour or
-    /// mode carries the time of the first frame that drew it.
     pub drawn_at: Option<f64>,
-    /// What the pointer highlights in that frame: `button:<control>` for the map's own buttons,
-    /// or `division:<id>`, `railway_gun:<id>` or `task_force:<id>` for a counter; none when it
-    /// highlights nothing. A province draws no highlight, as in the game: only its tooltip.
     pub hover: Option<String>,
-    /// The tooltip that frame drew: `province:<id>` for the map's own over that province, `shown`
-    /// for any other; none when it drew none.
     pub tooltip: Option<String>,
-    /// How long the map waits on a still pointer before it shows a tooltip, the game's own delay.
     pub tooltip_delay_ms: Option<f32>,
-    /// The camera's eye height in world units in that frame, its zoom.
     pub zoom: Option<f32>,
-    /// The camera's look-at point on the water plane in that frame, world `(x, z)`: where it pans.
     pub center: Option<[f32; 2]>,
-    /// The view's options that frame drew with.
     pub options: Option<MapOptions>,
-    /// The graphics, sound, counters and visual mods that frame drew and played with.
     pub applied: Option<AppliedMapSettings>,
 }
 
-/// The settings a map frame drew with, as its viewer holds them, so the page can see a saved
-/// setting reach the map: anti-aliasing and texture quality are the scene's own.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedMapSettings {
     pub graphics: MapGraphics,
     pub audio: MapAudio,
     pub counters: CounterFilter,
-    /// The ids of the visual mods its artwork mounts, sorted; empty for none.
     pub visual_mods: Vec<String>,
 }
 
@@ -820,8 +655,6 @@ pub struct ViewerState {
     pub revision: Option<String>,
 }
 
-/// A cheap file-change marker shared by the host and its maps. This is length and
-/// modification time, not a cryptographic content identity or asset witness.
 pub fn replay_revision(path: impl AsRef<Path>) -> io::Result<String> {
     let metadata = path.as_ref().metadata()?;
     if !metadata.is_file() {
@@ -841,7 +674,6 @@ pub fn replay_revision(path: impl AsRef<Path>) -> io::Result<String> {
     Ok(format!("{}:{stamp}", metadata.len()))
 }
 
-/// The frontend measures its content region in physical client pixels.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewBounds {
@@ -978,7 +810,6 @@ mod tests {
             .validate()
             .is_ok()
         );
-        // Options without the fields show the political map.
         let plain: super::MapOptions =
             serde_json::from_str(r#"{"country":null,"fog":false}"#).unwrap();
         assert_eq!(plain.map_mode, None);
@@ -1007,7 +838,6 @@ b"
                     .is_err()
             );
         }
-        // A mod's long mode name and many slots are its own to choose.
         let long = super::MapOptions {
             map_mode: Some(format!("scripted:{}", "m".repeat(249))),
             map_mode_slots: vec!["terrain".into(); 300],
@@ -1040,8 +870,6 @@ b"
             serde_json::to_string(&observe).unwrap(),
             r#"{"event":"observe_country","viewId":"campaign-map","country":{"slot":1499,"tag":"D01","sequence":7}}"#
         );
-        // The host's options carry the choice back by slot, with the switch it applied; older
-        // hosts' options still read.
         let back: super::MapOptions =
             serde_json::from_str(r#"{"country":"D01","countrySlot":1499,"fog":true,"observed":7}"#).unwrap();
         assert_eq!((back.country_slot, back.country_pinned, back.observed), (Some(1499), false, Some(7)));
@@ -1188,7 +1016,6 @@ b"
             state: state(x),
             pressed: 0,
         };
-        // A newer state of a waiting take stays a take, so the viewer still takes it.
         assert_eq!(
             GamepadMessage::merge(Some(take(3, 0.1)), update(3, 0.5)),
             take(3, 0.5)
@@ -1197,7 +1024,6 @@ b"
             GamepadMessage::merge(Some(update(3, 0.1)), update(3, 0.5)),
             update(3, 0.5)
         );
-        // A stale state never replaces a release or another handoff's take.
         assert_eq!(
             GamepadMessage::merge(Some(GamepadMessage::Release), update(3, 0.5)),
             GamepadMessage::Release
@@ -1206,7 +1032,6 @@ b"
             GamepadMessage::merge(Some(take(4, 0.1)), update(3, 0.5)),
             take(4, 0.1)
         );
-        // A release or a take replaces whatever waits.
         assert_eq!(
             GamepadMessage::merge(Some(take(4, 0.1)), GamepadMessage::Release),
             GamepadMessage::Release
@@ -1216,7 +1041,6 @@ b"
             take(5, 0.2)
         );
         assert_eq!(GamepadMessage::merge(None, update(5, 0.2)), update(5, 0.2));
-        // A press released again before the receiver reads it stays a press.
         let tapped = |handoff, pressed| GamepadMessage::State {
             owner: owner(handoff),
             state: state(0.0),
@@ -1320,8 +1144,6 @@ b"
                 ..Default::default()
             },
         };
-        // Every tag a product accepts is a tag the map accepts, with no
-        // vanilla character set: modded and lower-case tags included.
         for tag in ["Z01", "mod", "A_1", "Ä01", "LONG_MOD_TAG", &"A".repeat(129)] {
             assert!(configure(tag).validate().is_ok(), "{tag}");
         }
@@ -1379,8 +1201,6 @@ b"
         );
     }
 
-    /// The renderer's ready message carries its anti-aliasing counts to the host, or says it
-    /// has none.
     #[test]
     fn ready_carries_the_renderers_sample_counts() {
         for counts in [Some(vec![1, 2, 4, 8]), None] {

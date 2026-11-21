@@ -1,12 +1,3 @@
-//! A followed log over a synthetic log made in memory (no recording holds a log yet): the hook's
-//! time a step and a row, the message's bytes a step, and what follow and the playhead hold. Dev
-//! tool, deleted with the playback build's last step. Prints one JSON line.
-//!
-//! `follow-log-bench [--rows=10] [--blocks=20] [--every=24] [--listed=1000] [--standing]`: a log
-//! appending `rows` rows every `every` hours for `blocks` blocks, its oldest forgotten while more
-//! than `listed` are listed, followed as a feed of its four columns (`--standing`: as the rows it
-//! lists now), played flat (the head always the newest step built, so every step is `every`
-//! hours but at a block's end) from its first hour to its last.
 
 use dashboard_follow::{Follow, Message, Query, Rows, Sink, StepStats};
 use playhead::{
@@ -86,7 +77,6 @@ struct Options {
     standing: bool,
 }
 
-/// The log in `table`'s place (every other table empty), and the rows it appended.
 fn make(table: usize, options: &Options) -> io::Result<(Arc<Log>, u64)> {
     let kinds = vec![KINDS.to_vec(); table + 1];
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -127,8 +117,6 @@ fn percentiles(values: &[u64]) -> serde_json::Value {
     json!({ "n": sorted.len(), "p50": at(0.5), "p99": at(0.99), "worst": sorted.last().copied().unwrap_or(0), "sum": sorted.iter().sum::<u64>() })
 }
 
-/// What the playhead holds, by part: the lanes' cells (a log's count and live set), the parts
-/// under their heads and read ahead, the ring.
 fn holds(report: &playhead::Report) -> serde_json::Value {
     json!({ "cells": report.held.cells, "parts": report.held.parts, "part_bytes": report.held.part_bytes, "track_bytes": report.held.track_bytes, "ring_bytes": report.ring_bytes, "total": report.total })
 }
@@ -193,7 +181,6 @@ fn main() -> io::Result<()> {
     let ns: Vec<u64> = steps.iter().map(|stats| stats.ns).collect();
     let bytes: Vec<u64> = steps.iter().filter(|stats| stats.sent > 0).map(|stats| u64::from(stats.bytes)).collect();
     let counters = follow.counters();
-    // The rows a step appended, from the log's rule: `rows` every `every` hours.
     let rows_in = |stats: &StepStats| (i64::from(stats.last) + 1) * options.rows as i64 / i64::from(options.every) - i64::from(stats.first) * options.rows as i64 / i64::from(options.every);
     let rows: i64 = steps.iter().map(|stats| rows_in(stats)).sum();
     let hours: Vec<u64> = steps.iter().map(|stats| (stats.last - stats.first + 1) as u64).collect();

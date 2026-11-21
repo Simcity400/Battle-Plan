@@ -4,8 +4,6 @@ import type { MenuItem } from '../components/ContextMenu';
 import type { HTMLAttributes } from 'react';
 import { seekPositionFor } from '../dashboard/model.ts';
 
-/** "Jump to <date>": moves the dashboard's playback to a recorded hour of this
- * widget's track. Disabled when the hour is outside the track's branch. */
 export function jumpItem(runtime: Pick<WidgetRuntime, 'requestSeek' | 'tracks'>, trackId: string, rawHour: number): MenuItem {
   const date = gameDate(Math.floor(rawHour));
   const track = runtime.tracks.find(item => item.id === trackId);
@@ -17,7 +15,6 @@ export function jumpItem(runtime: Pick<WidgetRuntime, 'requestSeek' | 'tracks'>,
   };
 }
 
-/** Keep native row activation; only pointer/menu keys open a dated Jump action. */
 export function rowJumpProps(runtime: Pick<WidgetRuntime, 'requestSeek' | 'tracks'>, trackId: string, hour: number | null | (() => number | null),
   open: (x: number, y: number, items: readonly MenuItem[]) => void): Pick<HTMLAttributes<HTMLElement>, 'onContextMenu' | 'onKeyDown'> {
   if (hour === null) return {};

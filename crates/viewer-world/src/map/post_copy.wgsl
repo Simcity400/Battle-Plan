@@ -1,4 +1,3 @@
-// Viewer-only --postfx off: the HDR scene clamped by the output target.
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var linear_clamp: sampler;
 

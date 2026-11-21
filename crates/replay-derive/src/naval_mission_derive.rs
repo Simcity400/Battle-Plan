@@ -1,28 +1,15 @@
-//! The naval mission icon's convoy escort and raiding efficiencies, ledgers
-//! and escort presence, replayed from recorded operands with no memory access.
-//!
-//! Integer arithmetic preserves 64-bit wrapping products, truncating
-//! division and the fixed-point guard that turns a numerator of `i64::MIN`,
-//! `i64::MIN + 1` or `i64::MAX` into `0xFFFFFFFF`. Modifier inputs are
-//! effective values ([`effective`]); [`combined`] composes their sources.
-//! Callers join [`crate::rows::NavalMissionTaskForceRow`] and its sibling
-//! tables; defines come from the recorded content stack through [`Defines::read`].
 
 use crate::rows::ModifierDefinitionRow;
 pub use game_model::fixed5::power;
 use engine_native::modifier_definition::Operands;
 
 const SCALE: i64 = 100_000;
-/// What the native fixed-point division stores when its guard refuses the numerator.
 const REFUSED: i64 = 0xffff_ffff;
 
-/// The division guard refuses the two lowest and highest signed i64 values.
 fn divisible(numerator: i64) -> bool {
     (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// `numerator * 100000 / denominator` behind the guard. Every caller's denominator is a
-/// nonzero multiple of 100000, so the division cannot trap.
 fn fraction(numerator: i64, denominator: i64) -> i64 {
     if divisible(numerator) {
         numerator.wrapping_mul(SCALE).wrapping_div(denominator)
@@ -31,28 +18,18 @@ fn fraction(numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-/// The defines these values read, as fixed-point values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Defines {
-    /// `NNavy.CONVOY_DEFENSE_MAX_CONVOY_TO_SHIP_RATIO`.
     pub convoy_defense_max_convoy_to_ship_ratio: i64,
-    /// `NNavy.CONVOY_DEFENSE_MAX_REGION_TO_TASKFORCE_RATIO`.
     pub convoy_defense_max_region_to_taskforce_ratio: i64,
-    /// `NNavy.COORDINATION_EFFECT_ON_CONVOY_DEFENSE_EFFICIENCY`.
     pub coordination_effect_on_convoy_defense_efficiency: i64,
-    /// `NNavy.CONVOY_RAID_MAX_REGION_TO_TASKFORCE_RATIO`.
     pub convoy_raid_max_region_to_taskforce_ratio: i64,
-    /// `NNavy.COORDINATION_EFFECT_ON_CONVOY_RAID_EFFICIENCY`.
     pub coordination_effect_on_convoy_raid_efficiency: i64,
-    /// `NNavy.MISSION_EFFICIENCY_POW_FACTOR` (both efficiencies).
     pub mission_efficiency_pow_factor: i64,
-    /// `NInterface.CONVOY_ESCORT_PRESENCE_WARNING_THRESHOLD`.
     pub convoy_escort_presence_warning_threshold: i64,
 }
 
 impl Defines {
-    /// Reads each define by section and name with `fixed5` (the content stack's fixed-point
-    /// getter); the first failure refuses the set.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
     ) -> Result<Self, E> {
@@ -82,10 +59,6 @@ impl Defines {
     }
 }
 
-/// An absent modifier key is zero; a present key takes its definition's
-/// feature eligibility and optional clamp. `features` is the recorded DLC
-/// feature mask returned by the eligibility getter (SimulationFeatures);
-/// a gated key cannot be decided without it.
 pub fn effective(
     definition: &ModifierDefinitionRow,
     features: Option<u32>,
@@ -106,23 +79,14 @@ pub fn effective(
     .effective(raw))
 }
 
-/// Location terms, present only for a located task force.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Location {
-    /// Ship-count-weighted mean of the location region's naval terrain.
     pub terrain: i64,
-    /// The region weather modifier's effective value (zero when the region has no record).
     pub weather: i64,
-    /// [`weather_reduction`] of the task force's roster owner.
     pub weather_reduction: i64,
-    /// The task force's own accumulator.
     pub local: i64,
 }
 
-/// Combined task-force modifier with no location or leader override and
-/// flag 0: roster-owner value, location terms, fleet-leader value, and the
-/// largest of zero and each attached headquarters commander's
-/// [`headquarters_sum`].
 pub fn combined(
     country: i64,
     location: Option<Location>,
@@ -140,20 +104,16 @@ pub fn combined(
     value.wrapping_add(leader).wrapping_add(strongest)
 }
 
-/// The sum of a kind-2 unit leader's four effective values, in stored order.
 pub fn headquarters_sum(values: [i64; 4]) -> i64 {
     values
         .into_iter()
         .fold(0, |sum, value| sum.wrapping_add(value))
 }
 
-/// `100000 +` the roster owner's effective `0x248`, clamped to `0..=100000`.
 pub fn weather_reduction(modifier: i64) -> i64 {
     SCALE.wrapping_add(modifier).clamp(0, SCALE)
 }
 
-/// Class values weighted by ship count, with the division guard. Runs may
-/// be coalesced: multiplication and addition wrap before the one division.
 pub fn terrain_mean(classes: impl IntoIterator<Item = (i32, i64)>) -> i64 {
     let (mut count, mut sum) = (0_i32, 0_i64);
     for (ships, value) in classes {
@@ -167,7 +127,6 @@ pub fn terrain_mean(classes: impl IntoIterator<Item = (i32, i64)>) -> i64 {
     }
 }
 
-/// Fuel fraction; a refused numerator keeps the full default.
 pub fn fuel_fraction(fuel: i64, requested: i64) -> i64 {
     if requested < 1 || !divisible(fuel) {
         SCALE
@@ -176,7 +135,6 @@ pub fn fuel_fraction(fuel: i64, requested: i64) -> i64 {
     }
 }
 
-/// Underway bonus from the signed convoy ratio and effective owner modifier.
 pub fn underway_bonus(numerator: i32, denominator: i32, modifier: i64, define: i64) -> i64 {
     let ratio = if denominator == 0 {
         SCALE
@@ -195,7 +153,6 @@ pub fn underway_bonus(numerator: i32, denominator: i32, modifier: i64, define: i
         .wrapping_div(SCALE)
 }
 
-/// Mission range from recorded operands, including the second guarded division.
 #[allow(clippy::too_many_arguments)]
 pub fn mission_range(
     base: i64,
@@ -237,7 +194,6 @@ fn coordinated(coordination: i64, effect: i64, ratio: i64) -> i64 {
         / SCALE
 }
 
-/// A task force's convoy-escort capacity from its combined `0x19`.
 pub fn escort_capacity(coordination: i64, defines: &Defines) -> i64 {
     coordinated(
         coordination,
@@ -246,7 +202,6 @@ pub fn escort_capacity(coordination: i64, defines: &Defines) -> i64 {
     )
 }
 
-/// The mission task force's escort region ratio from its combined `0x19`.
 pub fn escort_region_ratio(coordination: i64, defines: &Defines) -> i64 {
     coordinated(
         coordination,
@@ -255,7 +210,6 @@ pub fn escort_region_ratio(coordination: i64, defines: &Defines) -> i64 {
     )
 }
 
-/// The mission task force's raid region ratio from its combined `0x19`.
 pub fn raid_region_ratio(coordination: i64, defines: &Defines) -> i64 {
     coordinated(
         coordination,
@@ -264,19 +218,12 @@ pub fn raid_region_ratio(coordination: i64, defines: &Defines) -> i64 {
     )
 }
 
-/// One counted task force's ship count and [`escort_capacity`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EscortShare {
     pub ships: u32,
     pub capacity: i64,
 }
 
-/// Convoy escort efficiency. `shares` are the mission fleet's task forces
-/// with kind 4, `is_in_regions` set and the mission's region range (fleet,
-/// begin and end equal), in any order; `convoys` is the stored mission count;
-/// `escort` is the mission owner's effective `0x10E`; `region_ratio` is
-/// [`escort_region_ratio`] of the mission task force; `range` is its first
-/// and end group index.
 pub fn escort_efficiency(
     shares: impl IntoIterator<Item = EscortShare>,
     convoys: i32,
@@ -323,11 +270,6 @@ pub fn escort_efficiency(
     )
 }
 
-/// Convoy raiding efficiency. `fleet` says whether the mission task force
-/// has a fleet; `raiders` counts that fleet's kind-3 task forces with
-/// `is_in_regions` set and the mission's region range; `region_ratio` is
-/// [`raid_region_ratio`], `raiding_factor` the mission task force's stored
-/// stat-block factor, and `raiding` its combined `0xCC`.
 pub fn raiding_efficiency(
     fleet: bool,
     range: [i32; 2],
@@ -352,8 +294,6 @@ pub fn raiding_efficiency(
     power(value, defines.mission_efficiency_pow_factor)
 }
 
-/// One registration in a region's naval mission ledger: mission kind,
-/// task-force fleet (zero for none), and stored convoy count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Registration {
     pub kind: u32,
@@ -361,11 +301,6 @@ pub struct Registration {
     pub convoys: i32,
 }
 
-/// Escort efficiency shown by a region icon, over its ledger registrations
-/// in order. Only the first escort registration of each fleet counts;
-/// `efficiency` gives [`escort_efficiency`] for a registration index. An
-/// empty ledger, no escort registration or largest convoy count -1 gives
-/// the `-100000` sentinel.
 pub fn escort_ledger(
     registrations: &[Registration],
     mut efficiency: impl FnMut(usize) -> Result<i64, &'static str>,
@@ -390,8 +325,6 @@ pub fn escort_ledger(
     })
 }
 
-/// Average [`raiding_efficiency`] over a region ledger's convoy-raiding
-/// registrations, zero without one.
 pub fn raiding_ledger(efficiencies: impl IntoIterator<Item = i64>) -> i64 {
     let mut sum = 0_u64;
     let mut count = 0_i32;
@@ -409,8 +342,6 @@ pub fn raiding_ledger(efficiencies: impl IntoIterator<Item = i64>) -> i64 {
     }
 }
 
-/// Presence from a recorded ring: `-100000` when the navy has no ring for
-/// the region, full when no entry is at least zero, else the share above zero.
 pub fn presence(tracked: bool, positive: i32, total: i32) -> i64 {
     if !tracked {
         return -SCALE;
@@ -427,16 +358,11 @@ pub fn presence(tracked: bool, positive: i32, total: i32) -> i64 {
     }
 }
 
-/// Shown convoy-escort efficiency: `escort` (the ledger's, [`escort_ledger`])
-/// scaled by the viewing navy's [`presence`], an absent ring counting as full.
 pub fn escort_shown(escort: i64, presence: i64) -> i64 {
     let presence = if presence == -SCALE { SCALE } else { presence };
     escort.wrapping_mul(presence) / SCALE
 }
 
-/// Escort alert without a tooltip: ledger escort efficiency below 100000,
-/// compared unsigned (so the `-100000` sentinel never alerts), or viewing
-/// navy [`presence`] at least zero and below `CONVOY_ESCORT_PRESENCE_WARNING_THRESHOLD`.
 pub fn escort_alert(escort: i64, presence: i64, defines: &Defines) -> bool {
     (escort as u64) < SCALE as u64
         || (0..defines.convoy_escort_presence_warning_threshold).contains(&presence)
@@ -466,14 +392,12 @@ mod tests {
         assert_eq!(underway_bonus(1, 2, 20_000, 50_000), 30_000);
         assert_eq!(underway_bonus(-2, 1, 0, 50_000), -50_000);
         assert_eq!(underway_bonus(0, 0, 0, 50_000), 50_000);
-        // (100+20) * (1+.1-.5*.5+.3) /2 =69, at scale100000.
         assert_eq!(
             mission_range(
                 10_000_000, 2_000_000, 10_000, 50_000, 100_000, -50_000, 30_000, 100_000
             ),
             6_900_000
         );
-        // The native floor keeps ten percent range; a negative base stays negative.
         assert_eq!(
             mission_range(-1_000_000, 0, -200_000, 0, 0, 0, 0, 100_000),
             -50_000
@@ -517,7 +441,6 @@ mod tests {
         };
         assert_eq!(effective(&clamped, None, Some(-7)), Ok(0));
         assert_eq!(effective(&clamped, None, Some(250_000)), Ok(100_000));
-        // A feature-gated key needs the recorded feature mask; a null callback disables it.
         let gated = ModifierDefinitionRow {
             feature_selector: 2,
             eligibility: 1,
@@ -531,7 +454,6 @@ mod tests {
             ..gated
         };
         assert_eq!(effective(&unset, None, Some(9)), Ok(0));
-        // An absent key is zero whatever the metadata.
         assert_eq!(effective(&unset, None, None), Ok(0));
     }
 
@@ -543,7 +465,6 @@ mod tests {
             weather_reduction: 50_000,
             local: 300,
         };
-        // 5_000 + 1_000 + (-20_000 * 50_000 / 100_000) + 300 + 700 + max(0, 400, -9).
         assert_eq!(combined(5_000, Some(location), 700, [400, -9]), -2_600);
         assert_eq!(combined(5_000, None, 700, [-400]), 5_700);
         assert_eq!(headquarters_sum([1, 2, 3, 4]), 10);
@@ -558,7 +479,6 @@ mod tests {
             mission_efficiency_pow_factor: 100_000,
             ..defines()
         };
-        // Capacity (0 * 0.5 + 1) * 10 = 1_000_000 per task force; region ratio 150_000.
         assert_eq!(escort_capacity(0, &defines), 1_000_000);
         assert_eq!(escort_region_ratio(20_000, &defines), 165_000);
         let shares = [
@@ -571,11 +491,8 @@ mod tests {
                 capacity: 1_000_000,
             },
         ];
-        // Covered = 4 ships * 1_000_000 * 1.1 = 4_400_000 >= 40 convoys: convoy coverage full.
-        // Region = 150_000 * 2 * 1.1 = 330_000 over 4 groups: 82_500.
         let value = escort_efficiency(shares, 40, 10_000, 150_000, [1, 5], &defines).unwrap();
         assert_eq!(value, power(82_500, 100_000).unwrap());
-        // No convoys or an empty range give zero before the power.
         assert_eq!(
             escort_efficiency(shares, 0, 10_000, 150_000, [1, 5], &defines).unwrap(),
             power(0, 100_000).unwrap()
@@ -601,7 +518,6 @@ mod tests {
             raiding_efficiency(true, [5, 5], 2, 150_000, 0, 0, &defines),
             Ok(100_000)
         );
-        // 2 * 150_000 * 1.2 = 360_000 over 8 groups = 45_000; times (1 - 0.1).
         let value = raiding_efficiency(true, [0, 8], 2, 150_000, 20_000, -10_000, &defines);
         assert_eq!(value, power(40_500, 100_000));
     }
@@ -628,7 +544,6 @@ mod tests {
             asked.push(index);
             Ok([0, 40_000, 90_000, 60_000][index])
         });
-        // The second registration of fleet 1 is skipped entirely.
         assert_eq!((value, asked), (Ok(60_000), vec![1, 3]));
         assert_eq!(escort_ledger(&[], |_| Ok(0)), Ok(-100_000));
         assert_eq!(escort_ledger(&ledger[..1], |_| Ok(0)), Ok(-100_000));
@@ -643,11 +558,9 @@ mod tests {
     #[test]
     fn the_shown_escort_scales_by_presence_and_alerts_on_either_input() {
         let defines = defines();
-        // An absent ring counts as full; a sentinel ledger stays the hidden sentinel.
         assert_eq!(escort_shown(80_000, -100_000), 80_000);
         assert_eq!(escort_shown(80_000, 50_000), 40_000);
         assert_eq!(escort_shown(-100_000, -100_000), -100_000);
-        // The sentinel compares unsigned: it never alerts on its own.
         assert!(!escort_alert(-100_000, -100_000, &defines));
         assert!(escort_alert(99_999, 100_000, &defines));
         assert!(!escort_alert(100_000, 100_000, &defines));
@@ -663,7 +576,6 @@ mod tests {
 
     #[test]
     fn power_preserves_fixed5_scalar_expectations() {
-        // Scalar expectations cover fractional and whole powers at fixed5 scale.
         for (base, exponent, expected) in [
             (100_000, 50_000, 100_000),
             (0, 50_000, 100_000),
@@ -674,7 +586,6 @@ mod tests {
         ] {
             assert_eq!(power(base, exponent), Ok(expected), "{base} ^ {exponent}");
         }
-        // A negative base takes |base|, negated only for an odd raw exponent.
         assert_eq!(power(-25_000, 50_000), Ok(POW_25000_HALF));
         assert_eq!(power(-25_000, 50_001), Ok(-power(25_000, 50_001).unwrap()));
     }

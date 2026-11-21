@@ -77,7 +77,6 @@ pub enum PublicationChange<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PublicationRecord<'a> {
-    // A correction's hour is its observation hour, even when its valid hours precede the segment.
     pub hour: Hour,
     pub key: Key<'a>,
     pub field: ProductFieldId,
@@ -101,7 +100,6 @@ pub struct WindowDependency<'a> {
 }
 
 pub trait WindowDependencies {
-    // Point lookup is O(log D), including for paged dependency sets.
     fn hours(
         &self,
         key: Key<'_>,
@@ -184,7 +182,6 @@ pub struct WindowExtent {
 }
 
 pub trait WindowClosures {
-    // None means this key's window remains open from the segment's first hour.
     fn closed_at(&self, rule: DeclarationId, key: Key<'_>) -> io::Result<Option<Hour>>;
 }
 
@@ -263,6 +260,5 @@ impl ProvisionalWindow<'_> {
 pub trait Publication {
     fn publish(&mut self, record: PublicationRecord<'_>) -> io::Result<()>;
     fn coverage(&mut self, coverage: Coverage<'_>) -> io::Result<()>;
-    // Validate against the subscription; the reader keeps inputs and the writer withholds dependent indexes.
     fn provisional(&mut self, window: ProvisionalWindow<'_>) -> io::Result<()>;
 }

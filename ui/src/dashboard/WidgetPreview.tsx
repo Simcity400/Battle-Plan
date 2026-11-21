@@ -9,20 +9,13 @@ import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 
-// The grid's row geometry, so a preview is as tall as the widget sits on the page.
 const ROW = 26, GAP = 6;
-/** Preview heights in CSS pixels: the widget's default height, kept to a range the details pane can show. */
 const HEIGHT = { min: 240, max: 440 };
 
-/** The real widget, drawn from the loaded campaign at the details pane's width and its own height.
- * It is never scaled, so text and charts stay sharp; widgets lay out for narrow columns already.
- * It scrolls and shows its hover details, but clicks stop at its edge, so its controls and
- * pop-ups cannot open over (or close) the catalogue. */
 export default function WidgetPreview({ definition, initial, runtime }: {
   definition: WidgetDefinition; initial?: Pick<WidgetSpec, 'title' | 'options'>; runtime: WidgetRuntime;
 }) {
   const trackId = runtime.campaignTracks[0]?.id;
-  // At the recording's end, not wherever playback stands: the opening hours often have no data yet.
   const widget = useMemo(() => {
     if (!trackId) return null;
     const widget = { ...createWidget(definition.kind, trackId, 'catalogue-preview'), ...initial };

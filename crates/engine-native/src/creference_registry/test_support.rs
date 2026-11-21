@@ -1,4 +1,3 @@
-//! Shared synthetic reference-registry fixture.
 use super::*;
 use crate::{Memory, reference_bucket as bucket};
 use std::collections::BTreeMap;
@@ -52,7 +51,6 @@ impl Fixture {
         self.put(at + bucket::DISTANCE, &[distance]);
         self.put(at + bucket::TYPE, &handle.to_le_bytes());
         self.put(at + bucket::OBJECT, &object.to_le_bytes());
-        // Lookup compares the full key, not the auxiliary cached hash.
         self.put(at + bucket::HASH, &0xdead_beef_u32.to_le_bytes());
     }
 }

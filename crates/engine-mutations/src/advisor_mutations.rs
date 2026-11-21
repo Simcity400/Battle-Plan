@@ -1,13 +1,3 @@
-//! Advisor mutation boundaries for the supported executable. Observers never
-//! invoke game functions to obtain data.
-//!
-//! Construction, destruction, idea changes and role parsing cover captured role
-//! fields. Factories finish initialization after construction; map publication
-//! is a separate boundary. Insertion helpers are shared with templates: observe
-//! exact map addresses, without inferring the receiver type. Merge has its own
-//! boundary because it inlines insertion. Range erase and recursive clear destroy
-//! values; character destruction also covers empty maps. Fresh-read diagnostics
-//! do not replace complete writer coverage.
 
 use engine_sites::Rva;
 pub struct MutationSite {

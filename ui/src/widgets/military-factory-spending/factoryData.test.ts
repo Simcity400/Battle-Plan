@@ -19,9 +19,7 @@ const reply = (): ProductionSpendingReply => ({
   production: [{ firstHour: 100, lastHour: 171, present: true, emptyCensusHour: null }],
   leaves: [
     leaf({}),
-    // Conversions apply their input to the target design.
     leaf({ purpose: 'converted', runs: [known(100, 147, '0'), known(148, 171, '300')] }),
-    // Input whose purpose was not recorded, with its evidence.
     leaf({ variant: '22', typeKey: 'mod_bomber', name: 'Bombers', purpose: 'unknown', runs: [known(100, 147, '0'), known(148, 171, '40')],
       unproven: [known(100, 147, '0'), known(148, 171, '40')] }),
     leaf({ variant: '23', typeKey: 'mod_rifle', name: 'Rifles', domain: 'land', runs: [known(100, 171, '9')] }),
@@ -38,7 +36,6 @@ test('new and converted input of the chosen equipment group by type and design; 
   assert.equal(purposeSum(items, 'converted'), 300n);
   assert.equal(purposeSum(items, 'purpose-unrecorded'), 40n);
   assert.ok(!items.some(item => item.path.some(key => key.id === 'mod_rifle')));
-  // The unrecorded purpose leaves both purposes' split uncertain from the hour it joined.
   assert.equal(items.find(item => item.path[0].id === 'new')?.localUnknownLevels?.[0], true);
   assert.equal(factoryItems(reply(), 'air', { from: null, hour: 130, end: 171 }).find(item => item.path[0].id === 'new')?.localUnknownLevels?.[0], false);
   assert.equal(purposeSum(factoryItems(reply(), 'land', { from: null, hour: 160, end: 171 }), 'new'), 9n);

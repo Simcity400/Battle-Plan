@@ -1,11 +1,3 @@
-//! The proof tool's line for the hovers (`--hovers all|<family>|none[@<file>]`). Every text goes
-//! through the jobs the window posts. Compared, each family's text over its rows at the sampled
-//! hour (made as its worker makes it: rows prepared, tables learned) against the same job over
-//! today's reader of every table there, for the hovers today's overlay presents at the hour.
-//! Timed, each open family is asked every frame as the window asks the hovered one, its thread's
-//! wall and CPU time kept with how old the text shown is; a reader of no table times the stepper's
-//! steps and counts each table's events in them. `<file>` names tables an earlier run learned
-//! (`<family> <Table>` a line), declared from the start.
 
 use super::{Caches, Family, HoverRows, Inputs, Job, Key, Posted, Retry, What, id, make};
 use crate::lane_rows::rosters::Lanes;
@@ -46,14 +38,11 @@ use viewer_foundation::{
 use viewer_world::map::map_mode::{MapMode, Stock};
 
 const LIMIT: Duration = Duration::from_secs(120);
-/// The overlay's viewport and the near cameras' height over the busiest provinces.
 const VIEWPORT: [u32; 2] = [2048, 1152];
 const NEAR: f32 = 400.0;
-/// Near cameras per sample, and provinces hovered per mode.
 const CAMERAS: usize = 3;
 const PROVINCES: usize = 16;
 
-/// What a sampled hour hovers, from today's overlay at the hour in the modes that present each.
 #[derive(Default)]
 struct Targets {
     vision: Option<Arc<Vision>>,
@@ -62,35 +51,25 @@ struct Targets {
     ports: Vec<task_force_port::Hover>,
     air_bases: BTreeSet<(u32, i32)>,
     naval_bases: BTreeSet<u32>,
-    /// Region, and mines (true) or accidents.
     naval: BTreeSet<(u32, bool)>,
     occupation: BTreeSet<(u32, String)>,
     provinces: Vec<u32>,
     modes: Vec<ModeHover>,
 }
 
-/// One family's reader of rows for the comparisons, and its timed figures.
 struct Reader {
     family: Family,
-    /// Compared: the family's rows; timed, the window's hovers read them instead.
     reader: Option<ViewReader>,
-    /// Timed: the target it hovers, its key and job, made once.
     timed: Option<(Key, MakeJob)>,
     tables: Vec<TableId>,
-    /// Timed: per frame the window thread's wall and CPU nanoseconds asking.
     frames: Vec<(u64, u64)>,
-    /// Timed: per frame the shown text's age in hours.
     ages: Vec<f64>,
 }
 
 pub(crate) struct Line {
-    /// None for `none`: no reader at all, the run the others are compared with.
     views: Views,
     readers: Vec<Reader>,
-    /// Timed: the window's hovers and the targets they hover.
     hovers: Option<(HoverRows, Targets)>,
-    /// A reader of no table: the stepper's play steps' nanoseconds, its reset steps' (seeks), and
-    /// each table's events in the play steps.
     steps: Option<(playhead::Reader, playhead::Consumer, (Vec<u64>, Vec<u64>), BTreeMap<usize, u64>)>,
     entry: Arc<Entry>,
     geometry: ProvinceGeometry,
@@ -98,13 +77,10 @@ pub(crate) struct Line {
     today_caches: Caches,
     totals: BTreeMap<String, (u64, u64, u64)>,
     cycle_hz: f64,
-    /// Compared: the air roster history read by lanes of its own, and by today's reader.
     rosters: Option<(Arc<Lanes>, RosterHistory, RosterHistory)>,
-    /// `scan-naval`: what today's reader finds of naval mines and accidents in every block.
     scan: Option<Value>,
 }
 
-/// The proof's lanes as the sampler's source, kept to read their timings back.
 struct Shared(Arc<Lanes>);
 
 impl SampleSource for Shared {
@@ -113,11 +89,9 @@ impl SampleSource for Shared {
     }
 }
 
-/// Countries whose visiting pass is compared besides the viewing one.
 const COUNTRIES: usize = 4;
 
 impl Line {
-    /// `all` or one family's name: those readers; `none`: only the stepper's steps.
     pub(crate) fn open(entry: &Arc<Entry>, views: Views, document: &Document, which: &str, timing: bool, cycle_hz: f64) -> io::Result<Self> {
         let (which, seeded) = match which.split_once('@') {
             Some((which, file)) => (which, seeds(file)?),
@@ -171,8 +145,6 @@ impl Line {
         Ok(line)
     }
 
-    /// One frame of the window, timed: every open family asked as the hovered one is; the
-    /// stepper's steps up to `head` taken.
     pub(crate) fn frame(&mut self, head: Hour) {
         if let Some((_, consumer, built, events)) = &mut self.steps {
             let mut taken: Vec<Arc<Step>> = Vec::new();
@@ -204,8 +176,6 @@ impl Line {
         hovers.end_frame(false);
     }
 
-    /// Each family's text over its rows at `hour`, made as its worker makes it, against the same
-    /// job over today's reader of every table there.
     pub(crate) fn compare(&mut self, document: &Document, hour: Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         if self.readers.is_empty() || self.hovers.is_some() {
             return Ok(());
@@ -266,10 +236,6 @@ impl Line {
         Ok(())
     }
 
-    /// Today's overlay at the document's hour in the default, air, navy and resistance modes, over
-    /// the whole map and near the provinces holding the most divisions; the provinces hovered
-    /// spread over the map's ids. `every`: today's reader of every table at the hour, which the
-    /// map's frame is not.
     fn targets(&self, document: &Document, every: Option<&DecodedFrame>) -> io::Result<Targets> {
         let frame = document.frame()?;
         let every = every.unwrap_or(frame);
@@ -317,8 +283,6 @@ impl Line {
                 }
             }
         }
-        // The overlay presents a region's hover only where the mode draws its control; every
-        // region the recording names mines or accidents in is hovered too.
         if let Ok(mines) = every.complete::<tables::NavalRegionalMines>() {
             targets.naval.extend(mines.iter().map(|row| (row.region, true)));
         }
@@ -335,15 +299,12 @@ impl Line {
             }
             targets.modes.push(mode);
         }
-        // The default mode's sea province hover is its region's.
         if let Some(prepared) = &navy_sources {
             targets.modes.push(ModeHover::SeaRegion(Arc::clone(prepared)));
         }
         Ok(targets)
     }
 
-    /// The latest daily pass that visited the viewing country and a few others, read by the
-    /// lanes against today's reader; a question that reaches before the lanes is counted apart.
     fn rosters(&mut self, document: &Document, today: &DecodedFrame, hour: Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         let Some((_, lanes, reference)) = &self.rosters else { return Ok(()) };
         let ours = document.hour()?.vision(&perspective::Choice::default())?.ours();
@@ -384,9 +345,6 @@ impl Line {
         self.totals.values().map(|(_, differing, _)| differing).sum()
     }
 
-    /// What was compared; per family the tables it reads and the bytes the side's views hold for
-    /// them; timed, the window thread's wall and CPU time per frame and the shown text's age; the
-    /// stepper's steps and the tables whose events fill them.
     pub(crate) fn summary(&self, distribution: fn(Vec<f64>) -> Value) -> Value {
         let held = self.views.held();
         let bytes = |list: &[(TableId, usize)], tables: &[TableId]| list.iter().filter(|(table, _)| tables.contains(table)).map(|(_, bytes)| bytes).sum::<usize>();
@@ -442,9 +400,6 @@ impl Drop for Line {
     }
 }
 
-/// Every block of the recording read through today's reader for NavalRegionalMines and
-/// NavalAccidentReports: per table the hours with rows (first, last, how many, the most rows),
-/// and how many hours held each status.
 fn scan_naval(document: &Document) -> io::Result<Value> {
     #[derive(Default)]
     struct Seen {
@@ -492,7 +447,6 @@ fn scan_naval(document: &Document) -> io::Result<Value> {
     Ok(json!({"blocks": replay.index.len(), "seconds": began.elapsed().as_secs_f64(), "NavalRegionalMines": seen(mines), "NavalAccidentReports": seen(accidents)}))
 }
 
-/// The tables an earlier run's families learned: `<family> <Table>` a line.
 fn seeds(file: &str) -> io::Result<BTreeMap<String, Vec<TableId>>> {
     let mut seeded: BTreeMap<String, Vec<TableId>> = BTreeMap::new();
     for line in std::fs::read_to_string(file)?.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -503,7 +457,6 @@ fn seeds(file: &str) -> io::Result<BTreeMap<String, Vec<TableId>>> {
     Ok(seeded)
 }
 
-/// The reader's frame at `hour`; none when its rows are already past it.
 fn at_hour(reader: &ViewReader, hour: Hour) -> io::Result<Option<Arc<DecodedFrame>>> {
     match reader.wait(|frame| frame.hour >= hour, LIMIT) {
         Ok(frame) => Ok((frame.hour == hour).then_some(frame)),
@@ -515,10 +468,8 @@ fn inputs(document: &Document, targets: &Targets) -> Option<Inputs> {
     Some(Inputs { content: Arc::clone(&document.counter_content), raids: Arc::clone(&document.icons.raids), vision: Arc::clone(targets.vision.as_ref()?), style: Style { nato: document.game_options.nato_counters, diagnostics: false }, wake: Arc::new(|| {}) })
 }
 
-/// How one target's text is made, given the caches it is made with.
 type MakeJob = Box<dyn Fn(&Caches) -> Job>;
 
-/// Every target of `family`, named, with its key and job.
 fn all(family: Family, document: &Document, targets: &Targets, inputs: &Inputs) -> Vec<(String, Key, MakeJob)> {
     let mut out: Vec<(String, Key, MakeJob)> = Vec::new();
     let replay = document.playback.roster_sampler();
@@ -578,9 +529,6 @@ fn all(family: Family, document: &Document, targets: &Targets, inputs: &Inputs) 
     out
 }
 
-/// A text made over `frame` as the worker makes it (over rows at the head when `at_head`), the
-/// roster history's answers waited for: the text, none when the rows lacked a table, and the
-/// tables they lacked.
 fn made_whole(caches: &Caches, key: Key, frame: &Arc<DecodedFrame>, at_head: bool, job: Job) -> (Option<Arc<Tooltip>>, Vec<TableId>) {
     let retry: Retry = Arc::new(|| {});
     let mut posted = Posted { key, frame: id(frame), rows: Arc::clone(frame), at_head, job };
@@ -598,7 +546,6 @@ fn text(tooltip: &Tooltip) -> String {
     format!("{}\n--\n{}\n--\n{:?}", tooltip.title, tooltip.body, tooltip.refused)
 }
 
-/// Where two texts first differ, with what each holds around it.
 fn first_difference(wanted: &str, got: &str) -> String {
     let at = wanted.bytes().zip(got.bytes()).position(|(a, b)| a != b).unwrap_or(wanted.len().min(got.len()));
     let around = |text: &str| {

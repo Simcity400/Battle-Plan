@@ -1,5 +1,3 @@
-//! Country visibility capture: each country's visibility with the carried raw accumulator entry of an unmarked country. The host owns dispatch, loans and table assembly.
-
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;
 use collector_observers::country_input_changes;

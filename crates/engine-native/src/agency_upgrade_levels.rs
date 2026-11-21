@@ -1,10 +1,3 @@
-//! Acquired agency upgrade entries, read with the scalar agency row.
-//!
-//! Serialization retains every pointer and signed level independently of the
-//! created flag. Mutations and loading select entries by pointer; their caps and
-//! merge rules do not change what this reader copies. Hourly acquisition covers
-//! scripted upgrades, GUI commands and resets between daily updates. Live reads
-//! remain unverified. No hook or game call is added.
 
 use crate::{
     Memory, ccountry, cintelligence_agency,
@@ -13,9 +6,7 @@ use crate::{
     walk::Outcome,
 };
 
-/// Stored acquired-upgrade array.
 pub const ACQUIRED: usize = 0x60;
-/// Pointer and signed i32 level entry stride.
 pub const ENTRY_STRIDE: usize = 16;
 pub use crate::{
     agency_upgrade_branch::{UPGRADES as BRANCH_UPGRADES, VTABLE_RVA as BRANCH_VTABLE_RVA},
@@ -73,10 +64,8 @@ pub fn status_name(status: u8) -> &'static str {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Index in this observation's native acquired array, not a persistent ID.
     pub ordinal: u32,
     pub definition_pointer: u64,
-    /// The stored branch pointer when the definition layout is authenticated; otherwise zero.
     pub branch_pointer: u64,
     pub upgrade_token: Option<u32>,
     pub branch_token: Option<u32>,
@@ -96,13 +85,9 @@ pub struct Refusal {
 }
 
 pub struct Walk {
-    /// Complete means every raw acquired entry was retained. Each row's
-    /// identity_status independently refuses unsupported identities.
     pub outcome: Outcome,
-    /// Every observed acquired entry, including identities refused and capacity omissions.
     pub required_rows: usize,
     pub refused_rows: u32,
-    /// Actual whole rows omitted only for output storage, independently of identity refusals.
     pub omitted_rows: u32,
     pub first_refused: Option<Refusal>,
     pub refusal_counts: [u32; STATUS_COUNT],
@@ -114,8 +99,6 @@ pub struct Demand {
     pub catalog: usize,
 }
 
-/// Sizing reads only country/agency identities and array headers. It authenticates
-/// branch layout before reading its member header, never any upgrade definition.
 pub fn native_demand(
     memory: &impl Memory,
     base: usize,
@@ -158,8 +141,6 @@ struct Identity {
     status: u8,
 }
 
-/// Caller-owned identity scratch. Construct and resize off the sampling thread;
-/// each combined agency walk rebuilds it, never retaining native pointers across hours.
 pub struct Catalog {
     definitions: Vec<Identity>,
     growing: bool,
@@ -226,7 +207,6 @@ impl Catalog {
                     .checked_add(members.count as usize)
                     .ok_or("agency upgrade catalog demand overflow")?;
                 if self.growing {
-                    // The database loader retains every branch membership.
                     crate::walk::Buffer::Growing(&mut self.definitions).ensure(self.required)?;
                 }
                 let branch_token = token(memory, tokens, branch).ok();
@@ -255,8 +235,6 @@ impl Catalog {
                     self.definitions[index].status = DUPLICATE_MEMBERSHIP;
                 }
             }
-            // Global lookup keeps the first token pointer; another branch-owned
-            // pointer with the same token remains valid.
             let globals = globals
                 .slice(1, globals.count - 1, 8)
                 .map_err(|_| DATABASE_UNSUPPORTED)?;
@@ -434,8 +412,6 @@ impl<'a> Capture<'a> {
         if let Some(witness) = self.catalog.witness
             && cpdx_lexer::unchanged(memory, base, witness).is_err()
         {
-            // Raw entries survive, but no token emitted before a changed witness
-            // can be claimed as an authenticated portable identity.
             self.first_refused = self.first_row.map(|row| Refusal {
                 country: row.country,
                 ordinal: row.ordinal,
@@ -457,8 +433,6 @@ impl<'a> Capture<'a> {
         let outcome = match self.failure {
             Some(reason) => Outcome::Unavailable { reason },
             None if self.shortages == 0 => Outcome::Rows { len: self.len },
-            // Census completeness concerns stored entries; each retained
-            // row's identity_status independently refuses its identity.
             None => Outcome::Truncated {
                 len: self.len,
                 unread_rows: self.shortages,

@@ -1,11 +1,3 @@
-//! A recording's resume state while it is written: `<file>.state` beside it, two slots each
-//! naming its sequence number, where its payload lies and the payload's digest. A revision
-//! writes the slot its last root does not name, payload then header, each synced, before its
-//! root names it; a torn write leaves the other slot whole.
-//!
-//! Layout: [`MAGIC`] and [`VERSION`], padded to [`SLOTS`]; two headers of [`SLOT_BYTES`]
-//! (sequence, offset, length, payload digest, then the digest of those); then payloads, each
-//! placed clear of the other slot's.
 
 use super::SlotRef;
 use crate::{envelope::digest, invalid};
@@ -17,12 +9,9 @@ use std::{
 
 pub const MAGIC: &[u8; 8] = b"H4STATE_";
 pub const VERSION: u32 = 1;
-/// Where the slot headers start.
 const SLOTS: u64 = 16;
 const SLOT_BYTES: u64 = 64;
-/// Where payloads may start.
 const PAYLOADS: u64 = SLOTS + 2 * SLOT_BYTES;
-/// A header's bytes its digest covers: sequence, offset, length and payload digest.
 const HEADER_FIELDS: usize = 8 + 8 + 8 + 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +34,6 @@ impl Header {
         bytes
     }
 
-    /// A header whose own digest holds; none for a torn or empty one.
     fn read(bytes: &[u8; SLOT_BYTES as usize]) -> Option<Self> {
         if digest(&bytes[..HEADER_FIELDS]) != bytes[40..56] {
             return None;
@@ -67,23 +55,19 @@ impl Header {
     }
 }
 
-/// A recording's resume state file, open.
 pub struct StateFile {
     path: PathBuf,
     file: File,
-    /// Each slot's header, when it holds one that verifies.
     slots: [Option<Header>; 2],
 }
 
 impl StateFile {
-    /// The state file of the recording at `recording`: `<file>.state` beside it.
     pub fn path_for(recording: &Path) -> PathBuf {
         let mut name = recording.as_os_str().to_os_string();
         name.push(".state");
         PathBuf::from(name)
     }
 
-    /// The state file at `path`, made empty when there is none.
     pub fn open(path: &Path) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -93,7 +77,6 @@ impl StateFile {
             .open(path)?;
         let length = file.seek(SeekFrom::End(0))?;
         if length < PAYLOADS {
-            // A file made but never given a slot holds nothing to keep.
             let mut start = [0; SLOTS as usize];
             start[..8].copy_from_slice(MAGIC);
             start[8..12].copy_from_slice(&VERSION.to_le_bytes());
@@ -136,12 +119,10 @@ impl StateFile {
         &self.path
     }
 
-    /// The newest sequence a slot holds.
     pub fn newest(&self) -> Option<u64> {
         self.slots.iter().flatten().map(|header| header.sequence).max()
     }
 
-    /// The slots it holds, newest first, their payloads unchecked.
     pub fn slots(&self) -> impl Iterator<Item = u64> + '_ {
         let mut held: [Option<u64>; 2] = [None, None];
         for (at, header) in self.slots.iter().enumerate() {
@@ -153,7 +134,6 @@ impl StateFile {
         held.into_iter().flatten()
     }
 
-    /// The payload of `slot` when a slot holds it and its bytes verify.
     pub fn read(&self, slot: SlotRef) -> io::Result<Option<Vec<u8>>> {
         let Some(header) = self
             .slots
@@ -172,15 +152,12 @@ impl StateFile {
         Ok((digest(&payload) == header.digest).then_some(payload))
     }
 
-    /// Writes `payload` as slot `sequence` into the slot not holding `keep`, which the last root
-    /// names: payload, then header, each made durable.
     pub fn write(&mut self, sequence: u64, payload: &[u8], keep: Option<SlotRef>) -> io::Result<SlotRef> {
         let kept = self.slots.iter().position(|header| {
             header.is_some_and(|header| keep.is_some_and(|keep| keep.sequence == header.sequence && keep.digest == header.digest))
         });
         let at = match kept {
             Some(kept) => 1 - kept,
-            // Nothing to keep: the older slot goes.
             None => match self.slots {
                 [Some(first), Some(second)] if first.sequence > second.sequence => 1,
                 [Some(_), None] => 1,
@@ -205,7 +182,6 @@ impl StateFile {
         self.file.write_all(&header.write())?;
         self.file.sync_data()?;
         self.slots[at] = Some(header);
-        // What lies past both slots' payloads is no slot's.
         let end = self.slots.iter().flatten().map(Header::end).max().unwrap_or(PAYLOADS);
         if self.file.metadata()?.len() > end {
             self.file.set_len(end)?;
@@ -216,7 +192,6 @@ impl StateFile {
         })
     }
 
-    /// Removes the state file: its recording needs it no more.
     pub fn remove(self) -> io::Result<()> {
         let Self { path, file, .. } = self;
         drop(file);
@@ -227,7 +202,6 @@ impl StateFile {
     }
 }
 
-/// Removes the state file at `path`, when there is one.
 pub fn remove_at(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),

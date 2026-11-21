@@ -1,15 +1,3 @@
-//! Authored equipment model pools, independent of the recording client's UI.
-//!
-//! The variant owner's ideology/culture are separate from the country used
-//! for country/faction/continent pools. Visit equipment and its authored
-//! family, then each context and archetype. Reverse pools and stably sort
-//! by descending fixed5 weight; reverse each model list and keep the first
-//! occurrence of each entity. No chosen model or eligible-pool cache is input.
-//!
-//! Each `graphic_db` file ([`document`]) has buckets for `default`, a continent
-//! named by `map/default.map`, a declared three-letter country tag (upper-
-//! cased), or `FACTION_` and three characters. Report other keys and skip
-//! their blocks.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -33,13 +21,9 @@ pub mod countries;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     pub entity: String,
-    /// Signed native Fixed5 weight, shared with conventional entity candidates.
     pub weight: i64,
 }
 
-/// Legacy insertion is BEFORE equal scores, while authored graphic
-/// insertion is AFTER equals. A duplicate never replaces the existing
-/// entity, even if its later score would be higher.
 pub fn insert_legacy(candidates: &mut Vec<Candidate>, candidate: Candidate) -> bool {
     insert(candidates, candidate, false)
 }
@@ -58,44 +42,28 @@ fn insert(candidates: &mut Vec<Candidate>, candidate: Candidate, after_equal: bo
     true
 }
 
-/// Every optional value here means known absence, never a missing replay row.
-/// Callers must establish complete simulation inputs before constructing this.
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
-    /// A real equipment name, including an authored empty name.
     pub equipment: &'a str,
-    /// None for the null object; Some("") is a real empty name.
-    /// Their cached hashes differ, so they cannot match the same authored key.
     pub archetype: Option<&'a str>,
-    /// Family equipment key and its optional archetype, if different from equipment.
     pub family: Option<(&'a str, Option<&'a str>)>,
     pub subunit: Option<&'a str>,
-    /// Ruling ideology group of the variant owner, not its leader's subtype.
     pub ideology: Option<&'a str>,
-    /// Graphical culture of the variant owner.
     pub culture: Option<&'a str>,
-    /// The separately supplied country context, which can differ from the owner.
     pub country: Option<&'a str>,
-    /// Native faction membership order, including the leader first.
     pub faction_tags: &'a [String],
-    /// Continent of original capital if nonzero, otherwise current capital.
     pub capital_continent: Option<&'a str>,
 }
 
-/// A `graphic_db` file's top-level key, which context a lookup visits it in.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bucket {
     Default,
-    /// A declared country tag, upper-cased.
     Country(String),
-    /// `FACTION_` and three characters, the three as written.
     Faction(String),
-    /// A continent of `map/default.map`, folded.
     Continent(String),
 }
 
 impl std::fmt::Display for Bucket {
-    /// The key as the lookup reads it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Default => f.write_str("default"),
@@ -106,22 +74,14 @@ impl std::fmt::Display for Bucket {
     }
 }
 
-/// One model a graphics pool lists ([`Content::models`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolModel<'a> {
     pub bucket: &'a Bucket,
-    /// The equipment key the pool is declared under, ASCII-folded as lookups
-    /// compare it.
     pub equipment: &'a str,
-    /// The `graphic_db` file that declares the pool.
     pub file: &'a str,
-    /// The model's entity or mesh name, exactly as authored.
     pub model: &'a str,
 }
 
-/// A pool `limit`, evaluated in an empty scope. Only scope-free predicates
-/// can be decided; the rest stay [`Limit::Unsupported`] and fail the lookup
-/// that meets them instead of dropping the pool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Limit {
     Dlc(String),
@@ -143,9 +103,6 @@ impl Limit {
                         String::from_utf8_lossy(item.operator.text())
                     )));
                 }
-                // Only scope-free equality forms are modelled. Built-ins require a
-                // keyword token; quoted keys have no built-in, and scripted triggers
-                // of those names are not resolved here.
                 let keyword = item.keyword().map(parser::Keyword::folded);
                 Ok(match (keyword.as_deref(), &item.value) {
                     (Some(b"has_dlc"), value) => match value.scalar_str() {
@@ -164,7 +121,6 @@ impl Limit {
             .collect()
     }
 
-    /// `Err` names the first predicate that cannot be decided.
     fn holds(&self, has_dlc: &impl Fn(&str) -> Option<bool>) -> Result<bool, String> {
         match self {
             Self::Dlc(name) => {
@@ -179,7 +135,6 @@ impl Limit {
                 }
                 Ok(false)
             }
-            // NOT is NOR over its children.
             Self::Not(inner) => {
                 for limit in inner {
                     if limit.holds(has_dlc)? {
@@ -202,8 +157,6 @@ fn all(limits: &[Limit], has_dlc: &impl Fn(&str) -> Option<bool>) -> Result<bool
     Ok(true)
 }
 
-/// Shared scope-free DLC predicates. Ambient admission also builds an
-/// empty scope, so it uses the same supported conjunction forms.
 pub fn empty_scope_condition(
     items: &[Item],
     has_dlc: impl Fn(&str) -> Option<bool>,
@@ -211,8 +164,6 @@ pub fn empty_scope_condition(
     all(&Limit::parse(items)?, &has_dlc).map_err(io::Error::other)
 }
 
-/// A pool's authored limit, evaluated in an empty event scope. The map supplies
-/// its recorded world; content-only consumers decide the scope-free DLC forms.
 pub trait PoolLimits {
     fn holds(&self, pool: usize, items: &[Item]) -> Result<bool, String>;
 }
@@ -235,7 +186,6 @@ struct Pool {
     ideologies: BTreeSet<String>,
     cultures: BTreeSet<String>,
     limit: Vec<Item>,
-    /// The `graphic_db` file that declares the pool.
     file: String,
 }
 
@@ -259,7 +209,6 @@ impl Default for Pool {
 
 impl Pool {
     fn weight(&self) -> i64 {
-        // Zero is the native fallback sentinel, not an explicit zero score.
         if self.models_weight == 0 {
             self.weight
         } else {
@@ -267,7 +216,6 @@ impl Pool {
         }
     }
 
-    /// The icon sort weight: `icons_weight`, or `weight` when that is zero.
     fn icons_weight(&self) -> i64 {
         if self.icons_weight == 0 {
             self.weight
@@ -292,11 +240,8 @@ pub struct Content {
     pool_count: usize,
 }
 
-/// The names a bucket key can be.
 pub struct Names {
-    /// Every tag `common/country_tags` declares, as written.
     pub countries: BTreeSet<String>,
-    /// `map/default.map`'s continents, folded.
     pub continents: BTreeSet<String>,
 }
 
@@ -316,28 +261,22 @@ impl Names {
         })
     }
 
-    /// The bucket a top-level key names; None marks a key the game reports
-    /// and skips.
     fn bucket(&self, key: &[u8], default: bool) -> Option<Bucket> {
         if default {
             return Some(Bucket::Default);
         }
         let key = std::str::from_utf8(parser::c_string(key)).ok()?;
-        // Continent names must be valid entries; lexer lookup folds their case.
         let folded = key.to_ascii_lowercase();
         if self.continents.contains(&folded) {
             return Some(Bucket::Continent(folded));
         }
         if key.len() == 3 {
-            // Uppercase the three-letter key before resolving the country tag.
             let tag = key.to_ascii_uppercase();
             return self
                 .countries
                 .contains(&tag)
                 .then_some(Bucket::Country(tag));
         }
-        // Split on `_`: exactly `FACTION` and three characters,
-        // hashed as written (FNV-1a), whether or not a country has the tag.
         match key.split('_').collect::<Vec<_>>()[..] {
             ["FACTION", tag] if tag.len() == 3 => Some(Bucket::Faction(tag.to_owned())),
             _ => None,
@@ -348,18 +287,12 @@ impl Names {
 #[derive(Clone, Copy)]
 enum Node {
     File,
-    /// Equipment keys within one context bucket.
     Bucket,
-    /// Equipment fields read `pool` only when its value opens a block.
     Equipment,
-    /// Fields within one authored graphics pool.
     Pool,
 }
 
-/// Read one `graphic_db` file through the persistent reader. The file
-/// loop runs to the end of the text and reads buckets as objects.
 fn document(bytes: &[u8], names: &Names, key_names: &KeyNames) -> io::Result<Vec<Item>> {
-    // Skip the leading mark when constructing each file's lexer.
     let read = native::read(
         bytes,
         native::Mode::SkipMark,
@@ -367,25 +300,17 @@ fn document(bytes: &[u8], names: &Names, key_names: &KeyNames) -> io::Result<Vec
         Some(key_names),
         &mut |node, field| match node {
             Node::File => match names.bucket(&field.key.text, field.keyword_is("default")) {
-                // Read a recognized bucket as an object.
                 Some(_) => Shape::Object(Node::Bucket),
-                // Unknown buckets are reported and skipped.
                 None => Shape::Skip,
             },
-            // Anything but `{` reports an error.
             Node::Bucket => Shape::ObjectOrSkip(Node::Equipment),
             Node::Equipment if field.keyword_is("pool") => Shape::ObjectOrSkip(Node::Pool),
             Node::Equipment => Shape::Skip,
             Node::Pool => match field.keyword().as_deref() {
-                // Read each of the three weights as fixed5.
                 Some(b"weight" | b"models_weight" | b"icons_weight") => Shape::One,
-                // The lexer's tokens to `}`, `@` names resolved, only after `{`.
                 Some(b"models" | b"icons") if field.opens() => Shape::RawList,
-                // Read the value slot's tokens through `}`.
                 Some(b"ideologies" | b"cultures" | b"sub_units") => Shape::List,
-                // The pool's limit is a conjunction trigger.
                 Some(b"limit") => Shape::Trigger,
-                // Report unexpected fields and skip their values.
                 _ => Shape::Skip,
             },
         },
@@ -400,8 +325,6 @@ impl Content {
     pub fn load(layers: &ResolvedLayers, names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
         let key_names = layers.key_names()?;
-        // List direct files in filename byte order. Covered reads verify every
-        // file's bytes against the recorded stack.
         for path in layers.directory_files("gfx/interface/equipmentdesigner/graphic_db", ".txt")? {
             document(&path.read_uncovered(layers)?, names, &key_names)
                 .and_then(|items| content.read_document(&items, names, &path.text()))
@@ -410,7 +333,6 @@ impl Content {
         Ok(content)
     }
 
-    /// Authored texts through the same native reader as files, for fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_texts(texts: &[&[u8]], names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
@@ -441,8 +363,6 @@ impl Content {
                 let Some(items) = equipment.value.items() else {
                     continue;
                 };
-                // Equipment keys use ASCII-folded hashing and comparison; entity
-                // identifiers below stay exact.
                 let pools = definitions
                     .entry(key(equipment)?.to_ascii_lowercase())
                     .or_default();
@@ -455,7 +375,6 @@ impl Content {
                         ..Pool::default()
                     };
                     for field in fields {
-                        // A failed fixed5 conversion keeps the slot.
                         let fixed = |slot: &mut i64| {
                             if let Some(value) =
                                 script_fixed5(field.value.scalar().unwrap_or_default())
@@ -470,7 +389,6 @@ impl Content {
                             Some(b"icons") if field.value.items().is_some() => {
                                 pool.icons.extend(strings(&field.value)?)
                             }
-                            // Any other value reports an error and leaves the list unread.
                             Some(b"models") if field.value.items().is_some() => {
                                 pool.models.extend(strings(&field.value)?)
                             }
@@ -484,7 +402,6 @@ impl Content {
                                 pool.cultures.extend(folded_strings(&field.value)?)
                             }
                             Some(b"limit") => {
-                                // A scalar trigger body adds no children, as the shared reader says.
                                 pool.limit.extend(
                                     crate::triggers::body(&field.value).unwrap_or_default(),
                                 );
@@ -492,7 +409,6 @@ impl Content {
                             _ => {}
                         }
                     }
-                    // Each lookup visits only pools holding its kind of artwork.
                     if !pool.models.is_empty() || !pool.icons.is_empty() {
                         pool.id = self.pool_count;
                         self.pool_count += 1;
@@ -504,10 +420,6 @@ impl Content {
         Ok(())
     }
 
-    /// Every model every pool lists, whatever context or limit would visit it:
-    /// by bucket and folded equipment key, each key's pools in declaration
-    /// order and each pool's models as authored. A model listed several times
-    /// is listed each time.
     pub fn models(&self) -> impl Iterator<Item = PoolModel<'_>> {
         self.buckets.iter().flat_map(|(bucket, definitions)| {
             definitions.iter().flat_map(move |(equipment, pools)| {
@@ -523,9 +435,6 @@ impl Content {
         })
     }
 
-    /// Every pool limit predicate the lookup refuses, with its file, bucket,
-    /// equipment, authored pool ordinal and limit-tree child path. Each `[n]`
-    /// is a 1-based sibling position, including supported predicates.
     pub fn refusals(&self) -> Vec<(&str, String)> {
         fn walk<'a>(limits: &'a [Limit], path: &str, out: &mut Vec<(&'a str, String)>) {
             for (index, limit) in limits.iter().enumerate() {
@@ -574,9 +483,6 @@ impl Content {
         refusals
     }
 
-    /// Return the native graphic candidates, ready for legacy insertion.
-    /// Unknown relevant predicates fail this lookup rather than silently
-    /// discarding a potentially higher-priority model.
     pub fn lookup(
         &self,
         context: &Context<'_>,
@@ -586,7 +492,6 @@ impl Content {
         self.lookup_with_limits(context, &has_dlc, entity_exists)
     }
 
-    /// Model candidates with the caller's evaluation of each authored limit.
     pub fn lookup_with_limits(
         &self,
         context: &Context<'_>,
@@ -599,7 +504,6 @@ impl Content {
         let mut candidates = Vec::new();
         for pool in matches {
             for entity in pool.models.iter().rev() {
-                // Deduplicate candidates before checking whether their assets exist.
                 if seen.insert(entity.as_str()) && entity_exists(entity) {
                     insert(
                         &mut candidates,
@@ -615,10 +519,6 @@ impl Content {
         Ok(candidates)
     }
 
-    /// Collect context, equipment and family pools, stably sort descending
-    /// model weight, then scan each model list backwards. Return the first
-    /// declared name directly without inserting or deduplicating legacy
-    /// candidates. A refused declaration still exists.
     pub fn aircraft_override(
         &self,
         context: &Context<'_>,
@@ -634,11 +534,6 @@ impl Content {
             .cloned())
     }
 
-    /// The icon the production view shows: pools matching `context` that have
-    /// icons and no `sub_units` filter (the context's `subunit` should be None),
-    /// stably sorted by descending `icons_weight`, or `weight` when zero. Try
-    /// each pool's icons last to first; the first sprite or texture path that
-    /// `exists` wins. Err names an undecidable limit, leaving the icon unknown.
     pub fn lookup_icon(
         &self,
         context: &Context<'_>,
@@ -654,9 +549,6 @@ impl Content {
             .cloned())
     }
 
-    /// The pools `context` visits that `wanted` keeps, in the native visit order:
-    /// for the equipment, then its family, each country, faction, continent and
-    /// default bucket; the equipment's then its archetype's pools, last first.
     fn matching(
         &self,
         context: &Context<'_>,
@@ -684,9 +576,6 @@ impl Content {
                 let Some(definitions) = self.buckets.get(bucket) else {
                     continue;
                 };
-                // Repeat this visit when keys coincide. The null equipment object uses
-                // a sentinel hash; a real empty name uses the ordinary empty-string hash.
-                // Only the latter can match an authored empty key.
                 for name in [Some(equipment), archetype].into_iter().flatten() {
                     let Some(pools) = definitions.get(&name.to_ascii_lowercase()) else {
                         continue;
@@ -731,7 +620,6 @@ fn block(value: &Value) -> io::Result<&[Item]> {
     }
 }
 
-/// A list's entries as stored text, `@` names already resolved.
 fn strings(value: &Value) -> io::Result<Vec<String>> {
     block(value)?
         .iter()
@@ -866,8 +754,6 @@ mod tests {
             }),
             Ok(None)
         );
-        // Collection precedes selection, weights are stable, strings run
-        // backwards, and this selector does not deduplicate repeated names.
         assert_eq!(
             *visited.borrow(),
             [
@@ -939,18 +825,14 @@ mod tests {
             .lookup(&context(Some("GER"), &factions), |_| Some(true), |_| true)
             .unwrap();
         let entities: Vec<_> = found.iter().map(|c| c.entity.as_str()).collect();
-        // Weight order; reversed model lists; equal weights keep visit order.
         assert_eq!(
             entities,
             ["ger", "allied", "base_b", "base_a", "continental"]
         );
-        // No country context visits only the default bucket.
         let found = pools
             .lookup(&context(None, &[]), |_| Some(true), |_| true)
             .unwrap();
         assert_eq!(found.len(), 2);
-        // Uppercase a three-letter key before country lookup; report and skip
-        // keys that name no bucket.
         let pools = content(
             br#"
             ger = { tank = { pool = { models = { lower } } } }
@@ -999,7 +881,6 @@ mod tests {
         let scoped =
             content(b"default = { tank = { pool = { limit = { tag = GER } models = { x } } } }")
                 .unwrap();
-        // A quoted `"has_dlc"` has no built-in token, so its result is undecided.
         let quoted = content(
             br#"default = { tank = { pool = { limit = { "has_dlc" = x } models = { q } } } }"#,
         )
@@ -1015,7 +896,6 @@ mod tests {
                 .lookup(&context(None, &[]), |_| Some(true), |_| true)
                 .is_err()
         );
-        // Each refused predicate, nested ones included, is named with its file.
         let nested = content(
             b"default = { tank = { pool = { limit = { has_dlc = a OR = { has_dlc = b \
                 AND = { NOT = { has_dlc = c tag = GER } } } } models = { x } } } }",
@@ -1156,8 +1036,6 @@ mod tests {
             .iter()
             .map(|c| (c.entity.as_str(), c.weight))
             .collect();
-        // Fixed5 conversion truncates past five digits and keeps the slot when it
-        // fails; `models` is read only from `{`; `@` names resolve.
         assert_eq!(
             found,
             [("equal", 100_000), ("fixed", 12_345), ("4", 12_345)]
@@ -1181,7 +1059,6 @@ mod tests {
         let mut icon_context = context(None, &[]);
         icon_context.subunit = None;
         let exists = |name: &str| name != "missing";
-        // icons_weight 7 beats weight 5; within it, last to first, the first that exists.
         assert_eq!(
             pools.lookup_icon(&icon_context, |_| Some(true), exists),
             Ok(Some("high_b".to_owned()))
@@ -1194,7 +1071,6 @@ mod tests {
             ),
             Ok(Some("low_b".to_owned()))
         );
-        // Models ignore icon-only pools and icons ignore model-only pools.
         let models = pools
             .lookup(&context(None, &[]), |_| Some(true), |_| true)
             .unwrap();
@@ -1246,8 +1122,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["own_model"]
         );
-        // A real empty archetype and family name retain their ordinary authored
-        // name hash, distinct from a null equipment object's sentinel.
         null_archetype.archetype = Some("");
         assert_eq!(
             pools.lookup_icon(&null_archetype, |_| Some(true), |_| true),

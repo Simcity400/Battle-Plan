@@ -78,7 +78,6 @@ fn typed_dependency_closure() {
             .map(|(pass, reason)| format!("Map shader {}: 1 refused pass: {reason}", pass.name()))
             .collect();
         assert_eq!(lines(&diagnostics).collect::<Vec<_>>(), expected);
-        // A new frame retries the producer; the retained diagnostic is still per pass.
         let mut frame = Frame::new(&mut diagnostics);
         assert!(
             frame
@@ -100,7 +99,6 @@ fn a_refused_hatch_is_named_once_and_withholds_no_other_pass() {
             .run::<()>(Pass::UnknownSnowMud, || Err(io::Error::other(reason)))
             .is_none()
     );
-    // The water draw of the same frame is not retried, and nothing else waits on the hatch.
     assert!(
         frame
             .run(Pass::UnknownSnowMud, || -> io::Result<()> {
@@ -188,7 +186,6 @@ fn world_rolls_back_all_retained_bindings_and_keeps_successful_binds() -> io::Re
             &[0, 255, 0, 255],
             "rollback {pass:?}"
         );
-        // Restoring the bytes must also restore which bytes are native-known.
         let mut tail = crate::map::shader_scene::State::default();
         tail.inherit(&retained.borrow());
         let (selection, template) = probe.template("Unknown")?;
@@ -289,7 +286,6 @@ fn shader_initialization_refuses_only_actually_read_unknown_bytes() -> io::Resul
     Ok(())
 }
 
-/// A preflight refusal leaves the single encoder usable for an independent draw.
 #[test]
 fn preflight_fault_skips_water_and_independent_pass_renders() {
     let instance = shader_pipeline::gpu::instance();
@@ -382,7 +378,6 @@ fn preflight_fault_skips_water_and_independent_pass_renders() {
         &buffer.slice(..).get_mapped_range().unwrap()[..4],
         &[0, 255, 0, 255]
     );
-    // Persistent diagnostics retain one entry per pass, even on later frames.
     Frame::new(&mut diagnostics).run(Pass::Underwater, || compiled(&failed));
     let warnings: Vec<_> = lines(&diagnostics).collect();
     assert_eq!(warnings.len(), 2);

@@ -84,7 +84,6 @@ fn a_shared_allocation_reads_back_as_one() {
     assert!(Arc::ptr_eq(&read[0], &read[1]));
     assert!(!Arc::ptr_eq(&read[0], &read[2]));
     assert_eq!(&*read[2], "tag");
-    // The repeat is written as the first, not again.
     assert!(bytes.len() < 3 * 5);
 }
 
@@ -146,7 +145,6 @@ fn a_weak_names_what_its_allocation_was_read_back_as() {
     drop(view);
     shared.sweep().unwrap();
     let released = std::mem::take(shared.released());
-    // A dead allocation a weak may name stays known.
     assert_eq!(shared.len(), 1);
     let mut second = Vec::new();
     (weak.clone(), Weak::<Viewed>::new())

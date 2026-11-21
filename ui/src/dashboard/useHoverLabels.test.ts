@@ -11,13 +11,10 @@ test('a tooltip revision changes with the question and with every answer, whatev
     ['B', { style: { name: 'Beta', color: null }, flag: { url: 'http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png' } }],
   ]);
   const read = (tag: string): HoverRead => answers.get(tag) ?? { style: undefined, flag: undefined };
-  // Both warmed at one hour: hovering B then A changes the revision, though every map is one entry.
   const b = hoverRevision({ hour: 100, tags: ['B'] }, read);
   const a = hoverRevision({ hour: 100, tags: ['A'] }, read);
   assert.notEqual(a, b);
-  // The same question at another hour is another revision.
   assert.notEqual(hoverRevision({ hour: 101, tags: ['A'] }, read), a);
-  // Each part on its own: still going, finished with nothing, then answered.
   const at = (look: HoverRead) => hoverRevision({ hour: 100, tags: ['C'] }, () => look);
   const revisions = [
     at({ style: undefined, flag: undefined }),
@@ -38,7 +35,6 @@ test('a tooltip revision changes with the question and with every answer, whatev
     at({ style: FAILED_FACT, flag: FAILED_FACT }),
   ];
   assert.equal(new Set(revisions).size, revisions.length);
-  // Nothing asked: an empty revision, and the same answers give the same revision.
   assert.equal(hoverRevision(null, read), '');
   assert.equal(hoverRevision({ hour: 100, tags: ['A'] }, read), a);
 });

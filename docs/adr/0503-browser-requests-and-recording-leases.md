@@ -1,0 +1,9 @@
+# Reserve browser request capacity and release recording leases by owner
+
+The browser bridge outlives a page. Tag opens and imports with the page's identity so closing or reloading it can release even leases whose responses did not arrive. A page retained in the back-forward cache retains its leases. Pages that never used the bridge do not report a teardown. An in-flight open reserves its import, and a source opened by another page keeps shared imported data even after the first page releases it.
+
+Divide the browser's six connections into history, replay pages, interactive dated facts and control. Reserve capacity for control and facts even when history fills its lane, and allow a waiting refresh after the first-request burst to prevent starvation across the matching service queues. Cancellation retains a started slot until its fetch and body settle. If a cancelled open still answers, release the returned lease. Cancellation remains the caller's result if attempting that cleanup also fails. Cancel one source when its lease closes without touching requests for another recording.
+
+The native reply echoes its source lease to protect against swapped recording results. Saved layouts refer to logical source roles; runtime requests use the current lease. A pagination request may carry a local hour for performance logging that the wire query does not accept. Requests affected by content follow the service's monotonically increasing presentation generation, which covers configured folders, readiness and source visual mods. The first generation establishes the entry's baseline. Only a newer generation advances it, so a delayed older reply cannot restore its stale state.
+
+[Browser client](../../ui/src/dashboard/browserClient.ts) · [Browser request lanes](../../ui/src/dashboard/browserRequestQueue.ts) · [Dashboard client contract](../../ui/src/dashboard/client.ts) · [Content revisions](../../ui/src/dashboard/contentRevision.ts)

@@ -1,5 +1,3 @@
-//! Daily Fuel supplying-read pack. Admission/growth is off the game thread;
-//! the callback owns every byte before worker conversion or replay encoding.
 use crate::table_capture::{grow_capacity, grow_vec};
 use engine_allocation::{copy_vec, default_vec, filled, owned_vec};
 use engine_fuel::fuel_demand as native;
@@ -248,8 +246,6 @@ impl Captured {
         ];
     }
 
-    /// Convert once for the whole cohort. Native raw country keys are indexed
-    /// once; no per-country full-world fleet/group scan or later memory read.
     pub fn owned(&self) -> io::Result<Vec<(u32, rows::FuelDemandRead)>> {
         let mut result = Vec::new();
         engine_allocation::reserve_exact(&mut result, self.lengths[0])?;
@@ -311,8 +307,6 @@ impl Captured {
             for (_, index) in keyed(&tasks, country.country) {
                 push(&mut pack.task_forces, self.unit(&self.tasks[*index])?)?;
             }
-            // A division can reach a foreign or untagged command. Keep that
-            // full-ref ancestor chain, independently of the owner index.
             let mut selected = Vec::new();
             let mut seen = HashSet::new();
             let mut missing = false;
@@ -368,8 +362,6 @@ impl Captured {
                 }
                 push(&mut pack.groups, owned)?;
             }
-            // Context IDs are pass-local, and this map contains only contexts
-            // reached by this country's site occurrences.
             let mut contexts = Vec::<(usize, u32)>::new();
             for site in slice(&self.sites[..self.lengths[4]], country.sites)? {
                 let mut owned = rows::FuelDemandSite {
@@ -548,8 +540,6 @@ fn select_group(
     Ok(())
 }
 
-/// A pack's hour: read with its CountryFuel row, in this capture, or an
-/// explicit placeholder when the capture had no hour.
 fn pack_hour(hour: Option<i32>) -> rows::FuelDemandHour {
     match hour {
         Some(_) => rows::FuelDemandHour::Host,
@@ -557,17 +547,9 @@ fn pack_hour(hour: Option<i32>) -> rows::FuelDemandHour {
     }
 }
 
-/// The parts' verdict when CountryFuel's read is truncated: its unread
-/// countries' parts are unknown and uncounted, so its packs stay whole.
 const TRUNCATED_PARTS: &str =
     "fuel demand parts are not split from a truncated CountryFuel read, whose packs stay whole";
 
-/// Attach each CountryFuel row's demand pack and return FuelDemandParts.
-/// From a complete read each pack's header is attached and its list
-/// elements are parts, a row each ([`rows::FuelDemandRead::split`]); a pack
-/// whose elements a key cannot hold stays whole. A truncated read's packs
-/// stay whole and its parts are unavailable, as are an unavailable read's,
-/// for its reason.
 pub fn attach(
     table: &mut replay_frame::frame::TableInput,
     captured: &Captured,
@@ -632,8 +614,6 @@ pub fn attach(
             reason: TRUNCATED_PARTS.into(),
         });
     }
-    // Each country's parts are in key order, whose highest bits are the
-    // country, and CountryFuel holds a row a country.
     parts.sort_unstable_by_key(replay_data::rows::RowCodec::key);
     Ok(TableView::Complete(TableRows::FuelDemandParts(parts)))
 }

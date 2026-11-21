@@ -32,7 +32,6 @@ fn a_pair_sums_its_lifetimes_cuts_where_a_tag_changes_and_leaves_out_what_was_no
         taken_a: HashMap::from([(old, vec![(100, 199, Some(5))]), (new, vec![(130, 149, Some(2)), (150, 159, None), (160, 199, Some(3))])]),
         taken_b: HashMap::from([(old, vec![(100, 199, Some(7))]), (new, vec![(130, 199, Some(1))])]),
         partial: HashMap::from([(holder_key(TWO), vec![(100, 169, Some(0)), (170, 199, Some(1))])]),
-        // Hours 180-184 were not written.
         observed: vec![(100, 179), (185, 199)],
     };
     let names = tags(&[(ONE, "ONE", 100, 199), (TWO, "TWO", 100, 139), (TWO, "NEW", 140, 199)]);
@@ -52,7 +51,6 @@ fn a_pair_sums_its_lifetimes_cuts_where_a_tag_changes_and_leaves_out_what_was_no
         runs("ONE", "NEW"),
         vec![
             (140, 149, s("7"), s("8"), false),
-            // A lifetime holding a row whose counter is not recorded leaves the hours out: never a smaller sum.
             (160, 169, s("8"), s("8"), false),
             (170, 179, s("8"), s("8"), true),
             (185, 199, s("8"), s("8"), true),
@@ -62,7 +60,6 @@ fn a_pair_sums_its_lifetimes_cuts_where_a_tag_changes_and_leaves_out_what_was_no
 
 #[test]
 fn an_ended_lifetime_keeps_its_last_counters_in_the_pairs_sum() {
-    // Before the window ended: its row at its last hour. Inside it: its runs through its last hour.
     let (before, inside) = (key(ONE, TWO, 10), key(ONE, TWO, 60));
     let lifetimes = [(before, 10, 50), (inside, 60, 129)];
     let reads = WindowReads {
@@ -118,7 +115,6 @@ fn a_breakdown_lists_what_the_country_took_in_each_lifetime_by_enemy_under_no_wa
     assert_eq!(
         shown,
         vec![
-            // As the lifetime's second identity, the country took `taken_b`.
             ("ZERO", vec![(10, 14, "3"), (15, 19, "8")]),
             ("FIVE", vec![(10, 19, "9")]),
             ("FOUR", vec![(0, 9, "9")]),
@@ -132,7 +128,6 @@ fn a_breakdown_lists_what_the_country_took_in_each_lifetime_by_enemy_under_no_wa
 fn a_breakdown_groups_each_lifetime_by_the_war_holding_it_and_an_ended_one_by_its_last_war() {
     use crate::products::wars::{WarRelationKey, WarRelationMembership};
     let (west, east) = (key(ONE, THREE, 0), key(TWO, THREE, 0));
-    // THREE's war with TWO ended at hour 9; its losses hold after.
     let lifetimes = [(west, 0, 19), (east, 0, 9)];
     let reads = WindowReads {
         taken_a: HashMap::new(),
@@ -160,7 +155,6 @@ fn a_breakdown_groups_each_lifetime_by_the_war_holding_it_and_an_ended_one_by_it
         vec![
             (0, 9, Some("first"), None, 0, true),
             (10, 14, Some("second"), None, 10, true),
-            // Two wars hold it: under no war, saying why, never counted in both.
             (15, 16, None, Some(SEVERAL_WARS), 15, true),
             (17, 19, Some("second"), None, 17, true),
         ]
@@ -172,8 +166,6 @@ fn a_breakdown_groups_each_lifetime_by_the_war_holding_it_and_an_ended_one_by_it
     }
 }
 
-/// A reply for one window carries the manifest its index names a window of, as the manifest's
-/// reply does: the widgets read the window's hours from it.
 #[test]
 fn a_window_reply_carries_the_windows_its_index_names() {
     use crate::test_fixtures::{CAMPAIGN, records, source};

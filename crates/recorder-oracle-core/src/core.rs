@@ -35,8 +35,6 @@ pub fn compare_province_names(
             ));
         }
         let subject = format!("province {}.name override", row.province);
-        // Province names gate on stored length,
-        // so a nonempty stored name can emit an empty prefix.
         let name = super::serialized_text(report, &subject, &row.name);
         report.scalar_checks += 1;
         match remaining.remove(&row.province) {
@@ -190,8 +188,6 @@ pub fn compare_provinces(
             continue;
         };
         report.provinces += 1;
-        // The province writer omits a zero controller. Every province is visited;
-        // only an empty serialized object can be omitted.
         let victory_points = save
             .provinces
             .get(&id)
@@ -216,8 +212,6 @@ pub fn compare_provinces(
                     expected.state,
                 );
             }
-            // The state save writer loses the exact nonpositive owner;
-            // The province save writer writes no separate owner.
             let owner = if expected.owner.is_none() {
                 nonpositive_owners += 1;
                 if (actual.owner as i32) > 0 {
@@ -242,12 +236,8 @@ pub fn compare_provinces(
             }
             owner
         };
-        // A saved explicit controller needs no state-owner inference;
-        // only its omission does.
         if expected.membership_known || expected.controller_explicit {
             if expected.controller.is_none() {
-                // The game omits every signed-nonpositive controller, not
-                // just raw0. A positive controller here would be emitted.
                 if (actual.controller as i32) > 0 {
                     report.difference(
                         format!("province {}.controller positive class", expected.id),
@@ -363,8 +353,6 @@ pub fn compare_states(
                         tag_text(Some(&expected.owner)),
                     );
                 }
-                // CState writes zero controller when owner is positive; only
-                // raw/canonical equality permits omission. No normalization.
                 let controller = country_tag(actual.controller, links)?;
                 if controller != Some(expected.controller.as_slice()) {
                     report.difference(
@@ -417,9 +405,7 @@ fn compare_state_fields(
 ) {
     let field = format!("state {}.category", actual.id);
     if let Some(&category) = report.recorded(&actual.category, "States.category", &field) {
-        // The writer emits the definition's name; the lexer interned it under its fold.
         if tokens.is_empty() {
-            // lexical_tokens names the unavailable dictionary as the limitation.
             report.limitation(
                 "the recorded lexical dictionary is unavailable, so the category token is not named",
                 field,
@@ -444,8 +430,6 @@ fn compare_state_fields(
     compare_state_scalars(actual, saved, report);
 }
 
-/// The state writer saves each contested owner's tag in stored order as `contested_owners`, and
-/// omits an empty list.
 fn compare_marked_owners(
     actual: &StateRow,
     saved: &installed_content_save::State,
@@ -485,7 +469,6 @@ fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::Stat
             report.difference(field, actual.manpower_available, saved);
         }
         Some(_) => {}
-        // The game writes manpower_pool only when its total is positive.
         None => report.limitation(
             "CState omits the manpower pool when total <= 0; available is not independently saved",
             field,
@@ -511,9 +494,7 @@ fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::Stat
                 report.difference(field, population, saved)
             }
             Some(Some(_)) => {}
-            // A written pool proves a positive total, so its absence differs.
             Some(None) => report.difference(field, population, "pool without total"),
-            // The pool, total included, is written only for a positive total.
             None if population > 0 => {
                 report.difference(field, population, "omitted pool (total <= 0)")
             }
@@ -523,8 +504,6 @@ fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::Stat
             ),
         }
     }
-    // State names gate on stored length,
-    // before the game writes the first-NUL prefix (possibly empty).
     let field = format!("state {}.custom_name", actual.id);
     let name = (!actual.custom_name.is_empty())
         .then(|| super::serialized_text(report, &field, &actual.custom_name));
@@ -533,8 +512,6 @@ fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::Stat
     }
 }
 
-/// The current-hour railway fraction is healthy infrastructure divided by the
-/// selected content template's native base maximum, not normal movement's sum.
 pub fn compare_railway_infrastructure(
     frame: &DecodedFrame,
     save: &Save,
@@ -575,8 +552,6 @@ pub fn compare_railway_infrastructure(
             }
             (None, None) | (Some(_), None) => 0,
             (Some(definition), Some(saved)) => {
-                // The game: positive province cap, positive state cap, then
-                // the exact signed content define. The game does not clamp.
                 let maximum = definition.base_maximum(defines)?;
                 if maximum == 0 {
                     i64::from(u32::MAX)
@@ -608,8 +583,6 @@ pub fn compare_state_flags(
         }
     }
     for (&id, state) in &save.states {
-        // Writer always emits token 33e1. There is no omission
-        // normalization, even for false or for states outside the current POV.
         let expected = state
             .demilitarized
             .ok_or_else(|| invalid(format!("save state {id} lacks its demilitarized boolean")))?;
@@ -750,13 +723,6 @@ pub fn compare_players(
     Ok(())
 }
 
-/// Prints the tracked engine counters on both sides. A changed counter witnesses
-/// intervening work; equality does not prove the absence of same-hour writes or
-/// untracked allocations. The witness never waives a field difference.
-///
-/// The frame compared with a save is taken to be one a refresh settled: read as the
-/// update after the save's hour is entered, it follows the save in either sample
-/// boundary. The recording does not mark such frames, so the report says so.
 pub fn compare_boundary_counters(
     frame: &DecodedFrame,
     save: &Save,
@@ -853,8 +819,6 @@ pub fn compare_boundary_counters(
             }
         }
     }
-    // A witness count, not an exact field comparison: the gap is printed and
-    // explained rather than turned into a difference.
     report.compared(
         "boundary counter witnesses (printed, never a difference)",
         recorded.len() - unreadable,
@@ -867,9 +831,6 @@ pub fn compare_boundary_counters(
             recorded.len() - unreadable
         )
     } else {
-        // The settled frame follows the save, so a counter rises in the recording.
-        // The other direction needs a reload, a 32-bit wrap or a frame read
-        // before the save. Neither is ever turned into a difference.
         let mut verdict = if regressed.is_empty() {
             String::from("no counter moved in the direction a frame read after the save allows")
         } else {
@@ -906,7 +867,6 @@ pub fn compare_boundary_counters(
     Ok(())
 }
 
-// The game clamps after each included stockpile row, in saved row order.
 
 #[cfg(test)]
 #[path = "core/nonpositive_state_tests.rs"]

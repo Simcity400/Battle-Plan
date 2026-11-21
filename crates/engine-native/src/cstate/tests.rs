@@ -131,8 +131,6 @@ fn states_with_holes() -> Vec<u8> {
         cgame_state::STATES + cpdx_array::COUNT,
         &4_u32.to_le_bytes(),
     );
-    // Slot zero is reserved even if occupied; slot two is a null hole.
-    // Slot four is spare capacity and must not be read.
     for (slot, pointer) in [(0, u64::MAX), (1, 0x1400), (3, 0x1600), (4, u64::MAX)] {
         put(&mut bytes, 0x300 + slot * 8, &pointer.to_le_bytes());
     }
@@ -148,8 +146,6 @@ fn states_with_holes() -> Vec<u8> {
     bytes
 }
 
-/// Sparse address space, because the movement defines live at module RVAs
-/// far above the census fixture.
 struct MapMemory(std::collections::BTreeMap<usize, u8>);
 impl Memory for MapMemory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -169,8 +165,6 @@ impl MapMemory {
     }
 }
 
-/// An MSVC string at `at`: inline up to 15 bytes, else on the heap at
-/// `heap`, terminated either way.
 fn put_string(memory: &mut MapMemory, at: usize, heap: usize, text: &[u8]) {
     use crate::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH};
     let mut header = [0_u8; 32];
@@ -187,7 +181,6 @@ fn put_string(memory: &mut MapMemory, at: usize, heap: usize, text: &[u8]) {
     memory.put(at, &header);
 }
 
-/// `count` states at slots 1..=count, each with the given two names.
 fn named_states(count: usize, names: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>)) -> MapMemory {
     let mut memory = MapMemory(std::collections::BTreeMap::new());
     const SLOTS: usize = 0x10_0000;
@@ -262,10 +255,6 @@ fn state_rows_and_names_grow_before_first_and_later_publication() {
     }
 }
 
-/// Both display names copy exactly, inline and heap alike; an empty one is
-/// an empty span; a row that does not fit ends the prefix while every row
-/// counts toward the required size; a fault or an unreadable census
-/// denies the table.
 #[test]
 fn both_display_names_are_copied_exactly_with_off_thread_growth() {
     let long = b"Synthetic State Display Name".to_vec();
@@ -287,13 +276,11 @@ fn both_display_names_are_copied_exactly_with_off_thread_growth() {
     assert_eq!(text(rows[2].owner_name), b"Test Region AAA");
     let total = 11 + long.len() + 4 + 15;
     assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
-    // Too small an arena grows to the demand.
     let mut small = vec![0_u8; 20];
     let mut rows = census_rows(3);
     let walk = read_names(&memory, 0, Outcome::Rows { len: 3 }, &mut rows, &mut small);
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
     assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
-    // A census already short of rows keeps its own omitted count.
     let mut rows = census_rows(3);
     let walk = read_names(
         &memory,
@@ -317,7 +304,6 @@ fn both_display_names_are_copied_exactly_with_off_thread_growth() {
         read_names(&memory, 0, unavailable, &mut census_rows(3), &mut arena).outcome,
         unavailable
     );
-    // A torn heap string denies the table rather than guessing.
     let mut broken = named_states(1, &|_| (long.clone(), Vec::new()));
     broken.0.remove(&(0x20_1000 + 0x900 + long.len()));
     assert!(matches!(
@@ -372,8 +358,6 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
         rows.iter().map(|row| row.best_vp_index).collect::<Vec<_>>(),
         [Some(-1), Some(-2), Some(5)]
     );
-    // No native vector payload was supplied. A quiet read carries the predicate,
-    // and does not read any native state or name at all.
     let mut carried = census_rows(3);
     let held = rows
         .iter()
@@ -392,7 +376,6 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
         .collect::<Vec<_>>();
     let mut fresh_arena = vec![0; 32];
     let empty = MapMemory(Default::default());
-    // The roster header is read even when every state is carried.
     let mut headers = empty;
     for (at, byte) in &memory.0 {
         if *at < 0x20_0000 {
@@ -429,7 +412,6 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
         outcome
     );
     assert_eq!(rows[0].single_controller, None);
-    // Ordinary state/name consumers demand neither scripted operand.
     assert_eq!(
         read_names(&memory, 0, outcome, &mut rows, &mut arena).outcome,
         outcome
@@ -463,7 +445,6 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
     );
     memory.put(0x4000 + 0x3b0, &0x5000_u64.to_le_bytes());
     memory.put(0x5000 + cbuilding_template::SCOPE, &5_i32.to_le_bytes());
-    // A disabled lookup keeps the healthy level at zero.
     memory.put(0x5000 + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, &[0]);
     memory.put(0x033e_5080, &(-10_000_i64).to_le_bytes());
     let census = Outcome::Rows { len: 1 };
@@ -476,7 +457,6 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
         census
     );
     assert_eq!(rows[0].movement_infrastructure, -50_000);
-    // A later hourly pass acquires both changed globals and new faults.
     memory.put(0x033e_5080, &(-12_000_i64).to_le_bytes());
     assert_eq!(
         read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
@@ -490,8 +470,6 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
     ));
     memory.put(0x033e_5080, &(-10_000_i64).to_le_bytes());
 
-    // An unreadable census, an absent slot and a broken state each deny the
-    // term rather than recording a plausible zero.
     let unavailable = Outcome::Unavailable { reason: "census" };
     assert_eq!(
         read_movement_infrastructure(&memory, 0, 0, unavailable, &mut rows),
@@ -1065,7 +1043,6 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
             (0x1300 + source.id as usize * 8, 8),
             (source.pointer, 8),
             (source.pointer + ID, 4),
-            // The DMZ byte and the border-war active byte share one span.
             (source.pointer + DEMILITARIZED, 2),
         ]);
     }
@@ -1137,7 +1114,6 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     };
     read_rows(&bytes, &mut rows);
     assert_eq!(rows[0].continent, Some(991));
-    // No province list is consulted or recomputed.
     bytes[template + crate::cstate_template::CONTINENT
         ..template + crate::cstate_template::CONTINENT + 8]
         .copy_from_slice(&(null as u64).to_le_bytes());
@@ -1151,9 +1127,6 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     assert_eq!(rows[0].owner, 123);
 }
 
-/// The census reads each state's population beside its available manpower
-/// in the same span, and the carried manpower read takes both words in its
-/// identity record. Available manpower alone was the old row.
 #[test]
 fn state_population_is_read_beside_available_manpower() {
     let mut bytes = states_with_holes();
@@ -1210,13 +1183,9 @@ fn state_population_is_read_beside_available_manpower() {
     );
 }
 
-/// The census and the carried manpower read take each state's category
-/// pointer; its definition is authenticated by vtable before its token is
-/// read, and a failed definition read refuses only that state's category.
 #[test]
 fn state_category_is_named_by_its_authenticated_definitions_token() {
     let mut bytes = states_with_holes();
-    // Two definitions: state 1's is a category, state 3's has another vtable.
     for (offset, vtable, token) in [
         (0x100, CATEGORY_VTABLE_RVA.0, 0x2fab_u32),
         (0x140, VTABLE_RVA.0, 7),
@@ -1256,8 +1225,6 @@ fn state_category_is_named_by_its_authenticated_definitions_token() {
     );
 }
 
-/// The contested owner words copy beside the names from the header between them; an invalid
-/// header refuses only that state's list, and a carried list lands where a fresh read puts it.
 #[test]
 fn contested_owners_copy_with_the_names_and_carry_exactly() {
     let mut memory = named_states(3, &|index| (vec![b'c'; index], b"Owner".to_vec()));

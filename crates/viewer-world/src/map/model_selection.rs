@@ -1,6 +1,3 @@
-//! Ordinary land-model choice over the shared sub-unit requirement resolver.
-//! Authored content and recorded local clones live below the viewer; scoring,
-//! equipment exclusions and model-country selection remain presentation rules.
 use dashboard_text::subunit_requirements as shared;
 pub use dashboard_text::subunit_requirements::{
     Definition, EquipmentModel, Group, SourceIndex, Sources, SubUnit, Template, text,
@@ -15,7 +12,6 @@ pub(crate) mod model_facts;
 pub(crate) mod profile;
 use profile::{Stage, Stages};
 
-/// The hour's variant definitions by id: the frame's rows, ascending by id, each looked up alone.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Variants<'a>(&'a [VariantDefinitionRow]);
 
@@ -41,7 +37,6 @@ impl Deref for Content {
     }
 }
 impl Content {
-    /// An empty, lazy fact view. No variant or live answer is evaluated here.
     pub(crate) fn classification_facts(&self, frame: &replay_frame::frame::DecodedFrame) -> Option<facts::Hour> {
         self.1.hour(frame)
     }
@@ -67,9 +62,6 @@ impl Content {
             model_facts::Retained::default(),
         )
     }
-    /// Supply only this division's equipment rows, in any order;
-    /// the recorded ordinal recovers native order before the stable quantity sort.
-    /// Missing authored/recorded identities are errors, never silent re-ranking.
     pub fn select_pair<'a>(
         &'a self,
         template: &Template<'a>,
@@ -90,8 +82,6 @@ impl Content {
         )
     }
 
-    /// Coarse stage timing only: both stable sorts and the input/error order
-    /// are identical to the ordinary entry; no clock is read per equipment row.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn select_pair_profiled<'a>(
         &'a self,
@@ -108,8 +98,6 @@ impl Content {
         )
     }
 
-    /// Only successful static row classification is shared; all candidate
-    /// admission, both stable sorts and live ranking below remain ordinary.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn select_pair_classified<'a>(
         &'a self,
@@ -126,7 +114,6 @@ impl Content {
             return Ok(None);
         };
         let mut candidates = stages.measure(Stage::PairClassify, || -> io::Result<_> {
-            // The first strictly largest positive requirement.
             let mut largest = None;
             let mut largest_amount = 0;
             for (archetype, amount) in representative.requirements.iter() {
@@ -204,7 +191,6 @@ impl Content {
                     {
                         continue;
                     }
-                    // Native signed dword arithmetic, including its wrap behavior.
                     let score = group.subunit.model_priority.unwrap_or_else(|| {
                         equipment_priority
                             .wrapping_add(10)
@@ -235,13 +221,10 @@ pub struct SelectedPair<'a> {
     pub subunit: &'a SubUnit,
     pub identity: Definition,
 }
-/// Model selection prefers a signed-positive variant origin over its creator. A missing
-/// origin branch does not remap the ordinary roster country to its original tag.
 pub fn model_country(pair: SelectedPair<'_>, roster_owner: u32) -> u32 {
     variant_country(pair.variant, pair.subunit, roster_owner)
 }
 
-/// The same rule for any (variant, sub-unit) pair and fallback country.
 pub fn variant_country(variant: &VariantDefinitionRow, subunit: &SubUnit, fallback: u32) -> u32 {
     let category = variant.classifier_flags;
     let source = if (variant.origin_link as i32) > 0 {

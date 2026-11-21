@@ -1,10 +1,5 @@
-//! The land model's three DivisionStatus columns, read on their own for Map
-//! recordings, which leave DivisionStatus out.
 use super::*;
 
-/// A division's stored model number, camouflage decision and exercise
-/// predicate, as [`StatusRow`] holds them. Each `None` is that field's own read
-/// refusal; a division whose identity changed refuses all three.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ModelInputsRow {
     pub division: u64,
@@ -16,16 +11,10 @@ pub struct ModelInputsRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelInputsReport {
     pub outcome: Outcome,
-    /// Rows whose orders group trains, the only ones the exercise operands are read for.
     pub training: u32,
 }
 
 impl StatusPacket {
-    /// One [`ModelInputsRow`] per census seed, through Status's own reads: the
-    /// seed's model number, the camouflage decision over its entries and the
-    /// exercise predicate behind an admitted group's training byte. Stat-block
-    /// maxima and experience are read fresh, and only where the predicate
-    /// reaches them; nothing else Status prepares is needed.
     pub fn capture_model_inputs<M: Memory>(
         &mut self,
         memory: &M,
@@ -142,7 +131,6 @@ impl StatusPacket {
         }
     }
 
-    /// The training byte of a group Status's membership walk would admit, read once a pass.
     fn model_training(
         &mut self,
         memory: &impl Memory,

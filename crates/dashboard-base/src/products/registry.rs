@@ -61,7 +61,6 @@ macro_rules! register_hourly_products {
     };
 }
 
-/// A product erased to its key and JSON entry points.
 #[derive(Clone, Copy)]
 pub struct Registered {
     pub key: &'static str,
@@ -113,8 +112,6 @@ fn load_json<P: Product>(
     )
 }
 
-/// The reply `load` makes for product `key`, in the transport's envelope, with the warnings every
-/// reply carries.
 pub fn reply_json<R: serde::Serialize + ReplyWarnings>(
     source: &Source,
     lease_id: &str,
@@ -141,7 +138,6 @@ struct JsonReply<'a> {
 }
 
 impl<'a> JsonReply<'a> {
-    // Shared reply work compiles once, outside every product's typed serializer.
     #[inline(never)]
     fn new(
         source: &'a Source,

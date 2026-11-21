@@ -11,11 +11,8 @@ import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
 import { textWidth } from './textWidth.ts';
 
-/** Canvas drawing shared by every chart. Everything takes its colours and sizes
- * from the tokens and works in layout pixels. */
 
 export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weight} ${size}px ${tokens.font}`;
-/** A bar's name and value weights; table cells use the same, so the two read alike. */
 export const LABEL_WEIGHT = 500;
 export const VALUE_WEIGHT = 600;
 const crisp = (value: number) => Math.round(value) + 0.5;
@@ -28,19 +25,14 @@ export function tracePath(ctx: CanvasRenderingContext2D, commands: readonly Path
   }
 }
 
-/** The value ticks a frame's axis is drawn with. They depend only on the value range
- * and the plot's height, so a chart can measure their labels before it settles its
- * left padding. */
 export function valueTicks(frame: PlotFrame, tokens: ChartTokens): number[] {
   if (frame.valueTicks) return frame.valueTicks.filter(value => value >= frame.y[0] && value <= frame.y[1]);
   return frame.log ? thinLogTicks(logTicks(frame.y[0], frame.y[1]), frame.toY, tokens.fontSize.small + 6)
     : linearTicks(frame.y[0], frame.y[1], Math.max(2, Math.round(frame.plotHeight / 48)));
 }
 
-/** The gap between a value label and the plot, in pixels. */
 export const VALUE_LABEL_GAP = 6;
 
-/** A full-height recording gap on a time surface, distinct from zero activity. */
 export function drawRecordedGap(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
   firstHour: number, lastHour: number, until: number | null = null): void {
   const first = Math.max(firstHour, frame.x[0]), last = Math.min(lastHour + 1, frame.x[1], until == null ? Infinity : until + 1);
@@ -49,7 +41,6 @@ export function drawRecordedGap(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   ctx.fillRect(frame.toX(first), frame.plotTop, frame.toX(last) - frame.toX(first), frame.plotHeight); ctx.restore();
 }
 
-/** Committed preparation extent, distinct from recording gaps and direct exact zooms. */
 export function drawPreparedCoverage(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
   coverage: { firstHour: number; lastHour: number; complete: boolean } | null, until: number | null = null): void {
   if (!coverage) return;
@@ -59,7 +50,6 @@ export function drawPreparedCoverage(ctx: CanvasRenderingContext2D, frame: PlotF
   ctx.fillRect(frame.toX(first), frame.plotTop + frame.plotHeight - 2, frame.toX(last) - frame.toX(first), 2); ctx.restore();
 }
 
-/** The widest value label of a frame's axis, in pixels. */
 export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string): number {
   ctx.save();
   ctx.font = font(tokens, tokens.fontSize.small);
@@ -69,9 +59,6 @@ export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   return width;
 }
 
-/** Hairline value gridlines with their labels, and date labels under the plot (and
- * any strip under it).
- * `formatValue` also gets every tick drawn, so it can keep neighbouring labels apart. */
 const rowLabels = new WeakMap<CanvasRenderingContext2D, { font: string; width: number; labels: Map<string, string> }>();
 export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
   rows?: readonly string[]): void {
@@ -117,8 +104,6 @@ export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
   ctx.restore();
 }
 
-/** An emphasised rule across the plot at one value, such as zero where lines cross
- * from surplus to shortage; nothing when the value is outside the plot. */
 export function drawValueRule(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, value: number): void {
   const y = frame.toY(value);
   if (!Number.isFinite(y) || y < frame.plotTop || y > frame.plotTop + frame.plotHeight) return;
@@ -129,17 +114,12 @@ export function drawValueRule(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
   ctx.restore();
 }
 
-/** Clips drawing to the plot so zoomed series never spill over the axes. */
 export function clipToPlot(ctx: CanvasRenderingContext2D, frame: PlotFrame): void {
   ctx.beginPath();
   ctx.rect(frame.plotLeft, frame.plotTop - 2, frame.plotWidth + 2, frame.plotHeight + 4);
   ctx.clip();
 }
 
-/** A 2px line through recorded runs, broken at gaps, with an optional light area
- * fill, an optional dash pattern (for a second measure in the same colour) and a
- * ringed dot at its last recorded point. `held` draws exact steps between reads.
- * Returns that point. */
 export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, runs: readonly Run[],
   color: string, options: { area?: boolean; endDot?: boolean; until?: number; dash?: readonly number[]; held?: boolean } = {}): { x: number; y: number } | null {
   const until = Math.min(frame.x[1], options.until ?? Infinity);
@@ -166,9 +146,6 @@ export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
   return last;
 }
 
-/** A light fill between two lines drawn with `drawLine` (to the same last hour),
- * bounded by exactly the drawn curves: `aboveColor` where the first line is higher,
- * `belowColor` where the second is, split wherever they cross. */
 export function drawGapFill(ctx: CanvasRenderingContext2D, frame: PlotFrame, first: readonly Run[], second: readonly Run[],
   aboveColor: string, belowColor: string, options: { until?: number; alpha?: number } = {}): void {
   const until = Math.min(frame.x[1], options.until ?? Infinity);
@@ -187,15 +164,10 @@ export function drawGapFill(ctx: CanvasRenderingContext2D, frame: PlotFrame, fir
   paint(regions.below, belowColor);
 }
 
-/** Stacked areas: `tops[k][i]` is the top of layer k at `hours[i]`, drawn with a
- * surface-coloured seam between layers. */
-/** Filled bands between explicit lower and upper edges (a diverging stack), each
- * with a thin surface outline so neighbouring bands stay apart. */
 export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[],
   ends: { start?: boolean; end?: boolean } = {}): void {
   bands.forEach((band, layer) => {
     if (band.high.every((value, index) => value === band.low[index])) return;
-    // A single sample (an hour between gaps) has no width: it is drawn as a thin bar.
     if (hours.length === 1) {
       const top = frame.toY(band.high[0]);
       ctx.fillStyle = colors[layer];
@@ -219,8 +191,6 @@ export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
   });
 }
 
-/** One band's edge, with the very vertices drawBands joins, without resampling
- * or curving between reads. Call separately for each recorded stretch. */
 export function drawBandLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
   hours: readonly number[], values: readonly number[], color: string): void {
   if (!hours.length) return;
@@ -254,7 +224,6 @@ export function drawStack(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
   });
 }
 
-/** Short event ticks along the bottom of the plot. */
 export function drawEventTicks(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], color = tokens.muted): void {
   ctx.save();
   ctx.strokeStyle = color; ctx.lineWidth = 1.5;
@@ -267,7 +236,6 @@ export function drawEventTicks(ctx: CanvasRenderingContext2D, frame: PlotFrame, 
   ctx.restore();
 }
 
-/** The accent playhead, through the plot and any strip under it. */
 export function drawPlayhead(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {
   if (hour < frame.x[0] || hour > frame.x[1]) return;
   const x = crisp(frame.toX(hour));
@@ -277,7 +245,6 @@ export function drawPlayhead(ctx: CanvasRenderingContext2D, frame: PlotFrame, to
   ctx.restore();
 }
 
-/** The hover crosshair, through the plot and any strip under it. */
 export function drawCrosshair(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {
   const x = crisp(frame.toX(hour));
   ctx.save();
@@ -286,7 +253,6 @@ export function drawCrosshair(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
   ctx.restore();
 }
 
-/** The box-zoom selection. */
 export function drawSelection(ctx: CanvasRenderingContext2D, tokens: ChartTokens, box: { x0: number; y0: number; x1: number; y1: number }): void {
   const x = Math.min(box.x0, box.x1);
   const y = Math.min(box.y0, box.y1);
@@ -298,9 +264,6 @@ export function drawSelection(ctx: CanvasRenderingContext2D, tokens: ChartTokens
   ctx.restore();
 }
 
-/** Text labels at the right of the plot, already placed apart by `layoutEndLabels`;
- * a `muted` label names a secondary line, such as a ceiling. A label too long for the
- * room ends in an ellipsis before its `suffix` (a value), which stays whole. */
 export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, labels: readonly { text: string; suffix?: string; y: number; from: number; color: string; muted?: boolean }[]): void {
   ctx.save();
   ctx.font = font(tokens, tokens.fontSize.small, 600);
@@ -320,26 +283,19 @@ export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
   ctx.restore();
 }
 
-/** One line's end label: where its line ends (`y`, in pixels), its text and colour. */
 export interface LineEnd { id: string; y: number; text: string; suffix?: string; color: string; muted?: boolean }
-/** An end label's height, and the least gap kept between two. */
 export const END_LABEL_HEIGHT = 14;
 
-/** End labels for the lines' ends, placed apart inside the plot (`layoutEndLabels`)
- * and drawn with a leader line where a label had to move from its line's end. */
 export function placeEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, ends: readonly LineEnd[], gap = 2): void {
   const placed = layoutEndLabels(ends.map(end => ({ ...end, height: END_LABEL_HEIGHT })), frame.plotTop, frame.plotTop + frame.plotHeight, gap);
   drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, suffix: end.suffix, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })));
 }
 
-/** A day label for tooltips and menus, from the recording's own calendar. */
 export function dayLabel(hour: number): string {
   const date = gameDate(Math.floor(hour));
   return date ? formatDate(date) : `Hour ${Math.floor(hour)}`;
 }
 
-/** The days from `first` to `last` for what is known only somewhere within them, such as a bin's value: the day's own
- * label when they share it, else "3–9 Jan 1941", "28 Feb – 3 Mar 1941" or "30 Dec 1940 – 2 Jan 1941". */
 export function spanLabel(first: number, last: number): string {
   const [from, to] = [gameDate(Math.floor(first)), gameDate(Math.floor(last))];
   if (!from || !to) return dayLabel(first) === dayLabel(last) ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;

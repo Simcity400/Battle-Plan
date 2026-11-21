@@ -1,4 +1,3 @@
-//! Production comparisons retain native ordering and serializer coverage limits.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -12,8 +11,6 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, TokenNames, complete, country_tag, daily_read, invalid, required_country_tag};
 
-/// Captured deployment manpower entries, keyed by line handle and container
-/// side, each holding its native ordinal, source-country link and count.
 type ManpowerEntries = BTreeMap<(u64, u8), Vec<(u32, u32, i32)>>;
 
 fn equal<T: std::fmt::Debug + PartialEq>(
@@ -75,7 +72,6 @@ pub fn compare(
     complete &= report.attempt("IndustrialOrganisationDetails", |report| {
         mios::compare(frame, &saved.production, links, tokens, report)
     });
-    // The output census is self-checked along the branch (`compare_line_output`).
     complete &= report.attempt("producer ProductionLineOutput", |report| {
         compare_line_output_countries(frame, &saved.production, links, report)
     });
@@ -166,8 +162,6 @@ fn compare_design_templates(
     Ok(())
 }
 
-/// The game serializes the entire array, including inactive occurrences.
-/// The MIO bonus cache, dirty byte and native source-tree names are not saved.
 fn compare_modifiers(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -248,14 +242,6 @@ fn compare_modifiers(
     Ok(())
 }
 
-/// The save nests each surviving line under its producing country, even when
-/// it has no organisation or builds a foreign country's variant. A line's
-/// producer never changes: only the line's constructor writes its status
-/// link and only the status's constructor writes its country,
-/// and no function moves a line between statuses (a civil war's transfer
-/// copies variants, not lines). So every row of a line, however many, must
-/// name the country whose block holds it. Ended lines are absent from the save
-/// and cannot certify their recorded producer.
 fn compare_line_output_countries(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -316,10 +302,6 @@ fn compare_line_output_countries(
     Ok(())
 }
 
-/// The production writer writes each country's organisations in array order, keyed by their
-/// token, with the name override and icon always written and one
-/// `history` block per occupied history slot. The owning country and the
-/// constructor's owner link both compare with the enclosing country.
 fn compare_organisations(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -442,11 +424,6 @@ mod line_output;
 use line_output::LINE_OUTPUT_TABLES;
 pub use line_output::compare_line_output;
 
-/// The production writer saves the available-variant roster under
-/// `available_equipments` and the foreign-lease roster under
-/// `foreign_lease_equipments` only when it is nonempty. Both keep
-/// native order and repeats. The best-variant candidates (kind 2) are
-/// written by no serializer and are rebuilt on load, so they are only counted.
 fn compare_available_variants(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -532,8 +509,6 @@ fn compare_available_variants(
     Ok(())
 }
 
-/// The production writer writes the licence container in native order; a country whose
-/// container is absent is a malformed save, not an empty licence set.
 fn compare_licenses(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -591,8 +566,6 @@ fn compare_licenses(
     Ok(())
 }
 
-/// The licence container's second published array. The game writes every field
-/// unconditionally, so an omitted one is a malformed save rather than a default.
 fn compare_license_records(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -697,8 +670,6 @@ fn compare_license_records(
     Ok(())
 }
 
-/// The conveyor writer writes the queue in native order with the line vector
-/// nested inside each entry; the four captured tables are joined by handle.
 fn compare_deployment(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -738,7 +709,6 @@ fn compare_deployment(
             row.amount_raw,
         ));
     }
-    // Child rows are compared only through their line, so one without a line is reported here.
     let orphans: BTreeSet<_> = manpower
         .keys()
         .map(|&(line, _)| ("DeploymentManpower", line))
@@ -789,8 +759,6 @@ fn compare_deployment(
                 actual.template,
                 expected.template,
             );
-            // The deployment save writer always
-            // writes the stored name, including an empty prefix.
             let name_label = format!("{label}.name");
             let name = super::serialized_text(report, &name_label, &actual.name);
             equal(report, name_label, name, expected.name.as_slice());
@@ -842,9 +810,6 @@ fn compare_deployment(
                     "missing serialized closed flag",
                 ),
             }
-            // The game writes the country reference under token 0x3ABA
-            // only when it is positive, so an omitted tag proves the stored word
-            // is not positive and any positive stored word is a real difference.
             match (&actual.exile_country, &expected.government_in_exile_tag) {
                 (None, None) => {}
                 (Some(raw), Some(tag)) => {
@@ -958,9 +923,6 @@ fn compare_lines_of(
                 "missing serialized amount",
             ),
         }
-        // The name-member writer emits the order word only when
-        // it is nonzero, so an omitted one proves the stored word is exactly
-        // zero; the game's -1 for "no order" is always written.
         match expected.name_order {
             Some(order) => equal(
                 report,
@@ -975,9 +937,6 @@ fn compare_lines_of(
             ),
             None => {}
         }
-        // The game writes the override string under token 0x38e1 only
-        // when its stored length is nonzero, so an omitted override proves the
-        // captured bytes are empty.
         match expected.name_override.as_ref() {
             Some(saved) => {
                 name_field(
@@ -994,8 +953,6 @@ fn compare_lines_of(
             ),
             None => {}
         }
-        // The game writes token 0x3936 when the programmatic flag is set, saved as
-        // override_set_programmatically; an omitted one proves the flag is clear.
         match expected.name_override_programmatic {
             Some(saved) => equal(
                 report,
@@ -1010,7 +967,6 @@ fn compare_lines_of(
             ),
             None => {}
         }
-        // The game writes is_name_ordered as `no` only when the ordered flag is clear.
         equal(
             report,
             format!("{label}.custom_flag_a"),
@@ -1039,14 +995,12 @@ fn compare_lines_of(
             actual.max_training_raw,
             deployment.max_training.as_ref(),
         );
-        // The game omits the distributable priority at its default of one.
         equal(
             report,
             format!("{label}.priority"),
             actual.distributable_priority,
             deployment.priority.unwrap_or(1),
         );
-        // The game writes the halting reason only when its flag byte is set.
         match (actual.halting_reason_present, deployment.halting_reason) {
             (0, None) => {}
             (0, Some(saved)) => {
@@ -1098,8 +1052,6 @@ fn compare_lines_of(
                 );
                 continue;
             };
-            // The game opens the wrapper unconditionally but writes only
-            // entries whose count is strictly positive, so compare that subset.
             let actual: Vec<_> = actual.iter().filter(|(_, _, amount)| *amount > 0).collect();
             if actual.len() != expected.len() {
                 report.difference(
@@ -1130,17 +1082,11 @@ fn compare_lines_of(
         }
         match deployment.equipment.as_ref() {
             None => {
-                // The writer gates the wrapper on allocation presence, scanning
-                // the pool's allocation array rather than its variant entries.
-                // A zero allocation count therefore proves the omission; a
-                // nonzero one leaves it undecidable from this table alone.
                 if actual.equipment_allocations != 0 {
                     *undecidable_pools += 1;
                 }
             }
             Some(pool) => {
-                // The game can only allow the wrapper when some allocation
-                // row is nonzero, so a zero captured count contradicts the save.
                 if actual.equipment_allocations == 0 {
                     report.difference(
                         format!("{label}.equipment_allocations"),
@@ -1161,8 +1107,6 @@ fn compare_lines_of(
                         "missing serialized allow_zero_entries",
                     ),
                 }
-                // The pool writer omits zero-amount entries unless allow_zero is set,
-                // which shifts saved positions; compare the retained entries.
                 let retained: Vec<_> = captured
                     .iter()
                     .filter(|(_, _, amount)| *amount != 0 || actual.allow_zero_entries != 0)
@@ -1197,10 +1141,6 @@ fn compare_lines_of(
     Ok(())
 }
 
-/// The deployment writer writes `training`,
-/// `max_training` and `max_manpower` only when the stored word is strictly
-/// positive, so an omitted word proves the captured value is not positive and
-/// any positive captured value is a real difference.
 fn omitted_not_positive(
     report: &mut Report,
     label: &str,
@@ -1295,10 +1235,6 @@ fn compare_lines(
     Ok(())
 }
 
-/// The recorded efficiency against the saved per-factory array, averaged with
-/// The game's arithmetic over the first min(saved active factories, recorded
-/// maximum factories) entries. A saved array shorter than that count is a
-/// difference: the game would have read past it.
 fn compare_efficiency(
     actual: &ProductionLineRow,
     expected: &production::Line,
@@ -1445,9 +1381,7 @@ fn compare_division_equipment(
 
 #[derive(Clone, Copy)]
 enum TokenWriter {
-    /// Pass the token and its c_str through token formatting.
     Token,
-    /// Resolve the token, then emit its c_str directly as raw text.
     String,
 }
 
@@ -1494,8 +1428,6 @@ fn ordinals(values: impl IntoIterator<Item = u32>, label: &str) -> io::Result<()
 }
 
 fn name_field(report: &mut Report, label: &str, actual: &[u8], saved: Option<&[u8]>) {
-    // The variant writer gates on stored length; ordinary text output
-    // stops at the first NUL.
     equal(
         report,
         format!("{label}.present"),
@@ -1511,9 +1443,6 @@ fn name_field(report: &mut Report, label: &str, actual: &[u8], saved: Option<&[u
     }
 }
 
-/// The variant writer writes an active icon entry's string under `override_sprite`
-/// whatever its length (kinds 0 and 1), and nothing for an
-/// inactive one: presence follows the active byte, not the string.
 fn icon_field(report: &mut Report, label: &str, active: u8, icon: &[u8], saved: Option<&[u8]>) {
     equal(
         report,
@@ -1562,10 +1491,6 @@ fn compare_line_base(
             report.difference(format!("{label}.{name}"), captured, saved);
         }
     }
-    // The production writer emits speed only when nonzero. Its absent
-    // literal therefore establishes raw zero, unlike an unmapped field or a
-    // serializer predicate that has not been inspected. The line's produced
-    // progress is retired and not compared.
     for (name, captured, saved) in [
         ("cost", actual.cost_raw, expected.cost.raw),
         (
@@ -1581,9 +1506,6 @@ fn compare_line_base(
     }
 }
 
-/// A complete native pool supplies every row, in source order. The tuple is
-/// (native ordinal, full variant handle, signed fixed5 amount), directly mapped
-/// from the caller's typed replay row; it is not a second recorded row format.
 fn compare_pool(
     rows: impl IntoIterator<Item = (u32, u64, i64)>,
     expected: &production::Pool,
@@ -1602,8 +1524,6 @@ fn compare_pool(
         }
     }
 
-    // The pool writer always calls the unconditional boolean writer.
-    // A missing policy is malformed/incomplete save data, not a native default.
     let compare_zeros = expected.allow_zero_entries.ok_or_else(|| {
         invalid(format!(
             "{label} lacks the serialized allow_zero_entries field"
@@ -1626,11 +1546,6 @@ fn compare_pool(
         )));
     }
 
-    // Positional alignment turned a single removed entry into a variant and an
-    // amount difference for every later position. Align as a multiset on the
-    // full variant handle instead, keeping repeated handles in their own
-    // relative order so duplicate banks still match one for one, and report the
-    // surviving order relationship as its own single difference.
     let mut pending = BTreeMap::<u64, VecDeque<usize>>::new();
     for (index, entry) in saved.iter().enumerate() {
         pending.entry(entry.variant).or_default().push_back(index);

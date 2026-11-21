@@ -9,8 +9,6 @@ import WidgetState from '../../components/WidgetState';
 import { amountKey, amountText, managementStructure, validateNavalManagement } from './navalManagementData';
 import './navyManagement.css';
 
-/** The country's standing naval orders at the breakdown's hour, read only while opened: following, a panel pushed
- * when its lines change, its refit progress and hulls painted from their live cells; else asked for the hour. */
 export default function NavyManagement({ runtime, widget, track, tag, hour, following, active }: PartsRaceDetailProps) {
   const [open, setOpen] = useState(false);
   const head = useHeadProduct(runtime, { ...widget, trackIds: [track.id] }, 'naval-management', open ? { country: countryFromKey(tag) } : null,

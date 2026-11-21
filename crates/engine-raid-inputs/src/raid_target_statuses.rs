@@ -1,10 +1,3 @@
-//! The raid system's stored target statuses. Each 0x50-byte record holds a scope, a valid byte and
-//! persistent detection bytes.
-//!
-//! Target evaluation skips invalid targets and detection-required buildings
-//! the viewer has not detected. Detection uses byte `slot / 8` and bit
-//! `slot % 8`; a slot beyond the vector is undetected. Map buildings use
-//! the same bit. Detection is simulation state.
 
 use crate::{
     Memory, cbuilding, cbuilding_status, cgame_state,
@@ -15,13 +8,9 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// The raid system's target status pointer array.
 pub const TARGETS: usize = 0x08;
-/// The embedded target scope (`raid_location_scope_layout`).
 pub const SCOPE: usize = 0x08;
-/// Stored valid byte, serialized with token 0x4af6.
 pub const VALID: usize = 0x31;
-/// The detection byte vector (data, capacity, count).
 pub const DETECTED: usize = 0x38;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -37,11 +26,8 @@ pub struct Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub detected_len: usize,
-    /// Row and byte demand, including rows past either capacity.
     pub required_rows: usize,
     pub required_detected: usize,
-    /// Rows refused because their leader arm's captor is unproven; counted
-    /// in the truncation, never in the demand.
     pub refused_leaders: u32,
 }
 
@@ -51,8 +37,6 @@ pub struct Demand {
     pub detected: usize,
 }
 
-/// Header-only storage hint for the target roster and detection extents.
-/// Scope readers retain their own faults.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -106,8 +90,6 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
         len,
     }
 }
-/// Scope arms (building, province, state, leader reference, leader
-/// province), `valid` and the detection header.
 const TARGET_FIELDS: [RecordField; 3] = [
     field(SCOPE, 0, 0x28),
     field(VALID, 0x28, 1),
@@ -146,8 +128,6 @@ fn word32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
-/// One batch of pointed objects that must carry `vtable` at offset zero; the
-/// returned records hold the fields of `layout` for each nonzero pointer.
 fn identified<'b>(
     memory: &impl Memory,
     pointers: &[usize],
@@ -172,8 +152,6 @@ fn identified<'b>(
     Ok(out)
 }
 
-/// Every target and its detection vector are serialized. Worker storage grows from each original
-/// header before row publication.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -266,8 +244,6 @@ fn walk_buffer(
                 batch[index].valid = record[0x28];
                 batch[index].scope.leader_reference = word64(record, 0x18);
             }
-            // Each pointer arm, batched: gather the nonzero pointers at `offset`
-            // of the scope, read their records, and hand them back by row.
             let mut arm = |offset: usize,
                            layout: &RecordLayout<'_>,
                            stride: usize,
@@ -342,7 +318,6 @@ fn walk_buffer(
             if owners[..named].contains(&0) {
                 return Err("raid target building status null");
             }
-            // A zero type token is the row's null building arm.
             if building_rows[..named]
                 .iter()
                 .any(|&index| batch[index].scope.building_type == 0)
@@ -371,7 +346,6 @@ fn walk_buffer(
                 {
                     match craid_target::leader_captor(memory, base, scope.leader_reference) {
                         Ok(captor) => row.scope.leader_country = captor,
-                        // Refuse just this row: its target country is unproven.
                         Err(()) => {
                             unread += 1;
                             walk.refused_leaders += 1;
@@ -441,7 +415,6 @@ mod tests {
         put(bytes, at + 8, &count.to_le_bytes());
         put(bytes, at + 12, &count.to_le_bytes());
     }
-    /// Target 0 names a province and is invalid; target 1 a province building.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x2000];
         put(
@@ -569,8 +542,6 @@ mod tests {
         assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
     }
 
-    /// `targets` statuses: half name a province, half a province building;
-    /// every tenth carries a detection vector one bit per country slot.
     fn scaled(targets: usize, countries: usize) -> Vec<u8> {
         let width = countries.div_ceil(8);
         let pointers = 0x1000;

@@ -1,8 +1,3 @@
-//! A land or lake province's local effects: its weather record's modifier accumulator
-//! (`WeatherProvinces.modifiers`), every key the game summed there from the province's
-//! mud, temperature range, ground snow and the modifiers script and building damage added,
-//! described as the game's modifier list describes it, under `LOCAL_PROVINCE_MODIFIERS`.
-//! An empty description adds nothing.
 use std::collections::{BTreeMap, BTreeSet};
 
 use installed_content_localisation::localisation::Localisation;
@@ -17,10 +12,8 @@ tooltip_keys! {
     LOCAL_PROVINCE_MODIFIERS = "LOCAL_PROVINCE_MODIFIERS",
 }
 
-/// Fixed5 one, the describer's scale.
 const ONE: i64 = 100_000;
 
-/// The section `province` appends this hour.
 pub(super) fn effects(
     content: &Content,
     frame: &DecodedFrame,
@@ -34,7 +27,6 @@ pub(super) fn effects(
     )
 }
 
-/// The province's accumulator described alone, without the section heading.
 pub(super) fn accumulator(
     content: &Content,
     frame: &DecodedFrame,
@@ -55,7 +47,6 @@ pub(super) fn accumulator(
     plain(definitions, content.assets.as_ref(), &content.localisation, modifiers)
 }
 
-/// The section for one accumulator.
 #[cfg(test)]
 pub(super) fn describe(
     definitions: &Definitions<'_>,
@@ -76,7 +67,6 @@ fn section(icons: &dyn TextIcons, loc: &Localisation, text: String) -> Result<St
     ))
 }
 
-/// One accumulator's entries as the game's modifier list describes them.
 fn plain(
     definitions: &Definitions<'_>,
     icons: &dyn TextIcons,

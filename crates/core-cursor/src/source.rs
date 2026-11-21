@@ -16,7 +16,6 @@ pub enum Lookup<'a> {
     NotResident,
 }
 
-// These are local dictionary slots; identities themselves remain arbitrary-width Key varints.
 pub enum Selection {
     All {
         len: usize,
@@ -30,7 +29,6 @@ pub enum Selection {
 }
 
 impl Selection {
-    // Sources attach their typed, validated key handle once during worker restore.
     pub fn with_source<T: Send + Sync + 'static>(
         self,
         source: T,
@@ -97,7 +95,6 @@ pub trait ValueStore: Send + 'static {
     fn record(&self, slot: usize, staged: bool) -> RecordRef<'_>;
     fn load(&mut self, address: &Address) -> io::Result<crate::Record>;
     fn begin(&mut self, previous: &[usize]);
-    // Stage copies into reserved columns; failure leaves the committed state whole.
     fn stage(&mut self, slot: usize, record: RecordRef<'_>) -> io::Result<bool>;
     fn include_active_rates(&self, changed: &mut Buffer<usize>) -> bool;
     fn commit(&mut self, changed: &[usize]);
@@ -112,11 +109,9 @@ pub struct PageInfo {
     pub hours: Hours,
     pub records: usize,
     pub coverage: usize,
-    /// Directory upper bound; actual loaded charges are reported by CursorStats::window_bytes.
     pub resident_bytes: usize,
 }
 
-// Selection maps dictionary ids to cursor slots; a decoder applies it exactly once.
 pub trait PageDecoder: Send + Sync + 'static {
     fn decode<'a>(
         &'a self,
@@ -168,12 +163,10 @@ impl<D: PageDecoder> Page<D> {
     }
 }
 
-// One source is one published log and branch view; corrections are resolved before exposure.
 pub trait LogSource: Send + Sync + 'static {
     type State: ValueStore;
     type Decoder: PageDecoder;
 
-    // All selects live addresses at the cut plus ids named by scope; never the campaign dictionary.
     fn version_at(
         &self,
         keys: &KeyFilter,
@@ -181,7 +174,6 @@ pub trait LogSource: Send + Sync + 'static {
         scope: Hours,
         memory: &Memory,
     ) -> io::Result<Self::State>;
-    // Restore the nearest version and replay to the cut, including earlier splits of this hour.
     fn version_before_page(
         &self,
         keys: &KeyFilter,
@@ -189,7 +181,6 @@ pub trait LogSource: Send + Sync + 'static {
         scope: Hours,
         memory: &Memory,
     ) -> io::Result<Self::State>;
-    // Worker-only, streaming directory traversal: directory pages may do I/O and must obey memory.
     fn pages(
         &self,
         keys: &KeyFilter,
@@ -197,7 +188,6 @@ pub trait LogSource: Send + Sync + 'static {
         visit: &mut dyn FnMut(PageInfo) -> ControlFlow<()>,
     ) -> io::Result<()>;
     fn checkpoint_run(&self, page: PageInfo) -> u64;
-    // Directory resident_bytes includes decoded columns and indexes; read_page decompresses once on the worker.
     fn read_page(&self, page: PageInfo, memory: &Memory) -> io::Result<Page<Self::Decoder>>;
     fn coverage(
         &self,
@@ -205,7 +195,6 @@ pub trait LogSource: Send + Sync + 'static {
         visit: &mut dyn FnMut(Coverage) -> ControlFlow<()>,
     ) -> io::Result<()>;
 
-    // No I/O, allocations or owned changes: decode only this frame's span into reserved columns.
     fn merged_changes<'a>(
         &self,
         selection: &Selection,

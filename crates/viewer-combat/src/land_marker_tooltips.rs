@@ -1,4 +1,3 @@
-//! land combat marker hover, normal (non-debug) hover.
 use super::content::Content as StaticContent;
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
@@ -17,7 +16,6 @@ use viewer_foundation::{
 };
 use viewer_foundation::{map::visibility::Relations, table_access::rows, tooltip_text::Tooltip};
 
-// Localisation keys for the marker heading and outcome.
 tooltip_keys! {
     LAND_COMBAT_TOOLTIP_NO_INTEL = "LAND_COMBAT_TOOLTIP_NO_INTEL",
     LAND_COMBAT_TOOLTIP_ATTACKER = "LAND_COMBAT_TOOLTIP_ATTACKER",
@@ -31,9 +29,6 @@ tooltip_keys! {
     COMBAT_LAST_MORE_THAN_DAY = "COMBAT_LAST_MORE_THAN_DAY",
 }
 
-/// strict wrapped fixed5 comparisons. In an overflow where both
-/// tests hold, attacker membership wins; otherwise either membership makes
-/// the text relative to the viewer. Neutral viewers get the absolute side.
 fn outcome(scores: [i64; 2], member: [bool; 2]) -> (&'static str, i32) {
     let [attacker, defender] = scores;
     let aw = attacker > defender.wrapping_mul(120_000) / 100_000;
@@ -53,19 +48,15 @@ fn outcome(scores: [i64; 2], member: [bool; 2]) -> (&'static str, i32) {
     } else {
         COMBAT_UNDECIDED
     };
-    // Deliberately select the defender only when attacker-winning, rather
-    // than min(): signed/overflow branches preserve the native selection.
     let selected = if aw { defender } else { attacker };
     let fixed = if (selected as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
         selected.wrapping_mul(100_000) / 2_400_000
     } else {
         i64::from(u32::MAX)
     };
-    (key, super::fixed::round(fixed)) // Round, then keep the low signed 32 bits.
+    (key, super::fixed::round(fixed))
 }
 
-/// the game consumes the primary list in order, doing no sorting or
-/// deduplication here: the recorded list is the native country's set.
 pub(super) fn countries(
     ids: &[u32],
     name: &impl Fn(u32) -> Result<String, String>,
@@ -85,8 +76,6 @@ fn seen(
     member: [bool; 2],
     name: &impl Fn(u32) -> Result<String, String>,
 ) -> Result<String, String> {
-    // With no selected units, the selection text is empty but retains its newline.
-    // The viewer has no selected units or debug-tooltip flag.
     let mut text = String::from("\n");
     for (key, roster, ids) in [
         (
@@ -110,13 +99,12 @@ fn seen(
                 ("COUNTRIES", Argument::Text(&names)),
             ],
         )?);
-        text.push('\n'); // the game appends a literal LF after each side.
+        text.push('\n');
     }
     text.push_str(&outlook(icons, loc, scores, member)?);
     Ok(text)
 }
 
-/// The common outcome and duration tail.
 pub(super) fn outlook(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -148,7 +136,6 @@ pub(crate) fn hit(hits: &[super::Hit], point: [f32; 2]) -> Option<(u64, [f32; 4]
     }
 }
 
-// Primary or secondary membership; direct references resolve to the same country.
 pub(super) fn membership(
     sides: &LandCombatSideRow,
     viewer: u32,
@@ -177,7 +164,6 @@ pub(super) fn membership(
     ])
 }
 
-// either cached side engaged; unknown is not no-intel.
 pub(super) fn intel(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -190,7 +176,6 @@ pub(super) fn intel(
     }
 }
 
-/// The land marker hover of combat `id` for the viewing country `viewer`.
 pub fn build(
     static_content: &StaticContent,
     frame: &DecodedFrame,
@@ -301,7 +286,6 @@ pub fn build(
         Ok(std::mem::take(&mut text.body))
     })();
     match result {
-        // hover text construction writes only its third (delayed) output.
         Ok(body) => text.body = body,
         Err(why) => {
             text.refused.insert(format!("land marker {id}: {why}"), 1);

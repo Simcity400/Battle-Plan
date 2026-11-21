@@ -1,0 +1,11 @@
+# 0708. Capture shared supply edges once while retaining native order
+
+The supply network records each node and its immediate parent edge. Playback reconstructs capital paths through the shared parent graph under the game's walk limit. This avoids copying a full path for every hub. The native node index selects its weight, so the reader requires it to agree with the current array position. A parent-chain vertex with no corresponding node has its own marked row so that the path still resolves.
+
+A native null province is a result the game can use in its parent map. Keep the stored value when lookup returns null. Withhold a walk when a reached lookup faults or a nonnull result fails identity validation. Cache authenticated province pointers only for a matching province census and play session. Clear edge and endpoint observations for each walk. Matching source dependencies within that walk share the original read, while each output keeps its own row and path occurrence.
+
+Read the outer route map only at the first reached positive parent edge. A root-only or omitted node does not demand it. Nested lookups use native probing bounds and return the original absent result. A missing stored route can mean the game inserts a synthetic naval segment. A route break flushes and reverses the current land portion. Keep original node order, and append parent-only vertices before a single final ordering pass. Bounded lookahead can hint the already admitted source, but cannot bypass pointer and identity validation.
+
+Country shares are interleaved to spread heavy neighbouring networks. Selection happens by native country ID before dereferencing any country's supply objects. A selected country's rows agree with the whole walk. With limited output storage, retain original demand and stop when the next required row cannot fit. Train allocations retain a full reference handle and signed integer count. Resolve equipment identity through the recorded variant definition.
+
+[Node walk](../../crates/engine-native/src/supply_node.rs) · [Parent map](../../crates/engine-native/src/supply_parent_map.rs) · [Routes](../../crates/engine-native/src/supply_route.rs) · [Train entries](../../crates/engine-native/src/supply_train_entry.rs)

@@ -1,13 +1,3 @@
-//! Production spending (families 43 and 45): one producer's applied factory IC per design and
-//! purpose over the whole branch, as the Production writer's rows hold it (ProductionTotals beside
-//! its country row and coverage) with Rocket output as recorded, and its dockyard repair rates when
-//! asked (DockyardRepairRates). The reply names no hour: each total is its runs over the branch, so
-//! a widget reads any hour of it, the playhead's included, without asking again.
-//!
-//! A producer is the tag's holder (its raw id keys the derived rows). A design's total without a row
-//! is zero while its country row is shown; the country row not shown is not recorded, and from the
-//! hour the source's coverage says spending is unknown every total is unknown, with its reason.
-//! Each holder stretch starts its totals again: its first run breaks from the one before.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Product};
@@ -37,8 +27,6 @@ use runs::{Amount, Context, Coverage, Piece, either, pieces, read_at, union, unk
 
 pub struct ProductionSpending;
 
-/// Starts the key of an equipment type content does not resolve, before the recorded token's
-/// spelling (or the design's handle without one).
 pub const UNRESOLVED_MARK: &str = ":";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -51,13 +39,12 @@ fn invalid(what: impl Into<String>) -> io::Error {
 pub struct ProductionSpendingParams {
     pub branch_id: String,
     pub country: Country,
-    /// Also read the producer's dockyard repair rates.
+    #[doc = " Also read the producer's dockyard repair rates."]
     pub repairs: bool,
-    /// The window of hours asked ([`super::windows`]): running totals over its hours alone.
+    #[doc = " The window of hours asked ([`super::windows`]): running totals over its hours alone."]
     pub window: u32,
 }
 
-/// Why a spending amount is not known.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +63,6 @@ pub enum ProductionSpendingUnknown {
     RocketDesignUnreadable,
 }
 
-/// What a production tick's input was for.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -98,9 +84,6 @@ impl ProductionPurpose {
     }
 }
 
-/// Which arm an equipment type serves, from the engine's own classifiers of its effective category
-/// flags (`installed_content_core::equipment::Database::category`): the plane family is air, the ship
-/// family (convoys included) naval, everything else land.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -122,38 +105,35 @@ impl Domain {
     }
 }
 
-/// A variant's names as recorded at a read of the variant table; a new entry
-/// wherever a read changes them.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockVariantName {
-    /// The read these names are from; they hold until the next entry.
+    #[doc = " The read these names are from; they hold until the next entry."]
     pub first_hour: i32,
-    /// The variant's display name; null when content does not name it, or when
-    /// not known.
+    #[doc = " The variant's display name; null when content does not name it, or when"]
+    #[doc = " not known."]
     pub name: Option<String>,
-    /// False from an hour the variant's names stopped being known (a gap, or a due
-    /// read of the variant table that did not land) until the next entry.
+    #[doc = " False from an hour the variant's names stopped being known (a gap, or a due"]
+    #[doc = " read of the variant table that did not land) until the next entry."]
     pub known: bool,
-    /// The design's fingerprint as read then (`equipment::design_fingerprint`: its
-    /// name, modules and upgrade levels); null where not known. A saved variant
-    /// choice carries it, so a later branch's other design under the same handle
-    /// is never taken for it.
+    #[doc = " The design's fingerprint as read then (`equipment::design_fingerprint`: its"]
+    #[doc = " name, modules and upgrade levels); null where not known. A saved variant"]
+    #[doc = " choice carries it, so a later branch's other design under the same handle"]
+    #[doc = " is never taken for it."]
     pub design: Option<String>,
 }
 
-/// A running total over hours: fixed5, or why it is not known.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionSpendingRun {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Decimal string of the fixed5 total; null is unknown, never a partial sum.
+    #[doc = " Decimal string of the fixed5 total; null is unknown, never a partial sum."]
     pub total_raw: Option<String>,
     pub reason: Option<ProductionSpendingUnknown>,
-    /// The run starts another holder's or another stretch's totals: nothing is measured across it.
+    #[doc = " The run starts another holder's or another stretch's totals: nothing is measured across it."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub break_before: Option<bool>,
@@ -168,10 +148,10 @@ pub struct ProductionSpendingLeaf {
     pub name: Option<String>,
     pub domain: Option<Domain>,
     pub rocket: bool,
-    /// What the input was for; null for Rocket output, which records none.
+    #[doc = " What the input was for; null for Rocket output, which records none."]
     pub purpose: Option<ProductionPurpose>,
-    /// For input whose purpose was not recorded: the summed magnitudes of it, dated evidence that
-    /// grows and never cancels; empty when there never was any.
+    #[doc = " For input whose purpose was not recorded: the summed magnitudes of it, dated evidence that"]
+    #[doc = " grows and never cancels; empty when there never was any."]
     pub unproven: Vec<ProductionSpendingRun>,
     pub names: Vec<StockVariantName>,
     pub runs: Vec<ProductionSpendingRun>,
@@ -183,21 +163,19 @@ pub struct ProductionSpendingLeaf {
 pub struct ProductionPresenceRun {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Any line or Rocket output of the producer; null cannot certify emptiness.
+    #[doc = " Any line or Rocket output of the producer; null cannot certify emptiness."]
     pub present: Option<bool>,
-    /// The output read that found none, where present is false.
+    #[doc = " The output read that found none, where present is false."]
     pub empty_census_hour: Option<i32>,
 }
 
-/// One part of the dockyard repair rate: a repaired design's, or (`variant` null) what the game's
-/// repair selection does not place on a design.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepairRatePart {
     pub variant: Option<String>,
-    /// The design's equipment type, or its recorded token when content cannot resolve it; empty
-    /// for the unattributed part.
+    #[doc = " The design's equipment type, or its recorded token when content cannot resolve it; empty"]
+    #[doc = " for the unattributed part."]
     pub type_key: String,
     pub name: Option<String>,
     pub domain: Option<Domain>,
@@ -205,20 +183,17 @@ pub struct RepairRatePart {
     pub runs: Vec<ProductionSpendingRun>,
 }
 
-/// Dockyard output used for repairs, as rates (fixed5 IC a day) over the branch: an amount over
-/// hours is the sum of rate times hours over `denominator`, so parts and their total add exactly.
 #[derive(Clone, Debug, Default, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepairRates {
     pub denominator: u32,
     pub total: Vec<ProductionSpendingRun>,
-    /// The repaired designs' rates and the unattributed rest, which sum to the total wherever each
-    /// is known.
+    #[doc = " The repaired designs' rates and the unattributed rest, which sum to the total wherever each"]
+    #[doc = " is known."]
     pub parts: Vec<RepairRatePart>,
 }
 
-/// The hours of a day: the denominator of every repair amount.
 pub const REPAIR_DENOMINATOR: u32 = 24;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -228,9 +203,9 @@ pub struct ProductionSpendingReply {
     pub branch_id: String,
     pub tag: String,
     pub decimals: u8,
-    /// Hours either output was read, ascending.
+    #[doc = " Hours either output was read, ascending."]
     pub reads: Vec<i32>,
-    /// The hour each observation began: running totals count from it.
+    #[doc = " The hour each observation began: running totals count from it."]
     pub observations: Vec<i32>,
     pub equipment_observations: Vec<i32>,
     pub rocket_observations: Vec<i32>,
@@ -238,22 +213,22 @@ pub struct ProductionSpendingReply {
     pub rocket_reads: Vec<i32>,
     pub rocket_key: Option<String>,
     pub rocket_name: Option<String>,
-    /// One leaf per design and purpose, and per Rocket design.
+    #[doc = " One leaf per design and purpose, and per Rocket design."]
     pub leaves: Vec<ProductionSpendingLeaf>,
-    /// Every purpose and Rocket output.
+    #[doc = " Every purpose and Rocket output."]
     pub total: Vec<ProductionSpendingRun>,
-    /// Every purpose but refits, and Rocket output.
+    #[doc = " Every purpose but refits, and Rocket output."]
     pub total_without_refits: Vec<ProductionSpendingRun>,
-    /// Production lines alone, every purpose.
+    #[doc = " Production lines alone, every purpose."]
     pub equipment_total: Vec<ProductionSpendingRun>,
-    /// Production lines alone, every purpose but refits.
+    #[doc = " Production lines alone, every purpose but refits."]
     pub equipment_total_without_refits: Vec<ProductionSpendingRun>,
     pub rocket_total: Vec<ProductionSpendingRun>,
     pub production: Vec<ProductionPresenceRun>,
-    /// Asked with `repairs`: none otherwise.
+    #[doc = " Asked with `repairs`: none otherwise."]
     pub repairs: Option<RepairRates>,
     pub window: u32,
-    /// The hours the window holds of the timeline; first past last where it holds none.
+    #[doc = " The hours the window holds of the timeline; first past last where it holds none."]
     pub first_hour: i32,
     pub last_hour: i32,
     pub warnings: Vec<String>,
@@ -261,14 +236,12 @@ pub struct ProductionSpendingReply {
 
 dashboard_base::reply_warnings!(ProductionSpendingReply);
 
-/// One stretch of the timeline one holder held the tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Span {
     pub(crate) run: u32,
     pub(crate) first: i32,
     pub(crate) last: i32,
     pub(crate) id: u32,
-    /// Its totals start again: a stretch or holder before it.
     pub(crate) breaks: bool,
 }
 
@@ -284,7 +257,6 @@ pub(crate) fn spans(query: &Query<'_>, tag: &Country) -> Vec<Span> {
     out
 }
 
-/// Some columns of a table over a span, and where each sits in a step's cells.
 pub(crate) struct Read {
     pub(crate) history: History,
     at: Vec<usize>,
@@ -312,13 +284,11 @@ impl Read {
         }
     }
 
-    /// One key's cells as pieces over the span, `None` where its row is not shown.
     fn pieces<T: Clone + PartialEq>(&self, key: u128, span: &Span, mut value: impl FnMut(&Self, &[Cell]) -> T) -> Vec<Piece<Option<T>>> {
         pieces(self.steps(key).iter().map(|step| (step.hour, step.cells.as_deref().map(|cells| value(self, cells)))), span.first, span.last, None)
     }
 }
 
-/// A design's total row as the reply reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Row {
     spent: Option<i64>,
@@ -326,18 +296,14 @@ struct Row {
     unproven: Option<i64>,
 }
 
-/// A leaf's identity: Rocket or a line's, its design, and a line's purpose.
 type LeafKey = (bool, u64, Option<u8>);
 
-/// What one span reads of the producer.
 struct SpanRead {
     span: Span,
-    /// Whether production's own rows can be read, at each hour.
     lines: Vec<Piece<Context>>,
     rocket: Vec<Piece<Context>>,
     country: Vec<Piece<Option<(Option<i64>, Option<i64>)>>>,
     rows: BTreeMap<LeafKey, Vec<Piece<Option<Row>>>>,
-    /// Each line design's archetype token, the latest recorded.
     archetypes: BTreeMap<u64, u32>,
     equipment_reads: Vec<i32>,
     rocket_reads: Vec<i32>,
@@ -346,7 +312,6 @@ struct SpanRead {
     repairs: Option<RepairRead>,
 }
 
-/// One span's repair rates: the total row's rate and whether its split is known, and each part.
 struct RepairRead {
     total: Vec<Piece<Option<(Option<i64>, bool)>>>,
     parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>,
@@ -392,7 +357,6 @@ impl SpanRead {
             rows.insert((false, variant, Some(*key as u8)), row);
         }
 
-        // The world row (key 0) and the producer's designs, in one pass over the table.
         let rockets = Read::of(query, &span, TableId::RocketProductionOutput, &["spent_raw"], Keys::Ranges(&[(0, 0), (id << 64 | 1, id << 64 | u128::from(u64::MAX))]))?;
         let world: Vec<Piece<bool>> = rockets.pieces(0, &span, |_, _| ()).into_iter().map(|(first, last, row)| (first, last, row.is_some())).collect();
         let rocket_unknown = zip(&unknown_pieces(&run_rocket), &unknown_pieces(&own_rocket), either);
@@ -422,7 +386,6 @@ impl SpanRead {
         if rocket { &self.rocket } else { &self.lines }
     }
 
-    /// A leaf's running total in this span: zero where it has no row.
     fn amounts(&self, key: &LeafKey, cell: impl Fn(&Row) -> Option<i64>) -> Vec<Piece<Amount>> {
         let absent = [(self.span.first, self.span.last, None)];
         let rows = self.rows.get(key).map_or(&absent[..], Vec::as_slice);
@@ -433,12 +396,10 @@ impl SpanRead {
         })
     }
 
-    /// The producer's lines total, with refits or without.
     fn equipment(&self, refits: bool) -> Vec<Piece<Amount>> {
         zip(&self.lines, &self.country, |context, row| context.amount(row.map(|row| if refits { row.0 } else { row.1 }), ProductionSpendingUnknown::SpendingUnavailable))
     }
 
-    /// The producer's Rocket output: the sum of its designs'.
     fn rocket_total(&self) -> Vec<Piece<Amount>> {
         let mut total: Vec<Piece<Amount>> = self.rocket.iter().map(|&(first, last, context)| (first, last, context.amount(None, ProductionSpendingUnknown::SpendingUnavailable))).collect();
         for key in self.rows.keys().filter(|key| key.0) {
@@ -447,7 +408,6 @@ impl SpanRead {
         total
     }
 
-    /// Whether the producer had any output row, where its country row is shown.
     fn presence(&self) -> Vec<ProductionPresenceRun> {
         let held: Vec<(i32, i32)> = self.rows.values().flatten().filter(|piece| piece.2.is_some()).map(|piece| (piece.0, piece.1)).collect();
         let present = union(held, self.span.first, self.span.last);
@@ -495,7 +455,6 @@ impl RepairRead {
         })
     }
 
-    /// A part's rate: zero without a row where the split is known, unknown where it is not.
     fn part(&self, design: Option<u64>) -> Vec<Piece<Amount>> {
         let [(first, last, ())] = self.span();
         let absent = [(first, last, None)];
@@ -510,7 +469,6 @@ impl RepairRead {
     }
 }
 
-/// Pieces of amounts appended to `runs` as the reply's runs; the first breaks when `breaks`.
 fn append(runs: &mut Vec<ProductionSpendingRun>, pieces: &[Piece<Amount>], breaks: bool) {
     for (index, &(first_hour, last_hour, amount)) in pieces.iter().enumerate() {
         let (total_raw, reason) = match amount {
@@ -525,7 +483,6 @@ fn append(runs: &mut Vec<ProductionSpendingRun>, pieces: &[Piece<Amount>], break
     }
 }
 
-/// Every span's pieces of one value as the reply's runs.
 fn runs_of(spans: &[SpanRead], mut each: impl FnMut(&SpanRead) -> Vec<Piece<Amount>>) -> Vec<ProductionSpendingRun> {
     let mut runs = Vec::new();
     for span in spans {
@@ -534,7 +491,6 @@ fn runs_of(spans: &[SpanRead], mut each: impl FnMut(&SpanRead) -> Vec<Piece<Amou
     runs
 }
 
-/// What a design is named and typed as.
 #[derive(Clone, Debug)]
 pub(crate) struct Design {
     pub(crate) type_key: String,
@@ -543,7 +499,6 @@ pub(crate) struct Design {
     pub(crate) names: Vec<StockVariantName>,
 }
 
-/// The recorded content the names read, or why not.
 pub(crate) struct Content {
     pub(crate) catalogue: Option<Arc<Catalogue>>,
     pub(crate) units: Option<Arc<installed_content_core::equipment::Database>>,
@@ -574,7 +529,6 @@ impl Content {
         Self { catalogue, units }
     }
 
-    /// An archetype's key, name and arm through the content's equipment types.
     pub(crate) fn archetype(&self, spelling: &str) -> Option<(String, Option<String>, Domain)> {
         let units = self.units.as_ref()?;
         let ordinal = units.get(spelling)?;
@@ -592,9 +546,6 @@ impl Content {
     }
 }
 
-/// The designs `variants` (each with the archetype token its totals recorded, or 0) as named at
-/// `span`'s last hour: each design's definition, its type's spelling and its country's tags, the
-/// names held from the hour the span first holds the design, never before it existed.
 pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u32>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<HashMap<u64, Design>> {
     if variants.is_empty() {
         return Ok(HashMap::new());
@@ -713,13 +664,10 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     Ok(out)
 }
 
-/// The rows of one design among `rows` (ascending by design), none where the table was not read complete.
 fn of_variant<T>(rows: Option<&[T]>, variant: u64, key: impl Fn(&T) -> u64) -> Option<&[T]> {
     rows.map(|rows| &rows[rows.partition_point(|row| key(row) < variant)..rows.partition_point(|row| key(row) <= variant)])
 }
 
-/// The leaves of every span's rows: each leaf's runs in every span (zero where it had no row), its
-/// type and names from the spans it appears in.
 fn leaves(spans: &[SpanRead], named: &[HashMap<u64, Design>]) -> Vec<ProductionSpendingLeaf> {
     let keys: BTreeSet<LeafKey> = spans.iter().flat_map(|span| span.rows.keys().copied()).collect();
     keys.into_iter()
@@ -759,7 +707,6 @@ fn leaves(spans: &[SpanRead], named: &[HashMap<u64, Design>]) -> Vec<ProductionS
         .collect()
 }
 
-/// The repair rates of every span: the total and each part, named as the leaves are.
 fn repairs(spans: &[SpanRead], named: &[HashMap<u64, Design>]) -> RepairRates {
     let total = runs_of(spans, |span| span.repairs.as_ref().map_or_else(|| vec![(span.span.first, span.span.last, Amount::Unknown(ProductionSpendingUnknown::NotRecorded))], RepairRead::total));
     let designs: BTreeSet<Option<u64>> = spans.iter().filter_map(|span| span.repairs.as_ref()).flat_map(|repairs| repairs.parts.keys().copied()).collect();
@@ -792,8 +739,6 @@ fn repairs(spans: &[SpanRead], named: &[HashMap<u64, Design>]) -> RepairRates {
     RepairRates { denominator: REPAIR_DENOMINATOR, total, parts }
 }
 
-/// The one building content classifies as Rocket production: its key and localised name, or why
-/// it is not known.
 type RocketName = Result<(String, Option<String>), String>;
 
 fn rocket_name(buildings: &installed_content_core::buildings::Buildings, texts: Option<&dyn Texts>) -> RocketName {
@@ -811,7 +756,6 @@ fn rocket_name(buildings: &installed_content_core::buildings::Buildings, texts: 
     Ok(((*key).clone(), texts.and_then(|texts| texts.text(key))))
 }
 
-/// The Rocket source's name per catalogue, read once per source.
 #[derive(Default)]
 struct RocketNameCache(Option<(Arc<Catalogue>, RocketName)>);
 
@@ -832,8 +776,6 @@ fn sorted(hours: impl IntoIterator<Item = i32>) -> Vec<i32> {
     hours.into_iter().collect::<BTreeSet<_>>().into_iter().collect()
 }
 
-/// The reply for `params` on `query`'s timeline.
-/// The tag's spans cut to `first..=last`: one cut at its start no longer starts its totals afresh.
 fn spans_within(query: &Query<'_>, tag: &Country, (first, last): (i32, i32)) -> Vec<Span> {
     spans(query, tag)
         .into_iter()

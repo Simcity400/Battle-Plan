@@ -1,6 +1,5 @@
 .national-focus { display: flex; flex-direction: column; height: 100%; min-height: 0; container-type: inline-size; color: var(--text); }
 
-/* The current focus, pinned above the history. */
 .focus-now {
   position: relative; display: flex; align-items: center; gap: 12px; flex-shrink: 0; margin: 0 6px 6px; padding: 10px 14px 22px 10px;
   border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 3%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft);
@@ -15,8 +14,6 @@
 .focus-now-left strong { font-family: var(--font-display); font-size: calc(var(--font-size-display) * 1.57143); font-weight: 700; letter-spacing: -.02em; }
 .focus-now-left small { color: var(--muted); font-size: 0.6875rem; font-weight: 500; }
 .focus-progress { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text) 12%, transparent); }
-/* The fill scales and the knob's track (`i`, as wide as the bar) slides, both glided by the frame engine (`progressFill`,
-   `progressKnob`): a moving bar never lays out the page, and carries no transition. */
 .focus-progress > span {
   position: absolute; inset: 0; border-radius: 999px; background: var(--accent);
   transform-origin: left; transform: scaleX(0);
@@ -26,7 +23,6 @@
 .is-paused .focus-progress > span { background: var(--warning); box-shadow: none; }
 .is-paused .focus-progress > i { display: none; }
 
-/* History */
 .focus-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 6px; scrollbar-gutter: stable; }
 .focus-entry.is-unfinished .focus-row { cursor: default; }
 .focus-entry.is-unfinished .focus-row:hover { background: transparent; }
@@ -49,7 +45,6 @@
 .focus-label { display: grid; gap: 2px; min-width: 0; flex: 1; }
 .focus-label strong { font-size: 0.875rem; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
 .focus-label > span { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-/* A fading overlay under the row's content, not an animated background: the compositor runs it. */
 .focus-entry.is-newest .focus-row { isolation: isolate; }
 .focus-entry.is-newest .focus-row::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
   background: var(--accent-soft); opacity: 0; animation: focus-landed 1.6s var(--ease); }
@@ -59,8 +54,6 @@
 .focus-row:hover .focus-chevron { color: var(--text); }
 .focus-details[open] .focus-chevron { transform: rotate(180deg); }
 .focus-description { padding: 0 12px 12px 36px; animation: rise var(--t) var(--ease) both; }
-/* A completed row opens and closes by revealing its natural height while it fades, clipped to that height,
-   so the rows below glide instead of jumping and nothing paints over them. Reduced motion zeroes the durations. */
 .national-focus .focus-details { interpolate-size: allow-keywords; }
 .national-focus .focus-details::details-content {
   block-size: 0; overflow-y: clip; opacity: 0;
@@ -68,7 +61,6 @@
 }
 .national-focus .focus-details[open]::details-content { block-size: auto; opacity: 1; }
 .national-focus .focus-description { animation: none; }
-/* A description that arrives after its row opened grows into place the same way instead of stepping. */
 .national-focus .focus-description p { overflow-y: clip; transition: block-size var(--t-slow) var(--ease), margin-top var(--t-slow) var(--ease), opacity var(--t-slow) var(--ease); }
 @starting-style { .national-focus .focus-description p { block-size: 0; margin-top: 0; opacity: 0; } }
 .focus-duration { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.75rem; }

@@ -1,10 +1,3 @@
-//! Country authentication reused only within one measured capture.
-//!
-//! A direct `CCountry` roster census seeds exact reads of headers, pointer slots,
-//! links, vtables and identity words. The seed path cannot read country scalars.
-//! Each preparation discards all previous observations. Every consumer remains
-//! inside one capture, while nothing writes the simulation.
-//! This cache is not a synchronization mechanism or a cross-hour address cache.
 
 use engine_allocation::SharedBox;
 use std::cell::RefCell;
@@ -30,35 +23,23 @@ impl Entry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedStatus {
     Ready,
-    /// Allocate the suggested number of cells off the game thread before a
-    /// later callback. The current view delegates every read to its source.
     Capacity {
         required_cells: usize,
     },
-    /// No part of a failed or inconsistent census is used as cached memory.
     Unavailable {
         reason: &'static str,
     },
 }
 
-/// Reusable callback-owned storage, shared read-only with acquisition workers.
-/// No lease may remain in a queued row buffer after the acquisition barrier.
 pub struct Cache {
     entries: Box<[Entry]>,
-    // A negative filter only: passing still requires the exact entry lookup.
-    // It is rebuilt from successfully inserted keys during each preparation.
     filter: Box<[u64]>,
-    // Cheap rejection before the mixed hash. Collisions only cause extra exact
-    // lookups; this bitmap never supplies bytes or authenticates a country.
     front_filter: Box<[u64]>,
-    /// Filter bit count minus one; both filters share the power-of-two size.
     filter_mask: usize,
     lengths: u64,
     len: usize,
     observed_reads: usize,
     status: SeedStatus,
-    // Derived results only: no additional source bytes or callback lifetime.
-    // A nonzero length publishes the complete census after seed validation.
     roster: Box<[Option<ccountry::Country>]>,
     roster_len: usize,
     roster_base: usize,
@@ -68,10 +49,6 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Prepare one owned authentication snapshot before dispatching any readers.
-    /// Every previous lease must have been returned: refusing a busy snapshot
-    /// leaves its bytes and observations unchanged. Cloning the resulting owner
-    /// allocates nothing and does not extend any live game-pointer lifetime.
     pub fn prepare_shared<M: Memory>(
         storage: &mut SharedBox<Self>,
         source: &M,
@@ -84,9 +61,6 @@ impl Cache {
         Ok(SharedBox::clone(storage))
     }
 
-    /// Borrow the immutable observations from the current acquisition epoch.
-    /// The owner retains this snapshot until all dependent readers finish.
-    /// Every consumer must remain inside the quiescent hourly barrier.
     pub fn view<'a, M: Memory>(&'a self, source: &'a M) -> CountryMemory<'a, M> {
         CountryMemory {
             source,
@@ -94,8 +68,6 @@ impl Cache {
         }
     }
 
-    /// Reuse the authenticated roster while ordinary reads retain the native
-    /// path. The choice is compiled into each consumer, with no per-read probe.
     pub fn roster_view<'a, M: Memory>(&'a self, source: &'a M) -> CountryMemory<'a, M, false> {
         CountryMemory {
             source,
@@ -103,12 +75,6 @@ impl Cache {
         }
     }
 
-    /// Serve the snapshot's exact country bytes while every country
-    /// observation keeps the source's path: the roster and reserved root are
-    /// the source's, so a reader resolves each country as on the source.
-    /// The roster names an excluded alias of the reserved country as absent
-    /// ([`ccountry::AuthenticatedRoster`]); a reader that resolves such a
-    /// slot directly must keep reading its identity.
     pub fn bytes_view<'a, M: Memory>(&'a self, source: &'a M) -> CountryMemory<'a, M, true, false> {
         CountryMemory {
             source,
@@ -116,8 +82,6 @@ impl Cache {
         }
     }
 
-    /// Allocate off the game thread. Zero disables storage; other capacities
-    /// round up to a power of two for bounded, division-free lookup.
     pub fn try_with_capacity(cells: usize) -> std::io::Result<Self> {
         let cells = if cells == 0 {
             0
@@ -126,7 +90,6 @@ impl Cache {
                 .checked_next_power_of_two()
                 .ok_or_else(crate::allocation::oom)?
         };
-        // One rejection-filter bit per storage cell, rounded to its word width.
         let words = cells.div_ceil(u64::BITS as usize);
         Ok(Self {
             entries: crate::allocation::boxed_slice(crate::allocation::filled(
@@ -158,14 +121,8 @@ impl Cache {
         self.entries.len()
     }
 
-    /// Cells for one complete census of `slots` country slots, so the first
-    /// hour of a mod with tens of thousands of countries is already cached.
-    /// The result never falls below `minimum`; growth stays with the caller.
     pub fn cells_for_countries(slots: usize, minimum: usize) -> usize {
         slots
-            // Each slot reaches its pointer, vtable and identity plus links for object
-            // ID, physical slot and canonical slot. The two original headers remain
-            // independent observations.
             .saturating_mul(6)
             .saturating_add(2)
             .max(minimum)
@@ -173,8 +130,6 @@ impl Cache {
             .unwrap_or(usize::MAX)
     }
 
-    /// Owned entry/filter storage plus derived roster storage and context.
-    /// Excludes allocator metadata and the shared owner's count.
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(self.entries.as_ref())
             + std::mem::size_of_val(self.filter.as_ref())
@@ -190,10 +145,6 @@ impl Cache {
             + std::mem::size_of_val(&self.reserved)
     }
 
-    /// Forget every previous observation and perform one direct country census.
-    /// No allocation, retry, engine call or cross-callback observation is used.
-    /// A disabled result still supplies a transparent source-memory view; its
-    /// seed status must be reported separately from table outcomes.
     pub fn prepare<'a, M: Memory>(
         &'a mut self,
         source: &'a M,
@@ -224,8 +175,6 @@ impl Cache {
                     .checked_add(crate::cgame_state::COUNTRIES)
                     .and_then(|address| Array::read(&recording, address, 8))
                     .ok_or("country array unreadable or invalid");
-                // Publish actual slot zero before unrelated links can fail.
-                // These optional reads must not poison positive seed status.
                 let root = match country_array {
                     Ok(array) => ccountry::cached_reserved_observation(source, base, game_state)
                         .unwrap_or_else(|| {
@@ -252,8 +201,6 @@ impl Cache {
                     [country_array, links],
                 )?;
                 for slot in 1..countries.count() {
-                    // read_at is the same census before at's pure alias
-                    // filter. Retain aliases for resolve's canonical check.
                     let country = countries.read_physical_at(slot)?;
                     if let Some(entry) = recording.cache.borrow_mut().roster.get_mut(slot as usize)
                     {
@@ -266,9 +213,6 @@ impl Cache {
         if let Err(reason) = result {
             self.status = SeedStatus::Unavailable { reason };
         } else if matches!(self.status, SeedStatus::Capacity { .. }) {
-            // Total reads are a conservative upper bound on distinct keys even
-            // after storage/probes are exhausted. Also grow on a collision-only
-            // miss; capacity growth belongs to the caller's off-thread work.
             let required = self
                 .observed_reads
                 .saturating_mul(2)
@@ -292,8 +236,6 @@ impl Cache {
     }
 
     fn hash(address: usize, len: usize) -> usize {
-        // Mix the complete address: native object alignment must not turn the
-        // many country vtables or identity words into one collision chain.
         let mut key = (address as u64) ^ (len as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         key ^= key >> 30;
         key = key.wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -313,9 +255,6 @@ impl Cache {
 
     #[inline]
     fn front_filter_bit(&self, address: usize, len: usize) -> (usize, u64) {
-        // No multiplication or division on the frequent non-country miss.
-        // Fold alignment bits as well as higher address bits; distribution
-        // affects performance only. Insertion and lookup use the same key.
         self.filter_bit(address ^ (address >> 3) ^ (address >> 17) ^ (len << 9))
     }
 
@@ -336,12 +275,8 @@ impl Cache {
         self.find_possible(address, len)
     }
 
-    // Keep the exact probe loop out of every monomorphized scalar reader,
-    // while allowing non-country reads to reject without a cross-crate call.
     #[inline(never)]
     fn find_possible(&self, address: usize, len: usize) -> Option<&Entry> {
-        // Possible front-filter hits retain the original mixed-hash filter
-        // and full exact address/length comparison, including probe bounds.
         let hash = Self::hash(address, len);
         let (word, bit) = self.filter_bit(hash);
         if self.filter[word] & bit == 0 {
@@ -406,7 +341,6 @@ impl Cache {
     }
 }
 
-/// This type is private so callers cannot accidentally seed arbitrary fields.
 struct RecordingMemory<'a, M> {
     source: &'a M,
     cache: RefCell<&'a mut Cache>,
@@ -478,7 +412,6 @@ impl<M: Memory> Memory for RecordingMemory<'_, M> {
     }
 }
 
-/// A single preparation's read-only view, borrowed within the hourly barrier.
 pub struct CountryMemory<'a, M, const CACHED_BYTES: bool = true, const ROSTER: bool = true> {
     source: &'a M,
     cache: &'a Cache,
@@ -563,9 +496,6 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
         layout: &crate::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        // Fixed-layout gathers intentionally remain fresh source reads. This
-        // preserves their single guarded batch; country authentication stays
-        // in the current callback's separately seeded snapshot.
         self.source.copy_records(sources, layout, destination)
     }
 
@@ -591,8 +521,6 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
             self.cache.find(addresses[index], destinations[index].len())
         });
         if hits.iter().all(Option::is_none) {
-            // Common non-country batches keep exactly one original guarded
-            // scatter call, with the original destinations and failure prefix.
             return self.source.copy_scattered(addresses, destinations);
         }
         let copied = if destinations
@@ -615,8 +543,6 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
                 }),
             )
         };
-        // Hits after a failed miss remain untouched, just as later native spans
-        // do. A partially copied failed miss is never counted as complete.
         for index in 0..copied {
             if let Some(entry) = hits[index] {
                 destinations[index].copy_from_slice(&entry.bytes[..entry.len]);

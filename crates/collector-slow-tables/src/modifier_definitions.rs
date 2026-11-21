@@ -1,8 +1,3 @@
-//! The engine's modifier definition table: every registered key's script-name
-//! token, localisation keys, display flags, category mask, feature selector and
-//! precision. Static: read on full hours, and on any hour whose table header
-//! (data pointer, count) differs from the last one the game thread saw, which
-//! only a database loader's registration changes.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
@@ -44,8 +39,6 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<native::Row>,
     text: Arena<u8>,
-    /// Set by the game thread before dispatch when the table header changed
-    /// since the last hour; kept across `reset` and replaced every hour.
     pub header_changed: bool,
 }
 
@@ -55,7 +48,6 @@ impl Captured {
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, scheduled, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0, text: 0 })
     }
@@ -162,8 +154,6 @@ mod tests {
             captured.capture(&memory, 0, 0x1000, hour, false);
             assert_eq!(captured.outcomes()[0], skipped, "{hour}");
         }
-        // Full hour, or a moved header: the (unreadable) table is walked and
-        // its failure is published, never a carried forward skip.
         for (force_full, header_changed) in [(true, false), (false, true)] {
             captured.header_changed = header_changed;
             captured.capture(&memory, 0, 0x1000, 5, force_full);
@@ -172,7 +162,6 @@ mod tests {
                 Outcome::Unavailable { reason } if reason != SKIPPED_REASON
             ));
         }
-        // A failed job on a scheduled read reports the job failure.
         captured.header_changed = true;
         captured.fail_capture(5, false, "worker stopped");
         assert_eq!(

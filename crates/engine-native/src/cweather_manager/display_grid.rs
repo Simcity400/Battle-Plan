@@ -1,15 +1,6 @@
-//! Live snow/mud display-grid boundary, including attachment after a full rebuild.
-//! A changed province queues its cells clamped one short of the grid, so an ordinary
-//! weather change never reaches the last row and column; only a whole-grid mark
-//! publishes every cell, and only that can move the boundary. No load history is
-//! needed. The refresh token is stored before copying and rebuilding; the queued
-//! count clears only after job joins. Read the token, require no whole-grid mark
-//! queued, select and copy, require it again, then compare the token. Equality alone
-//! can admit a running rebuild. Never retry or wait.
 
 use super::*;
 
-/// Positive live map dimensions quartered for the display grid.
 pub fn display_grid_size(memory: &impl Memory, base: usize) -> Result<[u32; 2], &'static str> {
     let map = engine_sites::at(base, crate::cmap::SINGLETON_RVA)
         .and_then(|address| read::<u64>(memory, address))
@@ -37,7 +28,6 @@ pub fn display_grid_size(memory: &impl Memory, base: usize) -> Result<[u32; 2], 
 pub struct DisplayGrid {
     pub size: [u32; 2],
     pub refresh_interval: i64,
-    /// An equality token only, never a replay or viewer animation clock.
     pub refresh_identity: u64,
     manager: usize,
     planes: [usize; 2],
@@ -52,9 +42,6 @@ impl DisplayGrid {
             .ok_or("weather display edge length overflow")
     }
 
-    /// Planar snow then mud. Each plane is the right column (south first,
-    /// excluding its northern corner), then the complete northern row.
-    /// Only these bytes are read; no whole grid or pre-attach baseline.
     pub fn read_edges(&self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
         let required = self.edge_bytes()?;
         let output = output
@@ -112,9 +99,6 @@ fn read_display_identity(memory: &impl Memory, manager: usize) -> Result<u64, &'
         .map_err(|_| "weather display refresh identity unreadable")
 }
 
-/// Refuses a queue that can still move the boundary: a whole-grid mark, which holds the
-/// last column's first index at that same position. A changed province never queues a
-/// last-column cell, however often its box repeats cells, so any other queue is interior.
 fn require_boundary_unqueued(
     memory: &impl Memory,
     manager: usize,
@@ -127,10 +111,6 @@ fn require_boundary_unqueued(
     if queued <= corner {
         return Ok(());
     }
-    // The queue's storage (pointer and capacity, one read) must hold the count read above, the
-    // entry is read only inside it, and the storage is read again unchanged: a count that ran
-    // ahead of the storage it was read with, or storage moved during the read, refuses rather
-    // than reads past it.
     let storage = || movement_field::<[u8; 12]>(memory, manager, DISPLAY_WORK_QUEUE).map_err(|_| "weather display work queue unreadable");
     let held = storage()?;
     let pointer = u64::from_le_bytes(held[..8].try_into().unwrap());
@@ -152,8 +132,6 @@ fn require_boundary_unqueued(
     Ok(())
 }
 
-/// Exact header read for an already authenticated manager (the raw copy keeps
-/// its successful root gather instead of observing that pointer/vtable twice).
 pub fn read_display_grid(
     memory: &impl Memory,
     base: usize,
@@ -163,8 +141,6 @@ pub fn read_display_grid(
     let extent = (size[0] as usize)
         .checked_mul(size[1] as usize)
         .ok_or("weather display grid extent overflow")?;
-    // Keep these separate and ordered: the timestamp is stored before work
-    // finishes, so selecting it in a header batch cannot certify completion.
     let refresh_identity = read_display_identity(memory, manager)?;
     require_boundary_unqueued(memory, manager, size)?;
     let fields = FieldBatch::gather(
@@ -285,7 +261,6 @@ mod tests {
             grid.read_edges(&source, &mut edges[..7]),
             Err("weather display edge capacity exhausted")
         );
-        // Counts come from the live map, including odd-sized mod rasters.
         let mut odd = Source::grid();
         odd.put(0x2800 + crate::cmap::WIDTH, &18_i32.to_le_bytes());
         odd.put(0x2800 + crate::cmap::HEIGHT, &10_i32.to_le_bytes());
@@ -332,8 +307,6 @@ mod tests {
         let reads = source.reads.borrow();
         let token = (0x2000 + DISPLAY_REFRESH_IDENTITY, 8);
         let work = (0x2000 + DISPLAY_WORK_COUNT, 4);
-        // The grid's size is read first; then the token and the work count open the read,
-        // before any edge cell of the planes (0x3000 to 0x4000).
         let opened = reads.iter().position(|&read| read == token).expect("the token is read");
         assert_eq!(&reads[opened..opened + 2], &[token, work]);
         assert!(reads[..opened].iter().all(|&(address, _)| !(0x3000..0x4000).contains(&address)), "no edge before the token: {reads:?}");
@@ -359,8 +332,6 @@ mod tests {
             }
             source
         };
-        // Changed provinces queue interior cells only, repeating the cells their boxes
-        // share, so the count can pass the grid's six cells and the boundary still reads.
         for entries in [&[1][..], &[0, 1, 1, 0, 1], &[0, 1, 0, 1, 1, 0, 0]] {
             let source = queued(entries);
             let reader = Reader::with_manager(&source, 0, 0x2000).unwrap();
@@ -372,7 +343,6 @@ mod tests {
                 .unwrap();
             assert_eq!(edges, [2, 3, 4, 5, 22, 23, 24, 25]);
         }
-        // A whole-grid mark queues every index in order; only it reaches the last column.
         let mark = queued(&[0, 1, 2, 3, 4, 5]);
         let reader = Reader::with_manager(&mark, 0, 0x2000).unwrap();
         assert_eq!(
@@ -386,8 +356,6 @@ mod tests {
                 .iter()
                 .any(|&(address, _)| (0x3000..0x3200).contains(&address))
         );
-        // A count past the capacity it was read with (a header torn while the queue grows)
-        // refuses without reading an entry past the storage.
         let mut torn = queued(&[0, 1, 0, 1, 1, 0, 0]);
         torn.put(0x2000 + DISPLAY_WORK_CAPACITY, &4_i32.to_le_bytes());
         let reader = Reader::with_manager(&torn, 0, 0x2000).unwrap();

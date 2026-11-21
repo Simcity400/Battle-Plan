@@ -1,9 +1,3 @@
-//! A table its producer writes while it reads the store's other tables ([`Store::lend`]): the
-//! table leaves the store for the producer's run, a new row goes straight in as it is set, and the
-//! cells a set changes of an older row wait, they alone, until the table is landed
-//! ([`Store::land`]). Landing gives the hour's log and the unit exactly what [`super::TableChanges`]
-//! would have had from the same rows set in key order: new rows at the slots key order gives them,
-//! changed cells in key order, deletes last. A row set and deleted in one hour keeps its set.
 
 use super::{Flags, ListPage, ListPolicy, PAGE, Store, Strings, TableState, TableView, Value, label, log_push, past_slots, value_of};
 use crate::{
@@ -12,37 +6,27 @@ use crate::{
 };
 use std::io;
 
-/// An older row's cell as a set changed it.
 enum Changed {
     Value(Value<'static>),
     List(Box<[u8]>),
 }
 
-/// A table lent to its producer ([`Store::lend`]).
 pub struct Lent {
     table: usize,
     state: TableState,
     kinds: Vec<Kind>,
-    /// The slot count at the lend, which an undo restores.
     slots: u32,
-    /// The table held no row at the lend: every row it holds is new.
     empty: bool,
-    /// The new rows' slots in the order set, ascending; not kept when `empty`.
     born: Vec<u32>,
-    /// The new rows' keys ascend in the order set, the last one's held.
     ordered: bool,
     last: Option<u128>,
-    /// The slots of rows set since the lend.
     set: Flags,
-    /// Older rows' cells a set changed: slot, column and the cell now.
     changed: Vec<(u32, u16, Changed)>,
     deletes: Vec<u128>,
-    /// A set or delete named the table.
     named: bool,
     scratch: Vec<u8>,
 }
 
-/// A lent table taken back, its hour not yet landed ([`Store::land`]).
 pub struct Landing {
     table: usize,
     empty: bool,
@@ -55,7 +39,6 @@ pub struct Landing {
 }
 
 impl Landing {
-    /// A set or delete named the table this hour.
     pub fn named(&self) -> bool {
         self.named
     }
@@ -70,20 +53,14 @@ impl Lent {
         &self.kinds
     }
 
-    /// The cells of older rows the sets since the lend changed.
     pub fn changed(&self) -> usize {
         self.changed.len()
     }
 
-    /// The table as its producer wrote it so far: its older rows as the hour began, its new rows
-    /// as set.
     pub fn view<'a>(&'a self, strings: &'a Strings) -> TableView<'a> {
         TableView::new(&self.state, &self.kinds, strings)
     }
 
-    /// Row `key` holds `cells`, one per column, `None` not recorded: a new row is written at the
-    /// lowest free slot, a cell an older row holds equal is nothing. False, and nothing written,
-    /// when `key` was set since the lend.
     pub fn set<'c>(&mut self, key: u128, cells: impl IntoIterator<Item = Option<Cell<'c>>>) -> io::Result<bool> {
         self.named = true;
         let Self { table, state, kinds, set, changed, scratch, born, empty, ordered, last, .. } = self;
@@ -128,13 +105,11 @@ impl Lent {
         Ok(true)
     }
 
-    /// The table holds no row `key` once landed, unless the hour sets it.
     pub fn delete(&mut self, key: u128) {
         self.named = true;
         self.deletes.push(key);
     }
 
-    /// The table as it was lent: every row set since gone, and nothing to land.
     pub fn undo(&mut self) -> io::Result<()> {
         let born = if self.empty { self.state.live.ones().collect() } else { std::mem::take(&mut self.born) };
         for slot in born {
@@ -150,7 +125,6 @@ impl Lent {
 }
 
 impl TableState {
-    /// The rows at `slots`, ascending, moved among those slots so their keys ascend with them.
     fn order(&mut self, slots: &[u32]) -> io::Result<()> {
         let _label = label("store: rows ordered");
         let mut by_key: Vec<u32> = (0..slots.len() as u32).collect();
@@ -171,7 +145,6 @@ impl TableState {
         Ok(())
     }
 
-    /// The live rows at `a` and `b` trade slots.
     fn swap_rows(&mut self, a: u32, b: u32, scratch: &mut (Vec<u8>, Vec<u8>)) -> io::Result<()> {
         let (key_a, key_b) = (self.keys.get(a), self.keys.get(b));
         if let Some(index) = &mut self.index {
@@ -194,7 +167,6 @@ impl TableState {
 }
 
 impl super::ColumnState {
-    /// The cells at `a` and `b`, both below the slot count, trade places, recorded or not.
     fn swap_cells(&mut self, a: u32, b: u32, policy: ListPolicy, scratch: &mut (Vec<u8>, Vec<u8>)) -> io::Result<()> {
         let (recorded_a, recorded_b) = (self.recorded(a), self.recorded(b));
         match self {
@@ -245,9 +217,6 @@ impl super::ColumnState {
 }
 
 impl Store {
-    /// Lends table `table` to its producer, which writes it ([`Lent::set`]) while the store's
-    /// other tables are read; the store holds an empty table in its place until
-    /// [`Self::take_back`]. Refused for a log and for a table keeping its last complete read.
     pub fn lend(&mut self, table: usize) -> io::Result<Lent> {
         let kinds = self.kinds.get(table).ok_or_else(|| invalid(format!("No table {table}")))?.clone();
         if self.tables[table].log {
@@ -275,16 +244,12 @@ impl Store {
         })
     }
 
-    /// The table `lent` holds back in the store as its producer wrote it, its hour landed next
-    /// ([`Self::land`]).
     pub fn take_back(&mut self, lent: Lent) -> Landing {
         let Lent { table, state, empty, born, ordered, set, changed, deletes, named, .. } = lent;
         self.tables[table] = state;
         Landing { table, empty, born, ordered, set, changed, deletes, named }
     }
 
-    /// What `landing`'s producer wrote, given to the hour's log and the unit as if each row had
-    /// been set through [`Self::table`] in key order, then its deletes but of rows it set.
     pub fn land(&mut self, landing: Landing) -> io::Result<()> {
         let Landing { table, empty, born, ordered, set, mut changed, mut deletes, named } = landing;
         if !named {

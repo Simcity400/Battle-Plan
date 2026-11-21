@@ -10,7 +10,6 @@ const request: ProductRequest = { sourceId: 'same-source', revision: 'same-revis
   params: { branchId: 'same-branch', tag: 'ONE' } };
 const frames = new Map<number, FrameRequestCallback>();
 let frameIds = 0;
-// Replies settle, then the frame they landed in commits.
 const settle = async () => {
   await new Promise<void>(resolve => setImmediate(resolve));
   for (const [id, frame] of [...frames]) { frames.delete(id); frame(0); }
@@ -61,8 +60,6 @@ test('actual product and window hooks scope ready, late and retried results to t
   };
   const host = globalThis as typeof globalThis & { __productClientHooks?: typeof fixture };
   host.__productClientHooks = fixture;
-  // Replace only React's hook dispatcher. Product loading, envelope validation,
-  // per-client caches, promise callbacks and cancellation all remain production code.
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'product-hook-client-fixture', enforce: 'pre',
       transform(source, id) {
@@ -72,7 +69,6 @@ test('actual product and window hooks scope ready, late and retried results to t
           assert.notEqual(hooked, source, `${path} imports its hooks from React`);
           return hooked;
         }
-        // Outside a widget frame.
         if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
           "import { createContext } from 'react'; const { useEffect, useState } = globalThis.__productClientHooks; const useContext = () => null;");
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
@@ -112,7 +108,7 @@ test('actual product and window hooks scope ready, late and retried results to t
         const ready = render(a.client);
         if (outcome === 'data') assert.deepEqual(owners(ready), requests.map(() => 'A'));
         else assert.equal(ready.error?.message, 'Previous client failed');
-        absent(render(b.client)); // Must mask A even before the old effect is cleaned up.
+        absent(render(b.client));
         fixture.commit(); await settle();
         assert.equal(b.calls.length, requests.length);
         absent(render(b.client));
@@ -120,7 +116,7 @@ test('actual product and window hooks scope ready, late and retried results to t
         await settle();
         assert.deepEqual(owners(render(b.client)), requests.map(() => 'B'));
         if (mode === 'windows') {
-          ready.retry(); // A's old retry cannot clear/restart B's held windows.
+          ready.retry();
           assert.deepEqual(owners(render(b.client)), requests.map(() => 'B'));
           fixture.commit(); await settle();
           assert.equal(b.calls.length, requests.length);
@@ -142,7 +138,7 @@ test('actual product and window hooks scope ready, late and retried results to t
         for (const call of b.calls) call.fail();
         await settle(); absent(render(a.client));
         if (mode === 'windows') {
-          firstA.retry(); // A's first visit cannot mutate a later A visit either.
+          firstA.retry();
           absent(render(a.client)); fixture.commit(); await settle();
           assert.equal(a.calls.length, requests.length * 2);
           assert.ok(a.calls.slice(requests.length).every(call => !call.signal.aborted));

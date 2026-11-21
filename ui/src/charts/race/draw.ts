@@ -1,7 +1,4 @@
 import { fillHatched } from '../hatch.ts';
-/** Canvas drawing for the race: hairline value gridlines with
- * their labels under the plot, bars with a 4 px rounded tip and a square baseline,
- * segments split by a surface seam, hatched parts and the corner date. */
 import { font } from '../draw.ts';
 import type { ChartTokens } from '../tokens';
 import type { RaceLayout, RaceRow } from './race';
@@ -11,27 +8,19 @@ import { textWidth } from '../textWidth.ts';
 const crisp = (value: number) => Math.round(value) + 0.5;
 const INSET_SHARE = .5;
 const OUTER_ALPHA = .35;
-/** The rounded tip, as style A draws it. */
 export const TIP_RADIUS = 4;
-/** Room between a bar's tip and its value label. */
 export const VALUE_GAP = 8;
-/** A flag in the label column: 21 × 14 px, 8 px from the edge. */
 export const FLAG = { x: 8, width: 21, height: 14 } as const;
-/** Where the name starts, after the flag. */
 export const NAME_X = FLAG.x + FLAG.width + 7;
-/** Room after the widest name, and the name column's least width. */
 export const NAME_PAD = 12;
 export const MIN_LABEL = 72;
-/** Room kept right of the widest value label. */
 export const VALUE_PAD = 6;
 
 const tickLabels = new WeakMap<(value: number, ticks: readonly number[]) => string, { key: string; text: string[] }>();
 
-/** Hairline gridlines at the value ticks, labelled under the plot. */
 export function drawRaceGrid(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, min: number, max: number,
   format: (value: number, ticks: readonly number[]) => string): void {
   const ticks = raceTicks(layout, min, max);
-  // The same ticks keep their labels: an easing axis rarely moves them.
   const key = ticks.join(',');
   let held = tickLabels.get(format);
   if (held?.key !== key) tickLabels.set(format, held = { key, text: ticks.map(tick => format(tick, ticks)) });
@@ -51,8 +40,6 @@ export function drawRaceGrid(ctx: CanvasRenderingContext2D, layout: RaceLayout, 
   ctx.restore();
 }
 
-/** A bar's outline from its baseline at `x`: square there, a rounded tip at the
- * other end, to the right (`width` > 0) or to the left (`width` < 0). */
 export function barPath(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius = TIP_RADIUS): void {
   const size = Math.abs(width);
   const r = Math.max(0, Math.min(radius, size / 2, height / 2));
@@ -70,11 +57,6 @@ export function barPath(ctx: CanvasRenderingContext2D, x: number, y: number, wid
 
 export { fillHatched } from '../hatch.ts';
 
-/** One row's bar: its segments stacked as signed values (`barParts`), positive
- * ones right of the baseline and negative ones left of it, each solid then hatched
- * away from zero; each side is clipped to one outline with a rounded tip, and a
- * surface seam divides the segments. Returns the right end of the bar (the baseline
- * when nothing lies right of it), where the value label goes. */
 export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, row: RaceRow, min: number, max: number): number {
   const centre = rowCentre(layout, row.y);
   const top = centre - layout.thickness / 2;
@@ -82,7 +64,6 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
   const base = x(0);
   const parts = barParts(drawnWidths(row));
   const extent = barExtent(drawnWidths(row));
-  // One solid part from the baseline: its outline filled, the same pixels as the clipped path.
   if (parts.length === 1 && !parts[0]!.hatched && !row.item.inset && (parts[0]!.low === 0 || parts[0]!.high === 0)) {
     const end = x(parts[0]!.low === 0 ? parts[0]!.high : parts[0]!.low);
     if (Math.abs(end - base) >= 0.01) {
@@ -105,7 +86,6 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
       const color = row.item.segments[part.segment].color;
       if (part.hatched) fillHatched(ctx, from, top, width, layout.thickness, color, 4, 1.5);
       else { ctx.fillStyle = color; ctx.fillRect(from, top, width, layout.thickness); }
-      // A seam where one segment meets another, never at the baseline.
       const seam = side > 0 ? from : from + width;
       if (Math.abs(seam - base) > 0.5 && !(part.hatched && parts.some(other => other.segment === part.segment && !other.hatched))) {
         ctx.fillStyle = tokens.surface;
@@ -128,8 +108,6 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
   return x(rowExtent(row).high);
 }
 
-/** The moment shown as a large, faint date in the plot's lower right corner, under
- * the bars (the race widgets' date overlay, off by default). */
 export function drawDateOverlay(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, text: string): void {
   const size = Math.max(tokens.fontSize.title, Math.min(64, (layout.right - layout.left) / 6, (layout.view.bottom - layout.view.top) / 3));
   ctx.save();
@@ -142,7 +120,6 @@ export function drawDateOverlay(ctx: CanvasRenderingContext2D, layout: RaceLayou
   ctx.restore();
 }
 
-/** `text` broken at spaces into lines no wider than `width` by `measure`; a word wider than `width` is a line of its own. */
 export function wrapText(text: string, width: number, measure: (text: string) => number): string[] {
   const lines: string[] = [];
   let line = '';
@@ -155,7 +132,6 @@ export function wrapText(text: string, width: number, measure: (text: string) =>
   return lines;
 }
 
-/** Why a race has no bar, centred in its view and wrapped to its width, never squeezed onto one line. */
 export function drawRaceEmpty(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, text: string): void {
   const width = layout.right - layout.left, step = Math.round(tokens.fontSize.body * 1.4);
   ctx.save();

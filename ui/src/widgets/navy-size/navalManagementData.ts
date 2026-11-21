@@ -19,19 +19,16 @@ export function validateNavalManagement(value: unknown): NavalManagementReply {
   return reply;
 }
 
-/** What renders the panel: its sections and lines; the amounts are painted. */
 export const managementStructure = (reply: NavalManagementReply) => JSON.stringify([reply.sections.map(section => [section.key, section.title,
   section.lines.map(line => [line.text, line.amount && [line.amount.row, line.amount.column, line.amount.of, line.amount.unit]])]), reply.warnings]);
 
 export const amountKey = (amount: NavalManagementAmount) => liveKey(amount.row, amount.column);
 
-/** A fixed5 amount as the panel writes it: five decimals, as the game's raw value. */
 export function fixedText(raw: string | number): string {
   const value = BigInt(typeof raw === 'number' ? Math.trunc(raw) : raw), negative = value < 0n, magnitude = negative ? -value : value;
   return `${negative ? '-' : ''}${magnitude / 100000n}.${(magnitude % 100000n).toString().padStart(5, '0')}`;
 }
 
-/** An amount's text: its live value where its cell holds one, else the reply's, else "Unavailable"; a hull out of its maximum. */
 export function amountText(values: LiveValues<number>, key: string, reply: NavalManagementReply | undefined): string {
   const held = reply?.sections.flatMap(section => section.lines).find(line => line.amount && amountKey(line.amount) === key)?.amount;
   if (!held) return '';

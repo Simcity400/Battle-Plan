@@ -45,7 +45,6 @@ fn attach_outcome_retains_typed_rollback_before_reference_rebuilding() {
     );
     fail_flushes(2);
     round.publish();
-    // Experience/fuel/politics consume this route before building references.
     let (outcome, report) = installation::capture(attach_outcome);
     assert!(outcome.unwrap().is_err());
     let failure = report.failure.unwrap();
@@ -57,8 +56,6 @@ fn attach_outcome_retains_typed_rollback_before_reference_rebuilding() {
     assert!(failure.cause.contains("restored bytes remain unflushed"));
 }
 
-/// A worker held inside `site`, a stub that jumps to itself, until its target
-/// is rewritten to `original`.
 struct Held {
     site: usize,
     worker: Option<std::thread::JoinHandle<usize>>,
@@ -85,7 +82,6 @@ impl Held {
             worker: Some(worker),
         }
     }
-    /// Let the worker out and put the site's bytes back as they were.
     fn release(mut self) {
         let target = self.site + 11;
         let flush = || {
@@ -102,11 +98,6 @@ impl Held {
     }
 }
 
-/// Two families under one census and suspension: a thread inside one site
-/// of the first holds that whole family back (nothing of it written, not
-/// ready), while the second publishes; each gets the outcome its own
-/// publication would have given. Two families' own publications took two
-/// suspensions.
 #[test]
 fn shared_publication_holds_only_the_family_a_thread_is_in() {
     let _guard = lock();
@@ -140,8 +131,6 @@ fn shared_publication_holds_only_the_family_a_thread_is_in() {
     assert_eq!(unsafe { invoke(first) }, 7);
     assert_eq!(unsafe { invoke(other) }, 19);
     held.release();
-    // Once the thread left, the held family publishes; the other, already
-    // enabled, is verified again in the same suspension.
     let before = suspensions();
     {
         let mut groups = [
@@ -154,8 +143,6 @@ fn shared_publication_holds_only_the_family_a_thread_is_in() {
     }
     assert_eq!(suspensions() - before, 1);
     assert_eq!(unsafe { invoke(first) }, 19);
-    // Restoring both together; then nothing is left to write and no
-    // suspension is taken.
     let before = suspensions();
     {
         let mut groups = [
@@ -189,8 +176,6 @@ fn shared_publication_holds_only_the_family_a_thread_is_in() {
     assert_eq!(unsafe { invoke(other) }, 7);
 }
 
-/// A failed instruction-cache flush restores every family written in the
-/// shared publication, each reporting the failure as its own would.
 #[test]
 fn a_failed_shared_flush_restores_every_written_family() {
     let _guard = lock();
@@ -224,10 +209,6 @@ fn a_failed_shared_flush_restores_every_written_family() {
     assert_eq!(unsafe { invoke(second) }, 7);
 }
 
-/// A round: the collect pass records each taking-part family's publication
-/// (not ready), one suspension publishes them, and the report pass answers
-/// each family's own call with its outcome; a publication the round did not
-/// record publishes on its own.
 #[test]
 fn a_round_publishes_recorded_families_once_and_reports_each() {
     let _guard = lock();
@@ -235,7 +216,6 @@ fn a_round_publishes_recorded_families_once_and_reports_each() {
     let (first, first_hook) = hook_at(&code, 0, original as *const () as usize);
     let (second, second_hook) = hook_at(&code, 64, original as *const () as usize);
     let (late, late_hook) = hook_at(&code, 128, original as *const () as usize);
-    // Both passes reach the same families, one after the other.
     let families = std::cell::RefCell::new([vec![first_hook], vec![second_hook]]);
     let late_family = std::cell::RefCell::new(vec![late_hook]);
     let before = suspensions();
@@ -256,7 +236,6 @@ fn a_round_publishes_recorded_families_once_and_reports_each() {
                     (outcome, take_reported_ticks().is_some())
                 })
                 .collect();
-            // Not recorded: published on its own, in its own suspension.
             let late = Hook::set_family_enabled_shared(&mut late_family.borrow_mut(), true);
             (reports, late, take_reported_ticks())
         },
@@ -269,7 +248,6 @@ fn a_round_publishes_recorded_families_once_and_reports_each() {
     for site in [first, second, late] {
         assert_eq!(unsafe { invoke(site) }, 19);
     }
-    // Outside a round every publication is its own.
     assert_eq!(
         Hook::set_family_enabled_shared(&mut families.borrow_mut()[0], false),
         Ok(true)
@@ -296,7 +274,6 @@ fn a_round_publishes_recorded_families_once_and_reports_each() {
     }
 }
 
-/// The protection of the page holding `site`, as `VirtualQuery` reports it.
 fn protection_at(site: usize) -> u32 {
     let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
     assert_ne!(
@@ -312,13 +289,6 @@ fn protection_at(site: usize) -> u32 {
     region.Protect
 }
 
-/// Two families with sites on one execute-read page restored in one detach
-/// round, one of whose page-protection restores fails. That family reports
-/// the failure, as its own publication would; the other still restores and
-/// reports success, and the shared page ends execute-read whichever family
-/// refused: nothing reopens a page after the restores, so the restore that
-/// succeeded leaves it with its saved protection, and no family that
-/// reports success leaves its page writable.
 #[test]
 fn a_detach_round_restores_a_shared_page_when_one_familys_restore_fails() {
     let _guard = lock();
@@ -336,7 +306,6 @@ fn a_detach_round_restores_a_shared_page_when_one_familys_restore_fails() {
     assert_eq!(first_family[0].page_protection, PAGE_EXECUTE_READ);
     let protection =
         || -> Result<bool, String> { Err("failed to restore hook-page protection".into()) };
-    // The first family's restore refuses, then the later family's.
     for (skip, refused) in [(0, 0), (1, 1)] {
         for family in [&mut first_family, &mut later_family] {
             assert_eq!(Hook::set_family_enabled(family, true), Ok(true));
@@ -373,10 +342,6 @@ fn a_detach_round_restores_a_shared_page_when_one_familys_restore_fails() {
     }
 }
 
-/// A family whose verification fails after the shared flush reports that
-/// failure, as its own publication would, and keeps its executable storage;
-/// every other family of the round is still written, verified and reported
-/// on its own merits, never skipped.
 #[test]
 fn a_shared_verification_failure_refuses_only_its_own_family() {
     let _guard = lock();
@@ -390,7 +355,6 @@ fn a_shared_verification_failure_refuses_only_its_own_family() {
             Group::new(&mut first_family, true),
             Group::new(&mut later_family, true),
         ];
-        // After a successful flush, the first site loses its jump.
         publish_groups(&mut groups, || {
             let flushed = real_flush();
             unsafe { ptr::write(first as *mut u8, 0x90) };
@@ -406,7 +370,6 @@ fn a_shared_verification_failure_refuses_only_its_own_family() {
     }
     assert!(first_family[0].needs_flush, "storage retained for detach");
     assert_eq!(unsafe { invoke(later) }, 19);
-    // Put the jump back so the first family restores as written.
     unsafe { ptr::write(first as *mut u8, 0xe9) };
     for family in [&mut first_family, &mut later_family] {
         assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
@@ -415,11 +378,6 @@ fn a_shared_verification_failure_refuses_only_its_own_family() {
     assert_eq!(unsafe { invoke(later) }, 7);
 }
 
-/// [`a_shared_verification_failure_refuses_only_its_own_family`] in a detach
-/// round: a family whose restored bytes fail verification after the shared
-/// flush reports that failure and stays unrestored (its executable storage
-/// kept), while the other family is restored and reports success, never
-/// skipped. The next round retries the refused family on its own merits.
 #[test]
 fn a_detach_verification_failure_refuses_only_its_own_family() {
     let _guard = lock();
@@ -436,7 +394,6 @@ fn a_detach_verification_failure_refuses_only_its_own_family() {
             Group::new(&mut first_family, false),
             Group::new(&mut later_family, false),
         ];
-        // After a successful flush, the first site's jump opcode is back.
         publish_groups(&mut groups, || {
             let flushed = real_flush();
             unsafe { ptr::write(first as *mut u8, 0xe9) };
@@ -456,8 +413,6 @@ fn a_detach_verification_failure_refuses_only_its_own_family() {
     );
     assert!(!later_family[0].is_enabled());
     assert_eq!(unsafe { invoke(later) }, 7);
-    // Once the site holds its original bytes again, the next round restores
-    // the refused family; the other has nothing left to write.
     unsafe { ptr::write(first as *mut u8, 0x90) };
     {
         let mut groups = [
@@ -476,8 +431,6 @@ fn a_detach_verification_failure_refuses_only_its_own_family() {
     assert_eq!(unsafe { invoke(later) }, 7);
 }
 
-/// The attach collect/report boundary, with many ordinary families and a
-/// mixed tap family, takes one suspension and attributes its hold once.
 #[test]
 fn attach_many_families_and_taps_share_one_measured_suspension() {
     let _guard = lock();
@@ -538,9 +491,6 @@ fn attach_many_families_and_taps_share_one_measured_suspension() {
     );
 }
 
-/// A family that publishes its own hooks and then sub-families through plain
-/// publications, with a step between that waits on the first outcome, takes
-/// one suspension in attach; each publication reports its own outcome.
 #[test]
 fn attach_takes_one_suspension_for_a_family_of_several_publications() {
     let _guard = lock();
@@ -690,7 +640,7 @@ fn attach_snapshot_and_preparation_refusals_leave_later_families_untouched() {
         let mut middle = vec![middle_hook];
         let mut later = vec![later_hook];
         if preparation {
-            middle[0].site = 0; // VirtualProtect refuses before writing.
+            middle[0].site = 0;
         } else {
             unsafe { ptr::write((middle_site + 15) as *mut u8, 0xcc) };
         }
@@ -967,14 +917,11 @@ fn detach_recording_allocation_failure_leaves_only_that_family_to_itself() {
         let mut round = Round::collect().unwrap();
         let [first, middle, later] = &mut families;
         assert_eq!(Hook::set_family_enabled_shared(first, false), Ok(false));
-        // Leave no spare capacity, so recording the next family must allocate.
         super::RECORDED.with_borrow_mut(Vec::shrink_to_fit);
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(Hook::set_family_enabled_shared(middle, false), Ok(false));
         });
         assert_eq!(Hook::set_family_enabled_shared(later, false), Ok(false));
-        // Unlike attach, the families recorded around the failure still
-        // restore together.
         assert_eq!(round.publish().families, 2);
         for family in families.iter_mut() {
             assert_eq!(Hook::set_family_enabled_shared(family, false), Ok(true));

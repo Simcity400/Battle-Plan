@@ -1,5 +1,3 @@
-//! Presentation metadata for an opened recording and the shared frame checks
-//! every product uses.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -232,7 +230,6 @@ fn copy_vec<T, U>(values: &[T], mut copy: impl FnMut(&T) -> io::Result<U>) -> io
     Ok(result)
 }
 
-/// Branch ranges, gaps and each branch's first readable country catalogue.
 pub fn read(
     replay: &Arc<Replay>,
     path: &Path,
@@ -249,8 +246,6 @@ pub fn read_resident(
     read_from(replay, path, cancelled, None, &|_| false)
 }
 
-/// Refresh the recording's metadata and catalogue only from the blocks not `read` before.
-/// Previously observed catalogues do not reread hours.
 pub fn read_append(
     replay: &Arc<Replay>,
     path: &Path,
@@ -362,7 +357,6 @@ fn read_from(
         }) {
             continue;
         }
-        // Skip gaps and incomplete country tables until a readable block establishes the catalogue.
         for block in replay
             .index
             .iter()
@@ -372,7 +366,6 @@ fn read_from(
             let mut catalogue = Catalogue::default();
             let mut player_country_id = None;
             let mut observed = None;
-            // Only the tables the catalogue reads, up to its first complete country table.
             let read = replay.visit_blocks(&[block], &CATALOGUE_TABLES, |_, _, decoded| {
                 check_cancel(cancelled)?;
                 validate_campaign(decoded, replay)?;
@@ -475,10 +468,6 @@ fn damage(
     warnings.warn(&reason)
 }
 
-/// The terminal marker is separate from gaps: an unknown failed hour has none.
-/// Warnings about the game build, once the installed game's tables are loaded: a recording
-/// of another build, an installed build this release does not recognise, and every table
-/// withheld on it.
 pub fn build_warnings(replay: &Replay) -> Vec<String> {
     use engine_executable::{build, executable_tables};
     let installed = executable_tables::is_initialized().then(executable_tables::get);
@@ -517,7 +506,6 @@ pub fn partial_recording(
     }))
 }
 
-/// Lists terminal metadata without reading or inflating recorded frame blocks.
 pub fn read_partial_recording(path: &Path) -> io::Result<Option<PartialRecording>> {
     Replay::read_partial(path)?
         .as_ref()
@@ -546,15 +534,10 @@ pub fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32
     Ok(slot)
 }
 
-/// The canonical slot a raw country link id names, when the recorded links name
-/// it. Recorded tables name countries by raw link id; every product resolves
-/// them through this.
 pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
     link_slot_in(&replay_frame::frame::Rowset::Decoded(links), raw)
 }
 
-/// [`link_slot`] of any frame's links, a walk's views among them; a link that cannot be
-/// built is one the hour does not hold.
 pub fn link_slot_in(
     links: &replay_frame::frame::Rowset<'_, CountryLinkRow>,
     raw: u32,
@@ -576,12 +559,6 @@ pub fn link_slot_in(
     slot
 }
 
-/// Each raw country link id's tag this hour, for a scan over a branch's hours.
-/// Rebuilt only when country tags, slots or links change; balance-only updates
-/// keep the mapping. The tables are named by identity, which cannot match a
-/// later allocation and does not hold their rows, so a later hour's update is
-/// never copied for them. A link whose country has no tag, or a tag that is not
-/// UTF-8, names no country.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LinkTags {
@@ -591,7 +568,6 @@ pub struct LinkTags {
     from: Option<ReadFrom>,
 }
 
-/// The country tables last read, and each country's slot and tag then.
 #[derive(Clone)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 struct ReadFrom {
@@ -603,8 +579,6 @@ struct ReadFrom {
 
 impl ReadFrom {
     fn tags(&self) -> HashMap<u32, String> {
-        // Raw aliases use the canonical slot's current tag, even when the
-        // Countries row's own raw id is absent from the recorded link table.
         let slots: HashMap<u32, &[u8]> = self
             .slots
             .iter()
@@ -620,8 +594,6 @@ impl ReadFrom {
     }
 }
 
-/// Each country's canonical slot and tag, and each raw link's slot, that
-/// [`LinkTags`] were built from.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LinkProjection {
     slots: Vec<(u32, Vec<u8>)>,
@@ -629,10 +601,7 @@ pub struct LinkProjection {
 }
 
 impl LinkTags {
-    /// Bytes the tags' allocations hold, about: each tag by raw link, and the
-    /// slots and links they were read from.
     pub fn heap_bytes(&self) -> usize {
-        // A hash table's buckets: at most seven eighths full, a control byte each.
         let table = |capacity: usize, entry: usize| capacity * 8 / 7 * (entry + 1);
         table(self.tags.capacity(), size_of::<(u32, String)>())
             + self.tags.values().map(String::capacity).sum::<usize>()
@@ -647,9 +616,6 @@ impl LinkTags {
             })
     }
 
-    /// Reads this hour's country tables: `Ok(true)` when the tags were rebuilt,
-    /// `Ok(false)` when their country identities are unchanged, and an error when
-    /// either table is not complete (tags stay held; the next complete read rebuilds).
     pub fn update(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
         let (countries, links) = match country_tables(frame) {
             Ok(tables) => tables,
@@ -684,8 +650,6 @@ impl LinkTags {
         Ok(rebuilt)
     }
 
-    /// [`Self::update`] of any frame's tables, a walk's views among them: the countries' and
-    /// links' identity fields read, then compared with those the tags were built from.
     pub fn update_tables<F: replay_frame::frame::Tables + ?Sized>(
         &mut self,
         frame: &F,
@@ -718,8 +682,6 @@ impl LinkTags {
         }
     }
 
-    /// Rebind the same country/link join from runtime current operands. Incomplete
-    /// inputs leave tags held but invalidate reuse, exactly as `update` does.
     pub fn update_projected(
         &mut self,
         countries: Option<&CountryKeys>,
@@ -754,9 +716,6 @@ impl LinkTags {
         Ok(true)
     }
 
-    /// The country projection the tags were last built from, for state saved
-    /// beside them: an update after [`LinkTags::from_projection`] compares
-    /// against it as a continued scan compares against its last read.
     pub fn projection(&self) -> Option<LinkProjection> {
         self.from.as_ref().map(|from| {
             let mut links: Vec<_> = from
@@ -772,7 +731,6 @@ impl LinkTags {
         })
     }
 
-    /// Tags built from a saved [`LinkTags::projection`].
     pub fn from_projection(projection: LinkProjection) -> Self {
         let from = ReadFrom {
             countries: None,
@@ -786,7 +744,6 @@ impl LinkTags {
         }
     }
 
-    /// The tag a raw link id names, if any.
     pub fn get(&self, raw: u32) -> Option<&String> {
         let tag = self.tags.get(&raw);
         if tag.is_none() && raw != 0 {
@@ -810,14 +767,11 @@ impl LinkTags {
         tag
     }
 
-    /// Every raw link id and its tag.
     pub fn iter(&self) -> impl Iterator<Item = (&u32, &String)> {
         self.tags.iter()
     }
 }
 
-/// Each country's id, slot and tag in table order: all that country identity
-/// reads from Countries, whose balances change it every hour.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryKeys(
@@ -837,7 +791,6 @@ impl CountryKeys {
         )
     }
 
-    /// [`Self::read`] of any frame's rows, each holding at least its slot and tag.
     pub fn read_in(countries: replay_frame::frame::Rowset<'_, CountryRow>) -> io::Result<Self> {
         let mut keys = Vec::with_capacity(countries.len());
         for row in countries.iter() {
@@ -847,7 +800,6 @@ impl CountryKeys {
         Ok(Self::from_keys(keys))
     }
 
-    /// Each country's id, slot and tag already read, in native table order.
     pub fn from_keys(keys: Vec<(u32, u32, Vec<u8>)>) -> Self {
         Self(
             keys,
@@ -856,14 +808,12 @@ impl CountryKeys {
         )
     }
 
-    /// Borrow retained id, canonical slot and tag operands in native table order.
     pub fn iter(&self) -> impl Iterator<Item = (u32, u32, &[u8])> {
         self.0
             .iter()
             .map(|(id, slot, tag)| (*id, *slot, tag.as_slice()))
     }
 
-    /// Bytes the keys' allocations hold: the list and each tag.
     pub fn heap_bytes(&self) -> usize {
         self.0.capacity() * size_of::<(u32, u32, Vec<u8>)>()
             + self
@@ -873,7 +823,6 @@ impl CountryKeys {
                 .sum::<usize>()
     }
 
-    /// Whether `countries` hold these keys.
     pub fn same(&self, countries: &[CountryRow]) -> bool {
         self.0.len() == countries.len()
             && self.0.iter().zip(countries).all(|((id, slot, tag), row)| {
@@ -882,8 +831,6 @@ impl CountryKeys {
                 *id == row.id && *slot == row.canonical_slot && *tag == row.tag
             })
     }
-    /// [`Self::same`] of any frame's rows, each holding at least its slot and tag; a row that
-    /// cannot be built differs.
     pub fn same_in(&self, countries: replay_frame::frame::Rowset<'_, CountryRow>) -> bool {
         self.0.len() == countries.len()
             && self.0.iter().zip(countries.iter()).all(|((id, slot, tag), row)| {
@@ -895,8 +842,6 @@ impl CountryKeys {
             })
     }
 
-    /// Whether the previous hour's key projection still holds after these
-    /// recorded row changes. Snapshots and identity edits compare normally.
     pub fn same_changes(
         &self,
         countries: &[CountryRow],
@@ -905,9 +850,6 @@ impl CountryKeys {
         self.kept_changes(countries.len(), delta) || self.same(countries)
     }
 
-    /// Whether one consecutive hour's delta proves these identity operands
-    /// unchanged, without walking the keys. Callers delaying their comparison
-    /// must retain every failed proof until they compare the full projection.
     pub fn kept_changes(
         &self,
         country_count: usize,
@@ -945,13 +887,10 @@ impl CountryKeys {
     }
 }
 
-/// One raw link's canonical slot only when every row agrees. True aliases
-/// remain valid; a contradictory raw link cannot name any country safely.
 pub fn link_slots(links: &[CountryLinkRow]) -> HashMap<u32, u32> {
     link_slots_of(links.iter().map(|link| (link.id, link.canonical_slot)))
 }
 
-/// [`link_slots`] of any frame's links, each holding at least its slot.
 pub fn link_slots_in(
     links: replay_frame::frame::Rowset<'_, CountryLinkRow>,
 ) -> io::Result<HashMap<u32, u32>> {
@@ -963,7 +902,6 @@ pub fn link_slots_in(
     Ok(link_slots_of(pairs))
 }
 
-/// [`link_slots`] of each link's raw id and canonical slot.
 pub fn link_slots_of(links: impl IntoIterator<Item = (u32, u32)>) -> HashMap<u32, u32> {
     let mut slots = HashMap::new();
     let mut ambiguous = std::collections::HashSet::new();
@@ -981,17 +919,12 @@ pub fn link_slots_of(links: impl IntoIterator<Item = (u32, u32)>) -> HashMap<u32
     slots
 }
 
-/// A tag's country hour by hour, as (canonical slot, country id): whether this
-/// hour goes on from the previous one, the same country one hour later. A gap,
-/// an hour without the country or another holder of the tag breaks it.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct IdentityTrack {
     last: Option<((u32, u32), i32)>,
 }
 
 impl IdentityTrack {
-    /// Extend the known holder through authenticated unchanged hours. Callers
-    /// close at a gap with `step(None, hour)` before observing its next holder.
     pub fn advance(&mut self, hour: i32) {
         if let Some((_, frontier)) = &mut self.last {
             *frontier = (*frontier).max(hour);
@@ -1007,21 +940,14 @@ impl IdentityTrack {
     }
 }
 
-/// What complete Countries and CountryLinks tables say of a tag this hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaggedCountry<'a> {
-    /// The first row with the tag whose identity the links resolve, with its
-    /// canonical slot, as every per-country product reads it.
     Found(&'a CountryRow, u32),
-    /// No row has the tag: no country holds it this hour.
     Absent,
-    /// Rows have the tag, but the links resolve none of them: which country
-    /// holds it, and so anything about it, is unknown, never absent.
     Unresolved,
 }
 
 impl<'a> TaggedCountry<'a> {
-    /// The country when found; absent and unresolved alike give none.
     pub fn found(self) -> Option<(&'a CountryRow, u32)> {
         match self {
             Self::Found(country, slot) => Some((country, slot)),
@@ -1030,8 +956,6 @@ impl<'a> TaggedCountry<'a> {
     }
 }
 
-/// The country recorded under `tag`, told apart from no country holding it and
-/// from one whose identity the links cannot resolve.
 pub fn tagged_country<'a>(
     countries: &'a [CountryRow],
     links: &[CountryLinkRow],
@@ -1053,9 +977,6 @@ pub fn tagged_country<'a>(
         .unwrap_or(TaggedCountry::Unresolved)
 }
 
-/// The country in canonical slot `slot` this hour: the first row in it the links resolve, told
-/// apart from no row in the slot and from rows the links cannot resolve, as [`tagged_country`]
-/// tells a tag's.
 pub fn slotted_country<'a>(
     countries: &'a [CountryRow],
     links: &[CountryLinkRow],
@@ -1072,9 +993,6 @@ pub fn slotted_country<'a>(
         .map_or(TaggedCountry::Unresolved, |country| TaggedCountry::Found(country, slot))
 }
 
-/// Every tag's [`TaggedCountry`] this hour in one pass over the rows, each as
-/// [`tagged_country`] gives it, for a product that reads every country at once.
-/// Tags are the recorded bytes.
 pub fn tagged_countries<'a>(
     countries: &'a [CountryRow],
     links: &[CountryLinkRow],
@@ -1093,8 +1011,6 @@ pub fn tagged_countries<'a>(
     tagged
 }
 
-/// The same lineage lookup using a caller's raw-link index, for an hourly product
-/// that already aggregates other tables by slot. Each recorded row is visited once.
 pub fn tagged_countries_indexed<'a>(
     countries: &'a [CountryRow],
     slots: &HashMap<u32, u32>,
@@ -1123,7 +1039,6 @@ pub fn tagged_countries_indexed<'a>(
     tagged
 }
 
-/// The tables the catalogue reads from each branch's first frames.
 const CATALOGUE_TABLES: [TableId; 4] = [
     TableId::Campaign,
     TableId::Countries,
@@ -1131,8 +1046,6 @@ const CATALOGUE_TABLES: [TableId; 4] = [
     TableId::LocalPlayer,
 ];
 
-/// The local player's slot; no player when the table is not complete. Only an
-/// allocation failure is an error.
 fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> io::Result<Option<u32>> {
     let players = match frame.complete::<tables::LocalPlayer>() {
         Ok(players) => players,
@@ -1147,7 +1060,6 @@ fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> io::Result<Opt
         .and_then(|country| link_slot(links, country)))
 }
 
-/// Identical campaign guard to Replay::seek, including intermediate frames.
 pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()> {
     if let TableView::Complete(rows) = &*frame.tables[TableId::Campaign.index()]
         && rows
@@ -1161,18 +1073,6 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
     Ok(())
 }
 
-/// Whether this hour's frame read a daily table: its slot hour by the cadence
-/// (`replay_data::cadence::is_refresh`), or any hour where a walk of a table of its
-/// slot was timed, which covers full hours (branch start, load, gap, refresh)
-/// and a shared read that times only its anchor. Timing alone is not enough: a shared read may be charged to a table outside the slot, as the
-/// economy-rest raw copy charges its daily tables' read to the hourly
-/// ProvinceSupply, so their slot hours show no timing. CountryIntel's walk can
-/// move off its slot alone, so only its own timing dates it; it and the other
-/// tables of its slot are no evidence for each other. A failed walk leaves its
-/// table incomplete, which callers check. Other hours carry the last read.
-/// Cadences are those `format` recorded with (`replay_data::cadence::cadence_in`):
-/// a table read daily then is dated at its slot even if it is hourly now.
-/// Every product that dates a daily table's values by their read uses this.
 pub fn slot_read(format: FormatVersion, metrics: &Metrics, table: TableId, hour: i32) -> bool {
     if table == TableId::CountryIntel {
         return metrics.table_ns[table.index()] != 0;
@@ -1183,9 +1083,6 @@ pub fn slot_read(format: FormatVersion, metrics: &Metrics, table: TableId, hour:
     slot_reads(format, metrics, hour)[table.index()]
 }
 
-/// Every table's supplying-read flag, as [`slot_read`] decides it. The
-/// recording's cadence groups are made once per thread and format; one
-/// hour's read evidence is shared by consumers with the same timed tables.
 pub fn slot_reads(
     format: FormatVersion,
     metrics: &Metrics,
@@ -1215,7 +1112,6 @@ impl ReadSlots {
     fn new(format: FormatVersion) -> Self {
         let mut groups: Vec<(replay_data::cadence::Cadence, Vec<TableId>)> = Vec::new();
         for table in TableId::ALL {
-            // This table's measured walk dates only itself.
             if table == TableId::CountryIntel {
                 continue;
             }
@@ -1262,16 +1158,13 @@ thread_local! {
     static SLOT_READ_BATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Distinct supplying-read batches computed on this thread.
 #[cfg(any(test, feature = "test-support"))]
 pub fn slot_read_batches() -> usize {
     SLOT_READ_BATCHES.with(std::cell::Cell::get)
 }
 
-/// Why a recorded event loss happened: only a same-process reattach writes one.
 pub const EVENT_LOSS_REASON: &str = "The recorder was detached for part of the interval between these reads; its recorded events are incomplete.";
 
-/// A branch's first and last hour: its start, every block and every recorded gap.
 pub fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32) {
     let mut first = branch.first_hour;
     let mut last = first;
@@ -1290,33 +1183,24 @@ pub fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32) {
     (first, last)
 }
 
-/// A branch's hours as a preparation reads them: those a frame of it is recorded at, read from
-/// its native runs or its row blocks, widened as [`branch_bounds`] widens them by its start and
-/// its recorded gaps, and those gaps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchExtent {
-    /// The first and last hour a frame of the branch is recorded at.
     pub recorded: (i32, i32),
-    /// Those widened by its start and its recorded gaps.
     pub bounds: (i32, i32),
-    /// Its recorded gaps' first and last hours, in order, those touching merged.
     pub gaps: Vec<(i32, i32)>,
 }
 
 impl BranchExtent {
-    /// Whether a recorded gap holds `hour`.
     pub fn in_gap(&self, hour: i32) -> bool {
         let at = self.gaps.partition_point(|&(first, _)| first <= hour);
         at.checked_sub(1).is_some_and(|at| hour <= self.gaps[at].1)
     }
 }
 
-/// Every recorded branch's extent ([`BranchExtent`]), read once for a preparation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Extents(BTreeMap<u64, BranchExtent>);
 
 impl Extents {
-    /// `replay`'s branches as its native `recording`'s runs record them: never its block index.
     pub fn native(replay: &Replay, recording: &Recording) -> io::Result<Self> {
         let mut recorded = BTreeMap::new();
         for at in 0..recording.run_count() {
@@ -1331,7 +1215,6 @@ impl Extents {
             };
             widen(&mut recorded, run.branch, (hour(0)?, hour(last)?));
         }
-        // A recording read as timelines records each timeline's pieces of its segments.
         if let Some(timelines) = replay.timelines() {
             let segments = std::mem::take(&mut recorded);
             for timeline in &timelines.list {
@@ -1349,7 +1232,6 @@ impl Extents {
         Ok(Self::declared(replay, recorded))
     }
 
-    /// `replay`'s branches as its row blocks record them.
     pub fn rows(replay: &Replay) -> Self {
         let mut recorded = BTreeMap::new();
         for block in &replay.index {
@@ -1362,7 +1244,6 @@ impl Extents {
         Self::declared(replay, recorded)
     }
 
-    /// Each branch `recorded` holds, widened by what `replay` declares of it.
     fn declared(replay: &Replay, recorded: BTreeMap<u64, (i32, i32)>) -> Self {
         let extents = recorded.into_iter().map(|(branch, recorded)| {
             let mut bounds = recorded;
@@ -1405,7 +1286,6 @@ impl Extents {
     }
 }
 
-/// `recorded` holding `branch`'s hours `first..=last` too.
 fn widen(recorded: &mut BTreeMap<u64, (i32, i32)>, branch: u64, (first, last): (i32, i32)) {
     recorded
         .entry(branch)
@@ -1413,8 +1293,6 @@ fn widen(recorded: &mut BTreeMap<u64, (i32, i32)>, branch: u64, (first, last): (
         .or_insert((first, last));
 }
 
-/// What metadata says of how a history joins its recorded play: whether it is the main one,
-/// where it parts from another, and its joins.
 fn history(replay: &Replay, id: u64) -> io::Result<(bool, Option<BranchFork>, Vec<BranchJoin>)> {
     use replay::campaign::timelines::{Evidence, Parting};
     let Some(timelines) = replay.timelines() else {
@@ -1467,7 +1345,6 @@ fn history(replay: &Replay, id: u64) -> io::Result<(bool, Option<BranchFork>, Ve
             choices,
         });
     }
-    // An alternative names where it parts from the main history, whichever of them loaded.
     let fork = match timelines.parting(id) {
         Some(Parting::LeftBehind(hour)) => Some(BranchFork {
             branch_id: timelines.main.to_string(),
@@ -1481,7 +1358,6 @@ fn history(replay: &Replay, id: u64) -> io::Result<(bool, Option<BranchFork>, Ve
 fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<BranchMetadata>> {
     let mut branches = engine_allocation::vec(replay.branches.len())?;
     let main = replay.timelines().map(|timelines| timelines.main);
-    // The main history first, which a recording opens on; the rest in recording order.
     let mut order: Vec<&BranchStart> = replay.branches.iter().collect();
     order.sort_by_key(|branch| (Some(branch.id) != main, branch.id));
     for branch in order {
@@ -1542,8 +1418,6 @@ impl Catalogue {
         branch: BranchId,
         hour: i32,
     ) -> io::Result<()> {
-        // The first complete country read supplies this branch's catalogue.
-        // Index borrowed rows, then allocate just the admitted output countries.
         let mut first = HashMap::new();
         for row in rows {
             let Ok(slot) = mapped_slot(row, links) else {
@@ -1561,7 +1435,6 @@ impl Catalogue {
             self.rows.push(CountryMetadata {
                 id: slot.to_string(),
                 tag: short_text(&tag, 512),
-                // Named by Source::name_countries once game content is known.
                 name: short_text(&tag, 512),
                 observed_branch_id: branch.to_string(),
                 observed_hour: hour,
@@ -1574,7 +1447,6 @@ impl Catalogue {
         if self.bad_mapping {
             warnings.warn("Some country rows have missing or conflicting country links mappings and are excluded from the catalogue.")?;
         }
-        // Canonical slot IDs are decimal without leading zeroes.
         self.rows
             .sort_unstable_by(|a, b| a.id.len().cmp(&b.id.len()).then_with(|| a.id.cmp(&b.id)));
         Ok(self.rows)
@@ -1596,7 +1468,6 @@ fn merge_countries(
     Ok(())
 }
 
-/// Bounded text for wire fields, cut at a character boundary.
 pub fn short_text(text: &str, maximum: usize) -> String {
     let mut end = text.len().min(maximum);
     while !text.is_char_boundary(end) {
@@ -1666,13 +1537,10 @@ mod local_player_tests {
     }
 }
 
-/// Why [`recorded_rows`] refuses `table` at `hour`: the recording's mode leaves it out.
 pub fn not_recorded(hour: i32, table: TableId, mode: impl std::fmt::Display) -> String {
     format!("{} is not recorded at hour {hour} in a {mode} recording", table.words())
 }
 
-/// The rows a table holds this hour, complete or truncated; an unavailable table
-/// holds none. For products that use whatever rows were recorded.
 pub fn recorded_rows<T: replay_data::rows::TableSchema>(
     frame: &dyn replay_frame::frame::DecodedSource,
 ) -> io::Result<&[T::Row]> {
@@ -1690,7 +1558,6 @@ pub fn recorded_rows<T: replay_data::rows::TableSchema>(
     }
 }
 
-/// [`recorded_rows`] of any frame's tables, each walked row holding the fields `mask` names.
 pub fn recorded_rows_in<T: replay_data::rows::TableSchema>(
     frame: replay_frame::frame::HourFrame<'_>,
     mask: u64,

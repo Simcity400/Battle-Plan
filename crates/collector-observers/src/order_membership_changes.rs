@@ -1,4 +1,3 @@
-//! Writer certificates for status membership, independent of the group census certificate.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -73,8 +72,8 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The runtime owns the authenticated image and this patch family's lifetime.
+    #[doc = " # Safety"]
+    #[doc = " The runtime owns the authenticated image and this patch family's lifetime."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "order_membership_changes") {
@@ -146,7 +145,6 @@ impl Drop for Hooks {
     fn drop(&mut self) {
         PATCHED.store(false, Ordering::SeqCst);
         observe();
-        // Runtime releases this owner only after its relays and callbacks quiesce.
         unsafe {
             GROUPS.release();
         }

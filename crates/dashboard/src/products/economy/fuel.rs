@@ -1,15 +1,3 @@
-//! A country's fuel, for the Fuel widget. Its level and capacity over time are the declared series
-//! `country-fuel` (CountryFuel's own cells), each day's gain and burn the series `fuel-days`
-//! (derived `FuelDays`, one row a read), and the current consumption by branch the series
-//! `fuel-demand-totals`. This module answers what those lines cannot: the read at an hour with its
-//! day and its labels ([`CountryFuel`]), the recipients of an applied day and one recipient's
-//! receipts over a window ([`awards`]), and the individual consumers of a read's demand pack and
-//! their rates over a window ([`demand`]).
-//!
-//! A read's day holds the 24 hourly fuel updates before it: the applied updates when they are known
-//! (`own_gain_quantity` recorded), else the ring's sums; a day the game may not have updated, or
-//! that overlaps one kept, is left out with why. Gains are fixed5, the level, capacity, what was
-//! burned and the transfers /32768.
 
 use dashboard_base::products::{Country, validate_country};
 use super::super::LoadContext;
@@ -32,23 +20,17 @@ pub mod demand;
 #[cfg(test)]
 mod tests;
 
-/// Hours of fuel updates one read's day sums: the ring's slots, one per hourly update.
 pub const DAY_HOURS: i32 = HISTORY_RING_ENTRIES as i32;
-/// Hours of one window of a detail history.
 pub const DETAIL_HOURS: i32 = 720;
 const QUANTITY_UNITS: u32 = QUANTITY_SCALE as u32;
 const GAIN_UNITS: u32 = MODIFIER_SCALE as u32;
 const _: () = assert!(QUANTITY_UNITS as i64 == QUANTITY_SCALE && GAIN_UNITS as i64 == MODIFIER_SCALE);
 
-/// The game's labels of its three fuel consumers, in consumer order.
 const CONSUMERS: [&str; 3] = ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"];
-/// The fuel panel's gain sources: base, states, oil (with its oil count), other.
 const GAINS: [(&str, bool); 4] =
     [("FUEL_DAILY_GAIN_BASE", false), ("FUEL_DAILY_GAIN_FROM_STATES", false), ("FUEL_DAILY_GAIN_FROM_OIL", true), ("FUEL_DAILY_GAIN_FROM_OTHER", false)];
-/// Incoming lend-lease, outgoing lend-lease, positive flat cost.
 const TRANSFERS: [&str; 3] = ["FUEL_DAILY_GAIN_FROM_LEND_LEASE", "FUEL_DAILY_REQUIRED_FROM_LEND_LEASE", "FUEL_DAILY_REQUIRED_FROM_OTHER"];
 
-/// A recorded number, none where it was not recorded.
 pub(crate) fn recorded(value: &Recorded<i64>) -> Option<i64> {
     match value {
         Recorded::Value(value) => Some(*value),
@@ -56,13 +38,10 @@ pub(crate) fn recorded(value: &Recorded<i64>) -> Option<i64> {
     }
 }
 
-/// Refusal bytes as text; none when empty.
 pub(crate) fn reason(bytes: &[u8]) -> Option<String> {
     (!bytes.is_empty()).then(|| String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// A fuel panel label: the game's template with `{NUM}` (and `{OIL}`) markers in place of its
-/// operands, or why it is not shown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -73,8 +52,6 @@ pub struct FuelLabel {
     pub reason: Option<String>,
 }
 
-/// What a fuel reply needs of the recorded content, made once per request or follow: the
-/// catalogue (labels and stored names), or why it is not available.
 pub struct Content {
     pub catalogue: Result<Arc<Catalogue>, String>,
     pub consumer_names: [Option<String>; 3],
@@ -139,7 +116,6 @@ impl Content {
         Self { catalogue, consumer_names, gain_labels, transfer_labels, warnings }
     }
 
-    /// A name the game stored in its own language at the read, as plain text, or why not.
     pub fn stored(&self, name: Option<&[u8]>, refused: &[u8], what: &str) -> (Option<String>, Option<String>) {
         if let Some(why) = reason(refused) {
             return (None, Some(why));
@@ -159,25 +135,16 @@ impl Content {
     }
 }
 
-/// Why a read's day is not shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum DayLeftOut {
-    /// It overlaps a day already kept, so no update is counted twice.
     Overlaps,
-    /// The country held no state at some hour of it (or was another country): the game did not
-    /// update its fuel then.
     NotUpdated,
-    /// Some hour that governs it was not recorded, or recorded without what tells ownership.
     OwnershipNotRecorded,
-    /// The day's row holds no value for a cell it shows.
     NotRecorded,
 }
 
-/// The applied updates of a day, summed: gain sources (fixed5); the own gain and its sum of
-/// hourly conversions (/32768); incoming, outgoing, flat cost and total other transfers (/32768);
-/// consumed (/32768); the consumers' receipts (fixed5).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -190,49 +157,44 @@ pub struct FuelAwardTotals {
     pub received_raw: [String; 3],
 }
 
-/// The fuel updates booked in the day before a read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDay {
-    /// Own fuel gain, fixed5.
+    #[doc = " Own fuel gain, fixed5."]
     pub gained_raw: String,
-    /// Everything taken out, /32768, `other_raw` included.
+    #[doc = " Everything taken out, /32768, `other_raw` included."]
     pub burned_raw: String,
-    /// The consumers' receipts, fixed5.
+    #[doc = " The consumers' receipts, fixed5."]
     pub received_raw: [String; 3],
-    /// Flat cost and lend-lease sent, /32768; already in `burned_raw`.
+    #[doc = " Flat cost and lend-lease sent, /32768; already in `burned_raw`."]
     pub other_raw: String,
-    /// The applied updates, when known: their sources and transfers.
+    #[doc = " The applied updates, when known: their sources and transfers."]
     pub awards: Option<FuelAwardTotals>,
 }
 
-/// The country's fuel status as last read at the hour, and the day before that read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelReadAt {
-    /// The hour the status was read; its values hold until the next read.
+    #[doc = " The hour the status was read; its values hold until the next read."]
     pub read_hour: Option<i32>,
-    /// The raw country id read, and its instance where recorded.
+    #[doc = " The raw country id read, and its instance where recorded."]
     pub country: u32,
     pub country_instance: Option<u32>,
     pub fuel_raw: String,
     pub capacity_raw: String,
-    /// Lend-lease fuel received in the hour before the read: the tank gains it, the day does not.
+    #[doc = " Lend-lease fuel received in the hour before the read: the tank gains it, the day does not."]
     pub lend_lease_raw: String,
-    /// The read the day is of: the last day read at or before the hour.
+    #[doc = " The read the day is of: the last day read at or before the hour."]
     pub day_hour: Option<i32>,
     pub day: Option<FuelDay>,
     pub left_out: Option<DayLeftOut>,
-    /// Why the applied updates (sources, recipients) are not known for the day.
+    #[doc = " Why the applied updates (sources, recipients) are not known for the day."]
     pub awards_reason: Option<String>,
     pub continuity_start_hour: Option<i32>,
 }
 
-/// The current consumption the demand pack read gives, by consumer (army, air, navy), fixed5 a
-/// day: the game's own family sum (none with `reasons` saying why), and the sums of each known
-/// part's projection, as is and clamped at zero.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -256,21 +218,21 @@ pub struct CountryFuelParams {
 #[serde(rename_all = "camelCase")]
 pub struct CountryFuelReply {
     pub tag: String,
-    /// Units per fuel of the level, capacity, burned and transfer values.
+    #[doc = " Units per fuel of the level, capacity, burned and transfer values."]
     pub quantity_scale: u32,
-    /// Units per fuel of the gains and the consumers' amounts.
+    #[doc = " Units per fuel of the gains and the consumers' amounts."]
     pub gain_scale: u32,
-    /// Hours of fuel updates a day sums.
+    #[doc = " Hours of fuel updates a day sums."]
     pub day_hours: i32,
-    /// Hours of one window of a detail history.
+    #[doc = " Hours of one window of a detail history."]
     pub detail_hours: i32,
     pub consumer_names: [Option<String>; 3],
     pub gain_labels: [FuelLabel; 4],
     pub transfer_labels: [FuelLabel; 3],
-    /// None with `missing` saying why.
+    #[doc = " None with `missing` saying why."]
     pub read: Option<FuelReadAt>,
     pub missing: Option<String>,
-    /// None with `consumption_missing` saying why.
+    #[doc = " None with `consumption_missing` saying why."]
     pub consumption: Option<FuelConsumptionAt>,
     pub consumption_missing: Option<String>,
     pub warnings: Vec<String>,
@@ -278,7 +240,6 @@ pub struct CountryFuelReply {
 
 dashboard_base::reply_warnings!(CountryFuelReply);
 
-/// A day from its row, or why it is left out.
 pub(crate) fn day_of(row: &FuelDayRow) -> (Option<FuelDay>, Option<DayLeftOut>) {
     let left = match row.left_out {
         FuelDayRow::KEPT => None,
@@ -307,7 +268,6 @@ pub(crate) fn day_of(row: &FuelDayRow) -> (Option<FuelDay>, Option<DayLeftOut>) 
     (Some(day), None)
 }
 
-/// The consumption a FuelDemandTotals row holds.
 pub(crate) fn consumption_of(row: &FuelDemandTotalRow) -> FuelConsumptionAt {
     let text = |value: &Recorded<i64>| recorded(value).map(|value| value.to_string());
     FuelConsumptionAt {
@@ -318,8 +278,6 @@ pub(crate) fn consumption_of(row: &FuelDemandTotalRow) -> FuelConsumptionAt {
     }
 }
 
-/// The hour `fuel` was read: its table's sample hour, else the hour a known applied day ends, else the hour its
-/// demand pack is stamped with; none where nothing tells.
 pub(crate) fn read_hour(fuel: &CountryFuelRow, sampled_at: Option<i32>) -> Option<i32> {
     use replay_data::rows::FuelDemandHour;
     sampled_at
@@ -336,7 +294,6 @@ pub(crate) fn read_hour(fuel: &CountryFuelRow, sampled_at: Option<i32>) -> Optio
         })
 }
 
-/// The read of `fuel` with the day `day` gives, at a frame's hour.
 pub(crate) fn read_of(fuel: &CountryFuelRow, read_hour: Option<i32>, day: Option<&FuelDayRow>) -> FuelReadAt {
     let (day_value, left_out) = match day {
         Some(row) => day_of(row),
@@ -405,7 +362,6 @@ fn reply(frame: &DecodedFrame, tag: &str, id: u32, content: &Content) -> Country
     out
 }
 
-/// The country's fuel at an hour: its read, the day before it and its current consumption.
 pub struct CountryFuel;
 
 impl AtHour for CountryFuel {

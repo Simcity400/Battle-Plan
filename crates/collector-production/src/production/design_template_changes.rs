@@ -1,5 +1,3 @@
-//! Independent production-template notifications. Native writers mark owners;
-//! the existing acquisition worker reads only demanded changed owner rosters.
 use collector_certificates::dirty_set::DirtySet;
 use collector_hooks::hook::Hook;
 use engine_native::{
@@ -38,9 +36,6 @@ pub(super) fn invalidate() {
 pub(super) fn take(visit: impl FnMut(usize)) -> Option<u64> {
     DIRTY.take(visit)
 }
-/// The worker offers storage from observed owner demand. Installation happens
-/// only at attach/reset or an actual native template writer return, never as
-/// additional synchronous hourly work. Until installed, writes move the epoch.
 pub(super) fn observe_owner(id: u32) {
     OBSERVED.fetch_max(id as usize + 1, Ordering::Relaxed);
 }
@@ -152,9 +147,6 @@ pub(super) struct Hooks {
 impl Hooks {
     pub(super) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
-        // Install an empty prepared bitmap before patch publication, while no
-        // callback/consumer can run. A quiet session can then seed its baseline
-        // without waiting for the first discount writer.
         DIRTY.offer(0);
         DIRTY.boundary(true);
         let mut hooks = Vec::new();
@@ -200,8 +192,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // The enclosing owner is dropped only after patch restoration and all
-        // template callbacks/workers are quiescent, as for the design observer.
         unsafe { DIRTY.release() };
         OFFERED.store(0, Ordering::Release);
         OBSERVED.store(0, Ordering::Release);

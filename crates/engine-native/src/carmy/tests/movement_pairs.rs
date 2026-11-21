@@ -1,8 +1,6 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
-/// Route staging reserved as `MovementPacket` reserves it: four bytes for
-/// every path slot the capture may fill.
 fn staging(paths: usize) -> Vec<u8> {
     Vec::with_capacity(paths * 4)
 }
@@ -43,8 +41,6 @@ impl crate::Memory for Observed<'_> {
         success
     }
 
-    // The relaxed read-order rule allows speed to move to copy_records.
-    // Count both guarded APIs: one route scatter and one speed gather.
     fn copy_records(
         &self,
         sources: crate::memory::RecordSources<'_>,
@@ -146,8 +142,6 @@ fn prefixes_preserve_empty_spans_order_duplicates_and_partial_failures() {
 #[test]
 fn native_pairs_keep_ordered_failure_prefixes() {
     use crate::cpdx_array::Array;
-    // SAFETY: sources are immutable test arrays and failed addresses
-    // are passed only to LiveMemory's guarded copy protocol.
     let memory = unsafe { crate::memory::LiveMemory::new() };
     let values = [3_u32, 9, 27];
     let route = Array {
@@ -307,7 +301,6 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
         ..Default::default()
     }];
     carmy::capture_division_seeds(&source, &mut seeds);
-    // `admitted` is the source census's prefix; an unadmitted division is never read.
     let capture = |memory: &Observed<'_>, admitted: usize| {
         let mut geometry = cprovince::GeometryPacket::default();
         geometry.begin(memory, 0, GS).unwrap();
@@ -337,8 +330,6 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
     let packet = capture(&success, 1);
     assert_eq!(packet.outcome().outcome, Outcome::Rows { len: 1 });
     assert_eq!(packet.paths, [1, 1, 77, 88]);
-    // One route scatter, plus the moving division's stat-block identity
-    // and base speed in one records gather (per the relaxed read-order rule).
     assert_eq!(success.batches.get(), 2);
     let trace = success.reads.borrow().clone();
     for (address, width, expected_paths, reason) in [

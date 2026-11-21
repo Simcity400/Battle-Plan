@@ -1,6 +1,5 @@
 use super::*;
 
-/// The tables the construction output self-check decodes.
 pub(super) const OUTPUT_TABLES: [TableId; 7] = [
     TableId::ConstructionLineOutput,
     TableId::BuildingConstruction,
@@ -11,8 +10,6 @@ pub(super) const OUTPUT_TABLES: [TableId; 7] = [
     TableId::CountryLinks,
 ];
 
-/// No save holds cumulative spending. Check it against successive queue reads
-/// and target growth; repairs have a necessary health/cadence check.
 pub fn compare_output(
     replay: &Replay,
     frame: &DecodedFrame,
@@ -21,8 +18,6 @@ pub fn compare_output(
     report.limitation("the save keeps no per-line construction spending; branch self-checks validate progress and repair cadence, not the exact repair rate", "ConstructionLineOutput");
     report.limitation("the save does not retain deleted lines or their daily completion events; completion timestamps require the native-hook smoke comparison", "ConstructionLineOutput.completion");
     let rows = super::complete::<tables::ConstructionLineOutput>(frame)?;
-    // After the last line ended and its final rows retired, the table is empty,
-    // but the earlier publications still hold spending the history must match.
     let since = match rows.first() {
         Some(row) => Some(row.since_hour),
         None => observation_start(replay, frame)?,
@@ -73,9 +68,6 @@ pub fn compare_output(
     Ok(())
 }
 
-/// The observation start of the branch's latest publication with rows at or
-/// before the frame's hour, searching its blocks from the latest back; `None`
-/// when no publication up to that hour held a row.
 fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option<Hour>> {
     let mut blocks: Vec<_> = replay
         .index
@@ -119,7 +111,6 @@ struct Published {
     cost: i64,
     amount: i32,
     shares_segment: bool,
-    /// Building target identity; changing one cannot continue a progress check.
     target: Option<(u32, u32, u32, u32, u32)>,
     country: Option<u32>,
     state_owner: Option<u32>,
@@ -138,16 +129,10 @@ pub(super) struct OutputCheck {
     ownership_resets: usize,
     bounded_carries: usize,
     external_levels: usize,
-    /// Completions in a window whose remaining count a queue edit raised.
     count_additions: usize,
-    /// Each line with such a window, by line, and the first such window:
-    /// nothing witnesses the addition, so the line's count must be
-    /// certified by the save at the compared hour.
     uncertified_additions: BTreeMap<u64, (Hour, Hour)>,
-    /// Lines published as ended.
     ended: BTreeSet<u64>,
     shared_railways: usize,
-    /// Railway gains in windows where the line made no spend advance.
     unpaid_railways: usize,
     seen: BTreeSet<u64>,
     output_handles: BTreeSet<u64>,
@@ -230,9 +215,6 @@ impl OutputCheck {
                 }
             }
         }
-        // Progress is looked up by province pair; updates
-        // write both directions. Transfers and completion
-        // recompute produced from that shared progress, not this line's spend.
         let mut segments: BTreeMap<(u32, u32), BTreeSet<u64>> = BTreeMap::new();
         for line in railways {
             for pair in line.route.windows(2) {
@@ -267,8 +249,6 @@ impl OutputCheck {
                     })
             } else {
                 buildings.iter().find(|r| r.id == row.line).map(|r| {
-                    // CBuildingReference prefers province, then offsite country,
-                    // then state (1163510). Offsite health is not recorded.
                     let (values, location) = if r.target_flags & 1 != 0 {
                         (province, r.target_location)
                     } else if (r.target_country as i32) > 0 {
@@ -315,7 +295,6 @@ impl OutputCheck {
                 );
             }
         }
-        // The writer gives every live queue line a row, so a missing one is a lost stream.
         let live: BTreeSet<u64> = rows.iter().filter(|r| !r.ended).map(|r| r.line).collect();
         for handle in buildings
             .iter()
@@ -330,8 +309,6 @@ impl OutputCheck {
             );
         }
         if let Some((hour, before)) = self.last.take() {
-            // Secondary linked lines return before H1 and mirror the primary's
-            // progress. A witnessed primary makes its target a shared comparator.
             let building_key = |p: &Published| {
                 p.building
                     .as_ref()
@@ -371,9 +348,6 @@ impl OutputCheck {
                         || b.repair_ticks != a.repair_ticks)
                 {
                     if let (Some(old), Some(new)) = (&was.building, &now.building) {
-                        // Repair advancement: 10^7 partial health per level.
-                        // The game also adds BASE_FACTORY_REPAIR at zero IC;
-                        // zero-IC repair advances are therefore retained as ticks.
                         let gain = (i128::from(new.healthy_level) - i128::from(old.healthy_level))
                             * i128::from(engine_native::cbuilding::PARTIAL_HEALTH_PER_LEVEL)
                             + i128::from(new.partial_health)
@@ -400,17 +374,12 @@ impl OutputCheck {
                 let mut external_growth = false;
                 let mut count_added = false;
                 if !b.railway {
-                    // The game consumes this line's amount
-                    // for each completed cost subtraction from its progress. A target's
-                    // level can also rise through another line or an effect.
                     let mut finished = i128::from(was.amount) - i128::from(now.amount);
                     let growth = was
                         .building
                         .as_ref()
                         .zip(now.building.as_ref())
                         .map(|(old, new)| i128::from(new.level) - i128::from(old.level));
-                    // Script effects can also update levels without spending
-                    // this line's IC or consuming its remaining count.
                     let reset = match (&a.count_reset, &b.count_reset) {
                         (
                             replay_data::rows::Recorded::Value(a),
@@ -437,19 +406,6 @@ impl OutputCheck {
                         );
                         continue;
                     }
-                    // A queue edit can add to the remaining count in the window
-                    // a level completes, so the count falls by fewer than the
-                    // completions or rises. Completions are then only the
-                    // exact integral cost debits from this line's progress
-                    // that the target's observed level rise covers. Those
-                    // make the progress equation hold by construction, and
-                    // nothing witnesses the addition, so the line's count is
-                    // held to the save: the line must be live, and its count
-                    // compared with the save, at the compared hour, every
-                    // later window checking the count between. Any other
-                    // rise stays outside the comparator. No addition is
-                    // inferred beside a witnessed count reset or an
-                    // ownership transfer, whose reset the game applies.
                     if finished <= 0
                         && reset.is_none_or(|reset| reset == 0)
                         && was.state_owner == now.state_owner
@@ -469,10 +425,6 @@ impl OutputCheck {
                         continue;
                     }
                     if finished > 0 && !count_added {
-                        // Ownership transfer resets the old owner's lines for this state.
-                        // The reset clears count and repair levels without
-                        // touching progress, spending or the building level.
-                        // The game compares canonical identity, not raw tags.
                         ownership_reset = now.amount == 0
                             && was.country.is_some()
                             && was.country == now.country
@@ -481,9 +433,6 @@ impl OutputCheck {
                             && was.state_owner != now.state_owner
                             && growth.is_some();
                         if let Some(reset) = reset {
-                            // The native count reset observation
-                            // separates cleared quantity from paid completions,
-                            // even when the game lowers their target afterwards.
                             finished -= reset;
                             ownership_reset = reset > 0;
                             if reset < 0 || finished < 0 {
@@ -495,10 +444,6 @@ impl OutputCheck {
                                 continue;
                             }
                         } else if ownership_reset {
-                            // An old prefix has no reset quantity. Compare the
-                            // exact native cost debits: any completed quantity
-                            // must be integral and within the cleared count.
-                            // No debit is attributed to the reset itself.
                             let debit = (spent - expected) as u64;
                             let cost = now.cost as u64;
                             if debit != 0
@@ -533,16 +478,9 @@ impl OutputCheck {
                     self.unpaid_railways += 1;
                     continue;
                 }
-                // The game forwards the overdraw to another segment. Its
-                // destination can consume some or all of it; args alone do not
-                // tell the discarded tail. Bound that tail, never call the
-                // whole carry new spending or pretend it was all discarded.
                 let valid = if b.railway {
                     carry >= 0 && spent >= expected && spent - expected <= carry
                 } else {
-                    // Progress addition and completed-level
-                    // subtraction store signed qwords. Compare
-                    // their bit patterns after widening all aggregate arithmetic.
                     carry == 0 && spent as u64 == expected as u64
                 };
                 if valid {
@@ -570,8 +508,6 @@ impl OutputCheck {
         Ok(())
     }
     pub(super) fn finish(self, report: &mut Report, compared: Hour) {
-        // The compared hour's own read publishes the lines the save's
-        // queue comparison certifies.
         let live = match &self.last {
             Some((hour, published)) if *hour == compared => Some(published),
             _ => None,
@@ -581,7 +517,6 @@ impl OutputCheck {
             if live.is_some_and(|published| published.contains_key(&handle)) {
                 continue;
             }
-            // The compared hour's queue, held to the save, holds it no more.
             if self.ended.contains(&handle) {
                 report.limitation(ENDED_ADDITION, subject);
                 continue;

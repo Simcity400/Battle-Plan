@@ -1,4 +1,3 @@
-//! Exact serializer projection of captured market and lend-lease facts.
 use super::*;
 use installed_content_save::{economy::market as save, production};
 use replay_data::rows::{MarketPool, MarketPriceLevel, MarketSubsidy};
@@ -489,7 +488,6 @@ mod tests {
         use replay_data::rows::TableRows;
         use replay_frame::frame::TableView;
         let (mut frame, mut saved, _, _) = recorder_oracle_support::fixtures::fixture();
-        // No surviving market holders in the save or any of the three state tables.
         saved.economy.market_terms = Some(Vec::new());
         frame.tables[TableId::MarketEvents.index()] =
             TableView::Complete(TableRows::MarketEvents(rows)).into();
@@ -582,7 +580,6 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        // Independently complete fuel and payment occurrences, with an ordering error.
         rows.push(MarketEventRow {
             id: 7,
             kind: 5,

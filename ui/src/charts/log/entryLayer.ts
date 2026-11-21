@@ -1,19 +1,7 @@
-/** Rows entering a revealing log, drawn as one shared layer instead of an animation on each row. The browser restyles
- * every element with a running animation on each frame it renders, composited or not, so 57 rows inside their 700 ms
- * entry at 1,440 h/s cost 200 elements restyled a frame however few rows the frame revealed. Here no row animates: a
- * canvas under the rows draws each entering row's flash, and one over them covers it in the list's own background,
- * clearing as the row would have faded in. The look is the rows' CSS entry exactly: over an opaque backdrop B, a cover
- * of B at alpha 1 − e(t) leaves e(t)·row + (1 − e(t))·B, a row at opacity e(t); the flash under the row's content,
- * seen through the cover, is e(t)·(1 − e(t)) of its colour, as the row's own flash under its fading content is. */
-
-/** The rows' entry: `moving-row-in` and `moving-row-flash` in charts.css. */
 export const ENTRY_MS = 700;
-/** The tallest stretch of entering rows drawn; rows past it (more than 170 entering at once) appear without the fade. */
 const MOST = 4096;
-/** Canvas heights grow in steps, so a stretch growing a row a frame does not reallocate every frame. */
 const STEP = 256;
 
-/** `cubic-bezier(.2, .8, .2, 1)` at progress `t` (0 to 1), as the browser eases the CSS entry. */
 export function entryEase(t: number): number {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
@@ -29,11 +17,8 @@ export function entryEase(t: number): number {
   return curve(s, y1, y2);
 }
 
-/** What `paint` draws an entry with: the cover's and the flash's alpha at `age` ms. */
 export const entryAlpha = (age: number) => 1 - entryEase(age / ENTRY_MS);
 
-/** The colour a stack of backgrounds shows, top first: each translucent one over those under it, down to the first
- * opaque one (white where none is), resolved by drawing them on a pixel. */
 export function backdrop(colours: readonly string[], pixel: CanvasRenderingContext2D): string {
   pixel.globalAlpha = 1;
   pixel.fillStyle = '#fff';
@@ -43,7 +28,6 @@ export function backdrop(colours: readonly string[], pixel: CanvasRenderingConte
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-/** The backgrounds behind `element`, nearest first, down to the first opaque one. */
 export function backgroundsBehind(element: Element): string[] {
   const out: string[] = [];
   for (let at: Element | null = element; at; at = at.parentElement) {
@@ -57,7 +41,6 @@ export function backgroundsBehind(element: Element): string[] {
 
 interface Entry { row: HTMLElement; height: number; start: number }
 
-/** The two canvases and the rows entering under them; drawn each frame while any row is inside its entry. */
 export class EntryLayer {
   private entries: Entry[] = [];
   private placed = NaN;
@@ -73,15 +56,12 @@ export class EntryLayer {
     this.over = over;
   }
 
-  /** `row`, `height` px tall, enters now. */
   add(row: HTMLElement, height: number, now: number): void {
     this.entries.push({ row, height, start: now });
   }
 
   get running(): boolean { return this.entries.length > 0; }
 
-  /** Draws every row still entering at `now`, at its place in the glide (`top`: none for a row no longer drawn), the
-   * canvases `width` px wide; whether any row is still entering. Writes two canvases' transforms, never a row. */
   paint(now: number, top: (row: HTMLElement) => number | undefined, width: number): boolean {
     let first = Infinity, last = -Infinity;
     const live: { at: number; height: number; alpha: number }[] = [];

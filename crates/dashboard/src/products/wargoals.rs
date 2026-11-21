@@ -1,6 +1,3 @@
-//! A country's war goals, the targets' terms, expiry and justifications in progress at an hour:
-//! rows at an hour ([`AtHour`]), requested for an hour and followed as a panel at the head. A
-//! justification's progress moves daily: it is the live cell (`id`, `points`), never in the reply.
 use super::{
     LoadContext,
     at_hour::{At, AtHour},
@@ -31,11 +28,9 @@ pub struct WargoalsParams {
     pub branch_id: String,
     pub country: Country,
 }
-/// What an inventory is asked: the country's tag at an hour of a branch.
 struct WargoalsAsk {
     branch_id: String,
     hour: i32,
-    /// The tag the country goes by at the hour.
     tag: String,
     country: Country,
 }
@@ -57,7 +52,7 @@ pub struct WargoalEntry {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalJustification {
-    /// Its row key: the row of its live cell `points`, the stored fixed5 progress.
+    #[doc = " Its row key: the row of its live cell `points`, the stored fixed5 progress."]
     pub id: String,
     pub ordinal: u32,
     pub name: String,
@@ -85,7 +80,7 @@ pub struct WargoalStateName {
 pub struct WargoalPair {
     pub actor: String,
     pub recipient: String,
-    /// What the recorded wars and factions prove about the pair; none when neither applies.
+    #[doc = " What the recorded wars and factions prove about the pair; none when neither applies."]
     pub standing: Option<WargoalStanding>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -101,7 +96,7 @@ pub enum WargoalStanding {
 pub struct WargoalsReply {
     pub branch_id: String,
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub standings: Vec<WargoalPair>,
     pub goals: Vec<WargoalEntry>,
@@ -122,7 +117,6 @@ pub const TABLES: &[TableId] = &[
     TableId::WargoalJustifications,
 ];
 
-/// What a reply reads at its hour: [`TABLES`] and its countries' names, in table order.
 fn read_tables() -> Vec<TableId> {
     let mut tables = TABLES.to_vec();
     tables.extend(installed_content_country_names::country_names::TABLES);
@@ -132,7 +126,6 @@ fn read_tables() -> Vec<TableId> {
 }
 dashboard_base::reply_warnings!(WargoalsReply);
 
-/// What a reply names goals and states with: the content's catalogue, or why it is unavailable.
 pub struct WargoalContent {
     catalogue: Result<Arc<Catalogue>, String>,
 }
@@ -189,7 +182,6 @@ impl AtHour for Wargoals {
     }
 }
 
-/// The inventory of `p` in `frame`, the country in canonical slot `slot`, named through `catalogue`.
 fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Arc<Catalogue>, String>) -> io::Result<WargoalsReply> {
     let held = catalogue.as_ref().ok().map(|cat| {
         cat.content
@@ -262,7 +254,6 @@ fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Ar
 fn invalid(why: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why.into())
 }
-/// The country holding `tag` this hour, as every per-country product resolves it.
 fn selected_country<'a>(
     countries: &'a [rows::CountryRow],
     links: &[rows::CountryLinkRow],
@@ -307,8 +298,6 @@ fn localised_goal_name(
     )
 }
 
-/// Only inventory pairs demand an answer: a live war or a shared faction the
-/// recorded tables prove, and nothing when neither does.
 fn standings(frame: &DecodedFrame, pairs: &BTreeSet<(String, String)>) -> Vec<WargoalPair> {
     let links = frame.complete::<tables::CountryLinks>().ok();
     let countries = frame.complete::<tables::Countries>().ok();
@@ -721,7 +710,6 @@ mod tests {
             results.iter().all(|r| r.actor != "THREE"),
             "no unrelated country-pair expansion"
         );
-        // A reversed relation with alias endpoints still establishes the same live war.
         let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
         links.push(rows::CountryLinkRow {
             id: 20,
@@ -779,8 +767,6 @@ mod tests {
 
     fn gate_frame() -> DecodedFrame {
         let mut frame = super::super::war_fixtures::recorded(100);
-        // Only these rosters are additional inputs to the inventory cases.
-        // Other absent tables stay unavailable, including singleton tables.
         for table in [
             TableId::CountryWargoals,
             TableId::WargoalTargets,
@@ -788,7 +774,6 @@ mod tests {
         ] {
             frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
         }
-        // Native tag resolution checks the stored owned-state count.
         frame.tables[TableId::CountryCounterInputs.index()] =
             TableView::Complete(TableRows::CountryCounterInputs(
                 (1..=3)
@@ -848,7 +833,6 @@ mod tests {
             tag: "ONE".into(),
             country: "ONE".into(),
         };
-        // The earlier row has no country link: the linked slot-1 country is the selection.
         let reply = inventory(&frame, &p, |_, _, _| Ok("name".into())).unwrap();
         assert_eq!(reply.goals.len(), 1);
         assert_eq!(reply.goals[0].actor, "ONE");

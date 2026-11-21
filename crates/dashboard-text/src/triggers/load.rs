@@ -1,7 +1,3 @@
-//! Load the children a trigger body holds: a conjunction's keys,
-//! or a conditional's limit and attached alternatives.
-//! Evaluate conjunctions, disjunctions and conditional chains
-//! with the shared recorded-hour evaluator.
 use crate::triggers::Failure;
 
 use installed_content_core::parser::Item;
@@ -12,23 +8,14 @@ use super::{
     operands::shown,
 };
 
-/// The token of `if`.
 const IF: u32 = 0x27C3;
 
-/// One child a body holds: a loaded child, an `if` with the
-/// alternatives attached to it, or a key whether a child is added for is
-/// unknown.
 pub(super) enum Unit<'i, 't> {
     One(&'i Item, Child<'t>),
-    /// A conditional and its alternatives, in chain order.
     Chain(Vec<Branch<'i, 't>>),
     Unknown(Failure),
 }
 
-/// The key a conditional holds when an alternative is appended:
-/// `if`, or an attached `else`/`else_if` (the token is set once attached),
-/// or an alternative loaded inside a conditional,
-/// which keeps its initial conjunction keyword.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Key {
     If,
@@ -37,23 +24,14 @@ enum Key {
     Inner,
 }
 
-/// One conditional of a chain: its limit conjunction
-/// and its body, the conditional's own children.
 pub(super) struct Branch<'i, 't> {
     key: Key,
     pub(super) limit: Vec<Unit<'i, 't>>,
     pub(super) body: Vec<Unit<'i, 't>>,
-    /// Why the conditional cannot be read as the game reads it.
     pub(super) refused: Option<Failure>,
 }
 
 impl<'a> Evaluator<'_, 'a> {
-    /// The children added for a conjunction's keys, in
-    /// order. A key that names nothing adds none. An `else` or `else_if` is
-    /// a conditional attached to the last child added when that is an `if`,
-    /// walking its chain from the `if`, which refuses a
-    /// chain holding an attached `else`; otherwise the misplaced
-    /// alternative is logged and adds none.
     pub(super) fn units<'i>(&self, items: &'i [Item]) -> Vec<Unit<'i, 'a>> {
         let mut out: Vec<Unit<'i, 'a>> = Vec::new();
         for item in items {
@@ -77,8 +55,6 @@ impl<'a> Evaluator<'_, 'a> {
         out
     }
 
-    /// Load a key other than an alternative: the child it
-    /// adds, if any.
     fn load_key<'i>(&self, item: &'i Item, out: &mut Vec<Unit<'i, 'a>>) {
         match self.child(item) {
             Ok(None) => {}
@@ -90,16 +66,6 @@ impl<'a> Evaluator<'_, 'a> {
         }
     }
 
-    /// Load a conditional body,
-    /// with the alternatives its body attaches to itself after
-    /// it, in chain order:
-    /// - `limit` loads into the limit only while the limit holds no
-    ///   child; a later one is recorded as an error and skipped;
-    /// - `else`/`else_if` make a conditional attached to the
-    ///   last child when that is an `if`, from its first alternative, else
-    ///   to this conditional's own chain (which finds no
-    ///   `else` key among them);
-    /// - any other key loads a child of the body.
     fn conditional<'i>(&self, item: &'i Item, key: Key) -> Vec<Branch<'i, 'a>> {
         let mut branch = Branch {
             key,
@@ -120,7 +86,6 @@ impl<'a> Evaluator<'_, 'a> {
             if child.keyword_is("limit") {
                 match presence(&branch.limit) {
                     Presence::None => {
-                        // LoadBody on a value that is no block reads nothing.
                         if let Some(limit) = child.value.items() {
                             let loaded = self.units(limit);
                             branch.limit.extend(loaded);
@@ -161,9 +126,6 @@ impl<'a> Evaluator<'_, 'a> {
         chain
     }
 
-    /// Whether a body holds a loaded child, for callers that test a
-    /// conjunction's child count, including adjacency rules
-    /// and the raid state selector.
     pub fn has_children(&self, items: &[Item]) -> Result<bool, Failure> {
         match presence(&self.units(items)) {
             Presence::None => Ok(false),
@@ -172,8 +134,6 @@ impl<'a> Evaluator<'_, 'a> {
         }
     }
 
-    /// Keep one variable-random context across a compound script operation.
-    /// Nested trigger checks and scoped operands share its temporary values.
     pub(super) fn with_variable_context<T>(&self, scopes: Scopes, run: impl FnOnce() -> T) -> T {
         let depth = self.checking.get();
         if depth == 0 && self.description_depth.get() == 0 {
@@ -187,15 +147,10 @@ impl<'a> Evaluator<'_, 'a> {
         result
     }
 
-    /// A trigger body, evaluated as a conjunction.
     pub fn evaluate(&self, items: &[Item], scopes: Scopes) -> Eval {
         self.evaluate_seeded(items, scopes, &[])
     }
 
-    /// [`Self::evaluate`] with temp variables set before the body runs, as a caller that
-    /// initialises its outputs does (fixed5 values).
-    /// An endless recursion reached inside it (`Evaluator::diverge`) refuses
-    /// it, whatever else it read: the game never returns from it.
     pub fn evaluate_seeded(&self, items: &[Item], scopes: Scopes, seeds: &[(&[u8], i64)]) -> Eval {
         let depth = self.evaluations.get();
         if depth == 0 {
@@ -213,7 +168,6 @@ impl<'a> Evaluator<'_, 'a> {
         self.evaluations.set(depth);
         match self.divergence() {
             Some(why) => {
-                // What the evaluation read past the recursion is discarded.
                 if let Eval::Unknown(reasons) = &value {
                     for failure in reasons {
                         failure.consumed();
@@ -239,8 +193,6 @@ impl<'a> Evaluator<'_, 'a> {
         result
     }
 
-    /// Any of the children holds; none added is
-    /// false.
     pub(super) fn any(&self, items: &[Item], scopes: Scopes) -> Eval {
         let mut result = Eval::False;
         for unit in &self.units(items) {
@@ -263,9 +215,6 @@ impl<'a> Evaluator<'_, 'a> {
         }
     }
 
-    /// Evaluate a chain: the first
-    /// conditional whose limit holds checks its body (an empty limit holds,
-    /// whatever the key); a chain none enters holds.
     fn branches(&self, chain: &[Branch<'_, 'a>], scopes: Scopes) -> Eval {
         let mut taken = Eval::False;
         let mut outcome = Eval::True;
@@ -287,7 +236,6 @@ impl<'a> Evaluator<'_, 'a> {
                     }
                 })
             };
-            // outcome = (enter -> body) and the earlier outcomes.
             outcome = outcome.and(|| enter.clone().negate().or(|| body));
             taken = taken.or(|| enter);
             if taken == Eval::True {
@@ -298,7 +246,6 @@ impl<'a> Evaluator<'_, 'a> {
     }
 }
 
-/// The key of an alternative: `else` or `else_if`.
 fn alternative(item: &Item) -> Option<Key> {
     if item.keyword_is("else") {
         Some(Key::Else)
@@ -309,7 +256,6 @@ fn alternative(item: &Item) -> Option<Key> {
     }
 }
 
-/// Whether a conjunction holds a child.
 enum Presence {
     None,
     Some,

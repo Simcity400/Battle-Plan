@@ -1,47 +1,13 @@
-//! Battle-plan name labels. Compose three variants, then lay the first that
-//! fits along the arrow in the `arrowText` font. Draw with the `mapname` effect
-//! after the ribbons.
-//!
-//! Composition, in the viewer's own language:
-//!
-//! * `$ORDERNAME$` is the order name plus a separator for move, invasion and
-//!   paradrop orders, and empty for lines. Name parts are a localized prefix,
-//!   stored unique text or localized name (else localized first and second
-//!   parts), then a localized postfix, separated with spaces.
-//! * Count assigned members except the display group's HQ member, which is
-//!   excluded only while the group has a leader.
-//! * full: `MAP_ARROWS_LOCALIZATION` with `$DIVISIONS$` (`MAP_ARROWS_DIVISIONS_COUNT`
-//!   or, for a paradrop, `MAP_ARROWS_PARATROOPERS_COUNT`, with `$DIV$`) and
-//!   `$GROUP$` (the stored group name); with no count an army shows
-//!   `MAP_ARROWS_LOCALIZATION_EMPTY` and an army group `$ORDERNAME$` and its name.
-//!   middle: the count string or `MAP_ARROWS_LOCALIZATION_EMPTY`; short: the
-//!   `_SHORT` keys. The keys are the executable's literals.
-//! * only the full variant appends the invasion/paradrop transport count,
-//!   including zero, when the arrow's control count is strictly above
-//!   `ARROW_EXT_TEXT_POINTS_LIMIT`. The invasion
-//!   supplier reads the order's allocated convoy count; the paradrop supplier
-//!   counts eligible transport wings at its source base.
-//!
-//! Placement: use the longest run of stored controls whose x keeps one
-//! direction, read left to right. Scale the glyph run by 0.05 * text_size world
-//! units per font pixel. A variant fits when its width is at most the path
-//! arc length. Centre it on the path with text_offset; each glyph centre follows
-//! the arc, turned to the mean of the current and previous segment and centred
-//! across the line. No variant fitting draws no text.
 
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 
 use super::fixed::{self, Point};
 use viewer_foundation::map::text::{self, Font, GlyphMetrics};
 
-/// World units per font pixel at font size 1.
 const FONT_PIXEL: f32 = 0.05;
-/// Initial minimum and maximum for the bounds.
 const BOUND: f32 = 9999.0;
-/// Run-merge ratio.
 const RUN_MERGE: f32 = 0.25;
 
-/// The exe's label keys and substitution names.
 const KEY_FULL: &str = "MAP_ARROWS_LOCALIZATION";
 const KEY_EMPTY: &str = "MAP_ARROWS_LOCALIZATION_EMPTY";
 const KEY_EMPTY_SHORT: &str = "MAP_ARROWS_LOCALIZATION_EMPTY_SHORT";
@@ -52,15 +18,12 @@ const KEY_INVASION_TRANSPORTS: &str = "MAP_ARROWS_INVASION_TRANSPORTS_COUNT";
 const KEY_PARADROP_TRANSPORTS: &str = "MAP_ARROWS_PARADROP_TRANSPORTS_COUNT";
 const ORDER_NAME_SEPARATOR: &str = " - ";
 
-/// What label building reads from the content.
 #[derive(Clone, Copy)]
 pub struct LabelInputs<'a> {
-    /// The `arrowText` font (`maparrows.txt`), loaded with the map icons.
     pub font: &'a Font,
     pub localisation: &'a Localisation,
 }
 
-/// Recorded name strings of one order.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OrderName<'a> {
     pub prefix: &'a [u8],
@@ -71,7 +34,6 @@ pub struct OrderName<'a> {
     pub postfix: &'a [u8],
 }
 
-/// The three label variants, in the order the layout tries them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     Full,
@@ -83,8 +45,6 @@ impl Variant {
     const TRIED: [Self; 3] = [Self::Full, Self::Middle, Self::Short];
 }
 
-/// Localize a recorded name token or a `MAP_ARROWS_*` label key. A key absent
-/// from the content uses its own bytes; the error names what cannot be shown.
 fn localise(
     localisation: &Localisation,
     key: &[u8],
@@ -95,8 +55,6 @@ fn localise(
         .map_err(|refusal| refusal.to_string())
 }
 
-/// Use the unique name as stored; localize the other recorded name tokens
-/// with no arguments.
 pub fn order_name(localisation: &Localisation, name: &OrderName<'_>) -> Result<String, String> {
     let mut out = String::new();
     if !name.prefix.is_empty() {
@@ -122,23 +80,17 @@ pub fn order_name(localisation: &Localisation, name: &OrderName<'_>) -> Result<S
     Ok(out)
 }
 
-/// Operands for three label variants. Layout builds each only when tried,
-/// so a full label that fits does not localize shorter variants.
 #[derive(Clone, Copy)]
 pub struct Composer<'a> {
     pub localisation: &'a Localisation,
     pub order_type: i32,
     pub name: OrderName<'a>,
-    /// The display group's recorded name, copied as stored.
     pub group_name: &'a [u8],
     pub army_group: bool,
-    /// Assigned members that are not the display group's HQ unit.
     pub count: usize,
 }
 
 impl Composer<'_> {
-    /// One variant's localized text: `DIV` is an integer (type 5); `DIVISIONS`,
-    /// `GROUP` and `ORDERNAME` are strings (type 1). The error names what cannot be shown.
     pub fn text(&self, variant: Variant) -> Result<String, String> {
         let localisation = self.localisation;
         let counted = |key: &str| {
@@ -155,7 +107,6 @@ impl Composer<'_> {
             Variant::Short if counting => counted(KEY_DIVISIONS_SHORT),
             Variant::Short => counted(KEY_EMPTY_SHORT),
             Variant::Full => {
-                // Each operand is made only on the branch that uses it.
                 let order_name = || -> Result<String, String> {
                     Ok(
                         if matches!(
@@ -201,16 +152,11 @@ impl Composer<'_> {
         }
     }
 
-    /// One variant as map text draws it: [`Composer::text`], refused by name
-    /// when it holds a control map text does not draw.
     pub fn drawn(&self, variant: Variant) -> Result<String, String> {
         let text = self.text(variant)?;
         drawable(text)
     }
 
-    /// The extended full label. Read its simulation operands only when this
-    /// variant needs the suffix. Bind the supplier's signed i32 under `TR`
-    /// without clamping a negative value or omitting zero.
     pub fn drawn_with_transports(
         &self,
         variant: Variant,
@@ -243,7 +189,6 @@ fn drawable(text: String) -> Result<String, String> {
     }
 }
 
-/// A font the layout can read: metrics and each glyph's page.
 pub trait LabelFont: GlyphMetrics {
     fn page(&self, ch: char) -> Option<usize>;
 }
@@ -254,8 +199,6 @@ impl LabelFont for Font {
     }
 }
 
-/// One glyph of the centred run: its quad in the run's own frame (x along,
-/// z up), its atlas rectangle and page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RunGlyph {
     left: f32,
@@ -266,9 +209,6 @@ struct RunGlyph {
     page: usize,
 }
 
-/// For one line, start the pen at minus half the integer run width. Skip a
-/// character the font lacks and break kerning; a glyph without height advances
-/// but emits nothing.
 fn centred_run(font: &dyn LabelFont, text: &str, size: f32) -> Vec<RunGlyph> {
     let chars: Vec<char> = text::strip_color_codes(text).chars().collect();
     let mut width = 0.0f32;
@@ -316,22 +256,15 @@ fn centred_run(font: &dyn LabelFont, text: &str, size: f32) -> Vec<RunGlyph> {
     out
 }
 
-/// Split the stored controls except the last into runs of one x direction,
-/// merge small runs into their neighbours, and read the longest left to right.
 #[cfg(test)]
 pub fn text_path(controls: &[Point]) -> Vec<[f32; 2]> {
     indexed_text_path(controls).0
 }
 
-/// Label-path points and their stored-control indices, passed as sample
-/// indices to the arrow height callback.
 type IndexedPath = (Vec<[f32; 2]>, Vec<u32>);
 
-/// Runs of one x direction: each point with its control index, and whether
-/// the run's x increases.
 type Runs = Vec<(Vec<([f32; 2], u32)>, bool)>;
 
-/// [`text_path`] with each point's control index.
 fn indexed_text_path(controls: &[Point]) -> IndexedPath {
     if controls.len() < 2 {
         return (Vec::new(), Vec::new());
@@ -393,8 +326,6 @@ fn indexed_text_path(controls: &[Point]) -> IndexedPath {
     points.into_iter().unzip()
 }
 
-/// Retry with the stored controls except the last, reversed when they run
-/// west overall.
 fn retry_path(controls: &[Point]) -> IndexedPath {
     if controls.len() < 2 {
         return (Vec::new(), Vec::new());
@@ -428,8 +359,6 @@ fn normalized([x, z]: [f32; 2]) -> [f32; 2] {
     }
 }
 
-/// One placed glyph, in the corner order the name pass draws: top-left,
-/// top-right, bottom-right, bottom-left in the glyph's own frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LabelGlyph {
     pub corners: [[f32; 3]; 4],
@@ -437,7 +366,6 @@ pub struct LabelGlyph {
     pub page: usize,
 }
 
-/// A laid-out label: the variant that fitted and its glyphs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedLabel {
     pub text: String,
@@ -446,14 +374,10 @@ pub struct PlacedLabel {
 
 enum Fit {
     Placed(Vec<LabelGlyph>),
-    /// The run is wider than the path.
     TooWide,
-    /// A glyph centre fell past the path's end.
     PastEnd,
 }
 
-/// `height` receives the world point and segment control index over the
-/// control count, passed to the arrow height callback.
 fn fit(
     run: &[RunGlyph],
     (path, indices): (&[[f32; 2]], &[u32]),
@@ -535,13 +459,6 @@ fn fit(
     Fit::Placed(out)
 }
 
-/// Use the first variant that fits, trying the retry path once per variant
-/// when a glyph runs past the end.
-///
-/// `variant` builds a variant's text or says why it cannot be drawn. Build each
-/// only when layout reaches it: a variant after the first that fits cannot
-/// refuse the label. Compute the text path once per label and the retry path
-/// at most once.
 pub fn place(
     variant: &dyn Fn(Variant) -> Result<String, String>,
     controls: &[Point],

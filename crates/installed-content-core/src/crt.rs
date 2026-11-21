@@ -1,26 +1,8 @@
-//! Shared C-runtime number scans and float-to-int truncation for content readers.
-//!
-//! Signed `%i` and `%lli` conversions accumulate at 64 bits. `%i` stores the low 32
-//! bits, while `%lli` stores all 64.
-//!
-//! Integer scanning:
-//! - skips C-locale white space (space and `\t` through `\r`), then one sign;
-//! - selects hexadecimal after `0x`/`0X`, octal after another leading `0`, otherwise
-//!   decimal for base-zero conversions; digits below the base are accepted without case;
-//! - clamps a signed overflow to `i64::MAX` or `i64::MIN`, and otherwise negates a
-//!   negative magnitude;
-//! - stores nothing without a digit. A scan stopped at the end after only white space,
-//!   a sign or `0x` returns EOF; other failures return no match.
-//!
-//! Unsigned `%u` and `%x` conversions use bases 10 and 16. `%f` uses [`scan_f32`]. Text
-//! ends at its first NUL ([`crate::parser::c_string`]).
 
-/// The C locale's `isspace`: space and tab to carriage return.
 fn is_space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t'..=b'\r')
 }
 
-/// The text after the leading space.
 fn trim(text: &[u8]) -> &[u8] {
     let start = text
         .iter()
@@ -29,7 +11,6 @@ fn trim(text: &[u8]) -> &[u8] {
     &text[start..]
 }
 
-/// A sign, and the text after it.
 fn sign(text: &[u8]) -> (bool, &[u8]) {
     match text.first() {
         Some(b'-') => (true, &text[1..]),
@@ -38,7 +19,6 @@ fn sign(text: &[u8]) -> (bool, &[u8]) {
     }
 }
 
-/// The UCRT's `parse_digit`: `0`-`9`, then an ASCII letter from 10; anything else is no digit.
 fn digit(byte: u8) -> Option<u32> {
     match byte {
         b'0'..=b'9' => Some(u32::from(byte - b'0')),
@@ -48,22 +28,14 @@ fn digit(byte: u8) -> Option<u32> {
     }
 }
 
-/// What one integer conversion does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scanned<T> {
-    /// sscanf returns 1 and stores the value.
     Stored(T),
-    /// The scan returns EOF and stores nothing. Callers that test a nonzero scan result
-    /// take this as success.
     End,
-    /// sscanf returns 0 and stores nothing: a byte that is no digit
-    /// stopped the scan before any digit.
     NoMatch,
 }
 
 impl<T> Scanned<T> {
-    /// The value stored, for a caller that only keeps what the conversion
-    /// stores (every reader that otherwise leaves its field as it was).
     pub fn stored(self) -> Option<T> {
         match self {
             Self::Stored(value) => Some(value),
@@ -80,10 +52,6 @@ impl<T> Scanned<T> {
     }
 }
 
-/// Scan one integer conversion: base 0 detects the base, and base 16 skips an optional
-/// `0x`. Signed conversions clamp past the signed range. Unsigned conversions give
-/// `u64::MAX` on a 64-bit wrap and otherwise negate after `-`. Returns the 64 bits as
-/// stored.
 fn parse_integer(bytes: &[u8], base: u32, signed: bool) -> Scanned<u64> {
     let (negative, mut rest) = sign(trim(crate::parser::c_string(bytes)));
     let mut radix = base;
@@ -134,18 +102,14 @@ fn parse_integer(bytes: &[u8], base: u32, signed: bool) -> Scanned<u64> {
     })
 }
 
-/// The 64-bit signed `%lli` conversion, including radix-prefix detection.
 pub fn scan_i64(bytes: &[u8]) -> Scanned<i64> {
     parse_integer(bytes, 0, true).map(|value| value as i64)
 }
 
-/// The signed `%i` conversion stores the low 32 bits of the 64-bit scan. Thus
-/// `2147483648` stores `i32::MIN`, and a clamped `i64::MAX` stores -1.
 pub fn scan_i32(bytes: &[u8]) -> Scanned<i32> {
     parse_integer(bytes, 0, true).map(|value| value as u32 as i32)
 }
 
-/// The signed decimal `%d` conversion, narrowed by callers with a short destination.
 pub fn scan_d32(bytes: &[u8]) -> Scanned<i32> {
     parse_integer(bytes, 10, true).map(|value| value as u32 as i32)
 }
@@ -154,21 +118,14 @@ pub fn scan_d32(bytes: &[u8]) -> Scanned<i32> {
 #[path = "crt/tests.rs"]
 mod decimal_tests;
 
-/// The unsigned decimal `%u` conversion stores the low 32 bits, so `4294967296` stores
-/// 0 and `-1` stores `u32::MAX`.
 pub fn scan_u32(bytes: &[u8]) -> Scanned<u32> {
     parse_integer(bytes, 10, false).map(|value| value as u32)
 }
 
-/// The unsigned hexadecimal `%x` conversion skips an optional `0x` and stores the low
-/// 32 bits, so `0x4ffffffff` stores `0xffffffff`.
 pub fn scan_x32(bytes: &[u8]) -> Scanned<u32> {
     parse_integer(bytes, 16, false).map(|value| value as u32)
 }
 
-/// `cvttss2si`, a float's conversion to `int` wherever the game truncates
-/// one: toward zero, `i32::MIN` for what it cannot convert (a NaN, an
-/// infinity, anything outside `i32`), where Rust's `as` saturates.
 pub fn truncate_f32(value: f32) -> i32 {
     if value.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         i32::MIN
@@ -177,31 +134,18 @@ pub fn truncate_f32(value: f32) -> i32 {
     }
 }
 
-/// The UCRT's mantissa buffer (`floating_point_string::_mantissa`): digits past it are dropped.
 const MANTISSA_DIGITS: usize = 768;
-/// The UCRT's `maximum_temporary_decimal_exponent`; the minimum is its negation.
 const EXPONENT_LIMIT: i32 = 5200;
 
-/// Whether `text` starts with `word`, compared without ASCII case.
 fn starts_with_word(text: &[u8], word: &[u8]) -> bool {
     text.len() >= word.len() && text[..word.len()].eq_ignore_ascii_case(word)
 }
 
-/// Scan a `%f` conversion with single-character push-back. Decimal and hexadecimal
-/// (`0x`, with a `p` exponent) mantissas retain up to 768 significant digits. Supports
-/// `inf`, `infinity`, `nan`, `nan(...)`, `nan(snan)` and `nan(ind)`. Rounds once to the
-/// nearest `float`, with ties to even; overflow stores infinity and underflow stores
-/// zero.
-/// A partial `infinity`, an exponent marker without a digit, `0x` without a digit, or
-/// an unclosed or malformed `nan(` consumes more than push-back restores: returns
-/// `None`, storing nothing.
 pub fn scan_f32(text: &[u8]) -> Option<f32> {
     let (negative, rest) = sign(trim(crate::parser::c_string(text)));
     let signed = |value: f32| if negative { -value } else { value };
     match rest.first() {
         Some(b'i' | b'I') => {
-            // `inf`, then `inity` or nothing of it: a partial match consumed more than the
-            // push-back restores.
             if !starts_with_word(rest, b"inf") {
                 return None;
             }
@@ -263,7 +207,6 @@ pub fn scan_f32(text: &[u8]) -> Option<f32> {
         let (exponent_negative, tail) = sign(&rest[1..]);
         let count = tail.iter().take_while(|byte| byte.is_ascii_digit()).count();
         if count == 0 {
-            // The marker and what follows it cannot be pushed back.
             return None;
         }
         for byte in &tail[..count] {
@@ -306,7 +249,6 @@ pub fn scan_f32(text: &[u8]) -> Option<f32> {
     }))
 }
 
-/// `nan`, `nan(...)`, `nan(snan)` and `nan(ind)` after the sign.
 fn nan(rest: &[u8], negative: bool) -> Option<f32> {
     let sign_bit = if negative { 0x8000_0000 } else { 0 };
     let quiet = f32::from_bits(sign_bit | 0x7FFF_FFFF);
@@ -317,7 +259,6 @@ fn nan(rest: &[u8], negative: bool) -> Option<f32> {
     let Some((b'(', inner)) = tail.split_first() else {
         return Some(quiet);
     };
-    // Each special spelling is compared from where the last stopped.
     let mut at = 0;
     let special = |at: &mut usize, word: &[u8]| {
         for want in word {
@@ -344,7 +285,6 @@ fn nan(rest: &[u8], negative: bool) -> Option<f32> {
     }
 }
 
-/// `0.mantissa * 10^exponent`, rounded once to the nearest `float`.
 fn decimal_value(mantissa: &[u8], exponent: i64) -> f32 {
     let digits: String = mantissa
         .iter()
@@ -355,8 +295,6 @@ fn decimal_value(mantissa: &[u8], exponent: i64) -> f32 {
         .unwrap_or(f32::NAN)
 }
 
-/// `0x0.mantissa * 2^exponent`, rounded once to the nearest `float` (the UCRT's
-/// `assemble_floating_point_value`: ties to even, the dropped digits a sticky tail).
 fn hexadecimal_value(mantissa: &[u8], exponent: i64) -> f32 {
     let mut value = 0u64;
     let mut used = 0;
@@ -365,24 +303,18 @@ fn hexadecimal_value(mantissa: &[u8], exponent: i64) -> f32 {
         used += 1;
     }
     let tail = mantissa[used..].iter().any(|digit| *digit != 0);
-    // value * 2^(exponent - 4 * used), with `tail` below its last bit.
     round_to_f32(value, exponent - 4 * used as i64, tail)
 }
 
-/// `value * 2^exponent` (positive, `value` nonzero) with a sticky bit below `value`, rounded to
-/// the nearest `float`, ties to even.
 fn round_to_f32(value: u64, exponent: i64, tail: bool) -> f32 {
     let shift = value.leading_zeros();
     let value = value << shift;
-    // The value is 1.f * 2^top.
     let top = exponent - i64::from(shift) + 63;
     if top > 127 {
         return f32::INFINITY;
     }
-    // Bits kept: 24 for a normal value, fewer below 2^-126.
     let kept = if top >= -126 { 24 } else { 24 - (-126 - top) };
     if kept <= 0 {
-        // Below half the smallest subnormal, or at most half of it: a tie rounds to even (0).
         let half = kept == 0 && (value > 1 << 63 || (value == 1 << 63 && tail));
         return if half { f32::from_bits(1) } else { 0.0 };
     }
@@ -405,8 +337,6 @@ fn round_to_f32(value: u64, exponent: i64, tail: bool) -> f32 {
         let biased = (top + 127) as u32;
         f32::from_bits(biased << 23 | (kept_bits as u32 & 0x7F_FFFF))
     } else {
-        // A subnormal: the kept bits are the fraction; rounding up to 2^23 is the smallest
-        // normal, which the same bits spell.
         f32::from_bits(kept_bits as u32)
     }
 }
@@ -422,14 +352,12 @@ mod tests {
         assert_eq!(scan_i64(b"-0x10"), Scanned::Stored(-16));
         assert_eq!(scan_i64(b"09"), Scanned::Stored(0));
         assert_eq!(scan_i64(b"300.75"), Scanned::Stored(300));
-        // No digit: EOF when the scan reached the end, else a mismatch.
         for text in [&b""[..], b"   ", b"-", b"+", b"0x", b" -0X"] {
             assert_eq!(scan_i64(text), Scanned::End, "{text:?}");
         }
         for text in [&b"x"[..], b"-x", b"0xg", b"@cost", b".5"] {
             assert_eq!(scan_i64(text), Scanned::NoMatch, "{text:?}");
         }
-        // Past the signed range: clamped, whatever the wrap.
         assert_eq!(scan_i64(b"9223372036854775807"), Scanned::Stored(i64::MAX));
         assert_eq!(scan_i64(b"9223372036854775808"), Scanned::Stored(i64::MAX));
         assert_eq!(scan_i64(b"-9223372036854775808"), Scanned::Stored(i64::MIN));
@@ -447,15 +375,12 @@ mod tests {
         assert_eq!(scan_i32(b"2147483648"), Scanned::Stored(i32::MIN));
         assert_eq!(scan_i32(b"4294967297"), Scanned::Stored(1));
         assert_eq!(scan_i32(b"-2147483649"), Scanned::Stored(i32::MAX));
-        // Clamped to i64::MAX (low bits all set) and i64::MIN (low bits 0).
         assert_eq!(scan_i32(b"99999999999999999999"), Scanned::Stored(-1));
         assert_eq!(scan_i32(b"-99999999999999999999"), Scanned::Stored(0));
         assert_eq!(scan_i32(b"lots"), Scanned::NoMatch);
         assert_eq!(scan_i32(b""), Scanned::End);
     }
 
-    /// `%i`, `%u` and `%x` accumulate at 64 bits and store the low 32. A 64-bit
-    /// overflow saturates; no digit stores nothing.
     #[test]
     fn integers_store_the_low_32_bits_of_a_64_bit_scan() {
         let i32_of = |text: &[u8]| scan_i32(text).stored();
@@ -466,7 +391,6 @@ mod tests {
         assert_eq!(i32_of(b"017"), Some(15));
         assert_eq!(i32_of(b"08"), Some(0));
         assert_eq!(i32_of(b"  -12px"), Some(-12));
-        // Past 64 bits: `i64::MAX`, whose low 32 bits are -1, or `i64::MIN`, whose are 0.
         assert_eq!(i32_of(b"99999999999999999999"), Some(-1));
         assert_eq!(i32_of(b"-99999999999999999999"), Some(0));
         assert_eq!(i32_of(b"9223372036854775808"), Some(-1));
@@ -476,8 +400,6 @@ mod tests {
         }
     }
 
-    /// `%u` and `%x` accumulate at 64 bits and store the low 32. A 64-bit wrap gives
-    /// `u64::MAX`; no digit stores nothing.
     #[test]
     fn unsigned_conversions_store_the_low_32_bits() {
         assert_eq!(scan_u32(b"4294967296"), Scanned::Stored(0));
@@ -498,8 +420,6 @@ mod tests {
         assert_eq!(scan_i32(b"  -12px"), Scanned::Stored(-12));
     }
 
-    /// `%f`: decimal, hexadecimal, the named values, overflow to an infinity, and the forms that
-    /// store nothing.
     #[test]
     fn floats_follow_the_ucrt() {
         assert_eq!(scan_f32(b"1.5e1"), Some(15.0));
@@ -552,12 +472,10 @@ mod tests {
         ] {
             assert_eq!(scan_f32(nothing), None, "{nothing:?}");
         }
-        // 768 significant digits are kept; the rest are dropped, not rounded.
         let long = format!("1.{}9", "0".repeat(800));
         assert_eq!(scan_f32(long.as_bytes()), Some(1.0));
     }
 
-    /// `cvttss2si`'s invalid result.
     #[test]
     fn float_to_int_is_int_min_when_invalid() {
         assert_eq!(truncate_f32(-1.9), -1);

@@ -13,19 +13,15 @@ const LAYOUT: RecordLayout<'static> =
 const SENTINEL_FIELDS: [RecordField; 1] = [field(0, 0, 26)];
 const SENTINEL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SENTINEL_FIELDS, 26).expect("valid air power map sentinel layout");
-/// A contribution map node: its links and flags, then the country key and amount.
 const NODE_BYTES: usize = node::PAYLOAD + 16;
 
-/// One entry's menu against the menu its row held before.
 pub(super) enum Read {
     Unavailable,
     Zero,
-    /// Equal to the held menu, which is kept.
     Same,
     Changed(Arc<Menu>),
 }
 
-/// A pending in-order node: its address, right link and payload.
 #[derive(Clone, Copy)]
 struct Pending {
     address: usize,
@@ -33,7 +29,6 @@ struct Pending {
     contribution: Contribution,
 }
 
-/// Reused across hours; grows only to the largest map read.
 #[derive(Default)]
 pub struct Scratch {
     contributions: [Vec<Contribution>; 2],
@@ -50,8 +45,6 @@ impl Scratch {
     }
 }
 
-/// Reads each entry's menu; `held` is the menu its row held, which an equal
-/// read keeps without allocating.
 pub(super) fn read(
     memory: &impl Memory,
     addresses: &[usize],
@@ -67,8 +60,6 @@ pub(super) fn read(
         &mut bytes[..addresses.len() * 72],
         &mut complete[..addresses.len()],
     );
-    // Only the observer country's entries accumulate contributions: every
-    // other map is empty, and its sentinel is not read.
     let mut heads = [0_usize; BATCH * 2];
     let mut gathered = [usize::MAX; BATCH * 2];
     let mut nonempty = 0;
@@ -170,9 +161,6 @@ fn decode(
     })))
 }
 
-/// In order, each node read once. The declared count bounds the walk, and every
-/// node must name its parent, as the map's own successor walk requires. A
-/// count of zero is the map's own size: no node or sentinel is read.
 fn read_map(
     memory: &impl Memory,
     header: [u8; 16],

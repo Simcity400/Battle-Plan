@@ -17,8 +17,6 @@ use viewer_foundation::map::{
 };
 use viewer_world::map::map_mode::{MapMode, Stock};
 
-/// Land provinces hold a base's anchor; a task force standing on land with no route is docked,
-/// anything else stands at sea in kind 0.
 struct Shore {
     land: HashSet<u32>,
 }
@@ -66,8 +64,6 @@ fn counter(maximum: i64) -> Vec<u8> {
     bytes
 }
 
-/// A task force at `slot`, keyed `id`, of link `owner` and fleet `fleet`, in `province`; with its
-/// motion row (no route) and counter inputs.
 fn force(store: &mut Store, slot: u32, id: u64, owner: u32, fleet: u64, province: u32) {
     insert(store, TableId::TaskForces, slot, u128::from(id));
     put(store, TableId::TaskForces, slot, "fleet", Cell::U64(fleet));
@@ -103,9 +99,6 @@ fn order(store: &mut Store, slot: u32, province: u32, mixed: &[u64], naval: &[u6
     put(store, TableId::ProvinceUnitOrder, slot, "naval", Cell::U64List(naval));
 }
 
-/// Two linked countries; task forces 100 (fleet 1) and 101 (fleet 2) at sea in province 5 (its
-/// array: 101, 100), 102 (fleet 1) docked at the base on land province 7; ships 1000 and 1001 of
-/// 100, 1002 of 102; fleet 1 headed by 100.
 fn world(store: &mut Store) {
     for (slot, key) in [(0, 10u128), (1, 11)] {
         insert(store, TableId::CountryLinks, slot, key);
@@ -130,7 +123,6 @@ fn world(store: &mut Store) {
     put(store, TableId::FleetCounterInputs, 0, "task_forces", Cell::U64List(&[100, 102]));
 }
 
-/// The layer's tables over a block, each hour's status from `status`; `hour` writes the campaign.
 fn campaign(name: &str, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
     record(name, 400, |at, store| {
         for table in TABLES.into_iter().chain([TableId::TaskForceMissions]) {
@@ -168,7 +160,6 @@ fn side_for(units: Units) -> MapSide {
     side_with(units, layer_seeing_all(), View { fog: false, ..View::default() })
 }
 
-/// Frames with the head held within three hours past `hour` until the mirrors are at or past it.
 fn reach(side: &mut MapSide, hour: i32) {
     for _ in 0..50_000_000u64 {
         let head = side.entry().playhead().newest().unwrap_or(0).min(hour + 3);
@@ -244,7 +235,6 @@ fn a_task_force_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -341,14 +331,12 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert_eq!(layer(&side).members().count(), 0, "nothing is kept while hidden");
     settled_equals_composed(&mut side);
     side.set_view(View { fog: false, ..View::default() }).unwrap();
-    // Its tables left the mirrors while it was hidden: they come back as a reset, and it composes then.
     frames_until(&mut side, |side, frame| frame.steps > 0 && !side.composing() && layer(side).refused().is_none());
     settled_equals_composed(&mut side);
     assert_eq!(layer(&side).refused(), None);
     assert!(member(&side, 100).is_some(), "shown again, it composes");
 }
 
-/// Frames with the head at `hour` until the playhead has built steps to it, whatever is declared.
 fn hold(side: &mut MapSide, hour: i32) {
     while side.entry().playhead().newest().is_none_or(|newest| newest < hour) {
         let head = side.entry().playhead().newest().unwrap_or(0).min(hour);

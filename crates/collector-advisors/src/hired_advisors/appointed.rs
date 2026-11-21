@@ -1,18 +1,3 @@
-//! HiredAdvisors held between hours ([`crate::advisor_pool_changes`]).
-//!
-//! HiredAdvisors, which `has_idea` triggers read (idea membership trigger over the country
-//! characters' appointed list), is read every hour. A row records a country's appointed `CAdvisor*`
-//! array and each advisor's character id, idea and slot. Every writer of the array is a Hooked site
-//! of the advisor pool family  (advisor insertion, the unappointment helper, the pool's constructor
-//! and destructor, [`engine_mutations::advisor_pool_mutations`]); every writer of an advisor's character
-//! link, idea and slot is one of the advisor family's sites, which notify the character domain
-//! ([`crate::character_changes`]); a character's id is written only by `repair_containers`, which
-//! the roster domain observes ([`crate::roster_changes`]); and a country gains or replaces its
-//! `CCountryCharacters` only through the pool constructor. So while the pool domain's, the
-//! character domain's and the roster's quiet tokens and the country and link array headers are
-//! those taken before the latest complete walk, every row equals that walk's: such a quiet hour
-//! publishes it without reading any country. Any hour that is not quiet walks every country, and
-//! an hour holds its walk when the tokens and headers stood still across it.
 use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
 use engine_native::{
@@ -20,20 +5,14 @@ use engine_native::{
     cpdx_array::Array, walk::Outcome,
 };
 
-/// Whether HiredAdvisors carries a quiet hour.
 pub const CARRY: bool = cfg!(feature = "appointment_changes");
 
-/// The domains a quiet hour rests on; tests substitute their own.
 pub trait Domains: Sync {
-    /// The advisor pool domain's token ([`crate::advisor_pool_changes::quiet`]).
     fn pools(&self) -> Option<(u64, u64)>;
-    /// The character domain's token ([`crate::character_changes::quiet`]).
     fn characters(&self) -> Option<(u64, u64)>;
-    /// The character roster's token ([`crate::roster_changes::roster`]).
     fn roster(&self) -> Option<(u64, u64)>;
 }
 
-/// The hooks' domains.
 pub struct Observer;
 impl Domains for Observer {
     fn pools(&self) -> Option<(u64, u64)> {
@@ -47,18 +26,14 @@ impl Domains for Observer {
     }
 }
 
-/// What a quiet hour must find unchanged since the held walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Key {
     pools: (u64, u64),
     characters: (u64, u64),
     roster: (u64, u64),
-    /// The country and link array headers.
     arrays: [Array; 2],
 }
 
-/// The tokens, then the array headers; `None` when any is unobserved or
-/// unreadable.
 pub(super) fn key(
     memory: &impl Memory,
     base: usize,
@@ -77,20 +52,16 @@ pub(super) fn key(
     })
 }
 
-/// The latest complete walk held for quiet hours, with its key.
 #[derive(Default)]
 pub struct Appointed {
     key: Option<Key>,
     rows: Vec<Row>,
     bytes: Vec<u8>,
-    /// Names the held walk ([`collector_projection::projection::generation`]).
     generation: u64,
-    /// The held walk's generation when the latest capture published exactly it.
     published: Option<u64>,
 }
 
 impl Appointed {
-    /// Nothing held certifies anything.
     pub fn forget(&mut self) {
         self.key = None;
         self.rows.clear();
@@ -98,7 +69,6 @@ impl Appointed {
         self.published = None;
     }
 
-    /// The generation of the held walk the latest capture published, if it published one.
     pub fn published(&self) -> Option<u64> {
         self.published
     }
@@ -107,8 +77,6 @@ impl Appointed {
         self.rows.capacity() * size_of::<Row>() + self.bytes.capacity()
     }
 
-    /// Holds `rows` and `bytes` under `key`; storage is advisory, so a walk
-    /// that cannot be held is read again next hour.
     fn hold(&mut self, key: Key, rows: &[Row], bytes: &[u8]) {
         self.forget();
         let stored = allocation::advisory(|| {
@@ -125,8 +93,6 @@ impl Appointed {
     }
 }
 
-/// Copies `held` into the front of a capture buffer; false when it cannot
-/// grow.
 pub(super) fn publish<T: Default + Copy>(held: &[T], values: &mut Vec<T>) -> bool {
     if values.len() < held.len() {
         if allocation::reserve(values, held.len() - values.len()).is_err() {
@@ -138,9 +104,6 @@ pub(super) fn publish<T: Default + Copy>(held: &[T], values: &mut Vec<T>) -> boo
     true
 }
 
-/// One hour's HiredAdvisors into the capture's `rows` and `bytes`: a quiet
-/// hour publishes the held walk; any other hour walks every country. Records
-/// the hour's counts.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -174,7 +137,6 @@ pub fn capture(
         Outcome::Rows { len } => rows.get(..len).zip(bytes.get(..walk.bytes_len)),
         _ => None,
     };
-    // Held only when the tokens and headers stood still across the walk.
     match (complete, before) {
         (Some((walked, walked_bytes)), Some(before))
             if key(memory, base, game_state, domains) == Some(before) =>
@@ -203,7 +165,6 @@ mod tests {
         }
     }
 
-    /// The domains of one test: a pool token it moves.
     struct Fake {
         pools: std::sync::atomic::AtomicU64,
     }
@@ -219,8 +180,6 @@ mod tests {
         }
     }
 
-    /// Without a readable country census nothing is quiet and nothing is
-    /// held: every hour walks (and here fails, unreadable).
     #[test]
     fn an_unreadable_census_holds_nothing_and_walks_every_hour() {
         let memory = engine_native::memory::SliceMemory {
@@ -239,9 +198,6 @@ mod tests {
         }
     }
 
-    /// A game state whose country table holds one null slot and whose link
-    /// table holds its sentinel: the census reads, and a walk finds no
-    /// appointment.
     fn empty_world() -> Vec<u8> {
         let mut bytes = vec![0_u8; 0x2000];
         let mut header = |at: usize, data: usize, count: u32| {
@@ -254,8 +210,6 @@ mod tests {
         bytes
     }
 
-    /// A quiet hour publishes the held walk without walking; a moved token
-    /// walks and holds the fresh walk.
     #[test]
     fn a_quiet_hour_publishes_the_held_walk_and_a_moved_token_walks() {
         let world = empty_world();
@@ -269,19 +223,14 @@ mod tests {
         let mut hour = |held: &mut Appointed| {
             capture(&memory, 0, 0x1000, held, &domains, &mut rows, &mut bytes).outcome
         };
-        // The first hour walks and holds the (empty) walk.
         assert_eq!(hour(&mut held), Outcome::Rows { len: 0 });
         assert!(held.key.is_some());
         let first = held.published().unwrap();
-        // A held appointment stands in for the walk's: a quiet hour publishes
-        // it, so this hour did not walk.
         held.rows.push(row(7, 0, 70, 0));
         held.bytes.extend_from_slice(b"idea");
         assert_eq!(hour(&mut held), Outcome::Rows { len: 1 });
         assert_eq!(hour(&mut held), Outcome::Rows { len: 1 });
-        // Both quiet hours published the held walk's generation.
         assert_eq!(held.published(), Some(first));
-        // A writer moved the pool token: the hour walks and holds its walk.
         domains
             .pools
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

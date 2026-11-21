@@ -7,7 +7,6 @@ import type { UnitLeaderPortrait, UnitLeaderPortraitsReply } from './types';
 
 type PortraitFact = UnitLeaderPortrait & { warnings: readonly string[] };
 
-/** A portrait to draw: a leader, at an hour that does not move with playback (the hour its row was first seen). */
 export interface PortraitAt { reference: string; hour: number }
 
 export function validatePortraits(input: unknown): UnitLeaderPortraitsReply {
@@ -15,8 +14,6 @@ export function validatePortraits(input: unknown): UnitLeaderPortraitsReply {
   return input as UnitLeaderPortraitsReply;
 }
 
-/** Each portrait is a texture decoded from the game's files the first time it is drawn (about 4 ms): a request names
- * a few, in the order the list shows them, so the rows in view are drawn first and no reply waits on a whole roster. */
 export const PORTRAITS_PER_REQUEST = 4;
 
 const specs = new Map<number, FactSpec<PortraitFact>>();

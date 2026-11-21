@@ -41,7 +41,6 @@ fn a_region_s_counts_are_live_cells_and_only_the_missions_it_records_are_named()
     assert_eq!(missions, [("0", "Mission 0", Some(0)), ("1", "Mission 1", Some(1)), ("2", "Mission name unavailable", Some(2))]);
     assert!(reply.warnings.iter().any(|warning| warning.contains("AIRWING_MISSION_TYPE_INTERCEPTION")), "{:?}", reply.warnings);
     assert_eq!(reply.theatres, Some(Vec::new()));
-    // The counts are live cells: read from a frame of the rows, never in the reply.
     let live = cells.finish();
     let mut frame = DecodedFrame { branch: 1, hour: 41, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
     *frame.tables[TableId::AirMissionCounts.index()] = TableView::Complete(TableRows::AirMissionCounts(rows.to_vec()));
@@ -76,7 +75,6 @@ fn wing(id: u64, owner: u32, region: Option<u32>) -> AirWingRow {
 
 #[test]
 fn theatres_are_the_owner_s_in_order_with_their_member_wings_regions() {
-    // Raw ids 3 and 4 both link to slot 7; raw 5 is another country's.
     let links: BTreeMap<u32, u32> = [(3, 7), (4, 7), (5, 8)].into();
     let rows = [theatre(100, 3, 2), theatre(101, 4, 1), theatre(102, 5, 0)];
     let groups = [AirTheatreGroupRow { id: 1, theatre: 100, ..Default::default() }, AirTheatreGroupRow { id: 2, theatre: 101, ..Default::default() }, AirTheatreGroupRow { id: 3, theatre: 102, ..Default::default() }];
@@ -91,7 +89,6 @@ fn theatres_are_the_owner_s_in_order_with_their_member_wings_regions() {
     let found = theatres(&rows, &groups, &members, &wings, &links, 7, name).unwrap();
     let shown: Vec<_> = found.iter().map(|theatre| (theatre.id.as_str(), theatre.regions.clone())).collect();
     assert_eq!(shown, [("101", Vec::new()), ("100", vec!["10".to_owned(), "11".to_owned()])], "game order; an empty theatre is known empty; a wing with no region adds none");
-    // Another country's member wing is never looked up; ours missing refuses the whole membership.
     assert!(theatres(&rows, &groups, &members, &wings[..1], &links, 7, name).unwrap_err().contains("wing is not recorded"));
     assert!(theatres(&rows, &groups[..1], &members, &wings, &links, 7, name).unwrap_err().contains("group is not recorded"));
     assert!(theatres(&rows, &groups, &members, &wings, &[(3, 7)].into(), 7, name).unwrap_err().contains("owner is unresolved"));
@@ -112,9 +109,6 @@ fn a_region_s_wings_are_the_owner_s_registrations_each_once_in_registration_orde
     assert_eq!(region_wings(&registrations, &wings[..3], &links, 7, 10).unwrap_err(), "registered wing 63 has no AirWings row", "a registration that does not join withholds the region");
 }
 
-/// The drill's wings read from `AirMissionWings`, as the recorder's AirMissions writer writes it
-/// from the raw rows, are the raw rows' roster for every owner and region: the same wings in the
-/// same order; the table not available is the region missing, never empty.
 #[test]
 fn a_region_s_wings_from_its_table_are_the_raw_rows_roster() {
     use recorder_derive::{air_missions::AirMissions, framework::Writers, testing};

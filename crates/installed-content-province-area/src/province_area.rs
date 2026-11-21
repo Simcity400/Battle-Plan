@@ -1,6 +1,3 @@
-//! Land raster coverage in map cells, as the engine's map (`province_geometry::EngineMap`)
-//! resolves the raster, counted as it streams in: the raster is never held whole.
-//! The province map is not equal-area: northern territory is enlarged.
 #[cfg(any(test, feature = "test-support"))]
 use crate::province_geometry::engine_map_checked;
 #[cfg(any(test, feature = "test-support"))]
@@ -13,7 +10,6 @@ use std::{
 
 #[derive(Clone, Debug, Default)]
 pub struct ProvinceAreas {
-    /// Every defined province, including unpainted land (zero) and water (zero).
     pub land: Vec<i64>,
 }
 
@@ -24,7 +20,6 @@ impl ProvinceAreas {
         Self::read_checked(layers, &mut || Ok(()))
     }
 
-    /// Cancellation leaves no partial area vector for a consumer to cache.
     pub fn read_cancellable(layers: &ResolvedLayers, cancelled: &AtomicBool) -> io::Result<Self> {
         Self::read_checked(layers, &mut || {
             if cancelled.load(Ordering::Relaxed) {
@@ -57,8 +52,6 @@ impl ProvinceAreas {
         })
     }
 
-    /// The areas of the raster `raster` hands in pieces, in file order; `definitions` is let go
-    /// of before the raster is read.
     fn stream_checked(
         definitions: installed_content_core::content::Bytes,
         raster: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
@@ -75,7 +68,6 @@ impl ProvinceAreas {
         Ok(Self { land: counted.finish()? })
     }
 
-    /// The areas of `definitions` and the raster handed as `pieces`, for tests.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_pieces(definitions: &[u8], pieces: &[&[u8]]) -> io::Result<Self> {
         Self::stream_checked(
@@ -97,7 +89,6 @@ impl ProvinceAreas {
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         check()?;
-        // Refuse ambiguous record positions rather than attach area to a different id.
         let rows = installed_content_core::map::definition_rows(definitions)?;
         for (index, row) in rows.iter().enumerate() {
             if index % 4096 == 0 {
@@ -119,7 +110,6 @@ impl ProvinceAreas {
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         check()?;
-        // Native records include slot zero; `defined` contains only nonzero ids.
         let mut land = vec![0; map.defined.last().map_or(0, |id| *id as usize + 1)];
         let mut is_land = vec![false; land.len()];
         for (index, id) in map.land.into_iter().enumerate() {
@@ -208,9 +198,6 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     }
 
-    /// The streamed count is the whole-map one on rasters handed in many pieces: 24bpp rows with
-    /// padding, an 8bpp raster whose pixels start past a palette and read across rows, unknown
-    /// colours inventing records, and a short raster refused alike.
     #[test]
     fn streamed_areas_equal_the_whole_map_count_in_any_pieces() {
         let definitions = b"0;0;0;0;land\n1;1;2;3;land\n2;2;3;4;sea\n3;3;4;5;lake\n4;4;5;6;land\n5;7;7;7;land\n";
@@ -239,7 +226,6 @@ mod tests {
         for row in 0..4_u8 {
             indexed.extend([1, 2, 3, row, 5, 6, 7, 8]);
         }
-        // A 1bpp raster too narrow to have row bytes: every read refused alike.
         let mut narrow = indexed[..54].to_vec();
         narrow[10..14].copy_from_slice(&54_u32.to_le_bytes());
         narrow[18..22].copy_from_slice(&3_i32.to_le_bytes());
@@ -259,7 +245,6 @@ mod tests {
         assert_eq!(refused, ProvinceAreas::from_assets(definitions, short).unwrap_err().to_string());
     }
 
-    /// A 24bpp bitmap of `width` by `height` file rows of `colours`, rows padded to four bytes.
     fn bitmap_rows(colours: &[[u8; 3]], width: usize, height: usize) -> Vec<u8> {
         let stride = (width * 3).div_ceil(4) * 4;
         let mut bytes = vec![0; 54 + stride * height];
@@ -377,7 +362,6 @@ mod tests {
         let changed = ProvinceAreas::read(&layers).unwrap_err().to_string();
         assert!(changed.contains("changed since verification"), "{changed}");
         assert!(changed.contains("custom-territory.bmp"), "{changed}");
-        // A new content identity lets the bitmap reader inspect the unsupported form.
         let layers = ResolvedLayers::from_folders(&[
             (&base, &[]),
             (&dlc, &[]),

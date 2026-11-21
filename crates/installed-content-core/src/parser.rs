@@ -1,17 +1,3 @@
-//! Shared byte-preserving Clausewitz text model with two readers.
-//!
-//! Script content uses [`native`] to follow lexer and field-dispatch consumption. Key
-//! dispatch, token kinds, `@name` variables, comparisons, EOF and text consumed out of
-//! step with braces share that behavior.
-//!
-//! [`parse`] builds a balanced tree for saves and descriptor consumers. Save brace
-//! mismatches are corruption and refuse the read. Both readers return [`Item`]s with
-//! the same value model.
-//!
-//! Numbers remain lexical bytes until callers choose their representation. Quoted
-//! strings decode escaped quotes and backslashes while preserving other escape
-//! sequences, paths and formatting bytes without UTF-8 replacement or invented numeric
-//! precision.
 
 use std::io;
 
@@ -19,7 +5,6 @@ pub mod decimal;
 pub mod native;
 pub use native::Kind;
 
-/// Maximum number of nested ordinary or color blocks.
 pub const MAX_DEPTH: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +22,6 @@ impl Value {
         }
     }
 
-    /// Returns `None` for a block or a scalar that is not valid UTF-8.
     pub fn scalar_str(&self) -> Option<&str> {
         std::str::from_utf8(self.scalar()?).ok()
     }
@@ -49,34 +33,22 @@ impl Value {
         }
     }
 
-    /// Stored script strings take value-token text up to its first NUL. A line feed is
-    /// reported and replaces the text with [`UNREADABLE_STRING`]. A block returns
-    /// `None`; one-value script replay stores its opening brace as a scalar instead.
     pub fn read_string(&self) -> Option<&[u8]> {
         Some(read_string(self.scalar()?))
     }
 
-    /// [`Self::read_string`] converted to text. Stored bytes are not filtered; invalid
-    /// UTF-8 gives [`NotText::NotUtf8`] rather than absence, so readers refuse by name
-    /// what they cannot hold.
     pub fn read_str(&self) -> Result<&str, NotText> {
         text(self.read_string().ok_or(NotText::Block)?)
     }
 
-    /// Value-token text through its first NUL, without the stored-string line-feed
-    /// check, converted as in [`Self::read_str`].
     pub fn c_str(&self) -> Result<&str, NotText> {
         text(c_string(self.scalar().ok_or(NotText::Block)?))
     }
 }
 
-/// Why a stored text is not the port's text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotText {
-    /// A block where the reader stores one value.
     Block,
-    /// Bytes the game stores that are not UTF-8, which the port's text
-    /// cannot hold.
     NotUtf8(Vec<u8>),
 }
 
@@ -93,15 +65,10 @@ impl std::fmt::Display for NotText {
     }
 }
 
-/// The first stored text a reader's projection could not hold, named by
-/// its field: the projection goes on without it, and the reader that owns
-/// the definition refuses it (a file gap, [`crate::coverage`]) instead of
-/// answering without the text or from an earlier one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Unheld(Option<String>);
 
 impl Unheld {
-    /// The text, or `None` with the first failure kept.
     pub fn keep<'a>(&mut self, field: &str, text: Result<&'a str, NotText>) -> Option<&'a str> {
         text.inspect_err(|refused| {
             self.0
@@ -110,12 +77,10 @@ impl Unheld {
         .ok()
     }
 
-    /// The first failure, if any.
     pub fn cause(&self) -> Option<&str> {
         self.0.as_deref()
     }
 
-    /// Keeps `other`'s failure unless this one has an earlier one.
     pub fn absorb(&mut self, other: &Self) {
         if self.0.is_none() {
             self.0.clone_from(&other.0);
@@ -123,17 +88,14 @@ impl Unheld {
     }
 }
 
-/// Stored bytes as the port's text, or why they are not.
 pub fn text(bytes: &[u8]) -> Result<&str, NotText> {
     std::str::from_utf8(bytes).map_err(|_| NotText::NotUtf8(bytes.to_vec()))
 }
 
-/// A token's text as a C string: up to its first NUL.
 pub fn c_string(bytes: &[u8]) -> &[u8] {
     &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())]
 }
 
-/// Read exact C-string `yes` or `no`; failure stores nothing.
 pub fn read_bool(text: &[u8]) -> Option<bool> {
     match c_string(text) {
         b"yes" => Some(true),
@@ -142,7 +104,6 @@ pub fn read_bool(text: &[u8]) -> Option<bool> {
     }
 }
 
-/// Apply boolean assignments in order; a failed conversion keeps the previous value.
 pub fn read_bool_field(items: &[Item], key: &str, default: bool) -> bool {
     items
         .iter()
@@ -152,11 +113,8 @@ pub fn read_bool_field(items: &[Item], key: &str, default: bool) -> bool {
         })
 }
 
-/// Stored replacement for a script string containing a line feed.
 pub const UNREADABLE_STRING: &[u8] = b"Unreadable String";
 
-/// Copy token text up to its first NUL. A line feed replaces the stored text with
-/// [`UNREADABLE_STRING`].
 pub fn read_string(text: &[u8]) -> &[u8] {
     let text = c_string(text);
     if text.contains(&b'\n') {
@@ -168,41 +126,22 @@ pub fn read_string(text: &[u8]) -> &[u8] {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
-    /// `None` represents an anonymous list element, block, or file header.
     pub key: Option<Vec<u8>>,
-    /// The key is quoted, so it bypasses keyword lookup and cannot reach keyword
-    /// dispatch. Ask [`Item::keyword`] rather than comparing key bytes.
     pub key_quoted: bool,
-    /// The operator between a key and value. `<` and `>` end bare tokens and each form
-    /// their own operator beside `=`, so `skill>@x` has a key, operator and value.
-    /// Anonymous items use [`Operator::Equals`].
     pub operator: Operator,
     pub value: Value,
-    /// The source value token's kind after variable resolution, or the current lexer
-    /// token for [`native::Shape::Current`]. References inherit their definition's
-    /// kind. [`Kind::End`] keeps the text from a failed advance or an empty value
-    /// before `}`; that text cannot make it a keyword, number or quoted string. Use
-    /// [`Item::quoted`], [`Item::value_keyword`] and [`Item::number`]. The tree
-    /// ([`parse`]) supplies [`Kind::Bare`], [`Kind::Quoted`] or [`Kind::Open`] for
-    /// blocks.
     pub kind: Kind,
 }
 
-/// Operators are single characters: `<=` is `<` followed by `=`, `!` starts a comment,
-/// and `?=` is not a field operator.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Operator {
-    /// `=`, token 1.
     #[default]
     Equals,
-    /// `<`, token 0x1D4.
     Less,
-    /// `>`, token 0x1D3.
     Greater,
 }
 
 impl Operator {
-    /// The operator's one character.
     pub fn text(self) -> &'static [u8] {
         match self {
             Self::Equals => b"=",
@@ -212,73 +151,51 @@ impl Operator {
     }
 }
 
-/// A bare key eligible for keyword lookup uses an ASCII-lowercased copy. Dispatch
-/// compares the resulting token identity without case; the registry alone determines
-/// whether the key is a keyword, and each reader selects the keywords it handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keyword<'a>(&'a [u8]);
 
-/// A text token's name under the lexer's ASCII case fold.
 pub fn fold_token(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
 impl<'a> Keyword<'a> {
-    /// Whether this is the keyword `name` (ASCII, compared without case).
     pub fn is(self, name: &str) -> bool {
         self.0.eq_ignore_ascii_case(name.as_bytes())
     }
 
-    /// The lexer's ASCII-lowercased copy, for matching reader keywords. Non-ASCII bytes
-    /// cannot become keyword bytes.
     pub fn folded(self) -> Vec<u8> {
         self.0.to_ascii_lowercase()
     }
 
-    /// The key's text up to its first NUL, the token the lexer looks up, for a reader that
-    /// uses its text.
     pub fn text(self) -> &'a [u8] {
         self.0
     }
 }
 
 impl Item {
-    /// The key seen by keyword dispatch: its text up to its first NUL, as the lexer looks
-    /// it up. Anonymous items, quoted keys, bare keys starting with a digit, `-` or NUL,
-    /// and punctuation tokens (`=` `<` `>` `{` `}` `(` `)` `,` `?=`) return `None`. These
-    /// all take the reader's nonkeyword branch.
     pub fn keyword(&self) -> Option<Keyword<'_>> {
         let key = c_string(self.key.as_deref()?);
         looked_up(key, self.key_quoted).then_some(Keyword(key))
     }
 
-    /// The key's text as a reader that takes it as a name stores it (an
-    /// idea's or a group's token, a definition's name), converted as
-    /// [`Value::read_str`] converts a value; an anonymous item's is empty.
     pub fn key_str(&self) -> Result<&str, NotText> {
         text(self.key.as_deref().unwrap_or_default())
     }
 
-    /// Whether the key is the keyword `name` (see [`Self::keyword`]).
     pub fn keyword_is(&self, name: &str) -> bool {
         self.keyword().is_some_and(|keyword| keyword.is(name))
     }
 
-    /// The ASCII-folded bare value up to its first NUL, as keyword dispatch sees it.
-    /// Quoted values, numbers, punctuation, End tokens regardless of retained text, and
-    /// blocks return `None` and take the nonkeyword branch.
     pub fn value_keyword(&self) -> Option<String> {
         let text = c_string(self.value.scalar()?);
         (self.kind == Kind::Bare && looked_up(text, false))
             .then(|| String::from_utf8_lossy(&text.to_ascii_lowercase()).into_owned())
     }
 
-    /// The value is a quoted string, which variable resolution always leaves literal.
     pub fn quoted(&self) -> bool {
         self.kind == Kind::Quoted && matches!(self.value, Value::Scalar(_))
     }
 
-    /// The value is a bare number token as recognized by [`number_token`].
     pub fn number(&self) -> bool {
         self.kind == Kind::Bare
             && self
@@ -294,7 +211,6 @@ pub struct Document {
 }
 
 impl Document {
-    /// Finds the first occurrence. Duplicate keys remain in source order.
     pub fn get(&self, key: impl AsRef<[u8]>) -> Option<&Value> {
         self.items
             .iter()
@@ -312,8 +228,6 @@ impl Document {
             .map(|item| &item.value)
     }
 
-    /// All values whose keys match under the shared ASCII case fold ([`fold_token`]),
-    /// so `ENABLE_EQUIPMENTS` matches `enable_equipments`.
     pub fn get_all_keyword<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a Value> + 'a {
         self.items
             .iter()
@@ -322,25 +236,18 @@ impl Document {
     }
 }
 
-/// Whether an item's key is `keyword` as the lexer identifies tokens: only ASCII A–Z
-/// fold (see [`Document::get_all_keyword`]).
 pub fn is_keyword(item: &Item, keyword: &str) -> bool {
     item.key
         .as_deref()
         .is_some_and(|key| key.eq_ignore_ascii_case(keyword.as_bytes()))
 }
 
-/// FNV-1a over a variable name after its `@`.
 fn variable_hash(name: &[u8]) -> u32 {
     name.iter().fold(0x811c_9dc5, |hash, byte| {
         (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
     })
 }
 
-/// Whether a key's C string is eligible for keyword lookup: a nonempty bare token that
-/// starts with neither a digit nor `-` and is not punctuation (`=` `<` `>` `{` `}` `(` `)`
-/// `,` `?=`). Quoted tokens are ineligible. Shared by [`Item::keyword`] and the script
-/// reader's `Field::keyword`.
 pub(crate) fn looked_up(key: &[u8], quoted: bool) -> bool {
     !quoted
         && key.first().is_some_and(|first| {
@@ -351,10 +258,6 @@ pub(crate) fn looked_up(key: &[u8], quoted: bool) -> bool {
         })
 }
 
-/// Whether a bare token is numeric: starts with a digit or `-`, or its text through the
-/// first NUL contains only digits, `-` and `.`. A leading NUL therefore gives a number
-/// token. Quoted tokens stay quoted, and a slot with no byte retains its initial empty
-/// kind, including the value before `}`.
 pub fn number_token(text: &[u8], quoted: bool) -> bool {
     let string = c_string(text);
     !quoted
@@ -367,19 +270,11 @@ pub fn number_token(text: &[u8], quoted: bool) -> bool {
         }
 }
 
-/// Parses a complete text document, including an optional leading UTF-8 BOM:
-/// a save or one of the formats the tree reads (see the module).
-///
-/// Errors use zero-based byte offsets in the original input. `HOI4txt` is an
-/// ordinary anonymous scalar, so save-header validation belongs to the caller.
 pub fn parse(bytes: &[u8]) -> io::Result<Document> {
     crate::content::io_counts::parse("balanced grammar", bytes);
     Parser::new(bytes, false, false).document()
 }
 
-/// Project save writer output, including an empty name emitted as `=fixed5` inside
-/// `variables`. Script loading instead takes `=` as a key with a retained value; that
-/// recovery does not represent the saved state.
 pub fn parse_save(bytes: &[u8]) -> io::Result<Document> {
     crate::content::io_counts::parse("save grammar", bytes);
     let mut parser = Parser::new(bytes, false, false);
@@ -387,8 +282,6 @@ pub fn parse_save(bytes: &[u8]) -> io::Result<Document> {
     parser.document()
 }
 
-/// The 1-based lines of a block's `{`, first token and `}`, counting only line feeds.
-/// A block closed by EOF ([`parse_unclosed`]) closes on the input's last line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BlockLines {
     pub open: u32,
@@ -396,9 +289,6 @@ pub struct BlockLines {
     pub close: u32,
 }
 
-/// [`parse_unclosed`] with the lines of every block and tagged block, in the
-/// order their `{` appear: a pre-order walk of the document's
-/// [`Value::Block`] and [`Value::Tagged`] values meets them in this order.
 pub fn parse_unclosed_lines(input: &[u8]) -> io::Result<(Document, Vec<BlockLines>, bool)> {
     crate::content::io_counts::parse("unclosed grammar with lines", input);
     let mut parser = Parser::new(input, true, true);
@@ -411,11 +301,6 @@ pub fn parse_unclosed_lines(input: &[u8]) -> io::Result<(Document, Vec<BlockLine
     ))
 }
 
-/// Every scalar of `bytes` in order, as the parser's own lexer reads and
-/// decodes it (comment boundaries, quoting and escapes), for text the
-/// parser refuses. No error stops the scan: a structural error does not
-/// concern the lexer, a NUL byte separates words and an unterminated quote
-/// runs to the end of the text.
 pub fn scalars(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut lexer = Lexer {
         bytes,
@@ -449,19 +334,13 @@ struct Token {
 struct Lexer<'a> {
     bytes: &'a [u8],
     position: usize,
-    /// The end of the input ends an open quoted string ([`parse_unclosed`]).
     at_eof: EndOfFile,
-    /// [`scalars`]' mode: NUL bytes separate words and an unterminated
-    /// quote ends the text, instead of either failing.
     lenient: bool,
 }
 
-/// What the end of the input does to what the text leaves open.
 #[derive(Clone, Copy, Default)]
 struct EndOfFile {
-    /// Close it, as the game's readers do; otherwise it is an error.
     closes: bool,
-    /// Something was closed.
     closed: bool,
 }
 
@@ -536,14 +415,11 @@ impl Lexer<'_> {
                         bytes.push(escaped);
                         self.position += 1;
                     }
-                    // Unknown escape sequences are literal bytes, including
-                    // the backslash. A trailing slash still cannot close a quote.
                     _ => bytes.push(byte),
                 },
                 _ => bytes.push(byte),
             }
         }
-        // A quoted token ends at EOF and retains the text read so far.
         if self.at_eof.closes {
             self.at_eof.closed = true;
             return Ok(bytes);
@@ -554,11 +430,6 @@ impl Lexer<'_> {
         Err(invalid(start, "unterminated quoted string"))
     }
 }
-/// Parse a `.gfx`, `.font` or particle file, closing open blocks at EOF as its reader
-/// loops do. EOF also ends quoted strings and closes blocks inside comments. Script
-/// content uses [`native`], whose loops stop there directly. Return whether EOF closed
-/// anything for caller reporting. A truncated save remains an error: [`parse`] never
-/// recovers.
 pub fn parse_unclosed(input: &[u8]) -> io::Result<(Document, bool)> {
     crate::content::io_counts::parse("unclosed grammar", input);
     let mut parser = Parser::new(input, true, false);
@@ -570,13 +441,11 @@ struct Parser<'a> {
     lexer: Lexer<'a>,
     lookahead: Option<Token>,
     lines: Option<Lines>,
-    /// The offset of the last closing brace a block ended on.
     closed_at: usize,
     save_variables: bool,
 }
 
 struct Lines {
-    /// Offsets of every `\n`, ascending.
     newlines: Vec<usize>,
     blocks: Vec<BlockLines>,
 }
@@ -658,8 +527,6 @@ impl<'a> Parser<'a> {
                             "empty saved variable requires fixed5",
                         ));
                     };
-                    // The writer emits signed fixed5 with at most five fractional
-                    // digits and no leading plus.
                     let decimal = decimal::Decimal::parse(&bytes).map_err(|error| {
                         invalid(value.offset, &format!("empty saved variable: {error}"))
                     })?;
@@ -680,8 +547,6 @@ impl<'a> Parser<'a> {
                 TokenKind::Operator(Operator::Equals) => {
                     return Err(invalid(token.offset, "expected an item before '='"));
                 }
-                // Script replay takes a stray `<` or `>` as a key, out of step with the
-                // text. The tree keeps it as an anonymous value.
                 TokenKind::Operator(operator) => items.push(Item {
                     key: None,
                     key_quoted: false,
@@ -741,7 +606,6 @@ impl<'a> Parser<'a> {
         Ok(items)
     }
 
-    /// A value, and its token's kind.
     fn value(&mut self, depth: usize, variable_map: bool) -> io::Result<(Value, Kind)> {
         let token = self
             .next()?
@@ -756,8 +620,6 @@ impl<'a> Parser<'a> {
                 let kind = tree_kind(&value, quoted);
                 Ok((value, kind))
             }
-            // The field reader takes any token after the operator as its value: `a >=
-            // 5` takes `=`.
             TokenKind::Operator(operator) => Ok((
                 Value::Scalar(operator.text().to_vec()),
                 match operator {
@@ -813,7 +675,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// The kind the tree gives a scalar or a tagged block it read.
 fn tree_kind(value: &Value, quoted: bool) -> Kind {
     match value {
         Value::Scalar(_) if quoted => Kind::Quoted,

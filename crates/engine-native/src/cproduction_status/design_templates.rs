@@ -1,5 +1,3 @@
-//! Owner-scoped consumable equipment-design discount records. Reads preserve
-//! native order, duplicate equipment tokens and exhausted unpruned records.
 use super::*;
 use engine_sites::Rva;
 
@@ -16,8 +14,6 @@ pub struct DesignTemplate {
     pub equipment: Vec<u32>,
 }
 
-/// The getter deliberately does not filter remaining uses. First equal-factor
-/// match wins; clamping belongs to the caller after selection.
 pub fn selected<'a>(
     entries: &'a [DesignTemplate],
     equipment: &[u32],

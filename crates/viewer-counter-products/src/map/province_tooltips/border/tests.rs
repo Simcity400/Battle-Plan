@@ -257,8 +257,6 @@ fn render(
 #[test]
 fn native_sum_uses_raw_hp_skill_and_doctrine_on_whole_aggregates() {
     let (content, frame, links) = fixture();
-    // Own: (1500+100)*2. Enemy: 1050*4*3; the empty province contributes
-    // controller33, while controller aliases111/222 multiply only once.
     assert_eq!(
         render(&content, &frame, &links).unwrap(),
         "    Border        Our 0.03200\n        Enemy 0.12600\n\n        Share 0.20253\n        Win 0.80000\n        Loss 0.20000\n\n        Hint\n"
@@ -316,7 +314,7 @@ fn empty_provinces_demand_controller_doctrine_and_aliases_do_not_repeat_it() {
 #[test]
 fn demanded_stats_and_unread_skill_refuse_but_native_invalid_skill_is_read() {
     let (content, mut frame, links) = fixture();
-    assert!(render(&content, &frame, &links).is_ok()); // Skill validity byte is zero.
+    assert!(render(&content, &frame, &links).is_ok());
     let statuses = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
     let mut missing = statuses.clone();
     missing

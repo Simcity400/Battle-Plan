@@ -10,7 +10,6 @@ fn summary(run: u32, table: u32, first: u32) -> Extent {
 }
 
 fn entry(run: u32, table: u32, block: u32) -> Entry {
-    // Table 3 is a log: its parts and its count say where its rows' ordinals lie.
     let log = table == 3;
     let restore = RestoreEntry { whole: table % 2 == 0, streams: vec![(0, vec![Chunk { first: 0, frame: frame(500, vec![]), prefix: (table % 2 == 1).then(|| frame(400, vec![])) }])], log };
     let ordinal = |rows: u64| if log { (1 << 32) + 1_000 + rows } else { 0 };
@@ -32,7 +31,6 @@ fn entry(run: u32, table: u32, block: u32) -> Entry {
 }
 
 fn head(hours: u16) -> BlockHead {
-    // Two chunks of strings in a block of even hours, none otherwise.
     let strings = if hours % 2 == 0 { vec![StringChunk { first: 77, frame: frame(12, vec![]) }, StringChunk { first: 4_077, frame: frame(14, vec![]) }] } else { Vec::new() };
     BlockHead { hours, clock: frame(10, vec![]), strings, first_string: 77, chain: [3; 32] }
 }

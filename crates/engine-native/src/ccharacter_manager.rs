@@ -1,15 +1,9 @@
-//! CCharacterManager owns both serialized character vectors. Its name index is a lossy cache.
 
 use engine_sites::Rva;
-/// Character-manager vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_3228);
-/// Serialized historical character-pointer array.
 pub const HISTORICAL_CHARACTERS: usize = 0x10;
-/// Serialized dynamic character-pointer array.
 pub const DYNAMIC_CHARACTERS: usize = 0x28;
-/// Constructor installing the empty-index sentinel.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x006f_c660);
-/// Clear operation restoring the empty-index sentinel.
 pub const CLEAR_RVA: Rva = Rva(0x0070_16f0);
 
 use crate::{Memory, ccharacter, cgame_state, cpdx_array::Array, read, read_slice};
@@ -21,7 +15,6 @@ pub struct Roster {
     base: usize,
 }
 
-/// An ephemeral authenticated roster entry, never an on-disk row.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry {
     pub pointer: usize,
@@ -31,18 +24,12 @@ pub struct Entry {
     pub ordinal: u32,
 }
 
-/// An owned, authenticated occurrence from the current character acquisition.
-/// Country readability was checked by the producer; portraits do not use its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortraitIdentity {
     pub pointer: usize,
     pub character: u32,
 }
 
-/// A complete census may be loaned only within the callback that acquired it.
-/// Occurrences retain roster order, including aliases and duplicate identities.
-/// Storage has no fixed limit: a roster larger than the current capacity is
-/// published as incomplete, records its native count and grows off-thread.
 #[derive(Debug)]
 pub struct PortraitCensus {
     rows: Vec<PortraitIdentity>,
@@ -50,25 +37,19 @@ pub struct PortraitCensus {
     complete: bool,
     written: usize,
     unchanged: bool,
-    /// Native roster length of the latest acquisition, kept until growth.
     required: usize,
-    /// Names the rows since the latest [`Self::begin`]: no other census or
-    /// acquisition ever had it.
     stamp: u64,
 }
 
-/// A census stamp no earlier acquisition had.
 fn fresh_stamp() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl PortraitCensus {
-    /// Fixture starting capacity; production follows the observed roster.
     #[cfg(test)]
     pub const INITIAL_CAPACITY: usize = 65536;
 
-    /// Allocate off the acquisition path. Appends never grow this storage.
     pub fn try_new(capacity: usize) -> std::io::Result<Self> {
         Ok(Self {
             rows: crate::allocation::vec(capacity)?,
@@ -86,18 +67,14 @@ impl PortraitCensus {
         Self::try_new(capacity).unwrap()
     }
 
-    /// Record the authenticated native roster length as soon as its headers
-    /// are known, so a capture that stops early still demands the full size.
     pub fn expect(&mut self, count: usize) {
         self.required = self.required.max(count);
     }
 
-    /// Whether the latest roster did not fit the owned storage.
     pub fn needs_growth(&self) -> bool {
         self.required > self.rows.capacity()
     }
 
-    /// Off-thread only: reserve the whole observed roster in one step.
     pub fn grow(&mut self) -> std::io::Result<()> {
         if self.needs_growth() {
             let additional = self.required.saturating_sub(self.rows.len());
@@ -119,8 +96,6 @@ impl PortraitCensus {
         self.complete = false;
     }
 
-    /// The producer must have freshly authenticated this occurrence and read
-    /// its country field successfully before appending it.
     pub fn push(&mut self, row: PortraitIdentity) {
         if self.written < self.rows.capacity() {
             if let Some(previous) = self.rows.get_mut(self.written) {
@@ -141,13 +116,10 @@ impl PortraitCensus {
         self.rows.truncate(self.written);
     }
 
-    /// Exact occurrence equality with the preceding complete capture, without
-    /// hashing or assuming that equal roster headers imply equal elements.
     pub fn unchanged(&self) -> bool {
         self.complete && self.unchanged
     }
 
-    /// Equal stamps name the same rows: no acquisition began since.
     pub fn stamp(&self) -> u64 {
         self.stamp
     }
@@ -195,10 +167,6 @@ impl Roster {
         self.count
     }
 
-    /// Split an already authenticated, current header snapshot in native order.
-    /// Each cursor retains the original roster/ordinal identities. This does
-    /// not authenticate pointer elements or characters: consumers must still
-    /// acquire those freshly within the same stopped-world capture.
     pub fn sections(self) -> [(Array, Self); 2] {
         std::array::from_fn(|index| {
             let array = self.arrays[index];
@@ -215,8 +183,6 @@ impl Roster {
         })
     }
 
-    /// One pass over the exact pointer vectors. Each chunk is confined to one
-    /// roster's declared length; no identity or domain fields survive the pass.
     pub fn cursor(self) -> Cursor {
         Cursor {
             roster: self,
@@ -240,9 +206,6 @@ impl Roster {
         })
     }
 
-    /// Resolves one current slot and batches exact domain fields independently.
-    /// Required fields are names, country-leader map, unit pointer, advisor map.
-    /// The view belongs to this acquisition and never survives the callback.
     pub fn view<'a, M: Memory>(
         self,
         memory: &'a M,
@@ -273,8 +236,6 @@ impl Roster {
     }
 }
 
-/// Stack storage for 32 consecutive native pointers, fresh for each census.
-/// A failed chunk publishes no pointer from its potentially copied prefix.
 pub struct Cursor {
     roster: Roster,
     index: u32,
@@ -297,24 +258,16 @@ impl Cursor {
             .map(Some)
     }
 
-    /// The next roster occurrence's pointer, in `next`'s order and with its
-    /// pointer failures, for a consumer that authenticates the identity in
-    /// its own gather (`ccharacter::identity_with_spans`).
     pub fn next_occurrence(&mut self, memory: &impl Memory) -> Result<Option<usize>, &'static str> {
         Ok(self.next_pointer(memory)?.map(|(pointer, _, _)| pointer))
     }
 
-    /// Stage the selected first-source fields for one native pointer page.
-    /// The requested fields stay fixed while the page is staged. Refill
-    /// caller-owned storage so no complete page is moved through Result/Option.
     pub fn refill_page<'a, M: Memory>(
         &mut self,
         memory: &'a M,
         page: &mut ViewPage<'a, M>,
         required: [bool; 4],
     ) -> Result<bool, &'static str> {
-        // Only this prefix is observable. Old slots need not be cleared; every
-        // newly admitted slot is overwritten before len publishes it.
         page.len = 0;
         page.next = 0;
         page.terminal = None;
@@ -349,8 +302,6 @@ impl Cursor {
                     page.len += 1;
                 }
                 Err(reason) => {
-                    // Defer this slot's error until its predecessors' bodies
-                    // have retained their own first domain failures.
                     page.terminal = Some(reason);
                     break;
                 }
@@ -400,9 +351,6 @@ impl Cursor {
     }
 }
 
-/// Callback-local owned Views for one already copied roster page. Numeric
-/// source addresses are only interpreted through each View's borrowed Memory;
-/// a native page is never retained in a job or sent to the decode worker.
 pub struct ViewPage<'a, M: Memory> {
     views: [Option<ccharacter::View<'a, M>>; 32],
     len: usize,
@@ -435,8 +383,6 @@ impl<'a, M: Memory> Iterator for ViewPage<'a, M> {
     }
 }
 
-/// Visits both serialized rosters in native order. The lossy name index is not
-/// consulted. Identity fields are read once and shared with the visitor.
 pub fn visit(
     memory: &impl Memory,
     base: usize,

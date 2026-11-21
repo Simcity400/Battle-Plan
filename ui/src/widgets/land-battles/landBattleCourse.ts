@@ -9,7 +9,6 @@ import type { BattleCountryLabel, BattleSide } from '../battles/battleRows';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { LandBattleRow } from './landBattlesData';
 
-/** A design as a course read names it; same-named designs stay apart by handle. */
 export interface LandDesign { name: string | null; variant: string }
 export interface CourseSide { manpower: number | string; equipment: Map<number, bigint> | string }
 export interface CourseRead { hour: number; terminal: boolean; sides: [CourseSide, CourseSide] | string }
@@ -24,7 +23,6 @@ const pairs = (v: unknown, size: number): v is [number, string][] => Array.isArr
   && int(entry[0]) && entry[0] >= 0 && entry[0] < size && amount(entry[1]));
 const malformed = () => new Error('The land battle course is malformed.');
 
-/** Rebuilds every read's full sides: a side lists every design, or changes its previous read's amounts by position. */
 export function validateLandBattleCourse(v: unknown): LandCourse {
   if (!object(v) || !object(v.battle) || typeof v.battle.id !== 'string' || !Array.isArray(v.designs) || !texts(v.contentWarnings)) throw malformed();
   const designs: LandDesign[] = [];
@@ -71,28 +69,22 @@ export function validateLandBattleTerrain(v: unknown): { provinces: LandTerrain[
   return v as { provinces: LandTerrain[]; warnings: string[] };
 }
 
-/** Terrain names read so far. Terrain is a content fact, so they are held for one
- * client, recording revision and content revision; any change starts empty. */
 export interface HeldTerrain { client: object; scope: string; names: Map<number, LandTerrain> }
 export function heldTerrain(held: HeldTerrain | null, client: object, source: { id: string; revision: string }, content: number): HeldTerrain {
   const scope = JSON.stringify([source.id, source.revision, content]);
   return held?.client === client && held.scope === scope ? held : { client, scope, names: new Map() };
 }
 
-/** The drawn provinces whose terrain is not held, once each, in order. */
 export function missingTerrain(held: HeldTerrain, drawn: readonly number[]): number[] {
   return [...new Set(drawn)].filter(province => !held.names.has(province)).sort((a, b) => a - b);
 }
 
-/** A course chart's value range: zero to its largest value, at least one; null with
- * nothing to draw. A loop, so a long battle's every read fits. */
 export function courseExtent(runs: readonly (readonly Run[])[]): [number, number] | null {
   let most = 1, any = false;
   for (const side of runs) for (const run of side) { any = true; if (run.value > most) most = run.value; }
   return any ? [0, most] : null;
 }
 
-/** Each side's manpower lost so far as held steps, read by read up to \`at\`; an unread hour breaks the line. */
 export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {
   const runs: [Run[], Run[]] = [[], []];
   const reads = course.reads.filter(read => read.hour <= at);
@@ -109,7 +101,6 @@ export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {
   return runs;
 }
 
-/** Each side's divisions at every recorded read up to \`at\`; an unrecorded roster or a gap breaks the line. */
 export function courseDivisions(course: LandCourse, at: number): [Run[], Run[]] {
   const runs: [Run[], Run[]] = [[], []];
   for (const side of [0, 1]) {
@@ -126,8 +117,6 @@ export function courseDivisions(course: LandCourse, at: number): [Run[], Run[]] 
 }
 
 export interface DesignLoss { name: string; raw: bigint; designs: number; variants: string[] }
-/** The latest read at or before \`at\` that read a side's equipment, by design name: same-named designs
- * sum exactly, zero rows are left out (counted), largest first. */
 export function courseEquipment(course: LandCourse, at: number): { hour: number; terminal: boolean; sides: [DesignLoss[] | string, DesignLoss[] | string]; zero: [number, number] } | null {
   let read: CourseRead | undefined;
   for (let index = course.reads.length - 1; index >= 0; index--) {
@@ -153,11 +142,9 @@ export function courseEquipment(course: LandCourse, at: number): { hour: number;
   return { hour: read.hour, terminal: read.terminal, sides, zero };
 }
 
-/** Whole equipment, as the game counts it; the exact fixed5 amount stays in the hover. */
 export const wholeEquipment = (raw: bigint) => formatFixed(raw, 5, 0);
 export const exactEquipment = (raw: bigint) => formatAmount(raw, 5, 5);
 
-/** "116 days" in a row, "116 days 8 hours" in a tooltip; a minimum says so. */
 export function lengthText(hours: number, atLeast: boolean, long: boolean): string {
   const days = Math.floor(hours / 24), rest = hours % 24;
   const unit = (count: number, one: string, many: string) => `${usNumber.format(count)} ${count === 1 ? one : many}`;
@@ -166,7 +153,6 @@ export function lengthText(hours: number, atLeast: boolean, long: boolean): stri
   return atLeast ? `at least ${text}` : text;
 }
 
-/** What a side shows: one country's flag and name, or a coalition's flags. */
 export interface SideLook { countries: { tag: string; hour: number; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean }[]; name: string | null; unknown: string | null }
 export function sideLook(side: BattleSide, country: BattleCountryLabel): SideLook {
   const countries = side.countries.map(part => ({ tag: part.tag, hour: part.hour, ...country(part.tag, part.hour) }));
@@ -174,14 +160,12 @@ export function sideLook(side: BattleSide, country: BattleCountryLabel): SideLoo
 }
 
 export type BattleOutcome = { kind: 'ongoing' } | { kind: 'won'; side: number } | { kind: 'unknown'; text: string };
-/** The game's verdict at the shown hour; an ending or verdict that was not read stays unknown in plain words. */
 export function battleOutcome(row: LandBattleRow): BattleOutcome {
   if (row.end === null) return { kind: 'ongoing' };
   if ('unknown' in row.end) return { kind: 'unknown', text: row.end.unknown };
   return 'unknown' in row.winner ? { kind: 'unknown', text: row.winner.unknown } : { kind: 'won', side: row.winner.side };
 }
 
-/** The tooltip's loss note: one dated status for every loss value. */
 export function lossNote(row: LandBattleRow): string | undefined {
   if (!row.lossRead) return undefined;
   return `${row.lossRead.terminal ? 'Final losses' : 'Losses so far'}, read ${formatDateTime(row.lossRead.hour)}`;
@@ -193,7 +177,6 @@ export const peakText = (peak: { value: number; hour: number } | null, atLeast =
 const SIDES = ['Attackers', 'Defenders'] as const;
 const placeName = (row: LandBattleRow, pending: boolean) => row.place.name ?? (pending ? 'Loading…' : 'Unnamed province');
 
-/** The winners by name: one or two countries in full, more as the first and a count. */
 export function winners(look: SideLook, side: string): string {
   const names = look.countries.map(part => part.name);
   if (names.length === 0) return side;
@@ -201,7 +184,6 @@ export function winners(look: SideLook, side: string): string {
   return `${names[0]} and ${names.length - 1} more`;
 }
 
-/** One compact summary: dates, length, size, each side and the verdict; one dated loss note. */
 export function battleTooltip(row: LandBattleRow, looks: readonly SideLook[], terrain: string | null, colours: readonly string[], pending: boolean): TooltipContent {
   const rows: TooltipRow[] = [];
   if (terrain) rows.push({ label: 'Terrain', value: terrain });

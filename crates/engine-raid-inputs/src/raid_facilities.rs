@@ -1,7 +1,3 @@
-//! Hourly raid-target tooltip operands. Select the first program at the
-//! target province in the controller's status, then its optional project token.
-//! Starting, cancelling, completion and script effects can update this at any
-//! hour, independently of daily project history. No game function is called.
 
 use crate::{
     Memory, ccountry, nproject_cprogram as program, nproject_cprogram_status as status, read,
@@ -10,14 +6,12 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
-    /// Raw country id whose status contains this occurrence.
     pub country: u32,
     pub ordinal: u32,
     pub id: u32,
     pub owner: u32,
     pub province: u32,
     pub active_project: Option<u32>,
-    /// Selected project's stored definition token, absent for a missing pool entry even when the program retains a token.
     pub project_definition: Option<u32>,
 }
 
@@ -195,8 +189,6 @@ mod tests {
             put(&mut bytes, status + 0x10, slot as u64);
             put(&mut bytes, status + 0x20, list as u64);
             put(&mut bytes, status + 0x28, (2u64 << 32) | 2);
-            // Two occurrences of the same program are significant for the
-            // first-province lookup and must not be deduplicated.
             put(&mut bytes, list, program as u64);
             put(&mut bytes, list + 8, program as u64);
             put(&mut bytes, program, program::VTABLE_RVA.0 as u64);

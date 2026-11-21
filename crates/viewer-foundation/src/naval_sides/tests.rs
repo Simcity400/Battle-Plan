@@ -76,8 +76,6 @@ fn frame() -> DecodedFrame {
     frame
 }
 
-/// Units sorted, the recorded lists, the convoy slots and the lists a
-/// removal rebuilds from the remaining task forces' owners.
 #[test]
 fn a_naval_sample_keys_both_sides_from_their_task_forces_and_convoys() {
     let sample = naval_sides(&frame()).unwrap();
@@ -89,7 +87,6 @@ fn a_naval_sample_keys_both_sides_from_their_task_forces_and_convoys() {
             units: Some(vec![30, 31]),
             added: engaged::Added::Observed(vec![3, 9]),
             lists: Some((vec![4], vec![5])),
-            // Logical owners in stored order; a nonpositive raw roster owner is left out.
             unit_lists: Some((vec![6, 4], vec![4])),
         }
     );
@@ -113,11 +110,9 @@ fn missing_inputs_leave_their_part_unknown() {
     }
     let sample = naval_sides(&frame).unwrap();
     let side = &sample.sides[&(62, 0)];
-    // An unrecorded census is not an hour without convoys.
     assert_eq!(side.added, engaged::Added::Unavailable);
     assert_eq!(side.unit_lists, None);
     assert_eq!(side.units, Some(vec![30, 31]));
-    // A combat without its details row has no units or lists.
     *frame.tables[TableId::NavalCombatDetails.index()] =
         TableView::Complete(TableRows::NavalCombatDetails(vec![]));
     let sample = naval_sides(&frame).unwrap();
@@ -125,8 +120,6 @@ fn missing_inputs_leave_their_part_unknown() {
     assert_eq!(sample.sides[&(62, 1)].lists, None);
 }
 
-/// An hour reads the task forces its combat sides name, spread over the census, and an hour
-/// without naval combat reads none.
 #[test]
 fn an_hour_reads_only_the_task_forces_its_combat_sides_name() {
     const COMBATS: u64 = 3;
@@ -139,14 +132,12 @@ fn an_hour_reads_only_the_task_forces_its_combat_sides_name() {
                 ..Default::default()
             };
             for side in 0..2_u8 {
-                // Spread over the whole census, as a real hour's are.
                 let force = (combat * 2 + u64::from(side)) * (total / (2 * COMBATS));
                 detail.sides[usize::from(side)].units = vec![force];
                 detail.sides[usize::from(side)].summary.countries = vec![1];
             }
             details.push(detail);
         }
-        // In key order, as a decoded census is; task force 0 has no positive roster owner.
         let forces: Vec<TaskForceRow> = (0..total)
             .map(|id| TaskForceRow {
                 id,

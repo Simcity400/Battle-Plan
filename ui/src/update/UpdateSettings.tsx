@@ -1,5 +1,3 @@
-// Battle Plan's Updates settings: the version with its update action, and the channel both apps
-// follow, as T3 Code's version and update track rows.
 import { useState } from 'react';
 import { Icon } from '../components/Icons';
 import { Select } from '../components/Select';
@@ -12,7 +10,6 @@ import { useUpdateState } from './useUpdateState';
 export default function UpdateSettings() {
   const { state, error } = useUpdateState();
   const actions = useUpdateActions();
-  // The version the restart question is about: it no longer shows once that download is gone.
   const [confirming, setConfirming] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   if (!api.updatesAvailable) return <p className="settings-row-text"><small>Updates are part of the desktop app.</small></p>;

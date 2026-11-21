@@ -18,7 +18,6 @@ test('reward text drops the game\'s colour and country markup and headings with 
     { text: 'Norrbotten, Västerbotten', heading: true },
     { text: 'Add 1 Infrastructure.', heading: false },
   ]);
-  // A scope whose own effects were not described is left out entirely.
   assert.deepEqual(rewardLines('Add 200 power\nEvery Faction Member:\n(\u0012GERGerman Reich, \u0012RKHProtektorat):\n').map(line => line.text), ['Add 200 power']);
   assert.deepEqual(rewardLines('Add 500 power\n \nThe 2 Faction Members with the highest influence:').map(line => line.text), ['Add 500 power']);
 });

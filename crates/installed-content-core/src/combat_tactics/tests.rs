@@ -1,8 +1,6 @@
 use super::*;
 use crate::parser::Operator;
 
-/// Both bindings read recursive argument keys, consuming definitions;
-/// argument names that also name triggers are never conditions.
 #[test]
 fn custom_tooltip_bindings_read_localisation_before_conditions() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -25,7 +23,6 @@ fn custom_tooltip_bindings_read_localisation_before_conditions() {
     assert_eq!(conditions.len(), 2, "{conditions:?}");
     assert!(conditions[0].keyword_is("skill"));
     assert_eq!(conditions[0].value.scalar(), Some(b"2".as_slice()));
-    // A quoted key is not one of the binding keywords.
     assert!(conditions[1].key_quoted);
     assert_eq!(
         conditions[1].key.as_deref(),
@@ -33,9 +30,6 @@ fn custom_tooltip_bindings_read_localisation_before_conditions() {
     );
 }
 
-/// A localisation key reads only the current value. Its block is not
-/// skipped, so the next key still belongs to the enclosing binding,
-/// including a definition there.
 #[test]
 fn a_localisation_key_block_keeps_its_parse_boundary() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -62,11 +56,6 @@ fn a_localisation_key_block_keeps_its_parse_boundary() {
     );
 }
 
-/// Every key reaches trigger dispatch, including keys read without an
-/// operator, with the value slot as the last read left it. `OR {` takes
-/// `{` as its operator and retains the earlier opening value, so the
-/// group reads the following tokens as its body. A modifier
-/// `factor` likewise reaches its one-value reader.
 #[test]
 fn a_key_without_an_operator_goes_to_its_trigger_reader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -129,10 +118,6 @@ fn ids_follow_every_named_non_phase_entry_in_source_order() {
     assert!(database.logged.is_empty(), "{:?}", database.logged);
 }
 
-/// A scalar tactic declaration reads fields from the following tokens
-/// to the next `}`. A block on a one-value field contributes its `{`
-/// as the value, its contents as tactic fields, and its `}` ends the
-/// tactic. Unknown-key blocks are skipped.
 #[test]
 fn a_single_value_tactic_reads_the_rest_of_the_file() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -154,8 +139,6 @@ fn a_single_value_tactic_reads_the_rest_of_the_file() {
             .map(|field| field.key.clone().unwrap())
             .collect()
     };
-    // `first`'s `}` after `is_attacker = yes` ends it; `unknown` is a
-    // tactic whose block is read as its fields, and the stray `}` a key.
     assert_eq!(
         keys(&database.tactics[0]),
         [b"active".to_vec(), b"is_attacker".to_vec()]
@@ -174,8 +157,6 @@ fn a_single_value_tactic_reads_the_rest_of_the_file() {
     );
 }
 
-/// `phases` and both `no` sentinels compare their text exactly; field
-/// and trigger keys are keywords and fold.
 #[test]
 fn phases_and_no_match_their_exact_text_while_keys_fold() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -207,10 +188,6 @@ fn phases_and_no_match_their_exact_text_while_keys_fold() {
     assert!(database.unsupported.is_empty());
 }
 
-/// Every token of `phases` through `}` is stored, including `=`.
-/// Variable names need not be UTF-8; a 0xFF byte ends lexer text.
-/// An anonymous top-level value acts as a key and consumes the next
-/// token as its operator.
 #[test]
 fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -234,7 +211,6 @@ fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
         ]
     );
     assert_eq!(database.tactics[1].effects[2], 200_000);
-    // `loose` takes `third` as its operator and the stale value.
     assert_eq!(database.tactics[2].token, b"loose");
     assert!(
         database
@@ -252,9 +228,6 @@ fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
     );
 }
 
-/// File variables take no tactic ID and are not fields; references read
-/// their values. A duplicate definition consumes nothing further, so
-/// its `=` becomes the next key.
 #[test]
 fn file_variables_take_no_id_and_resolve_in_fields() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -298,7 +271,6 @@ fn file_variables_take_no_id_and_resolve_in_fields() {
         "{:?}",
         taken.logged
     );
-    // A picture named by a variable reads its value.
     let pictures = parse(
         b"@pic = attack\ntactic_a = { picture = @pic }",
         &KeyNames::default(),
@@ -307,8 +279,6 @@ fn file_variables_take_no_id_and_resolve_in_fields() {
     assert_eq!(fields[0].value.scalar(), Some(b"attack".as_slice()));
 }
 
-/// A phase list entry naming a variable reads its value, so a tactic's
-/// `phase = @p` and the list agree on the phase's name.
 #[test]
 fn phase_lists_resolve_file_variables() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -328,9 +298,6 @@ fn phase_lists_resolve_file_variables() {
     assert_eq!(fields[0].value.scalar(), Some(b"breakthrough".as_slice()));
 }
 
-/// Phase fields resolve against the phases read before the tactic, `no`
-/// is its own sentinel even when a phase is named `no`, and an absent or
-/// unmatched field is unknown.
 #[test]
 fn phase_fields_resolve_in_read_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -358,8 +325,6 @@ fn phase_fields_resolve_in_read_order() {
     );
 }
 
-/// Field keys match without case; a phase trigger stores the ID of a
-/// phase registered before it, and -1 for `no` or a later phase.
 #[test]
 fn phase_keys_fold_and_triggers_resolve_in_read_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -419,11 +384,6 @@ fn raw_name_bytes_and_nested_fields_survive_parsing() {
     assert_eq!(fields[0].key.as_deref(), Some(b"allowed".as_slice()));
 }
 
-/// Effect keys fold and the last value wins. `attacker_movement_speed`
-/// uses an integer scan (`010` is eight); other effects use decimal
-/// fixed5 conversion, accepting any text and taking six decimal places
-/// unscaled. Duplicate tactic names retain separate values, and quoted
-/// keys are not keywords.
 #[test]
 fn effects_follow_each_fields_reader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -441,10 +401,8 @@ fn effects_follow_each_fields_reader() {
     let effects = |id: usize| database.tactics[id - 1].effects;
     assert_eq!(effects(1), [10_000, 800_000, 25_000, 0, 0, 0]);
     assert_eq!(effects(3)[2], 75_000);
-    // An undefined reference is its own text, which reads zero.
     assert_eq!(effects(2)[4], 0);
     assert_eq!((effects(4)[5], effects(4)[4]), (203_300, 1));
-    // A quoted "@bonus" is text, never a reference.
     assert_eq!(effects(5), [0; 6]);
     assert!(
         database.logged.iter().any(|line| line
@@ -452,12 +410,10 @@ fn effects_follow_each_fields_reader() {
         "{:?}",
         database.logged
     );
-    // `PHASES` is tactic 6; its bare names are keys without operators.
     assert_eq!(database.tactics[5].token, b"PHASES");
     assert!(database.tactics.iter().all(|t| t.unproven.is_none()));
 }
 
-/// A failed fixed5 scan reports the value and retains the earlier assignment.
 #[test]
 fn an_unscannable_movement_value_keeps_the_previous_one() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -475,11 +431,6 @@ fn an_unscannable_movement_value_keeps_the_previous_one() {
     );
 }
 
-/// One reader owns each file's variables. Chains resolve when defined
-/// and names retain case; definitions inside tactics remain in scope.
-/// `phases` is a string list that registers nothing. `@(1+1)` reads as
-/// reference `@` followed by keys `(`, `1+1`, and `)`, with the last
-/// consuming the tactic's `}`.
 #[test]
 fn tactic_variables_follow_the_game_reader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -506,15 +457,10 @@ fn tactic_variables_follow_the_game_reader() {
         database.phases,
         [b"@unregistered".to_vec(), b"=".to_vec(), b"1".to_vec()]
     );
-    // `after` is read as a field of `expression`.
     assert_eq!(database.tactics.len(), 5);
     assert!(database.tactics.iter().all(|t| t.unproven.is_none()));
 }
 
-/// A tactic trigger and weight read keys on the same file reader,
-/// registering definitions and resolving values in document order.
-/// Unknown fields skip their blocks and register nothing. Comparisons
-/// retain their operators.
 #[test]
 fn definitions_inside_trigger_and_base_register() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -556,11 +502,6 @@ fn definitions_inside_trigger_and_base_register() {
     );
 }
 
-/// A key `x` read without an operator consumes `@y` and retains the
-/// stale opening value. Trigger dispatch then determines consumption.
-/// An invalid key skips against the consumed `@y`, registering nothing;
-/// a scope reads following tokens as its body. Ambiguous names leave
-/// the current tactic unproven and prevent reading later tactics.
 #[test]
 fn a_key_without_an_operator_is_read_as_what_it_names() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -592,9 +533,6 @@ fn a_key_without_an_operator_is_read_as_what_it_names() {
     assert_eq!(database.unsupported, [reason]);
 }
 
-/// Body dispatch uses the retained value even without an operator;
-/// error recovery skips against the current token. Exercise both tactic
-/// dispatch and content readers using `Shape::Trigger`.
 #[test]
 fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -661,8 +599,6 @@ fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() 
     }
 }
 
-/// Embedded collection filters share their enclosing reader and trigger
-/// dispatch, including content names.
 #[test]
 fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -684,10 +620,6 @@ fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
     assert!(triggers.templates[b"check".as_slice()].body.is_ok());
 }
 
-/// A weight's one-value fields and unknown keys do not skip blocks, so
-/// a block there ends the weight early. A block on a one-value trigger
-/// becomes the enclosing trigger's children, and its `}` ends that
-/// trigger. Reading continues with diagnostics and retains later tactics.
 #[test]
 fn nested_readers_follow_their_own_consumption() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -715,7 +647,6 @@ fn nested_readers_follow_their_own_consumption() {
         );
         assert_eq!(database.tactics[0].token, b"s", "{shown}");
     }
-    // Under IS_ATTACKER the block's `skill > 2` is the trigger's own.
     let database = parse(
         b"a = { trigger = { IS_ATTACKER = { skill > 2 } } attacker = 0.1 }",
         &KeyNames::default(),
@@ -730,10 +661,6 @@ fn nested_readers_follow_their_own_consumption() {
     );
 }
 
-/// A weight modifier's `factor` and `add` each read one scoped-variable
-/// value without skipping a block. A block contributes `{` as its value,
-/// its contents as modifier conditions, and its `}` ends the modifier;
-/// following fields belong to the weight again.
 #[test]
 fn a_modifier_factor_block_ends_the_modifier() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -766,15 +693,10 @@ fn a_modifier_factor_block_ends_the_modifier() {
         [b"FACTOR".to_vec(), b"is_attacker".to_vec()]
     );
     assert_eq!(modifier[0].value.scalar(), Some(b"{".as_slice()));
-    // Later tactics are read as the game reads them.
     assert_eq!(database.tactics.len(), 2, "{:?}", database.tactics);
     assert!(database.tactics.iter().all(|t| t.unproven.is_none()));
 }
 
-/// A scalar trigger reports an error and consumes nothing, retaining
-/// other tactic fields. A scalar modifier has no condition; the weight
-/// reports an unknown command. Quoted keys skip their blocks and
-/// register nothing.
 #[test]
 fn a_scalar_trigger_is_a_local_error() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -818,9 +740,6 @@ fn a_scalar_trigger_is_a_local_error() {
     assert_eq!((b.effects[2], b.effects[4]), (20_000, 0));
 }
 
-/// Definitions are consumed before the next trigger key at any depth
-/// and never become conditions. Spaced and compact comparison operands
-/// resolve through file variables and phase lookup.
 #[test]
 fn consumed_definitions_are_no_conditions_and_comparisons_resolve() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -860,8 +779,6 @@ fn consumed_definitions_are_no_conditions_and_comparisons_resolve() {
     assert_eq!(shown(modifier), ["factor=2", "PHASE<1"]);
 }
 
-/// Raw `meta_trigger` text registers no definitions. An invalid trigger
-/// key skips its block without reading or registering its contents.
 #[test]
 fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -881,8 +798,6 @@ fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
     assert_eq!(database.tactics[0].effects[4], 0);
 }
 
-/// A scalar group retains an empty group at any depth of a tactic
-/// trigger or weight modifier; keys fold.
 #[test]
 fn scalar_groups_are_the_empty_groups_the_game_keeps() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -899,7 +814,6 @@ fn scalar_groups_are_the_empty_groups_the_game_keeps() {
     );
     assert_eq!(trigger[2].value, Value::Block(Vec::new()));
     assert_eq!(trigger[3].value, Value::Block(Vec::new()));
-    // A quoted key is no group.
     assert_eq!(trigger[4].value.scalar(), Some(b"yes".as_slice()));
     let modifier = database.tactics[0].fields[1].value.items().unwrap()[0]
         .value
@@ -918,8 +832,6 @@ fn scalar_groups_are_the_empty_groups_the_game_keeps() {
     );
 }
 
-/// Phase text ends at its first NUL; text with a line feed uses the
-/// shared unreadable-string value and reports a diagnostic.
 #[test]
 fn phase_names_keep_first_nul_text_and_line_feed_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -934,8 +846,6 @@ fn phase_names_keep_first_nul_text_and_line_feed_fallback() {
     );
 }
 
-/// The source check enforces `Field::keyword` dispatch: quoted keys
-/// are not keywords and bare keys fold. `phases` compares exact bytes.
 #[test]
 fn the_tactic_reader_asks_the_keyword_helper() {
     const RAW: [&str; 6] = [

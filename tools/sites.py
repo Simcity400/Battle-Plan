@@ -47,15 +47,11 @@ LIB = os.path.join(ROOT, "crates", "engine-sites", "src", "lib.rs")
 U64 = (1 << 64) - 1
 IMAGE_BASE = 0x140000000
 M1, M2, M3 = 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB
-# Paths the game's release build passes to its log and assert helpers end like this or are empty.
 SOURCE_SUFFIXES = (b".cpp", b".h", b".hpp", b".c", b".inl", b".cc")
 ARGS = (x86.X86_REG_RCX, x86.X86_REG_RDX, x86.X86_REG_R8, x86.X86_REG_R9)
 ARGS32 = (x86.X86_REG_ECX, x86.X86_REG_EDX, x86.X86_REG_R8D, x86.X86_REG_R9D)
-# Verified bytes engine-sites keeps at each code key (engine_sites::ORIGINAL).
 ORIGINAL = 32
-# Largest function taken as a layout witness: a constructor or destructor rather than code that inlines one.
 WITNESS_LIMIT = 1024
-# How far apart members of one block of globals may be.
 
 
 def fingerprint(data, mask=()):
@@ -181,7 +177,6 @@ class Image:
             return None
         return fingerprint(self.img[start:start + length], mask)
 
-    # ---- function analysis -------------------------------------------------------------------
 
     def analyse(self, start, length):
         """Mask and references of the function at [start, start + length).
@@ -217,8 +212,6 @@ class Image:
                 if (is_jump or is_call) and insn.operands and insn.operands[0].type == x86.X86_OP_IMM:
                     target = insn.operands[0].imm
                     if insn.size >= 5 and (op[-5] in (0xE8, 0xE9) or (len(op) >= 6 and op[-6] == 0x0F and 0x80 <= op[-5] <= 0x8F)):
-                        # A branch inside the function keeps its displacement when the function
-                        # moves, so it stays in the fingerprint; only branches out of it are masked.
                         if not start <= target < end:
                             fields[nxt - 4 - start] = (nxt - start, "rel", target)
                     if is_jump and start <= target < end:
@@ -254,10 +247,7 @@ class Image:
                         tables = []
                     break
                 pc = nxt
-        # Code no branch reaches (exception continuations): decode each gap linearly while it
-        # decodes, skipping bytes already known as jump-table entries.
         table_bytes = {start + k + j for k, (_, kind, _) in fields.items() if kind == "table" for j in range(4)}
-        # Fall-through after a call that never returns can decode a jump table as code.
         for pc in [pc for pc, insn in seen.items() if any(q in table_bytes for q in range(pc, pc + insn.size))]:
             del seen[pc]
         for k in [k for k, (_, kind, _) in fields.items()
@@ -287,7 +277,6 @@ class Image:
                 if o.type == x86.X86_OP_MEM and o.mem.base == x86.X86_REG_RIP and not start <= nxt + o.mem.disp < end:
                     fields[pc + insn.disp_offset - start] = (nxt - start, "rip", nxt + o.mem.disp)
             pc = nxt
-        # Source-line immediates passed beside a source path to the game's log and assert helpers.
         order = sorted(seen)
         for i, pc in enumerate(order):
             insn = seen[pc]
@@ -332,14 +321,12 @@ class Image:
             if not ranges:
                 self._matches[key] = []
             else:
-                # Prefilter on the masked first 16 bytes of the expected code.
                 first = next((s for s in ranges if self.fingerprint_at(s, length, mask) == value), None)
                 want = head(self.img[first:first + length], mask) if first is not None else None
                 self._matches[key] = [s for s in ranges if want is not None and head(self.img[s:s + length], mask) == want
                                       and self.fingerprint_at(s, length, mask) == value]
         return self._matches[key]
 
-    # ---- RTTI --------------------------------------------------------------------------------
 
     def rtti(self):
         """{(name hash, offset): [vtable rva]} for every vtable with a complete object locator."""
@@ -375,7 +362,6 @@ class Image:
             if name and name.startswith(b".?A"):
                 return (fingerprint(name), self.u32(col + 4))
 
-    # ---- references --------------------------------------------------------------------------
 
     def referencing(self, targets):
         """{target: [(range start, field offset)]}: .text fields whose rel32/RIP target is a target.
@@ -416,7 +402,6 @@ class Image:
         return n
 
 
-# ---- the locator, as engine-sites runs it --------------------------------------------------------
 
 def locate(image, spec, layout_checked=True):
     """(function starts, vtables, data) as {index: rva or reason}, and the layout verdict.
@@ -435,7 +420,6 @@ def locate(image, spec, layout_checked=True):
     for i, v in enumerate(vtables):
         hits = rtti.get((v["name"], v["offset"]), [])
         vt[i] = hits[0] if len(hits) == 1 else ("changed" if not hits else "ambiguous")
-    # Operands are checked against the vtable RTTI identifies, even when its shape withholds it.
     by_rtti = dict(vt)
     for i, v in enumerate(vtables):
         if isinstance(vt[i], int) and image.slot_count(vt[i]) != v["slots"]:
@@ -536,7 +520,6 @@ def resolve_keys(image, spec, layout_checked=True):
     return out
 
 
-# ---- keys in the source ---------------------------------------------------------------------------
 
 KEY = re.compile(r"\bRva\(\s*(0x[0-9a-fA-F_]+)\s*\)")
 CONST = re.compile(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:")
@@ -601,7 +584,6 @@ def source_keys():
                             elif s:
                                 name = "%s::%s" % (stem, s.group(1))
                             else:
-                                # The enclosing function names it: line numbers move with every edit.
                                 fns = [FN.search(lines[j]) for j in range(n - 1, -1, -1) if FN.search(lines[j])]
                                 name = "%s::%s" % (stem, fns[0].group(1)) if fns else stem
                         if rva not in keys or (c and "::" in keys[rva][0] and not CONST.search(keys[rva][3])):
@@ -609,7 +591,6 @@ def source_keys():
     return {k: v[:3] for k, v in keys.items()}
 
 
-# ---- generation --------------------------------------------------------------------------------
 
 def leaf_bounds(build, rva):
     """[start, end) of the RE index function holding rva, for code without unwind data."""
@@ -712,12 +693,7 @@ def generate(keys, ref, others, reference):
         key = ref.vtable_key(rva)
         if len(rtti.get(key, ())) != 1 or any(len(o.rtti().get(key, ())) > 1 for o in others):
             problems.append("%s (%#x): its RTTI type name and offset are not unique" % (keys[rva], rva))
-        # Witnesses: the smallest functions that store the vtable (constructors, destructors), whose
-        # code encodes the offsets of the fields they initialise.
         stores = sorted({fs for fs, k in refs.get(rva, []) if takes_address(fs, k)}, key=lambda fs: ref.length(fs))
-        # Out-of-line constructors and destructors; larger functions only inline them.
-        # A class without one is witnessed by the smallest larger function storing its vtable,
-        # whose change withholds only that class.
         found = [fs for fs in stores if unique(fs, ref.length(fs))]
         small = [fs for fs in found if ref.length(fs) <= WITNESS_LIMIT]
         veto = bool(small)
@@ -741,8 +717,6 @@ def generate(keys, ref, others, reference):
             k["index"] = vidx[k["rva"]]
         elif k["kind"] == "data":
             k["index"] = didx[k["rva"]]
-    # Functions not unique everywhere, or without unwind data: from callers, walking up through
-    # callers that are not unique themselves, and from RTTI vtable slots.
     slots = collections.defaultdict(list)
     for key, vts in rtti.items():
         if len(vts) != 1 or any(len(o.rtti().get(key, ())) > 1 for o in others):
@@ -763,7 +737,6 @@ def generate(keys, ref, others, reference):
                     vk = ref.vtable_key(vt)
                     vtables.append({"rva": vt, "name": vk[0], "offset": vk[1], "slots": ref.slot_count(vt), "witnesses": [], "veto": False})
                 functions[i]["from"].append({"via": "slot", "from": vidx[vt], "slot": slot})
-            # A chained .pdata fragment continues the range before it.
             prev = ref.range_of(t - 1) if t in ref.ends else None
             if prev and prev[1] == t and not any(e["via"] == "after" for e in functions[i]["from"]):
                 j = function(prev[0], prev[1] - prev[0], True)
@@ -790,7 +763,6 @@ def generate(keys, ref, others, reference):
     for i, d in enumerate(data):
         if not isinstance(dt[i], int):
             problems.append("global %s (%#x): %s" % (keys[d["rva"]], d["rva"], dt[i]))
-    # Order functions by reference start, as engine-sites searches them.
     order = sorted(range(len(functions)), key=lambda i: functions[i]["start"])
     remap = {old: new for new, old in enumerate(order)}
     functions = [functions[i] for i in order]
@@ -811,8 +783,6 @@ def generate(keys, ref, others, reference):
         for e in f["from"]:
             if e["via"] == "field":
                 e["from"] = e["from"]
-    # Bytes after a function that a hook at a key near its end replaces or keeps as its original:
-    # fingerprinted separately (padding, or the next function's start with its fields masked).
     for i, f in enumerate(functions):
         need = max([k["rva"] - f["start"] + ORIGINAL - f["len"] for k in out if k["kind"] == "code" and k["index"] == i] + [0])
         f["tail"], f["tail_mask"], f["tail_hash"] = 0, [], 0
@@ -830,7 +800,6 @@ def generate(keys, ref, others, reference):
                     need = max(need, at + 4)
         f["tail"], f["tail_mask"] = need, mask
         f["tail_hash"] = fingerprint(ref.img[end:end + need], mask)
-    # Every rel32 or RIP operand that reaches another located part is checked against it at attach.
     starts = {f["start"]: j for j, f in enumerate(functions)}
     drva = {d["rva"]: i for i, d in enumerate(data)}
     vrva = {v["rva"]: i for i, v in enumerate(vtables)}
@@ -849,7 +818,6 @@ def generate(keys, ref, others, reference):
                     checks.append({"function": i, "field": k, "end": end, "kind": name, "index": table[t]})
                     break
             else:
-                # A continuation inside another generated function must reach the same offset of it.
                 j = bisect.bisect_right(order, t) - 1
                 g = by_start[j] if j >= 0 else None
                 if g is not None and g != i and functions[g]["start"] < t < functions[g]["start"] + functions[g]["len"]:
@@ -923,11 +891,8 @@ def emit(spec, version):
     return "\n".join(w)
 
 
-# ---- builds --------------------------------------------------------------------------------------
 
-# Builds the generator verifies against: id -> release. The reference build comes first.
 BUILDS = {"c184": "1.19.5.0", "0bdb": "1.19.4.2", "f584": "1.19.4.1"}
-# Keys each non-reference build is known to withhold, and why; any other outcome fails `check`.
 EXPECTED_WITHHELD = {
     "f584": {
         0xc4a420: "requisition_hq_from_army: its code really changed in 1.19.4.2",
@@ -979,7 +944,6 @@ def report(image, spec, recorded, layout_checked):
                 wrong.append("%s: locates %#x, expected %#x" % (k["name"], g, exp))
         else:
             reasons["withheld %s: %s" % (k["kind"], g)] += 1
-    # A code key's hook bytes past its function's end need that function's tail to verify too.
     fn, _, _, _ = locate(image, spec, layout_checked)
     for i, f in enumerate(spec["functions"]):
         if f.get("tail") and isinstance(fn[i], int):

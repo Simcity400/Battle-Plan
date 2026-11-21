@@ -1,0 +1,11 @@
+# 1203. Join inferred war-end settlements only to an unambiguous conference
+
+The recorder can capture actions, automatic transfers and subjects directly at a conference's finalizer. The ownership comparison may arrive later. The captured outcome is usable at the finalizer hour and the comparison can then supply a former owner or state value. A subject may be allocated as part of the settlement, which prevents using an action's country operand as proof of what created it. State totals require points for every state. Keep recorded action point cost distinct from the state's own victory points, and place unknown state values after known ones when sorting.
+
+A war-end outcome joins a recorded conference only at the same hour with each winner on the winning side and each loser on the losing side. Reversing the sides fails the match. Every outcome that uniquely matches one conference joins it. No match or several matches leave a separate outcome card, preserving the uncertainty. Captured actions retain their recorded order. The automatically transferred states and inferred war-end outcomes remain visibly attributed to those sources.
+
+Use gaps in the hourly finalizer and ownership reads to report periods when conferences could be missing. The daily roster's normal cadence is complete for its purpose. A conference opening and closing between roster reads can still be captured by the finalizer or an ownership change. Keep the gaps when filtering and retain the full recorded action list for a conference that matches a selected category.
+
+Prepare visible conference-card states over a block, then reveal and hide those states at their recorded hours without a React render inside the block. Preload labels for every prepared card in the block, and paint headline counts from cards revealed at the current hour. Binary cutoff over pre-shaped rows keeps playback from reshaping the campaign. Estimate offscreen card height, then measure actual wrapping once mounted. Width fitting never removes participants or outcomes from the tooltip. A war name is unavailable, so describe the sides instead.
+
+[Peace data](../../ui/src/widgets/peace-deals/peaceData.ts) · [Conference cards](../../ui/src/widgets/peace-deals/PeaceDealsWidget.tsx) · [Settlement tests](../../ui/src/widgets/peace-deals/peaceData.test.ts)

@@ -1,60 +1,26 @@
-//! Native writers of retained division-template data and country template
-//! configuration. Assignment, token loading, reset, grid writes and resizing,
-//! derived-cache rebuilding, scalar/equipment/model setters and AI-role
-//! rebuilding certify the template object. Effect writers, scripted template
-//! additions among them, are scoped to their canonical country, so inline
-//! lock/cap stores and an addition's rename also revoke that owner's rows.
-//! The deleting destructor prevents address reuse from preserving a certificate.
-//! The custom-icon command resolves its template natively and stores the icon
-//! fields directly, so it revokes every template.
-//!
-//! Deployment selection and occupation reset/default/group/state setters
-//! certify their holders. Occupation insertion and group/status destruction revoke
-//! membership. Country loading and world replacement also invalidate capture epochs.
-//! Deployment reset uses the existing local-subunit writer certificate.
-//! The occupation insertion forwards its fifth argument explicitly.
-//! Nothing here calls the game or obtains a fact by evaluating native code.
 
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
 
-/// How a site's RCX names the template.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
-    /// The contained data, `template+DATA`.
     Data,
-    /// The template.
     Template,
-    /// A deployment or occupation holder, watched by its own address.
     Object,
-    /// An occupation group whose parent status is stored at its second word.
     OccupationGroup,
-    /// The embedded occupation membership table, relative to its status.
     OccupationTable,
-    /// An effect's second argument holds its country scope.
     ScopeCountry,
-    /// A command whose receiver retains the raw owning-country link.
     CommandCountry,
-    /// No receiver is resolved: the writer revokes every template.
     Every,
 }
 
-/// The contained data's offset in the template
-/// (`creferenced_division_template::COMPOSITION`).
 pub const DATA: usize = crate::creferenced_division_template::COMPOSITION;
-/// Embedded occupation membership map, before its allocator-owned data header.
 pub const OCCUPATION_MEMBERSHIP: usize = 0x40;
-/// Occupation group's parent status pointer.
 pub const OCCUPATION_PARENT: usize = 0x08;
-/// Country tag in an authored effect's execution scope.
 pub const EFFECT_SCOPE_COUNTRY: usize = 0x08;
 pub const COMMAND_COUNTRY: usize = 0x28;
 
-/// Every site with its receiver; each returns RAX unchanged from its
-/// original, so a detour returns the original's value.
 pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
-    // Editable-data assignment (dest, source): saving RSI and reserving 0x20
-    // stack bytes occupy six relocated bytes.
     (
         MutationSite {
             name: "assign_editable_template_data",
@@ -62,7 +28,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::Data,
     ),
-    // Full-data assignment (dest, source): the RBX spill to RCX's home slot relocates.
     (
         MutationSite {
             name: "assign_template_data",
@@ -70,7 +35,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::Data,
     ),
-    // Data reader (data, reader, token): the RBX spill to RCX's home slot relocates.
     (
         MutationSite {
             name: "read_template_data",
@@ -78,8 +42,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::Data,
     ),
-    // Primary deleting destructor (template, flags): the RBX spill to RCX's home slot
-    // relocates.
     (
         MutationSite {
             name: "destroy_template",
@@ -451,7 +413,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::CommandCountry,
     ),
-    // Role edits can rewrite the excluded-variant payload without changing its header.
     (
         MutationSite {
             name: "update_template_tracked_variant",
@@ -459,7 +420,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::Data,
     ),
-    // Custom-icon command (command): writes the icon index and its flag past every other site.
     (
         MutationSite {
             name: "set_template_symbol",
@@ -467,8 +427,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::Every,
     ),
-    // Scripted template additions (effect, scope) append to the scope country's roster and rename
-    // the template of that roster whose name the new one takes.
     (
         MutationSite {
             name: "add_template_effect",
@@ -489,8 +447,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
 mod tests {
     use super::*;
 
-    /// The data receiver is the template's contained data, and the sites are
-    /// distinct.
     #[test]
     fn data_sites_name_the_contained_data() {
         assert_eq!(DATA, 0x18);

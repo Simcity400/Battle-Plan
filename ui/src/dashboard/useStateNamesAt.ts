@@ -7,7 +7,6 @@ import { useCountryFactsRead } from './countryNamesAt.ts';
 import { stateNameKey, stateNameRequestOptions, validateStateNamesReply } from './stateNamesData.ts';
 import type { StateAt, StateLabel } from './stateNamesData';
 
-// State IDs use the same bounded per-hour request store as country facts.
 const NAMES: FactSpec<StateLabel> = {
   product: 'place-names', perRequest: stateNameRequestOptions.perRequest, shared: true,
   params: (branchId, hour, states) => ({ branchId, places: [], states: states.map(state => ({ stateId: Number(state), hour })) }),

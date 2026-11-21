@@ -5,7 +5,6 @@ import type { DashboardClient, DashboardSource, ProductRequest } from './client'
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-/** A client whose product reads wait until answered, each kept with its signal. */
 function transport() {
   const asked: { signal: AbortSignal; answer: (value: unknown) => void }[] = [];
   const client = {
@@ -29,7 +28,6 @@ test('mounts asking the same product share one read, and each is told its reply'
   asked[0].answer(final(1));
   assert.deepEqual(await Promise.all([first, second]), [final(1), final(1)]);
   assert.deepEqual(told.map(([name]) => name).sort(), ['first', 'second']);
-  // Its final reply is kept, so a later mount reads nothing.
   await mount('later');
   assert.equal(asked.length, 1);
 });
@@ -57,7 +55,6 @@ test('a mount leaving keeps the shared read for the rest, and the last one leavi
 
 test('a mount whose own validation refuses a reply fails alone, and the refused reply is never kept', async () => {
   const { client, asked } = transport();
-  // Refuses only its first look, so a second look would cache what it refused.
   let looks = 0;
   const refuse = (data: unknown) => { if (++looks === 1) throw new Error('refused'); return data; };
   const refusing = loadProduct(client, request(5), new AbortController().signal, refuse, source, false, () => {});
@@ -81,7 +78,6 @@ test('replies that follow the hour never push out those that do not, and either 
   const at = (params: unknown): ProductRequest => ({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-catalogue', params });
   const signal = () => new AbortController().signal;
   await loadProduct(client, at({ whole: true }), signal());
-  // Far more hour replies than the shared cache holds.
   for (let hour = 0; hour < 300; hour++) await loadProduct(client, at({ hour }), signal(), undefined, undefined, false, undefined, undefined, true);
   await loadProduct(client, at({ whole: true }), signal());
   assert.equal(asked.filter(params => params === JSON.stringify({ whole: true })).length, 1, 'the reply that does not follow the hour is still held');
@@ -95,7 +91,6 @@ test('a held reply is validated each consumer’s own way, and an ask cancelled 
   const request: ProductRequest = { sourceId: plain.id, revision: plain.revision, product: 'synthetic-rows', params: {} };
   const signal = () => new AbortController().signal;
   const rows = (data: unknown) => (data as { rows: string[] }).rows;
-  // Settled by a read that follows the hour, validated its way.
   assert.deepEqual(await loadProduct(client, request, signal(), rows, undefined, false, undefined, undefined, true), ['held']);
   assert.deepEqual(await loadProduct(client, request, signal(), (data: unknown) => data), { rows: ['held'] }, 'another consumer is given its own validation');
   const cancelled = new AbortController();

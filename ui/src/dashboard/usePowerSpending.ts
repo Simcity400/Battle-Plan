@@ -13,8 +13,6 @@ import { useCountryGroups } from './useCountryGroups.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 
-/** One currency's ledgers of the widget's countries, each read once over the widget's span in aligned chunks (never by the
- * head's hour: a reader cuts them where it shows), with the group membership the rows are counted under. */
 export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, currency: PowerCurrency) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
@@ -34,19 +32,16 @@ export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, act
     }
     return { matches: match.matches, membership, unobserved: selected.unobserved };
   }, [match.matches, selected]);
-  // Every dated alias of the choice is asked; the matcher keeps each to its own hours.
   const tags = useMemo(() => !match.ready ? [] : selected.membership === null ? resolved.tags : [...new Set(selected.membership.map(run => run.tag))],
     [match.ready, selected, resolved.tags]);
   const span = track ? spendingSpan(widget, track, runtime.tracks) : null;
   const requests = useMemo(() => track && span ? tags.flatMap(tag => spendingChunks(span.firstHour, span.lastHour).map(([from, to]) => ({
     sourceId: track.source.id, revision: track.source.revision, product: 'power-spending',
     params: { branchId: track.branch.id, country: countryFromKey(tag), currency, from, to } }))) : [],
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   [track?.source.id, track?.source.revision, track?.branch.id, tags, currency, span?.firstHour, span?.lastHour]);
   const replies = useProducts<PowerSpendingReply>(runtime.client, requests, active, validatePowerSpending, track?.source);
   const ledgers = useMemo(() => {
     if (!replies.data) return undefined;
-    // A reply names its country by the tag it went by, not by the key asked: replies are matched to their requests.
     const byTag = new Map<string, PowerSpendingReply[]>();
     replies.data.forEach((reply, at) => {
       const tag = countryKey(requests[at].params.country);

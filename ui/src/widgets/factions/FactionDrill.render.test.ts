@@ -8,13 +8,11 @@ import { BRANCH, mountModule, pendingGroups } from '../../dashboard/pendingGroup
 import { factionViews } from './factionsData.ts';
 
 test('a dissolved faction shows no power projection kept from its last reply', async () => {
-  // Founded at 0 and dissolved after 100; every later hour is recorded.
   const groups = { ...pendingGroups({ final: true }), factions: [{ id: '5', name: 'Mod pact', recordedName: 'Mod pact', firstHour: 0, lastHour: 100,
     nameReason: null, names: [{ firstHour: 0, lastHour: 100, name: 'Mod pact', reason: null }], members: [{ tag: 'ENG', firstHour: 0, lastHour: 100 }],
     leaders: [], incomplete: [] }] } as CountryGroupReply;
   const [view] = factionViews(groups, (faction: FactionGroup) => ({ name: faction.name, reason: faction.nameReason }), () => '#123456');
   const { module, close } = await mountModule<{ default: (props: Record<string, unknown>) => ReactElement }>('/ui/src/widgets/factions/FactionDrill.tsx', {
-    // The panel read while the faction stood: what a held reply would keep showing, its projection a live cell.
     '/dashboard/factionChoice.ts': `export const useFactionDetails = () => ({ retry() {}, root() {}, at: 50, hour: null, shownAt: () => 50,
       data: { faction: '5', branchId: '1', definitions: [], manifest: null, goals: [], completed: [], cancelled: [], goalReason: null, resources: null,
         manpower: null, manpowerUnlocked: null, researchUnlocked: null, researchCountries: null, doctrineFolders: null, refusals: [], warnings: [], logo: null },

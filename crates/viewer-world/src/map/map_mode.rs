@@ -1,51 +1,3 @@
-//! The game's map modes and what each draws in the political fill's two channels.
-//!
-//! The game keeps one gradient-border layer per kind (strategic regions, countries, states,
-//! diplomacy, resistance and so on) and a map mode chooses which layer each of the two
-//! channels shows, or none ([`Source`]). The country layer has variants (political, factions,
-//! players, ideology), so one mode can recolour it while another keeps it under its own layer.
-//!
-//! | mode | channel 1 | channel 2 |
-//! |---|---|---|
-//! | political, navy | strategic regions | countries |
-//! | air | strategic regions | none |
-//! | factions, players, ideology | countries in that variant | none |
-//! | resources, raids | countries | none |
-//! | states, resistance, compliance, operatives | countries | the mode's layer |
-//! | diplomacy | the mode's layer | none |
-//! | infrastructure, manpower, terrain | the mode's layer | countries |
-//! | supply | the supply-border layer, refused | the supply layer, refused |
-//! | scripted | the bottom layer | the top layer |
-//!
-//! | mode | regions | colour | thickness, constant gradient, camera override / outline cutoff |
-//! |---|---|---|---|
-//! | political | controller | the subject-resolved recorded colour | area rule; country defines |
-//! | air | strategic region, land and water | the viewing country's stored superiority weights, or regional active-mission counters at zero weights, through the content's strategic-air colours | strategic-region thickness and channel constants |
-//! | navy | strategic region, sea only | the content's neutral strategic-navy tint, with the viewing country's naval control and gaining-side FX | strategic-region thickness and channel constants |
-//! | factions | controller | the controller's faction colour at `FACTIONS_MEMBER_TRANSPARENCY`, else `FACTIONS_COLOR_NOT_MEMBER` | area rule; faction defines |
-//! | players | controller | the subject-resolved colour, at `PLAYER_MAPMODE_NOT_SELECTED_COUNTRY_TRANSPARENCY` unless a player holds it | area rule; country defines |
-//! | ideology | controller | the ruling party's ideology group colour at `MAP_MODE_IDEOLOGY_COLOR_TRANSPARENCY`, else the subject-resolved colour | area rule; country defines |
-//! | states | state | the state's live category's colour; a category without one: the fixed blue below | `THICKNESS_STATE`; state defines |
-//! | diplomacy | controller | relation to the selected country, in the fixed colours below | `THICKNESS_DIPLOMACY`; diplomacy defines |
-//! | resistance, compliance | the selected country's controlled states | the level through the content's colour list, or `OCCUPATION_RESISTANCE_NON_INITIALIZED_COLOR` without an occupier | `THICKNESS_RESISTANCE`, gradient 241; camera 0 / resistance cutoff |
-//! | operatives | each state with positive strength in one of the selected country's networks, while the network's target controls it | the strength's share of 100% between the `MAP_MODE_INTEL_NETWORK_STRENGTH` low and high colours, or the quiet pair for a quiet subnetwork | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
-//! | terrain | each province | its terrain category's colour ([`terrain`]) | zero, gradient 127; terrain camera / state cutoff |
-//! | manpower | state | the population over `MAP_MODE_MANPOWER_RANGE_MAX`, blended between its two colours | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
-//! | infrastructure | state | the infrastructure level over its maximum, blended between `MAP_MODE_INFRA_RANGE_COLOR_FROM` and `_TO`; no maximum: opaque black ([`infrastructure`]) | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
-//!
-//! In the players mode the selected country pulses and its fill factor is
-//! `SELECTED_COUNTRY_HIGHLIGHT_THICKNESS_MULT`. The selected country is the viewing country:
-//! the viewer has no separate diplomatic selection. Colours pack each component as the low
-//! byte of `trunc(c * 255)`, alpha included; the alpha is the channel's opacity.
-//!
-//! A layer the viewer does not draw leaves its channel empty and is refused by name in
-//! [`ModeFill::warnings`], as are the overlays a mode adds beyond its layers. What each mode
-//! shows of the map's other layers (counters, icons, labels, fog, borders) is [`visibility`].
-//! Air and Navy regional entries, their grids and hover text are viewer counter products;
-//! selection, assignment highlights and ranges stay local to each view. Air-supply regional
-//! summaries alone lack an exact acquisition within the recording cost rules and are refused
-//! by name. The ordinary Air province hover contains detection, selected-wing assignment
-//! feedback and the shared mine summary; the received-damage grids belong to the Air view.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -94,7 +46,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The picker's own modes, in the game's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Stock {
     Default,
@@ -137,7 +88,6 @@ impl Stock {
         Self::Raids,
     ];
 
-    /// The protocol token.
     pub fn token(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -160,7 +110,6 @@ impl Stock {
         }
     }
 
-    /// The localisation key of the mode's tooltip; `_NAME` and `_DESCRIPTION` follow it.
     pub fn key(self) -> &'static str {
         match self {
             Self::Default => "MAPMODE_DEFAULT",
@@ -183,7 +132,6 @@ impl Stock {
         }
     }
 
-    /// Why a recording can never draw this mode, for modes the picker offers disabled.
     pub fn unavailable(self) -> Option<&'static str> {
         match self {
             Self::Supply => Some(SUPPLY_UNAVAILABLE),
@@ -193,7 +141,6 @@ impl Stock {
 }
 
 impl Stock {
-    /// The recorded tables this mode's own layer and icons read beyond the political map's.
     pub fn tables(self) -> &'static [TableId] {
         use TableId::*;
         match self {
@@ -244,16 +191,11 @@ impl MapMode {
     }
 }
 
-/// Why the supply mode is unavailable: its province colours, supply borders, flows and
-/// tooltips are computed from the supply network's per-province sources and per-hour node
-/// amounts, which no recording holds.
 pub const SUPPLY_UNAVAILABLE: &str = "Not available in replays: the game computes this map mode from the supply network's per-province sources and hourly hub amounts, which recordings do not hold.";
 
-/// A view's map mode.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapMode {
     Stock(Stock),
-    /// A content mode by its declared name.
     Scripted(String),
 }
 
@@ -263,11 +205,9 @@ impl Default for MapMode {
     }
 }
 
-/// The token prefix of a scripted mode.
 pub const SCRIPTED_PREFIX: &str = "scripted:";
 
 impl MapMode {
-    /// A protocol token: a stock token, or `scripted:` and a declared name.
     pub fn parse(token: &str) -> Option<Self> {
         if let Some(name) = token.strip_prefix(SCRIPTED_PREFIX) {
             return (!name.is_empty()).then(|| Self::Scripted(name.to_owned()));
@@ -286,12 +226,9 @@ impl MapMode {
     }
 }
 
-/// One region's presentation in the country channel. Floats compare by their bits, so hours
-/// share a fill only when it is bit-identical.
 pub use map_display_data::landscape::{Draw, ModeFill, ModeLayer, Source, Style};
 pub const POLITICAL: [Source; 2] = [Source::Strategic, Source::Country];
 
-/// A colour define of four components, as f32.
 fn color4(defines: &Defines, section: &str, name: &str) -> io::Result<[f32; 4]> {
     match defines.numbers(section, name)?.as_slice() {
         [r, g, b, a, ..] => Ok([*r as f32, *g as f32, *b as f32, *a as f32]),
@@ -305,19 +242,12 @@ fn number(defines: &Defines, section: &str, name: &str) -> io::Result<f32> {
     Ok(defines.number(section, name)? as f32)
 }
 
-/// A content colour list: rows of a threshold and four components.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorList(pub Vec<f32>);
 
-/// The difference below which two thresholds count as one.
 const COLOR_LIST_EPSILON: f32 = 0.01;
 
 impl ColorList {
-    /// The colour of `value`: interpolated between the two rows around it, the alpha too.
-    ///
-    /// The first row at or above the value (from the second on, or the last) ends the
-    /// interval; a gap under [`COLOR_LIST_EPSILON`] or a value below the interval takes its
-    /// first row. A list that is not whole rows of five, or shorter than two rows, is white.
     pub fn color(&self, value: f32) -> [f32; 4] {
         let list = &self.0;
         let n = list.len();
@@ -348,7 +278,6 @@ impl ColorList {
     }
 }
 
-/// The colour defines the modes read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModeDefines {
     factions_not_member: [f32; 4],
@@ -356,7 +285,6 @@ pub struct ModeDefines {
     players_other_alpha: f32,
     selected_fill: f32,
     ideology_alpha: f32,
-    /// Camera override and outline cutoff per channel use.
     country_channel: [f32; 2],
     factions_channel: [f32; 2],
     state_channel: [f32; 2],
@@ -365,28 +293,22 @@ pub struct ModeDefines {
     state_thickness: f32,
     diplomacy_thickness: f32,
     resistance_thickness: f32,
-    /// `GRADIENT_BORDERS_THICKNESS_COUNTRY_HIGH`: a scripted layer's width with `thickness = yes`.
     scripted_thickness: f32,
     very_good_opinion: i32,
     very_bad_opinion: i32,
     resistance_colors: ColorList,
     compliance_colors: ColorList,
     resistance_uninitialised: [f32; 4],
-    /// The population that takes the manpower mode's last colour, and its two colours.
     manpower_max: f32,
     manpower_colors: [[f32; 4]; 2],
-    /// The operatives mode's low and high network colours, and the quiet pair.
     network_colors: [[f32; 4]; 2],
     quiet_network_colors: [[f32; 4]; 2],
-    /// The infrastructure mode's two colours.
     infrastructure_colors: [[f32; 4]; 2],
-    /// `UI_CONFIGURABLE_SLOT_FROM` and `_TO`: the picker slots the user can reassign.
     pub configurable_slots: [i32; 2],
     pub terrain: terrain::Defines,
 }
 
 impl ModeDefines {
-    /// `VERY_GOOD_OPINION` and `VERY_BAD_OPINION`, which the diplomacy mode's lines test.
     pub fn opinion_thresholds(&self) -> [i32; 2] {
         [self.very_good_opinion, self.very_bad_opinion]
     }
@@ -497,28 +419,20 @@ impl ModeDefines {
     }
 }
 
-/// The diplomacy mode's fixed colours: the selected country, its enemies, its faction,
-/// countries it holds a war goal against (or against one of their subjects), and very good
-/// and very bad opinions of it.
 const DIPLOMACY_SELF: [f32; 4] = [0.1, 0.66, 0.1, 1.0];
 const DIPLOMACY_WAR: [f32; 4] = [0.7, 0.0, 0.0, 1.0];
 const DIPLOMACY_FACTION: [f32; 4] = [0.035, 0.426, 0.91, 1.0];
 const DIPLOMACY_WAR_GOAL: [f32; 4] = [1.0, 0.35, 0.0, 1.0];
 const DIPLOMACY_GOOD: [f32; 4] = [0.0, 0.4, 0.0, 1.0];
 const DIPLOMACY_BAD: [f32; 4] = [1.0, 0.64, 0.0, 1.0];
-/// The states mode's colour for a state whose category has no colour.
 const STATE_WITHOUT_CATEGORY: [f32; 4] = [0.0, 0.0, 1.0, 0.25];
-/// Resistance and compliance levels are fixed5 percentages.
 const RESISTANCE_SCALE: f32 = 100_000.0;
-/// The constant gradient the resistance, compliance and manpower layers write.
 const LEVEL_GRADIENT: u8 = 241;
 
-/// Each component as the low byte of `trunc(c * 255)`.
 pub fn pack(color: [f32; 4]) -> [u8; 4] {
     color.map(|component| (component * 255.0) as i32 as u8)
 }
 
-/// Immutable inputs of every mode for one content stack.
 pub struct Content {
     id: u64,
     memberships: std::sync::Mutex<membership::Memberships>,
@@ -526,14 +440,10 @@ pub struct Content {
     scripts: std::sync::Mutex<colour_script::Fold>,
     pub defines: ModeDefines,
     ideologies: Arc<installed_content_core::ideologies::Ideologies>,
-    /// Each declared category's colour by folded name: `Ok(None)` for one without a colour.
     category_colors: BTreeMap<Vec<u8>, Result<Option<[f32; 4]>, String>>,
     pub scripted: MapModes,
-    /// The content's faction templates, which name a faction without a literal name.
     faction_templates: Result<Arc<installed_content_core::faction_templates::Catalog>, String>,
-    /// The recording's language, which a faction's stored literal name is written in.
     recorded_language: String,
-    /// The terrain mode's layer, built once, or why the content cannot build it.
     terrain: Result<terrain::Built, String>,
     pub infrastructure: infrastructure::Content,
     pub strategic: strategic::Content,
@@ -558,7 +468,7 @@ impl Content {
     pub fn projection_id(&self) -> u64 {
         self.id
     }
-    #[allow(clippy::too_many_arguments)] // One argument per content source, read separately by the caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         defines: &Defines,
         ideologies: Arc<installed_content_core::ideologies::Ideologies>,
@@ -632,7 +542,6 @@ impl Content {
         }
     }
 
-    /// Whether `mode` names a mode this content declares.
     pub fn knows(&self, mode: &MapMode) -> bool {
         match mode {
             MapMode::Stock(_) => true,
@@ -641,32 +550,23 @@ impl Content {
     }
 }
 
-/// Whose names a mode writes far out and close in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NameLayers {
     pub far: NameLayer,
     pub near: NameLayer,
 }
 
-/// Whose names the map writes in a mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameLayer {
-    /// Each country's own name.
     Countries,
-    /// A faction's name across its members; countries outside a faction keep theirs.
     Factions,
-    /// No names.
     Nothing,
-    /// Each strategic region's name across its connected provinces.
     StrategicRegions,
-    /// Each state's name across its provinces.
     States,
-    /// Each player's name on the country they hold; other countries carry none.
     Players,
 }
 
 impl NameLayer {
-    /// A scripted mode's declared `far_text` or `near_text`; undeclared writes none.
     fn of(text: Option<MapText>) -> Self {
         match text {
             Some(MapText::Country) => Self::Countries,
@@ -678,18 +578,12 @@ impl NameLayer {
     }
 }
 
-/// Names written across groups of countries instead of each country's own: a faction's across
-/// its members, or a player's on the country they hold.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroupLabels {
-    /// Each grouped country's canonical slot, with its group and that group's name or why it
-    /// has none.
     pub groups: BTreeMap<u32, (u64, Result<String, String>)>,
-    /// Whether countries outside every group keep their own names.
     pub others_named: bool,
 }
 
-/// The faction labels of one frame, named by the shared faction name rule in `localisation`.
 pub fn faction_labels(
     content: &Content,
     frame: &DecodedFrame,
@@ -737,8 +631,6 @@ pub fn faction_labels(
     })
 }
 
-/// The players mode's names: each player's name on the country they hold; countries no player
-/// holds carry none.
 pub fn player_labels(frame: &DecodedFrame) -> Result<GroupLabels, String> {
     let players = complete::<tables::Players>(frame, "players")?;
     let countries = Countries::read(frame).map_err(|error| error.to_string())?;
@@ -767,7 +659,6 @@ pub fn player_labels(frame: &DecodedFrame) -> Result<GroupLabels, String> {
     })
 }
 
-/// The first of several players holding one country, by their roster ordinals.
 fn first_player<'r>(
     players: &[&'r replay_data::rows::PlayerRow],
 ) -> Result<&'r replay_data::rows::PlayerRow, String> {
@@ -787,10 +678,8 @@ fn first_player<'r>(
     Ok(first)
 }
 
-/// The country tables of one frame, resolved to canonical slots.
 struct Countries {
     links: BTreeMap<u32, u32>,
-    /// Canonical slot to raw id.
     raw: BTreeMap<u32, u32>,
 }
 
@@ -812,7 +701,6 @@ impl Countries {
     }
 }
 
-/// The controller region keys the political fill uses: the controller's slot plus one.
 #[cfg(test)]
 fn controller_regions(
     map: &MapData,
@@ -827,7 +715,6 @@ fn controller_regions(
         let Some(definition) = map.definitions.get(&province.id) else {
             continue;
         };
-        // Sea is never in the country layer; a land or lake province joins its controller's.
         if definition.kind == ProvinceKind::Sea || province.controller == 0 {
             continue;
         }
@@ -848,7 +735,6 @@ fn region_table_len(map: &MapData, ids: impl Iterator<Item = u32>) -> usize {
     largest as usize + 1
 }
 
-/// The subject-resolved recorded colours, as f32, of the given slots.
 #[cfg(test)]
 fn subject_colors<'a>(
     map: &MapData,
@@ -904,7 +790,6 @@ fn with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
     color
 }
 
-/// The table a mode needs, or why the hour cannot draw it.
 fn complete<'a, T: replay_data::rows::TableSchema>(
     frame: &'a DecodedFrame,
     mode: &str,
@@ -926,20 +811,15 @@ fn complete<'a, T: replay_data::rows::TableSchema>(
     }
 }
 
-/// What the stock and scripted modes need besides the frame.
 pub struct Inputs<'a, 'w> {
     pub content: &'a Content,
     pub map: &'a MapData,
     pub frame: &'a DecodedFrame,
-    /// The viewing country's canonical slot, the modes' selected country.
     pub selected: Option<u32>,
-    /// The hour's trigger world, which scripted modes' colour scripts run on.
     pub world: Option<&'a dashboard_text::triggers::World<'w>>,
-    /// The scripted mode's borders as the previous hour kept them; `None` on a first hour.
     pub colour: Option<&'a ColourState>,
 }
 
-/// The country channel `mode` draws this hour.
 pub fn fill(mode: &MapMode, inputs: &Inputs) -> io::Result<ModeFill> {
     match mode {
         MapMode::Stock(stock) => stock_fill(*stock, inputs),
@@ -957,7 +837,6 @@ fn refusal(warnings: Vec<String>) -> ModeFill {
     }
 }
 
-/// A channel showing a layer the viewer built, or empty when the layer was refused.
 fn built(layer: &Option<ModeLayer>, source: Source) -> Source {
     if layer.is_some() {
         source
@@ -991,8 +870,6 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
     };
     let draw = match stock {
         Stock::Default => return Ok(ModeFill::default()),
-        // The resources mode draws no layer of its own: the countries, under its state
-        // resource icons ([`visibility`]).
         Stock::Resources => Draw::of([Country, Empty], political),
         Stock::StrategicNavy | Stock::StrategicAir => {
             let mut draw = Draw::of(
@@ -1011,9 +888,6 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
             );
             draw
         }
-        // The raid mode draws no layer of its own: the countries alone. Its raid icons and
-        // what it hides are [`visibility`] rules; its source stripes belong to the raid creation
-        // window, which a replay has no use for.
         Stock::Raids => Draw::of([Country, Empty], political),
         Stock::Factions => variant(Variant::Factions, &mut warnings)?,
         Stock::Players => variant(Variant::Players, &mut warnings)?,
@@ -1093,7 +967,6 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
     })
 }
 
-/// Why a picker mode keeps the political country channel.
 fn unbuilt(stock: Stock) -> &'static str {
     match stock {
         Stock::Supply => {
@@ -1111,7 +984,6 @@ enum Variant {
     Ideology,
 }
 
-/// The country layer's variants: the political regions in another colouring.
 fn country_variant(
     variant: Variant,
     inputs: &Inputs,
@@ -1125,7 +997,6 @@ fn country_variant(
         .country(variant, inputs, warnings)
 }
 
-/// Drops provinces of regions without a style, so a refused region draws nothing.
 fn finish(
     mut region_of: Vec<u32>,
     styles: BTreeMap<u32, Style>,
@@ -1147,7 +1018,6 @@ fn finish(
     })
 }
 
-/// Every state, coloured by its live category.
 fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
     let states = match complete::<tables::States>(inputs.frame, "states") {
@@ -1175,22 +1045,16 @@ fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mode
     }))
 }
 
-/// One country's relation to the selected country, as the diplomacy mode reads it.
 #[derive(Clone, Copy, Debug, Default)]
 struct Relation {
     selected: bool,
     at_war: bool,
     same_faction: bool,
-    /// The selected country holds a war goal against it or one of its subjects; `None` when
-    /// the recording cannot say.
     war_goal: Option<bool>,
-    /// Its opinion of the selected country.
     opinion: i32,
 }
 
 impl Relation {
-    /// The first relation that holds, in this order; `Ok(None)` leaves the country unfilled
-    /// and `Err` means the war-goal test was reached without its operand.
     fn color(self, defines: &ModeDefines) -> Result<Option<[f32; 4]>, ()> {
         Ok(Some(if self.selected {
             DIPLOMACY_SELF
@@ -1210,12 +1074,8 @@ impl Relation {
     }
 }
 
-/// Why the diplomacy mode cannot colour a country below war and faction.
 const WAR_GOALS_UNRECORDED: &str = "the selected country's owned war goals are not recorded, and the war-goal test comes before the opinions";
 
-/// The slots the selected country's owned war goals mark: each goal's recipient and its
-/// overlord, since a goal against a subject marks the overlord too. `Err` names why the
-/// recording cannot say.
 fn war_goal_slots(
     frame: &DecodedFrame,
     countries: &Countries,
@@ -1354,15 +1214,12 @@ fn diplomacy(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<M
     }))
 }
 
-/// The manpower mode's colour for a state of `population`: the two colours blended by the
-/// population's share of the range, clamped to it, in the game's single precision.
 fn manpower_color(defines: &ModeDefines, population: i32) -> [f32; 4] {
     let t = (population as f32 / defines.manpower_max).clamp(0.0, 1.0);
     let [from, to] = defines.manpower_colors;
     std::array::from_fn(|i| (to[i] - from[i]) * t + from[i])
 }
 
-/// Every state, coloured by its population.
 fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
     let states = match complete::<tables::States>(inputs.frame, "manpower") {
@@ -1390,13 +1247,9 @@ fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mo
     }))
 }
 
-/// Network strengths are fixed5 percentages.
 const NETWORK_STRENGTH_SCALE: f32 = 100_000.0;
 const NETWORK_STRENGTH_FULL: f32 = 100.0;
 
-/// The operatives mode's colour for a state's network strength: its share of 100%, clamped,
-/// times the larger of one half and itself, blends the pair; quiet subnetworks take the quiet
-/// pair. Single precision throughout, as the game computes it.
 fn network_color(defines: &ModeDefines, strength: i64, quiet: bool) -> [f32; 4] {
     let share = (strength as f32 / NETWORK_STRENGTH_SCALE / NETWORK_STRENGTH_FULL).clamp(0.0, 1.0);
     let t = (share * share.max(0.5)).clamp(0.0, 1.0);
@@ -1408,8 +1261,6 @@ fn network_color(defines: &ModeDefines, strength: i64, quiet: bool) -> [f32; 4] 
     std::array::from_fn(|i| (to[i] - from[i]) * t + from[i])
 }
 
-/// The selected country's intelligence networks: each state of positive strength whose
-/// controller is the network's target, coloured by that strength.
 fn operatives(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
     let Some(selected) = inputs.selected else {

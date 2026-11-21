@@ -13,8 +13,6 @@ function Items({ title, items, share = false }: { title: string; items: MarketIt
 }
 function Levels({ levels }: { levels: MarketLevel[] }) { return levels.length ? <div className="market-items"><h4>Asking price levels</h4><dl>{levels.map((level, index) => <div key={index}><dt title={level.variant}>{level.name ?? 'Equipment name unavailable'}</dt><dd>{priceLevel(level.level)}</dd></div>)}</dl></div> : <p>Normal asking price unless specified.</p>; }
 function Grants({ grants }: { grants: MarketGrant[] }) { return grants.length ? <div className="market-items"><h4>Subsidies</h4>{grants.map((grant, index) => <p key={index}>{rawAmount(grant.cicRaw)} CIC · {grant.archetype ?? 'Archetype unavailable'} · {grant.trigger !== null ? 'Conditional eligibility' : grant.targets.length ? grant.targets.join(', ') : 'No eligible countries'}</p>)}</div> : <p>No subsidies.</p>; }
-/** The market and lend-lease at `data.hour`. A contract's purchase progress and an agreement's fuel sent and lost are the
- * reply's live cells (`values`); `deliveries` is the list of the parties' delivery changes. */
 export default function TradeMarketView({ data, selected, onPick, values, deliveries }: { data: MarketAt; selected?: string | null; onPick?: (key: string) => void;
   values?: LiveValues<number>; deliveries?: ReactNode }) {
   const root = useRef<HTMLDivElement>(null);

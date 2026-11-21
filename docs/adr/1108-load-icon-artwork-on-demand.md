@@ -1,0 +1,11 @@
+# Load icon artwork on demand
+
+A recording can reference thousands of countries and portraits, and predecoding all indexed art can retain hundreds of megabytes that are never drawn. Ordinary window layout asks for its texture on demand. A bounded pool decodes the request and wakes the map when the decision changes. A headless render settles on its own thread so atlas cells land in a deterministic order. Keep a running worker responsible for requests arriving just before it clears its running flag. A failed dispatch leaves requests available to the next schedule or settle.
+
+Use the recorded country's tag and ruling group to try flag keys in order. The index folds folder names to find candidates, but the actual read follows the source's case rules and archives require exact spelling. A failing art overlay can fall back to the recorded art and is reported by name. Apply any cloth overlay or mask before packing the decoded flag. An ordinary layout can briefly use an already loaded second candidate. Counter publication warms its flag files, and the drawing path synchronously resolves an unwarmed candidate when necessary. This avoids showing a stand-in for a counter. Warming preserves request-time atlas packing and UV rounding.
+
+Both a load and a refusal bump the texture version because either can change which candidate a retained window uses. Memoize rejected files. Use separate dynamic IDs above the static atlas pages, and avoid reusing them so an evicted portrait can never turn into another portrait on an older quad. Keep portraits used or drawn over several recent frames, including those placed by a cached layout. Each view using the same content contributes to that clock.
+
+Inline GUI flags apply the three-byte minimum after a first-NUL cut and use the small atlas. Resolve an unknown tag through the first database slot and an index beyond a signed count through record zero. Refuse an invalid negative index that would point before the atlas. A missing atlas page leaves the flag undrawn, while a shield's overlay draws independently. A missing required recording operand refuses the draw by name instead of selecting a different country.
+
+[Lazy textures and atlas pages](../../crates/viewer-foundation/src/map/lazy_icons.rs) · [Flag record resolution](../../crates/viewer-foundation/src/map/native_flags.rs)

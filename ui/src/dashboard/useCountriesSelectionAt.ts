@@ -20,7 +20,6 @@ export function useCountriesSelectionAt(widget: WidgetSpec, runtime: WidgetRunti
       countries: ready && !filter.reason ? filter.tags : undefined,
       requestTags: request.ready ? request.tags.length ? request.tags : null : undefined,
       selectionReason: filter.reason ?? request.reason,
-      // False while the countries at `hour` are not yet read: no row is not yet proof of none.
       known: filter.known,
     };
   }, [widget.countries, track, group.data, hour, needsGroups]);

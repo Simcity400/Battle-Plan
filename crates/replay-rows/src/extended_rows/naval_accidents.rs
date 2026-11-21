@@ -1,4 +1,3 @@
-//! Retained standing naval accident reports. Keys retain native occurrence order.
 use super::*;
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]

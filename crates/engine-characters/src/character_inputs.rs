@@ -1,15 +1,3 @@
-//! Character-scope inputs absent from role tables, acquired in one pass over
-//! `ccharacter_manager`: leader, advisor and scientist role trait arrays, plus
-//! the unit-leader reference and resolved operands.
-//!
-//! Trait predicates search unit-leader traits, then every matching advisor and country-leader role,
-//! or the scientist role for scientist traits. The unit leader comes from
-//! `ccharacter::UNIT_LEADER`, otherwise registry resolution of `ccharacter::OPERATIVE`; tag and
-//! skill predicates use the same selection. Roster pointers copy in pages, with identities and role
-//! fields in one guarded gather per page. Maps, roles and trait arrays follow their role walks.
-//!
-//! Synthetic fixtures cover these walks; live capture and fresh-save agreement
-//! remain unverified.
 
 use crate::{
     Memory, cadvisor,
@@ -28,28 +16,20 @@ fn site(base: usize, key: engine_sites::Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("character address overflow")
 }
 
-/// The role a trait array belongs to.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    /// A country-leader role, by its ideology key in the character's leader map.
     CountryLeader(i32),
-    /// An advisor role, by its position in the character's advisor map.
     Advisor(u32),
-    /// The scientist role (`ccharacter::SCIENTIST`).
     #[default]
     Scientist,
 }
 
-/// One trait of a role's array: its lexer token and, for a country-leader trait, its database
-/// ordinal (the trait's database ordinal), which tells definitions of one name apart.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Trait {
     pub token: u32,
     pub ordinal: Option<u32>,
 }
 
-/// One role's nonempty trait array: `traits[start..start + len]` in array
-/// order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TraitRow {
     pub character: u32,
@@ -58,20 +38,13 @@ pub struct TraitRow {
     pub len: usize,
 }
 
-/// The stored operands of the unit leader a reference resolves to.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Leader {
-    /// `cunit_leader::CATEGORY`.
     pub category: i32,
-    /// `cunit_leader::OWNER`, the raw country reference.
     pub owner: u32,
-    /// Skill level in the unit leader's optional skill object (`cunit_leader::SKILL`); `None` when
-    /// that object is null.
     pub skill_level: Option<i32>,
 }
 
-/// One character's nonzero `ccharacter::OPERATIVE` reference. With a resolved `leader`, its
-/// assigned traits' definition ordinals are `definitions[start..start + len]`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OperativeRow {
     pub character: u32,
@@ -83,13 +56,9 @@ pub struct OperativeRow {
     pub codename: Option<crate::cname_group_member::Inputs>,
     pub name_reason: Option<&'static str>,
     pub codename_reason: Option<&'static str>,
-    /// Whether the codename's group key and stored name are heap-held, as
-    /// read (`cname_group_member::codename_inputs_buffer`); a carried row
-    /// grows a growing arena for them as the fresh copy does.
     pub codename_heap: [bool; 2],
 }
 
-/// Worker-owned rows and arenas grow from the original role/trait headers.
 pub struct Buffers<'a> {
     pub traits: &'a mut Vec<TraitRow>,
     pub trait_values: &'a mut Vec<Trait>,
@@ -110,9 +79,6 @@ struct Names<'a> {
     required: usize,
 }
 
-/// Outcomes of both tables. Rows that do not fit are counted (a row whose
-/// values do not fit is not stored), and `required_*` count every value,
-/// stored or not, so an empty buffer yields the live demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub traits: Outcome,
@@ -123,9 +89,7 @@ pub struct Walk {
     pub required_bytes: usize,
 }
 
-/// Roster pointers per page.
 const PAGE: usize = 64;
-/// Per character: the identity header, then `LEADER_MAP_HEAD..OPERATIVE + 8`.
 const IDENTITY: usize = 16;
 const ROLE_SPAN: usize = ccharacter::OPERATIVE + 8 - ccharacter::LEADER_MAP_HEAD;
 const ROW: usize = IDENTITY + ROLE_SPAN;
@@ -154,11 +118,8 @@ const LAYOUT: RecordLayout<'static> = match RecordLayout::new(&FIELDS, ROW) {
     Some(layout) => layout,
     None => panic!("character input layout"),
 };
-/// Trait pointers copied per guarded read.
 const TRAITS_PER_READ: usize = 32;
-/// The two role maps of each character, in the order they are walked.
 const MAPS: [usize; 2] = [ccharacter::LEADER_MAP_HEAD, ccharacter::ADVISOR_MAP_HEAD];
-/// A map's head node up to its nil byte, which `RoleTree` checks.
 const SENTINEL: usize = 26;
 const SENTINEL_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: 0,
@@ -170,7 +131,6 @@ const SENTINEL_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&SENTINEL
     None => panic!("role map sentinel layout"),
 };
 
-/// One table's rows, value arena and its own first failure.
 struct Table<'a, R, V> {
     rows: crate::walk::Buffer<'a, R>,
     values: crate::walk::Buffer<'a, V>,
@@ -194,15 +154,11 @@ impl<'a, R: Default, V: Default> Table<'a, R, V> {
         }
     }
 
-    /// Room for one more row with `count` values, which the demand counts
-    /// either way. `None` counts the row as unread; once one row does not fit,
-    /// no later row is stored.
     fn reserve(&mut self, count: usize) -> Result<Option<usize>, &'static str> {
         self.required = self
             .required
             .checked_add(count)
             .ok_or("character input value count overflow")?;
-        // Trait predicates visit every reached role trait array.
         self.rows.ensure(
             self.len
                 .checked_add(1)
@@ -233,8 +189,6 @@ impl<'a, R: Default, V: Default> Table<'a, R, V> {
         self.len += 1;
     }
 
-    /// Runs one step of this table, unless it already failed; a failure here
-    /// fails this table alone.
     fn run(&mut self, step: impl FnOnce(&mut Self) -> Result<(), &'static str>) {
         if self.failure.is_none()
             && let Err(reason) = step(self)
@@ -243,8 +197,6 @@ impl<'a, R: Default, V: Default> Table<'a, R, V> {
         }
     }
 
-    /// This table's outcome; `shared` is a failure of the walk both tables
-    /// share, which a table that already failed on its own does not take.
     fn outcome(&self, shared: Option<&'static str>) -> Outcome {
         match self.failure.or(shared) {
             Some(reason) => Outcome::Unavailable { reason },
@@ -257,9 +209,6 @@ impl<'a, R: Default, V: Default> Table<'a, R, V> {
     }
 }
 
-/// Walks the whole roster in native order (historical, then dynamic). An
-/// unreadable roster, page or unauthenticated character fails both tables; a
-/// role, trait or resolved leader that does not read fails its own table.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -333,8 +282,6 @@ fn walk_storage(
                 }) {
                     return Err("character vtable or reference type mismatch");
                 }
-                // Every map is checked by its header and sentinel, the empty
-                // ones included, as RoleTree::read checks it.
                 let sentinels = &mut page_sentinels[..count * MAPS.len() * SENTINEL];
                 traits.run(|_| {
                     let heads = &mut page_heads[..count * MAPS.len()];
@@ -395,15 +342,9 @@ fn walk_storage(
     }
 }
 
-/// Occupants whose map sentinels [`CensusWalk::sentinels`] gathers per call.
 pub const CENSUS_PAGE: usize = PAGE;
-/// Bytes of a role map's head node up to its nil byte.
 pub const MAP_SENTINEL: usize = SENTINEL;
 
-/// One occurrence of the roster job's admitted role census: the character's pointer and id and the
-/// bytes that job gathered, in the same stopped-world callback, at the character's country-leader
-/// map header, advisor map header, scientist and unit-leader reference). Each occurrence was
-/// authenticated by that job's view.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Occupant {
     pub pointer: usize,
@@ -414,14 +355,6 @@ pub struct Occupant {
     pub operative: u64,
 }
 
-/// Both tables over an admitted census instead of the roster. The caller
-/// visits the occurrences in roster order (historical, then dynamic); for
-/// each it either reads the country-leader and advisor rows afresh
-/// ([`Self::roles`]) or carries the rows a certified earlier read produced
-/// ([`Self::carry`]), then reads the scientist row ([`Self::scientist`]) and
-/// the operative link ([`Self::operative`]). Row order, value demand,
-/// truncation and each table's own first failure follow [`walk`]; the census
-/// replaces only its roster pages and identity gather.
 pub struct CensusWalk<'a> {
     traits: Table<'a, TraitRow, Trait>,
     operatives: Table<'a, OperativeRow, u32>,
@@ -453,11 +386,6 @@ impl<'a> CensusWalk<'a> {
         }
     }
 
-    /// Gathers the sentinel of each role map header in `headers` (at most
-    /// two per occupant of a [`CENSUS_PAGE`]) into `output`, [`MAP_SENTINEL`]
-    /// bytes each, in one guarded call, as [`walk`] gathers a page's. A
-    /// header that fails its check or a sentinel that does not read fails the
-    /// trait table.
     pub fn sentinels(&mut self, memory: &impl Memory, headers: &[[u8; 16]], output: &mut [u8]) {
         self.traits.run(|_| {
             if headers.len() > PAGE * MAPS.len() || output.len() != headers.len() * SENTINEL {
@@ -480,8 +408,6 @@ impl<'a> CensusWalk<'a> {
         });
     }
 
-    /// Reads one occupant's country-leader then advisor rows afresh, from its
-    /// map headers and their gathered sentinels.
     pub fn roles(
         &mut self,
         memory: &impl Memory,
@@ -505,9 +431,6 @@ impl<'a> CensusWalk<'a> {
         });
     }
 
-    /// Appends rows an earlier [`Self::roles`] produced, with their values
-    /// (`values[row.start..row.start + row.len]`), exactly as a fresh read
-    /// stores them: each row reserves and counts its values.
     pub fn carry(&mut self, rows: &[TraitRow], values: &[Trait]) {
         self.traits.run(|table| {
             for row in rows {
@@ -529,14 +452,12 @@ impl<'a> CensusWalk<'a> {
         });
     }
 
-    /// Reads the occupant's scientist row afresh.
     pub fn scientist(&mut self, memory: &impl Memory, base: usize, occupant: &Occupant) {
         self.traits.run(|table| {
             scientist_traits(memory, base, occupant.scientist, occupant.character, table)
         });
     }
 
-    /// Reads the occupant's nonzero unit-leader reference afresh.
     pub fn operative(&mut self, memory: &impl Memory, base: usize, occupant: &Occupant) {
         if occupant.operative == 0 {
             return;
@@ -546,9 +467,6 @@ impl<'a> CensusWalk<'a> {
         }
     }
 
-    /// Resolves a nonzero unit-leader reference as [`Self::operative`] does
-    /// first: the object, or `Some(None)` for none; `None` once the
-    /// operatives table failed (a resolution failure fails it).
     pub fn resolve_operative(
         &mut self,
         memory: &impl Memory,
@@ -568,8 +486,6 @@ impl<'a> CensusWalk<'a> {
         resolved
     }
 
-    /// [`Self::operative`] with the occupant's reference resolved to
-    /// `object` ([`Self::resolve_operative`]).
     pub fn operative_resolved(
         &mut self,
         memory: &impl Memory,
@@ -593,15 +509,10 @@ impl<'a> CensusWalk<'a> {
         });
     }
 
-    /// Operative rows stored so far.
     pub fn operatives_stored(&self) -> usize {
         self.operatives.len
     }
 
-    /// The operative row stored last: the row with its definition spans and
-    /// name and codename spans rebased onto its own definitions and `text`,
-    /// which it replaces, in the order a fresh read stores them (name, group
-    /// key, custom name). `None` when `text` cannot hold them.
     pub fn last_operative(&self, text: &mut Vec<u8>) -> Option<(OperativeRow, &[u32])> {
         let len = self.operatives.len;
         let row = *self.operatives.rows.get(len.checked_sub(1)?)?;
@@ -626,7 +537,6 @@ impl<'a> CensusWalk<'a> {
         let codename = match row.codename {
             Some(mut inputs) => {
                 inputs.group = take(inputs.group)?;
-                // A skipped stored name keeps its default span.
                 if crate::cname_group_member::custom_copied(&inputs) {
                     inputs.custom = take(inputs.custom)?;
                 }
@@ -645,16 +555,6 @@ impl<'a> CensusWalk<'a> {
         ))
     }
 
-    /// Appends a held operative row ([`Self::last_operative`], read with
-    /// neither refusal), its definitions and its name text as a fresh read
-    /// (`operative`) stores them: every name's bytes count toward demand
-    /// before the row is admitted, a name the storage cannot hold is refused
-    /// on the row (`cunit_leader::read_name_buffer`), a codename whose group
-    /// key or custom name it cannot hold is refused whole
-    /// (`cname_group_member::codename_inputs_buffer`), a growing arena grows
-    /// for an inline or heap-held codename string as the fresh copy does, a
-    /// stored name the fresh read skipped keeps its default span, and only
-    /// an admitted row commits its spans.
     pub fn carry_operative(&mut self, row: &OperativeRow, definitions: &[u32], text: &[u8]) {
         let Self {
             operatives, names, ..
@@ -686,7 +586,6 @@ impl<'a> CensusWalk<'a> {
                 } else {
                     None
                 };
-                // cunit_leader::read_codename_buffer over the held bytes.
                 let mut arena = naming::Names {
                     bytes: pending.bytes.suffix(0),
                     len: pending.len,
@@ -715,20 +614,16 @@ impl<'a> CensusWalk<'a> {
                 return Ok(());
             };
             table.values[start..start + definitions.len()].copy_from_slice(definitions);
-            // Only an admitted row commits its optional name spans.
             names.len = bytes_len;
             table.push(OperativeRow { start, ..carried });
             Ok(())
         });
     }
 
-    /// Rows and values stored so far.
     pub fn stored(&self) -> (usize, usize) {
         (self.traits.len, self.traits.values_len)
     }
 
-    /// The rows stored since `from` (a [`Self::stored`] result), with the
-    /// value arena their `start`s index.
     pub fn stored_since(&self, from: (usize, usize)) -> (&[TraitRow], &[Trait]) {
         (
             &self.traits.rows[from.0.min(self.traits.len)..self.traits.len],
@@ -736,8 +631,6 @@ impl<'a> CensusWalk<'a> {
         )
     }
 
-    /// No trait row failed or went unstored so far, so every visited
-    /// occupant's rows are complete.
     pub fn traits_complete(&self) -> bool {
         self.traits.failure.is_none() && self.traits.unread_rows == 0
     }
@@ -754,17 +647,11 @@ impl<'a> CensusWalk<'a> {
     }
 }
 
-/// A role map's 16-byte header (head, size) in a gathered record.
 fn map_header(record: &[u8], map: usize) -> [u8; 16] {
     let at = IDENTITY + map - ccharacter::LEADER_MAP_HEAD;
     record[at..at + 16].try_into().unwrap()
 }
 
-/// The trait arrays of one character's country-leader, advisor and scientist
-/// roles, in that order. `maps` holds each map's gathered header and
-/// sentinel, which are checked before an empty map is accepted; `field`
-/// holds the scientist pointer. Each role is authenticated by its vtable and
-/// parent character, as the role walks authenticate it.
 fn role_traits(
     memory: &impl Memory,
     base: usize,
@@ -778,8 +665,6 @@ fn role_traits(
     scientist_traits(memory, base, field(ccharacter::SCIENTIST), character, table)
 }
 
-/// The country-leader then advisor rows of one character, from its two role maps
-/// (`ccharacter::LEADER_MAP_HEAD`).
 fn map_role_traits(
     memory: &impl Memory,
     base: usize,
@@ -848,7 +733,6 @@ fn map_role_traits(
     Ok(())
 }
 
-/// The scientist row of the role (`ccharacter::SCIENTIST`), when it is nonzero.
 fn scientist_traits(
     memory: &impl Memory,
     base: usize,
@@ -883,8 +767,6 @@ fn non_null(value: u64, reason: &'static str) -> Result<usize, &'static str> {
         .ok_or(reason)
 }
 
-/// One nonempty trait array as a row: each element must be a non-null trait of `vtable`, whose
-/// token follows it; a country-leader trait's (`ordinal`) database ordinal is read with it.
 fn push_traits(
     memory: &impl Memory,
     array: Array,
@@ -938,7 +820,6 @@ fn push_traits(
     Ok(())
 }
 
-/// Each element pointer of `array`, copied in batches, through `value`.
 fn elements<V>(
     memory: &impl Memory,
     array: Array,
@@ -960,10 +841,6 @@ fn elements<V>(
     Ok(())
 }
 
-/// A carried leader name's bytes stored as a fresh read stores them
-/// (`cunit_leader::read_name_buffer`): counted toward demand, then copied at
-/// the end when the storage holds (or grows to hold) them. Their start, or
-/// `None` when they do not fit.
 fn place(names: &mut Names<'_>, bytes: &[u8]) -> Result<Option<usize>, &'static str> {
     const OVERFLOW: &str = "unit leader name byte count overflow";
     names.required = names.required.checked_add(bytes.len()).ok_or(OVERFLOW)?;
@@ -977,8 +854,6 @@ fn place(names: &mut Names<'_>, bytes: &[u8]) -> Result<Option<usize>, &'static 
     Ok(Some(start))
 }
 
-/// One nonzero `ccharacter::OPERATIVE` reference and, when the registry holds its object, that unit
-/// leader's category, owner, skill level and assigned trait definitions.
 fn operative(
     memory: &impl Memory,
     base: usize,
@@ -1036,7 +911,6 @@ fn operative(
         {
             return Err("operative skill unreadable");
         }
-        // Read the skill level of either leader class.
         let vtable = u64::from_le_bytes(vtable);
         let skills = [
             cunit_leader_skill::VTABLE_RVA,
@@ -1121,7 +995,6 @@ fn operative(
             Ok(u32::from_le_bytes(ordinal))
         },
     )?;
-    // Only an admitted row commits optional name spans.
     names.len = bytes_len;
     table.push(OperativeRow {
         character,
@@ -1150,7 +1023,6 @@ fn copy_pointers(
     let source = array
         .slice(0, output.len() as u32, 8)
         .map_err(|_| "character roster pointers unreadable")?;
-    // Validate in element order: an earlier null wins over a later unreadable pointer.
     crate::cpdx_array::pointers(
         memory,
         source,
@@ -1215,7 +1087,6 @@ mod tests {
                 self.u64(data + index * 8, pointer as u64);
             }
         }
-        /// A map at `character + offset` holding one node.
         fn one_node(&mut self, character: usize, offset: usize, head: usize, entry: usize) {
             self.u64(character + offset, head as u64);
             self.u64(character + offset + 8, 1);
@@ -1226,7 +1097,6 @@ mod tests {
             self.put(head + node::COLOR, &[1, 1]);
             self.put(entry + node::COLOR, &[0, 0]);
         }
-        /// An empty map at `character + offset`: the sentinel links itself.
         fn empty_map(&mut self, character: usize, offset: usize, head: usize) {
             self.u64(character + offset, head as u64);
             self.u64(character + offset + 8, 0);
@@ -1268,10 +1138,6 @@ mod tests {
         }
     }
 
-    /// A (id 11): a country-leader role of ideology 5 with traits 101 and
-    /// 102, an advisor role with trait 102 and a scientist with trait 201.
-    /// B (12): an operative reference that resolves; C (13, dynamic): one that
-    /// does not.
     fn world() -> Sparse {
         let mut m = Sparse::default();
         m.u64(GS + cgame_state::CHARACTER_MANAGER, MANAGER as u64);
@@ -1454,8 +1320,6 @@ mod tests {
         );
     }
 
-    /// The census walk over every roster occurrence: `carry` lists the
-    /// occupants whose map rows come from `held` instead of a fresh read.
     fn census(
         memory: &Sparse,
         carry: &[u32],
@@ -1546,14 +1410,10 @@ mod tests {
         assert_eq!(fresh.walk, roster.walk);
         assert_eq!(fresh.traits, roster.traits);
         assert_eq!(fresh.operatives, roster.operatives);
-        // Carried rows land at their new arena positions with the same values;
-        // the scientist row is still read afresh after them.
         let held = (rows[..2].to_vec(), values);
         let (carried, ..) = census(&memory, &[11], &held);
         assert_eq!(carried.walk, roster.walk);
         assert_eq!(carried.traits, roster.traits);
-        // A carried character reads none of its role memory: with the maps
-        // gone, only the census-supplied rows remain.
         let mut gone = world();
         gone.0.retain(|&address, _| {
             !(0x4000..0x4200).contains(&address) && !(0x5000..0x5400).contains(&address)
@@ -1625,13 +1485,6 @@ mod tests {
         );
     }
 
-    /// A carried operative row stores what a fresh read of its leader stores
-    /// after the same earlier row, from every starting name, row and
-    /// definition capacity: its trait definitions, name and
-    /// codename spans in the fresh order (name, group key, custom name), a
-    /// skipped stored name's default span, per-name refusals, written and
-    /// committed bytes, the growing arena's length (inline or heap-held group
-    /// keys and stored names, over more than one copy chunk) and demand.
     #[test]
     fn a_carried_operative_stores_exactly_what_a_fresh_read_stores() {
         use crate::cname_group_member::{FLAG_B, OVERRIDE_NAME};
@@ -1646,8 +1499,6 @@ mod tests {
         };
         let member = OPERATIVE + coperative_leader::CODENAME;
         let (group_header, custom_header) = (member + 0x10, member + OVERRIDE_NAME);
-        // An MSVC string header holding `text` inline (`heap` none) or at
-        // `heap`, with its terminator.
         let string = |memory: &mut Sparse, header: usize, text: &[u8], heap: Option<usize>| {
             match heap {
                 Some(at) => {
@@ -1664,7 +1515,6 @@ mod tests {
             }
             memory.u64(header + 16, text.len() as u64);
         };
-        // One 256-byte copy chunk and more.
         let long: Vec<u8> = (0..300_u32)
             .map(|index| b'a' + (index % 26) as u8)
             .collect();
@@ -1673,8 +1523,6 @@ mod tests {
             (b"GROUP-KEY-ON-THE-HEAP", Some(0x2_0000)),
             (&long, Some(0x2_0000)),
         ];
-        // Shown stored names (programmatic flag clear), inline or heap-held, empty or not, and one
-        // programmatic skip.
         let customs: [(u8, &[u8], Option<usize>); 6] = [
             (0, b"", None),
             (0, b"Code", None),
@@ -1715,8 +1563,6 @@ mod tests {
                 let heap = (group_heap.is_some(), custom_heap.is_some());
                 let whole = 2 * text.len();
                 {
-                    // Every capacity of a short text; a long one's every
-                    // seventh and its last few.
                     for capacity in (0..=whole)
                         .filter(|&capacity| whole < 64 || capacity % 7 == 0 || capacity + 4 > whole)
                     {
@@ -1774,14 +1620,11 @@ mod tests {
             output.walk.operatives,
             Outcome::Unavailable { .. }
         ));
-        // A null skill object has no level.
         let mut memory = world();
         memory.u64(OPERATIVE + cunit_leader::SKILL, 0);
         assert_eq!(run(&memory, 8).operatives[0].2.unwrap().skill_level, None);
     }
 
-    /// An empty map is accepted only with a valid header and sentinel; a bad
-    /// one fails the trait table alone.
     #[test]
     fn empty_maps_are_checked_and_a_bad_one_fails_only_the_trait_table() {
         let b_leaders = 0x4800 + 2 * 0x40;
@@ -1820,8 +1663,6 @@ mod tests {
         }
     }
 
-    /// A later failure of the walk both tables share does not replace a
-    /// table's own earlier one.
     #[test]
     fn a_table_keeps_its_own_first_failure_before_a_shared_one() {
         let mut memory = world();

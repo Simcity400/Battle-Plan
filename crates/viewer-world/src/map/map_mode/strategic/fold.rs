@@ -679,7 +679,6 @@ impl Air {
             };
             outcomes = outcomes.inserted(region, Retained::new(color))?;
         }
-        // These roots contain compact operands; a skipped lazy read must retain its own earlier cursor.
         if counters.is_none() {
             if let Some(previous) = old.and_then(|old| old.counters.as_ref()) {
                 counters = Some(previous.copy());

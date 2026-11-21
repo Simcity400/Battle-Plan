@@ -12,8 +12,6 @@ use crate::{
 };
 use std::{cell::RefCell, collections::BTreeMap};
 
-/// Operands for the arithmetic, each missing one a refusal, and the
-/// operands each preview asked for.
 #[derive(Clone)]
 struct Mock {
     controllers: BTreeMap<u32, u32>,
@@ -165,8 +163,6 @@ fn outer_gates_return_before_any_operand() {
     }
 }
 
-/// Every entry in native order with the attack-preview arithmetic: a large river, a
-/// level-two fort, snow, region weather, night and enemy air.
 #[test]
 fn every_entry_follows_the_native_order_and_arithmetic() {
     let mock = Mock {
@@ -195,7 +191,6 @@ fn every_entry_follows_the_native_order_and_arithmetic() {
         enemy_air: Ok(true),
         ..Default::default()
     };
-    // Fort: max(2 * ONE, ONE) * base / ONE + leader = -300000 + 20000.
     let fort_factor = -300_000 + 20_000;
     assert_eq!(
         rows(&mock),
@@ -204,12 +199,10 @@ fn every_entry_follows_the_native_order_and_arithmetic() {
                 kind: TERRAIN,
                 value: -10_000
             },
-            // (large define + leader) + stat: -60000 + 10000 - 5000.
             Row {
                 kind: RIVER,
                 value: -55_000
             },
-            // min(stat + factor, 0) = min(10000 - 280000, 0).
             Row {
                 kind: FORT,
                 value: 10_000 + fort_factor
@@ -222,7 +215,6 @@ fn every_entry_follows_the_native_order_and_arithmetic() {
                 kind: WEATHER,
                 value: -10_000
             },
-            // stat + define + country + leader.
             Row {
                 kind: NIGHT,
                 value: 4_000 - 50_000 + 25_000 + 1_000
@@ -237,8 +229,6 @@ fn every_entry_follows_the_native_order_and_arithmetic() {
 
 #[test]
 fn zero_values_omit_their_entries_but_night_always_lists() {
-    // Nothing nonzero, no neighbour, no fort, no weather record, and a
-    // night whose terms cancel.
     let mock = Mock {
         night_factor: Ok(100_000),
         night_modifier: Ok(50_000),
@@ -251,7 +241,6 @@ fn zero_values_omit_their_entries_but_night_always_lists() {
             value: 0
         }]
     );
-    // Exactly 0.8 is not night.
     let mock = Mock {
         night_factor: Ok(NIGHT_THRESHOLD),
         ..Default::default()
@@ -272,7 +261,6 @@ fn small_rivers_and_admission_by_either_value() {
         }),
         ..Default::default()
     };
-    // The small define cancels the first value; the second admits the entry.
     assert_eq!(
         rows(&mock),
         [Row {
@@ -287,7 +275,6 @@ fn small_rivers_and_admission_by_either_value() {
         night: Ok(0),
     });
     assert!(rows(&mock).is_empty());
-    // A sea or impassable crossing is no river.
     for kind in [0, 1, 4] {
         mock.crossing = Ok(Some(kind));
         assert!(rows(&mock).is_empty());
@@ -320,7 +307,6 @@ fn a_fort_never_raises_attack() {
         }),
         ..Default::default()
     };
-    // Both sums are positive: min(.., 0) leaves no entry.
     assert!(rows(&mock).is_empty());
     let mock = Mock {
         fort_level: Ok(-3),
@@ -365,7 +351,6 @@ fn a_missing_operand_refuses_only_its_entries() {
             ("region weather", "no region weather".to_owned())
         ]
     );
-    // A commander that cannot be read refuses every entry it adds to.
     let mock = Mock {
         commander: Err("group unread".into()),
         ..Default::default()
@@ -434,7 +419,6 @@ fn region_weather_skips_the_factor_when_both_values_are_zero() {
     };
     assert!(rows(&mock).is_empty());
     assert!(!mock.asked.borrow().contains(&"factor"));
-    // A full acclimatization removes the penalty entirely.
     let mock = Mock {
         region: Ok(Some([-20_000, 5_000])),
         factor: Ok(0),
@@ -448,14 +432,12 @@ fn snow_and_fort_helpers_wrap_and_clamp_as_the_game() {
     assert!(has_snow(1, 0, 100));
     assert!(!has_snow(5, -5, 100));
     assert!(!has_snow(500, 0, 0));
-    // The permanent snow addition wraps.
     assert!(!has_snow(i64::MAX, 1, 1));
     assert_eq!(fort_base(None, 7, -150_000), -150_000);
     assert_eq!(fort_base(Some(-50_000), 0, -150_000), -75_000);
     assert_eq!(fort([0, 0], 0, 0, -1), None);
 }
 
-// Frame fixtures.
 
 const DIVISION: u64 = (7 << 32) | 1;
 const GROUP: u64 = (3 << 32) | 53;
@@ -586,7 +568,6 @@ fn frame() -> DecodedFrame {
                 active: true,
                 ..Default::default()
             },
-            // Not in the active vector, so the walk never reaches it.
             BuildingRow {
                 location: 2,
                 building_type: FORT_TOKEN + 1,
@@ -698,8 +679,6 @@ fn put(frame: &mut DecodedFrame, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
 }
 
-/// Content as a mod may author it: a terrain index past vanilla's count
-/// with its own adjuster, a large river and a fort weight of three.
 struct Content {
     index: i32,
     attack: i64,
@@ -736,9 +715,6 @@ impl Context for Content {
     }
 }
 
-/// Format 102: the stat block's entry at the terrain index minus one plus
-/// the content's terrain adjuster, the commander's entry at the index, the
-/// fort level from the active buildings, and the effective country entries.
 #[test]
 fn recorded_inputs_derive_the_list_with_the_recorded_content() {
     let frame = frame();
@@ -750,13 +726,10 @@ fn recorded_inputs_derive_the_list_with_the_recorded_content() {
     let inputs = FrameInputs::new(&frame, &content, DIVISION);
     let preview = super::preview(&inputs, 1, 2).unwrap().unwrap();
     assert!(preview.refusals.is_empty(), "{:?}", preview.refusals);
-    // fort base: (-50000 + ONE - 20000) * -150000 / ONE = -45000;
-    // level 2 * 3 = 6: 600000 * -45000 / ONE = -270000, + leader 20000.
     let fort_factor = -270_000 + 20_000;
     assert_eq!(
         preview.rows,
         [
-            // stat[1] -10000 + terrain 3000 + commander[2] 5000.
             Row {
                 kind: TERRAIN,
                 value: -2_000
@@ -792,7 +765,6 @@ fn recorded_inputs_derive_the_list_with_the_recorded_content() {
 #[test]
 fn recorded_content_variations_change_only_what_they_reach() {
     let frame = frame();
-    // A mod terrain past the stat block's entries is refused, not zero.
     let content = Content {
         index: 5,
         attack: 0,
@@ -802,8 +774,6 @@ fn recorded_content_variations_change_only_what_they_reach() {
     let preview = super::preview(&inputs, 1, 2).unwrap().unwrap();
     assert_eq!(preview.refusals.len(), 1, "{:?}", preview.refusals);
     assert_eq!(preview.refusals[0].0, "terrain");
-    // A terrain index the commander's vector lacks takes its first entry,
-    // and the mod terrain's own adjuster joins the stat block's entry.
     let content = Content {
         index: 4,
         attack: 40_000,
@@ -820,7 +790,6 @@ fn recorded_content_variations_change_only_what_they_reach() {
     );
 }
 
-/// Each recorded define refused alone refuses only the entry that reads it.
 #[test]
 fn a_recorded_define_refused_alone_refuses_only_its_entry() {
     let content = Content {
@@ -875,7 +844,6 @@ fn a_recorded_define_refused_alone_refuses_only_its_entry() {
             refused("night", "BASE_NIGHT_ATTACK_PENALTY")
         )
     );
-    // The crossing is large, so the small river define is never read.
     assert_eq!(
         preview(|scalars| scalars.river_small = None),
         (
@@ -885,8 +853,6 @@ fn a_recorded_define_refused_alone_refuses_only_its_entry() {
     );
 }
 
-/// Format 101: the operands themselves, each per-terrain value already the terrain attack
-/// sum, and the effective country and weather values.
 #[test]
 fn format_101_operands_answer_for_their_recordings() {
     let mut frame = frame();
@@ -1001,7 +967,6 @@ fn format_101_operands_answer_for_their_recordings() {
     assert_eq!(
         preview.rows,
         [
-            // The recorded sum, never the content's adjuster again.
             Row {
                 kind: TERRAIN,
                 value: -7_000
@@ -1032,7 +997,6 @@ fn format_101_operands_answer_for_their_recordings() {
             },
         ]
     );
-    // A packet stamped at another hour is stale there.
     countries[0].attack = rows::Recorded::Value(Witnessed(Some(CountryAttackInputs {
         sample_hour: PacketHour::Stamped(499),
         land_night_attack: Some(25_000),
@@ -1060,8 +1024,6 @@ fn absent_tables_refuse_by_name_and_reserved_controllers_are_not_recorded() {
     let preview = super::preview(&inputs, 1, 2).unwrap().unwrap();
     assert_eq!(preview.refusals.len(), 1);
     assert_eq!(preview.refusals[0].0, "enemy air");
-    // A positive alias of the reserved slot passes the raw gates; its
-    // modifiers are not recorded, so only the fort entry refuses.
     put(
         &mut frame,
         TableRows::CountryLinks(vec![

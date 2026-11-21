@@ -1,14 +1,11 @@
 import type { PlotFrame } from './frame';
 import type { Range } from './view';
 
-/** Geometry actually drawn at a pick; keyboard picks have no pointer target. */
 export interface ChartPick { frame: PlotFrame; until: number | null; point?: { x: number; y: number } }
 type PickCallback = (hour: number, context?: ChartPick) => void;
 interface PickScope { owner?: unknown; extent: Range; branchStart: number; active: boolean; onPick?: PickCallback }
 interface DrawnPick { epoch: number; context: ChartPick; onPick?: PickCallback }
 
-/** A delayed click retains its drawn callback and geometry. Playback and labels
- * may change while it waits; a different source/selection/model invalidates it. */
 export class ChartPicks {
   private scope: PickScope | null = null;
   private epoch = 0;

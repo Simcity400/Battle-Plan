@@ -8,37 +8,22 @@ import type { DrillPart, DrillUnattributed } from './parts';
 import '../charts.css';
 import './drill.css';
 
-/** One part: its value (for the bar and share), an exact text for it if the widget
- * formats one, and its colour in the widget's chart (shown as a swatch too). */
 export type { DrillPart } from './parts';
 
-/** A breakdown's values at the head, read as a frame paints; the same object while nothing moved. */
 export type LiveDrillParts = Live<{ parts: readonly DrillPart[]; unattributed?: DrillUnattributed; total?: number | null; totalText?: string }>;
 
-/** The parts of a value at one moment, largest first, each with its amount and its
- * share of the total. Labels come from the game or the recording only; whatever the
- * recording cannot attribute is shown as its own row, never folded into another. */
 export default function DrillParts({ parts, format, total, unattributed, totalRow, showShares = true, virtual = false,
   positiveBars = false, signedShares = false, active = true, onVisible, onPick, live }: {
   parts: readonly DrillPart[]; format: (value: number) => string; total?: number | null;
-  /** Incomplete totals cannot supply a percentage. */
   showShares?: boolean;
-  /** Full inventories use the existing viewport rows, with no data truncation. */
   virtual?: boolean;
   active?: boolean; onVisible?: (ids: readonly string[]) => void;
-  /** Native row activation is opt-in; residual and refused IDs are never picked. */
   onPick?: (id: string) => void;
-  /** Corrections retain selectable exact rows, without positive amount geometry. */
   positiveBars?: boolean; signedShares?: boolean;
-  /** The part of the total no recorded source explains, with the game's own label if it has one. */
   unattributed?: DrillUnattributed;
-  /** A closing total row. */
   totalRow?: { label: string; value: string };
-  /** Painted at the head: rendered only when its rows change, their values painted in each frame they move; their
-   * order follows the live values. */
   live?: LiveDrillParts;
 }) {
-  // The live values a render last took its rows from: kept while the live source and the parts given hold.
   const [adopted, setAdopted] = useState<{ live: LiveDrillParts; parts: readonly DrillPart[]; now: ReturnType<LiveDrillParts['read']> } | null>(null);
   const taken = live && adopted?.live === live && adopted.parts === parts ? adopted.now : null;
   const shownParts = taken?.parts ?? parts, shownUnattributed = taken ? taken.unattributed : unattributed;
@@ -51,7 +36,6 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
     widest: shown.reduce((result, row) => Math.max(result, magnitude(row.item.value)), 1e-12),
     sum: given === undefined ? drillPartsTotal(shown.map(row => row.item)) : given });
   const { widest, sum } = scaleOf(rows, total);
-  // What a row's cells show at a scale, the same at a render and at a frame's paint.
   const look = (row: DrillPart, scale: { widest: number; sum: number | null }) => ({ amount: amount(row),
     share: showShares ? row.shareText ?? drillPartShare(row.value, scale.sum, signedShares) : '',
     width: `${magnitude(row.value) / scale.widest * 100}%`, negative: row.value != null && row.value < 0,
@@ -105,7 +89,6 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   }, [active, publishVisible]);
   const visibleCallback = useRef(onVisible);
   visibleCallback.current = onVisible;
-  // Releasing the rows also forgets them, so replayed effects report them again.
   useEffect(() => () => { reported.current = null; visibleCallback.current?.([]); }, []);
   useEffect(() => {
     if (!active) publishVisible([]);

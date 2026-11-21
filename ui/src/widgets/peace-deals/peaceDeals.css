@@ -5,7 +5,6 @@
 .peace-muted { color: var(--muted); }
 .peace-note { margin: 0; padding: 0 12px 6px; color: var(--muted); font-size: var(--type-xs); cursor: help; }
 
-/* A deal sits flat on the widget; a hairline separates it from the next. */
 .peace-deal { padding: 10px 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .peace-deal time { color: var(--muted); font-size: var(--type-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .peace-meta { display: flex; align-items: center; gap: 8px; min-height: 18px; }
@@ -42,7 +41,6 @@
 .peace-more { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--border); cursor: help; }
 .peace-source { margin: 7px 0 0 28px; color: var(--muted); font-size: var(--type-xs); }
 
-/* A conference with nothing recorded to show is one line. */
 .peace-quiet { display: flex; align-items: center; gap: 8px; padding: 8px 0; min-width: 0; font-size: var(--type-sm); }
 .peace-quiet time { min-width: 11em; flex: none; }
 .peace-quiet > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }

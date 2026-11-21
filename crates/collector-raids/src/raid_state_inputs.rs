@@ -1,20 +1,3 @@
-//! The stored operands of state-scope raid target triggers: resource amounts,
-//! state dynamic modifiers and state cores and claims (`is_core_of`,
-//! `is_claimed_by`). One census walk fills the first four tables and
-//! a second pass over the same census reads the core and claim lists. They are two sliced
-//! families: the state tables (`raid_state`, owner: state ID) and
-//! CountryBuildingResources (`raid_country_buildings`, owner: native country
-//! ID). Owner decision 2026-10-11: they equal the game's at every hour, as
-//! the game's offer cache re-checks every offer at least hourly
-//! (raid offer cache update). Each hour reads an owner new to its census,
-//! the owners of a read that was not published and every owner a hooked
-//! native writer marked since the previous hour ([`crate::raid_changes`]);
-//! a controller of a read state is read with it, and an hour that reads
-//! nothing reads no memory beyond the censuses. An hour whose take of the
-//! marks does not certify the previous hour's read reads every owner. The
-//! supply-route flag, which the hourly supply rebuild rewrites and no hook
-//! certifies, is read with its state: a state with a resource origin (the
-//! flag is zero without one, and origins are hooked) keeps its daily slice.
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -36,13 +19,11 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryBuildingResources,
     TableId::StateCores,
 ];
-/// The `raid_state` family's tables (owner: state) among [`TABLES`].
 pub const STATE_TABLES: [usize; 4] = [0, 1, 2, 4];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     walk: native::Capacity,
-    /// StateCores' raw country links, every read state's core and claim lists.
     core_links: usize,
 }
 
@@ -73,16 +54,12 @@ impl Capacities {
         Ok(())
     }
 
-    /// Presize the per-country buffers from the country registry, so a large
-    /// mod's first hour is not truncated. Never lowers a capacity.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.walk.countries, rows(slots, 1));
     }
 }
 
-/// The two families' owner stores, loaned for one capture, and the hook
-/// marks that join each hour's read.
 pub struct Stores<'a> {
     pub states: &'a mut SliceFingerprints,
     pub countries: &'a mut SliceFingerprints,
@@ -91,23 +68,15 @@ pub struct Stores<'a> {
 
 pub struct Captured {
     buffers: native::Buffers,
-    /// StateCores rows (one per read state) and their links.
     cores: Vec<native::CoreRow>,
     core_links: Vec<u32>,
-    /// The links the last read needed, fitted or not.
     core_required: usize,
     outcomes: [Outcome; N],
     token_bytes: usize,
     required: native::Capacity,
-    /// The capacity `buffers` was built with. Every frame compares its own,
-    /// so an idle frame grows after another frame raised the shared capacity.
     built: native::Capacity,
-    /// This hour's state census, the state owners scanned.
     census: Vec<u32>,
-    /// The states whose StateResourceInputs, StateResources and
-    /// StateDynamicModifiers rows this hour's read replaced.
     states: SliceSelection,
-    /// The countries whose CountryBuildingResources rows it replaced.
     countries: SliceSelection,
 }
 
@@ -117,7 +86,6 @@ impl Captured {
         self.states.reset(hour, force_full);
         self.countries.reset_hooked(hour, force_full);
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self {
             buffers: native::Buffers::empty(),
@@ -162,11 +130,8 @@ impl Captured {
             + self.cores.capacity() * size_of::<native::CoreRow>()
             + self.core_links.capacity() * size_of::<u32>()
     }
-    /// Off-thread: grow every buffer a truncated walk measured as too small.
     pub fn grow(&mut self, capacity: &mut Capacities) {
         capacity.walk.raise(&self.required);
-        // Capacities only rise, so a difference is a buffer below capacity,
-        // whichever frame raised it.
         if self.built != capacity.walk {
             let Ok(buffers) = native::Buffers::new(&capacity.walk).map_err(crate::allocation::io)
             else {
@@ -200,24 +165,19 @@ impl Captured {
         }
     }
 
-    /// Start a frame's selections at its hour; the capture resets them again.
     pub fn reset_selections(&mut self, hour: i32, force_full: bool) {
         self.states.reset(hour, force_full);
         self.countries.reset_hooked(hour, force_full);
     }
 
-    /// The states whose StateResourceInputs, StateResources,
-    /// StateDynamicModifiers and StateCores rows this frame's read replaced.
     pub fn state_selection(&self) -> &SliceSelection {
         &self.states
     }
 
-    /// The countries whose CountryBuildingResources rows it replaced.
     pub fn country_selection(&self) -> &SliceSelection {
         &self.countries
     }
 
-    /// Fixture fixed-storage read without the families' owner stores.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
         &mut self,
@@ -230,7 +190,6 @@ impl Captured {
         self.capture_sliced(memory, base, game_state, hour, force_full, None)
     }
 
-    /// Worker-only: continue each original walk in its owned growing storage.
     pub fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -269,18 +228,13 @@ impl Captured {
         }
         let started = qpc();
         let scanned = stores.is_some();
-        // The scan's state census, which the cores read.
         let mut scan_census = Ok(());
-        // The ids a complete census saw, sizing each family's mark set.
         let mut ids = [None; 2];
         if let Some(stores) = stores.as_mut() {
-            // Scan first, so a new owner joins this hour's read.
             let scan = qpc();
             scan_census = native::state_census(memory, game_state, &mut self.census)
                 .map_err(crate::allocation::io);
             let states = scan_census.is_ok();
-            // A state's print is its last read's origin flag: only an origin
-            // state's supply-route flag drifts between marks.
             for &state in &self.census {
                 let origin = stores.states.held(state);
                 self.states.scan_drifting(
@@ -322,16 +276,11 @@ impl Captured {
                     .map(|countries| countries.arrays()[1].count as usize);
             }
             self.countries.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
-            // Every owner a hooked writer marked since the previous hour
-            // joins this hour's read; a take that does not certify the
-            // previous hour's read reads every owner.
             let changes = stores.changes;
             let states = &mut self.states;
             let epoch = changes.take(Family::States, &mut |id| states.mark(id as u32));
             self.buffers.recruitment_enabled = epoch.is_some();
             states.certify(stores.states, epoch);
-            // A country mark is its raw link; an unresolved one certifies
-            // nothing.
             let mut resolved = true;
             let countries = &mut self.countries;
             let epoch = changes.take(Family::Countries, &mut |raw| match reader
@@ -368,8 +317,6 @@ impl Captured {
         }
         self.token_bytes = walk.token_bytes;
         let walked = qpc().saturating_sub(started).max(0) as u64;
-        // The cores of the same states, over the census the scan took (the
-        // inline fallback takes its own: every state is read).
         let _cores_reads = crate::read_accounting::table(TABLES[4]);
         let cores_started = qpc();
         let census = if scanned {
@@ -401,9 +348,6 @@ impl Captured {
             ),
         };
         self.outcomes = [inputs, resources, modifiers, overrides, cores];
-        // Only controllers are walked for overrides: the countries read are
-        // those the walk reports, not every selected census owner, and they
-        // include the controller of every read state.
         self.countries.track_reads();
         for &country in &self.buffers.read_countries {
             self.countries.select(country);
@@ -421,7 +365,6 @@ impl Captured {
             qpc().saturating_sub(cores_started).max(0) as u64,
         ]
     }
-    /// Record each family's counts for the hour.
     fn record_counts(&self, ids: [Option<usize>; 2]) {
         use crate::raid_changes::{Counts, Family, record};
         for (family, selection, ids) in [
@@ -536,7 +479,6 @@ impl Captured {
         }) {
             return unavailable("state core list outside captured links");
         }
-        // Two words each: (high, low) into one u64.
         let pairs = |words: &[u32]| {
             owned_vec(vec(words.len() / 2).map(|mut out: Vec<u64>| {
                 out.extend(
@@ -568,7 +510,6 @@ mod tests {
     use super::*;
     use replay_data::rows::TableRows;
 
-    /// Every copied address of the synthetic world.
     struct Traced<'a> {
         memory: engine_native::memory::SliceMemory<'a>,
         copies: std::cell::RefCell<Vec<usize>>,
@@ -581,9 +522,6 @@ mod tests {
         }
     }
 
-    /// Four countries and four states, whose records are zeroed: a walk
-    /// refuses the hour. Everything before the state records is the
-    /// censuses' (the game state, the country table and the state slots).
     fn world() -> (engine_native::ccountry::synthetic::World, [usize; 4]) {
         let mut world = engine_native::ccountry::synthetic::World::new(0, 4, 0x200);
         let slots = world.alloc(5 * 8);
@@ -604,7 +542,6 @@ mod tests {
         full: bool,
         states: Vec<u32>,
         countries: Vec<u32>,
-        /// Something beyond the censuses was read.
         touched: bool,
         outcomes: [Outcome; N],
     }
@@ -650,10 +587,6 @@ mod tests {
         }
     }
 
-    /// No slice but the origin states': a quiet hour reads no state or
-    /// country record even when memory changed underneath, a writer re-reads
-    /// exactly what it names, an origin state is read at its slice, and an
-    /// invalidating hour or a disabled family reads every owner.
     #[test]
     fn quiet_hours_read_nothing_and_marks_read_only_their_owners() {
         use crate::raid_changes::{Family, Target, Watches};
@@ -674,11 +607,9 @@ mod tests {
                 )
             };
         }
-        // The first take certifies no earlier read.
         let first = read!(&watches, 0);
         assert!(first.full && first.touched);
         assert_eq!(first.states, [1, 2, 3, 4]);
-        // Quiet hours read nothing, whatever memory holds.
         for at in 1..=3 {
             world.u64(objects[at as usize - 1], 7);
             let quiet = read!(&watches, at);
@@ -686,27 +617,21 @@ mod tests {
             assert!(quiet.states.is_empty() && quiet.countries.is_empty());
             assert_eq!(quiet.outcomes, [Outcome::Rows { len: 0 }; N]);
         }
-        // A state writer names state 3: only state 3 is read.
         drop(watches.notify(0, Target::State(Some(3))));
         let marked = read!(&watches, 4);
         assert!(!marked.full && marked.touched);
         assert_eq!((marked.states, marked.countries), (vec![3], vec![]));
-        // An override writer names country 2's link: only country 2.
         drop(watches.notify(10, Target::Country(Some(2))));
         let marked = read!(&watches, 5);
         assert_eq!((marked.states, marked.countries), (vec![], vec![2]));
-        // State 1 held an origin at its last read: its supply-route flag is
-        // read at its daily slice; state 2, without one, waits for a mark.
         states.hold(1, 1);
         assert_eq!(read!(&watches, 25).states, [1]);
         assert!(read!(&watches, 26).states.is_empty());
-        // An invalidating hour reads every owner, then settles.
         watches.boundary(true);
         let invalidated = read!(&watches, 27);
         assert!(invalidated.full);
         assert_eq!(invalidated.states, [1, 2, 3, 4]);
         assert!(!read!(&watches, 28).touched);
-        // A disabled family certifies nothing: every hour reads every owner.
         let disabled = Watches::new();
         for at in 29..31 {
             let every = read!(&disabled, at);
@@ -758,14 +683,11 @@ mod tests {
         assert!(matches!(views[0], TableView::Complete(_)));
     }
 
-    /// A scanned state census that does not read leaves StateCores unavailable, never an empty or
-    /// partial table.
     #[test]
     fn an_unreadable_state_census_withholds_state_cores() {
         use crate::raid_changes::Watches;
         let base = 0x10_0000;
         let mut bytes = vec![0_u8; 0x1000];
-        // Five state slots whose data lies outside readable memory.
         let header = engine_native::cgame_state::STATES;
         bytes[header..header + 8].copy_from_slice(&((base + 0x10_0000) as u64).to_le_bytes());
         bytes[header + 8..header + 12].copy_from_slice(&5_u32.to_le_bytes());

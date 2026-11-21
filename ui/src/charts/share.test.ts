@@ -263,7 +263,7 @@ test('share polygons clip fractional tile edges without snapping a narrow gap or
   ], 3);
   const frame = plotFrame(8, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [1.5, 6.5], [0, 100], false);
   drawShareBands(ctx, frame, shareSegments(model, 0, 9, 1), bands);
-  assert.equal(paths.length, 3); // The spike and two separated in-supply stretches.
+  assert.equal(paths.length, 3);
   const spike = paths[0];
   assert.ok(spike.some(([x, y]) => x === frame.toX(2) && y === frame.toY(100)));
   assert.ok(spike.some(([x, y]) => x === frame.toX(3) && y === frame.toY(100)));

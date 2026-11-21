@@ -1,0 +1,9 @@
+# 1115. Preserve vision derivation order while folding changed sources
+
+Vision is shared by fog, intel, counters, unit models and engagement. Rebuild the small global parts on the worker from its own complete inputs: the viewing country, canonical relations, unit modifier, air and naval lanes and definitions. Retain unit intel by unit and province fog per province. Content supplies province topology. Missing data keeps the original reason by name, including undecided unit sight, truncated inputs, relation gaps and visibility gaps. A gap step refuses its hour.
+
+Each visibility source places terms on the provinces it reaches, ordered as the whole derivation visits the source. Term order is semantically significant. Keep the first refusal in derivation order, including source and participant ordering, so incremental results give the same refusal as a complete rebuild. Recompute only the provinces that read a changed controller or pair's cutoff. A source from a removed participant drops its previous terms. The fold also retains the land province an invasion draws its sight from while at sea.
+
+Consumers that copy sight take the entire snapshot on a change to shared inputs and otherwise get changed unit levels and province bytes. The fold maintains reverse dependencies from province bytes to readers. Its output can update province arrays by sharing the previous pages and copying the changed bytes. A perspective change restarts the fold on the applied hour and distinguishes held earlier output until that fold answers. Fog can withhold a frame's display independently of the province bytes computed for a comparison.
+
+[Vision layer](../../crates/viewer-playback/src/layers/vision.rs) · [Ordered fold](../../crates/viewer-playback/src/layers/vision/fold.rs) · [Global inputs](../../crates/viewer-playback/src/layers/vision/global.rs)

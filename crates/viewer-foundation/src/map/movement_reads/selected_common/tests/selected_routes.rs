@@ -21,8 +21,6 @@ fn unit<'a>(army: &'a Army, class: CommonClass) -> CommonUnit<'a> {
         army,
     }
 }
-/// A province with its controller and owner area labels; the label province
-/// of a controller area holds its node.
 fn province(id: u32, controller: u32, owner: u32, node: Option<ControllerAreaNode>) -> ProvinceRow {
     ProvinceRow {
         id,
@@ -34,7 +32,6 @@ fn province(id: u32, controller: u32, owner: u32, node: Option<ControllerAreaNod
         ..Default::default()
     }
 }
-/// Area 1 holds provinces 1 and 2, area 3 holds 3; sea province 4 has none.
 fn areas() -> Vec<ProvinceRow> {
     vec![
         province(
@@ -66,7 +63,6 @@ fn selected_areas_read_the_recorded_labels_and_the_node_on_the_label_province() 
     apply(&frame, |moves| {
         assert_eq!(moves.controller_area_equal(1, 2), Ok(true));
         assert_eq!(moves.controller_area_equal(2, 3), Ok(false));
-        // Two null areas compare equal, as their null pointers do.
         assert_eq!(moves.controller_area_equal(4, 4), Ok(true));
         assert_eq!(moves.owner_area_equal(1, 2), Ok(true));
         assert_eq!(moves.owner_area_equal(1, 3), Ok(false));
@@ -74,7 +70,6 @@ fn selected_areas_read_the_recorded_labels_and_the_node_on_the_label_province() 
         assert_eq!(moves.controller_area(4), Ok(0));
         let node = moves.area_node(1).unwrap();
         assert_eq!(node.first_land_province, Ok(2));
-        // The nonsea index comes from the map content; the land count counts the members.
         assert_eq!(node.nonsea_index, Ok(2));
         assert_eq!(node.land_count, Ok(2));
         assert_eq!(node.neighbors, Ok(vec![3, 3]));
@@ -82,11 +77,9 @@ fn selected_areas_read_the_recorded_labels_and_the_node_on_the_label_province() 
         let node = moves.area_node(3).unwrap();
         assert_eq!(node.land_count, Ok(1));
         assert!(node.neighbors.is_err());
-        // Only a label province holds its area's node.
         assert!(moves.area_node(2).is_err());
         assert!(moves.area_node(0).is_err());
     });
-    // A refused label and an older recording without labels refuse by name.
     for field in [Recorded::Value(None), Recorded::NotRecorded] {
         let mut rows = areas();
         rows[1].controller_area = field;
@@ -127,8 +120,6 @@ fn a_selected_army_reads_exile_from_its_status_and_retreat_bans_from_the_hour() 
             bans: DivisionRetreatBanRow::ATTACKING,
         }],
     );
-    // The bans are the hour's: no owner read hour is consulted, so an
-    // empty SliceReads still answers.
     put::<tables::SliceReads>(&mut frame, Vec::new());
     let army = Army::default();
     apply(&frame, |moves| {
@@ -137,7 +128,6 @@ fn a_selected_army_reads_exile_from_its_status_and_retreat_bans_from_the_hour() 
         assert_eq!(moves.unit_retreat_ban(&selected, true), Ok(true));
         assert_eq!(moves.unit_retreat_ban(&selected, false), Ok(false));
     });
-    // The class-13 retreat-ban query returns zero, known before any Army operand.
     *frame.tables[TableId::DivisionRetreatBans.index()] = TableView::Unavailable {
         reason: "must remain unreached".into(),
     };
@@ -180,8 +170,6 @@ fn the_move_fallback_names_a_target_without_a_naval_base_and_refuses_past_it() {
             Ok(false)
         );
         assert_eq!(text, "No naval base");
-        // A target with a base reaches the source's land and base tests,
-        // which need the content graph, then the retired admission.
         let mut text = String::new();
         assert!(
             moves
@@ -195,8 +183,6 @@ fn the_move_fallback_names_a_target_without_a_naval_base_and_refuses_past_it() {
 fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands() {
     let mut frame = strait_frame();
     put::<tables::Provinces>(&mut frame, areas());
-    // The owner-area gate accepts at equal owner areas with target access: no faction,
-    // subject, exile, retreat or area graph operand is demanded.
     for table in [
         TableId::RelationLinks,
         TableId::FactionMembers,
@@ -231,8 +217,6 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
         mover.selected_army_path(&unit(&army, CommonClass::Army), 2),
         Ok(true)
     );
-    // Different owner areas go on to the army's exile byte, which its
-    // DivisionStatus row holds.
     assert!(
         mover
             .selected_army_path(&unit(&army, CommonClass::Army), 3)
@@ -325,8 +309,6 @@ fn railway_country_access_uses_direct_veto_exile_law_and_zero_cell_military_poin
     apply(&frame, |moves| {
         assert_eq!(moves.railway_path_owner_admits(20, 30, 0), Ok(true));
         assert_eq!(moves.railway_path_owner_admits(20, 30, 255), Ok(true));
-        // This read succeeds from the original forward cell even without any
-        // reconstructed RelationLinks row toward actual zero.
         assert_eq!(moves.railway_path_owner_admits(20, 0, 0), Ok(true));
     });
     let mut rows = frame

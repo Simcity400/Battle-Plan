@@ -1,5 +1,3 @@
-//! Presentation workers release prepared ranges without waiting for the
-//! callback's next unrelated result installation.
 use super::*;
 use acquisition::lock_unpoisoned;
 use std::sync::Weak;
@@ -118,8 +116,6 @@ impl PresentationDispatch {
                 stitch: Some((Arc::clone(continuation), index)),
             }));
             let role = job.as_ref().unwrap().role();
-            // SAFETY: the parent belongs to the callback's Batch. The ledger
-            // drains every child on unwind until that Batch adopts its ticket.
             let result =
                 unsafe { executor.submit_with_priority(&mut job, role.priority(), true, false) };
             note_dispatch(
@@ -146,8 +142,6 @@ impl PresentationDispatch {
     }
 }
 
-/// Only ownership transfers run before publication: no native reads, allocation
-/// or successor admission. Cancelled queued requests retain their original data.
 pub(super) fn completed(
     job: &mut Job,
     report: &Result<Report, Failure>,
@@ -183,7 +177,6 @@ pub(super) fn completed(
         Job::PresentationStatus(request) => {
             let (dispatch, index) = request.stitch.as_ref()?;
             dispatch.store_part(*index, request.part.take(), *report);
-            // Drop every immutable preparation lease before its successor.
             request.inputs = None;
             Some(dispatch.clone())
         }
@@ -191,8 +184,6 @@ pub(super) fn completed(
     }
 }
 
-/// The same worker-only admission and retained rejection used by range release.
-/// Retain the ticket and release its ledger before waking accepted work.
 fn submit(
     executor: &acquisition::Pool<Job, Report>,
     calibration: &SharedCalibration,
@@ -207,8 +198,6 @@ fn submit_retained(
     job: &mut Option<Job>,
 ) -> RangeTicket {
     let role = job.as_ref().expect("retained successor").role();
-    // SAFETY: Batch owns the ledger until every child is drained. Each phase
-    // has its own reservation because preceding tickets may be uncollected.
     let result = unsafe { executor.submit_with_priority(job, role.priority(), true, false) };
     note_dispatch(&calibration.roles[role as usize], result.is_ok());
     match result {
@@ -253,8 +242,6 @@ impl Drop for PresentationDispatch {
         let Some(calibration) = self.calibration.as_deref() else {
             return;
         };
-        // Normally the callback already adopted every ticket. A callback
-        // unwind or failed parent must still end every shared native lease.
         for pending in self.parts.iter_mut().filter_map(Option::take) {
             drain(&self.executor, calibration, Some(pending));
         }

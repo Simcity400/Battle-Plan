@@ -1,11 +1,7 @@
-//! A thread whose first call into the heap is a realloc of another thread's block. The global
-//! allocator stays the system's, so no thread touches mimalloc before the heap is called.
 
 use engine_heap::Heap;
 use std::alloc::{GlobalAlloc, Layout};
 
-/// Each block is made on this thread and resized on a new one; `to` fits its size class
-/// (kept in place), grows past it, or crosses into its own pages and back.
 fn resized_on_a_new_thread(from: usize, to: usize) {
     let layout = Layout::from_size_align(from, 8).unwrap();
     let block = unsafe { Heap.alloc(layout) };

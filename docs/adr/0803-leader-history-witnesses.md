@@ -1,0 +1,9 @@
+# Derive leader history from recorded participation, orders, and trait changes
+
+Record a leader's first observed participation in a land or naval combat and its final result. Include commanders from live side details and leaders named only in the result. Keep commanders through the following hour to attach a result read just after the combat ends. Naval links can wait for their result row for at most one day. Disagreeing results leave the winners unknown. The first hour is a baseline. The leaderboard counts participations fought and witnessed outcomes won or lost, and deletes a leader's totals when its `UnitLeaders` row is removed.
+
+A command span starts when an orders group or fleet first names the leader. It records the formation kind and stored name at the start. End it at the last hour the old assignment was known, before a change, removal, or break in observation. Following a gap, close all held spans at the last writer hour and start fresh from the recorded formations. The open rows carry the current spans, and the end log rows live through their writer hour.
+
+Trait history compares a leader's complete old and new trait lists using retained cells from deleted or changed rows. A change in list position is not a gain. Distinguish baseline traits, traits absent in the immediately preceding complete read, and traits first observed after a gap or when a leader appears. A repeated first observation of a trait does not replace a known gain. `LeaderTraitDates` preserves the first observation and last gain, even when the leader loses the trait, until the leader is removed. The gain rows keep the recorded spelling and are published for the read hour.
+
+[Leader battles](../../crates/recorder-derive/src/leader_battles.rs) · [Command spans](../../crates/recorder-derive/src/leader_commands.rs) · [Trait gains and dates](../../crates/recorder-derive/src/leader_traits.rs)

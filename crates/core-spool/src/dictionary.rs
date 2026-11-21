@@ -504,7 +504,6 @@ impl Pages {
         if hash.finalize() != crc {
             return Err(invalid("payload checksum failed"));
         }
-        // Validate the complete value before lending any bytes to a consumer.
         self.chunks(offset, len, visit)
     }
 }

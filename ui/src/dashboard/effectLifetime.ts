@@ -1,4 +1,3 @@
-/** Dispose on an actual unmount, not React's immediate cleanup/setup replay. */
 export class EffectLifetime {
   private generation = 0;
   private owner: unknown;

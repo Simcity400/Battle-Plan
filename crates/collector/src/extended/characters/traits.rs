@@ -15,9 +15,6 @@ pub(super) struct TraitDefinition {
     error: Option<&'static str>,
 }
 
-/// Each entry owns exact native observations. Only successful definitions enter
-/// the address index, which is emptied before every pass. The owned log
-/// supplies every definition byte consumed by the decode worker.
 #[derive(Debug, Default)]
 pub(super) struct TraitDefinitions {
     pub(super) entries: Vec<TraitDefinition>,
@@ -168,8 +165,6 @@ impl TraitDefinitions {
         self.entries[index].len
     }
 
-    /// Copy the definition's token bytes and terminator once; later consumers
-    /// share the terminated entry.
     pub(super) fn consume(
         &mut self,
         memory: &impl Memory,
@@ -258,8 +253,6 @@ pub(super) struct TraitVector {
     required_bytes: usize,
 }
 
-/// Current-pass occurrences retain native order, while successful definitions
-/// are shared only inside this owned image.
 #[derive(Debug, Default)]
 pub(super) struct TraitCapture {
     pub(super) definitions: TraitDefinitions,
@@ -394,8 +387,6 @@ impl TraitCapture {
             let array = header
                 .and_then(|header| Array::from_header(header, TRAIT_STRIDE))
                 .ok_or("unit leader trait vector invalid or unreadable")?;
-            // Assigned trait visitor bounds this vector by its count. Its original acquired count
-            // reserves every occurrence before reads.
             engine_allocation::reserve(&mut self.occurrences, array.count as usize)
                 .map_err(|_| "character trait occurrence allocation failed")?;
             engine_sites::at(base, cunit_leader_trait::VTABLE_RVA)
@@ -514,11 +505,8 @@ impl TraitCapture {
     }
 }
 
-/// Assigned trait visitor visits the assigned traits (`cunit_leader::TRAIT_DATA`, with its count)
-/// as 8-byte definition pointers.
 pub(super) const TRAIT_STRIDE: usize = 8;
 
-/// Native trait-vector identity for one owned acquisition.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TraitVectorCopy {
     pub(super) unit: usize,

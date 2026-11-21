@@ -1,17 +1,3 @@
-//! Byte-exact GPU port of the gradient oracle. Only displayed states reach this pass.
-//!
-//! Dirty province boxes include the search halo (including wrapped cells); changes to a
-//! region's thickness or colour additionally invalidate all its provinces. This is the
-//! conservative equivalent of the grown-box dirty-layer overlap rule. The search halo
-//! is necessary even across another shape: the native buckets contain all boundaries.
-//!
-//! Province metadata stays on the CPU because the compute kernel never reads it. CPU-oracle and GPU
-//! readback checks cover full and incremental updates, shared views and large fields.
-//!
-//! Sharing: [`Static`] holds what no hour or perspective changes (IDs, kernel, strategic
-//! geometry) per content and device. Each distinct displayed fill is a [`State`] with its own
-//! country/naval buffers and texture pair; [`View`]s with equal tables share one, and a state is
-//! released with the last view showing it. States dispatch through one shared [`Scratch`].
 
 mod membership;
 #[path = "province_colors.rs"]
@@ -68,9 +54,7 @@ struct Region {
     alpha_count: u32,
     radius: u32,
     attributes: u32,
-    /// Channel-two green (the colour's alpha) and, at bit 8, the pulse.
     fx: u32,
-    /// The fill factor's f32 bits.
     fill: u32,
 }
 
@@ -152,8 +136,6 @@ pub fn check_device(device: &wgpu::Device) -> io::Result<()> {
     Ok(())
 }
 
-/// One recorded content stack on one device. The weak entry releases everything with the last
-/// scene, independently of CPU content caches.
 #[derive(Default)]
 pub struct Cache(Mutex<Vec<(wgpu::Device, Weak<Static>)>>);
 
@@ -184,40 +166,25 @@ impl Cache {
     }
 }
 
-/// What no hour or perspective changes: the province IDs and boxes, the compiled kernel and the
-/// initial strategic output. Each fill updates its own naval attributes.
 pub struct Static {
-    /// Keeps its own output: every new state copies its first layer from it.
     strategic: PoliticalGpu,
-    /// Dispatch scratch shared by every state.
     scratch: Arc<Scratch>,
     size: [u32; 2],
     field: FieldDefines,
     strategic_keys: Vec<u32>,
     registry: Mutex<Registry>,
-    /// Times a registry critical section was checked to exclude other threads.
     #[cfg(test)]
     race_checks: std::sync::atomic::AtomicUsize,
 }
 
-/// The fill states of one map and the views using them, behind one lock. Views are created on
-/// loader threads, dropped on the dropper thread and shown on the UI thread: finding a state,
-/// reusing a pooled one, pooling a released one and claiming one's own for an update each
-/// happen whole under this lock, so no view can pick up a state another view is changing.
 #[derive(Default)]
 struct Registry {
-    /// Every live state, shown or pooled; only [`Static::find`] upgrades them.
     states: Vec<Weak<State>>,
-    /// States no view shows any more, kept for reuse: at most one per live view. Maps stepping
-    /// through hours together would otherwise allocate and fully refill a state on every
-    /// change, because the first map to move cannot update the state the others still show. A
-    /// reused state diffs from the tables it last held, so it stays incremental and exact.
     pool: Vec<Arc<State>>,
     views: usize,
 }
 
 impl Registry {
-    /// Pool a state no view holds any more, up to one per live view; drop it otherwise.
     fn keep(&mut self, state: Arc<State>) {
         if Arc::strong_count(&state) == 1 && self.pool.len() < self.views {
             self.pool.push(state);
@@ -264,8 +231,6 @@ impl Static {
         })
     }
 
-    /// A new fill state: its own country resources and texture pair, holding the strategic layer
-    /// and no country fill until its first update.
     fn state(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Arc<State>> {
         let empty = vec![0; self.strategic.provinces.len()];
         let color = |_| [0; 3];
@@ -298,8 +263,6 @@ impl Static {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("strategic gradient copy"),
         });
-        // The naval layer starts as the strategic field copied below, so its first update redraws
-        // only the sea regions whose attributes or styles differ from the warm layer's.
         let naval = self.strategic.resumed(
             device,
             queue,
@@ -337,8 +300,6 @@ impl Static {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    /// Test hook at the points where an unlocked registry let another thread interleave: it
-    /// checks from a second thread that the registry is held here.
     #[cfg(test)]
     fn race_point(&self) {
         let excluded = std::thread::scope(|scope| {
@@ -360,8 +321,6 @@ impl Static {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// A live state already holding this fill, whichever view it was computed for. A pooled one
-    /// leaves the pool in the same critical section, so it is never reused while shown.
     fn find(&self, regions: &Regions, styles: &BTreeMap<u32, Style>) -> Option<Arc<State>> {
         let mut registry = self.registry();
         let found = registry
@@ -384,8 +343,6 @@ impl Static {
         found
     }
 
-    /// A pooled state to update instead of allocating one. Its tables stay for the diff; its
-    /// fill is forgotten before the lock is released, so no view finds it meanwhile.
     fn recycle(&self) -> Option<Arc<State>> {
         let mut registry = self.registry();
         let state = registry.pool.pop()?;
@@ -393,7 +350,6 @@ impl Static {
         Some(state)
     }
 
-    /// Pool a state its view no longer shows, if no other view holds it.
     fn release(&self, state: Arc<State>) {
         let mut registry = self.registry();
         #[cfg(test)]
@@ -403,9 +359,6 @@ impl Static {
         registry.keep(state);
     }
 
-    /// Take a state only this view holds for an update. Its fill is forgotten under the lock, so
-    /// no other view can find it until it holds the new tables; `false` when another view holds
-    /// it too.
     fn claim(&self, state: &Arc<State>) -> bool {
         let _registry = self.registry();
         if Arc::strong_count(state) != 1 {
@@ -430,7 +383,6 @@ impl Static {
     }
 }
 
-/// Equal tables fill equal bytes. Colours of unused keys make the test conservative, never wrong.
 fn same_fill(a: &Regions, b: &Regions) -> bool {
     std::ptr::eq(a, b)
         || (a.country_of == b.country_of
@@ -439,27 +391,20 @@ fn same_fill(a: &Regions, b: &Regions) -> bool {
             && a.mode == b.mode)
 }
 
-/// One displayed political fill: a country layer's compute state and the texture pair it fills.
 pub struct State {
     textures: [wgpu::Texture; 2],
     fill: Mutex<Fill>,
 }
 
 struct Fill {
-    /// The country layer: the political fill or a map mode's variant of it.
     gpu: PoliticalGpu,
     naval: PoliticalGpu,
-    /// A map mode's own layer, or nothing; it also stands for an empty channel.
     mode: PoliticalGpu,
-    /// What each channel shows.
     channels: [Source; 2],
-    /// The tables the state was last updated to; `None` until its first update.
     shown: Option<Arc<Regions>>,
-    /// Local selection changes presentation without cloning hour membership.
     strategic_styles: Arc<BTreeMap<u32, Style>>,
 }
 
-/// The fill's three layers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Held {
     Naval,
@@ -467,9 +412,6 @@ enum Held {
     Mode,
 }
 
-/// The layer each channel copies from. An empty channel takes the mode layer when the mode has
-/// no layer of its own, otherwise the country layer, which then holds nothing. A scripted mode's
-/// second layer takes the country layer's place, since it never shows beside the countries.
 fn holders(channels: [Source; 2]) -> [Held; 2] {
     let empty = if channels.contains(&Source::Mode) {
         Held::Country
@@ -490,7 +432,6 @@ impl State {
         self.fill.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// What one more displayed fill costs: its texture pair and the buffers it keeps.
     #[cfg(test)]
     pub fn bytes(&self) -> u64 {
         let textures: u64 = self
@@ -506,24 +447,16 @@ impl State {
     }
 }
 
-/// One view's political fill. Views showing equal tables (the same hour in another perspective)
-/// share one state; a view showing a fill no other view shows owns its state and updates it
-/// incrementally. A view leaving a shared state takes a pooled one before allocating. There are
-/// never more states than twice the views: those shown, and at most one pooled per view.
-/// [`View::show`] and [`View::encode`] run on the thread that renders the views.
 pub struct View {
     base: Arc<Static>,
-    /// The state warmed on the loader for this view's first fill, unless it joins another's.
     spare: Option<Arc<State>>,
     shown: Option<Arc<State>>,
     strategic_styles: Arc<BTreeMap<u32, Style>>,
 }
 
 impl View {
-    /// Loader side: the static parts, plus a first state so the first hour allocates nothing.
     pub fn new(base: Arc<Static>, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Self> {
         base.registry().views += 1;
-        // Constructed first, so a failed allocation still leaves the view count through `drop`.
         let mut view = Self {
             base,
             spare: None,
@@ -537,19 +470,15 @@ impl View {
         Ok(view)
     }
 
-    /// The bytes of the state this view shows, if any.
     #[cfg(test)]
     pub fn state_bytes(&self) -> Option<u64> {
         self.shown.as_ref().map(|state| state.bytes())
     }
 
-    /// The texture pair to draw, `None` until this view's own first fill.
     pub fn textures(&self) -> Option<&[wgpu::Texture; 2]> {
         self.shown.as_ref().map(|state| &state.textures)
     }
 
-    /// Replace this view's local strategic-region styles. Hour geometry remains
-    /// shared; a different selection acquires its own fill through `show`.
     pub fn set_strategic_styles(
         &mut self,
         device: &wgpu::Device,
@@ -569,10 +498,6 @@ impl View {
         }
     }
 
-    /// The country layer of the state this view alone shows, updated for the provinces of
-    /// `provinces` (whose key in `region_of` may have changed) and the keys of `keys` (whose
-    /// colour may have); `false`, touching nothing, when the state is shared, a map mode draws, or
-    /// nothing is shown yet: the caller then shows the tables whole.
     pub fn show_changed(
         &mut self,
         device: &wgpu::Device,
@@ -594,9 +519,6 @@ impl View {
         Ok(true)
     }
 
-    /// The naval layer of the state this view alone shows, updated for the strategic regions of
-    /// `keys` (region id plus one) whose attributes changed; `false`, touching nothing, as
-    /// [`Self::show_changed`] refuses.
     pub fn show_naval(
         &mut self,
         device: &wgpu::Device,
@@ -628,7 +550,6 @@ impl View {
         Ok(true)
     }
 
-    /// Show these tables; `true` when the view now draws a different texture pair.
     pub fn show(
         &mut self,
         device: &wgpu::Device,
@@ -659,7 +580,6 @@ impl View {
         } else {
             let state = {
                 let _span = span("political_acquire");
-                // A state only this view holds follows it; a shared one stays with the other views.
                 let own = self
                     .shown
                     .as_ref()
@@ -679,8 +599,6 @@ impl View {
                 .as_ref()
                 .map_or(POLITICAL, |draw| draw.channels);
             if fill.channels != channels {
-                // A layer moving between halves, or into or out of them, copies its whole field
-                // again; one standing in the same half keeps what that half holds.
                 let (was, now) = (holders(fill.channels), holders(channels));
                 let moved = |layer: Held| was.map(|held| held == layer) != now.map(|held| held == layer);
                 if moved(Held::Country) {
@@ -794,10 +712,6 @@ impl View {
         Ok(changed)
     }
 
-    /// Record the shown state's pending fill before terrain, when it has one not yet recorded
-    /// into an encoder awaiting submission. It stays pending until [`Encoded::submitted`]
-    /// follows that encoder's submission; dropping the token instead, as an aborted frame does,
-    /// leaves it to be recorded again.
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) -> Option<Encoded> {
         let state = self.shown.as_ref()?;
         let [first, second] = &state.textures;
@@ -819,7 +733,6 @@ impl View {
             (Held::Mode, &mut fill.mode),
         ]) {
             let rows = rows(layer);
-            // A layer no channel shows keeps its update until one does.
             if !rows.is_empty() {
                 *recorded = gpu.encode_rows(encoder, [first, second], &rows);
             }
@@ -832,18 +745,14 @@ impl View {
     }
 }
 
-/// The layers of a state [`View::encode`] recorded into an encoder: pending until that encoder
-/// is submitted. Dropped without [`Self::submitted`], they are recorded again by the next encode.
 #[must_use = "a recorded fill stays pending until `submitted` follows its encoder's submission"]
 pub struct Encoded {
     state: Arc<State>,
-    /// Naval, country and mode layers.
     layers: [bool; 3],
     submitted: bool,
 }
 
 impl Encoded {
-    /// The encoder holding the recorded layers was submitted: their update is done.
     pub fn submitted(mut self) {
         self.submitted = true;
     }
@@ -878,12 +787,6 @@ impl Drop for View {
     }
 }
 
-/// Buffers a dispatch writes before its copies read them and no later dispatch reads: the
-/// distance scratch and the packed output. Every state of one map may share them, because each
-/// state's passes and its copies are recorded together, and wgpu orders one dispatch's copies
-/// before the next dispatch's writes, within a submission and across submissions. The copies
-/// read only texels the same dispatch recomputed ([`copy_rects`]). Boundary masks are not
-/// scratch: incremental dispatches recompute only dirty cells and keep the others' masks.
 struct Scratch {
     distances: wgpu::Buffer,
     output: wgpu::Buffer,
@@ -910,7 +813,6 @@ impl Scratch {
     }
 }
 
-/// Compiled once, shared by the strategic and country layers.
 struct Kernel {
     layout: wgpu::BindGroupLayout,
     pipelines: [wgpu::ComputePipeline; 5],
@@ -970,15 +872,12 @@ impl Kernel {
     }
 }
 
-/// Resources belonging to one map. IDs, areas and boxes are derived once from its bitmap.
 pub struct PoliticalGpu {
     params: Params,
     uniform: wgpu::Buffer,
     ids: wgpu::Buffer,
     provinces: Arc<[Province]>,
     mapping: Vec<u32>,
-    /// Per region slot its provinces, and per province its place in its slot's list: a partial
-    /// update marks a restyled region's provinces without scanning the map.
     members: Vec<Vec<u32>>,
     member_at: Vec<u32>,
     source_keys: Vec<u32>,
@@ -994,17 +893,14 @@ pub struct PoliticalGpu {
     alpha_stride: usize,
     capacity: usize,
     alpha_keys: HashMap<(u32, u32), usize>,
-    /// Region slots using each shape, so [`Self::update_changed`] frees a shape no region uses.
     alpha_users: HashMap<(u32, u32), u32>,
     alpha_free: Vec<usize>,
     alpha_slots: usize,
     cells: wgpu::Buffer,
-    /// Shared by every state of a [`Static`]; a standalone layer has its own.
     scratch: Arc<Scratch>,
     dirty_buffer: wgpu::Buffer,
     indirect: wgpu::Buffer,
     dirty: Vec<bool>,
-    /// The cells `dirty` marks, so a partial update never scans the grid.
     marked: Vec<u32>,
     copies: Vec<[u32; 4]>,
     group: wgpu::BindGroup,
@@ -1013,9 +909,7 @@ pub struct PoliticalGpu {
     kind: gradient::LayerKind,
     initialized: bool,
     pending: bool,
-    /// The pending update is recorded into an encoder not yet submitted.
     recorded: bool,
-    /// Number of cells in the most recent dispatch, useful to the exactness/performance harness.
     pub dispatched_cells: usize,
 }
 
@@ -1024,13 +918,11 @@ impl PoliticalGpu {
         Self::new_shared(device, map, layer, None, None)
     }
 
-    /// Reuse the bitmap upload and province metadata for another layer of this map.
     #[cfg(test)]
     pub fn new_layer(&self, device: &wgpu::Device, layer: &Layer<'_>) -> io::Result<Self> {
         self.layer_with(device, layer, None)
     }
 
-    /// Like `Self::new_layer`, dispatching through `scratch` when given.
     fn layer_with(
         &self,
         device: &wgpu::Device,
@@ -1050,9 +942,6 @@ impl PoliticalGpu {
         )
     }
 
-    /// A layer standing where this submitted one stands: its tables, and buffers and boundary
-    /// masks copied in `encoder`, dispatching through `scratch`. What its textures must already
-    /// hold is this layer's field, so a first update redraws only what differs from it.
     fn resumed(
         &self,
         device: &wgpu::Device,
@@ -1177,8 +1066,6 @@ impl PoliticalGpu {
         let field = *layer.field;
         let max_thickness = maximum_thickness(layer.kind, &field);
         let radius = search_radius(max_thickness, &field, map.width, map.height);
-        // Lookups never need distances outside the map or the searched buckets. This also
-        // bounds huge mod-defined reaches without rejecting fields the CPU oracle can render.
         let reach = gradient::field_reach(max_thickness, &field);
         let dx = (map.width / 2).min((radius + 1) * GRID_CELL);
         let dy = (map.height - 1).min((radius + 1) * GRID_CELL);
@@ -1203,7 +1090,6 @@ impl PoliticalGpu {
         if largest >= layer.region_of.len() {
             return Err(unsupported("province ID is outside the region table"));
         }
-        // Refuse sparse IDs before allocating a table indexed by them.
         if (largest as u64 + 1) * 4 > limits.max_storage_buffer_binding_size {
             return Err(unsupported("province ID table exceeds storage limit"));
         }
@@ -1364,7 +1250,6 @@ impl PoliticalGpu {
         })
     }
 
-    /// A map mode's layer: its regions in their styles, at its thickness and constant gradient.
     pub fn update_mode(
         &mut self,
         device: &wgpu::Device,
@@ -1401,8 +1286,6 @@ impl PoliticalGpu {
         self.update(device, queue, &layer)
     }
 
-    /// Makes the next update recompute and copy every cell, for a layer moving to another
-    /// texture half.
     pub fn refill(&mut self) {
         self.initialized = false;
     }
@@ -1424,8 +1307,6 @@ impl PoliticalGpu {
         self.update(device, queue, &layer)
     }
 
-    /// Diff compact tables. The queue receives only changed province entries and region/LUT rows.
-    /// A refused update leaves the state as it was; a new state is the only full refill.
     pub fn update(
         &mut self,
         device: &wgpu::Device,
@@ -1463,8 +1344,6 @@ impl PoliticalGpu {
             self.dispatched_cells = 0;
             return Ok(());
         }
-        // Plan the region and lookup tables before touching any state, so the adapter's storage
-        // limit refuses an update rather than half-applying it.
         let limits = device.limits();
         let storage = limits
             .max_storage_buffer_binding_size
@@ -1519,8 +1398,6 @@ impl PoliticalGpu {
         let mut changed = Vec::new();
         {
             let _span = span("political_mapping");
-            // An exact source-key match keeps every slot and integer area unchanged,
-            // including nonzero keys whose member provinces have no pixels.
             if !same_membership {
                 self.keys.retain(|key, slot| {
                     if *key == 0 || area_of.contains_key(key) {
@@ -1640,8 +1517,6 @@ impl PoliticalGpu {
         let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let mut rebind = false;
         if self.regions.len() > self.capacity {
-            // The first update sizes the table to the content's regions; later growth doubles,
-            // never past the storage limit the plan above was checked against.
             self.capacity = self
                 .regions
                 .len()
@@ -1696,7 +1571,6 @@ impl PoliticalGpu {
                 ],
             );
         }
-        // Contiguous changed entries share an upload; no map-sized CPU data is touched here.
         for range in runs(&changed) {
             shader_pipeline::gpu::stats::write_buffer(&queue, 
                 &self.mapping_buffer,
@@ -1744,12 +1618,6 @@ impl PoliticalGpu {
         )
     }
 
-    /// [`Self::update`] for what a caller knows changed: the provinces of `provinces`, whose key may
-    /// differ from the one shown, and the keys of `keys`, whose colour or style may. Nothing walks
-    /// every province or every cell, but the provinces of a region whose row changed. While the
-    /// layer is not initialized, or when the region or lookup tables would grow past what the
-    /// buffers hold, it is the whole update. A key left with no province keeps its slot until the
-    /// next whole update releases it.
     pub fn update_changed(
         &mut self,
         device: &wgpu::Device,
@@ -1918,9 +1786,6 @@ impl PoliticalGpu {
         Ok(())
     }
 
-    /// The whole update from part way through [`Self::update_changed`]: its tables already hold
-    /// changes not yet written, which a diff against them would never write nor redraw, so the
-    /// tables go whole (they fit their buffers: the entry grows none) and every cell is redone.
     fn refill_update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, layer: &Layer<'_>) -> io::Result<()> {
         shader_pipeline::gpu::stats::write_buffer(queue, &self.mapping_buffer, 0, bytemuck::cast_slice(&self.mapping));
         shader_pipeline::gpu::stats::write_buffer(queue, &self.region_buffer, 0, bytemuck::cast_slice(&self.regions));
@@ -1929,7 +1794,6 @@ impl PoliticalGpu {
         self.update(device, queue, layer)
     }
 
-    /// Bytes of the buffers this layer owns and keeps between dispatches.
     #[cfg(test)]
     fn own_bytes(&self) -> u64 {
         [
@@ -1946,7 +1810,6 @@ impl PoliticalGpu {
         .sum()
     }
 
-    /// `province` in region slot `slot` (0: none).
     fn remap(&mut self, province: usize, slot: usize) {
         let old = self.mapping[province] as usize;
         if old != 0 {
@@ -1990,9 +1853,6 @@ impl PoliticalGpu {
         }
     }
 
-    /// Record before terrain; `true` when there was a pending update not yet recorded. It stays
-    /// pending until [`Self::recorded`] says the encoder was submitted. Buffer copies preserve
-    /// the exact bytes in the sRGB textures.
     pub fn encode(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2006,7 +1866,6 @@ impl PoliticalGpu {
         true
     }
 
-    /// [`Self::encode`] copying into each of `rows`: one layer shown in both channels.
     fn encode_rows(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2022,15 +1881,10 @@ impl PoliticalGpu {
         true
     }
 
-    /// Run the pending update's passes into the output buffer; `false` when nothing was pending
-    /// or an encoder awaiting submission already holds them.
     fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
         if !self.pending || self.recorded {
             return false;
         }
-        // One pass for the whole update: its dispatches run in order and each reads what the one
-        // before wrote, and a pass of its own for each would cost the display frame's thread the
-        // driver's work of opening one for every step of the distance search.
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("political fill"),
@@ -2062,7 +1916,6 @@ impl PoliticalGpu {
         true
     }
 
-    /// The encoder holding the recorded update was submitted, or dropped unsubmitted.
     pub fn recorded(&mut self, submitted: bool) {
         if self.recorded && submitted {
             self.pending = false;
@@ -2071,7 +1924,6 @@ impl PoliticalGpu {
         self.recorded = false;
     }
 
-    /// Copy output rectangles `[x, y, width, height]` of both channels into a layer's textures.
     fn copy(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2115,12 +1967,8 @@ impl PoliticalGpu {
     }
 }
 
-/// Texture copies of exactly the dirty cells: each row's runs of consecutive cells, merged down
-/// with the equal run of the row above. A copy never reaches a cell the dispatch did not
-/// recompute, whose output bytes may belong to another state sharing the scratch.
 fn copy_rects(cells: &[u32], columns: u32, width: u32, height: u32) -> Vec<[u32; 4]> {
     let mut rectangles: Vec<[u32; 4]> = Vec::new();
-    // Rectangles ending at the previous dirty row, by their horizontal span.
     let mut open: HashMap<(u32, u32), usize> = HashMap::new();
     let mut previous = None;
     let mut rest = cells;
@@ -2164,8 +2012,6 @@ fn maximum_thickness(kind: gradient::LayerKind, field: &FieldDefines) -> f32 {
     match kind {
         gradient::LayerKind::Country => {
             let [thin, thick] = field.country_thickness;
-            // Bound the actual f32 interpolation, whose rounded endpoint can exceed `thick`, and
-            // every map mode's fixed rule for this channel.
             thin.max(thin + (thick - thin))
                 .max(field.mode_thickness_max)
         }
@@ -2176,7 +2022,6 @@ fn maximum_thickness(kind: gradient::LayerKind, field: &FieldDefines) -> f32 {
 fn search_radius(thickness: f32, field: &FieldDefines, width: u32, height: u32) -> u32 {
     let radius =
         ((thickness + field.center).sqrt() * gradient::RADIUS_MULTIPLIER / GRID_CELL as f32) as u32;
-    // Once every bucket is searched, increasing the radius cannot change traversal order.
     radius
         .saturating_add(1)
         .min(width.div_ceil(GRID_CELL).max(height.div_ceil(GRID_CELL)))

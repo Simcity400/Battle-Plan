@@ -1,6 +1,3 @@
-//! Retained task-force name returned without generation or mutation.
-//! Serialization follows the secondary unit base to the same string. Capture
-//! owns all bytes; save writing and localisation apply their own C-string rules.
 
 use super::{SECONDARY_BASE, SECONDARY_VTABLE_RVA, VTABLE_RVA};
 use crate::{
@@ -18,11 +15,6 @@ const ERRORS: StringErrors = [
 ];
 
 
-/// Copy the exact cached bytes after rechecking both vtables and the full
-/// handle supplied by the authenticated fleet walk. No native getter runs.
-/// The returned span starts at `names.len`; commit it only with its admitted
-/// row. Healthy empty text is Some((start, 0)); insufficient arena is None and
-/// retains the validated demand for checked growth outside acquisition.
 pub fn cached_name(
     memory: &impl Memory,
     base: usize,
@@ -53,8 +45,6 @@ pub fn cached_name(
     copy_string(memory, &header, names, &ERRORS)
 }
 
-/// Authenticate the same header and boundary probes with an empty arena. No
-/// heap text payload is copied; only proven byte demand sizes the live arena.
 pub fn cached_name_demand(
     memory: &impl Memory,
     base: usize,

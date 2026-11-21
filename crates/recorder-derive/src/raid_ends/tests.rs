@@ -7,8 +7,6 @@ use engine_native::craid_instance::{OUTCOME_NONE, OUTCOME_SUCCESS, PHASE_PREPARI
 use replay_columnar::store::Store;
 use replay_data::rows::{RaidRow, RaidTargetRow};
 
-/// A raid as an hour reads it: id, raider slot, phase, outcome, distance flown, and its target's
-/// province, state and building country.
 #[derive(Clone, Copy)]
 struct Raid {
     id: u32,
@@ -26,8 +24,6 @@ const fn raid(id: u32, phase: i32, outcome: i32, travelled: Option<i64>, provinc
     Raid { id, raider: 9, phase, outcome, travelled, province, state }
 }
 
-/// One hour: the raids, Raids' status, and province 10's controller (province 10 lies in state
-/// 5, whose controller is country 200; country 100 links to slot 1, 200 to slot 2).
 fn feed(store: &mut Store, hour: i32, raids: &[Raid], status: Status, controller: u32) {
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     let rows: Vec<RaidRow> = raids
@@ -58,11 +54,6 @@ const ENDED: i32 = PHASE_ENDED;
 
 type Hours = [(&'static [Raid], Status, u32)];
 
-/// Raid 1 prepares, flies at hour 1 and ends in success at hour 2, its target province 10 then
-/// held by 100; province 10 passes to 200 at hour 3. Raid 2 is already ended at the first read.
-/// Raid 3 is created at hour 1 against state 5 and deleted at hour 3 without ending. Raid 4
-/// targets province 99, which no row holds, and ends at hour 3. Raid 6 is created at hour 3 and
-/// gone while Raids is read in part at hour 4; raid 5 is created ended at hour 5.
 const HOURS: &Hours = &[
     (&[raid(1, PREPARING, OUTCOME_NONE, None, 10, 0), raid(2, ENDED, OUTCOME_SUCCESS, Some(500), 10, 0)], Status::Complete, 100),
     (&[raid(1, FLYING, OUTCOME_NONE, Some(0), 10, 0), raid(2, ENDED, OUTCOME_SUCCESS, Some(500), 10, 0), raid(3, PREPARING, OUTCOME_NONE, None, 0, 5), raid(4, PREPARING, OUTCOME_NONE, None, 99, 0)], Status::Complete, 100),
@@ -72,8 +63,6 @@ const HOURS: &Hours = &[
     (&[raid(1, ENDED, OUTCOME_SUCCESS, Some(800), 10, 0), raid(5, ENDED, OUTCOME_NONE, None, 10, 0)], Status::Complete, 200),
 ];
 
-/// The end rows living at the hour: (hour, raid id, kind, previous read, first hour, first exact,
-/// launch, phase, target state, victim, victim slot, victim unknown); none where not recorded.
 type End = (i32, u32, u8, i32, Option<i32>, bool, Option<i32>, Option<i32>, Option<Option<u32>>, Option<Option<u32>>, u32, u8);
 
 fn ends(store: &Store) -> Vec<End> {
@@ -108,11 +97,6 @@ fn ends(store: &Store) -> Vec<End> {
     out
 }
 
-/// A raid's end is one row living the hour it was first read ended or found gone: an ended raid's
-/// victim frozen at that read, a deleted one's read at its deletion; a raid ended at the first read
-/// has none, and the row of a raid ended earlier is not written again when its row goes. Hours
-/// Raids is read in part withhold the log; after them a raid first read is dated from the last
-/// read before them, and one gone meanwhile ends with its lost last read not recorded.
 #[test]
 fn a_raid_ends_once_at_its_first_ended_read_or_its_deletion_with_its_victim_read_then() {
     let mut store = store();
@@ -129,7 +113,6 @@ fn a_raid_ends_once_at_its_first_ended_read_or_its_deletion_with_its_victim_read
                 (3, 3, RaidEndRow::DELETED, 2, Some(1), true, None, Some(PREPARING), Some(Some(5)), Some(Some(200)), 2, RaidEndRow::VICTIM_KNOWN),
                 (3, 4, RaidEndRow::ENDED, 2, Some(1), true, None, Some(ENDED), None, None, none, RaidEndRow::LOCATION_UNKNOWN),
             ],
-            // Withheld: the rows of hour 3 stand, unread.
             4 => ends(&store),
             5 => vec![
                 (5, 5, RaidEndRow::ENDED, 3, Some(5), false, None, Some(ENDED), Some(Some(5)), Some(Some(200)), 2, RaidEndRow::VICTIM_KNOWN),
@@ -141,8 +124,6 @@ fn a_raid_ends_once_at_its_first_ended_read_or_its_deletion_with_its_victim_read
     }
 }
 
-/// A raid's end row carries its raider, outcome, distance and preparation as its row last held
-/// them, and its target's own columns.
 #[test]
 fn an_end_row_carries_the_raids_last_state_and_its_target() {
     let mut store = store();
@@ -157,7 +138,6 @@ fn an_end_row_carries_the_raids_last_state_and_its_target() {
     assert_eq!([5, 7, 8, 9, 10, 11, 19].map(number), [Some(9), Some(i64::from(OUTCOME_SUCCESS)), Some(800), Some(3), Some(10), Some(0), Some(41)]);
 }
 
-/// A resume takes up the held raids: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {

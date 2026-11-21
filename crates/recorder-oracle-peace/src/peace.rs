@@ -1,4 +1,3 @@
-//! Independent saved bids and retained post-settlement outcomes.
 #[cfg(test)]
 #[path = "peace_tests.rs"]
 mod tests;
@@ -19,7 +18,6 @@ fn equal<T: std::fmt::Debug + PartialEq>(
     }
 }
 
-/// A settlement's conference as a report subject, like `PeaceBids {id}`.
 fn conference_label(conference: Option<u64>) -> String {
     conference.map_or_else(|| "with no recorded identity".into(), |id| id.to_string())
 }
@@ -66,8 +64,6 @@ pub fn compare_bids(
             report.difference(format!("PeaceBids {id}"), "recorded", "absent from save");
             continue;
         };
-        // Compare the writer's group order, never lexical tag sorting.
-        // Groups with no actions have no occurrence in the captured payload.
         let mut groups: BTreeMap<&[u8], Vec<&SettledPeaceAction>> = BTreeMap::new();
         let mut group_order = Vec::new();
         for action in &row.actions {
@@ -252,8 +248,6 @@ pub fn compare_recorded_settlements(
         if first_hour.is_none_or(|first| hour < first) {
             return Ok(None);
         }
-        // A recorded event loss after this read: its finalizations may have
-        // gone unobserved, as before the branch's first read.
         if let Some(&loss) = event_losses.iter().find(|&&(after, _)| after == hour) {
             crossed.set(Some(loss));
             return Ok(None);
@@ -289,9 +283,6 @@ fn compare_settlements(frame: &DecodedFrame, save: &Save, report: &mut Report) -
     compare_settlements_after(frame, |_| Ok(None::<&DecodedFrame>), save, report)
 }
 
-/// Queue cleanup precedes advancing/finalizing its first
-/// remaining conference.
-/// A finalizer publication can therefore precede the resident ID's disappearance.
 fn preceding_finalizations<F: std::borrow::Borrow<DecodedFrame>>(
     branch: BranchId,
     mut hour: Hour,
@@ -329,8 +320,6 @@ fn preceding_finalizations<F: std::borrow::Borrow<DecodedFrame>>(
                     .hour
                     .ok_or_else(|| invalid("peace settlement hour unavailable"))?;
                 let mut earliest = hour.saturating_sub(1);
-                // A delayed publication still needs its own witnessed busy span;
-                // this lookup never widens the current drain's accepted span.
                 if observed < earliest {
                     let mut check_hour = hour.checked_sub(1);
                     while let Some(at) = check_hour {
@@ -404,9 +393,6 @@ fn compare_settlements_after<F: std::borrow::Borrow<DecodedFrame>>(
         .filter_map(|r| r.conference)
         .collect::<BTreeSet<_>>();
     let mut disappeared = BTreeSet::new();
-    // collector/src/peace_settlements.rs::drain retains owned events and pending
-    // losses on PEACE_DRAIN_BUSY. collector/src/extended/peace_settlements.rs
-    // keeps Event.hour in each row; this frame's hour dates later publication.
     let mut earliest_hour = frame.hour.saturating_sub(1);
     let mut preceding_hour = frame.hour.checked_sub(1);
     while let Some(hour) = preceding_hour {
@@ -525,8 +511,6 @@ fn compare_settlements_after<F: std::borrow::Borrow<DecodedFrame>>(
                 ),
             );
         }
-        // Several conferences in a tick can touch one state: native event
-        // sequence and outcome order determine its final owner.
         for transfer in &row.transfers {
             states.insert(transfer.state, transfer.taker);
         }

@@ -1,4 +1,3 @@
-//! Lossless codec for the hourly map event interval.
 use super::*;
 
 opaque_value!([MapEventFamilyHealth; MapEventFamily::COUNT]);

@@ -1,12 +1,3 @@
-//! Event choices and decisions: pages of cards, each an opening occurrence with the rows
-//! continuing it. An event card opens at a dispatch and continues with the option chosen for it;
-//! a decision card opens at a selection (or an activation with none open) and continues with its
-//! activation, duration writes, effect executions and terminal steps. The feed writer joined them
-//! as it wrote them (a row's `opener` and `opener_hour`): nothing here guesses a join. A page's
-//! rows are the log's rows of the card kinds that continue nothing (the `opener` facet without a
-//! value); a continuing row whose opening was not recorded is a card of its own. A card's edges
-//! are found through the `opener` facet at its opener's read hour, read only in the buckets that
-//! hold them, through the page's last hour.
 
 use super::{
     EventFeedKind, EventFeedRow, EventFeedUnavailable, FeedEvent, FeedPageParams, LOG, Names, Notices, Presenter, branch, content, content_refusals, invalid, logs, page,
@@ -29,7 +20,6 @@ use ts_rs::TS;
 
 use crate::products::{LoadContext, Product};
 
-/// Which list a page belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum List {
     EventChoices,
@@ -37,7 +27,6 @@ pub(crate) enum List {
 }
 
 impl List {
-    /// The kinds that open a card.
     pub fn openers(self) -> &'static [EventFeedKind] {
         use EventFeedKind::*;
         match self {
@@ -46,7 +35,6 @@ impl List {
         }
     }
 
-    /// The kinds that continue a card; unjoined, each is a card of its own.
     pub fn continuing(self) -> &'static [EventFeedKind] {
         use EventFeedKind::*;
         match self {
@@ -75,47 +63,41 @@ pub enum ScriptCurrency {
     CommandPower,
 }
 
-/// One currency a decision execution was proven to charge.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptCost {
     pub currency: ScriptCurrency,
-    /// The exact fixed5 balance change as a decimal string; negative when spent.
+    #[doc = " The exact fixed5 balance change as a decimal string; negative when spent."]
     pub amount: String,
 }
 
-/// One fact of a card with the native operands its wording needs.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptEdge {
     pub row: EventFeedRow,
-    /// The executed option's signed native ordinal.
+    #[doc = " The executed option's signed native ordinal."]
     pub option: Option<i32>,
-    /// The writer's lifecycle result, where its boundary supplies one.
+    #[doc = " The writer's lifecycle result, where its boundary supplies one."]
     pub lifecycle: Option<i32>,
-    /// The writer's duration result in days.
+    #[doc = " The writer's duration result in days."]
     pub days: Option<i32>,
-    /// The power the execution was proven to charge; null when not proven.
+    #[doc = " The power the execution was proven to charge; null when not proven."]
     pub costs: Option<Vec<ScriptCost>>,
 }
 
-/// One card: its opener first when recorded, then the rows continuing it in stream order, each
-/// through the page's last hour.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptOccurrence {
     pub id: String,
-    /// Whether the first edge opened the card; false for a continuing row whose opening was not
-    /// recorded or joined.
+    #[doc = " Whether the first edge opened the card; false for a continuing row whose opening was not"]
+    #[doc = " recorded or joined."]
     pub opened: bool,
     pub edges: Vec<ScriptEdge>,
 }
 
-/// A row of a card page: `log-page`'s row (no cells) with its card; null for a row the list does
-/// not show.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -151,7 +133,6 @@ pub struct ScriptOccurrencePage {
 
 dashboard_base::reply_warnings!(ScriptOccurrencePage);
 
-/// What a card's edge says beyond its row.
 pub(crate) fn edge(event: &FeedEvent, row: EventFeedRow) -> ScriptEdge {
     let costs = event.costs.and_then(|[political, command]| {
         (political.is_some() || command.is_some()).then(|| {
@@ -164,8 +145,6 @@ pub(crate) fn edge(event: &FeedEvent, row: EventFeedRow) -> ScriptEdge {
     ScriptEdge { row, option: event.option, lifecycle: event.lifecycle, days: event.days, costs }
 }
 
-/// The rows continuing `openers` (by generation and sequence, each with its read hour) read
-/// through `to`, in stream order: found through the `opener` facet at each opener's read hour.
 pub(crate) fn continuing(query: &Query<'_>, list: List, openers: &[(u64, u64, i32)], to: i32, cancelled: &AtomicBool) -> io::Result<BTreeMap<(u64, u64), Vec<FeedEvent>>> {
     let mut out: BTreeMap<(u64, u64), Vec<FeedEvent>> = BTreeMap::new();
     let hours: BTreeSet<i32> = openers.iter().map(|(.., hour)| *hour).filter(|hour| *hour <= to).collect();
@@ -199,7 +178,6 @@ pub(crate) fn continuing(query: &Query<'_>, list: List, openers: &[(u64, u64, i3
     Ok(out)
 }
 
-/// A page of `list`'s cards.
 fn cards(list: List, source: &Source, params: &FeedPageParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ScriptOccurrencePage> {
     crate::metadata::check_cancel(cancelled)?;
     let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| invalid("Invalid branch"))?)?;
@@ -215,7 +193,6 @@ fn cards(list: List, source: &Source, params: &FeedPageParams, context: &LoadCon
     let mut notices = Notices::default();
     let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
     let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-    // Each row's kind as the list shows it, and an opener's continuing rows.
     let cards: Vec<(Option<EventFeedKind>, Vec<FeedEvent>)> = rows
         .iter()
         .map(|paged| {

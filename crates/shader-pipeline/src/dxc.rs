@@ -1,5 +1,3 @@
-//! The pinned DXC's compiler interface (`IDxcCompiler3`) in `dxcompiler.dll`, which loads its
-//! `dxil.dll` from beside itself. Only the calls compiling a stage, and the DLL's version.
 
 use std::{ffi::c_void, os::windows::ffi::OsStrExt as _, path::Path, ptr};
 use windows_sys::{
@@ -20,12 +18,9 @@ fn wide(text: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     text.as_ref().encode_wide().chain([0]).collect()
 }
 
-/// The DLL's product version, from its version resource: what `dxc --version` prints after the
-/// interface version.
 pub(crate) fn product_version(path: &Path) -> Result<String, String> {
     const MISSING: &str = "dxcompiler.dll carries no product version";
     let file = wide(path);
-    // SAFETY: each call reads the NUL-terminated path or the block it was given, of its size.
     unsafe {
         let size = GetFileVersionInfoSizeW(file.as_ptr(), ptr::null_mut());
         if size == 0 {
@@ -82,7 +77,6 @@ struct Compiler3Vtbl {
     ) -> HRESULT,
 }
 
-/// `IDxcResult`'s first methods, those of `IDxcOperationResult`.
 #[repr(C)]
 struct ResultVtbl {
     unknown: UnknownVtbl,
@@ -98,12 +92,9 @@ struct BlobVtbl {
     size: unsafe extern "system" fn(this: *mut c_void) -> usize,
 }
 
-/// An owned interface pointer whose vtable begins with `V`.
 struct Com<V>(ptr::NonNull<*const V>);
 
 impl<V> Com<V> {
-    /// # Safety
-    /// `raw` is null or an interface pointer of `V`'s layout, whose reference this takes.
     unsafe fn from_raw(raw: *mut c_void) -> Option<Self> {
         ptr::NonNull::new(raw.cast()).map(Self)
     }
@@ -113,7 +104,6 @@ impl<V> Com<V> {
     }
 
     fn vtbl(&self) -> &V {
-        // SAFETY: a live interface pointer's first word is its vtable.
         unsafe { &**self.0.as_ptr() }
     }
 
@@ -121,7 +111,6 @@ impl<V> Com<V> {
 
 impl<V> Drop for Com<V> {
     fn drop(&mut self) {
-        // SAFETY: every vtable here begins with IUnknown's; this holds one reference.
         unsafe {
             let unknown = &*(*self.0.as_ptr()).cast::<UnknownVtbl>();
             (unknown.release)(self.this());
@@ -130,7 +119,6 @@ impl<V> Drop for Com<V> {
 }
 
 fn blob_bytes(blob: &Com<BlobVtbl>) -> Vec<u8> {
-    // SAFETY: the blob owns `size` bytes at `pointer` while it lives.
     unsafe {
         let pointer = (blob.vtbl().pointer)(blob.this()).cast::<u8>();
         let size = (blob.vtbl().size)(blob.this());
@@ -142,21 +130,17 @@ fn blob_bytes(blob: &Com<BlobVtbl>) -> Vec<u8> {
     }
 }
 
-/// `dxcompiler.dll`, loaded for the life of the process.
 pub(crate) struct Library {
     create: CreateInstance,
 }
 
 impl Library {
-    /// Loads the DLL at `path`, which finds its `dxil.dll` in its own folder.
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
         let file = wide(path);
-        // SAFETY: a NUL-terminated path; the module is never freed once it serves.
         let module: HMODULE = unsafe { LoadLibraryExW(file.as_ptr(), ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH) };
         if module.is_null() {
             return Err(format!("dxcompiler.dll did not load: {}", std::io::Error::last_os_error()));
         }
-        // SAFETY: the export's documented signature.
         match unsafe { GetProcAddress(module, c"DxcCreateInstance".as_ptr().cast()) } {
             Some(create) => Ok(Self {
                 create: unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, CreateInstance>(create) },
@@ -170,7 +154,6 @@ impl Library {
 
     fn compiler(&self) -> Result<Com<Compiler3Vtbl>, String> {
         let mut out = ptr::null_mut();
-        // SAFETY: DxcCreateInstance writes an IDxcCompiler3 on success.
         let hr = unsafe { (self.create)(&CLSID_DXC_COMPILER, &IID_COMPILER3, &mut out) };
         if hr < 0 {
             return Err(format!("DXC made no compiler (HRESULT {hr:#010x})"));
@@ -178,16 +161,12 @@ impl Library {
         unsafe { Com::from_raw(out) }.ok_or_else(|| "DXC made no compiler".to_owned())
     }
 
-    /// Compiles `source` with command-line `arguments`: its object's bytes, or the compiler's
-    /// messages.
     pub(crate) fn compile(&self, source: &str, arguments: &[String]) -> Result<Vec<u8>, String> {
         let compiler = self.compiler()?;
         let wide: Vec<Vec<u16>> = arguments.iter().map(|argument| argument.encode_utf16().chain([0]).collect()).collect();
         let pointers: Vec<*const u16> = wide.iter().map(|argument| argument.as_ptr()).collect();
         let buffer = Buffer { ptr: source.as_ptr().cast(), size: source.len(), encoding: CP_UTF8 };
         let mut out = ptr::null_mut();
-        // SAFETY: the buffer and arguments outlive the call; no include handler, as the source
-        // names no file.
         let hr = unsafe {
             (compiler.vtbl().compile)(
                 compiler.this(),
@@ -204,7 +183,6 @@ impl Library {
             return Err(format!("DXC did not compile (HRESULT {hr:#010x})"));
         };
         let mut status = 0;
-        // SAFETY: IDxcOperationResult's methods on a live result.
         unsafe {
             if (result.vtbl().status)(result.this(), &mut status) < 0 {
                 return Err("DXC gave no status".into());

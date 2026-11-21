@@ -1,27 +1,12 @@
-//! Transport speeds for one owner in chosen strategic regions.
-//!
-//! [`movement_speeds`] answers [`movement_speed`] for each chosen region. The
-//! owner's country, the base speed, the transport penalty gates, the owner's
-//! and every enemy's region-independent operands and the conditional defines
-//! are read once per owner; the region census, the weather manager's region
-//! array, the speed key's metadata, each region's identity and weather and
-//! each navy's regional operands once for every owner ([`SpeedCache`]). Within
-//! one quiescent acquisition every reused read returns what a fresh read
-//! would, and each region takes its reads in [`movement_speed`]'s order, so a
-//! region's speed or first refusal is exactly the single query's.
 
 use super::*;
 
-/// A strategic region chosen for a query.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportRegion {
     pub id: u32,
-    /// Borrowed acquisition input; it never leaves the acquisition.
     pub pointer: usize,
 }
 
-/// The strategic region holding `province`, from the game state's province
-/// array: an authenticated province with that id and its region pointer.
 pub fn province_region(
     memory: &impl Memory,
     base: usize,
@@ -52,7 +37,6 @@ pub fn province_region(
     })
 }
 
-/// A shared read, taken the first time a region reaches it.
 fn memo<T: Copy>(
     slot: &mut Option<Result<T, &'static str>>,
     read: impl FnOnce() -> Result<T, &'static str>,
@@ -60,10 +44,8 @@ fn memo<T: Copy>(
     *slot.get_or_insert_with(read)
 }
 
-/// One enemy of the owner, as the regional totals visit it.
 #[derive(Clone, Copy)]
 enum Enemy {
-    /// No fog network, or capitulated: the totals skip it.
     Skipped,
     Counted {
         weight: i64,
@@ -71,7 +53,6 @@ enum Enemy {
     },
 }
 
-/// The penalty's region-independent prefix: `None` when a gate leaves it out.
 #[derive(Clone, Copy)]
 struct Penalty {
     definition: usize,
@@ -85,7 +66,6 @@ struct Shared<'a, M: Memory> {
     countries: &'a ccountry::Reader<'a, M>,
     speed: Option<Result<i64, &'static str>>,
     penalty: Option<Result<Option<Penalty>, &'static str>>,
-    /// The enemy roster up to and including its first refusal.
     enemies: Option<Result<Vec<Result<Enemy, &'static str>>, &'static str>>,
     maximum: Option<Result<i64, &'static str>>,
     reduction: Option<Result<i64, &'static str>>,
@@ -98,20 +78,12 @@ struct Shared<'a, M: Memory> {
     cache: &'a mut SpeedCache,
 }
 
-/// What every owner's query of one hour shares: each region's identity and
-/// weather (neither depends on the owner), the region census, the weather
-/// region array, the speed key's metadata and each navy's regional operands,
-/// copied whole once. Valid for one acquisition and one region slice;
-/// [`SpeedCache::begin`] forgets it.
 #[derive(Default)]
 pub struct SpeedCache {
     regions: Vec<RegionTerms>,
     census: Option<Result<Array, &'static str>>,
     weather_regions: Option<Result<Array, &'static str>>,
-    /// Successful speed-key metadata reads; a failure is read again.
     definitions: modifier_definition::DefinitionMemo,
-    /// Each navy's regional operand array by data address, copied whole, or
-    /// `None` where the whole copy failed and each operand is read alone.
     navies: Vec<(usize, Option<Vec<u8>>)>,
 }
 
@@ -122,8 +94,6 @@ struct RegionTerms {
 }
 
 impl SpeedCache {
-    /// Forget the previous acquisition and size for `regions` regions, the
-    /// slice every owner's [`movement_speeds`] call of this acquisition takes.
     pub fn begin(&mut self, regions: usize) -> Result<(), &'static str> {
         self.regions.clear();
         self.regions
@@ -148,8 +118,6 @@ impl SpeedCache {
             + self.navies.capacity() * size_of::<(usize, Option<Vec<u8>>)>()
     }
 
-    /// No later query may use this acquisition. Release owned navy copies on
-    /// the consumer's thread rather than at the next parked begin().
     pub fn finish(&mut self) {
         self.regions.clear();
         self.census = None;
@@ -158,7 +126,6 @@ impl SpeedCache {
         self.definitions.clear();
     }
 
-    /// One navy's operand for `region`, as a single guarded read returns it.
     fn operand(
         &mut self,
         memory: &impl Memory,
@@ -200,8 +167,6 @@ impl SpeedCache {
 }
 
 impl<M: Memory> Shared<'_, M> {
-    /// [`weather_modifier`] for one region, its manager and region array read
-    /// once for the walk.
     fn weather(&mut self, region: u32) -> Result<i64, &'static str> {
         let (memory, base, state) = (self.memory, self.base, self.state);
         let array = memo(&mut self.cache.weather_regions, || {
@@ -214,7 +179,6 @@ impl<M: Memory> Shared<'_, M> {
                 .ok_or("transport weather array invalid")
         })?;
         let Some(row) = array.element(region, sweather_per_region::STRIDE) else {
-            // Out-of-range regions yield no weather modifier.
             return Ok(0);
         };
         if value::<u64>(memory, row, 0)? != key(base, sweather_per_region::VTABLE_RVA)? as u64
@@ -315,7 +279,6 @@ impl<M: Memory> Shared<'_, M> {
                 let refused = enemy.is_err();
                 enemies.push(enemy);
                 if refused {
-                    // The totals stop at this enemy for every region.
                     break;
                 }
             }
@@ -327,7 +290,6 @@ impl<M: Memory> Shared<'_, M> {
         }
     }
 
-    /// [`totals`] for one region.
     fn totals(&mut self, region: u32) -> Result<(i64, i64), &'static str> {
         let memory = self.memory;
         let mut total = 0_i64;
@@ -357,7 +319,6 @@ impl<M: Memory> Shared<'_, M> {
         ))
     }
 
-    /// [`composed_inputs`] for one region.
     fn composed(&mut self, region: u32) -> Result<ComposedInputs, &'static str> {
         let (memory, base, owner) = (self.memory, self.base, self.owner);
         let Some(Penalty { definition }) = self.penalty()? else {
@@ -446,9 +407,6 @@ impl<M: Memory> Shared<'_, M> {
     }
 }
 
-/// [`movement_speed`] for one owner at each of `wanted`, indices into
-/// `regions`, in order: `emit` receives each region with its own speed or
-/// refusal. Every call sharing `cache` passes the same `regions`.
 #[allow(
     clippy::too_many_arguments,
     reason = "One owner's query over the shared region slice, its chosen indices and the hour's cache"
@@ -469,8 +427,6 @@ pub fn movement_speeds<M: Memory>(
     );
 }
 
-/// Native acquisition of movement_speeds, retaining its final arithmetic for
-/// an owned-data consumer. All gates and shared-memo decisions stay here.
 #[allow(clippy::too_many_arguments)]
 pub fn movement_speeds_inputs<M: Memory>(
     memory: &M,
@@ -553,7 +509,6 @@ pub fn movement_speeds_inputs<M: Memory>(
     }
 }
 
-/// A census region's identity check, as [`movement_speed`] makes it.
 fn region_identity(
     memory: &impl Memory,
     base: usize,

@@ -1,32 +1,3 @@
-//! Shared span-log raw-copy primitive for the decode-worker rollout.
-//!
-//! Each moved family stages one refresh of guarded reads into a `RawLog`:
-//! exact (address, length) spans with success flags, affected-table masks
-//! and byte pools. The game thread never decodes, sorts or compares rows; it
-//! only copies bytes and parses locally what the next read address is. The
-//! single FIFO decode worker serves the log through `Recorded` (a `Memory`
-//! impl failing every unrecorded read) and replays the family's existing
-//! typed walk. Correctness requires staging every read that walk needs and
-//! preserving its failure prefix; synthetic-memory tests and fresh-save
-//! comparisons validate those contracts.
-//!
-//! Mirror rules (exact address/length keys retain their observation order,
-//! including failures; bulk spans additionally serve contained requests):
-//! - reads served locally by an authenticated view need no log entry beyond
-//!   the view's own spans;
-//! - pooled row and arena capacities are ignored while copying (a superset
-//!   is recorded and the replay truncates identically against the real
-//!   pooled buffers);
-//! - a failed or unparsable span stops only the sub-path that needs it; the
-//!   replay fails identically from the same recorded spans, so later extras
-//!   are harmless;
-//! - a record gather logs the field it stopped at as a failed span even when
-//!   its row pointer is null (address 0) or non-canonical; the replay's
-//!   `copy_records` stops at the same field before any lookup;
-//! - allocating worker roles grow before each original request; fixed pool
-//!   overflow aborts the copy and grows staging capacity on recycle.
-//!   The caller may use the typed fallback only before a prepared source
-//!   observation; afterward, that capture fails without repeating live reads.
 
 pub use crate::address_range::is_canonical_range;
 use crate::raw_plan::{Attempt, CapturePlan, Observations, Request};
@@ -86,7 +57,6 @@ pub struct RawGrowth {
 
 static GROWTH_DIAGNOSTICS: Mutex<Vec<(&'static str, Growth)>> = Mutex::new(Vec::new());
 
-/// Worker-only capacity diagnostics: never allocate or lock in the callback.
 pub fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>) {
     if !log.overflowed && !log.torn {
         return;
@@ -119,11 +89,8 @@ pub fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>) {
     );
 }
 
-/// No span the game holds is longer than `u32::MAX` bytes, so a read that long
-/// took its length from a torn or foreign header: it is unreadable.
 pub const TORN_READ: &str = "raw read longer than any game span: torn or foreign header";
 
-/// Publish an equivalent worker-owned packet capacity diagnostic.
 pub fn publish_growth(family: &'static str, value: Growth) {
     if let Ok(mut diagnostics) = GROWTH_DIAGNOSTICS.lock() {
         match diagnostics.binary_search_by_key(&family, |row| row.0) {
@@ -156,9 +123,6 @@ impl serde::Serialize for GrowthDiagnostics {
     }
 }
 
-/// One recorded guarded read: exact address and length, success flag, table
-/// mask, byte-pool offset for successful spans, and whether this span is a
-/// bulk chunk whose sub-ranges the replay may request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub addr: usize,
@@ -169,10 +133,6 @@ pub struct Span {
     pub bulk: bool,
 }
 
-/// Fully initialized reusable storage with a separately published byte prefix.
-/// Spare bytes may contain an earlier capture or a failed partial copy; only
-/// the successfully copied logical prefix is exposed through slice operations.
-/// Initialization and capacity growth happen off the game thread.
 pub struct RawBytes {
     storage: Vec<u8>,
     used: usize,
@@ -239,7 +199,6 @@ impl RawBytes {
         }
     }
 
-    /// Worker-only growth. The logical prefix and existing bytes survive.
     fn grow_to(&mut self, capacity: usize) {
         if capacity > self.storage.capacity()
             && crate::allocation::reserve_raw(&mut self.storage, capacity, "raw bytes").is_ok()
@@ -248,9 +207,6 @@ impl RawBytes {
         }
     }
 
-    /// Append already-owned bytes within a prepared arena. The lexical
-    /// exceptional decoder uses this after reserving the exact payload size.
-    /// This never allocates and never publishes an unfilled destination.
     pub fn extend_from_slice(&mut self, bytes: &[u8]) {
         self.untracked();
         let end = self
@@ -333,9 +289,6 @@ impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for RawBytes {
 
 impl Eq for RawBytes {}
 
-/// One refresh of raw payload for a family of at most 32 tables. Flat pools
-/// keep every span fixed-size so `clear` recycles capacities. Every acquisition
-/// role is a worker, so storage grows before the read that needs it.
 #[derive(Debug)]
 pub struct RawLog<const N: usize> {
     pub spans: Vec<Span>,
@@ -343,22 +296,14 @@ pub struct RawLog<const N: usize> {
     pub fault: [bool; N],
     pub raw_bytes: [u64; N],
     pub overflowed: bool,
-    /// A read was refused as [`TORN_READ`].
     torn: bool,
     span_exhausted: bool,
     required_spans: usize,
     required_bytes: usize,
-    /// Set when the log holds bulk spans wider than the replay's requests
-    /// (contiguous table copies). The decode side then serves sub-ranges
-    /// from the enclosing span instead of exact matches only.
     pub has_bulk: bool,
-    // Address metadata only, never game bytes. Taken and returned by the
-    // decode worker; clear() on the copy side leaves it untouched.
     index: RefCell<Option<RecordedIndex>>,
     plan: CapturePlan<N>,
-    /// A complete plan loans its immutable span vector until decode/recycle.
     planned_spans_loaned: bool,
-    /// Most recent prepared backend wall time; excludes continuation and span restoration.
     pub backend_ns: u64,
     capacity_charge: crate::raw_memory::Charge,
 }
@@ -370,8 +315,6 @@ impl<const N: usize> Default for RawLog<N> {
 }
 
 impl<const N: usize> RawLog<N> {
-    /// Cold constructor; steady state reuses pooled jobs through the
-    /// decode-worker acquire/recycle pair, so this never runs per refresh.
     pub fn new(span_cap: usize, byte_cap: usize) -> Self {
         debug_assert!(N <= 32, "span masks cover at most 32 tables");
         let mut spans = Vec::new();
@@ -411,7 +354,6 @@ impl<const N: usize> RawLog<N> {
         });
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.return_planned_spans();
         self.spans.clear();
@@ -432,7 +374,6 @@ impl<const N: usize> RawLog<N> {
         self.plan.attempt = Attempt::None;
     }
 
-    /// Opt in off-thread. Trace exhaustion changes only optimization eligibility.
     pub fn initialize_read_plan(
         &mut self,
         read_capacity: usize,
@@ -456,15 +397,11 @@ impl<const N: usize> RawLog<N> {
         self.update_capacity_charge();
     }
 
-    /// The producer opts in only after its scattered native observations and
-    /// auxiliary state have the same complete-plan/ordered-resume contract.
     pub fn initialize_scattered_read_plan(&mut self, reads: usize, controls: usize, bytes: usize) {
         self.initialize_read_plan(reads, controls, bytes);
         self.plan.scattered = true;
     }
 
-    /// Begin on an empty log with the same fresh provider used by the producer.
-    /// False requires running that producer before finish_planned_capture().
     pub fn begin_planned_capture(&mut self, memory: &impl Memory, key: [usize; 4]) -> bool {
         if !self.plan.enabled {
             return false;
@@ -499,7 +436,6 @@ impl<const N: usize> RawLog<N> {
         self.backend_ns = backend_elapsed.as_nanos().min(u64::MAX as u128) as u64;
         CapturePlan::<N>::note_backend_elapsed(backend_elapsed);
         let Some(outcome) = outcome else {
-            // Unsupported execution guarantees that no source read occurred.
             return false;
         };
         use engine_native::read_plan::Outcome;
@@ -509,9 +445,6 @@ impl<const N: usize> RawLog<N> {
                 self.bytes.used = compiled.plan.destination_len();
                 self.has_bulk = compiled.has_bulk;
                 self.raw_bytes = compiled.raw_bytes;
-                // The geometry is immutable for this successful acquisition.
-                // Loan it to owned decoding rather than copying every span on
-                // the game critical path. Recycle returns the same allocation.
                 std::mem::swap(&mut self.spans, &mut compiled.spans);
                 self.planned_spans_loaned = true;
                 self.plan.attempt = Attempt::Complete;
@@ -569,8 +502,6 @@ impl<const N: usize> RawLog<N> {
         self.plan.active
     }
 
-    /// Retain the producer's current, validated lookahead in a prepared pass.
-    /// Observing the selecting raw bytes creates controls before this hint.
     pub fn prefetch(&self, address: usize, len: usize) {
         if let Some(observations) = &self.bytes.observations {
             observations.borrow_mut().hint(address, len);
@@ -578,9 +509,6 @@ impl<const N: usize> RawLog<N> {
         engine_native::prefetch::span(address, len);
     }
 
-    /// Capacity exhaustion after a prepared source observation must not enter
-    /// an outer fresh typed retry. Keep its fault bits clear so normal worker
-    /// growth can repair capacity before the next independent capture.
     pub fn planned_capture_requires_no_retry(&self) -> bool {
         self.planned_capture_failed() || (self.overflowed && self.plan.source_observed)
     }
@@ -589,19 +517,15 @@ impl<const N: usize> RawLog<N> {
         self.plan.attempt == Attempt::Complete && !self.plan.blocked
     }
 
-    /// Compound acquisitions cannot retry an earlier section's planned source
-    /// observations when a later section exhausts its staging storage.
     pub fn planned_source_observed(&self) -> bool {
         self.plan.source_observed
     }
 
-    /// Request retirement without dropping owned storage on the acquisition thread.
     pub fn invalidate_read_plan(&mut self) {
         self.plan.retire = true;
         self.plan.sealed = false;
     }
 
-    /// Worker-only compilation and retirement, before clear/recycle.
     pub fn prepare_read_plan(&mut self) {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
         if crate::allocation::failed() {
@@ -624,13 +548,10 @@ impl<const N: usize> RawLog<N> {
         }
     }
 
-    /// The named refusal of a read this capture could not hold, if any.
     pub fn refusal(&self) -> Option<&'static str> {
         self.torn.then_some(TORN_READ)
     }
 
-    /// A read whose length no game span has fails its tables as unreadable,
-    /// with no span: its length does not fit one.
     fn refuse_torn(&mut self, mask: u32) {
         self.torn = true;
         self.mark_fault(mask);
@@ -645,15 +566,11 @@ impl<const N: usize> RawLog<N> {
     }
 
     pub fn grow_for_next(&self) -> bool {
-        // More storage cannot repair a failed source read. In particular an
-        // invalid optional-object path must not double every pool indefinitely.
         self.overflowed
             && self.required_bytes <= u32::MAX as usize
             && !self.fault.iter().any(|fault| *fault)
     }
 
-    /// Off-thread live presizing. Retain the current prefix and verdicts;
-    /// acquisition uses only the storage prepared here.
     pub fn presize(&mut self, spans: usize, bytes: usize) {
         engine_allocation::advisory(|| self.presize_storage(spans, bytes));
     }
@@ -670,8 +587,6 @@ impl<const N: usize> RawLog<N> {
         self.update_capacity_charge();
     }
 
-    /// Grow only exhausted storage off-thread. Span-heavy censuses must not
-    /// repeatedly double a mostly empty byte arena (and vice versa).
     pub fn grow(&mut self) {
         engine_allocation::advisory(|| self.grow_storage());
     }
@@ -698,18 +613,11 @@ impl<const N: usize> RawLog<N> {
         self.update_capacity_charge();
     }
 
-    /// Grow to `extra` more bytes before any read that must not be retried:
-    /// when storage cannot hold them, mark overflow and the size to grow to.
     pub fn reserve(&mut self, extra: usize) {
         let end = self.bytes.len().saturating_add(extra);
         let _ = self.ensure_storage(0, end);
     }
 
-    /// Whether `spans` more spans and `bytes` more pool bytes fit the
-    /// storage this log already holds, without growing it or marking
-    /// overflow. A batched take admits its worst case up front; when that
-    /// does not fit, its caller takes the batch's requests one by one, so
-    /// the log overflows only where those requests would.
     pub fn fits(&self, spans: usize, bytes: usize) -> bool {
         !self.overflowed
             && self
@@ -753,11 +661,6 @@ impl<const N: usize> RawLog<N> {
         }
     }
 
-    /// Guarded copy of one span into the pool. Returns the pool offset of the
-    /// copied bytes on success and records failures with the affected-table
-    /// mask. Empty spans read nothing (matching `Memory`), null or
-    /// overflowing addresses fail without touching memory. On pool overflow
-    /// sets `overflowed` and returns `None`.
     #[inline]
     pub fn take(
         &mut self,
@@ -769,9 +672,6 @@ impl<const N: usize> RawLog<N> {
         self.take_inner(memory, addr, len, mask, false)
     }
 
-    /// Bulk variant of [`take`]: the span additionally serves replay requests
-    /// fully enclosed in it (contiguous table copies). Use only for spans no
-    /// smaller exact span overlaps.
     #[inline]
     pub fn take_bulk(
         &mut self,
@@ -798,9 +698,6 @@ impl<const N: usize> RawLog<N> {
         if self.plan.blocked {
             return None;
         }
-        // Empty fields consume neither source memory nor destination bytes.
-        // Exclude them from the prepared trace and its continuation ordinal;
-        // the next nonempty observation still matches address/width/scope.
         if len == 0 {
             return self.take_scalar(memory, addr, len, mask, bulk);
         }
@@ -887,13 +784,6 @@ impl<const N: usize> RawLog<N> {
             self.note_fail(addr, len32, mask);
             return None;
         }
-        // Noncanonical x86-64 sources (e.g. text bytes read as a pointer)
-        // fault with ExceptionInformation[1] == -1, which the C
-        // filter cannot attribute and would crash. Record the same graceful
-        // fault the typed walk reports for an unreadable source, before any
-        // guarded copy runs. Ordering matches the typed walk: null, overflow,
-        // then canonical, each with identical Unavailable/Truncated reasons
-        // derived by the replay from these recorded spans.
         if !is_canonical_range(addr, len) {
             self.note_fail(addr, len32, mask);
             return None;
@@ -902,8 +792,6 @@ impl<const N: usize> RawLog<N> {
             return None;
         }
         let start = self.bytes.len();
-        // The whole destination is already initialized. A failed partial
-        // copy stays outside the logical prefix and records only its fault.
         if self.plan.active {
             self.plan.canonical_reads += 1;
         }
@@ -925,12 +813,6 @@ impl<const N: usize> RawLog<N> {
         Some(start)
     }
 
-    /// Append observations held from an earlier refresh of sources the
-    /// caller proved unchanged since, as that refresh recorded them: each of
-    /// `spans` is a successful read whose bytes start at its `start` in
-    /// `bytes`. Nothing is read, and no raw byte is counted. False, with
-    /// overflow and the size to grow to marked, when storage cannot hold
-    /// them.
     pub fn splice(&mut self, spans: &[Span], bytes: &[u8]) -> bool {
         if self.overflowed || !self.allow_unplanned_operation() {
             return false;
@@ -955,11 +837,6 @@ impl<const N: usize> RawLog<N> {
         true
     }
 
-    /// Record one observation that a batched gather already made, exactly as
-    /// `take` would have recorded reading it now: `None` is that read's
-    /// failure. The span, its fault mask and capacity demand follow `take`'s
-    /// order; only reads the replay consumes need recording. The gather
-    /// charges its own raw bytes. Unplanned acquisition only.
     pub fn record(
         &mut self,
         addr: usize,
@@ -1003,8 +880,6 @@ impl<const N: usize> RawLog<N> {
         Some(start)
     }
 
-    /// Stage independent fields with one guarded call, retaining the exact
-    /// successful prefix and first failure. Each field keeps its table mask.
     #[inline(always)]
     pub fn take_scattered<const M: usize>(
         &mut self,
@@ -1016,9 +891,6 @@ impl<const N: usize> RawLog<N> {
         self.take_scattered_inner::<M, false>(memory, addresses, lengths, masks)
     }
 
-    /// The same ordered capture with advisory hints for bounded independent
-    /// spans. Admission, planning eligibility and failure accounting are shared
-    /// with `take_scattered`; a short copy must not be retried.
     #[inline(always)]
     pub fn take_scattered_prefetched<const M: usize>(
         &mut self,
@@ -1067,9 +939,6 @@ impl<const N: usize> RawLog<N> {
             return None;
         }
         if self.plan.active && self.plan.prefix_cursor < self.plan.prefix_len {
-            // A changed control or failed read can stop inside this scatter.
-            // Replay its ordered prefix through take_inner, then acquire only
-            // the untouched suffix. Full scatter admission still precedes it.
             for index in 0..M {
                 match self.take_inner(
                     memory,
@@ -1167,10 +1036,6 @@ impl<const N: usize> RawLog<N> {
         Some((starts, completed))
     }
 
-    /// Copy at most 64 consecutive fixed-width elements in one guard. Retain
-    /// the successful prefix as one bulk span and the first failed element
-    /// separately; never retry a partial copy or read beyond that failure.
-    /// The limit bounds one guarded call; callers chunk the complete array.
     #[inline(always)]
     pub fn take_array_chunk(
         &mut self,
@@ -1183,12 +1048,6 @@ impl<const N: usize> RawLog<N> {
         self.take_array_inner::<true>(memory, address, width, count, mask)
     }
 
-    /// [`take_array_chunk`](Self::take_array_chunk) retaining each copied
-    /// element as its own exact span, so the log is the one per-element
-    /// [`take`](Self::take)s would record: the same spans, bytes and first
-    /// failure, and no bulk span. Use it where the replay reads the elements
-    /// one by one; it then serves each from its exact key in record order
-    /// instead of searching the bulk ranges.
     #[inline(always)]
     pub fn take_array_entries(
         &mut self,
@@ -1222,14 +1081,10 @@ impl<const N: usize> RawLog<N> {
         }
         let size = count.checked_mul(width)?;
         let end = start.checked_add(size)?;
-        // The copied prefix and one failed element.
         let spans = if BULK { 2 } else { count + 1 };
         if !self.ensure_storage(spans, end) {
             return None;
         }
-        // The ordinary contiguous range has one arithmetic/canonical gate.
-        // An invalid suffix still permits its exact earlier elements, including
-        // an actual read fault before that suffix. No pointer array is staged.
         let admitted = if address != 0
             && address.checked_add(size).is_some()
             && is_canonical_range(address, size)
@@ -1290,18 +1145,12 @@ impl<const N: usize> RawLog<N> {
             self.raw_bytes[lowest_table(mask)] += (completed * width) as u64;
         }
         if completed != count {
-            // Fault metadata retains the original field address after either
-            // admission failure or a live fault. A failed read is not retried.
             let failed_address = address.checked_add(completed * width).unwrap_or(0);
             self.note_fail(failed_address, width as u32, mask);
         }
         Some((start, completed))
     }
 
-    /// Stage fixed-layout fields of several records with one guarded call.
-    /// Record `row` lands at `start + row * stride`; each completed nonempty
-    /// field is its own exact span and the first failed field is recorded.
-    /// Nothing after that failure is read. Returns the completed field count.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_records(
         &mut self,
@@ -1377,8 +1226,6 @@ impl<const N: usize> RawLog<N> {
         self.mark_fault(mask);
     }
 
-    /// A different source-operation kind cannot consume a scalar prefix.
-    /// Without a prefix, it only makes this capture ineligible for planning.
     fn allow_unplanned_operation(&mut self) -> bool {
         if !self.plan.active {
             return true;
@@ -1392,7 +1239,6 @@ impl<const N: usize> RawLog<N> {
         !self.plan.blocked
     }
 
-    /// Compare staged implementations in synthetic-memory tests only.
     #[cfg(any(test, feature = "test-support"))]
     pub fn logs_equal(&self, other: &Self) -> bool {
         self.spans == other.spans && self.bytes == other.bytes
@@ -1402,8 +1248,6 @@ impl<const N: usize> RawLog<N> {
 #[cfg(test)]
 mod read_plan_tests;
 
-/// Attribute shared spans to the anchor table; private spans carry a single
-/// bit already. A zero mask retains the existing table-zero attribution.
 #[inline]
 pub fn lowest_table(mask: u32) -> usize {
     if mask == 0 {
@@ -1413,8 +1257,6 @@ pub fn lowest_table(mask: u32) -> usize {
     }
 }
 
-/// Child-process fault sweep: discovery, compilation, cursor preparation and
-/// growth all use ordinary production APIs against stack-owned memory.
 #[cfg(any(test, feature = "test-support"))]
 pub fn allocation_exercise() -> bool {
     use engine_native::memory::SliceMemory;
@@ -1456,7 +1298,6 @@ pub fn allocation_exercise() -> bool {
         }
     }
     log.clear();
-    // Demand grows both arenas beyond their prepared capacities.
     for _ in 0..64 {
         if log.take(&memory, 0x1000, 1, 1).is_none() {
             return false;
@@ -1466,13 +1307,11 @@ pub fn allocation_exercise() -> bool {
     if crate::allocation::failed() {
         return false;
     }
-    // A read longer than any game span is refused by name, and published.
     let _ = log.take(&memory, 0x1000, u32::MAX as usize + 1, 1);
     note_growth("synthetic-allocation", &log);
     if crate::allocation::failed() {
         return false;
     }
-    // The second diagnostic replaces the same family without growing keys.
     note_growth("synthetic-allocation", &log);
     if crate::allocation::failed() {
         return false;

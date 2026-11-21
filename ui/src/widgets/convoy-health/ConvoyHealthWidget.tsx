@@ -42,8 +42,6 @@ import type { ConvoyHealthReply, ConvoyView } from '../../generated/dashboard';
 const NO_WARNINGS: readonly string[] = [];
 const VALIDATORS = { regions: validateConvoys('regions'), trade: validateConvoys('trade') };
 
-/** The head of `track` as charts paint it each frame, telling the widget's perf log the hour it
- * shows; none unless following. */
 function useLiveHead(runtime: WidgetRuntime, track: BoundTrack | undefined, following: boolean, widgetId: string): LiveHead | undefined {
   return useMemo(() => {
     if (!following || !track) return undefined;
@@ -60,9 +58,6 @@ function useLiveHead(runtime: WidgetRuntime, track: BoundTrack | undefined, foll
   }, [following, track, runtime.clock, widgetId]);
 }
 
-/** Are convoys getting through: one country's delivery efficiency by sea region day by day, or
- * the trade efficiency each of its import deals gets, as heat strips. The rows and cells are one
- * reply over the span shown; the playhead is painted each frame, never rendered for. */
 export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -73,12 +68,10 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const following = widget.time.mode === 'follow';
-  // Where the window sits needs an hour only for a range or a pin; while following the head is painted.
   const window = track && resolveWindow(widget, track, runtime.tracks, following ? track.branch.lastHour - track.axisOffset : runtime.clock.getSnapshot().position);
   const pinnedHour = window && widget.time.mode === 'pin' ? Math.floor(window.lastHour) : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const liveHead = useLiveHead(runtime, track, following, widget.id);
-  // A non-null playhead while following keeps the chart in its playback look; the live head moves it.
   const playhead = following && track ? Math.floor(runtime.clock.getSnapshot().position + track.axisOffset) : pinnedHour;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: CONVOY_HEALTH,
     params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: extent[0], to: extent[1] } } : null;
@@ -88,10 +81,9 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const [picked, setPicked] = useState<string | null>(null);
   const wanted = useMemo(() => data ? labelDates(data) : [], [data]);
   const names = useCountryNamesAt(runtime.client, track, wanted, active, Math.max(1, new Set(wanted.map(item => item.hour)).size));
-  // A name still being read says so; one not recorded is unavailable: country codes show only on hover.
   const countryName = useCallback((country: string | null, at: number) => country === null ? nameReadMetadata(undefined)
     : nameReadMetadata(names.get(nameKey(at, country))), [names]);
-  const periods = useMemo(() => track ? dayPeriods(extent, track.branch.gaps) : [], [track, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const periods = useMemo(() => track ? dayPeriods(extent, track.branch.gaps) : [], [track, extent[0], extent[1]]);
   const rows = useMemo(() => data && data.view === view ? convoyRows(data, countryName) : [], [data, view, countryName]);
   const color = tokens.categories[0];
   const heat = useMemo(() => heatRows(rows, periods, color, count, data?.scale ?? 1), [rows, periods, color, count, data?.scale]);
@@ -160,8 +152,6 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   </div>;
 }
 
-/** One row's own history (efficiency and its factors, or a shipment's convoys) and its facts at
- * the drill's date: painted at the head while following, else at the picked day. */
 function ConvoyDrill({ row, runtime, track, hour, liveHead, liveFacts, extent, active, scale, onPick }: { row: ConvoyRow; runtime: WidgetRuntime; track: BoundTrack;
   hour: number | null; liveHead: LiveHead | undefined; liveFacts: LiveTexts | null; extent: [number, number]; active: boolean; scale: number; onPick: (hour: number) => void }) {
   const tokens = useChartTokens();
@@ -183,7 +173,6 @@ function ConvoyDrill({ row, runtime, track, hour, liveHead, liveFacts, extent, a
       return range;
     },
   }], [lines]);
-  // End labels sit in the right gutter, outside the plot's clip, so they are drawn after it.
   const overlay = useCallback((ctx: CanvasRenderingContext2D, frame: PlotFrame, chartTokens: ChartTokens) => {
     const at = Math.min(frame.x[1], extent[1]);
     placeEndLabels(ctx, frame, chartTokens, lines.flatMap(line => {
@@ -191,7 +180,7 @@ function ConvoyDrill({ row, runtime, track, hour, liveHead, liveFacts, extent, a
       const run = end === null ? null : plottedAt(line.plotted, end);
       return run ? [{ id: line.label, y: frame.toY(run.value), text: percent ? `${run.value}%` : String(run.value), color: line.color }] : [];
     }));
-  }, [lines, percent, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lines, percent, extent[1]]);
   const facts = hour === null ? [] : row.facts(hour);
   const shownHour = hour ?? (liveHead ? Math.floor(liveHead.read()) : extent[1]);
   return <div className="convoy-health-drill">

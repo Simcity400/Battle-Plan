@@ -1,7 +1,3 @@
-//! Sparse faction rules, programme references and manpower pool writers.
-//! Native world replacement invalidates their certificates. Construction and
-//! deletion are bounded by the authenticated faction handle census. Daily
-//! programme awards do not mutate the programme reference list and get no hook.
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
 #[derive(Clone, Copy, Debug)]
@@ -24,7 +20,6 @@ pub enum Patch {
     Call,
     Tap,
 }
-/// Site, independent writer domain and native patch kind.
 pub const MUTATIONS: [(MutationSite, Family, Patch); SITES] = [
     (
         MutationSite {

@@ -1,4 +1,3 @@
-//! Commander abilities, scopes, adjusters and authored definitions.
 
 #[cfg(test)]
 use installed_content_core::DiagnosticKind;

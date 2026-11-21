@@ -1,4 +1,3 @@
-//! Technology-sharing template names through the recorded content stack.
 
 use crate::{
     ResolvedLayers,
@@ -15,7 +14,6 @@ use std::{collections::BTreeMap, io};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Group {
     pub token: String,
-    /// Localised with event scope.
     pub name: String,
 }
 
@@ -54,13 +52,10 @@ fn string(item: &Item) -> io::Result<String> {
     })
 }
 
-/// Every definition is a new template; an existing token replaces
-/// the pointer to its previous template.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Group>, Vec<String>)> {
     let mut available = false;
     let read = native::read(
         input,
-        // Each file constructs the lexer in mode 0.
         native::Mode::KeepMark,
         native::Top::Persistent(Node::File),
         Some(names),
@@ -79,9 +74,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Group>, Vec<Stri
                     | b"research_sharing_per_country_bonus"
                     | b"is_faction_sharing",
                 ) => Shape::One,
-                // Resolve raw lexer tokens, leaving the value slot.
                 Some(b"categories") => Shape::RawList,
-                // A second available body records an error and skips it.
                 Some(b"available") if available => Shape::Skip,
                 Some(b"available") => {
                     available = true;

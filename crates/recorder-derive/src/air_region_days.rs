@@ -1,15 +1,3 @@
-//! `AirRegionDays`: each strategic region's composed air activity, day by day: the friendly scores
-//! of every side the sides comparison shows there (the moment's composition, [`Compose::activity`],
-//! over the sides the hour's groups form, [`assignment::roster`]), and those at the last hour of
-//! each earlier day of the run. The air superiority timeline ranks its most active regions by the
-//! sum of a span's days, which is then two reads of a row.
-//!
-//! A row is written only where the activity changes: the days between two writes each ended at the
-//! earlier write's activity. The sides come from the group facts live at the hour (memberships,
-//! leaders by their order, war pairs; none while a faction's or the wars' history is incomplete or
-//! not observed); the scores' owners resolve through the links and the tags' holders, as the
-//! moment's do. State is the tables, each score row and the counts of each owner's rows; a fresh
-//! hour, a resume or a change of the groups, links or holders reads the inputs whole.
 
 use crate::{
     forces::{invalid, written},
@@ -30,7 +18,6 @@ use std::{
     sync::Arc,
 };
 
-/// Hours of a game day.
 pub const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 
 const SCORES: [usize; 2] = columns::<RaidAirScoreRow, 2>(["friendly", "enemy"]);
@@ -40,7 +27,6 @@ const ORDINAL: [usize; 1] = columns::<GroupSpanRow, 1>(["ordinal"]);
 const FACTION: [usize; 1] = columns::<GroupRow, 1>(["faction"]);
 const OWN: [usize; 3] = columns::<AirRegionDayRow, 3>(["day", "activity", "activity_total"]);
 
-/// The groups, links and holders: what the sides and the owners are read from.
 const CONTEXT: [TableId; 4] = [TableId::CountryLinks, TableId::TagHolders, TableId::GroupSpans, TableId::Groups];
 
 const READS: &[Read] = &[
@@ -51,16 +37,11 @@ const READS: &[Read] = &[
     Read { table: TableId::Groups, columns: Columns::These(&FACTION), watch: Watch::Changed, required: true },
 ];
 
-/// The hour's sides and owners.
 #[derive(Default)]
 struct Context {
-    /// Every tag held.
     present: Arc<BTreeSet<String>>,
-    /// Each raw country id's tag, through its link's slot.
     owners: HashMap<u32, String>,
-    /// None where the groups are not known.
     sides: Option<Vec<AssignedSide>>,
-    /// Who holds which tag is known.
     identity: bool,
 }
 
@@ -71,7 +52,6 @@ fn text(hour: &Hour<'_>, view: &TableView<'_>, column: usize, slot: u32) -> Opti
     }
 }
 
-/// The sides and owners the hour's groups, links and holders give.
 fn context(hour: &Hour<'_>) -> Context {
     let holders = hour.table(TableId::TagHolders);
     let mut identity = true;
@@ -91,7 +71,6 @@ fn context(hour: &Hour<'_>) -> Context {
         }
     }
     let present: BTreeSet<String> = tags_of.values().flatten().cloned().collect();
-    // A slot several tags share reads as its last tag, as the moment's slot map does.
     let slot_tag: HashMap<u32, &String> = tags_of.iter().filter_map(|(slot, tags)| Some((*slot, tags.last()?))).collect();
     let links = hour.table(TableId::CountryLinks);
     let owners = links
@@ -143,7 +122,6 @@ fn context(hour: &Hour<'_>) -> Context {
     Context { present: Arc::new(present), owners, sides, identity }
 }
 
-/// A region's row: the day its activity was read in, the activity, the activity of earlier days.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Activity {
     pub day: i32,
@@ -152,12 +130,10 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// The activity of the days before `day`, each earlier day ended at this row's.
     pub fn before(&self, day: i32) -> i128 {
         i128::from(self.total) + i128::from(self.activity) * i128::from(day.saturating_sub(self.day).max(0))
     }
 
-    /// The activity through `day`, whose activity so far is this row's.
     pub fn through(&self, day: i32) -> i128 {
         self.before(day) + i128::from(self.activity)
     }
@@ -169,17 +145,12 @@ impl Activity {
 
 #[derive(Default)]
 pub struct AirRegionDays {
-    /// The writer must read its inputs whole before its next hour: a resume.
     rebuild: bool,
     context: Context,
-    /// Each score row's friendly and enemy score, by key (raw id above region).
     scores: HashMap<u128, (i64, i64)>,
-    /// Each region's score rows' keys.
     regions: HashMap<u32, BTreeSet<u128>>,
-    /// Each owner's rows and rows with a negative score; rows no owner holds.
     rows: HashMap<String, (u32, u32)>,
     unresolved: u32,
-    /// The operands the activity was last composed with.
     composed: Option<(HashSet<String>, HashSet<String>, bool)>,
 }
 
@@ -229,7 +200,6 @@ impl AirRegionDays {
         touched.insert(region);
     }
 
-    /// The counts of each owner's rows, again from every row: the owners changed.
     fn recount(&mut self) {
         self.rows.clear();
         self.unresolved = 0;
@@ -246,8 +216,6 @@ impl AirRegionDays {
         Operands { identity_known: self.context.identity, present: Arc::clone(present), witnessed, invalid, complete, unresolved: self.unresolved > 0 }
     }
 
-    /// `region`'s pairs: each owner's row there, the greatest raw id of a tag's, none of an owner
-    /// with a negative score.
     fn pairs(&self, region: u32, operands: &Operands) -> Vec<Pair> {
         let mut supplied: BTreeMap<&str, (u32, i64, i64)> = BTreeMap::new();
         for key in self.regions.get(&region).into_iter().flatten() {
@@ -323,7 +291,6 @@ impl Writer for AirRegionDays {
         }
         let operands = self.operands(hour.complete(TableId::RaidAirScores));
         let now = (operands.witnessed.clone(), operands.invalid.clone(), operands.unresolved);
-        // Other sides, owners or operands recompose every region.
         if moved || self.composed.as_ref() != Some(&now) {
             touched.extend(self.regions.keys().copied());
             touched.extend(crate::forces::held(out, table).into_iter().map(|key| key as u32));
@@ -350,7 +317,6 @@ impl Writer for AirRegionDays {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads the inputs whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

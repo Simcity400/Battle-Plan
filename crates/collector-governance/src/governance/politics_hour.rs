@@ -1,62 +1,3 @@
-//! A quiet politics hour: Politics, PoliticalParties, ActiveIdeas and
-//! PartyLeaders published whole from the latest complete walk, without
-//! reading any country's political status, parties, ideas or leaders
-//! ([`crate::political_status_changes`]).
-//!
-//! Every value the Politics walk publishes for a country, and what proves it
-//! unchanged since the walk that read it:
-//! - The country census: this hour's `countries.at(slot)` over every slot
-//!   must list the walk's (slot, pointer, id) sequence; with the callback's
-//!   authenticated census this reads nothing. The status pointer
-//!   `ccountry::POLITICAL_STATUS`, the status's vtable and its owner backlink
-//!   (`cpolitical_status::COUNTRY`)
-//!   are written only by their constructors, and countries are reused,
-//!   never rebuilt.
-//! - The capital (`ccountry::CAPITAL`) and original capital: set
-//!   capital and country appearance reset. The last election: set
-//!   politics and the daily politics update's election-day store. The
-//!   election frequency and elections byte: the politics setter and
-//!   the party clear (below). The ruling party: force ruling party
-//!   and set ruling party. The party array and count: the party build
-//!   and clear, reached at runtime only from country appearance reset. The
-//!   idea array and count: set ideas. Each moves the political status
-//!   structure token.
-//! - Each party's popularity (`cpolitical_party::POPULARITY`): add popularity, set
-//!   popularity redistributing, the clamped setter's calls from the party
-//!   popularity and popularities effects, force ruling party, country
-//!   appearance reset and the daily politics update, which rewrites every
-//!   living country's popularity once a day in one hour. Each moves the
-//!   popularity token.
-//! - A party's id, ideology token, tag, names and default flag: the party
-//!   domain's token ([`crate::party_changes`]). A party's leader vector, and
-//!   a leader's character link and id, written only on a new leader a hooked
-//!   insert lists: the party-leader domain's token
-//!   ([`crate::party_leader_changes`]).
-//! - A leader's character identity and role key: that character's
-//!   certificate in the character domain ([`crate::character_changes`]),
-//!   whose token moves too often to use; each certificate the party-leader
-//!   store holds is checked one by one, which reads no game memory.
-//! - An idea's definition token: fixed by the idea database for the session.
-//!
-//! The walk's key is the structure, party and party-leader tokens and the
-//! scope, taken before its first read or registration. An hour is quiet when
-//! its key is the held walk's, the census lists the held countries, every
-//! held leader's character keeps its certificate, the four tables are all
-//! walked and no full refresh is forced. When the popularity token also
-//! equals the held one the hour reads nothing; otherwise it gathers every
-//! held party's popularity afresh in one batched guarded read and writes it
-//! into the held rows first (a failed gather walks). The held tables are
-//! published into the hour's buffers exactly as a walk of the same memory
-//! appends them, and the other tables of the country loop still run.
-//!
-//! The held tables live in the party store and follow the Governance job's
-//! loan: a failed job forgets them with the store, and a walk that does not
-//! complete all four tables, lacks a token, or whose countries the
-//! party-leader store did not all hold, holds nothing. A quiet hour neither
-//! begins nor finishes the party and party-leader stores, so the next walk
-//! still carries per country from them. Allocation is worker-only and
-//! advisory for the held copy: one that cannot be held only makes the next
-//! hour walk.
 use super::{CountryRow, LeaderReuse, LeaderStore, N, Observation, PartyStore, PoliticsReuse};
 use crate::{
     party_changes, party_leader_changes,
@@ -73,7 +14,6 @@ use std::ops::Range;
 
 type Certified = (u64, u64);
 
-/// One party's popularity, gathered from its pointer.
 const POPULARITY: [RecordField; 1] = [RecordField {
     source_offset: cpolitical_party::POPULARITY,
     destination_offset: 0,
@@ -84,8 +24,6 @@ const POPULARITY_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&POPULA
     None => panic!("popularity layout"),
 };
 
-/// What a walk's tables rest on, taken before its first read or
-/// registration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
     structure: Certified,
@@ -94,8 +32,6 @@ struct Key {
     scope: (usize, usize),
 }
 
-/// One country a walk visited and its rows in each table's buffers; text
-/// ranges index their arena.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Visit {
     pub slot: u32,
@@ -121,7 +57,6 @@ impl Visit {
     }
 }
 
-/// The walk's politics buffers, as the Governance walk fills them.
 pub(super) struct Tables<'t> {
     pub politics: &'t mut Vec<CountryRow<cpolitical_status::Row>>,
     pub parties: &'t mut Vec<PartyRow>,
@@ -133,13 +68,11 @@ pub(super) struct Tables<'t> {
     pub leaders: &'t mut Vec<LeaderRow>,
 }
 
-/// The latest complete walk's four tables, in the walk's order.
 #[derive(Default)]
 struct Outputs {
     countries: Vec<Visit>,
     politics: Vec<CountryRow<cpolitical_status::Row>>,
     parties: Vec<PartyRow>,
-    /// Each party row's `CPoliticalParty`.
     pointers: Vec<usize>,
     party_text: Vec<u8>,
     party_required: usize,
@@ -175,31 +108,21 @@ impl Outputs {
     }
 }
 
-/// What the party store holds for a quiet politics hour: the latest complete
-/// walk's tables and keys, and the walk being made.
 #[derive(Default)]
 pub struct QuietWalk {
     held: Outputs,
-    /// The held walk's key; `None` when nothing is held.
     key: Option<Key>,
-    /// The popularity token the held rows' popularity was read under.
     popularity: Option<Certified>,
-    /// The walk being made: its countries and party pointers so far.
     visits: Vec<Visit>,
     pointers: Vec<usize>,
-    /// The current country's first party pointer, and its fresh read's.
     country: usize,
     fresh: Vec<usize>,
-    /// Every visit and pointer so far was recorded.
     recorded: bool,
-    /// The popularity gather's scratch.
     gathered: Vec<u8>,
-    /// The latest walk hour's use of the domains.
     counts: Counts,
 }
 
 impl QuietWalk {
-    /// A walk begins.
     pub(super) fn begin(&mut self) {
         self.visits.clear();
         self.pointers.clear();
@@ -208,18 +131,15 @@ impl QuietWalk {
         self.recorded = true;
     }
 
-    /// A country's PoliticalParties read is planned.
     pub(super) fn start_country(&mut self) {
         self.country = self.pointers.len();
         self.fresh.clear();
     }
 
-    /// One party of a fresh read, in array order.
     pub(super) fn fresh_party(&mut self, party: usize) {
         self.recorded &= push(&mut self.fresh, party);
     }
 
-    /// The fresh read completed: its parties are the country's.
     pub(super) fn read_parties(&mut self) {
         let stored =
             allocation::advisory(|| allocation::reserve(&mut self.pointers, self.fresh.len()));
@@ -230,8 +150,6 @@ impl QuietWalk {
         self.pointers.extend_from_slice(&self.fresh);
     }
 
-    /// The country's parties were carried: the held read's pointers, which
-    /// the live array still lists.
     pub(super) fn carried_parties(&mut self, parties: impl ExactSizeIterator<Item = usize>) {
         let stored =
             allocation::advisory(|| allocation::reserve(&mut self.pointers, parties.len()));
@@ -242,8 +160,6 @@ impl QuietWalk {
         self.pointers.extend(parties);
     }
 
-    /// A visited country, once its four tables were appended. Its party
-    /// pointers must be its PoliticalParties rows, one each.
     pub(super) fn visit(&mut self, visit: Visit) {
         self.recorded &= visit.parties == (self.country..self.pointers.len());
         self.recorded &= push(&mut self.visits, visit);
@@ -261,7 +177,6 @@ impl QuietWalk {
         self.counts
     }
 
-    /// Whether this hour's census lists the held countries in order.
     fn same_countries<M: Memory>(&self, countries: &ccountry::Reader<'_, M>) -> bool {
         let held = &self.held.countries;
         let mut next = 0;
@@ -282,9 +197,6 @@ impl QuietWalk {
         next == held.len()
     }
 
-    /// Every held party's popularity, gathered afresh in one batched guarded
-    /// read and written into the held rows; `false` when the gather failed,
-    /// leaving them as they were.
     fn refresh_popularity<M: Memory>(&mut self, memory: &M) -> bool {
         let Self { held, gathered, .. } = self;
         let Some(bytes) = held.pointers.len().checked_mul(8) else {
@@ -308,9 +220,6 @@ impl QuietWalk {
         true
     }
 
-    /// Writes the held tables into the walk's buffers as a walk of the same
-    /// memory appends them; `false` when a buffer cannot grow, before any
-    /// outcome is set.
     fn publish(&self, slots: usize, tables: &mut Tables<'_>, o: &mut Observation) -> bool {
         let held = &self.held;
         let ready = grow_vec(tables.politics, slots)
@@ -354,7 +263,6 @@ impl QuietWalk {
         true
     }
 
-    /// Holds this walk's tables for the next hour under `key`, or nothing.
     fn commit(
         &mut self,
         key: Option<Key>,
@@ -405,7 +313,6 @@ impl QuietWalk {
         held.leaders.extend_from_slice(&tables.leaders[..lens[5]]);
         held.party_required = o.required[2];
         held.idea_required = o.required[3];
-        // The next popularity gather's scratch; a refusal only grows it then.
         let _ = allocation::advisory(|| {
             allocation::resize_default(&mut self.gathered, lens[1].saturating_mul(8))
         });
@@ -418,8 +325,6 @@ fn grow<T: Default>(values: &mut Vec<T>, len: usize) -> bool {
     Buffer::Growing(values).ensure(len).unwrap_or(false)
 }
 
-/// Appends without failing the walk: a full buffer only withholds the next
-/// hour's quiet path.
 fn push<T>(values: &mut Vec<T>, value: T) -> bool {
     if allocation::advisory(|| allocation::reserve(values, 1)).is_err() {
         return false;
@@ -428,8 +333,6 @@ fn push<T>(values: &mut Vec<T>, value: T) -> bool {
     true
 }
 
-/// One Governance walk's politics stores and the observations that certify
-/// carrying their rows.
 pub struct PoliticsWalk<'a> {
     pub leaders: Option<&'a mut LeaderStore>,
     pub parties: Option<&'a mut PartyStore>,
@@ -439,21 +342,16 @@ pub struct PoliticsWalk<'a> {
     pub force_full: bool,
 }
 
-/// One walk hour of the politics tables.
 pub(super) struct Hour<'a> {
     walk: PoliticsWalk<'a>,
     key: Option<Key>,
     popularity: Option<Certified>,
-    /// Politics, PoliticalParties, ActiveIdeas and PartyLeaders are all
-    /// walked this hour.
     usual: bool,
-    /// The held tables were published this hour.
     quiet: bool,
     counts: Counts,
 }
 
 impl<'a> Hour<'a> {
-    /// Before the walk's first read or registration.
     pub(super) fn start(
         walk: PoliticsWalk<'a>,
         base: usize,
@@ -483,8 +381,6 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// Whether the held tables stand for this hour, before any politics
-    /// read.
     fn holds<M: Memory>(&self, countries: &ccountry::Reader<'_, M>) -> bool {
         let walk = &self.walk;
         let (Some(key), Some(_), Some(parties), Some(leaders)) = (
@@ -512,9 +408,6 @@ impl<'a> Hour<'a> {
         quiet.same_countries(countries)
     }
 
-    /// Decides the hour before any politics read. A quiet hour refreshes the
-    /// held popularity when its token moved and publishes the held tables
-    /// into `tables`: whether it did.
     pub(super) fn quiet<M: Memory>(
         &mut self,
         memory: &M,
@@ -531,7 +424,6 @@ impl<'a> Hour<'a> {
         let quiet = store.quiet_mut();
         let refresh = quiet.popularity != Some(popularity);
         if refresh {
-            // A failed gather walks every country.
             if !quiet.refresh_popularity(memory) {
                 return false;
             }
@@ -546,7 +438,6 @@ impl<'a> Hour<'a> {
         true
     }
 
-    /// The party and party-leader stores' walk views, for a walked hour.
     pub(super) fn election_cache_certified(&self) -> bool {
         self.usual && self.key.is_some()
     }
@@ -564,8 +455,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// Ends the hour after the stores' walk views finished: a walked hour
-    /// holds its tables; every hour records its counts.
     pub(super) fn finish(mut self, tables: &Tables<'_>, o: &Observation, census: bool) {
         if !self.quiet {
             self.counts.read = true;

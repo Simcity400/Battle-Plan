@@ -10,18 +10,15 @@ test('browser flags stay with this device; desktop flags move once into the shar
   let local = setCampaignFlag(parseCampaignSettings(undefined), 'ab', 'GER');
   local = setFactionStyle(local, 'ab', '1', { colour: '#ff0000' });
   values.set(key, JSON.stringify(local));
-  // Without shared settings, a choice is saved with this device's campaign settings.
   assert.equal(saveCampaignFlag('cd', 'mod-country-long-tag', undefined, storage), null);
   assert.deepEqual(settingsFlags(loadCampaignSettings(storage)), { ab: 'GER', cd: 'mod-country-long-tag' });
 
   const saves: [string, string | null][] = [];
   await shareCampaignFlags({ cd: 'FRA' }, async (campaign, tag) => { saves.push([campaign, tag]); }, storage);
-  // The shared choice wins; this device's other choice fills in once.
   assert.deepEqual(saves, [['ab', 'GER']]);
   const after = loadCampaignSettings(storage);
   assert.deepEqual(settingsFlags(after), {}, 'flags leave this device');
   assert.equal(after.campaigns.ab.factions['1'].colour, '#ff0000', 'faction colours stay');
-  // Later choices go to the shared settings.
   const reports: (string | null)[] = [];
   assert.equal(saveCampaignFlag('ab', null, error => reports.push(error), storage), null);
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -30,7 +27,6 @@ test('browser flags stay with this device; desktop flags move once into the shar
   assert.deepEqual(settingsFlags(loadCampaignSettings(storage)), {});
 });
 
-/** A fresh device store, with these settings in use. */
 function device(settings: ReturnType<typeof parseCampaignSettings>) {
   const values = new Map<string, string>();
   const storage = { getItem: (item: string) => values.get(item) ?? null, setItem: (item: string, value: string) => { values.set(item, value); } };
@@ -38,7 +34,6 @@ function device(settings: ReturnType<typeof parseCampaignSettings>) {
   return storage;
 }
 
-/** A save that waits until released, and says when it was asked. */
 function heldSave() {
   const saves: [string, string | null][] = [];
   let entered!: () => void, release!: () => void;
@@ -53,7 +48,6 @@ test('a flag chosen while this device’s flags move is kept and saved after the
   const { saves, asked, release, save } = heldSave();
   const migration = shareCampaignFlags({}, save, storage);
   await asked;
-  // While the first flag's save waits, both campaigns get newer choices.
   assert.equal(saveCampaignFlag('ab', 'USA', undefined, storage), null);
   assert.equal(saveCampaignFlag('cd', null, undefined, storage), null);
   release();
@@ -69,7 +63,6 @@ test('a flag chosen or cleared while the shared flags are read moves over them',
   const read = new Promise<Record<string, string>>(resolve => { answer = resolve; });
   const saves: [string, string | null][] = [];
   const migration = shareCampaignFlags(read, async (campaign, tag) => { saves.push([campaign, tag]); }, storage);
-  // Before the shared flags arrive, choices stay on this device and are remembered.
   assert.equal(saveCampaignFlag('ab', 'USA', undefined, storage), null);
   assert.equal(saveCampaignFlag('cd', null, undefined, storage), null);
   answer({ ab: 'GER', cd: 'FRA', ef: 'ITA' });

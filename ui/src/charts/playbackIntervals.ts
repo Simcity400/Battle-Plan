@@ -25,8 +25,6 @@ export class PlaybackIntervals<T> {
     return value;
   }
 
-  /** The hours, from `first` to before `end`, between the change hours around `hour`: what the value is
-   * read from stays the same there, whatever display `bounds` refresh within. */
   span(hour: number): PlaybackBounds {
     let low = 0, high = this.hours.length;
     while (low < high) {

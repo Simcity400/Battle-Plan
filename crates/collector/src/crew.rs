@@ -1,9 +1,5 @@
-//! Acquired crews, read under the crew writers' quiet token: equal tokens on both sides of the
-//! read prove no observed crew writer ran across it. `None` is a crew not recorded this hour,
-//! never a crew the game holds as none; the rows write it as the column's refusal (`None`).
 use engine_native::{Memory, cair_wing, cship, read};
 
-/// A ship's acquired and required crew.
 pub(crate) fn ship(
     memory: &impl Memory,
     ship: usize,
@@ -16,7 +12,6 @@ pub(crate) fn ship(
     })
 }
 
-/// A wing's acquired manpower and government-in-exile country.
 pub(crate) fn wing(
     memory: &impl Memory,
     wing: usize,
@@ -56,9 +51,6 @@ mod tests {
         bytes
     }
 
-    /// The attach hour of every recording, vanilla or modded: both crew writer families are
-    /// observed, but the crew registry has no table yet, so a per-receiver certificate refuses
-    /// every ship and wing. The game holds the crew.
     #[test]
     fn crews_read_in_an_observed_hour_before_any_registry_table() {
         let registry = WatchRegistry::new();

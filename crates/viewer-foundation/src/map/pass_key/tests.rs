@@ -1,7 +1,6 @@
 use super::*;
 use crate::map::textures::Content;
 
-/// The scene block of two frames whose camera moved: only the view-projection bytes differ.
 fn block(camera: f32, clock: f32) -> Vec<u8> {
     let mut bytes = vec![0u8; 64];
     bytes[..4].copy_from_slice(&camera.to_le_bytes());
@@ -9,7 +8,6 @@ fn block(camera: f32, clock: f32) -> Vec<u8> {
     bytes
 }
 
-/// The binding whose program reads the camera at 0..16 and nothing from 32 on.
 fn reads() -> shader_pipeline::Buffer {
     shader_pipeline::Buffer {
         binding: 0,
@@ -18,7 +16,6 @@ fn reads() -> shader_pipeline::Buffer {
     }
 }
 
-/// A binding read to eight bytes, past a block that is shorter.
 fn reads_eight() -> shader_pipeline::Buffer {
     shader_pipeline::Buffer {
         binding: 0,
@@ -48,8 +45,6 @@ fn a_changed_read_byte_redraws_and_a_changed_unread_byte_does_not() {
     assert!(keyed.draws(key), "the camera moved, and the program reads it");
 }
 
-/// A read range past the block's end counts as the zeros the device reads there, and does not
-/// make two equal blocks differ.
 #[test]
 fn reads_past_the_block_are_the_zeros_the_device_reads() {
     let mut keyed = Keyed::default();
@@ -81,8 +76,6 @@ fn a_rewritten_texture_redraws_and_a_still_one_does_not() {
     assert!(keyed.draws(key), "the texture was written");
 }
 
-/// A target remade for a new view size takes a content of its own, so the pass draws into it
-/// again however little else changed.
 #[test]
 fn a_remade_target_redraws() {
     let mut keyed = Keyed::default();
@@ -129,8 +122,6 @@ fn an_input_no_writer_describes_draws_every_frame() {
     }
 }
 
-/// A frame that drew but never reached the queue left the target as it was, so the next frame
-/// draws again even though its key repeats that dropped frame's.
 #[test]
 fn a_frame_that_did_not_reach_the_queue_draws_again() {
     let mut keyed = Keyed::default();
@@ -142,7 +133,6 @@ fn a_frame_that_did_not_reach_the_queue_draws_again() {
     let mut key = keyed.start();
     key.read(&reads(), &block(2.0, 0.0));
     assert!(keyed.draws(key), "the camera moved");
-    // The frame failed: no submit.
 
     let mut key = keyed.start();
     key.read(&reads(), &block(2.0, 0.0));
@@ -157,7 +147,6 @@ fn a_frame_that_did_not_reach_the_queue_draws_again() {
     assert!(!keyed.draws(key));
 }
 
-/// A target whose content was lost is drawn again even though every input repeats.
 #[test]
 fn a_lost_target_draws_again() {
     let mut keyed = Keyed::default();

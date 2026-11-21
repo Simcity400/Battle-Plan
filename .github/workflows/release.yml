@@ -1,35 +1,5 @@
 name: Release
 
-# How releases are made. Battle Plan and Battle Plan Recorder share one version and one installer.
-#
-# - Preview: Run workflow > preview on any branch builds, signs and verifies the installer as a
-#   workflow artifact and publishes nothing; the build carries no update feed. It is the only
-#   trigger while the repository is private.
-# - Stable and nightly are off while the repository is private: installed apps read their update
-#   feed from its public Releases, so both refuse a private repository. To turn them on, make it
-#   public and restore `push: tags: v<major>.<minor>.<patch>` (the tag must match `version` under
-#   [workspace.package] in Cargo.toml) and the daily `schedule` (cron 30 18 * * *, after the 03:00
-#   daily tests; only when main has commits the last nightly did not build). Run workflow >
-#   nightly then builds main on demand. A nightly's version is the next patch,
-#   `<major>.<minor>.<patch+1>-nightly.<yyyymmdd>.<run>`.
-#
-# Stable and nightly releases are published on this repository's own Releases, by
-# github-actions[bot] with the workflow's token, so no personal token or identity is involved. The
-# repository must be public: installed apps read their update feed from it. Its releases tagged
-# `stable` and `nightly` each hold `latest.json`, the feed the apps check, which records the commit
-# it was built from. A release's installer is uploaded before its feed points at it.
-#
-# Nothing is published that tools/leak-gate.py has not passed: the installer and everything it
-# installs (release-build.yml), then the manifest, the notes and the release text here. Notes are
-# the merged pull requests' titles. The private terms come from the secret LEAK_GATE_TERMS.
-#
-# The build runs on the self-hosted runner on the maintainer's machine (release-build.yml); resolving
-# and publishing run on GitHub's runners.
-#
-# Secrets: TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD sign updates for the
-# public key in crates/app-update/updater.pub. Authenticode signing starts once AZURE_TENANT_ID,
-# AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and
-# AZURE_SIGNING_PROFILE are set (Azure Artifact Signing).
 
 on:
   workflow_dispatch:
@@ -42,8 +12,6 @@ on:
           - preview
           - nightly
 
-# Stable tags queue behind each other, as do nightlies and previews; every queued run is kept
-# (queue: max) and nothing that publishes is cancelled. A feed only ever moves to a newer version.
 concurrency:
   group: release-${{ github.event_name == 'push' && 'stable' || 'nightly' }}
   cancel-in-progress: false
@@ -59,7 +27,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      # Release notes are the merged pull requests' titles.
       pull-requests: read
     outputs:
       channel: ${{ steps.release.outputs.channel }}
@@ -70,7 +37,6 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       name: ${{ steps.version.outputs.name }}
     steps:
-      # Notes and ancestry need history, not file contents.
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -120,7 +86,6 @@ jobs:
           fi
           releases="https://github.com/$REPOSITORY/releases"
           echo "releases=$releases" >> "$GITHUB_OUTPUT"
-          # The commit the channel's feed was last built from.
           status="$(curl -sSL -o feed.json -w '%{http_code}' "$releases/download/$channel/latest.json")"
           case "$status" in
             200) jq -er '.commit' feed.json > previous; jq -er '.version' feed.json > previous-version ;;
@@ -138,7 +103,6 @@ jobs:
               exit 1
             fi
           fi
-          # Run workflow > nightly builds even an unchanged main.
           if [[ "$EVENT" == workflow_dispatch ]]; then due=true; fi
           echo "due=$due" >> "$GITHUB_OUTPUT"
 
@@ -167,7 +131,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 tools/release.py notes --channel "${{ steps.release.outputs.channel }}" --since "$(cat previous)" --until "${{ github.sha }}" --output notes.md
 
-      # The notes are pull request titles: checked before any artifact holds them.
       - name: Check the release notes for leaks
         if: steps.release.outputs.due == 'true' && steps.release.outputs.channel != 'preview'
         env:
@@ -252,15 +215,12 @@ jobs:
       - name: Write the release text
         run: '{ cat notes.md; echo; echo "Built from commit ${COMMIT}."; } > body.md'
 
-      # Everything this job publishes; the build job checked the installer's contents already.
       - name: Check for leaks
         env:
           LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: python3 tools/leak-gate.py dist latest.json notes.md body.md
 
-      # Runs of a channel follow each other (concurrency above); this refuses one that would move its
-      # feed, or GitHub's latest stable release, back to an older version.
       - name: Refuse an older version
         run: |
           set -euo pipefail
@@ -289,7 +249,6 @@ jobs:
           fi
           gh release create "$TAG" --target "$COMMIT" --title "$NAME" --notes-file body.md "${flags[@]}" dist/*
 
-      # Only now does the feed name the release, whose installer is already public.
       - name: Point the feed at the release
         run: |
           set -euo pipefail

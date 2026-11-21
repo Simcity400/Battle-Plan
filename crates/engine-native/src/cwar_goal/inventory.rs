@@ -1,8 +1,3 @@
-//! Complete serializable goal objects and the separate unused-goal roster.
-//!
-//! The caller lends the country and diplomacy objects authenticated by its
-//! existing census. Target occurrences keep their order, including repeats.
-//! Nothing here evaluates action eligibility or removes expired goals.
 use crate::{
     Memory, allocation, ccountry, cpdx_array::Array, cpolitical_status, cwar_goal_type, read,
 };
@@ -42,7 +37,6 @@ pub struct Goal {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Justification {
-    /// Position in the complete timed-activity roster, including other types.
     pub ordinal: u32,
     pub actor: u32,
     pub recipient: u32,
@@ -58,8 +52,6 @@ pub struct Justification {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Target {
-    /// 0 states, 1 liberation countries, 2 puppets, 3 unused handles,
-    /// 4 justification selected state IDs.
     pub kind: u8,
     pub goal: u32,
     pub ordinal: u32,
@@ -104,8 +96,6 @@ impl Inputs {
             + self.targets.capacity() * size_of::<Target>()
     }
 
-    /// Worker only. Reuses all three flat buffers. Failure leaves no complete
-    /// inventory; the caller must withhold these buffers and its certificate.
     pub fn read_owner(
         &mut self,
         m: &impl Memory,
@@ -115,7 +105,6 @@ impl Inputs {
     ) -> Result<(), &'static str> {
         self.read_parts(m, base, country, diplomacy, [true, true])
     }
-    /// Read only the domains whose native writer certificates changed.
     pub fn read_parts(
         &mut self,
         m: &impl Memory,
@@ -194,7 +183,6 @@ impl Inputs {
                 if p == 0 {
                     return Err("timed-activity pointer is null");
                 }
-                // Other activity types have no justification payload and are never followed.
                 if field::<u64>(m, p, 0)?
                     != engine_sites::at(base, JUSTIFICATION_VTABLE_RVA)
                         .ok_or("justification vtable withheld")? as u64
@@ -225,7 +213,6 @@ impl Inputs {
         Ok(())
     }
 
-    // Each target list supplies its source layout and destination identity explicitly.
     #[allow(clippy::too_many_arguments)]
     fn copy_targets(
         &mut self,
@@ -243,7 +230,6 @@ impl Inputs {
         for ordinal in 0..source.count {
             let value = if state_pointers {
                 let p = pointer(m, source, ordinal)?;
-                // Timed creation can preserve null for an invalid authored state ID.
                 if p == 0 {
                     0
                 } else {

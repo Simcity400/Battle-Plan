@@ -1,4 +1,3 @@
-//! Complete active observer projection; aggregate losses reuse their census source.
 use crate::{Report, complete, invalid, required_country_tag};
 use engine_land_inputs::combat_log_events as kind;
 use installed_content_save::{
@@ -200,8 +199,6 @@ fn decode(
     Ok(result)
 }
 
-// The replay stores exact /100000 values, not save literal spellings. Compare
-// every numeric value exactly while retaining presence and collection order.
 fn pools_equal(actual: Option<&Pool>, saved: Option<&Pool>) -> bool {
     match (actual, saved) {
         (None, None) => true,

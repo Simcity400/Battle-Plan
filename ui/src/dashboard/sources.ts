@@ -30,8 +30,6 @@ export function useSourceRoles(client: DashboardClient) {
     const updates = new Map<string, DashboardSource>();
     for (const [roleId, source] of sources.current) {
       if (source.id !== sourceId || source.revision !== revision) continue;
-      // One entry per (slot, tag), as the native catalogues: another branch's
-      // witness of a known country adds nothing a lookup by slot or tag can see.
       const identity = (country: CountryMetadata) => `${country.id}:${country.tag}`;
       const known = new Set(source.metadata.countries.map(identity));
       const added = countries.filter(country => { const key = identity(country); if (known.has(key)) return false; known.add(key); return true; });
@@ -56,9 +54,6 @@ export function useSourceRoles(client: DashboardClient) {
       if (!mounted.current || controller.signal.aborted || controllers.current.get(roleId) !== controller) { release(source); return null; }
       sources.current.set(roleId, source);
       setBindings((previous) => ({ ...previous, [roleId]: { source, loading: false, error: null } }));
-      // Every campaign's later countries join its source, not only the shown campaign's,
-      // so a country chosen in any campaign keeps its name and flag. A failure leaves
-      // them unavailable, as a picker's own roster then reports.
       void loadProduct<LandOwners>(client, { sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }, controller.signal, undefined, source)
         .then(result => { if (!controller.signal.aborted) observeCountries(source.id, source.revision, result.countries); }, () => {});
       return source;
@@ -74,8 +69,6 @@ export function useSourceRoles(client: DashboardClient) {
   }, [client, release, observeCountries]);
 
   useEffect(() => {
-    // Hot reload replays effects while preserving these bindings and refs.
-    // Their native leases must live until the session actually unmounts.
     const detach = lifetime.current.attach(client, () => {
       mounted.current = false;
       for (const controller of controllers.current.values()) controller.abort();

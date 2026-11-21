@@ -1,5 +1,3 @@
-//! The flying mode in a map: which aircraft it flies, one frame of the flight, and a window
-//! dump's scripted flight (`--fly`).
 
 use super::Viewer;
 use crate::controls::flight::{self, Airframe, Flight, View};
@@ -11,26 +9,17 @@ use viewer_world::map::aircraft::PlayerAircraft;
 use viewer_world::map::models::ModelInstance;
 use viewer_world::map::scene::PlayerModel;
 
-/// The scene label the aircraft draws under, which gives it a flying aircraft's native object
-/// data.
 pub(crate) const LABEL: &str = "flying aircraft";
 
-/// A window dump's flight: where the aircraft starts, the view, and the controls held through
-/// the capture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Scripted {
-    /// The aircraft's world position.
     pub position: [f32; 3],
-    /// Heading clockwise from north, pitch up and bank right wing down, in radians.
     pub attitude: [f32; 3],
     pub view: View,
-    /// Turn right, climb and throttle up, each within -1..=1, held as the controller's left stick
-    /// and triggers.
     pub steer: [f32; 3],
 }
 
 impl Scripted {
-    /// One frame of the held controls lasting `dt` seconds.
     pub(crate) fn frame(&self, dt: f32) -> Frame {
         let [turn, climb, throttle] = self.steer;
         Frame {
@@ -52,9 +41,6 @@ impl Scripted {
     }
 }
 
-/// What the scene draws for the flight this frame: the chosen aircraft's library slot `aircraft`
-/// where the flight's view places it, and nothing at all while no aircraft is chosen, whatever
-/// the view would show.
 pub(super) fn placed(
     aircraft: Option<usize>,
     sight: Option<ModelInstance>,
@@ -62,10 +48,6 @@ pub(super) fn placed(
     aircraft.zip(sight)
 }
 
-/// What the flight knows of the aircraft in library slot `aircraft`: its model's bounding radius
-/// ([`flight::DEFAULT_SIZE`] without one), whether its entity has the explode state, and how the
-/// content's planes meet the ground. Unreadable ground defines meet the drawn surface itself and
-/// remove the aircraft at once ([`Viewer::fly_refusal`] names them).
 fn airframe(document: &Document, aircraft: Option<usize>) -> Airframe {
     let ground = document
         .aircraft
@@ -91,16 +73,10 @@ fn airframe(document: &Document, aircraft: Option<usize>) -> Airframe {
 }
 
 impl Viewer {
-    /// The aircraft the flying mode flies over `document`'s map: the one the user chose, once it
-    /// has baked for that map ([`super::fly_aircraft::FlyAircraft::ready`]). There is no default:
-    /// until an aircraft is chosen, the flying mode is a free eye with no model. The map being
-    /// drawn is passed in, as a frame holds it apart from `self.document` while it draws.
     pub(crate) fn fly_aircraft(&self, document: &Document) -> Option<&PlayerAircraft> {
         self.fly_aircraft.ready(&document.aircraft)
     }
 
-    /// What the flying mode cannot do as the content says: fly an aircraft, or crash it as the
-    /// content's planes meet the ground.
     pub(super) fn fly_refusals(&self, document: &Document) -> Vec<String> {
         let mut refusals = Vec::new();
         if let Some(reason) = self.fly_aircraft.refusal() {
@@ -126,11 +102,6 @@ impl Viewer {
         refusals
     }
 
-    /// One frame of flight over `map`'s map: steps the flight with `controls` and what its
-    /// aircraft's player has played as the scene's last frame left it, and returns the camera the
-    /// frame draws with. The aircraft's instance waits in `self.flying` for the scene. A flight
-    /// starts where a window dump's `--fly` puts it, over the ground at world `start` chosen from
-    /// the map, or over the ground `map` looks at.
     pub(super) fn fly(
         &mut self,
         document: &Document,
@@ -149,7 +120,6 @@ impl Viewer {
         let scripted = self.options.fly;
         let flight = self.flight.get_or_insert_with(|| match scripted {
             Some(scripted) => scripted.flight(),
-            // The map camera moved over the chosen ground keeps its height and heading.
             None => Flight::from_map(
                 &start.map_or(map, |center| Camera { center, ..map }),
                 &floor,
@@ -174,7 +144,6 @@ impl Viewer {
         sight.camera
     }
 
-    /// The scene's player model for this frame: the aircraft the flight placed, if any.
     pub(super) fn fly_model<'a>(
         flying: Option<(usize, ModelInstance)>,
         library: &'a viewer_world::map::models::ModelLibrary,
@@ -187,7 +156,6 @@ impl Viewer {
         })
     }
 
-    /// The flight's state as a window dump reports it.
     pub(super) fn flight_line(&self, document: &Document) -> Option<String> {
         let flight = self.flight.as_ref()?;
         let [x, y, z] = flight.position;
@@ -222,7 +190,6 @@ mod tests {
         let frame = scripted.frame(0.05);
         assert_eq!(frame.dt, 0.05);
         assert_eq!(frame.pad.left, [0.5, -1.0]);
-        // Throttling down is the left trigger.
         assert_eq!(frame.pad.triggers, [0.25, 0.0]);
         assert_eq!(
             Scripted {
@@ -240,8 +207,6 @@ mod tests {
         assert_eq!(flight.view, View::Nose);
     }
 
-    /// The host routes the controller to the map in front whatever the map's keyboard focus: a
-    /// dashboard map flies on its sticks, triggers and buttons while its window lacks focus.
     #[test]
     #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
     fn the_host_s_controller_flies_the_aircraft_while_the_map_lacks_keyboard_focus()
@@ -278,7 +243,6 @@ mod tests {
         let mut frame = eframe::Frame::_new_kittest();
         frame.wgpu_render_state = Some(fixture.state.clone());
         let target = super::super::render_failure_tests::target(&fixture);
-        // Every frame's window lacks keyboard focus.
         let draw = |viewer: &mut Viewer| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
@@ -305,9 +269,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         viewer.set_camera_mode(dashboard::protocol::CameraMode::Fly, false, &ctx);
-        // The host hands the map the controller, whose South button starts the flight in the
-        // middle of the view; then the left stick hard right, the right trigger pulled. A button
-        // held as the map takes the controller is held, not pressed, so the press comes after.
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 1,
@@ -350,13 +311,11 @@ mod tests {
         }
         let flown = viewer.flight.clone().expect("still flying");
         assert_eq!(flown.phase, flight::Phase::Flying);
-        // It turned right and throttled up.
         let turned = (flown.yaw - start.yaw + std::f32::consts::PI)
             .rem_euclid(std::f32::consts::TAU)
             - std::f32::consts::PI;
         assert!(turned > 0.05, "{} -> {}", start.yaw, flown.yaw);
         assert!(flown.throttle > start.throttle, "{}", flown.throttle);
-        // The North button changes the view.
         assert_eq!(flown.view, View::Chase);
         state.buttons = GamepadButton::North.bit();
         viewer.input.gamepad(GamepadMessage::State {

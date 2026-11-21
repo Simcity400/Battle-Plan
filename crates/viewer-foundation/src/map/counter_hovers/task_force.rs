@@ -1,4 +1,3 @@
-//! Actual drawn naval observer inputs and retained metadata.
 use super::gui_authored::Authored;
 use super::unit_hits as unit_selection;
 use crate::map::gui_resources::contains;
@@ -16,11 +15,9 @@ pub enum Control {
     Pride,
 }
 
-/// The shared handler observes the control actually hit inside the drawn at-sea plate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hover {
     pub control: Control,
-    /// The corresponding typed plate in this presented CounterReport.
     pub unit_hit: usize,
     pub rect: [f32; 4],
     pub hit: Option<HitGeometry>,

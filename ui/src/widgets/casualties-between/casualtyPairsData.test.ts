@@ -39,7 +39,6 @@ test("a chord names every country its held windows pair, a later window's too, o
   const next = fixture(); Object.assign(next, { window: 1, observed: [{ firstHour: 121, lastHour: 150 }] });
   next.pairs = [{ identity: '1:10|3:30', firstCountry: 'mod attacker', secondCountry: 'a later victim', runs: [
     { firstHour: 130, lastHour: 150, readHour: 130, hourly: true, firstTaken: '1', secondTaken: '2', incomplete: false }] }];
-  // The later victim first shows at 130, within the window after the one shown: it is named with the others before then.
   assert.deepEqual(casualtyPairTags([first, validateCasualtyPairs(next)]), ['a later victim', 'mod attacker', 'mod victim']);
   assert.deepEqual(casualtyPairTags([first, undefined]), ['mod attacker', 'mod victim'], 'a window still loading names nothing');
   assert.deepEqual(casualtyPairTags([]), []);

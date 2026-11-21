@@ -1,8 +1,3 @@
-//! Finalizer observation. One try-only exclusive lease owns arenas prepared
-//! off-thread, which grow in the callback past what was prepared; competing or
-//! reentrant calls are counted as lost events.
-//! Like line_output, the hourly boundary installs offered storage and the
-//! spool retires it. No live pointer leaves the observer.
 
 use crate::hook::Hook;
 use engine_native::Memory;
@@ -135,8 +130,6 @@ impl Storage {
             + self.subjects.capacity() * size_of::<Subject>()
             + self.name_bytes.capacity()
     }
-    /// Grows every arena it needs; only a failed allocation loses the
-    /// conference (counted) or names its snapshot's failure.
     pub fn observe(
         &mut self,
         memory: &impl Memory,
@@ -197,8 +190,6 @@ impl Storage {
         }
         true
     }
-    /// Resident bids run on the acquisition worker. Continue each original
-    /// history walk after its acquired headers size the cumulative owned arenas.
     pub fn observe_bids(
         &mut self,
         memory: &impl Memory,
@@ -261,7 +252,6 @@ struct Log {
     capacity: Capacities,
     storage: UnsafeCell<Storage>,
 }
-// The sole access is under Lease; storage is retired only at a writer-free boundary.
 unsafe impl Sync for Log {}
 #[derive(Default)]
 struct Swap {
@@ -311,7 +301,6 @@ fn presize_storage(capacity: Capacities) {
         return;
     };
     let current = swap.current.as_ref().map(|log| {
-        // The prepared shape, never the vectors the callback grows under its lease.
         log.capacity
     });
     let offered = swap.next.as_ref().map(|log| log.capacity).or(current);
@@ -368,8 +357,6 @@ fn sizing_array<T: engine_native::memory::Raw>(
     Some(array)
 }
 
-/// Loader/spool only: backed native rosters and resident arrays size every arena.
-/// Population headroom covers conferences created between sizing reads.
 pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
     let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
@@ -412,8 +399,6 @@ fn resident_capacity(memory: &impl Memory, base: usize, state: usize) -> Option<
             .element(index, 8)
             .and_then(|at| engine_native::read::<u64>(memory, at))?;
         let demand = native::demand(memory, base, pointer as usize);
-        // Only complete demands from backed arrays and validated history size
-        // grow storage. Capture paths still report failures independently.
         if demand.failure.is_some() {
             continue;
         }
@@ -428,8 +413,6 @@ fn resident_capacity(memory: &impl Memory, base: usize, state: usize) -> Option<
     Some(capacity)
 }
 
-/// Simulation-thread handoff, copying only owned arenas. A short destination
-/// loses counted conferences, never publishes their partial payload as exact.
 pub fn drain(output: &mut Storage, continuous: bool) -> Result<u64, &'static str> {
     drain_mode(output, continuous)
 }
@@ -562,8 +545,6 @@ unsafe extern "system" fn observe(conference: usize) {
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
-// The synthetic return continues through the site's native unwind record.
-// After it, flags/registers plus 136 bytes keep the observer call aligned.
 core::arch::global_asm!(
     ".text",
     ".globl peace_finalizer_entry",
@@ -606,12 +587,12 @@ pub struct Hooks {
     hook: Option<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family, as for line_output.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family, as for line_output."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize, capacity: Capacities) -> Self {
         presize(capacity);
         install_offered();
@@ -698,7 +679,6 @@ pub fn status() -> impl serde::Serialize {
 
 #[cfg(any(test, feature = "test-support"))]
 static TEST_GLOBALS: Mutex<()> = Mutex::new(());
-/// Serialises tests on this crate's globals; a failed test never poisons the rest.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     TEST_GLOBALS
@@ -753,8 +733,6 @@ mod tests {
             );
         }
     }
-    // Match an interior site's call-aligned RSP, then return via the original
-    // target stub. The measured path includes the production bridge itself.
     core::arch::global_asm!(
         ".text",
         ".globl peace_test_call",
@@ -811,16 +789,12 @@ mod tests {
             image_base + unsafe { (*function).BeginAddress } as u64,
             peace_finalizer_entry as *const () as u64
         );
-        // Stack after the bridge prologue: 136 scratch, seven registers,
-        // flags, then the synthetic site return. No observer is executed.
         #[repr(align(16))]
         struct Stack([u64; 28]);
         let mut stack = Stack([0; 28]);
         let registers = [11, 10, 9, 8, 3, 2, 1];
         stack.0[17..24].copy_from_slice(&registers);
         stack.0[24] = 0x202;
-        // The synthetic return is the instruction after the patched site, never the
-        // site itself, whose `E9` the unwinder would take for an epilogue.
         let site = 0x140000000 + engine_peace::peace_finalizer_site::RETURN_RVA.0 as u64;
         stack.0[25] = site;
         let original_rsp = stack.0.as_ptr() as u64 + 208;
@@ -946,7 +920,6 @@ mod tests {
             let mut samples = Vec::with_capacity(100);
             for _ in 0..100 {
                 let log = unsafe { &*LOG.load(Ordering::Acquire) };
-                // This isolated ignored test is single-threaded and installs no hook.
                 unsafe { &mut *log.storage.get() }.used = [0; 7];
                 let started = std::time::Instant::now();
                 unsafe { peace_test_call(std::hint::black_box(conference)) };

@@ -1,5 +1,3 @@
-//! Comparing one unit history with another, instance bytes and carried state alike: what the
-//! tests of a walk's own oracle assert when they run two of them side by side.
 use super::*;
 
 pub(super) fn assert_instances(a: &[(usize, ModelInstance)], b: &[(usize, ModelInstance)]) {

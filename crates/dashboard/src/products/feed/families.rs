@@ -1,11 +1,3 @@
-//! What the feed shows over a span besides its pages (`event-feed-span`): each kind's code (the
-//! values a page's `kind` facet takes), the reads whose events were not all observed, and the rows
-//! other families date. Each family's rows come from one function: groups (war starts,
-//! capitulations, faction joins and leaves, peace) and subjects (subject starts) from those
-//! families' own answers, special project completions from that family's
-//! (`special_projects::completions`); laws and advisors, focus completions, nuclear stockpile
-//! increases, nuclear strikes and ruling party changes are refused by name until their families
-//! are on the query layer.
 
 use super::{
     EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, EventFeedUnavailable, LOG, Names, Notices, branch, invalid,
@@ -37,21 +29,20 @@ use ts_rs::TS;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventFeedSpanParams {
     pub branch_id: String,
-    /// The timeline's first and last hour when none.
+    #[doc = " The timeline's first and last hour when none."]
     #[serde(default)]
     pub from: Option<i32>,
     #[serde(default)]
     pub to: Option<i32>,
-    /// The categories whose other families' rows are wanted.
+    #[doc = " The categories whose other families' rows are wanted."]
     pub categories: Vec<EventFeedCategory>,
-    /// Only the kinds' codes, which a page's facets need before anything is read: no rows and
-    /// no coverage notes, so the pages are never asked after a walk of the span's reads.
+    #[doc = " Only the kinds' codes, which a page's facets need before anything is read: no rows and"]
+    #[doc = " no coverage notes, so the pages are never asked after a walk of the span's reads."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub kinds_only: Option<bool>,
 }
 
-/// A kind the feed's log holds, by the code its rows' `kind` facet counts.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -69,24 +60,18 @@ pub struct EventFeedSpanReply {
     pub first_hour: i32,
     pub last_hour: i32,
     pub kinds: Vec<FeedKindCode>,
-    /// The other families' rows in the span, by hour.
+    #[doc = " The other families' rows in the span, by hour."]
     pub rows: Vec<EventFeedRow>,
-    /// What the span could not show: reads whose events were not all observed, families not
-    /// read, refusals of their rows.
+    #[doc = " What the span could not show: reads whose events were not all observed, families not"]
+    #[doc = " read, refusals of their rows."]
     pub unavailable: Vec<EventFeedUnavailable>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(EventFeedSpanReply);
 
-/// The notices an incomplete read can raise, in the order one read raises them: its coverage,
-/// then each script family it refused.
 pub(crate) const NOTICES: usize = 1 + SCRIPT_FAMILY_NAMES.len();
 
-/// The incomplete reads of `kinds` (patterns asking the feed's incomplete reads) that raise each
-/// of [`NOTICES`], as patterns grouped by notice over the `incomplete` facet at `shift`: coverage
-/// partial or unavailable, then each family's bit set. A row the facet does not hold (all ones)
-/// raises none.
 pub(crate) fn notice_patterns(kinds: &[Pattern], shift: u32) -> Vec<Pattern> {
     let facet = |pattern: &Pattern, mask: u32, value: u32, group: usize| Pattern { mask: pattern.mask | u128::from(mask) << shift, value: pattern.value | u128::from(value) << shift, group, ..*pattern };
     let mut out = Vec::new();
@@ -102,10 +87,6 @@ pub(crate) fn notice_patterns(kinds: &[Pattern], shift: u32) -> Vec<Pattern> {
     out
 }
 
-/// Each read of the span whose events were not all observed, noted: its coverage, why, and the
-/// script families it refused. Each notice's count comes from the log's summaries through the
-/// `incomplete` facet, and its examples from a page of its first three reads, so the cost is the
-/// span's summary pieces and [`NOTICES`] short pages, never a walk of the reads.
 pub(crate) fn coverage(source: &Source, query: &Query<'_>, branch: u64, from: i32, to: i32, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<()> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
@@ -135,8 +116,6 @@ pub(crate) fn coverage(source: &Source, query: &Query<'_>, branch: u64, from: i3
     Ok(())
 }
 
-/// `raised` (each notice's index in [`NOTICES`], its count and its first reads with their hour
-/// and key) into `notices`, in the order a walk of the reads meets them.
 pub(crate) fn raised_notices(mut raised: Vec<(usize, u64, Vec<(i32, u128, FeedEvent)>)>, losses: &[(i32, i32)], notices: &mut Notices) {
     raised.retain(|(_, _, examples)| !examples.is_empty());
     raised.sort_by_key(|(notice, _, examples)| (examples[0].0, examples[0].1, *notice));
@@ -175,7 +154,6 @@ fn family_reason(name: &str, read: &FeedEvent) -> String {
     format!("{name}: interval ending at {} has unobserved native writers; missing changes and unchanged carry are unavailable.", read.read_hour)
 }
 
-/// An incomplete read's notices, as a walk of the reads raised them.
 #[cfg(test)]
 pub(crate) fn read_notices(read: &FeedEvent, losses: &[(i32, i32)], notices: &mut Notices) {
     if let Some(reason) = coverage_reason(read, losses) {
@@ -207,17 +185,12 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
     }
 }
 
-/// Whether the hour before `hour` is held and observed, so a run starting at `hour` began there.
 fn follows_observed(query: &Query<'_>, unobserved: &[crate::span::HourSpan], hour: i32) -> bool {
     let before = hour - 1;
     query.timeline.at(before).is_some_and(|stretch| stretch.first <= before && query.timeline.at(hour).is_some_and(|other| other.run == stretch.run))
         && !unobserved.iter().any(|span| span.first_hour <= before && before <= span.last_hour)
 }
 
-/// The groups family's rows in `from..=to`: war starts and capitulations as the engine dates them,
-/// faction joins and leaves and peace where a run starts or ends next to an observed hour. A peace
-/// the recorder dated as a native war end of the same pair (that hour or the one before) is that
-/// row's, not repeated.
 pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>)> {
     let wanted = |kind: EventFeedKind| categories.contains(&kind.category());
     if !wanted(EventFeedKind::WarStarted) && !wanted(EventFeedKind::FactionJoined) {
@@ -265,8 +238,6 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     Ok((rows, reply.warnings))
 }
 
-/// The native war ends (both countries named, the pair in tag order) at the hours of `ends` and
-/// the hour before each, read only in the buckets holding them.
 fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled: &AtomicBool) -> io::Result<BTreeSet<(i32, String, String)>> {
     let mut out = BTreeSet::new();
     let mut ranges: Vec<(i32, i32)> = ends.iter().map(|(hour, ..)| (hour - 1, *hour)).collect();
@@ -309,8 +280,6 @@ fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled:
     Ok(out)
 }
 
-/// The subjects family's rows in `from..=to`: each relation's start as the engine dates it, the
-/// first read holding it its read; none for a relation begun before the timeline.
 pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Vec<EventFeedRow>> {
     let held = subjects::held_runs(source, query, cancelled)?;
     let names = Names::new(&query.holders);
@@ -327,9 +296,6 @@ pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i3
     Ok(rows)
 }
 
-/// The special projects family's rows in `from..=to`: each completion as the game dates it, read
-/// when the recording first held it, named for its country then; the hours the histories were not
-/// recorded are named, and a completion whose country no tag held is counted in the warnings.
 pub(crate) fn project_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>)> {
     let found = special_projects::completions(source, context, query, from, to, cancelled)?;
     if !found.unrecorded.is_empty() {
@@ -348,7 +314,6 @@ pub(crate) fn project_rows(source: &Source, query: &Query<'_>, context: &LoadCon
     Ok((rows, found.warnings))
 }
 
-/// The families whose rows the feed names but cannot read yet, each refused by name.
 pub(crate) fn unread(categories: &[EventFeedCategory], notices: &mut Notices) {
     for (kind, label, family) in [
         ("lawChanged", "Laws and advisors", "the ideas family (24)"),
@@ -374,12 +339,10 @@ pub(crate) fn unread(categories: &[EventFeedCategory], notices: &mut Notices) {
     }
 }
 
-/// Each kind the feed's log holds, by its code.
 fn kinds() -> Vec<FeedKindCode> {
     super::CODES.iter().map(|&(code, kind)| FeedKindCode { kind, code, category: kind.category() }).collect()
 }
 
-/// The reply to a request for the kinds' codes alone.
 pub(crate) fn kinds_only(branch_id: &str, first_hour: i32, last_hour: i32) -> EventFeedSpanReply {
     EventFeedSpanReply { branch_id: branch_id.to_owned(), first_hour, last_hour, kinds: kinds(), rows: Vec::new(), unavailable: Vec::new(), warnings: Vec::new() }
 }

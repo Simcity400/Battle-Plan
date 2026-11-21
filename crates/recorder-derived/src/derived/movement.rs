@@ -1,12 +1,3 @@
-//! Playback's division movement speed against the game's own: the hourly movement step
-//! adds the speed it computed for a division's current edge to the division's progress
-//! numerator and stores the speed nowhere else, so a division that keeps its location,
-//! first route province and route between two consecutive hours advanced its numerator
-//! by the game's speed for that edge. Each such pair compares that step with
-//! [`eta_derive::edge_speed`] over the earlier hour's recorded terms
-//! ([`FrameTerms`]). The step runs inside the next hour's update, after that update's
-//! own writers of some operands (supply, organisation, fuel, weather), so a difference
-//! names the terms the division's edge took that could have changed in between.
 
 use std::collections::BTreeMap;
 
@@ -19,15 +10,11 @@ use replay_derive::{
 };
 use replay_frame::frame::DecodedFrame;
 
-/// The content the movement speed reads.
 pub struct Content {
     pub map: MovementMap,
     pub defines: Defines,
-    /// Each terrain category's own adjuster movement, in database order.
     pub terrain_movement: Vec<i64>,
-    /// Each province's strategic region id.
     pub regions: BTreeMap<u32, u32>,
-    /// The sub-unit database: special forces and type masks.
     pub sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
 }
 
@@ -118,8 +105,6 @@ impl Geography for Content {
     }
 }
 
-/// The tables the speed check decodes: each mover's Divisions and DivisionMovement
-/// rows and every table the speed terms read ([`replay_derive::eta_derive::frame_terms::TABLES`]).
 pub fn tables() -> impl Iterator<Item = replay_data::rows::TableId> {
     use replay_data::{rows::TableId::DivisionMovement, rows::TableId::Divisions};
     [Divisions, DivisionMovement]
@@ -127,8 +112,6 @@ pub fn tables() -> impl Iterator<Item = replay_data::rows::TableId> {
         .chain(replay_derive::eta_derive::frame_terms::TABLES)
 }
 
-/// One division's edge at an hour: its location, first route province, route,
-/// numerator and the speed playback derives for the edge.
 struct Edge {
     location: u32,
     first: u32,
@@ -143,20 +126,13 @@ struct Edge {
 pub struct Checker {
     content: Option<Result<Content, String>>,
     previous: Option<(replay_data::BranchId, i32, BTreeMap<u64, Edge>)>,
-    /// Pairs whose step equals the derived speed, and those that differ.
     pub matched: u64,
-    /// Pairs whose step differs from the earlier hour's derived speed but equals the
-    /// later hour's, over the same edge.
     pub matched_later: u64,
-    /// Equal progress steps clipped at the native first-edge distance.
     pub matched_clipped: u64,
     pub differed: u64,
-    /// Pairs whose numerator did not advance (a stopped or blocked move).
     pub stalled: u64,
-    /// Pairs whose derived speed was refused, by reason.
     pub refused: BTreeMap<String, u64>,
     listed: Vec<String>,
-    /// Differences by the terms the division's edge took, for diagnosis.
     differences: BTreeMap<String, u64>,
 }
 
@@ -203,8 +179,6 @@ impl Checker {
                         self.matched += 1;
                         self.matched_clipped += u64::from(*speed != step);
                     }
-                    // The step runs after the next update's own writers of some operands:
-                    // the later hour's terms, over the same edge, can be the ones it read.
                     Ok(_)
                         if after.speed.as_ref().is_ok_and(|speed| {
                             progress_matches(
@@ -265,9 +239,6 @@ impl Checker {
         }
     }
 
-    /// Cross-hour progress categories are diagnostic: writers can change an
-    /// operand between either endpoint and the movement step. Only content
-    /// failure affects the result.
     pub fn failures(&self) -> [u64; 2] {
         match &self.content {
             Some(Err(_)) => [0, 1],
@@ -276,17 +247,11 @@ impl Checker {
     }
 }
 
-/// Movement can stop at the first edge's distance while entry is blocked. The
-/// observed numerator then witnesses the clipped step, rather than a smaller
-/// speed. No tolerance is applied to either branch.
 fn progress_matches(before: i64, after: i64, speed: i64, distance: Option<i64>) -> bool {
     let advanced = before.wrapping_add(speed).max(0);
     after == advanced || distance.is_some_and(|distance| after == distance && advanced >= distance)
 }
 
-/// The terms a differing division's edge took that the next hour's update can rewrite
-/// first: days out of supply, partial supply, fuel, a retreat and a commander block
-/// with entries, its armour speed entry apart.
 fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> String {
     let status = frame
         .complete::<tables::DivisionStatus>()
@@ -312,7 +277,6 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
     if movement.retreat {
         terms.push("retreat");
     }
-    // A commander block with entries, its armour speed entry counted apart.
     match &status.commander_modifiers {
         Recorded::Value(Some(entries)) if entries[1].is_some() => {
             terms.push("commander armour speed entry");
@@ -329,7 +293,6 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
     }
 }
 
-/// What [`classify`] reads from a division's movement row.
 struct MovementRowKey {
     fuel_limited: bool,
     retreat: bool,
@@ -383,8 +346,6 @@ fn edges(frame: &DecodedFrame, content: &Content) -> BTreeMap<u64, Edge> {
                         }
                     }),
                 key: MovementRowKey {
-                    // A fuel word below a whole tank is decided by the speed term itself;
-                    // here any positive word under the largest recorded fuel is flagged.
                     fuel_limited: matches!(row.fuel, Recorded::Value(Some(fuel)) if fuel > 0),
                     retreat: row.retreat != 0,
                 },
@@ -478,7 +439,6 @@ mod tests {
         use replay_data::rows::{DivisionMovementRow, OwnerTransportSpeedRow, TableId, TableRows};
         use replay_frame::frame::TableView;
         let mut frame = moving(1, 10);
-        // No panel row: the transfer edge needs no base speed.
         {
             *frame.tables[TableId::DivisionMovement.index()] =
                 TableView::Complete(TableRows::DivisionMovement(vec![DivisionMovementRow {

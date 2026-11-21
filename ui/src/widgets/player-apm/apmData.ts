@@ -34,7 +34,6 @@ export function apmRuns(series: ApmSeries, paused = false): Run[] {
   return runs;
 }
 
-/** Each player's latest registry name, numbered only where distinct players share one. */
 export function playerNames(rows: readonly { id: string; name: string }[], registry = rows): Map<string, string> {
   const known = new Map(registry.map(row => [row.id, row.name]));
   const named = rows.map(row => ({ id: row.id, name: known.get(row.id) ?? row.name }));
@@ -54,7 +53,6 @@ export const countText = (value: string | null | undefined) => value == null ? '
 export const pointAt = (series: ApmSeries, hour: number) => runAt(series.points, Math.floor(hour));
 export const APM_EXPLANATION = 'Effective actions per minute (eAPM): accepted player-issued gameplay orders per unpaused real minute. Paused orders and paused time never affect eAPM. Camera movement, selections and unsaved interface edits do not count. Automatic battle-plan execution does not add orders.';
 export const GAPS_NOTE = 'Part of this period was not recorded; its orders and minutes are both left out.';
-/** eAPM as text, starred where part of its period was not recorded. */
 export const apmValueText = (value: ApmValue | undefined) => value?.gaps && value.apm !== null ? `${apmText(value.apm)}*` : apmText(value?.apm);
 function rateNote(value: ApmValue): string {
   if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';

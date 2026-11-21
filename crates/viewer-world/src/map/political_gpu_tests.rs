@@ -1,4 +1,3 @@
-//! Byte oracle: a small fallback-adapter check runs in the gate; large hardware sweeps are opt-in.
 use super::*;
 use gradient::{LayerKind, LayerPlane};
 use std::sync::MutexGuard;
@@ -144,8 +143,6 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
         "other view remains unselected",
     );
     assert_ne!(a_pixels.channel1, b_pixels.channel1);
-    // Region opacity belongs to channel two's green component; control,
-    // pulse and contested bytes remain independent of this local style.
     assert_ne!(a_pixels.channel2, b_pixels.channel2);
     assert!(
         a_pixels
@@ -173,7 +170,6 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
         b.shown.as_ref().unwrap()
     ));
     let mut c = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
-    // A selection chosen before the first fill joins the same selected state.
     assert!(
         !c.set_strategic_styles(&harness.device, &harness.queue, &selected)
             .unwrap()
@@ -207,8 +203,6 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
 
 fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fallback: &Fallback) {
     use std::collections::BTreeMap;
-    // The gradient harness reads half of its nominal map extent; province
-    // stripes are full-resolution, so read every pixel of this 64 by 32 map.
     let harness = fallback.harness(128, 64);
     for second in [2, 65_537] {
         let ids: Vec<_> = (0..64 * 32)
@@ -237,7 +231,6 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fal
         let green = [0, 255, 0, 64];
         pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, blue)]))
             .unwrap();
-        // A frame that fails after recording drops its encoder: the stripes stay pending.
         let mut aborted = harness.device.create_command_encoder(&Default::default());
         assert!(pass.encode(&mut aborted));
         drop(aborted);
@@ -399,23 +392,17 @@ struct Harness {
     width: u32,
     rows: u32,
     timer: Option<PassTimer>,
-    /// Held for the harness's life, and dropped after its device (last field); a harness on
-    /// the shared fallback device leaves it to [`Fallback`].
     _serial: Option<MutexGuard<'static, ()>>,
 }
 
-/// The fallback adapter's device, opened once for every oracle that runs on it: opening it is
-/// most of their cost.
 struct Fallback {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Dropped after the device (last field).
     _serial: MutexGuard<'static, ()>,
 }
 
 impl Fallback {
     fn open() -> Option<Self> {
-        // Taken first: a skip below drops its device before the guard.
         let serial = serial();
         let instance = shader_pipeline::gpu::instance();
         let adapter =
@@ -430,8 +417,6 @@ impl Fallback {
                 }
             };
         println!("POLITICAL fallback adapter {:?}", adapter.get_info());
-        // A fallback adapter that cannot open the viewer's device, or lacks the compute the
-        // kernel needs, is as absent as no adapter: the viewer would refuse it too.
         let (device, queue) =
             match pollster::block_on(adapter.request_device(&device_descriptor(&adapter))) {
                 Ok(opened) => opened,
@@ -456,7 +441,6 @@ impl Fallback {
     }
 }
 
-/// Every byte oracle on the fallback adapter, on one device.
 #[test]
 fn political_gpu_fallback_oracles() {
     let Some(fallback) = Fallback::open() else {
@@ -488,8 +472,6 @@ impl Harness {
         Self::with_device(Some(serial), width, height, device, queue)
     }
 
-    /// `serial` comes first: parameters drop in reverse order, so a panic here drops the device
-    /// before the guard.
     fn with_device(
         serial: Option<MutexGuard<'static, ()>>,
         width: u32,
@@ -559,7 +541,6 @@ impl Harness {
         (plane, cpu)
     }
 
-    /// Both channels of the layer starting at `origin_y`, after the encoder's own commands.
     fn read(
         &self,
         mut encoder: wgpu::CommandEncoder,
@@ -623,7 +604,6 @@ impl Harness {
         plane
     }
 
-    /// Render one view's frame: whether it dispatched, then its country and strategic layers.
     fn view(&self, view: &View) -> (bool, LayerPlane, LayerPlane) {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let encoded = view.encode(&mut encoder);
@@ -737,7 +717,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
     strategic_layer.region_opacity = 0;
     strategic_layer.no_region_color = field.navy_neutral;
     let strategic = gradient::build_layer(&map, &strategic_layer).unwrap();
-    // Each call is a new table, as another view's builder would derive it.
     let hour = |key: u32| {
         let mut country_of = strategic_keys.clone();
         country_of[1] = key;
@@ -777,7 +756,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
     };
     let new_view = || View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
     let (mut a, mut b) = (new_view(), new_view());
-    // A view draws nothing of its own until its first fill.
     assert!(a.textures().is_none() && b.textures().is_none());
     let (one, two) = (hour(1), hour(2));
     assert!(show(&mut a, &one) && show(&mut b, &two));
@@ -785,7 +763,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
         a.shown.as_ref().unwrap(),
         b.shown.as_ref().unwrap()
     ));
-    // A state costs its texture pair and the buffers it keeps; the dispatch scratch is shared.
     {
         let state = a.shown.as_ref().unwrap();
         let fill = state.lock();
@@ -820,7 +797,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
     assert!(!show(&mut a, &hour(1)) && !show(&mut b, &hour(2)));
     check(&a, &one, false, "view a, unchanged fill");
     check(&b, &two, false, "view b, unchanged fill");
-    // The same fill from another view's tables (another perspective) shares a's state.
     let mut c = new_view();
     assert!(show(&mut c, &hour(1)));
     assert!(Arc::ptr_eq(
@@ -829,25 +805,19 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
     ));
     assert!(c.spare.is_none());
     check(&c, &one, false, "view c joins a");
-    // c's unused spare waits in the pool: three states, the three views' spares.
     assert_eq!((base.live_states(), base.pooled()), (3, 1));
-    // a leaves the shared state for the pooled one; c keeps the old fill.
     let three = hour(3);
     assert!(show(&mut a, &three));
     check(&a, &three, true, "view a splits");
-    // No allocation: a new state would have left c's spare pooled, four live.
     assert_eq!((base.live_states(), base.pooled()), (3, 0));
     check(&c, &one, false, "view c keeps its fill");
-    // b joins a; b's old state has no view left and is released.
     assert!(show(&mut b, &hour(3)));
     assert!(Arc::ptr_eq(
         a.shown.as_ref().unwrap(),
         b.shown.as_ref().unwrap()
     ));
     check(&b, &three, false, "view b joins a");
-    // b's old state (hour two) is pooled.
     assert_eq!((base.live_states(), base.pooled()), (3, 1));
-    // A state only c holds follows c, incrementally, without growing the set.
     for key in [4, 5, 0] {
         let regions = hour(key);
         let before = Arc::as_ptr(c.shown.as_ref().unwrap());
@@ -856,7 +826,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
         check(&c, &regions, true, &format!("view c alone, key {key}"));
         assert_eq!((base.live_states(), base.pooled()), (3, 1));
     }
-    // Back to hour two: c takes b's pooled state, which still holds that fill, and pools its own.
     let before = Arc::as_ptr(c.shown.as_ref().unwrap());
     assert!(show(&mut c, &hour(2)));
     assert_ne!(Arc::as_ptr(c.shown.as_ref().unwrap()), before);
@@ -865,7 +834,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
     drop((a, b, c));
     assert_eq!((base.live_states(), base.pooled()), (0, 0));
 
-    // Thousands of fixed-thickness strategic regions still need only one LUT.
     let keys = (0..=5000).collect::<Vec<_>>();
     let ids = (0..width * height)
         .map(|i| 1 + i % 5000)
@@ -891,8 +859,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
 
 #[test]
 fn copies_reach_only_dirty_cells() {
-    // Rows 0-1: columns 0-1 and 5 (merged down); row 2: column 5 (merged on); row 3: column 0
-    // and columns 8-9, gapped, the last clipped to the texture width.
     let cells = [0, 1, 5, 10, 11, 15, 25, 38, 39, 30];
     let mut sorted = cells;
     sorted.sort_unstable();
@@ -959,11 +925,7 @@ fn country_tables(country_of: Vec<u32>) -> Arc<Regions> {
     })
 }
 
-/// Two states share one map's dispatch scratch, dispatching in one submission; the second
-/// overwrote the whole output before the first's incremental update, whose rows have gaps.
 fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
-    // Both countries stay above the area saturation threshold. Two interior
-    // three-cell halos leave a column gap and an untouched bottom row.
     let (width, height) = (272, 128);
     let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
@@ -984,7 +946,6 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
         .map(|id| if id % columns < columns / 2 { 1 } else { 2 })
         .collect::<Vec<_>>();
     let mut changed = halves.clone();
-    // Two provinces of one row, far apart: the dispatch's rows have a gap between them.
     changed[(1 + 3 * columns + 4) as usize] = 4;
     changed[(1 + 3 * columns + 12) as usize] = 5;
     let other = vec![3; halves.len()];
@@ -1018,8 +979,6 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     {
         a.show(&harness.device, &harness.queue, &first).unwrap();
         b.show(&harness.device, &harness.queue, &second).unwrap();
-        // A new state's sea field is the warm strategic one: with no naval attributes, its
-        // first fill redraws none of it.
         if round == 0 {
             for view in [&a, &b] {
                 assert_eq!(view.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0);
@@ -1037,8 +996,6 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
             compare(&naval, &sea, &format!("shared scratch, view {label}'s sea"));
         }
     }
-    // A new state first shown in a mode whose channels keep the sea in its half (strategic air:
-    // the sea, then nothing) starts from the warm field too: its first fill redraws none of it.
     let air = Draw { channels: [Source::Strategic, Source::Empty], strategic: None, country: None, layer: None, second: None, political: [0.0; 2] };
     let in_air = Arc::new(Regions { mode: Some(Arc::new(air)), ..(*tables(vec![3; (columns * (height / GRID_CELL) + 1) as usize])).clone() });
     let mut c = new_view();
@@ -1060,10 +1017,7 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     );
 }
 
-/// Two maps stepping through hours together: after warm-up, no state is allocated, the pair
-/// alternates between two states, and each update is incremental and exact.
 fn political_gpu_fallback_lockstep(fallback: &Fallback) {
-    // 200 cells leave two changed seven-cell halos below half the map.
     let (width, height) = (400, 128);
     let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
@@ -1074,7 +1028,6 @@ fn political_gpu_fallback_lockstep(fallback: &Fallback) {
         height,
         ids: &ids,
     };
-    // Each map's builder derives its own tables for the same hour.
     let tables = |country_of: &[u32]| country_tables(country_of.to_vec());
     let mut keys = (0..=columns * (height / GRID_CELL))
         .map(|id| if id % columns < columns / 2 { 1 } else { 2 })
@@ -1082,10 +1035,8 @@ fn political_gpu_fallback_lockstep(fallback: &Fallback) {
     let new_view = || View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
     let (mut a, mut b) = (new_view(), new_view());
     let cells = (columns * height / GRID_CELL) as usize;
-    // The two warm-up spares are the only states ever: both stay alive and no third is live.
     let spares = [&a, &b].map(|view| Arc::downgrade(view.spare.as_ref().unwrap()));
     let mut used = [false; 2];
-    // Two warm-up steps, then reuse each of the two states once.
     for step in 0..4 {
         let province = 1 + (step * 97) % (keys.len() - 1);
         keys[province] = (step % 5 + 3) as u32;
@@ -1100,14 +1051,11 @@ fn political_gpu_fallback_lockstep(fallback: &Fallback) {
             .expect("a warm-up state");
         used[index] = true;
         let dispatched = shown.lock().gpu.dispatched_cells;
-        // A frame that fails after recording drops its encoder and token: the shared fill is
-        // recorded again by the next.
         let mut aborted = harness.device.create_command_encoder(&Default::default());
         drop(a.encode(&mut aborted).expect("pending"));
         drop(aborted);
         let mut encoder = harness.device.create_command_encoder(&Default::default());
         let recorded = a.encode(&mut encoder).expect("still pending");
-        // The shared fill is recorded once per encoder.
         assert!(b.encode(&mut encoder).is_none());
         harness.queue.submit([encoder.finish()]);
         recorded.submitted();
@@ -1130,17 +1078,13 @@ fn political_gpu_fallback_lockstep(fallback: &Fallback) {
         );
         assert_eq!(base.live_states(), 2, "step {step}");
         if step >= 2 {
-            // The reused state diffs from two hours back: two changed provinces' halos.
             assert!(dispatched < cells / 2, "step {step}: {dispatched}/{cells}");
         }
     }
     assert_eq!(used, [true, true]);
 }
 
-/// The two interleavings the pool must exclude, each in both orders, with the registry checked
-/// to be held from another thread at the point where they used to interleave.
 fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
-    // One province suffices: these are registry interleavings, with no pixel oracle.
     let (width, height) = (16, 16);
     let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
@@ -1157,12 +1101,10 @@ fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
     let (one, two) = (hour(1), hour(2));
     x.show(device, queue, &one).unwrap();
     y.show(device, queue, &two).unwrap();
-    // x joins y; x's state, still holding hour one, is pooled.
     x.show(device, queue, &two).unwrap();
     assert_eq!(base.pooled(), 1);
     let shows = |state: &Arc<State>| state.lock().shown.as_ref().map(|shown| shown.country_of[1]);
 
-    // (a) find, then recycle: find takes the pooled state out whole, still holding its fill.
     let before = checks();
     let found = base.find(&one, &BTreeMap::new()).expect("the pooled fill");
     assert!(checks() > before);
@@ -1170,12 +1112,10 @@ fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
     assert!(base.recycle().is_none());
     base.release(found);
     assert_eq!(base.pooled(), 1);
-    // (a) recycle, then find: the recycled state is forgotten before any find can see it.
     let recycled = base.recycle().expect("the pooled state");
     assert_eq!(shows(&recycled), None);
     assert!(base.find(&one, &BTreeMap::new()).is_none());
 
-    // (b) find, then release: the found state has a holder, so it is not pooled.
     {
         let mut fill = recycled.lock();
         fill.gpu.update_regions(device, queue, &hour(3)).unwrap();
@@ -1187,8 +1127,6 @@ fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
         .expect("the updated state");
     base.release(recycled);
     assert_eq!(base.pooled(), 0);
-    // (b) release, then find: the state is pooled only while nobody holds it, and find takes
-    // it back out.
     base.release(found);
     assert!(checks() > before);
     assert_eq!(base.pooled(), 1);
@@ -1199,7 +1137,6 @@ fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
     assert!(base.recycle().is_none());
     drop(found);
 
-    // A view's own state is claimed under the lock: no other view finds it mid-update.
     let own = x.shown.as_ref().unwrap();
     assert!(!base.claim(own), "x shares y's state");
     y.show(device, queue, &hour(4)).unwrap();
@@ -1318,7 +1255,6 @@ fn political_gpu_incremental() {
     assert!(incremental > 30, "only {incremental} sparse dispatches");
 }
 
-/// Uses the recorded content stack; no local colour or province catalog is embedded in fixtures.
 #[test]
 #[ignore = "set BATTLE_PLAN_POLITICAL_REPLAY, BATTLE_PLAN_POLITICAL_GAME_DIR and BATTLE_PLAN_POLITICAL_USER_DIR"]
 fn political_gpu_recording() {
@@ -1372,7 +1308,6 @@ fn political_gpu_recording() {
     assert!(step > 0, "BATTLE_PLAN_POLITICAL_STEP must be positive");
     use replay_data::{rows::TableId, rows::tables};
     use replay_frame::frame::FrameDecoder;
-    // Keep full wire validation, but materialize only the political operands and campaign identity.
     let selected = [
         TableId::Campaign,
         TableId::Provinces,
@@ -1441,7 +1376,6 @@ fn political_gpu_recording() {
                 std::hint::black_box(&stacked);
                 (plane, start.elapsed().as_secs_f64() * 1000.0)
             };
-            // Alternate execution order in the same process and on exactly the same inputs.
             let (cpu, actual) = if total % 2 == 0 {
                 let cpu = oracle();
                 (cpu, harness.gpu(gpu, &layer, total))
@@ -1469,12 +1403,10 @@ fn political_gpu_recording() {
 
 #[test]
 fn a_second_mode_layer_takes_the_country_layers_place() {
-    // A scripted mode's two layers copy from the mode and country slots.
     assert_eq!(
         holders([Source::Mode, Source::Second]),
         [Held::Mode, Held::Country]
     );
-    // One layer shown in both channels copies from one slot into both.
     assert_eq!(
         holders([Source::Mode, Source::Mode]),
         [Held::Mode, Held::Mode]
@@ -1482,10 +1414,6 @@ fn a_second_mode_layer_takes_the_country_layers_place() {
     assert_eq!(holders(POLITICAL), [Held::Naval, Held::Country]);
 }
 
-/// [`PoliticalGpu::update_changed`] given what changed, frame after frame: owners moved (to no
-/// owner, to keys new to the layer, a large country shrinking past its area's thickness), colours
-/// changed, two updates before one draw, and a draw dropped unsubmitted. Each drawn frame equals
-/// the CPU field of its tables, and most dispatch only part of the map.
 fn political_gpu_fallback_named_changes_equal_the_whole_update(fallback: &Fallback) {
     let (width, height) = (272, 128);
     let harness = fallback.harness(width, height);
@@ -1558,7 +1486,6 @@ fn political_gpu_fallback_named_changes_equal_the_whole_update(fallback: &Fallba
         }
         provinces.clear();
         recolored.clear();
-        // Two updates before a draw, and a draw its frame dropped: the next draw covers both.
         if frame % 9 == 4 {
             continue;
         }

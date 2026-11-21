@@ -524,7 +524,6 @@ fn game_score_first_sites_keep_repeats_access_false_and_read_failures_distinct()
     i32_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS_COUNT, 2);
     u64_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS, 0x3000);
     u64_at(&mut bytes, 0x3008, 0xdead);
-    // The native bounds rejection does not need a data pointer or capacity.
     i32_at(&mut bytes, 0x2000 + cair_base::COUNTRY_CONTAINERS_COUNT, 1);
     let mut rows = vec![AirSite::default(); 3];
     let memory = SliceMemory {
@@ -670,7 +669,6 @@ fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
     ];
     let first = rvas.into_iter().min().unwrap();
     let mut bytes = vec![0; rvas.into_iter().max().unwrap() + 8 - first];
-    // Nonzero values, so a global read from an unwritten address cannot match.
     let values = [-3_i64, -2, -1, 1, 2, 3];
     for (rva, value) in rvas.into_iter().zip(values) {
         u64_at(&mut bytes, rva - first, value as u64);
@@ -751,7 +749,6 @@ fn first_score_air_sites_grow_from_original_headers_for_mod_sized_lists() {
     }
 }
 
-/// Counts guarded rounds: one per copy and one per record gather.
 struct Rounds<'a> {
     inner: Fault<'a>,
     rounds: std::cell::Cell<usize>,
@@ -780,11 +777,6 @@ impl Memory for Rounds<'_> {
     }
 }
 
-/// 150 first sites across three batches, with a null pointer, a vtable
-/// mismatch, a null handle, a bound rejection, a null container vector, a
-/// zero access word and one unreadable identity and access word: every site
-/// keeps the result of reading it alone, in a handful of guarded rounds per
-/// batch instead of five reads per site.
 #[test]
 fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
     const SITES: usize = 150;
@@ -843,7 +835,6 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
             })
             .collect::<Vec<_>>()
     };
-    // An unreadable identity (site 100) and access word (site 130).
     for fault in [site(100) + 4, VECTORS + 130 * 0x40 + 8] {
         let memory = Rounds {
             inner: Fault {
@@ -903,10 +894,6 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
     );
 }
 
-/// One country with 150 fleets across three batches, with a null pointer, a
-/// vtable mismatch, a null handle and an unreadable identity and task-force
-/// count: every fleet keeps the result of reading it alone, and the navy sum
-/// and its first failure stand, in a handful of guarded rounds per batch.
 #[test]
 fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
     const FLEETS: usize = 150;
@@ -949,7 +936,6 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
         let capture = walk_country_inputs(memory, 0, GS, &mut countries, &mut fleets);
         (capture, countries, fleets)
     }
-    // An unreadable identity (fleet 90) and task-force count (fleet 130).
     for fault in [fleet(90) + 4, fleet(130) + cfleet::TASK_FORCE_COUNT] {
         let memory = Rounds {
             inner: Fault {
@@ -1002,7 +988,6 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
             .task_forces,
         Err("game score fleet handle is null")
     );
-    // Without a failure the sum wraps over every fleet, as before.
     let (_, countries, _) = walk(&SliceMemory {
         base: 0,
         bytes: &good,
@@ -1010,10 +995,6 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
     assert_eq!(countries[0].navy_count, Ok((0..FLEETS as i32).sum()));
 }
 
-/// CountryGameScoreInputs' first-site pass at the 1943 shape (440 owners,
-/// 5,906 site occurrences over 2,000 bases), cold, through guarded live
-/// reads: each site read alone (before) and in batches (now). Prints the
-/// median per-hour time of each.
 #[test]
 #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
 fn bench_first_site_batches() {

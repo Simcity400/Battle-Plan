@@ -3,8 +3,6 @@ use crate::slicing::SliceSelection;
 use replay_data::rows::{ClockRow, SliceReadRow};
 use replay_frame::frame::{FrameDecoder, TableUpdate};
 
-/// The original append/sort/deduplicate provenance walk, kept independent of
-/// the ordered merge so empty, removed and unscanned owners stay covered.
 fn original_merge(
     previous: &[(u32, i32)],
     owners: &[u32],
@@ -108,8 +106,6 @@ fn ordered_slice_provenance_matches_original_for_all_small_owner_sets() {
                     if census != 16 {
                         selection = selection.with_census(&subset(census));
                     }
-                    // A tracked census also admits selected owners returning no rows,
-                    // but stamps only the owners its walker actually reached.
                     if early & 1 != 0 {
                         selection.track_reads();
                         for owner in subset(early & 10) {
@@ -189,7 +185,6 @@ fn sparse_slice_reads_match_complete_spool_bytes_through_keyframes() {
     let mut saw = [false; 3];
     for hour in 0..=721 {
         match hour {
-            // Same row count, different key: a position-only comparison is insufficient.
             40 => {
                 owners.retain(|&owner| owner != 25);
                 owners.push(61);
@@ -222,8 +217,6 @@ fn sparse_slice_reads_match_complete_spool_bytes_through_keyframes() {
         }
         let mut frame_reads = std::array::from_fn(|_| None);
         if hour % 31 == 0 {
-            // Truncated reads can publish frame-local provenance without admitting
-            // it to the held complete state. An explicit empty override is not None.
             let table = tables[0].index();
             let mut partial = original.0[table].clone();
             if let Some(row) = partial.first_mut() {
@@ -292,7 +285,6 @@ fn slice_reads_recovery_gaps_branches_and_dropped_publications_keep_complete_fal
     for (branch, hour, force, publish, sparse) in [
         (1, 0, false, true, false),
         (1, 1, false, false, true),
-        // The failed publication advanced neither baseline: no next-hour token.
         (1, 2, false, true, false),
         (1, 3, true, true, false),
         (1, 4, false, true, true),
@@ -323,7 +315,6 @@ fn slice_reads_recovery_gaps_branches_and_dropped_publications_keep_complete_fal
             reference.commit(ordinary).unwrap();
         }
     }
-    // A contained table refusal clears its baseline without dropping provenance.
     encoder
         .encode_bytes(
             frame(2, 8, unavailable("slice provenance fixture refusal").into()),
@@ -337,7 +328,6 @@ fn slice_reads_recovery_gaps_branches_and_dropped_publications_keep_complete_fal
         encoded.decode().unwrap().tables[TableId::SliceReads.index()],
         TableUpdate::Snapshot(_)
     ));
-    // A restarted spool has no encoder baseline; the retained source is complete.
     encoder = FrameEncoder::new();
     assert!(matches!(
         held.input(&frame_reads, &encoder, 2, 10, true).unwrap(),

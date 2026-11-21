@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, ideaTargetTags, tooltipRowBudget, tooltipText } from './ideaTooltip.ts';
 import type { IdeaInfo, ModifierFormat } from '../generated/dashboard';
 
-// Modifier definitions covering the formatting flags.
 const format = (key: string, index: number, flags: number, precision: number, label: string, postfix: string | null = null): ModifierFormat =>
   ({ key, index, flags, precision, label, postfix, postfixKey: postfix ? 'MOD_DAILY' : null, feature: 0, source: 'recorded' });
 const STABILITY = format('stability_factor', 0x8d, 3, 2, 'Stability');
@@ -28,9 +27,7 @@ test('values are written as the game writes them: truncated, at the lower precis
 test('each flag changes the value as the game shows it', () => {
   assert.deepEqual(shown(STABILITY, 0.05), { text: '+5.00%', tone: 'positive' });
   assert.deepEqual(shown(STABILITY, -0.005), { text: '-0.50%', tone: 'negative' });
-  // Truncated, never rounded: 0.129% is 0.12%.
   assert.deepEqual(shown(STABILITY, 0.00129), { text: '+0.12%', tone: 'positive' });
-  // Neutral colour and no plus sign.
   assert.deepEqual(shown(CONSUMER, 0.4), { text: '40.0%', tone: 'neutral' });
   assert.deepEqual(shown(CONSUMER, -0.33), { text: '-33.0%', tone: 'neutral' });
   assert.deepEqual(shown(POWER, 0.2), { text: '+0.20', tone: 'positive' });
@@ -42,7 +39,6 @@ test('each flag changes the value as the game shows it', () => {
 
 const idea = (extra: Partial<IdeaInfo>): IdeaInfo => ({ token: 'idea', category: 'country', slot: null, law: false, designer: false,
   effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null, ...extra });
-/** One modifier as the dashboard sends it: merged by the game's identity, its stored value. */
 const line = (key: string, value: number, hidden = false) => ({ key, fixed5: String(fixed5Of(value)), hidden });
 const sources = ideaTooltipSources({
   modifiers: [STABILITY, POWER, EXPORT, CONSUMER],
@@ -52,7 +48,6 @@ const sources = ideaTooltipSources({
 
 test('an idea lists its effects in key order, hides what the game hides, and marks what it cannot format', () => {
   const { rows, note } = ideaEffectRows(idea({
-    // A value the game's conversion cannot read is stored as 0: stability is not shown.
     effects: [line('stability_factor', 0), line('political_power_gain', 0.2), line('min_export', 0),
       line('consumer_goods_factor', 0, true), line('mod_key', 0.3)],
     tooltips: ['MY_TOOLTIP'],
@@ -61,7 +56,6 @@ test('an idea lists its effects in key order, hides what the game hides, and mar
     equipment: [{ target: 'small_plane_airframe', instant: false, lines: [line('build_cost_ic', -0.05)], tooltips: [] }],
   }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value ?? null, row.tone ?? null]), [
-    // Ascending index: political_power_gain (0x25), stability_factor (0x8d), min_export (0xe0).
     ['Political Power Gain:', '+0.20', 'positive'],
     ['Resources to Market:', '0%', 'neutral'],
     ['Modifier name unavailable:', '0.3', 'muted'],
@@ -106,7 +100,6 @@ test('a line the game shows at zero stays, with an unavailable label and its key
 test('an authored zero without a format stays, and targets are named as they were when taken on', () => {
   const { rows } = ideaEffectRows(idea({ effects: [line('mod_key', 0)] }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value]), [['Modifier name unavailable:', '0']]);
-  // Unformatted, the engine's exact value: 0.099999999999999999 reads as 0.09999.
   const exactRow = ideaEffectRows(idea({ effects: [{ key: 'mod_key', fixed5: '9999', hidden: false }] }), sources);
   assert.equal(exactRow.rows[0].value, '0.09999');
   const dated = ideaTooltipSources({ modifiers: [STABILITY], texts: [] }, tag => tag, (tag, hour) => `${tag} in ${hour}`);
@@ -117,7 +110,6 @@ test('an authored zero without a format stays, and targets are named as they wer
 test('a long tooltip shows its first rows and counts the rest; its text keeps them all', () => {
   const many = idea({ effects: Array.from({ length: 50 }, (_, index) => line(`mod_${String(index).padStart(2, '0')}`, 1)) });
   const tip = ideaTooltip({ title: 'Idea' }, many, sources, 'A description.', [], undefined, undefined, 10);
-  // Two lines go to the count; the first row's divider takes one: seven rows fit.
   assert.equal(tip.rows.length, 8);
   assert.equal(tip.rows[7].label, '43 more effects');
   const text = tooltipText(ideaTooltip({ title: 'Idea' }, many, sources, 'A description.', [], undefined, undefined, Infinity));
@@ -143,8 +135,6 @@ test('the row budget counts wrapped labels, and the exact authored value wins', 
   const long = idea({ effects: Array.from({ length: 10 }, (_, index) => line(`a_very_long_modifier_key_that_wraps_twice_${index}_over_the_width`, 1)) });
   const labelled = ideaTooltipSources({ modifiers: long.effects.map((line, index) => ({ ...POWER, key: line.key, index, label: line.key })), texts: [] }, tag => tag);
   const tip = ideaTooltip({ title: 'Idea' }, long, labelled, null, [], undefined, undefined, 13);
-  // Each label and value takes three lines (the first four, with its divider):
-  // three fit the eleven lines left beside the count, the rest are counted.
   assert.equal(tip.rows.length, 4);
   assert.equal(tip.rows[3].label, '7 more effects');
   const exact = ideaEffectRows(idea({ effects: [{ key: 'stability_factor', fixed5: '9999', hidden: false }] }), sources);
@@ -172,7 +162,6 @@ test('the engine clamps, hides every hidden key, and marks modifiers that need a
   const engine = ideaTooltipSources({ modifiers: [clamped, gated, STABILITY], texts: [] }, tag => tag);
   const { rows, note } = ideaEffectRows(idea({ effects: [line('clamped', 1.5), line('agency_upgrade_time', -0.1),
     line('stability_factor', 0.2, true)] }), engine);
-  // Clamped to 100% (bad without the good flag); stability left out entirely (a hidden key); the gated one marked.
   assert.deepEqual(rows.map(row => [row.label, row.value, row.tone]), [['Clamped:', '+100.00%', 'negative'], ['Agency upgrade time:', '-10.00% *', 'muted']]);
   assert.equal(note, '* Depends on an enabled game feature.');
   assert.equal(ideaEffectRows(idea({ effects: [line('clamped', -0.5)] }), engine).rows.length, 0);

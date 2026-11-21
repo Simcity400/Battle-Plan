@@ -9,7 +9,6 @@ import { countryRaceEnds, countryRaceItems } from '../../charts/race/countryRace
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 import { stepRace } from '../../charts/race/race.ts';
 
-/** One country: no raid at 100-101, a gap at 102, one win from 103. */
 const synthetic = (): RaidTallySeries => ({ tag: 'MOD A', segments: [{ firstHour: 100, lastHour: 101 }, { firstHour: 103, lastHour: 105 }], membership: null,
   runs: [{ firstHour: 100, lastHour: 101, readHour: 100, launched: 0, succeeded: 0 }, { firstHour: 103, lastHour: 105, readHour: 103, launched: 0, succeeded: 1 }] });
 

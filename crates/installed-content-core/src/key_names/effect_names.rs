@@ -1,6 +1,3 @@
-//! Content rosters used by effect subreaders: the same recorded-stack
-//! database loaders as their other consumers, with an unread suffix kept
-//! as a named gap instead of treating an unknown key as a miss.
 
 use std::{collections::BTreeSet, io, sync::Arc};
 
@@ -24,9 +21,6 @@ pub struct EffectNames {
 }
 
 impl EffectNames {
-    /// Find a sub-unit by token first, then a category. Terrain types are also found by
-    /// token. `need` and `need_equipment` look up the token text, including equipment
-    /// aliases.
     pub(super) fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Self> {
         let fallback;
         let sub_units = if let Some(sub_units) = &names.sub_units {
@@ -47,9 +41,6 @@ impl EffectNames {
         result
             .modifiers
             .extend(sub_units.modifiers().iter().cloned());
-        // Terrain categories append before later effect files are read. An absent
-        // directory is an empty database; the full map projection's requirement for at
-        // least one category does not apply to token lookup.
         let mut definitions = terrain::TerrainDefinitions::default();
         for path in terrain::definition_paths(layers)? {
             if let Err(error) = definitions.append(&path.read(layers)?) {
@@ -256,7 +247,6 @@ mod tests {
             names.equipment,
             [b"active_equipment".to_vec(), b"active_alias".to_vec()].into()
         );
-        // An equipment alias registers in the same index used to find its pool.
         let token = |kind, text: &[u8]| LexToken {
             kind,
             text: text.to_vec(),

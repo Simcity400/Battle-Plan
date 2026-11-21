@@ -1,6 +1,3 @@
-//! Off-hour sizing for task-force names/supply/port operands and the physical
-//! navy pass. Hints own no native pointers and never certify an hourly
-//! projection.
 
 use crate::extended::PhysicalNavyCapacities;
 use engine_native::{Memory, ccountry, cfleet};
@@ -11,7 +8,6 @@ pub(crate) struct Demand {
     pub capacities: PhysicalNavyCapacities,
     pub name_rows: usize,
     pub name_bytes: usize,
-    /// Sum of independently valid origin headers, not a complete capture.
     pub supply_origins: usize,
     pub port: engine_native::ctask_force::port_mission::Demand,
     first_reason: Option<&'static str>,
@@ -95,9 +91,6 @@ fn task_forces<M: Memory>(
         let cfleet::Visit::TaskForce(visit, _) = event else {
             return Ok(());
         };
-        // Names belong to every admitted task force, including stationary
-        // ones. This existing authenticated visitor needs only string headers
-        // and boundary probes; it neither copies payload nor adds a census.
         match observed.name_rows.checked_add(1) {
             Some(count) => observed.name_rows = count,
             None => {
@@ -119,8 +112,6 @@ fn task_forces<M: Memory>(
                 observed.name_failure.get_or_insert(reason);
             }
         }
-        // The same authenticated primary CUnit owns the supply header. A
-        // failed optional header cannot erase the name floors.
         match engine_native::cunit_supply_inputs::origin_demand(memory, visit.task) {
             Ok(count) => match observed.supply_origins.checked_add(count) {
                 Some(count) => observed.supply_origins = count,
@@ -134,10 +125,6 @@ fn task_forces<M: Memory>(
                 observed.supply_failure.get_or_insert(failure.reason());
             }
         }
-        // These optional port demands use this same all-task-force visitor,
-        // after the established name/supply observations. Nothing allocates
-        // or follows a searcher here; only headers/string boundaries size the
-        // independent prepared arenas.
         let port =
             engine_native::ctask_force::port_mission::demand(memory, base, visit.task, visit.kind);
         for (total, count) in [
@@ -167,8 +154,6 @@ fn task_forces<M: Memory>(
     observed
 }
 
-/// The physical manager's slot count and every task force's name, supply and
-/// port headers. Native population remains uncapped; no navy is visited.
 pub(crate) fn observe(memory: &impl Memory, base: usize, state: usize) -> Demand {
     let mut demand = Demand::default();
     let reader = native::Reader::new(memory, base, state);
@@ -300,7 +285,6 @@ mod tests {
                     (id << 32) | ctask_force::DEFAULT_HANDLE_TYPE as usize,
                 );
                 world.pointer(task + ctask_force::FLEET, 0xd000);
-                // Authenticated retained CUnit name: genuine empty inline text.
                 world.pointer(task + 0x258 + 24, 15);
                 world.word(task + cunit::ROSTER_OWNER, 3);
                 world.array(task + cunit::ORDINARY_ROUTE_DATA, 0xf000, 1);
@@ -355,16 +339,12 @@ mod tests {
         }
     }
 
-    /// Physical slots come from the manager header; no navy, theatre,
-    /// task-force roster owner or province controller area is visited.
     #[test]
     fn attach_hint_sizes_slots_without_navy_theatre_owner_or_area_reads() {
         let world = World::new();
         let demand = observe(&world, 0, STATE);
         assert_eq!(demand.refusal(), None);
-        // The original physical manager's four slots include reserved zero.
         assert_eq!(demand.capacities.navies, 4);
-        // The retired selected-route area domain is not sized.
         assert!(!world.touches(0xa200 + cprovince::CONTROLLER_AREA, 8));
         assert_eq!(demand.name_rows, 2);
         for navy in [NAVY, 0x7200, 0x7400] {
@@ -406,7 +386,7 @@ mod tests {
     #[test]
     fn invalid_name_demand_keeps_other_valid_name_floors() {
         let mut world = World::new();
-        world.pointer(TASK + 0x258 + 24, 1); // invalid inline capacity
+        world.pointer(TASK + 0x258 + 24, 1);
         world.bytes[0xdc00 + 0x258..0xdc00 + 0x258 + 6].copy_from_slice(b"Stored");
         world.pointer(0xdc00 + 0x258 + 16, 6);
         let demand = observe(&world, 0, STATE);
@@ -455,9 +435,6 @@ mod tests {
     fn port_hint_shares_the_fleet_visitor_and_sizes_large_reference_headers_without_payloads() {
         let mut world = World::new();
         world.bytes.resize(0x11000, 0);
-        // The older movement fixture needed only a short subset of each TF. The port's farthest
-        // field would alias the second TF's parent at that old spacing. Give the second complete
-        // object its own range before adding fields.
         let second = world.bytes[0xdc00..0xe400].to_vec();
         world.bytes[0xe800..0xf000].copy_from_slice(&second);
         world.pointer(0x3388, 0xe800);
@@ -513,7 +490,6 @@ mod tests {
     #[test]
     fn invalid_supply_header_keeps_other_supply_and_name_floors() {
         let mut world = World::new();
-        // A positive count with no data is a failure, not an empty origin list.
         world.array(TASK + engine_native::cunit_supply_inputs::ORIGINS, 0, 3);
         world.array(
             0xdc00 + engine_native::cunit_supply_inputs::ORIGINS,

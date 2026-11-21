@@ -1,6 +1,5 @@
 import { useId } from 'react';
 
-/** The app mark: a globe inside a theme-tinted tile, following the accent and glow. */
 export default function BrandMark({ size = 30 }: { size?: number }) {
   const id = useId();
   return <svg className="brand-mark" width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" focusable="false">

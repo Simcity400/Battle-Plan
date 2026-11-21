@@ -50,7 +50,6 @@ impl Memory for HintedMemory<'_> {
             if self.once {
                 self.fault.set(None);
             }
-            // A guarded copy can have written a partial record before failing.
             output.fill(0xff);
             return false;
         }
@@ -62,7 +61,6 @@ impl Memory for HintedMemory<'_> {
     }
 }
 
-/// The old reader's memory path, with no cache hint reaching native memory.
 struct Unhinted<'a, 'b>(&'a HintedMemory<'b>);
 impl Memory for Unhinted<'_, '_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -94,7 +92,6 @@ fn status_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) 
             object[data::CAPACITY..data::CAPACITY + 4].copy_from_slice(&33_u32.to_le_bytes());
             object[data::COUNT..data::COUNT + 4].copy_from_slice(&33_u32.to_le_bytes());
             seed.acclimatization = Some(object);
-            // No positive weight: no category/define reads obscure this trace.
             assert_eq!(entry::STRIDE, 16);
             seed
         })
@@ -110,7 +107,6 @@ fn status(
     status_holding(memory, seeds, admitted, &[])
 }
 
-/// The source census admits the first `admitted` seeds and leaves the rest unread.
 fn status_holding(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
@@ -153,10 +149,6 @@ fn status_packet(count: usize) -> carmy::StatusPacket {
     .unwrap()
 }
 
-// Count actual guarded APIs, forwarding their inner spans without counting
-// them a second time. Serial mode declines only the speculative batch and
-// lets its original per-object fallback run; declined fixture gathers are
-// excluded from the old-path request total.
 struct StatusReads<'a, 'b> {
     source: &'a HintedMemory<'b>,
     serial: bool,
@@ -263,8 +255,6 @@ fn distinct_status_world(
             })
         })
         .collect();
-    // One independently authenticated country per seed, including 5,000
-    // countries in the scale case. Keep the fixture's exact modifier tree.
     let prototype = source.bytes[C1..C1 + 0x1000].to_vec();
     let countries = 0x4000_0000;
     let links = 0x4100_0000;
@@ -354,8 +344,6 @@ fn batched_status_one_shot_faults_refuse_no_more_and_count_fallbacks() {
             before + 1
         );
         let serial = status(&status_reads(&direct, 65, true), &seeds, 65);
-        // Relaxed read order permits the batch to spend a transient fault;
-        // retained rows/options can improve, but may never become harsher.
         assert!(batched.0.len() >= serial.0.len());
         assert_eq!(batched, status(&source, &seeds, 65));
     }
@@ -376,7 +364,6 @@ fn batched_status_request_counts_and_held_maxima_gates() {
     );
     assert_eq!(batch.maxima.get(), 0);
     assert_eq!(actual.fault.get(), Some(seeds[20].stat_block.unwrap()));
-    // A source prefix never gathers the divisions beyond it.
     let actual = HintedMemory::new(&source, None, false);
     let batch = status_reads(&actual, 65, false);
     status(&batch, &seeds, 1);
@@ -409,8 +396,6 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
     let expected = status(&source, &seeds, seeds.len());
     let mut rows = vec![carmy::StatusRow::default(); seeds.len()];
     for fault in [None, Some(0x20000 + 20 * 0x300 + 7), None] {
-        // A previous batch's bytes, including its incomplete suffix, cannot
-        // authorize this hour's rows. Dirty scratch must remain harmless.
         packet
             .acclimatization
             .as_deref_mut()
@@ -465,7 +450,6 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
 #[test]
 fn status_maxima_reuses_one_probe_per_seed_and_keeps_carried_aliases_unread() {
     let (source, mut seeds, held) = distinct_status_world(129);
-    // Aliases within and across chunk boundaries retain their first admission.
     for index in [1, 31, 63, 64, 65, 128] {
         seeds[index].stat_block = seeds[0].stat_block;
     }
@@ -604,7 +588,7 @@ fn status_exercise_control_memo_matches_native_path_and_first_partial_faults() {
                         "counts {counts}, fault {fault:?}, once {once}, raw {raw}"
                     );
                     if result.is_err() {
-                        break; // This is the Status pass's existing failure boundary.
+                        break;
                     }
                 }
                 assert_eq!(packet.allocated_bytes(), allocated);
@@ -686,7 +670,6 @@ fn movement_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>
     (source, seeds)
 }
 
-/// The source census admits the first `admitted` seeds; the packet starts with room for `paths`.
 fn movement(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
@@ -800,8 +783,6 @@ const BATCHED_PROVINCE_SLOTS: usize = 0x4200_0000;
 
 fn batched_movement_world(countries: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) {
     let (mut source, mut seeds) = movement_world(countries);
-    // Keep the large registry away from original fixture objects. Each seed
-    // belongs to a different authenticated country; there is no combat here.
     let mut slots = vec![0_u8; (2 + countries * 2) * 8];
     let country_slots = 0x4300_0000;
     let link_slots = 0x4400_0000;
@@ -953,7 +934,6 @@ fn batched_movement_one_shot_refuses_no_more_and_counts_fallbacks() {
             before + 1
         );
         let serial = movement(&movement_reads(&direct, 65, true), &seeds, 65, 130);
-        // The relaxed rule allows transient recovery in the serial suffix.
         assert!(batch.0.outcome.len() >= serial.0.outcome.len());
         assert_eq!(batch, movement(&source, &seeds, 65, 130));
     }

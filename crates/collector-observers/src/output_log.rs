@@ -1,7 +1,3 @@
-//! Shared atomic-log protocol for production and construction output. A ring
-//! sized off-thread takes each entry; one that finds no free slot gets storage
-//! of its own on a lock-free spill, so no entry is overwritten or dropped and
-//! no writer waits for the drain.
 use crate::opinion_changes::Padded;
 use collector_primitives::spill_stack::SpillStack;
 use std::sync::{
@@ -15,23 +11,18 @@ pub const CAPACITY: usize = 1 << 16;
 pub const STORAGE_FAILED: &str = "output log entry storage allocation failed";
 
 pub struct Log {
-    /// Payload slots, changed only at an empty, writer-free drain boundary.
     pub capacity: AtomicUsize,
     pub cursor: Padded<AtomicU64>,
     pub epoch: AtomicU64,
     pub enabled: AtomicBool,
     pub active: Padded<AtomicUsize>,
     pub consumed: AtomicU64,
-    /// Full attempted burst since consumption, including spilled entries.
     pub required: AtomicUsize,
-    /// The lowest index whose entry no storage could take, or `u64::MAX`.
     lost: AtomicU64,
 }
 
-/// Entries the ring had no free slot for, with their index, until drained.
 pub struct Spill<T> {
     pushed: SpillStack<(u64, T)>,
-    /// Taken from `pushed`; only the drain locks it.
     held: Mutex<Vec<(u64, T)>>,
 }
 
@@ -48,8 +39,6 @@ impl<T> Spill<T> {
             held: Mutex::new(Vec::new()),
         }
     }
-    /// Drain path: the held entries with every pushed one taken in, and the
-    /// lowest index from `from` on that no storage could take.
     fn held(&self, from: u64) -> (MutexGuard<'_, Vec<(u64, T)>>, Option<u64>) {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         let refused = self.pushed.take_into(&mut held).err().and_then(|taken| {
@@ -60,7 +49,6 @@ impl<T> Spill<T> {
         });
         (held, refused)
     }
-    /// Hook path: lock-free; false only when allocation failed.
     fn push(&self, index: u64, entry: T) -> bool {
         self.pushed.push((index, entry)).is_ok()
     }
@@ -69,7 +57,7 @@ impl<T> Spill<T> {
         held.retain(|&(at, _)| at >= index);
         refused
     }
-    /// After every writer and drain has left: frees the storage.
+    #[doc = " After every writer and drain has left: frees the storage."]
     pub fn release(&self) {
         drop(self.pushed.take());
         *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Vec::new();
@@ -88,9 +76,6 @@ impl<T> Spill<T> {
     }
 }
 
-/// Hook path: `value` raised to at least `minimum`, with the locked exchange
-/// of `fetch_max` only when that raises it. Demand maxima settle within a few
-/// intervals, after which nearly every raise would leave them unchanged.
 #[inline(always)]
 pub fn raise(value: &AtomicUsize, minimum: usize, order: Ordering) {
     if value.load(Ordering::Relaxed) < minimum {
@@ -108,12 +93,9 @@ impl Drop for Call<'_> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Drained {
     pub epoch: u64,
-    /// First copied index; past every entry handed over before.
     pub first: u64,
-    /// Entries before this sample have indices below this cursor.
     pub cursor: u64,
     pub copied: usize,
-    /// Storage needed to take all waiting entries.
     pub pending: usize,
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -126,12 +108,10 @@ impl Drained {
 pub struct DrainCounters<'a> {
     pub drains: &'a AtomicU64,
     pub copied: &'a AtomicU64,
-    /// Intervals given up because an entry's storage could not be allocated.
     pub overflow: &'a AtomicU64,
     pub unobserved: &'a AtomicU64,
 }
 
-/// Where a reserved entry goes: its ring slot, or the spill.
 pub enum Reserved {
     Slot(usize),
     Spill,
@@ -157,8 +137,6 @@ impl Log {
         self.active.fetch_add(1, Ordering::SeqCst);
         Call(self)
     }
-    /// Callers keep an active guard through all payload stores. A slot is
-    /// given only when every earlier entry it held has been consumed.
     pub fn reserve(&self) -> (u64, Reserved) {
         let consumed = self.consumed.load(Ordering::Acquire);
         let index = self.cursor.fetch_add(1, Ordering::SeqCst);
@@ -171,8 +149,6 @@ impl Log {
             (index, Reserved::Spill)
         }
     }
-    /// After a slot's stores. A drain that gave up while this writer stored
-    /// can have let a newer entry take the same slot; end the observation.
     pub fn finish(&self, index: u64) {
         if self.consumed.load(Ordering::Acquire) > index
             && self.cursor.load(Ordering::SeqCst).wrapping_sub(index)
@@ -181,7 +157,6 @@ impl Log {
             self.invalidate();
         }
     }
-    /// Hook path, for an entry [`Self::reserve`] sent to the spill.
     pub fn spill<T>(&self, spill: &Spill<T>, index: u64, entry: T) {
         if !spill.push(index, entry) {
             self.lost.fetch_min(index, Ordering::AcqRel);
@@ -212,7 +187,6 @@ impl Log {
             counters,
         )
     }
-    /// `entry` reads a ring slot; None is an entry no storage holds.
     pub fn drain_buffer<T: Copy + Default>(
         &self,
         mut output: engine_native::walk::Buffer<'_, T>,
@@ -224,8 +198,6 @@ impl Log {
     ) -> Result<Drained, &'static str> {
         counters.drains.fetch_add(1, Ordering::Relaxed);
         let first = self.consumed.load(Ordering::Relaxed);
-        // Read the cursor before ACTIVE: every earlier index is settled when
-        // ACTIVE is zero.
         let cursor = self.cursor.load(Ordering::SeqCst);
         let epoch = self.epoch.load(Ordering::SeqCst);
         if let Some(reason) = unavailable() {
@@ -264,7 +236,6 @@ impl Log {
         let capacity = self.capacity.load(Ordering::Acquire) as u64;
         let mut missing = false;
         {
-            // Every spilled entry before `cursor` is pushed once no writer is active.
             let (mut held, refused) = spill.held(first);
             if let Some(index) = refused {
                 self.lost.fetch_min(index, Ordering::AcqRel);
@@ -338,7 +309,6 @@ mod tests {
         }
     }
 
-    /// A log over plain slots that records each entry's own index.
     struct Ring {
         log: Log,
         slots: Vec<AtomicU64>,
@@ -424,7 +394,6 @@ mod tests {
     fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_entry_in_order() {
         let ring = Ring::new(4);
         let counters = Counters::default();
-        // The drain's spill storage stays held through the whole burst.
         let held = ring.spill.held.lock().unwrap();
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {

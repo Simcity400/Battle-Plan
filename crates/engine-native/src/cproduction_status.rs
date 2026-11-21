@@ -1,13 +1,3 @@
-//! Production status reached through the country's production pointer.
-//! Factory totals are stored caches, rebuilt on controller, idea and decision
-//! changes and during pre-hourly updates. Pending refresh bits select factory
-//! recalculation; building-level changes can rebuild modifiers and trigger
-//! recalculation when the factory modifier changes. Production updates rebuild
-//! dirty totals and otherwise only reassign construction. Top-bar presentation,
-//! factory tooltips and triggers read these fields directly.
-//! `walk_factories` reads each canonical country's three stored group-head
-//! levels with independent authentication and failure handling. The controlled
-//! factory count uses those levels; fixed5 production totals are separate.
 
 use crate::{
     Memory, ccountry, cequipment_production_license, cequipment_variant, civ_factory_consumer,
@@ -26,87 +16,45 @@ pub use cequipment_production_license::Row as LicenseRecordRow;
 
 pub use crate::cequipment_production_line::Row as LineRow;
 
-/// Licensed-variant entry in stored order. The first published array writes
-/// bare typed variant handles; the third array holds licence relations recorded
-/// separately as [`LicenseRecordRow`]. This list is the licensee's buildable variants.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LicenseRow {
-    /// Raw country reference of the licensee: the production manager's owner.
     pub country: u32,
-    /// Stored container position; the save writes the same order.
     pub ordinal: u32,
-    /// Authenticated CEquipmentVariant handle, not a process pointer.
     pub variant: u64,
 }
 
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_d098);
 
-/// Production-line pointer-array data.
 pub const LINES: usize = 0x58;
-/// Production-line pointer width.
 pub const LINE_POINTER_STRIDE: usize = 0x08;
-/// Organisation pointer array with data, capacity and count. New-game setup
-/// and loading append entries; serialization keeps order keyed by each token.
 pub const ORGANISATIONS: usize = 0x130;
-/// Cached allowed-policy roster, rebuilt from content by refresh and loading.
 pub const POLICIES: usize = 0x148;
-/// Policy primary vtable and definition-token layout.
 pub const POLICY_VTABLE_RVA: Rva = Rva(0x029b_a5a8);
-/// Lexer token used to resolve the localized policy name.
 pub const POLICY_TOKEN: usize = 8;
-/// Construction-line pointer-array data.
 pub const CONSTRUCTION_LINES: usize = 0x70;
-/// Construction-line pointer-array capacity, u32.
 pub const CONSTRUCTION_LINES_CAPACITY: usize = 0x78;
-/// Construction-line pointer-array count, u32.
 pub const CONSTRUCTION_LINES_COUNT: usize = 0x7c;
-/// Construction-line pointer width.
 pub const CONSTRUCTION_POINTER_STRIDE: usize = 0x08;
-/// Licensed equipment-variant pointer array in the container's available list.
 pub const LICENSES: usize = 0x198;
-/// Owned-licence object array appended on registration and serialized in order.
 pub const LICENSE_RECORDS: usize = 0x1c8;
-/// Owned-licence signed count bounding traversal.
 #[cfg(test)]
 pub const LICENSE_RECORDS_COUNT: usize = 0x1d4;
-/// Licence-object pointer stride.
 pub const LICENSE_RECORD_STRIDE: usize = clicensed_production_status::POINTER_STRIDE;
-/// License pointer width.
 pub const LICENSE_POINTER_STRIDE: usize = 0x08;
-/// Embedded equipment-variant pool.
 pub const STOCKPILE_POOL: usize = 0x200;
-/// Stockpile entry-array data.
 pub const STOCKPILE: usize = 0x220;
-/// CProductionStatus owning CCountry pointer; trade factory-header reader validates this backlink.
 pub const COUNTRY: usize = 0x2a8;
-/// Military factory group ([`factory_group`]), populated from military-production
-/// buildings and assigned to non-naval lines.
 pub const MILITARY_FACTORIES: usize = 0x2c8;
-/// Naval dockyard group populated from naval-production buildings for naval lines.
 pub const NAVAL_FACTORIES: usize = 0x328;
-/// Civilian factory group populated from general-production buildings for
-/// civilian consumers and construction.
 pub const CIVILIAN_FACTORIES: usize = 0x388;
-/// Stored factory energy factor, i64 fixed5: the energy one factory level uses, which the
-/// factory total recalculation stores (capped at its define) and a state's factory energy usage
-/// multiplies its weighted factory levels by.
 pub const FACTORY_ENERGY_FACTOR: usize = 0x558;
-/// Embedded consumer-goods object ([`civ_factory_consumer`]).
 pub const CONSUMER_GOODS: usize = 0x448;
-/// National projects consumer.
 pub const SPECIAL_PROJECTS: usize = 0x460;
-/// Licensed production consumer.
 pub const LICENSED_PRODUCTION: usize = 0x478;
-/// Trade consumer.
 pub const TRADE: usize = 0x490;
-/// Market contract payment consumer.
 pub const CONTRACT_PAYMENTS: usize = 0x4a8;
-/// Bytes from the military group to the end of the last consumer: one span
-/// covers every factory field the reader takes.
 pub const FACTORY_SPAN: usize = CONTRACT_PAYMENTS + civ_factory_consumer::SIZE - MILITARY_FACTORIES;
 
-/// Authenticates the manager reached from a previously authenticated country.
 pub fn manager(
     memory: &impl Memory,
     base: usize,
@@ -152,7 +100,6 @@ pub fn country_pointer(
     usize::try_from(u64::from_le_bytes(owner)).map_err(|_| "production status country unreadable")
 }
 
-/// Null production status is native absence for the appended policy roster.
 pub fn policies_header(
     memory: &impl Memory,
     base: usize,
@@ -184,11 +131,6 @@ pub fn policies_header(
         .ok_or("MIO policy roster unreadable or invalid")
 }
 
-/// Every country's roster names the same few content `CPolicy` objects, so
-/// each page of pointers is followed by one guarded batch of their identities
-/// rather than a guarded read per policy. Rows, validation and the first
-/// fault are those of a read per policy in roster order: a page's identities
-/// are checked in order up to the first unreadable one, then a short page.
 pub fn read_policies(
     memory: &impl Memory,
     base: usize,
@@ -252,8 +194,6 @@ pub fn read_policies(
     Ok(())
 }
 
-/// One factory group as the last factory-total recalculation left it. Field
-/// meanings and writers are in [`factory_group`]. Fixed5 fields keep the raw i64.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FactoryGroup {
     pub levels: i32,
@@ -269,13 +209,8 @@ pub struct FactoryGroup {
     pub to_others: i32,
 }
 
-/// One country's stored factory totals: the three factory groups, the
-/// civilian licence and trade exports, and each civilian consumer's allocated
-/// count ([`civ_factory_consumer::ALLOCATED`]). These are the game's own
-/// numbers, not a derivation from state buildings.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FactoryRow {
-    /// Raw country reference: the canonical country's native id.
     pub country: u32,
     pub military: FactoryGroup,
     pub naval: FactoryGroup,
@@ -289,7 +224,6 @@ pub struct FactoryRow {
     pub contract_payments: i32,
 }
 
-/// The five civilian consumers in their constructor order with their vtables.
 const CONSUMERS: [(usize, Rva); 5] = [
     (
         CONSUMER_GOODS,
@@ -310,8 +244,6 @@ const CONSUMERS: [(usize, Rva); 5] = [
     ),
 ];
 
-/// Worker acquisition grows from the original country census; canonical
-/// countries own the cached totals rebuilt on update.
 pub fn walk_factories(
     memory: &impl Memory,
     base: usize,
@@ -340,7 +272,6 @@ fn walk_factories_buffer(
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
-        // The countries whose rows the next batch reads, in slot order.
         let mut batch = [None::<ccountry::Country>; BATCH];
         let mut pending = 0;
         for slot in 1..countries.count() {
@@ -348,8 +279,6 @@ fn walk_factories_buffer(
                 Ok(Some(country)) => country,
                 Ok(None) => continue,
                 Err(reason) => {
-                    // The serial walk read the earlier countries' statuses
-                    // first: their failure comes first.
                     read_batch(memory, &vtables, &batch[..pending], &mut output, &mut len)?;
                     return Err(reason);
                 }
@@ -380,9 +309,7 @@ fn walk_factories_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Countries whose status pointers, then status spans, one batch gathers.
 const BATCH: usize = 32;
-/// A country's production status pointer.
 const POINTER_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: ccountry::PRODUCTION_STATUS,
     destination_offset: 0,
@@ -390,8 +317,6 @@ const POINTER_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const POINTER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POINTER_FIELDS, 8).expect("valid production status pointer layout");
-/// A status's identity, owner and factory span, as [`read_factories`]
-/// copies them.
 const STATUS_FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: 0,
@@ -413,15 +338,6 @@ const STATUS_BYTES: usize = 16 + FACTORY_SPAN;
 const STATUS_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATUS_FIELDS, STATUS_BYTES).expect("valid production status layout");
 
-/// The rows of `batch` (consecutive countries the walk reads, in slot
-/// order) into `output[*len..]`: every status pointer in one guarded
-/// gather, then every status's identity, owner and factory span in another,
-/// each decoded with [`read_factories`]' checks in order. Healthy memory
-/// gives the serial walk's rows and first failure. When a gather does not
-/// complete, or a status pointer is null, the batch is read again country
-/// by country, once ([`crate::batch_fallback`]), which gives the serial
-/// walk's result for a fault that persists and never refuses more than it
-/// for one that does not.
 fn read_batch(
     memory: &impl Memory,
     vtables: &[usize; 6],
@@ -482,7 +398,6 @@ fn read_batch(
     Ok(())
 }
 
-/// `vtables` holds the status vtable, then the consumers' in [`CONSUMERS`] order.
 fn read_factories(
     memory: &impl Memory,
     vtables: &[usize; 6],
@@ -498,8 +413,6 @@ fn read_factories(
     let mut vtable = [0; 8];
     let mut owner = [0; 8];
     let mut span = [0; FACTORY_SPAN];
-    // The three independent spans, hinted together before the same ordered
-    // copy.
     let copied = memory.copy_scattered_prefetched(
         [
             status,
@@ -511,8 +424,6 @@ fn read_factories(
     decode_factories(vtables, country, vtable, owner, &span, copied)
 }
 
-/// A status's row from its `copied` leading spans (identity, owner, factory
-/// span), with [`read_factories`]' checks in their order.
 fn decode_factories(
     vtables: &[usize; 6],
     country: ccountry::Country,
@@ -580,36 +491,22 @@ fn i64_at(bytes: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
 
-/// Equipment-roster entry retaining order and repeats. Serialization writes
-/// primary and foreign rosters separately; land-model fallback appends foreign
-/// entries after primary ones. The third roster stores best-variant candidates
-/// for archetype lookup and is mutated by additions/removals, never serialized.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AvailableEquipmentRow {
-    /// Raw country reference of the roster's production manager owner.
     pub country: u32,
-    /// 0 for the primary roster, 1 for the foreign one, 2 for the best-variant candidates.
     pub roster_kind: u8,
-    /// Position within its own roster.
     pub ordinal: u32,
-    /// Authenticated CEquipmentVariant handle.
     pub variant: u64,
 }
 
-/// CProductionStatus primary equipment roster, 8-byte CEquipmentVariant pointers.
 pub const AVAILABLE_EQUIPMENT: usize = 0xa0;
-/// CProductionStatus foreign (licensed or lent) equipment roster.
 pub const FOREIGN_EQUIPMENT: usize = 0xe8;
-/// CProductionStatus best-variant candidate list, with its count.
 pub const BEST_VARIANT_CANDIDATES: usize = 0xb8;
 
 pub fn count_available_equipment(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_available_equipment_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Worker-only capture. Primary and foreign rosters are serialized; the
-/// best-variant roster is maintained by equipment updates. Grow from each
-/// original header before ordered entries, retaining repeated variant rows.
 pub fn walk_available_equipment(
     memory: &impl Memory,
     base: usize,
@@ -815,12 +712,10 @@ pub fn walk_licenses_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One licence-record walk: its outcome and the handle-arena use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LicenseRecordOutcome {
     pub outcome: Outcome,
     pub handles_len: usize,
-    /// Full produced-handle need of the records this pass actually reached.
     pub required_handles: usize,
 }
 
@@ -864,8 +759,6 @@ pub fn walk_license_records_buffer(
                     .filter(|pointer| *pointer != 0)
                     .ok_or("production licence record pointer unreadable or null")?;
                 if len == output.len() {
-                    // A record's produced-handle count is only knowable by
-                    // reading it, so stop counting handles once rows stop.
                     unread_rows = unread_rows
                         .checked_add(array.count - ordinal)
                         .ok_or("production licence unread row count overflow")?;
@@ -930,8 +823,6 @@ mod tests {
     const SECOND_LINE: usize = 0x7200;
     const VARIANT: usize = 0x8000;
     const RECORD: usize = 0x6400;
-    /// The variant's equipment type; its archetype link points to itself, as
-    /// the constructor leaves it.
     const EQUIPMENT: usize = 0x8800;
     const FIRST_EFFICIENCIES: usize = 0x7400;
     const SECOND_EFFICIENCIES: usize = 0x7600;
@@ -952,7 +843,6 @@ mod tests {
         let mut bytes = vec![0; 0x8000];
         array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
         array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 3);
-        // Current id 2 aliases canonical slot 1; both table slots are occupied.
         for slot in [1, 2] {
             put(
                 &mut bytes,
@@ -1066,7 +956,6 @@ mod tests {
                 put(&mut bytes, pointer + offset, &value.to_le_bytes());
             }
         }
-        // Ten factories at 53% and the remaining factories at 10%.
         for (line, data) in [
             (FIRST_LINE, FIRST_EFFICIENCIES),
             (SECOND_LINE, SECOND_EFFICIENCIES),
@@ -1097,8 +986,6 @@ mod tests {
             EQUIPMENT + crate::cequipment_type::ARCHETYPE,
             &(EQUIPMENT as u64).to_le_bytes(),
         );
-        // The type sets both optionals, so no define is needed: 150 military
-        // and 15 naval factories per line.
         for (offset, value) in [
             (crate::cequipment_type::MAX_MIL_FACTORIES, 150_i32),
             (crate::cequipment_type::MAX_NAV_FACTORIES, 15),
@@ -1109,8 +996,6 @@ mod tests {
         bytes
     }
 
-    /// The fixture's memory plus the six maximum-factory defines at their
-    /// module addresses (module base zero), each read as its own span.
     struct WithDefines<'a> {
         memory: SliceMemory<'a>,
         defines: Option<[i32; 6]>,
@@ -1160,7 +1045,6 @@ mod tests {
     fn efficiency_averages_the_clamped_factory_prefix_in_q15() {
         let bytes = fixture();
         let row = walk_first(&bytes, None).unwrap();
-        // (10 * 53 + 2 * 10) / 12 percent, truncated in Q15.
         assert_eq!(
             (row.max_factories, row.efficiency_raw),
             (150, 550 * Q15 / 12)
@@ -1171,8 +1055,6 @@ mod tests {
             FIRST_LINE + cproduction_line::ACTIVE_FACTORIES,
             &200_i32.to_le_bytes(),
         );
-        // 200 active clamp to the type's 150, beyond the array's 20 entries:
-        // the reader refuses rather than reading past the array.
         assert_eq!(
             walk_first(&bytes, None),
             Err(Outcome::Unavailable {
@@ -1193,7 +1075,6 @@ mod tests {
                 FIRST_LINE + cproduction_line::ACTIVE_FACTORIES,
                 &active.to_le_bytes(),
             );
-            // No entry is read without factories, not even a broken header.
             put(
                 &mut bytes,
                 FIRST_LINE + equipment::FACTORY_EFFICIENCIES,
@@ -1206,7 +1087,6 @@ mod tests {
     #[test]
     fn maximum_factories_follow_the_type_archetype_and_kind_defines() {
         let mut bytes = fixture();
-        // Past the image, clear of the type's fields; the reader takes 16 bytes of optionals.
         let archetype = BASE + bytes.len();
         bytes.resize(
             bytes.len() + crate::cequipment_type::MAX_MIL_FACTORIES + 16,
@@ -1222,7 +1102,6 @@ mod tests {
             archetype,
             &(crate::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        // The type's own optional wins over the archetype's.
         put(
             &mut bytes,
             archetype + crate::cequipment_type::MAX_MIL_FACTORIES,
@@ -1236,7 +1115,6 @@ mod tests {
             archetype + crate::cequipment_type::MAX_MIL_FACTORIES + 4,
             &[0],
         );
-        // Without either optional the defines are read, once per walk.
         assert_eq!(
             walk_first(&bytes, None),
             Err(Outcome::Unavailable {
@@ -1250,14 +1128,12 @@ mod tests {
         set_line_kind(&mut bytes, crate::crailway_gun_production_line::VTABLE_RVA);
         let row = walk_first(&bytes, Some(DEFINES)).unwrap();
         assert_eq!(row.max_factories, 1);
-        // One factory of the twelve: 53%.
         assert_eq!(row.efficiency_raw, 53 * Q15);
         for vtable in [
             cnaval_production_line::VTABLE_RVA,
             crate::cship_refit_production_line::VTABLE_RVA,
         ] {
             set_line_kind(&mut bytes, vtable);
-            // The naval optional is still set on the type.
             assert_eq!(walk_first(&bytes, Some(DEFINES)).unwrap().max_factories, 15);
             clear_type_maximum(&mut bytes, crate::cequipment_type::MAX_NAV_FACTORIES);
             for (flags, expected) in [
@@ -1325,7 +1201,6 @@ mod tests {
                 "{address:#x}"
             );
         }
-        // The entries lie outside the readable memory.
         let mut bytes = fixture();
         put(
             &mut bytes,
@@ -1338,8 +1213,6 @@ mod tests {
                 reason: "production line efficiency entries unreadable"
             })
         );
-        // An unreadable efficiency header, the last span of the line's
-        // scatter, is reported after every other field was copied.
         struct Blocked<'a>(SliceMemory<'a>);
         impl Memory for Blocked<'_> {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -1455,8 +1328,6 @@ mod tests {
     #[test]
     fn equipment_rosters_keep_all_three_rosters_in_order_with_repeats() {
         let mut bytes = fixture();
-        // The licence list's two entries double as the primary roster; the
-        // foreign roster and the best-variant candidates repeat it once each.
         array(&mut bytes, STATUS + AVAILABLE_EQUIPMENT, 0x6100, 2);
         array(&mut bytes, STATUS + FOREIGN_EQUIPMENT, 0x6100, 1);
         array(&mut bytes, STATUS + BEST_VARIANT_CANDIDATES, 0x6108, 1);
@@ -1548,7 +1419,6 @@ mod tests {
             }
         );
         assert_eq!(&handles[..2], &[0xfedc_ba98_0000_0046; 2]);
-        // The count probe counts the record without storing it.
         assert_eq!(
             walk_license_records_buffer(&memory, 0, BASE, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut handles)).outcome,
             Outcome::Truncated {
@@ -1654,15 +1524,8 @@ mod tests {
         );
     }
 }
-/// Slots of [`WarFactoryTemplates`]; a full table only reads again.
 const WAR_FACTORY_TEMPLATE_SLOTS: usize = 1024;
 
-/// Building templates already authenticated in one quiescent war overview pass,
-/// with whether the war overview counts their buildings (the signed 32-bit sum
-/// of the four production words is positive). The game waits on the pass, so a
-/// template read again in it returns the same bytes: each is read once per pass
-/// instead of once per building. Only a template whose record was read and
-/// whose vtable matched is kept; nothing is kept across passes.
 pub struct WarFactoryTemplates {
     keys: [usize; WAR_FACTORY_TEMPLATE_SLOTS],
     counted: [bool; WAR_FACTORY_TEMPLATE_SLOTS],
@@ -1682,8 +1545,6 @@ impl WarFactoryTemplates {
         }
     }
 
-    /// The template's slot when kept, else the empty slot it would take
-    /// (`None` when the table is full).
     fn slot(&self, template: usize) -> Result<usize, Option<usize>> {
         let start = ((template as u64 >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 54) as usize;
         for step in 0..WAR_FACTORY_TEMPLATE_SLOTS {
@@ -1715,10 +1576,6 @@ impl WarFactoryTemplates {
     }
 }
 
-/// War-overview factory counts, rather than cached factory group totals. Core
-/// occurrences, including nulls and repeats, and the terminal offsite pass stay
-/// in native order. No native functions are called. `templates` holds the
-/// pass's authenticated building templates.
 pub fn war_overview_factories(
     memory: &impl crate::Memory,
     base: usize,
@@ -1842,10 +1699,6 @@ pub fn war_overview_factories(
                 }
                 sources[index] = u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
             }
-            // The page's templates this pass has not authenticated yet, once
-            // each. Every kept template was readable with its vtable, so this
-            // page fails exactly when reading all of its templates would, with
-            // the same reason.
             let mut unread = [0; 64];
             let mut unread_len = 0;
             for &template in &sources[..count] {
@@ -1886,7 +1739,6 @@ pub fn war_overview_factories(
             let mut selected = [0; 64];
             let mut n = 0;
             for (&template, &pointer) in sources[..count].iter().zip(&pointers) {
-                // A full pass table leaves this page's reads only in `counted`.
                 let counts = match unread[..unread_len].iter().position(|&t| t == template) {
                     Some(position) => counted[position],
                     None => templates.get(template).expect("kept template"),
@@ -1970,7 +1822,6 @@ mod war_overview_tests {
                 &mut WarFactoryTemplates::new(),
             )
         };
-        // One controlled core, a null-core offsite pass and the terminal pass.
         assert_eq!(count(&w), Ok(9));
         w.u64(production, 0);
         assert!(count(&w).is_err());
@@ -1984,7 +1835,7 @@ mod war_overview_tests {
             template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[0],
             i32::MAX as u32,
         );
-        assert_eq!(count(&w), Ok(0)); // positive words wrap to i32::MIN.
+        assert_eq!(count(&w), Ok(0));
         w.u32(template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[0], 0);
         w.array(w.object(1) + ccountry::WAR_OVERVIEW_CORE_STATES, 0, 0);
         let many = w.alloc(65_539 * 8);
@@ -1998,8 +1849,6 @@ mod war_overview_tests {
         assert!(count(&w).is_err());
     }
 
-    /// A pass reads each building template once, not once per building:
-    /// the same count comes from fewer source requests, across countries too.
     #[test]
     fn a_pass_reads_each_building_template_once() {
         use crate::memory::{CountedMemory, ReadCounts};
@@ -2045,17 +1894,12 @@ mod war_overview_tests {
         let mut spans = Vec::new();
         for id in [1, 2] {
             let country = countries.resolve(id).unwrap();
-            // Levels 1, 2, 4 and 5 count; 3 and 6 have a zero sum.
             let result = war_overview_factories(&memory, 0, &countries, country, &mut templates);
             spans.push(ReadCounts::take_current().spans);
             assert_eq!(result, Ok(12));
         }
         prior.add_current();
-        // The first country reads its two templates once each (five fields
-        // apiece) rather than once per building; the second reads neither.
         assert_eq!(spans[0] - spans[1], 2 * 5, "{spans:?}");
-        // Six buildings: a vtable and template each, four levels, and the
-        // fixed production, core and offsite reads besides.
         assert!(spans[1] < 6 * 5, "{spans:?}");
     }
 }
@@ -2067,12 +1911,10 @@ mod policy_tests {
     use std::cell::Cell;
 
     const BASE: usize = 0x10_0000;
-    /// Four shared policies, then the roster at the end of readable memory.
     const POLICIES: usize = 0x1000;
     const STRIDE: usize = 0x20;
     const ROSTER: usize = 0x2000;
 
-    /// Counts guarded calls: one per copy and one per scattered batch.
     struct Guarded<'a> {
         bytes: &'a [u8],
         guards: Cell<usize>,
@@ -2118,8 +1960,6 @@ mod policy_tests {
         }
     }
 
-    /// A roster of `count` entries naming the four policies in turn; policy
-    /// `index` has token 500 + index.
     fn world(count: usize) -> Vec<u8> {
         let mut bytes = vec![0; ROSTER + count * 8];
         for index in 0..4 {
@@ -2137,7 +1977,6 @@ mod policy_tests {
         bytes
     }
 
-    /// A roster header of `count` entries at [`ROSTER`].
     fn roster(count: u32) -> Array {
         let mut header = [0_u8; 16];
         header[..8].copy_from_slice(&(ROSTER as u64).to_le_bytes());
@@ -2151,8 +1990,6 @@ mod policy_tests {
         read_policies(&Guarded::new(bytes), BASE, roster(count), &mut output).map(|()| output)
     }
 
-    /// A page of policies costs two guarded calls, its pointers and then their
-    /// identities, where a read per policy took one more call per policy.
     #[test]
     fn a_page_of_policies_is_read_in_two_guarded_batches() {
         for (count, guards) in [(20, 2), (64, 2), (130, 6)] {
@@ -2169,7 +2006,6 @@ mod policy_tests {
         }
     }
 
-    /// The first fault in roster order stands, as in a read per policy.
     #[test]
     fn the_first_fault_in_roster_order_is_reported() {
         let foreign = |bytes: &mut [u8], policy: usize| {
@@ -2177,21 +2013,16 @@ mod policy_tests {
             bytes[at..at + 8].copy_from_slice(&1_u64.to_le_bytes());
         };
         let null = |bytes: &mut [u8], slot: usize| bytes[ROSTER + slot * 8..][..8].fill(0);
-        // A foreign policy (slot 1) before a null entry (slot 2).
         let mut bytes = world(8);
         foreign(&mut bytes, 1);
         null(&mut bytes, 2);
         assert_eq!(read(&bytes, 8), Err("MIO policy vtable mismatch"));
-        // A null entry (slot 1) before a foreign policy (slot 2).
         let mut bytes = world(8);
         null(&mut bytes, 1);
         foreign(&mut bytes, 2);
         assert_eq!(read(&bytes, 8), Err("MIO policy identity unreadable"));
-        // A header longer than the readable roster: its readable entries all
-        // check, then the pointers fault.
         let bytes = world(8);
         assert_eq!(read(&bytes, 13), Err("MIO policy pointer unreadable"));
-        // A foreign policy before the unreadable pointers still comes first.
         let mut bytes = world(8);
         foreign(&mut bytes, 3);
         assert_eq!(read(&bytes, 13), Err("MIO policy vtable mismatch"));

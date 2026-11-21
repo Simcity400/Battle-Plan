@@ -1,48 +1,3 @@
-//! The Clausewitz binary asset container (`.mesh`, `.anim`) and the `.gfx` and
-//! `.asset` descriptors that name a mesh file for an entity.
-//!
-//! The container holds a depth-delimited node tree with named properties.
-//! Each property's tag selects an integer, float or string stream, and its
-//! count determines how many values follow. The parser retains node and
-//! property order while checking every declared length against the remaining
-//! bytes. Descriptors join the resulting assets to entity names, materials
-//! and animation declarations; consumers resolve their files through the
-//! recorded content stack.
-//!
-//! ```text
-//! magic "@@b@", then tokens until EOF:
-//!   0x5B ('[') x N, name bytes, 0x00     open a node at depth N (root = 0)
-//!   0x21 ('!'), u8 len, name bytes,      a property of the open node
-//!       'i' u32 count, count x i32
-//!       'f' u32 count, count x f32
-//!       's' u32 count, count x { u32 len, len bytes }
-//! ```
-//!
-//! There is no close token: depth alone delimits, so the file is a pre-order
-//! walk. [`parse`] returns that tree verbatim and [`read`] projects the
-//! `.mesh` shape of it into typed vertex streams.
-//!
-//! Skins, skeletons and both halves of `.anim` are decoded, because the figure
-//! the game draws for a division is a posed one. A `.mesh`'s own vertex stream
-//! is its bind pose, which can differ from the displayed default pose; the
-//! engine plays the entity's default state animation and skins the mesh by it.
-//! [`SubMesh::skin`] carries the per-vertex influences, [`Mesh::skeleton`] the
-//! joints, [`read_animation`] both the `[info]` rest pose and the `[samples]`
-//! frames, and [`Mesh::palette`] composes the two into the matrix a linear
-//! blend skinning pass multiplies a vertex by.
-//!
-//! The same joints place attachments. An attachment rig can carry a small
-//! base mesh while its `attach` blocks supply the visible objects at named
-//! joints. Each attached entity follows its parent's animated joint rather
-//! than the base mesh's bind pose. An attachment hangs from [`Mesh::pose`],
-//! which is the same joint transform the palette is built from, so an object
-//! attached to a hand follows the skinned hand; see
-//! [`Descriptors::resolve_entity`].
-//!
-//! **A still hour is [`FIRST_FRAME`].** A recording samples the game once an
-//! hour and carries no animation clock, so there is no time to advance to: the
-//! frame the engine shows an entity that has just entered its default state is
-//! sample 0, and that is the one evaluated here.
 
 use std::{collections::BTreeMap, io};
 
@@ -59,7 +14,6 @@ pub use descriptors::{
     lexical_names, parse_descriptors,
 };
 
-/// The four magic bytes every PDX binary asset starts with.
 pub const MAGIC: [u8; 4] = *b"@@b@";
 
 pub fn parse_in(layers: &crate::ResolvedLayers, path: &str) -> io::Result<std::sync::Arc<Node>> {
@@ -70,19 +24,9 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-// ----------------------------------------------------------------- transforms
 
-/// An affine transform: three basis columns and a translation.
-///
-/// This is the layout a `tx` property carries. The twelve floats are four
-/// triples; the first three are **columns** of the linear part, and the
-/// fourth is the translation. A basis column gives the transformed unit axis,
-/// so a point is the weighted sum of those columns plus the translation.
-/// The same layout is used for inverse binds, joint poses and attachment
-/// transforms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform {
-    /// `basis[c]` is where the `c`-th unit axis lands.
     pub basis: [[f32; 3]; 3],
     pub translation: [f32; 3],
 }
@@ -99,7 +43,6 @@ impl Transform {
         translation: [0.0; 3],
     };
 
-    /// The twelve floats of a `tx` property, four columns of three.
     pub fn from_columns(values: &[f32]) -> Option<Self> {
         let values: &[f32; 12] = values.get(..12)?.try_into().ok()?;
         Some(Self {
@@ -112,8 +55,6 @@ impl Transform {
         })
     }
 
-    /// A translation, a rotation quaternion `(x, y, z, w)` and a uniform scale,
-    /// which is how `.anim` states a joint's rest pose.
     pub fn from_trs(translation: [f32; 3], rotation: [f32; 4], scale: f32) -> Self {
         let length = rotation.iter().map(|v| v * v).sum::<f32>().sqrt();
         let [x, y, z, w] = if length > 0.0 {
@@ -126,7 +67,6 @@ impl Transform {
         } else {
             [0.0, 0.0, 0.0, 1.0]
         };
-        // Columns of the rotation matrix, then the uniform scale on each.
         let basis = [
             [
                 1.0 - 2.0 * (y * y + z * z),
@@ -150,8 +90,6 @@ impl Transform {
         }
     }
 
-    /// `self` applied after `inner`: the transform that maps `inner`'s space
-    /// through `self`'s.
     pub fn compose(&self, inner: &Self) -> Self {
         Self {
             basis: inner.basis.map(|axis| self.transform_vector(axis)),
@@ -177,18 +115,12 @@ impl Transform {
         ]
     }
 
-    /// The determinant of the linear part.
     pub fn determinant(&self) -> f32 {
         let [a, b, c] = self.basis;
         a[0] * (b[1] * c[2] - b[2] * c[1]) - b[0] * (a[1] * c[2] - a[2] * c[1])
             + c[0] * (a[1] * b[2] - a[2] * b[1])
     }
 
-    /// The inverse, or `None` when the linear part is singular or not finite.
-    ///
-    /// An all-zero `tx` has no inverse. Large basis entries can also produce
-    /// a non-finite determinant or inverse, so those transforms follow the
-    /// same absent-inverse path.
     pub fn inverse(&self) -> Option<Self> {
         let determinant = self.determinant();
         if !determinant.is_finite() || determinant.abs() < 1e-12 {
@@ -196,7 +128,6 @@ impl Transform {
         }
         let [a, b, c] = self.basis;
         let inverse = 1.0 / determinant;
-        // The inverse of the 3x3, as columns.
         let basis = [
             [
                 (b[1] * c[2] - b[2] * c[1]) * inverse,
@@ -234,8 +165,6 @@ impl Transform {
             .all(|value| value.is_finite())
     }
 
-    /// The mean length of the three basis columns: the uniform scale a joint
-    /// carries, which is 0 on a joint whose attachment the animation hides.
     pub fn uniform_scale(&self) -> f32 {
         self.basis
             .iter()
@@ -245,73 +174,39 @@ impl Transform {
     }
 }
 
-/// One `[skeleton]` joint, as the importer keeps it ([`read_tree`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Joint {
     pub name: String,
-    /// The joint's place in its skeleton, which skin influences and `pa` name;
-    /// the authored `ix` does not choose it.
     pub index: u32,
-    /// `pa`, the parent's place; absent on a root.
     pub parent: Option<u32>,
-    /// `tx`, the inverse bind matrix: world space to this joint's own space.
-    /// Absent when the file declares none.
     pub inverse_bind: Option<Transform>,
 }
 
-/// A `[material]` node: the effect name and the three texture references.
-/// Every name resolves relative to the `.mesh`'s own directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Material {
-    /// The `Effect` in `gfx/FX/pdxmesh.shader`, e.g. `PdxMeshAdvancedSnow`.
-    /// None is an absent key, distinct from an authored empty shader.
     pub shader: Option<String>,
-    /// Nonempty meshsettings override of every variant's source.
     pub shader_file: Option<String>,
     pub diffuse: String,
     pub normal: String,
     pub specular: String,
 }
 
-/// An `[aabb]` node: the sub-mesh's object-space bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bounds {
     pub min: [f32; 3],
     pub max: [f32; 3],
 }
 
-/// How many joints one vertex of a `[skin]` is influenced by.
-///
-/// The streams are **always** four wide. `bones` is not that width: it gives
-/// the authoring tool's influence cap, while `ix` and `w` each carry four
-/// entries per vertex. A vertex can use fewer entries than the stream holds,
-/// with its unused entries carrying zero weight. Reading `bones` as the
-/// stride would move the start of the following vertex whenever the cap is
-/// below four.
 pub const INFLUENCES: usize = 4;
 
-/// One `[skin]` node: which joints move a vertex and by how much.
-///
-/// A slot a vertex does not use is joint `-1` at weight 0. The four weights
-/// normally sum to one, but a vertex can be bound to nothing at all: all
-/// four slots are `-1` at weight 0. Such a vertex keeps its bind position
-/// rather than collapsing onto the origin. Influence extraction ignores
-/// unused slots and leaves the unbound case to the skinning consumer.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Skin {
-    /// `bones`: the largest number of non-zero influences a vertex carries.
     pub bones: u32,
-    /// `ix`, four per vertex. `-1` is an unused slot.
     pub joints: Vec<[i32; INFLUENCES]>,
-    /// `w`, four per vertex, in the same slot order.
     pub weights: Vec<[f32; INFLUENCES]>,
 }
 
 impl Skin {
-    /// The joints and weights of one vertex, unused slots dropped.
-    ///
-    /// Empty for a vertex bound to nothing, which is the caller's signal to
-    /// leave it in its bind position.
     pub fn influences(&self, vertex: usize) -> Vec<(u32, f32)> {
         let (Some(joints), Some(weights)) = (self.joints.get(vertex), self.weights.get(vertex))
         else {
@@ -326,29 +221,19 @@ impl Skin {
     }
 }
 
-/// One `[mesh]` node: a vertex stream set, its triangles and its material.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SubMesh {
-    /// Ordinal among all shape children, before filtering to `[mesh]`.
     pub child_index: usize,
     pub positions: Vec<[f32; 3]>,
-    /// Optional stream lengths may differ from vertex_count; mismatches are omitted.
     pub normals: Vec<[f32; 3]>,
-    /// `ta`: tangent XYZ and handedness W; optional stream lengths may differ from vertex_count.
     pub tangents: Vec<[f32; 4]>,
-    /// Optional stream lengths may differ from vertex_count.
     pub uv0: Vec<[f32; 2]>,
-    /// `u1`: tree tint row/height jitter; presence does not guarantee vertex_count entries.
     pub uv1: Option<Vec<[f32; 2]>>,
-    /// Extra packed coordinates; present streams may differ from vertex_count.
     pub uv2: Option<Vec<[f32; 2]>>,
-    /// Extra packed coordinates; present streams may differ from vertex_count.
     pub uv3: Option<Vec<[f32; 2]>>,
-    /// `tri`, three indices per triangle, each inside the vertex streams.
     pub indices: Vec<u32>,
     pub bounds: Option<Bounds>,
     pub material: Option<Material>,
-    /// The `[skin]` node, when the sub-mesh declares one.
     pub skin: Option<Skin>,
 }
 
@@ -363,40 +248,22 @@ impl SubMesh {
     }
 }
 
-/// One shape node under `[object]`: a LOD level, or a whole sub-object on a
-/// single-LOD mesh.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shape {
     pub name: String,
-    /// `lod`, absent on single-LOD meshes.
     pub lod: Option<i32>,
     pub meshes: Vec<SubMesh>,
 }
 
-/// A decoded `.mesh` file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mesh {
-    /// `loddist`, ascending and starting at 0; empty on a single-LOD mesh.
     pub lod_distances: Vec<f32>,
     pub shapes: Vec<Shape>,
-    /// The `[skeleton]` joints, in file order.
     pub skeleton: Vec<Joint>,
-    /// The names under the root `[locator]` node, if any.
     pub locators: Vec<String>,
 }
 
 impl Mesh {
-    /// The shapes to draw at each LOD level, outermost first.
-    ///
-    /// A shape that declares `lod` is one rung of a ladder. A mesh where **no**
-    /// shape declares one is not a ladder at all: its shapes are sub-objects
-    /// and they all draw together at the single level. An undrawable
-    /// collision hull can precede a drawable shape, so child order alone
-    /// cannot select a detail level. Treating those children as successive
-    /// levels could hide the drawable shape at the nearest distance.
-    /// Explicit `lod` properties supply the ladder's level numbers; shapes
-    /// without one remain together when no shape declares a ladder.
-    /// This also keeps multiple drawable sub-objects visible together.
     pub fn lods(&self) -> Vec<Vec<&Shape>> {
         if self.shapes.iter().all(|shape| shape.lod.is_none()) {
             return if self.shapes.is_empty() {
@@ -423,49 +290,20 @@ impl Mesh {
             .collect()
     }
 
-    /// The joint of this name.
     pub fn joint(&self, name: &str) -> Option<&Joint> {
         self.skeleton.iter().find(|joint| joint.name == name)
     }
 
-    /// The joint's bind-pose transform in the mesh's own space, composed from
-    /// the inverse bind matrix the file carries.
-    ///
-    /// `tx` is the **world** inverse bind, not a local one: on
-    /// `motorized_frame.mesh` the `infantry` joint's `tx` translates by
-    /// `(-1.88863, 0, 0)` and the idle animation rests that joint at
-    /// `(1.88863, 0, 0)`, so inverting `tx` alone reproduces the pose with no
-    /// parent walk. `None` when the file declares no `tx` for the joint or
-    /// declares a singular one.
     pub fn bind_pose(&self, name: &str) -> Option<Transform> {
         self.joint(name)?.inverse_bind?.inverse()
     }
 
-    /// The joint's pose in the mesh's own space at one frame of an animation,
-    /// composed down the skeleton's `pa` chain.
-    ///
-    /// The `.anim` states each joint **relative to its parent** and carries no
-    /// parent of its own, so the two files are read together: the `[skeleton]`
-    /// gives the tree and the animation the transform on each link. For a rig
-    /// this is one link — every attachment joint of `motorized_frame`,
-    /// `cavalry_frame`, `bicycle_frame` and `artillery_frame` hangs off an
-    /// identity root — and for a rifleman it is eight, from the hip out to
-    /// `Right_Hand_node`.
-    ///
-    /// A joint the animation does not name contributes its own bind transform
-    /// relative to its parent's, so a partial `.anim` still places its joint.
-    /// `None` when the skeleton has no joint of that name.
-    ///
-    /// This is where an `attach` block hangs, and it is the left half of the
-    /// skinning matrix [`Mesh::palette`] builds, so an attachment and the joint
-    /// that carries it move together by construction.
     pub fn pose(&self, animation: &Animation, frame: u32, name: &str) -> Option<Transform> {
         let index = self.joint(name)?.index;
         let locals = locals_by_name(animation, frame);
         self.world_pose(&locals, index, &mut self.memo(), 0)
     }
 
-    /// World transforms of a sampled local pose, indexed by skeleton joint index.
     pub fn sampled_pose(&self, animation: &Animation, locals: &[JointPose]) -> Vec<Transform> {
         let locals: BTreeMap<&str, Transform> = animation
             .joints
@@ -487,15 +325,6 @@ impl Mesh {
             .collect()
     }
 
-    /// The skinning matrix of every joint: its pose at this frame times its own
-    /// inverse bind, indexed by the joint's place in its skeleton.
-    ///
-    /// This is what a linear blend skinning pass multiplies a bind-pose vertex
-    /// by. A joint with no usable `tx` takes the identity rather than a
-    /// singular or non-finite matrix. A vertex weighted to such a joint
-    /// stays where the file put it instead of inheriting an unusable
-    /// transform. Valid joints still combine their animated pose with
-    /// their inverse bind.
     pub fn palette(&self, animation: &Animation, frame: u32) -> Vec<Transform> {
         let locals = locals_by_name(animation, frame);
         let mut memo = self.memo();
@@ -523,13 +352,10 @@ impl Mesh {
             .collect()
     }
 
-    /// An empty memo for [`Mesh::world_pose`], one slot per joint.
     fn memo(&self) -> Vec<Option<Option<Transform>>> {
         vec![None; self.skeleton.len()]
     }
 
-    /// One joint's pose in the mesh's own space, memoised by its position in
-    /// [`Mesh::skeleton`]. `depth` bounds a `pa` chain that loops.
     fn world_pose(
         &self,
         locals: &BTreeMap<&str, Transform>,
@@ -552,8 +378,6 @@ impl Mesh {
             .parent
             .filter(|parent| *parent != joint.index)
             .and_then(|parent| self.skeleton.iter().position(|other| other.index == parent));
-        // A joint the animation names takes its transform; one it does not
-        // contributes its own bind transform relative to its parent's.
         let local = locals.get(joint.name.as_str()).copied().or_else(|| {
             let world = joint.inverse_bind?.inverse()?;
             match parent {
@@ -575,9 +399,6 @@ impl Mesh {
     }
 }
 
-/// A mesh/animation name join, retained while both immutable inputs are in use.
-/// Duplicate animation names retain their last supplied local; duplicate skeleton
-/// indices resolve to the first skeleton record, as the ordinary pose query does.
 #[derive(Debug)]
 pub struct PoseBinding {
     joints: Vec<BoundJoint>,
@@ -633,8 +454,6 @@ impl PoseBinding {
         Self { joints, slots }
     }
 
-    /// The same parent walk and composition order as [`Mesh::sampled_pose`],
-    /// with its name and index joins already resolved and its buffers reused.
     pub fn sample_into(
         &self,
         locals: &[JointPose],
@@ -680,12 +499,6 @@ impl PoseBinding {
     }
 }
 
-/// One frame of an animation, keyed by joint name.
-///
-/// The skeleton and the animation are two files and are joined by name.
-/// A partial or reordered `.anim` can have different joint positions, so
-/// joining by position would place a joint's transform on its neighbour.
-/// The name join preserves each animation joint's own transform.
 fn locals_by_name(animation: &Animation, frame: u32) -> BTreeMap<&str, Transform> {
     animation
         .joints
@@ -695,12 +508,6 @@ fn locals_by_name(animation: &Animation, frame: u32) -> BTreeMap<&str, Transform
         .collect()
 }
 
-/// Decodes a `.mesh` file into typed vertex streams.
-///
-/// Errors are named `InvalidData` for anything [`parse`] refuses, for a file
-/// with no `[object]` node, for vertex streams of disagreeing lengths, for a
-/// stream whose float count is not a multiple of its component count, and for a
-/// triangle index outside the vertex streams.
 pub fn read(bytes: &[u8]) -> io::Result<Mesh> {
     read_tree(&parse(bytes)?)
 }
@@ -711,7 +518,6 @@ pub fn read_animation_in(layers: &crate::ResolvedLayers, path: &str) -> io::Resu
     })
 }
 
-/// Projects a parsed container, preserving `read`'s post-parse validation order.
 pub fn read_tree(root: &Node) -> io::Result<Mesh> {
     let object = root
         .child("object")
@@ -723,7 +529,6 @@ pub fn read_tree(root: &Node) -> io::Result<Mesh> {
         .to_vec();
     let mut shapes = Vec::new();
     for child in &object.children {
-        // A `[skeleton]` beside the shapes is no shape, and the importer reads no joints from it.
         if child.name == "skeleton" {
             continue;
         }
@@ -736,7 +541,6 @@ pub fn read_tree(root: &Node) -> io::Result<Mesh> {
             }
         }
         if meshes.is_empty() && child.children.is_empty() {
-            // A property-only child of `[object]` is not a shape.
             continue;
         }
         shapes.push(Shape {
@@ -765,16 +569,12 @@ pub fn read_tree(root: &Node) -> io::Result<Mesh> {
     })
 }
 
-/// The triangles the engine ray-tests a mesh by, in the mesh's own unscaled space.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Collision {
     pub positions: Vec<[f32; 3]>,
-    /// Three per triangle, narrowed to 16 bits as the engine stores them.
     pub indices: Vec<u16>,
 }
 
-/// The importer keeps the last `[mesh]` of any `[object]` shape whose material's shader is
-/// `Collision` and which has both `p` and `tri`; a mesh without one is tested by its bounds.
 pub fn collision(root: &Node) -> io::Result<Option<Collision>> {
     let mut kept = None;
     for mesh in root
@@ -807,8 +607,6 @@ pub fn collision(root: &Node) -> io::Result<Option<Collision>> {
     Ok(kept)
 }
 
-/// The skeleton the importer keeps: the first nonempty `[skeleton]` of a shape
-/// (depth 3), in source order across every `[object]`.
 fn skeleton_node(root: &Node) -> Option<&Node> {
     root.children_named("object")
         .flat_map(|object| &object.children)
@@ -816,9 +614,6 @@ fn skeleton_node(root: &Node) -> Option<&Node> {
         .find(|skeleton| !skeleton.children.is_empty())
 }
 
-/// Every joint of the kept skeleton in source order, each at its place ([`native_skeleton`]):
-/// with `ix` and `tx` its parent is `pa` as the importer's byte holds it (255 is none), without
-/// them parent 0 and no bind.
 fn read_joints(node: &Node) -> Vec<Joint> {
     node.children
         .iter()
@@ -848,8 +643,6 @@ fn read_joints(node: &Node) -> Vec<Joint> {
         .collect()
 }
 
-/// Keeps the first nonempty skeleton in source order.
-/// `ix` must exist but its value does not select the destination record.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeJoint {
     pub name: String,
@@ -863,7 +656,6 @@ pub fn native_skeleton(root: &Node, scale: f32) -> io::Result<Vec<NativeJoint>> 
     };
     let mut joints = Vec::with_capacity(skeleton.children.len());
     for child in &skeleton.children {
-        // Mesh joint names retain the first 31 Latin-1 bytes.
         let mut joint = NativeJoint {
             name: child.name.chars().take(31).collect(),
             parent: 0,
@@ -907,8 +699,6 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
     let uv2 = optional_vectors::<2>(shape, node, "u2")?;
     let uv3 = optional_vectors::<2>(shape, node, "u3")?;
     let vertices = positions.len();
-    // Wrong-sized optional streams are omitted; retain their presence here
-    // because declaration bits clear only for an absent property.
     let raw = node.property("tri").and_then(Value::ints).unwrap_or(&[]);
     if !raw.len().is_multiple_of(3) {
         return Err(invalid(format!(
@@ -960,10 +750,6 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
     })
 }
 
-/// The `[skin]` node's four-wide influence streams.
-///
-/// Errors are named `InvalidData` for a stream that does not cover every vertex
-/// four times over; see [`INFLUENCES`] for why the width is not `bones`.
 fn read_skin(shape: &str, node: &Node, vertices: usize) -> io::Result<Skin> {
     let raw_joints = node.property("ix").and_then(Value::ints).unwrap_or(&[]);
     let raw_weights = node.property("w").and_then(Value::floats).unwrap_or(&[]);
@@ -1000,13 +786,11 @@ fn read_skin(shape: &str, node: &Node, vertices: usize) -> io::Result<Skin> {
     })
 }
 
-/// Keeps optional property presence while omitting ragged vectors.
 fn optional_vectors<const N: usize>(
     shape: &str,
     node: &Node,
     name: &str,
 ) -> io::Result<Option<Vec<[f32; N]>>> {
-    // Ragged streams are omitted while their presence bit stays set.
     if node
         .property(name)
         .and_then(Value::floats)
@@ -1017,7 +801,6 @@ fn optional_vectors<const N: usize>(
     vectors(shape, node, name)
 }
 
-/// Splits one float property into fixed-width vectors.
 fn vectors<const N: usize>(
     shape: &str,
     node: &Node,

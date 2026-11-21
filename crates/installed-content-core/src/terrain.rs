@@ -1,24 +1,3 @@
-//! The terrain database (`common/terrain/*.txt`) and `map/default.map`.
-//!
-//! This is the one reader of the terrain database; the movement map
-//! ([`crate::movement`]) derives its costs and ordinals from its result.
-//!
-//! The loader lists the direct `.txt` files under `common/terrain`
-//! ([`ResolvedLayers::directory_files`]) and reads each file's top-level keys
-//! in source order:
-//!
-//! - Every `categories` entry appends a category with the current count as
-//!   its ordinal; the null terrain has ordinal zero. A redeclared name
-//!   appends another entry instead of replacing the first.
-//! - Every `terrain` entry resolves `type` immediately against the categories
-//!   appended so far: the first case-insensitive match, else the null terrain.
-//!   It sees only earlier files and earlier `categories` blocks. An entry
-//!   without `color` indices is logged and discarded; otherwise every index
-//!   writes the palette, and the last writer wins with a log line.
-//!
-//! One script reader per file ([`native`]) resolves variables in document
-//! order and preserves consumption when fields leave the balanced-tree
-//! grammar. Bare keywords fold; quoted keys take the non-keyword branch.
 
 use std::{collections::BTreeMap, io};
 
@@ -39,39 +18,22 @@ use crate::{
     },
 };
 
-/// One authored `categories` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerrainCategory {
-    /// The authored key bytes; lookups fold ASCII case ([`TerrainDefinitions::category`]).
     pub name: Vec<u8>,
-    /// Authored `movement_cost` as fixed5, zero when absent. Every read
-    /// clamps it to 0.01, including failed conversions.
     pub movement_cost: i64,
-    /// Authored `combat_width` as fixed5, zero when absent.
     pub combat_width: i64,
-    /// Authored `combat_support_width`, the fixed5 width each additional
-    /// direction adds; zero when absent.
     pub combat_support_width: i64,
-    /// Supply-flow penalty shown by the land terrain hover; starts at zero.
     pub supply_flow_penalty_factor: i64,
-    /// Common modifiers and ordered class entries; common values are
-    /// added to each class after loading.
     pub modifiers: modifiers::Modifiers,
     pub classes: Vec<(Vec<u8>, modifiers::Modifiers)>,
-    /// Minimum sea-zone dominance and common/per-class unit adjustments
-    /// used by the naval terrain hover.
     pub minimum_seazone_dominance: i64,
     pub common_adjuster: TerrainAdjuster,
     pub class_adjusters: Vec<TerrainAdjuster>,
-    /// The `color` reads replayed in order over the colour object's white start, as
-    /// [`f32::to_bits`] ([`Self::color`]).
     pub color: Result<[u32; 4], String>,
 }
 
 impl TerrainCategory {
-    /// The category's colour: white when it has no `color`, each read applied as the
-    /// colour reader does ([`crate::ideologies::ColorReads`]). `Err` names a form the
-    /// reader does not convert.
     pub fn color(&self) -> Result<[f32; 4], String> {
         self.color
             .as_ref()
@@ -80,7 +42,6 @@ impl TerrainCategory {
     }
 }
 
-/// Three fixed5 unit adjustments read from terrain definitions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerrainAdjuster {
     pub movement: i64,
@@ -104,37 +65,22 @@ impl TerrainAdjuster {
     }
 }
 
-/// One kept `terrain` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerrainType {
-    /// Authored name; names may repeat across entries.
     pub name: String,
-    /// Position in [`TerrainDefinitions::categories`] of the category `type`
-    /// resolved to when the entry was read; `None` is the null terrain.
     pub category: Option<usize>,
-    /// Signed `texture` bits; upload uses the low byte, where 255 means none.
     pub atlas_index: u32,
-    /// Permanent-snow flag.
     pub perm_snow: bool,
-    /// City-spawn predicate flag.
     pub spawn_city: bool,
 }
 
-/// The terrain database the native loader builds from every file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerrainDefinitions {
-    /// Every category in load order; the one-based native ordinal is the
-    /// position plus one.
     pub categories: Vec<TerrainCategory>,
-    /// `terrain.bmp` palette index to the terrain entry that wrote it last.
-    /// Indices past a byte are never sampled and are not kept.
     pub palette: BTreeMap<u8, TerrainType>,
-    /// Logged recovery notes: malformed entries that were skipped and
-    /// failed field conversions that retained the previous value.
     pub skipped: Vec<String>,
 }
 
-/// The file names and tree indices `map/default.map` declares.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DefaultMap {
     pub definitions: String,
@@ -143,13 +89,10 @@ pub struct DefaultMap {
     pub rivers: String,
     pub heightmap: String,
     pub tree_definition: String,
-    /// `tree = { 3 4 7 10 }`: palette indices of `trees.bmp` that count as trees.
     pub tree_indices: Vec<u8>,
-    /// Every other key of the file, in source order, as authored text.
     pub other: Vec<(String, String)>,
 }
 
-/// The decoded bitmaps `map/default.map` names, plus `world_normal.bmp`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MapImages {
     pub terrain: IndexedImage,
@@ -160,24 +103,18 @@ pub struct MapImages {
 }
 
 impl TerrainDefinitions {
-    /// The first category whose name matches without regard to ASCII case.
     pub fn category(&self, name: &[u8]) -> Option<usize> {
         self.categories
             .iter()
             .position(|category| category.name.eq_ignore_ascii_case(name))
     }
 
-    /// The category a water province reads: its strategic region's `naval_terrain`, or
-    /// `ocean` when it has no region, the region names none or the name matches no category.
-    /// `None` when that fallback is missing too.
     pub fn naval_category(&self, naval_terrain: Option<&str>) -> Option<usize> {
         naval_terrain
             .and_then(|name| self.category(name.as_bytes()))
             .or_else(|| self.category(b"ocean"))
     }
 
-    /// Reads one more file through the script reader ([`native`]). A block
-    /// whose consumption cannot be settled refuses the file by place and reason.
     pub(crate) fn append(&mut self, bytes: &[u8]) -> io::Result<()> {
         let mut undecided = Vec::new();
         let read = native::read(
@@ -186,15 +123,11 @@ impl TerrainDefinitions {
             native::Top::File(Node::Top),
             None,
             &mut |node, field| match node {
-                // terrain and categories use their own loops; other keys,
-                // including quoted spellings, report and skip their blocks.
                 Node::Top => match field.keyword().as_deref() {
                     Some(b"terrain") => Shape::Object(Node::Terrains),
                     Some(b"categories") => Shape::Object(Node::Categories),
                     _ => Shape::Skip,
                 },
-                // Each category or terrain entry reads its fields regardless
-                // of whether its value opens a block.
                 Node::Categories => Shape::Object(Node::Category),
                 Node::Terrains => Shape::Object(Node::Graphics),
                 Node::Category => category_field(field.keyword().as_deref(), field.opens())
@@ -207,8 +140,6 @@ impl TerrainDefinitions {
                         )
                         .map(Node::Modifier)
                     }),
-                // A per-class entry reads units as an adjustment object;
-                // other fields use its modifier dispatch.
                 Node::Class if field.keyword_is("units") => Shape::Object(Node::Adjuster),
                 Node::Class => modifiers::shape(
                     modifiers::Node::Modifier,
@@ -217,23 +148,15 @@ impl TerrainDefinitions {
                     &mut undecided,
                 )
                 .map(Node::Modifier),
-                // attack, defence and movement take one value each;
-                // other keys are reported and skipped.
                 Node::Adjuster => match field.keyword().as_deref() {
                     Some(b"attack" | b"defence" | b"movement") => Shape::One,
                     _ => Shape::Skip,
                 },
-                // color reads an integer list; type takes value text;
-                // texture scans an integer; snow and city flags read bools.
-                // Other keys are reported and skipped.
                 Node::Graphics => match field.keyword().as_deref() {
                     Some(b"color") => Shape::List,
                     Some(b"type" | b"texture" | b"perm_snow" | b"spawn_city") => Shape::One,
                     _ => Shape::Skip,
                 },
-                // A keyed scalar statement consumes its value. Anonymous
-                // values and blocks reach statement forms whose consumption
-                // this reader cannot trace.
                 Node::Statements if field.fresh && !field.opens() => Shape::One,
                 Node::Statements => {
                     undecided.push(modifiers::Undecided::untraced(
@@ -272,9 +195,6 @@ impl TerrainDefinitions {
                             String::from_utf8_lossy(entry.key.as_deref().unwrap_or_default())
                                 .into_owned();
                         let what = format!("terrain {name}");
-                        // A malformed field is logged and keeps its earlier
-                        // value; only a form the game cannot hold skips the
-                        // entry.
                         let mut errors = Vec::new();
                         let fields = entry.value.items().unwrap_or_default();
                         match self.graphics(name, fields, &mut errors) {
@@ -291,8 +211,6 @@ impl TerrainDefinitions {
         Ok(())
     }
 
-    /// One category, field by field. Widths and costs read fixed5; a value
-    /// that does not convert is logged and leaves its field unchanged.
     fn read_category(&mut self, entry: &Item) {
         let name = entry.key.clone().unwrap_or_default();
         let what = format!("terrain category {}", String::from_utf8_lossy(&name));
@@ -306,7 +224,6 @@ impl TerrainDefinitions {
         for field in entry.value.items().unwrap_or_default() {
             let keyword = field.keyword().map(|keyword| keyword.folded());
             if keyword.as_deref() == Some(b"color") {
-                // Each read updates the colour from where the last left it.
                 color.read(field);
                 continue;
             }
@@ -358,7 +275,6 @@ impl TerrainDefinitions {
                     crate::fixed5::fixed5_to_string(values[slot], -1)
                 )),
             }
-            // Clamp the cost after every read, including a failed one.
             if slot == 0 {
                 values[0] = values[0].max(1_000);
             }
@@ -381,13 +297,6 @@ impl TerrainDefinitions {
         });
     }
 
-    /// One terrain entry's fields in source order, then its palette writes.
-    /// `color` appends indices; other fields take their last value.
-    ///
-    /// A failed field conversion is reported without changing the field;
-    /// the entry and its other fields remain, and the note goes to `errors`.
-    /// Colour elements start at zero before scanning, so a failed scan keeps
-    /// zero. Negative palette indices would be used out of range and refuse the entry.
     fn graphics(
         &mut self,
         name: String,
@@ -402,16 +311,12 @@ impl TerrainDefinitions {
             spawn_city: false,
         };
         let mut indices = Vec::new();
-        // Signed integer scans store nothing at EOF without reporting an
-        // error; a nonmatching value is reported.
         let integer = |item: &Item| scan_i32(item.value.scalar().unwrap_or_default());
-        // Boolean fields accept exactly yes or no.
         let flag = |field: &Item| field.value.scalar().and_then(crate::parser::read_bool);
         for field in fields {
             match field.keyword().map(|keyword| keyword.folded()).as_deref() {
                 Some(b"type") => {
                     entry.category = self.category(field.value.scalar().unwrap_or_default());
-                    // Report a type lookup that selects the null terrain.
                     if entry.category.is_none() {
                         errors.push(format!(
                             "type {} names no category read before it",
@@ -452,7 +357,6 @@ impl TerrainDefinitions {
                 _ => {}
             }
         }
-        // An entry without colours is discarded before any palette writes.
         for index in indices {
             if let Ok(index) = u8::try_from(index) {
                 self.palette.insert(index, entry.clone());
@@ -462,34 +366,21 @@ impl TerrainDefinitions {
     }
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    /// File-level fields.
     Top,
-    /// Category declarations.
     Categories,
-    /// Terrain declarations.
     Terrains,
-    /// A category's fields.
     Category,
-    /// A per-class entry's fields.
     Class,
-    /// Unit adjustments.
     Adjuster,
-    /// A terrain entry's fields.
     Graphics,
-    /// Building-level statements.
     Statements,
     Modifier(modifiers::Node),
 }
 
-/// Dispatches each category field by its keyword.
 fn category_field(keyword: Option<&[u8]>, opens: bool) -> Option<Shape<Node>> {
     Some(match keyword {
-        // Costs, widths, sea dominance, AI importance, match and supply
-        // penalties read one fixed5 value. Water and inland-sea flags,
-        // naval terrain, worth and sound type also take one value.
         Some(
             b"movement_cost"
             | b"combat_width"
@@ -504,21 +395,14 @@ fn category_field(keyword: Option<&[u8]>, opens: bool) -> Option<Shape<Node>> {
             | b"worth"
             | b"sound_type",
         ) => Shape::One,
-        // color reads a colour object.
         Some(b"color") => Shape::Color,
-        // units reads an adjustment object.
         Some(b"units") => Shape::Object(Node::Adjuster),
-        // buildings_max_level reads keyed statements with their operators,
-        // passing each value to the category's statement reader.
         Some(b"buildings_max_level") => Shape::Object(Node::Statements),
-        // A block under any other key opens a per-class entry; a scalar
-        // uses the category's common modifier dispatch.
         _ if opens => Shape::Object(Node::Class),
         _ => return None,
     })
 }
 
-// Parses one terrain database file on its own.
 pub fn parse_definitions(input: &[u8]) -> io::Result<TerrainDefinitions> {
     let mut definitions = TerrainDefinitions::default();
     definitions.append(input)?;
@@ -528,10 +412,7 @@ pub fn parse_definitions(input: &[u8]) -> io::Result<TerrainDefinitions> {
     Ok(definitions)
 }
 
-/// Parses `map/default.map`.
 pub fn parse_default_map(input: &[u8]) -> io::Result<DefaultMap> {
-    // Paths take the value as a C string; tree takes an integer list.
-    // Unknown keywords are reported and their blocks skipped.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -560,8 +441,6 @@ pub fn parse_default_map(input: &[u8]) -> io::Result<DefaultMap> {
     };
     let mut tree_indices = Vec::new();
     for item in items.iter().filter(|item| item.keyword_is("tree")) {
-        // Append a zero-initialized i32 before scanning each token.
-        // Repeated tree fields append rather than replace.
         for entry in item.value.items().unwrap_or_default() {
             let index = match scan_i32(entry.value.scalar().unwrap_or_default()) {
                 Scanned::Stored(index) => index,
@@ -647,17 +526,12 @@ fn default_map_replays_keyword_and_array_readers() {
 
 const DEFINITIONS_DIRECTORY: &str = "common/terrain";
 
-/// The terrain definition files in native load order
-/// ([`ResolvedLayers::directory_files`]). The movement costs
-/// (`province_graph`) read the same list.
 pub fn definition_paths(
     layers: &ResolvedLayers,
 ) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     layers.directory_files(DEFINITIONS_DIRECTORY, ".txt")
 }
 
-/// Reads the terrain database from every `common/terrain/*.txt` file in
-/// native load order ([`definition_paths`]).
 pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<TerrainDefinitions> {
     layers.recorded_product("terrain database", 1, &[], read_terrain_definitions)
         .map(|definitions| definitions.as_ref().clone())
@@ -684,14 +558,11 @@ fn read_terrain_definitions(layers: &ResolvedLayers) -> io::Result<TerrainDefini
     Ok(definitions)
 }
 
-/// Reads the terrain database and `map/default.map`.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(TerrainDefinitions, DefaultMap)> {
     Ok((read_definitions(layers)?, read_default_map(layers)?))
 }
 
 impl DefaultMap {
-    /// The `map/` path `default.map` names for `key`, as the engine opens it.
-    /// A repeated key takes its last value.
     pub fn file(&self, key: &str) -> io::Result<String> {
         let name = match key {
             "definitions" => Some(&self.definitions),
@@ -712,7 +583,6 @@ impl DefaultMap {
     }
 }
 
-/// Reads and parses `map/default.map`.
 pub fn read_default_map(layers: &ResolvedLayers) -> io::Result<DefaultMap> {
     layers.recorded_product("default map", 1, &[], |layers| {
         parse_default_map(&layers.read("map/default.map")?)
@@ -720,7 +590,6 @@ pub fn read_default_map(layers: &ResolvedLayers) -> io::Result<DefaultMap> {
     }).map(|map| map.as_ref().clone())
 }
 
-/// Decodes the bitmaps `map/default.map` names, plus `map/world_normal.bmp`.
 pub fn read_map_images(
     layers: &ResolvedLayers,
     map: &DefaultMap,
@@ -746,13 +615,6 @@ pub fn read_indexed_image(layers: &ResolvedLayers, path: &str) -> io::Result<Ind
     }).map(|image| image.as_ref().clone())
 }
 
-/// `map/world_normal.bmp`, the height-normal texture, follows ordinary
-/// texture resolution ([`resources::texture`]): `.dds`, `.tga`, then the
-/// requested name. The BMP decoder accepts 24- and 32-bit forms and converts
-/// all-opaque 32-bit alpha to 24 bits. The client `force_pow2_textures` option
-/// still applies through `decode`; the CPU bitmaps above remain unpadded.
-/// A texture the game does not load, or whose format cannot use the 8-bit
-/// RGBA upload, is refused by name.
 pub fn read_world_normal(layers: &ResolvedLayers, decode: Decode) -> io::Result<Rgba8Image> {
     world_normal(&|path| layers.read_uncovered_path(path), decode)
 }

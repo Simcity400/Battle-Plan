@@ -1,23 +1,3 @@
-//! Idea categories and ideas (`common/idea_tags`, `common/ideas`): which slot
-//! or category each idea belongs to, and what it shows (name, picture, effects).
-//!
-//! The recording names active ideas by token only; this is what joins a token to
-//! its category, slot and effects. Nothing here assumes vanilla categories:
-//! a mod's categories and slots come through the same reader.
-//!
-//! One idea database (`Database`) takes both directories in load order:
-//! `common/idea_tags` files first, then `common/ideas`. Both read
-//! `idea_categories` and `ideas`; only the first reads `slot_ledgers`,
-//! and only the second rereads a group it already holds. Each file has
-//! its own reader replay ([`native`]) with the readers' own dispatch.
-//! Conditions (`allowed`, `visible`, `available`) and effects (`on_add`, …)
-//! need the game to evaluate and are only read by key. Modifier values
-//! are stored as the game stores them ([`crate::modifiers`]).
-//!
-//! A file whose reading the port cannot follow to its end, or whose stored
-//! text the port cannot hold, leaves what the rest of it defines unknown
-//! ([`crate::coverage`]): a lookup that part could change is refused, with
-//! the file and the cause.
 
 use crate::{
     ResolvedLayers,
@@ -39,43 +19,26 @@ use std::{
     io,
 };
 
-/// One idea category from `idea_categories`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IdeaCategory {
     pub name: String,
-    /// Idea slots, in source order (laws, designers).
     pub slots: Vec<String>,
-    /// Character seats, one entry per seat (three political advisors are three entries).
     pub character_slots: Vec<String>,
-    /// `type` dispatches by the value keyword: `national_spirit`,
-    /// `army_spirit`, `navy_spirit` or `air_spirit`, whatever its case.
-    /// None for any other value, a quoted one included (type 0).
     pub kind: Option<String>,
     pub hidden: bool,
-    /// False when the category sets `politics_tab = no`.
     pub politics_tab: bool,
-    /// The intel ledgers it shows on (`ledger`).
     pub ledger: u32,
     pub cost: Option<f64>,
     pub removal_cost: Option<f64>,
 }
 
-/// The categories in the database's array, in load order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IdeaTags {
-    /// Every category object read; a repeated name appends beside
-    /// the earlier one.
     categories: Vec<IdeaCategory>,
-    /// The first file that stops short, and how many categories were read
-    /// before it: every category after those is unknown.
     cut: Option<(usize, Gap)>,
 }
 
 impl IdeaTags {
-    /// Resolve a group or slot name to its category: each category in array
-    /// order, its name and then its slots and seats (both kinds), compared
-    /// exactly; the first match wins. A gap when a category that could match
-    /// comes after a file that stops short.
     pub fn resolve(&self, name: &str) -> Result<Option<&IdeaCategory>, &Gap> {
         for (index, category) in self.categories.iter().enumerate() {
             if let Some((known, gap)) = &self.cut
@@ -96,49 +59,30 @@ impl IdeaTags {
         }
     }
 
-    /// Every category read, in load order, and the gap that may hide more.
     pub fn categories(&self) -> (&[IdeaCategory], Option<&Gap>) {
         (&self.categories, self.cut.as_ref().map(|(_, gap)| gap))
     }
 }
 
-/// One idea from `ideas = { <group> = { <token> = { … } } }`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Idea {
     pub token: String,
-    /// The name of the group it belongs to: an idea slot
-    /// (`economy`, `tank_manufacturer`) or a category (`country`,
-    /// `hidden_ideas`).
     pub group: String,
-    /// The group's `law` and `designer` flags as the database holds them
-    /// once every file is read: the game reads the current group flags
-    /// when it uses the idea.
     pub law: bool,
     pub designer: bool,
-    /// The slot's default law.
     pub default: bool,
-    /// `name`: the override shown when it is not empty.
     pub name: Option<String>,
-    /// The picture's name, from `picture`; the sprite is `GFX_idea_<picture>`.
     pub picture: Option<String>,
     pub modifiers: Modifiers,
     pub targeted: Vec<TargetedModifier>,
     pub equipment_bonuses: Vec<EquipmentBonus>,
     pub research_bonuses: Vec<Modifier>,
     pub traits: Vec<String>,
-    /// The idea's rule fields.
     pub rules: IdeaRules,
     pub cost: Option<f64>,
     pub removal_cost: Option<f64>,
-    /// The intel ledgers it shows on (`ledger`).
     pub ledger: u32,
-    /// `level`: initially -1, then read as a signed integer;
-    /// a failed scan keeps it.
     pub level: i32,
-    /// Its index in the database's ideas (the null idea at 0, so the first
-    /// is 1), or, once a `common/ideas` file rereads its group, its place in
-    /// the group from 0. Every idea of that group receives its updated place.
-    /// A term of the generated name's seed.
     pub position: i32,
 }
 
@@ -152,7 +96,6 @@ pub struct IdeaRules {
 impl Default for IdeaRules {
     fn default() -> Self {
         Self {
-            // Construction copies each rule default.
             values: crate::power_balance::rules()
                 .iter()
                 .map(|rule| rule.2)
@@ -174,7 +117,6 @@ impl IdeaRules {
                     .to_owned();
             } else if field.keyword_is("override") {
                 for entry in field.value.items().unwrap_or_default() {
-                    // Rule override indices use decimal integer conversion.
                     let raw = crate::fixed5::decimal_i32(entry.key.as_deref().unwrap_or_default());
                     let index = usize::try_from(raw)
                         .ok()
@@ -195,7 +137,6 @@ impl IdeaRules {
                 .iter()
                 .position(|rule| field.keyword_is(rule.0))
             {
-                // The temporary boolean starts false before conversion.
                 self.values[index] = field
                     .value
                     .scalar()
@@ -208,18 +149,12 @@ impl IdeaRules {
 }
 
 impl Idea {
-    /// The picture sprite, prefixed with `GFX_idea_`.
     pub fn sprite(&self) -> String {
         format!(
             "GFX_idea_{}",
             self.picture.as_deref().unwrap_or(&self.token)
         )
     }
-    /// The sprites the idea icon resolver tries, in order:
-    /// `GFX_idea_<token>` first, then [`Self::sprite`], then that sprite
-    /// followed by `_<holder's tag>`; when none exists it draws `GFX_idea_unknown`.
-    /// Without a recorded tag, returns only the static candidates; the caller
-    /// cannot decide the tag candidate or the final fallback offline.
     pub fn sprite_candidates(&self, tag: Option<&str>) -> Vec<String> {
         let own = format!("GFX_idea_{}", self.token);
         let picture = self.sprite();
@@ -235,19 +170,14 @@ impl Idea {
     }
 }
 
-/// Exactly `yes` or `no`, whatever the quoting;
-/// anything else fails and leaves the field as it was.
 fn bool_token(item: &Item) -> Option<bool> {
     item.value.scalar().and_then(crate::parser::read_bool)
 }
 
-/// Fixed5 as a number; a failed conversion leaves the field as it was.
 fn fixed5_number(item: &Item) -> Option<f64> {
     modifiers::read_fixed5(item).map(|raw| raw as f64 / 100_000.0)
 }
 
-/// Signed integer scanning: a scan that stores nothing (EOF) or fails
-/// leaves the field as it was.
 fn int32(item: &Item) -> Option<f64> {
     match scan_i32(item.value.scalar()?) {
         Scanned::Stored(value) => Some(f64::from(value)),
@@ -255,15 +185,10 @@ fn int32(item: &Item) -> Option<f64> {
     }
 }
 
-/// The keyword a field dispatches on.
 fn keyword(item: &Item) -> Option<Vec<u8>> {
     item.keyword().map(|keyword| keyword.folded())
 }
 
-/// The intel ledger reader shared by categories, ideas, `slot_ledgers`
-/// and advisors: the value keyword sets or ORs the bits; any other value
-/// (quoted, a number, the end of text included) is reported and leaves
-/// them unchanged.
 pub(crate) fn ledger(bits: u32, item: &Item) -> u32 {
     match item.value_keyword().as_deref() {
         Some("hidden") => 1,
@@ -278,8 +203,6 @@ pub(crate) fn ledger(bits: u32, item: &Item) -> u32 {
     }
 }
 
-/// A recognised `ledger` value consumes one token; any other is reported
-/// and skips a block the current token opens.
 pub(crate) fn ledger_shape<S>(field: &Field<'_>) -> Shape<S> {
     match field.value_keyword().as_deref() {
         Some(
@@ -290,36 +213,22 @@ pub(crate) fn ledger_shape<S>(field: &Field<'_>) -> Shape<S> {
     }
 }
 
-/// The two file loops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Loader {
-    /// `common/idea_tags`: reads `slot_ledgers`; every group is read
-    /// as a new one, then registered.
     Tags,
-    /// `common/ideas`: a held group named by a bare key is read again.
     Ideas,
 }
 
-/// A group's name as the token registry keys it: A-Z folded, compared
-/// without case. `None` for a name starting with a digit or `-`,
-/// which is refused (id 0), so the group never merges.
 fn identity(name: &[u8]) -> Option<Vec<u8>> {
     (!matches!(name.first(), Some(b'0'..=b'9' | b'-'))).then(|| name.to_ascii_lowercase())
 }
 
-/// How a group occurrence is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Path {
-    /// A new group; `officers` when its name is in
-    /// NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU.
     New { officers: bool },
-    /// Read again into a group the database holds by the key's token id.
     Again,
 }
 
-/// What decides a group occurrence's path: the database's group names so
-/// far, and the cause when an earlier file stops short, whose unknown rest
-/// may have registered any name.
 #[derive(Clone, Debug)]
 struct Groups<'a> {
     loader: Loader,
@@ -329,8 +238,6 @@ struct Groups<'a> {
 }
 
 impl Groups<'_> {
-    /// The path of the group `key` names, registering its name; an error
-    /// when an earlier gap leaves it unknown whether the database holds it.
     fn path(&mut self, key: &[u8], quoted: bool) -> Result<Path, String> {
         let identity = identity(key);
         let held = identity.as_ref().is_some_and(|id| self.known.contains(id));
@@ -344,7 +251,6 @@ impl Groups<'_> {
         {
             Path::Again
         } else {
-            // Compare the officer-corps group name exactly.
             Path::New {
                 officers: self.officers.iter().any(|name| name.as_bytes() == key),
             }
@@ -354,43 +260,27 @@ impl Groups<'_> {
     }
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
     Top,
-    /// The `idea_categories` loop: each key reads a category object.
     Categories,
-    /// One category and its fields.
     Category,
-    /// The `slot_ledgers` loop: each entry reads a ledger value.
     Ledgers,
-    /// The `ideas` loop: each key a group.
     Groups,
     Group(Path),
-    /// One idea and its fields.
     Idea,
-    /// An advisor template and its fields.
     Advisor,
-    /// Rule fields ([`rule_field`]).
     Rule(RuleNode),
-    /// Mean-time-to-happen fields.
     Mtth,
     Modifier(modifiers::Node),
 }
 
-/// Rule readers (an idea's `rule`, an ideology group's `rules`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RuleNode {
-    /// One rule field.
     Rule,
-    /// Its `override` loop.
     Override,
 }
 
-/// `icon` skips a block when the current token is `{`; `desc` reads
-/// a string; `override` opens its own loop, converting each key and
-/// value text as decimal integers. Any other key reads a rule boolean
-/// or is only logged.
 pub(crate) fn rule_field(node: RuleNode, field: &Field<'_>) -> Shape<RuleNode> {
     match node {
         RuleNode::Rule => match field.keyword().as_deref() {
@@ -402,8 +292,6 @@ pub(crate) fn rule_field(node: RuleNode, field: &Field<'_>) -> Shape<RuleNode> {
     }
 }
 
-/// Where a file's reading, or what it stores, cannot be followed: the
-/// count of ideas and categories before it, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Stop {
     ideas: usize,
@@ -412,7 +300,6 @@ struct Stop {
 }
 
 impl Stop {
-    /// The earlier of two stops.
     fn first(stop: Option<Self>, other: Self) -> Self {
         match stop {
             Some(stop) if (stop.ideas, stop.categories) <= (other.ideas, other.categories) => stop,
@@ -421,11 +308,8 @@ impl Stop {
     }
 }
 
-/// What the dispatch learns while the reader reads.
 struct Reading<'a> {
     groups: Groups<'a>,
-    /// Ideas and advisors, and categories, dispatched so far, and the idea
-    /// count when the group being read began.
     ideas: usize,
     categories: usize,
     group_start: usize,
@@ -446,9 +330,6 @@ impl Reading<'_> {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();
         let shape = match node {
-            // `idea_categories` and `ideas` open their own loops; `slot_ledgers`
-            // opens its own loop only for idea tags. Any other key, a quoted one
-            // included, is reported and skipped.
             Node::Top => match keyword {
                 Some(b"idea_categories") => Shape::Object(Node::Categories),
                 Some(b"ideas") => Shape::Object(Node::Groups),
@@ -461,10 +342,6 @@ impl Reading<'_> {
                 self.categories += 1;
                 Shape::Object(Node::Category)
             }
-            // `slot` and `character_slot` read text; `politics_tab` and `hidden`
-            // read booleans; `cost` and `removal_cost` read signed integers;
-            // `type` uses the value keyword, and `ledger` the shared ledger reader.
-            // Any other key is reported and skipped.
             Node::Category => match keyword {
                 Some(
                     b"slot" | b"character_slot" | b"politics_tab" | b"hidden" | b"cost"
@@ -487,9 +364,6 @@ impl Reading<'_> {
                     }
                 }
             }
-            // `law`, `designer` and `use_list_view` read booleans. Any other key
-            // with a `{` value reads an idea, or for an officer-corps group an
-            // advisor template; any other value is reported and skipped.
             Node::Group(Path::New { officers }) => match keyword {
                 Some(b"law" | b"designer" | b"use_list_view") => Shape::One,
                 _ if field.opens() => {
@@ -498,9 +372,6 @@ impl Reading<'_> {
                 }
                 _ => Shape::Skip,
             },
-            // `law` and `designer` read booleans; any other key, `use_list_view`
-            // included, reads an idea whatever its value, without checking for
-            // `{` or testing whether the group belongs to the officer corps.
             Node::Group(Path::Again) => match keyword {
                 Some(b"law" | b"designer") => Shape::One,
                 _ => {
@@ -509,34 +380,22 @@ impl Reading<'_> {
                 }
             },
             Node::Idea => match keyword {
-                // Conjunction triggers: `available`, `cancel`, `visible`, `allowed`,
-                // `allowed_civil_war`, `allowed_to_remove`, `do_effect`.
                 Some(
                     b"available" | b"cancel" | b"visible" | b"allowed" | b"allowed_civil_war"
                     | b"allowed_to_remove" | b"do_effect",
                 ) => Shape::Trigger,
-                // `on_add` and `on_remove` read effects by key in country scope.
                 Some(b"on_add" | b"on_remove") => Shape::EffectIn(ScopeKind::Country.bit()),
-                // `cost` and `removal_cost` read fixed5; `name` and `picture` read
-                // strings; `level` reads a signed integer; `default`,
-                // `cancel_if_invalid` and `is_good` read booleans; `category`
-                // is only logged.
                 Some(
                     b"cost" | b"removal_cost" | b"name" | b"picture" | b"level" | b"default"
                     | b"cancel_if_invalid" | b"is_good" | b"category",
                 ) => Shape::One,
-                // `ledger` uses the shared ledger reader.
                 Some(b"ledger") => ledger_shape(field),
-                // Object fields: `modifier`, `ai_will_do`, `rule` and
-                // `targeted_modifier`.
                 Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Modifier)),
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                 Some(b"rule") => Shape::Object(Node::Rule(RuleNode::Rule)),
                 Some(b"targeted_modifier") => {
                     Shape::Object(Node::Modifier(modifiers::Node::Targeted))
                 }
-                // Own loops: `research_bonus` and `equipment_bonus`; `traits`
-                // reads each token through the closing brace.
                 Some(b"research_bonus") => {
                     Shape::Object(Node::Modifier(modifiers::Node::ResearchBonus))
                 }
@@ -544,8 +403,6 @@ impl Reading<'_> {
                     Shape::Object(Node::Modifier(modifiers::Node::EquipmentBonuses))
                 }
                 Some(b"traits") => Shape::List,
-                // Any other key, `designer` and a quoted one included,
-                // is reported and skipped.
                 _ => Shape::Skip,
             },
             Node::Advisor => characters::advisor_field(field).map(|role| match role {
@@ -569,7 +426,6 @@ impl Reading<'_> {
     }
 }
 
-/// One category as read.
 fn read_category(name: &Item) -> Result<IdeaCategory, String> {
     let mut unheld = Unheld::default();
     let mut category = IdeaCategory {
@@ -582,7 +438,6 @@ fn read_category(name: &Item) -> Result<IdeaCategory, String> {
     };
     for field in name.value.items().unwrap_or_default() {
         match keyword(field).as_deref() {
-            // Hash the value's text for its name identity.
             Some(b"slot") => category.slots.extend(
                 unheld
                     .keep("a slot", field.value.c_str())
@@ -593,10 +448,6 @@ fn read_category(name: &Item) -> Result<IdeaCategory, String> {
                     .keep("a character slot", field.value.c_str())
                     .map(str::to_owned),
             ),
-            // The value keyword selects `national_spirit`, `army_spirit`,
-            // `navy_spirit` or `air_spirit`; any other value, including `default`,
-            // a quoted value or the end of text, selects type 0. Each assignment
-            // replaces the last.
             Some(b"type") => {
                 category.kind = field.value_keyword().filter(|kind| {
                     matches!(
@@ -623,7 +474,6 @@ fn read_category(name: &Item) -> Result<IdeaCategory, String> {
     }
 }
 
-/// One idea body as read, or what it stores that the port cannot hold.
 fn read_idea(token: &Item, group: &str, fields: &[Item]) -> Result<Idea, String> {
     let mut unheld = Unheld::default();
     let mut idea = Idea {
@@ -640,7 +490,6 @@ fn read_idea(token: &Item, group: &str, fields: &[Item]) -> Result<Idea, String>
             Some(b"default") => {
                 idea.default = bool_token(field).unwrap_or(idea.default);
             }
-            // Read the value as string text.
             Some(b"name") => {
                 idea.name = unheld
                     .keep("its name", field.value.read_str())
@@ -659,7 +508,6 @@ fn read_idea(token: &Item, group: &str, fields: &[Item]) -> Result<Idea, String>
                 }
             }
             Some(b"ledger") => idea.ledger = ledger(idea.ledger, field),
-            // Every `modifier` block reads into the idea's one modifier object.
             Some(b"modifier") => idea
                 .modifiers
                 .read_all(field.value.items().unwrap_or_default()),
@@ -675,7 +523,6 @@ fn read_idea(token: &Item, group: &str, fields: &[Item]) -> Result<Idea, String>
                 field.value.items().unwrap_or_default(),
                 &mut unheld,
             )),
-            // Each entry reads string text.
             Some(b"traits") => {
                 for entry in field.value.items().unwrap_or_default() {
                     idea.traits.extend(
@@ -699,28 +546,22 @@ fn read_idea(token: &Item, group: &str, fields: &[Item]) -> Result<Idea, String>
     }
 }
 
-/// One group occurrence as the file read it.
 struct Occurrence {
     name: String,
     identity: Option<Vec<u8>>,
     path: Path,
     law: Option<bool>,
     designer: Option<bool>,
-    /// The count of ideas and advisors before it in the file.
     start: usize,
     ideas: Vec<Idea>,
     advisors: Vec<Characters>,
 }
 
-/// What one file declares, in document order, as far as it can be followed.
 enum Declared {
     Category(IdeaCategory),
     Group(Occurrence),
 }
 
-/// One file as its loader reads it: its declarations up to the stop, the
-/// ideas and advisors the stop leaves known by name only, the stop, and
-/// the misreads.
 struct FileRead {
     declared: Vec<Declared>,
     refused_tokens: Vec<String>,
@@ -737,7 +578,6 @@ fn read_file(input: &[u8], groups: Groups<'_>, names: &KeyNames) -> FileRead {
         undecided: Vec::new(),
         stop: None,
     };
-    // Both idea tags and ideas construct a mode-0 lexer per file.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -752,7 +592,6 @@ fn read_file(input: &[u8], groups: Groups<'_>, names: &KeyNames) -> FileRead {
             cause: format!("{unsettled}; any idea the rest of the file defines is unknown"),
         })
     });
-    // The same walk as the dispatch, over what it read.
     let mut groups = groups;
     let (mut ideas, mut categories) = (0, 0);
     let mut declared = Vec::new();
@@ -818,7 +657,6 @@ fn read_file(input: &[u8], groups: Groups<'_>, names: &KeyNames) -> FileRead {
                                 continue;
                             }
                             Path::New { .. } if is("use_list_view") => continue,
-                            // Only an entry the group read as one is an idea.
                             Path::New { .. } if entry.kind != Kind::Open => continue,
                             _ => {}
                         }
@@ -883,7 +721,6 @@ fn read_file(input: &[u8], groups: Groups<'_>, names: &KeyNames) -> FileRead {
         None => Vec::new(),
     };
     if let Some(stop) = &stop {
-        // Only what comes before the stop is known.
         let mut categories = 0;
         declared.retain(|declared| match declared {
             Declared::Category(_) => {
@@ -911,8 +748,6 @@ fn read_file(input: &[u8], groups: Groups<'_>, names: &KeyNames) -> FileRead {
     }
 }
 
-/// A group the database holds: its flags and its ideas' places in
-/// the database's ideas.
 #[derive(Clone, Debug)]
 struct Group {
     name: String,
@@ -922,16 +757,11 @@ struct Group {
     ideas: Vec<usize>,
 }
 
-/// The idea database both loaders build.
 #[derive(Clone, Debug, Default)]
 struct Database {
     tags: IdeaTags,
     groups: Vec<Group>,
-    /// The idea array without its null idea: an idea's index is its
-    /// place here plus one.
     ideas: Vec<Idea>,
-    /// The first file that stops short, whose unknown rest may register
-    /// any group name.
     unknown: Option<String>,
 }
 
@@ -949,8 +779,6 @@ impl Database {
         }
     }
 
-    /// The idea takes the database's count (the null idea included)
-    /// as its index and joins the database and `group`.
     fn register(&mut self, mut idea: Idea, group: usize) -> usize {
         idea.position = i32::try_from(self.ideas.len() + 1).unwrap_or(i32::MAX);
         idea.group.clone_from(&self.groups[group].name);
@@ -960,14 +788,11 @@ impl Database {
         index
     }
 
-    /// One file's declarations, in order; the indices of the ideas it
-    /// defines, and the advisors it declares.
     fn apply(&mut self, declared: Vec<Declared>) -> (Vec<usize>, Characters) {
         let mut defined = Vec::new();
         let mut advisors = Characters::default();
         for declared in declared {
             let occurrence = match declared {
-                // A name declared again adds another object.
                 Declared::Category(category) => {
                     self.tags.categories.push(category);
                     continue;
@@ -983,10 +808,6 @@ impl Database {
                     .position(|group| group.identity.as_ref() == Some(identity))
             });
             match (occurrence.path, existing) {
-                // Reread the held group: its flags change for every idea it holds;
-                // an idea whose name matches without case is rebuilt in place under
-                // the new spelling; any other is appended. Every idea then takes
-                // its place in the group as its index.
                 (Path::Again, Some(group)) => {
                     let held = &mut self.groups[group];
                     held.law = occurrence.law.unwrap_or(held.law);
@@ -1013,9 +834,6 @@ impl Database {
                         self.ideas[*index].position = i32::try_from(place).unwrap_or(i32::MAX);
                     }
                 }
-                // A new group whose name the database already holds gives it its
-                // ideas, appended whatever their names, and is discarded with
-                // its flags.
                 (_, Some(group)) => {
                     for idea in occurrence.ideas {
                         defined.push(self.register(idea, group));
@@ -1039,8 +857,6 @@ impl Database {
         (defined, advisors)
     }
 
-    /// The ideas as the game uses them once every file is read: each takes
-    /// its group's flags.
     fn finish(mut self) -> (IdeaTags, Vec<Idea>) {
         for group in &self.groups {
             for index in &group.ideas {
@@ -1052,7 +868,6 @@ impl Database {
     }
 }
 
-/// Parses one `common/idea_tags` file, its triggers against `names`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn parse_tags(input: &[u8], names: &KeyNames) -> Vec<IdeaCategory> {
     let mut database = Database::default();
@@ -1065,24 +880,15 @@ pub fn parse_tags(input: &[u8], names: &KeyNames) -> Vec<IdeaCategory> {
     database.tags.categories
 }
 
-/// One file's ideas in read order. `refused` is set when the reading cannot
-/// be followed: it names where and why, and `refused_tokens` the ideas and
-/// advisors from the group holding that place on, whose contents are not
-/// known. `notes` are the places the game's reading leaves the text's
-/// braces, each read as the game reads it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IdeaFile {
     pub ideas: Vec<Idea>,
-    /// The character templates the officer-corps groups declare
-    /// (`characters::officer_template`): advisors, not ideas.
     pub advisors: Characters,
     pub refused: Option<String>,
     pub refused_tokens: Vec<String>,
     pub notes: Vec<String>,
 }
 
-/// Parses one `common/ideas` file on its own, its triggers against `names`.
-/// `officers` is NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU.
 #[cfg(any(test, feature = "test-support"))]
 pub fn parse_ideas(input: &[u8], officers: &[String], names: &KeyNames) -> IdeaFile {
     let mut database = Database::default();
@@ -1097,31 +903,18 @@ pub fn parse_ideas(input: &[u8], officers: &[String], names: &KeyNames) -> IdeaF
     }
 }
 
-/// Every idea category and idea in the content stack.
 #[derive(Clone, Debug, Default)]
 pub struct IdeaContent {
     pub tags: IdeaTags,
-    /// The database's ideas, in its order.
     ideas: Vec<Idea>,
-    /// The first matching lexer token wins; ASCII case folds without
-    /// changing the definition's authored spelling.
     by_token: BTreeMap<Token, usize>,
-    /// Tokens in load order (a token defined again keeps its first place): a law
-    /// slot lists its laws from least to most escalated this way.
     order: Vec<String>,
-    /// Effective laws by slot, in database order.
     laws_by_slot: BTreeMap<String, Vec<usize>>,
-    /// Definition indices: a group reread replaces an idea in place,
-    /// while an appended duplicate cannot replace that match.
     coverage: Coverage,
-    /// A gap before an entry was created could hold an earlier matching
-    /// token, even after this entry is rebuilt in place.
     first_files: Vec<usize>,
 }
 
 impl IdeaContent {
-    /// Every declared token in database order, and a gap that may hide more.
-    /// Resolve each with `idea`: a later unread file may have replaced it.
     pub fn tokens(&self) -> (impl Iterator<Item = &str>, Option<&Gap>) {
         (
             self.order.iter().map(String::as_str),
@@ -1161,8 +954,6 @@ impl IdeaContent {
         }
     }
 
-    /// Content from parsed files alone, every file read to its end: other
-    /// crates' test fixtures.
     #[cfg(feature = "test-support")]
     pub fn from_parsed(categories: Vec<IdeaCategory>, ideas: Vec<Idea>) -> Self {
         Self::new(
@@ -1176,8 +967,6 @@ impl IdeaContent {
         )
     }
 
-    /// An idea by token: None when no file defines it, the gap when a file
-    /// that could define or redefine it stops short.
     pub fn idea(&self, token: &str) -> Result<Option<&Idea>, &Gap> {
         let index = self.by_token.get(&Token::c_str(token.as_bytes()));
         if let Some(gap) = index
@@ -1195,7 +984,6 @@ impl IdeaContent {
         Ok(index.map(|index| &self.ideas[*index]))
     }
 
-    /// The laws of a slot in load order, and the gap that may hide more.
     pub fn laws(&self, slot: &str) -> (Vec<&Idea>, Option<&Gap>) {
         let laws = self
             .laws_by_slot
@@ -1208,10 +996,6 @@ impl IdeaContent {
     }
 }
 
-/// Reads `common/idea_tags` and then `common/ideas` into one database.
-/// `officers` is NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU,
-/// whose groups the game reads as character advisor templates. Those
-/// come back apart from the ideas, for [`characters::read`].
 pub fn read(
     layers: &ResolvedLayers,
     officers: &[String],
@@ -1222,7 +1006,6 @@ pub fn read(
     let mut advisors = Characters::default();
     let mut warnings = Vec::new();
     let names = layers.key_names()?;
-    // The content loader reads idea tags fourth, and ideas after buildings.
     for (loader, folder, what, names) in [
         (
             Loader::Tags,
@@ -1259,9 +1042,6 @@ pub fn read(
             advisors.register(&file_advisors);
             advisors.merge(file_advisors);
             if let Some(stop) = read.stop {
-                // The ideas, categories and advisors from the stop on are
-                // known by name only, and the rest of the file may define
-                // any other: every lookup this file could answer is refused.
                 coverage.gap(&path.text(), stop.cause.clone());
                 advisors.gap(&path.text(), &stop.cause);
                 if database.tags.cut.is_none() {
@@ -1362,8 +1142,6 @@ mod tests {
         ];
         let content = IdeaContent::new(IdeaTags::default(), ideas, coverage.clone(), vec![0, 2]);
         assert_eq!(content.idea("First").unwrap_err().path, "gap.txt");
-        // Rebuilding the matched object in its held group clears the gap;
-        // appending a shadowed alias in another group above did not.
         coverage.replace("0");
         let content = IdeaContent::new(content.tags, content.ideas, coverage, content.first_files);
         assert_eq!(content.idea("FIRST").unwrap().unwrap().token, "first");
@@ -1417,7 +1195,6 @@ mod tests {
             .collect()
     }
 
-    /// Files through the database in order, each by its loader.
     fn database(files: &[(Loader, &[u8])]) -> (IdeaTags, Vec<Idea>) {
         let mut database = Database::default();
         for (loader, input) in files {
@@ -1460,22 +1237,14 @@ mod tests {
         assert_eq!(category("country").kind.as_deref(), Some("national_spirit"));
         assert!(!category("army_spirit").politics_tab);
         assert!(category("hidden_ideas").hidden);
-        // A quoted type is no keyword; `cost` uses integer scanning,
-        // so 010 is 8, and a failed scan keeps it.
         let quoted = category("quoted");
         assert_eq!((quoted.kind.as_deref(), quoted.cost), (None, Some(8.0)));
-        // The type dispatch uses the value keyword, folded by the lexer;
-        // a value that names no type resets it.
         let folded = category("folded");
         assert_eq!(folded.kind.as_deref(), Some("national_spirit"));
         assert_eq!(folded.ledger, 0x4);
         assert_eq!(category("reset").kind, None);
     }
 
-    /// Visit each category in array order, its name and then its slots,
-    /// compared exactly: an earlier category holding slot `X` wins over a
-    /// later category named `X`. A repeated name adds another object,
-    /// which the scan reaches after the first.
     #[test]
     fn categories_resolve_in_array_order_and_repeat_as_new_objects() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1528,8 +1297,6 @@ mod tests {
         assert_eq!(designer.equipment_bonuses[0].equipment, "armor");
         let spirit = by(&ideas, "GER_spirit");
         assert_eq!(spirit.name.as_deref(), Some("GER_SPIRIT_NAME"));
-        // Both blocks read into the one modifier object; `[?x]` does not
-        // convert and leaves the 0.
         assert_eq!(
             values(&spirit.modifiers),
             [
@@ -1539,7 +1306,6 @@ mod tests {
         );
         assert_eq!(spirit.modifiers.tooltips(), ["GER_TIP"]);
         assert_eq!(spirit.targeted[0].tag.as_deref(), Some("SOV"));
-        // Each idea takes its database index, with the null idea at 0.
         assert_eq!(
             [law.position, designer.position, spirit.position],
             [1, 2, 3]
@@ -1588,11 +1354,6 @@ mod tests {
         }
     }
 
-    /// Rereading a held group keeps its flags: a later occurrence without
-    /// `law` keeps it, and a later `law = no` changes every idea of the group.
-    /// An idea whose name matches without case is rebuilt in place under
-    /// the new spelling; any other key, `use_list_view` included, is an idea.
-    /// Every idea then takes its place in the group as its index.
     #[test]
     fn a_group_read_again_keeps_its_flags_and_its_ideas() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1626,11 +1387,6 @@ mod tests {
         assert!(ideas.iter().all(|idea| !idea.law));
     }
 
-    /// Idea tags read every group as a new one; registration appends its
-    /// ideas to a held group of the same name, whatever their names, with
-    /// their database indices, and discards the new group's flags. A quoted
-    /// key in `common/ideas` misses the held-group scan and merges the
-    /// same way.
     #[test]
     fn a_new_group_of_a_held_name_merges_its_ideas() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1649,9 +1405,6 @@ mod tests {
         assert_eq!(shown, [("a", 1, true), ("a", 2, true), ("c", 3, true)]);
     }
 
-    /// Both loaders read `idea_categories` and `ideas`: an idea declared
-    /// under `common/idea_tags` and a category declared under `common/ideas`
-    /// join the database like any other.
     #[test]
     fn both_directories_declare_categories_and_ideas() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1670,10 +1423,6 @@ mod tests {
         assert_eq!(tokens, ["early", "late"]);
     }
 
-    /// The value keyword selects ledger bits: `hidden` sets 1, `invalid`
-    /// sets 0xFFFF, and the others OR their bits. Any other value is reported
-    /// and its block skipped, so a block's fields never become the enclosing
-    /// idea's fields.
     #[test]
     fn a_ledger_is_read_as_its_reader_reads_it() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1691,9 +1440,6 @@ mod tests {
         assert_eq!(by(&file.ideas, "d").ledger, 0xFFFF);
     }
 
-    /// One reader per file, in document order: definitions inside ideas,
-    /// modifier blocks and conditions register; quoting keeps text; a
-    /// reference before its definition keeps its text.
     #[test]
     fn ideas_follow_the_file_reader_table_in_document_order() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1725,10 +1471,8 @@ mod tests {
         );
         let second = by(&file.ideas, "second");
         assert_eq!(second.cost, Some(25.0));
-        // The later `picture` reads the variable its condition defined.
         assert_eq!(second.picture.as_deref(), Some("second_pic"));
         assert_eq!(values(&second.modifiers), [("c".to_owned(), 20_000)]);
-        // A string list resolves; before its definition `@trait` stays text.
         assert_eq!(second.traits, ["@trait"]);
         let third = by(&file.ideas, "third");
         assert_eq!(third.traits, ["trait_x"]);
@@ -1739,25 +1483,18 @@ mod tests {
             values(&third.targeted[0].modifiers),
             [("d".to_owned(), 30_000)]
         );
-        // An unknown top-level key is skipped, defining nothing.
         assert_eq!(
             texts(by(&file.ideas, "fourth")),
             [
                 ("e".to_owned(), "@skipped".to_owned(), 0),
                 ("f".to_owned(), "1".to_owned(), 100_000),
-                // `idea_categories` is read by key.
                 ("g".to_owned(), "0.4".to_owned(), 40_000),
-                // Rule fields read by key but skip `icon`.
                 ("h".to_owned(), "7".to_owned(), 700_000),
                 ("i".to_owned(), "@icon".to_owned(), 0),
             ]
         );
     }
 
-    /// A taken name reads nothing more and the reading goes on, noted. A
-    /// block whose reading the port cannot settle refuses the ideas of the
-    /// group holding it and every later one: the group's flags may follow
-    /// anywhere in it.
     #[test]
     fn unsettled_blocks_refuse_their_group_and_the_rest_of_the_file() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1801,10 +1538,6 @@ mod tests {
         }
     }
 
-    /// A bare key folds; a quoted one has no keyword. In a group a quoted
-    /// `"law"` with a scalar is an error the reader records, and with a block
-    /// an idea named `law`; in an idea a quoted field is skipped. A failed
-    /// conversion leaves the field as it was.
     #[test]
     fn keywords_fold_quoted_keys_are_names_and_failed_values_keep_the_field() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1818,12 +1551,9 @@ mod tests {
         assert_eq!(file.ideas.len(), 1);
         let idea = &file.ideas[0];
         assert_eq!(idea.token, "designer");
-        // `designer` is the group's flag, so an idea reports it as unexpected.
         assert!(idea.law && !idea.designer && idea.default);
         assert_eq!(idea.cost, Some(5.0));
         assert_eq!(idea.picture.as_deref(), Some("pic"));
-        // `use_list_view` is a boolean flag of the group: a block's `{` is
-        // its value and the block's `}` ends the group.
         let file = parse_ideas(
             b"ideas = { g = { use_list_view = { } kept = { } } }",
             &[],
@@ -1838,15 +1568,6 @@ mod tests {
         assert!(file.ideas.is_empty());
     }
 
-    /// A new group named in
-    /// NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU makes each
-    /// entry a character template holding one advisor. Its fields read in
-    /// order as an advisor. The slot is the group's unless a `slot` field
-    /// names another; the idea token is always the key, an empty name is the
-    /// key, and the army/small portrait is `GFX_idea_` followed by the name.
-    /// `traits` blocks add up, a failed cost keeps the earlier one, and the
-    /// role keeps its `modifier` and `research_bonus`. A held group read
-    /// again makes no officer test: its entries are ideas.
     #[test]
     fn officer_corps_groups_are_character_advisor_templates() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1902,14 +1623,11 @@ mod tests {
             portrait("GER_z"),
             Authored::Asset("GFX_idea_GER_z_name".into())
         );
-        // Without the define every group is an idea group.
         let plain = parse_ideas(source, &[], &KeyNames::default());
         assert_eq!(plain.ideas.len(), 4);
         assert_eq!(plain.advisors, Characters::default());
     }
 
-    /// An officer-corps entry past the place the reading cannot follow is
-    /// refused like an idea.
     #[test]
     fn a_refused_officer_corps_entry_is_no_advisor() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -1923,12 +1641,6 @@ mod tests {
         assert_eq!(file.refused_tokens, ["GER_a", "GER_b", "GER_c"]);
     }
 
-    /// A file whose reading stops short leaves every idea, category and
-    /// advisor it could define unknown: a lookup names the file and the
-    /// cause instead of answering from an earlier layer or from absence. A
-    /// later file's definition is known again; a category before the stop
-    /// resolves, and a group a later file names whose earlier registration
-    /// the stop may hide is refused.
     #[cfg(feature = "test-support")]
     #[test]
     fn a_file_that_stops_short_refuses_what_it_could_define() {
@@ -1965,12 +1677,9 @@ mod tests {
             gap.cause.starts_with("line 1: x has a block value"),
             "{gap}"
         );
-        // Absent is unknown too: b.txt may define it past the stop.
         assert!(content.idea("never").is_err());
         assert!(content.idea("kept").is_err());
         assert!(content.idea("redone").unwrap().is_some());
-        // A later group's new entry cannot prove that an unread earlier
-        // suffix did not append the token to another group first.
         assert!(content.idea("late").is_err());
         assert!(content.idea("LATE").is_err());
         assert!(advisors.advisor("GER_t").is_err());
@@ -1984,9 +1693,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A group a later file names that the database does not hold may be
-    /// one the unknown rest of an earlier file registers. That decides
-    /// whether it is read again or as new, so the file stops there, by name.
     #[test]
     fn a_group_an_earlier_gap_may_hold_is_refused() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -2018,10 +1724,6 @@ mod tests {
         assert_eq!(read.refused_tokens, ["new"]);
     }
 
-    /// The replay's classes through this reader: a quoted key is no keyword
-    /// and a bare one folds (above); a variable holds within its file only;
-    /// a block where fixed5 takes one value is read as the idea's own fields;
-    /// the end of text closes every loop.
     #[test]
     fn the_replay_classes_hold_for_ideas() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -2031,8 +1733,6 @@ mod tests {
         );
         let a = &file.ideas[0];
         assert_eq!((a.cost, a.picture.as_deref()), (None, Some("inner")));
-        // The block's `}` ended the idea, so `removal_cost` was read by the
-        // group and is no field of `a`.
         assert_eq!(a.removal_cost, None);
         assert!(file.notes[0].contains("field `cost` is a block"));
         let file = parse_ideas(
@@ -2048,7 +1748,6 @@ mod tests {
             file.notes
         );
         assert_eq!(file.ideas[0].token, "open");
-        // `@v` is another file's variable: its text, which does not convert.
         assert_eq!(file.ideas[0].removal_cost, None);
     }
 }

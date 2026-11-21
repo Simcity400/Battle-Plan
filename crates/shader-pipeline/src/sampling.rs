@@ -1,6 +1,3 @@
-//! Adapt sampler operations wgpu cannot express for the bound textures. This operates on
-//! naga's generated WGSL, then the device validates the resulting module. Authored code is
-//! parsed by the compiler and naga before it reaches this pass.
 
 use installed_content_core::pdxshader::{
     Address,
@@ -32,7 +29,6 @@ fn resource_names(wgsl: &str, group: u32) -> Result<BTreeMap<String, u32>, Strin
     Ok(names)
 }
 
-/// D3D11 addressing of one integer texel index (7.18.9), as WGSL over `i32` expressions.
 fn address(mode: Address, i: &str, n: &str) -> String {
     match mode {
         Address::Wrap => format!("((({i}) % {n}) + {n}) % {n}"),
@@ -50,7 +46,6 @@ fn pdx_mirror(i: i32, n: i32) -> i32 {
 }
 ";
 
-/// An integer texel offset that is not literally zero (an unknown expression counts).
 fn nonzero(offset: &str) -> bool {
     let body = ["vec2<i32>", "vec3<i32>", "vec2", "vec3"]
         .iter()
@@ -61,9 +56,6 @@ fn nonzero(offset: &str) -> bool {
             .any(|digits| !digits.trim_start_matches('0').is_empty())
 }
 
-/// `gather4` through MIRROR_ONCE or an unfilterable view (22.4.2, top mip level):
-/// the four bilinear footprint texels at `floor(uv * size - 0.5) + offset`, each axis addressed
-/// as D3D11 does, in gather order (x0,y1) (x1,y1) (x1,y0) (x0,y0). Exact: no filtering or LOD.
 fn gather(n: usize, fact: &Sampler) -> String {
     let (u, v) = (
         address(fact.u, "x[i]", "size.x"),
@@ -99,15 +91,6 @@ fn pdx_gather{n}(t: texture_2d<f32>, uv: vec2<f32>, offset: vec2<i32>, c: u32) -
     )
 }
 
-/// Shader filtering for an unfilterable view or a MIRROR_ONCE texel offset. D3D11 adds the
-/// offset in texels of each level before addressing (22.4.6). `textureLoad` reads each tap,
-/// each axis addressed as 7.18.9 does and a border read as
-/// transparent black. The LOD follows 7.18.10-11: isotropic
-/// `log2(max(|dX|, |dY|))` in level-0 texels from coarse derivatives, plus MipLODBias (and the
-/// instruction's bias), clamped to MinLOD/MaxLOD; a clamped LOD above zero minifies, else it
-/// magnifies; point mip reads level `floor(LOD + 0.5)`, linear mip blends the two levels by the
-/// fraction. D3D's derivative, LOD and weight arithmetic is implementation-defined, so this
-/// matches it as closely as another conforming GPU would.
 fn sample(n: usize, fact: &Sampler, dimension: super::TextureKind, kind: &str) -> String {
     let volume = dimension == super::TextureKind::D3;
     let (texture, vector, ivector) = if volume {
@@ -137,7 +120,6 @@ fn sample(n: usize, fact: &Sampler, dimension: super::TextureKind, kind: &str) -
             border.join(" || ")
         )
     };
-    // Bilinear (trilinear in a volume) over the footprint at `p - 0.5`.
     let corners: &[[i32; 3]] = if volume {
         &[
             [0, 0, 0],
@@ -249,7 +231,6 @@ pub fn lower(
         let fact = samplers
             .get(slot)
             .ok_or_else(|| format!("sampler slot {slot} retains an unbound native state"))?;
-        // Texture dimension belongs to the active program, not a retained sampler declaration.
         let binding = texture_names
             .get(texture.trim())
             .ok_or_else(|| format!("sampling uses unresolved texture {texture}"))?;
@@ -268,7 +249,6 @@ pub fn lower(
     while let Some(relative) = wgsl[cursor..].find("texture") {
         let start = cursor + relative;
         out.push_str(&wgsl[cursor..start]);
-        // Whole identifiers only: `dx11_cb0_.textureUv` is a member, not an operation.
         let name_end = wgsl[start..]
             .bytes()
             .position(|byte| !identifier(byte))
@@ -288,7 +268,6 @@ pub fn lower(
         let (end, mut args) = arguments(wgsl, paren)?;
         cursor = end;
         if name == "textureGather" {
-            // textureGather(component, texture, sampler, coords[, offset]).
             let (fact, dimension, manual) = resolve(&args[1], &args[2])?;
             let mirrored = fact.u == Address::MirrorOnce || fact.v == Address::MirrorOnce;
             if manual && dimension != super::TextureKind::D2 {
@@ -331,8 +310,6 @@ pub fn lower(
                 fact.name, fact.mag, fact.min, fact.mip
             ));
         }
-        // An anisotropic footprint mirrors tap by tap, folding where it crosses zero; with no
-        // MIRROR_ONCE mode in wgpu, no single sample (nor per-level offset) reproduces that.
         if mirrored && [fact.mag, fact.min, fact.mip].contains(&Filter::Anisotropic) {
             return Err(format!(
                 "anisotropic sample through MIRROR_ONCE sampler {:?}: wgpu has no MIRROR_ONCE \
@@ -398,17 +375,12 @@ pub fn lower(
         } else if name == "textureSampleBias" && !mirrored {
             args[3] = format!("({}) + {:?}", args[3], fact.lod_bias);
         } else if name == "textureSampleLevel" && fact.lod_bias != 0.0 {
-            // 7.18.11: MipLODBias applies to an LOD the shader specifies too.
             args[3] = format!("({}) + {:?}", args[3], fact.lod_bias);
         } else if name == "textureSampleGrad" {
-            // D3D's sampler bias scales the gradients for SampleGrad too.
             let scale = 2_f32.powf(fact.lod_bias);
             args[3] = format!("({}) * {scale:?}", args[3]);
             args[4] = format!("({}) * {scale:?}", args[4]);
         } else if name != "textureSampleLevel" && mirrored {
-            // Preserve pre-addressing derivatives across the mirror seam. Taking derivatives
-            // of abs(uv) would pick a different mip for quads crossing zero. D3D's LOD uses
-            // coarse derivatives (7.18.11).
             function = "textureSampleGrad";
             let bias = if name == "textureSampleBias" {
                 args.remove(3)
@@ -469,7 +441,6 @@ mod tests {
 
     #[test]
     fn mirror_once_gathers_and_offsets_lower_to_native_addressing() {
-        // `b.textureUv` precedes the operations: a member name must not swallow them.
         let wgsl = "@group(1) @binding(3) var t: texture_2d<f32>;
 @group(2) @binding(3) var s: sampler;
 fn f(b: B, uv: vec2<f32>) -> vec4<f32> { let w = b.textureUv; return textureGather(0, t, s, uv) + textureSample(t, s, uv, vec2<i32>(1i, 0i)) + textureSample(t, s, uv, vec2<i32>(0i, 0i)); }
@@ -494,7 +465,6 @@ fn f(b: B, uv: vec2<f32>) -> vec4<f32> { let w = b.textureUv; return textureGath
         assert!(lowered.contains("pdx_gather0(t, uv, vec2<i32>(0), u32(0))"));
         assert!(lowered.contains("fn pdx_gather0(") && lowered.contains("textureLoad(t,"));
         assert!(lowered.contains("pdx_sample") && lowered.contains("dpdxCoarse(uv)"));
-        // A zero offset keeps the mirror-by-abs lowering.
         assert!(lowered.contains("textureSampleGrad(t, s, vec2<f32>(abs((uv).x), (uv).y)"));
         let clamped = BTreeMap::from([(3, sampler(Address::Clamp, Filter::Linear))]);
         assert_eq!(lower(wgsl, &clamped, &plain, 0).unwrap(), wgsl);
@@ -507,7 +477,6 @@ fn f(b: B, uv: vec2<f32>) -> vec4<f32> { let w = b.textureUv; return textureGath
         let anisotropic = BTreeMap::from([(3, sampler(Address::MirrorOnce, Filter::Anisotropic))]);
         let reason = lower(wgsl, &anisotropic, &plain, 0).unwrap_err();
         assert!(reason.contains("anisotropic") && reason.contains("Map"));
-        // Without an offset too: the footprint would fold across zero.
         let no_offset = "@group(1) @binding(3) var t: texture_2d<f32>;
 @group(2) @binding(3) var s: sampler;
 fn f(uv: vec2<f32>) -> vec4<f32> { return textureSample(t, s, uv); }

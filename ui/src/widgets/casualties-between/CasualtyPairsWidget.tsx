@@ -58,17 +58,13 @@ import { trackHourOf } from '../../dashboard/settledHour';
 const SORT = { column: 'value', direction: 'descending' } as const;
 const pairKey = (flow: PairFlow) => flow.id;
 const flowOf = (key: string) => key.split('\u0000')[0];
-// Columns that name no country keep their accessors: arriving labels never re-sort by them.
 const AMOUNT: TableColumn<PairFlow> = { key: 'value', header: 'Casualties', label: 'Casualties', numeric: true, width: 'max-content',
   value: flow => flow.value, render: pairAmount };
 
-/** The selected pairs' exact signed rows. Built only once the breakdown mounts,
- * and again only when the rows, their labels or colours change. */
 const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId, narrow, live, totals }: {
   rows: readonly PairFlow[]; label: CountryLabel; hour: number; colors: ReadonlyMap<string, string>;
   columns: readonly TableColumn<PairFlow>[]; speed: number | undefined; height: number; onPick: (hour: number) => void;
   runtime: WidgetProps['runtime']; trackId: string; narrow: NarrowTable;
-  /** Following, each flow's amount and share at the head, and the total line: painted each frame, never rendered. */
   live?: Live<LiveValues<SortValue>>; totals?: LiveTexts;
 }) {
   const subtotal = rows.some(row => row.incomplete);
@@ -114,11 +110,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
     params: { branchId: track.branch.id, countries: [], between: false, window: null } } : null;
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
-  // Following, the widget renders when the head enters another window (the chord paints the hours inside one from the
-  // clock).
   const drillFollows = drill.breakdown !== null && drill.follow;
   const headWindow = useCallback((at: number) => String(casualtyPairWindows(manifest.data, at, false)[0] ?? -1), [manifest.data]);
-  // A following breakdown renders where its flows (or their subtotal marks) change: its numbers are painted.
   const drillRows = useRef<() => string>(() => '');
   const playback = useHeadHour(runtime.clock, active && (widget.time.mode === 'follow' || drillFollows),
     at => drillFollows ? `${headWindow(at)}:${drillRows.current()}` : headWindow(at));
@@ -160,7 +153,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     validateCasualtyPairs, track?.source, true);
   const data = currentWindows.length ? histories.data.get(currentWindows[0]) : undefined;
   const through = hour;
-  // Membership at the moment the flows show, not the hour asked for.
   const filter = filterQuery.at(through);
   const error = currentWindows.length ? histories.errors.get(currentWindows[0]) : undefined;
   const detailData = detailWindows.length ? histories.data.get(detailWindows[0]) : undefined;
@@ -168,11 +160,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const snapshot = useMemo(() => data ? snapshotCursor.at(data, through, grouped ? filter.tags : null, between)
     : { countries: [], flows: [] }, [snapshotCursor, data, through, filter.tags, grouped, between]);
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
-    [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    [chartWindows.join(','), histories.data]);
   const selectedIds = useMemo(() => pinned ? savedSelection ?? casualtyPairIds([...histories.data.values()]) : detail ?? [],
     [pinned, savedSelection, histories.data, detail]);
   const selectionKey = JSON.stringify(selectedIds);
-  const selected = useMemo(() => new Set(selectedIds), [selectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selected = useMemo(() => new Set(selectedIds), [selectionKey]);
   const detailThrough = detailHour;
   const rows = useMemo(() => detailData ? casualtyPairsAt(detailData, detailThrough).flows.filter(flow => selected.has(flow.id)) : [],
     [detailData, detailThrough, selected]);
@@ -187,7 +179,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const drillDay = useMemo<LiveTexts | undefined>(() => drillLive && { text: () => dayLabel(drillLive.hour()), subscribe: drillLive.subscribe }, [drillLive]);
   const following = active && widget.time.mode === 'follow';
   const windowTags = useMemo(() => casualtyPairTags(currentWindows.map(index => histories.data.get(index))),
-    [currentWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    [currentWindows.join(','), histories.data]);
   const identityHour = useIdentityHour(runtime.client, track, windowTags, runtime.clock, following,
     clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
   const identitySince = useIdentityKey(runtime.client, track, following);
@@ -200,8 +192,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const color = useCountryColours(named.tags, tag => { const style = styles.get(nameKey(named.hour, tag)); return style instanceof Error ? null : style?.color; }, tokens, colorRevision);
   const mutedColor = useMemo(() => (_tag: string) => tokens.muted, [tokens.muted]);
   const detailLabel = useMemo(() => labelAt(detailThrough), [labelAt, detailThrough]);
-  // Resolve the clock locally between React ticks. Prefetched windows carry only
-  // recorded values; a gap or an unloaded window clears the graph immediately.
   const frameAt = useMemo(() => {
     let lastHour = NaN, lastSeek = -1, frame: ChordFrame = { data: null };
     let labels: { hour: number; at: CountryLabel } | null = null;
@@ -237,7 +227,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const exact = exactFrames.current.get(frame);
     return exact ? fitTooltip([pairTooltip(chordPairs(hit, exact), exact.labels, exact.hour)], height) : null;
   }, [height]);
-  const stack = useMemo(() => pairHistory(chartReplies, selectedIds), [chartReplies, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stack = useMemo(() => pairHistory(chartReplies, selectedIds), [chartReplies, selected]);
   const colors = useMemo(() => selectedIds.map((_id, index) => tokens.categories[index % tokens.categories.length]), [selectedIds, tokens.categories]);
   const colorById = useMemo(() => new Map(selectedIds.map((id, index) => [id, colors[index]])), [selectedIds, colors]);
   const layers = useMemo<ChartLayer[]>(() => [{

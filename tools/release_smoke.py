@@ -23,8 +23,6 @@ import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# Installer internals 7-Zip shows beside the installed files, in folders named for NSIS variables
-# ($PLUGINSDIR and the like); none is ours. The uninstaller is written at install time.
 NSIS_INTERNAL = ("uninstall.exe",)
 FRAME = (1280, 720)
 DRAW_SECONDS = 600
@@ -164,7 +162,6 @@ def main():
     args.out.mkdir(parents=True)
     opened = args.out / "installed"
     open_installer(args.installer, opened)
-    # Some 7-Zip versions keep the install folder's variable as a folder of its own.
     installed = opened / "$INSTDIR" if (opened / "$INSTDIR").is_dir() else opened
     problems = layout_problems(installed, shipped_binaries())
     if problems:

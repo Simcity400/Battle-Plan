@@ -1,7 +1,3 @@
-//! Division object; all fields use its primary pointer. The hourly walker
-//! retains full handles and i64 hit points and organisation. Candidate fields
-//! with unknown widths remain identified below. Shared stat-block, ownership,
-//! location, map-entity and modifier fields are in cunit.
 
 use crate::modifier_keys as keys;
 use crate::{
@@ -10,155 +6,78 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Primary division vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_6d98);
-/// Secondary division vtable.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029d_6f78);
-/// Secondary subobject displacement.
 pub const SECONDARY_BASE: usize = 0x10;
-/// Low-supply counter input, i64 fixed5.
 pub const COUNTER_SUPPLY_STATUS: usize = 0x40;
-/// Byte gating the yellow invalid-orders glyph.
 pub const INVALID_ORDERS: usize = 0x24e;
-/// Fixed5 factor multiplying the plain strength ratio before clamping to
-/// zero through 100000. Both counter and committed-combat strength bars use
-/// this product.
 pub const STRENGTH_FACTOR: usize = 0x468;
-/// Orders-group member backlink, authenticated reciprocally against the group.
 pub const ORDERS_GROUP: usize = 0xc0;
-/// Primary order-instance pointer.
 #[cfg(test)]
 pub const PRIMARY_ORDER: usize = 0xd8;
-/// Movement target pointer, tested for presence.
 pub const MOVEMENT_TARGET: usize = 0x1e8;
-/// Source-province pointer requiring province authentication.
 pub const MOVEMENT_SOURCE: usize = 0x1f8;
-/// Movement numerator, i64.
 pub const MOVEMENT_NUMERATOR: usize = 0x240;
-/// Raw retreat byte.
 pub const RETREAT: usize = 0x24c;
-/// Strategic-redeployment byte.
 pub const STRATEGIC_REDEPLOYMENT: usize = 0x2af;
-/// Government-in-exile byte. Raid edges accept exile or their independent
-/// second gate. Exile permits a different controller area when state owners agree.
 pub const EXILED: usize = 0x2ae;
-/// Naval-transfer membership pointer, also selecting the counter-supply override.
 pub const NAVAL_TRANSFER_MEMBERSHIP: usize = 0x2f8;
-/// Byte that, nonzero, spares the movement speed's out-of-supply step its
-/// noncore-supply term.
 pub const NONCORE_SUPPLY_BYPASS: usize = 0x2e;
-/// Signed air-supply word, i64: positive, the movement speed's noncore-supply
-/// term takes the air noncore-supply define instead of the ordinary one.
 pub const AIR_SUPPLY: usize = 0x58;
-/// Signed days out of supply, i32: the movement speed's and attrition's
-/// out-of-supply penalty scale it by the supply-days define.
 pub const OUT_OF_SUPPLY_DAYS: usize = 0x498;
-/// Deployment handle type, u32.
 pub const DEPLOYMENT_TYPE: usize = 0x32c;
-/// Embedded equipment-variant pool.
 pub const EQUIPMENT_POOL: usize = 0x348;
-/// Equipment-bank vector data.
 pub const EQUIPMENT_DATA: usize = 0x368;
-/// Standard referenced-template pointer used by serialization.
 pub const STANDARD_TEMPLATE: usize = 0x3b8;
-/// Previous template retained while a deployed division completes conversion.
 pub const PREVIOUS_TEMPLATE: usize = 0x3c0;
-/// Separate fake-intelligence template pointer.
 pub const FAKE_INTEL_TEMPLATE: usize = 0x3c8;
-/// Embedded manpower-values object.
 pub const MANPOWER_VALUES: usize = 0x3d8;
 pub const MANPOWER_DATA: usize = MANPOWER_VALUES + crate::carmy_manpower_values::DATA;
-/// Current hit points, i64 fixed5.
 pub const STRENGTH: usize = 0x420;
-/// Organisation, i64 fixed5.
 pub const ORGANISATION: usize = 0x428;
-/// Experience, i64 fixed5.
 pub const EXPERIENCE: usize = 0x430;
-/// Total attrition, i64 fixed5.
 pub const ATTRITION_TOTAL: usize = 0x448;
-/// Entrenchment, i64 fixed5.
 pub const ENTRENCHMENT: usize = 0x458;
-/// Entrenchment cap, i64 fixed5.
 pub const ENTRENCHMENT_CAP: usize = 0x460;
-/// Attrition-icon input, separate from total attrition.
 pub const COUNTER_ATTRITION: usize = 0x438;
-/// Icon threshold, i64, tested after applying the country modifier.
 pub const COUNTER_ATTRITION_THRESHOLD_RVA: Rva = Rva(0x033e_0008);
-/// Maximum exercise level define, i32.
 pub const EXERCISE_MAXIMUM_LEVEL_RVA: Rva = Rva(0x033e_3ff4);
-/// Minimum effective strength fraction define, i64.
 pub const EXERCISE_MINIMUM_STRENGTH_RVA: Rva = Rva(0x033e_40b0);
-/// Ordered i64 experience-threshold array.
 pub const EXPERIENCE_THRESHOLDS_RVA: Rva = Rva(0x033e_6ec0);
-/// Requests-object pointer selecting the serialized upgrade group.
 pub const REQUESTS: usize = 0x478;
-/// Retained land model number, i32, selected from priority subunit and
-/// equipment. Recalculation runs once per day in the division's staggered hour
-/// and on template changes, deployment and creation. Between updates retain
-/// the displayed value; model suffix selection uses its sign-extended low byte.
 pub const RETAINED_VISUAL_VARIANT: usize = 0x4b0;
-/// Embedded acclimatization object requiring vtable authentication.
 pub const ACCLIMATIZATION: usize = 0x4b8;
-/// Signed fixed5 maximum grace hours, serialized unconditionally.
 pub const MAXIMUM_SUPPLY_GRACE: usize = 0x600;
-/// Signed fixed5 remaining grace hours, serialized unconditionally including zero.
 pub const REMAINING_SUPPLY_GRACE: usize = 0x610;
-/// The division's fuel, a signed fixed5 word: the movement speed's fuel ratio divides it
-/// by the stat block's capacity, and the army writer saves it as `fuel`.
 pub const FUEL_CANDIDATE: usize = 0x620;
-/// Raw counter-separation byte.
 pub const SEPARATE_COUNTER: usize = 0x630;
 
-/// Constructor followed by registration of the full handle.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00cc_a1b0);
-/// Synchronous hourly division update.
 pub const HOURLY_UPDATE_RVA: Rva = Rva(0x00ce_4fc0);
-/// Active-stat recalculation in staggered parallel work joined before returning.
 pub const UPDATE_ACTIVE_STATS_RVA: Rva = Rva(0x00ce_a3c0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Native reference qword: type in the low u32, numeric id in the high u32.
     pub id: u64,
-    /// Raw country link whose canonical country owns this roster entry.
     pub roster_owner: u32,
     pub logical_owner: u32,
     pub expeditionary_owner: u32,
-    /// Zero represents the native null location pointer.
     pub province: u32,
-    /// Standard template's full native reference; zero represents a null pointer.
     pub template: u64,
-    /// Current HP, not the derived strength fraction; native signed fixed5.
     pub hit_points: i64,
-    /// Native signed fixed5, without display rounding.
     pub organisation: i64,
-    /// Full COrdersGroup reference of the army this division belongs to, read through the embedded
-    /// COrdersGroupMember back-pointer (`ORDERS_GROUP`). Zero preserves the native null pointer of
-    /// an unassigned division; it is an independent second source for the group's own member
-    /// vector, never a substitute for it.
     pub orders_group: u64,
-    /// Standard template's [`creferenced_division_template::REVEAL_SKIP`]
-    /// byte; zero for a null template.
     pub reveal_skip: u8,
-    /// The full handle of [`cunit::THEATRE`] ([`crate::ctheatre::UnitTheatres`]), zero for a null
-    /// pointer; None is a refused read, which leaves the row's other fields standing.
     pub theatre: Option<u64>,
 }
 
-/// Hourly companion to a division's existing authenticated core row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IconInputsRow {
     pub division: u64,
-    /// Native byte, including noncanonical true values.
     pub separate_counter: u8,
-    /// Full preferred template handle; zero means the pointer is null.
     pub alternate_template: u64,
 }
 
-/// Bounded, allocation-free acquisition from the shared division census.
-/// The same template authentication is used for the standard and alternate
-/// pointers in the current source acquisition. A supplied seed and source must
-/// belong to this same acquisition boundary; failed seed fields are not reread.
 pub fn read_icon_inputs(
     memory: &impl Memory,
     base: usize,
@@ -183,7 +102,6 @@ pub fn read_icon_inputs(
                 && seed.primary_vtable == Some(primary as u64)
                 && seed.secondary_vtable == Some(secondary as u64)
                 && seed.handle == Some(source.division)
-                // This is the raw roster reference, not its canonical slot.
                 && seed.roster_owner == Some(source.country)
         } else {
             read::<u64>(memory, source.pointer) == Some(primary as u64)
@@ -197,9 +115,6 @@ pub fn read_icon_inputs(
         Ok(())
     };
     identity()?;
-    // A seed carries both fields from the census's gather at this boundary
-    // ([`capture_division_seeds`]); a field that gather could not read failed
-    // there and is not read again.
     let separate_counter = match seed {
         Some(seed) => seed.separate_counter,
         None => read::<u8>(memory, at(SEPARATE_COUNTER)?),
@@ -213,8 +128,6 @@ pub fn read_icon_inputs(
     .ok_or("army alternate template pointer unreadable")?;
     let alternate_template =
         if pointer != 0 && seed.is_some_and(|seed| seed.standard_template == Some(pointer)) {
-            // The core projection authenticated this exact pointer and retained its
-            // handle in source.template. A different alternate template stays live.
             if source.template == 0 {
                 return Err("non-null division template has null handle");
             }
@@ -232,7 +145,6 @@ pub fn read_icon_inputs(
     })
 }
 
-/// Reads only a transition-dirty division, using its authenticated census identity.
 pub fn pending_template(
     memory: &impl Memory,
     base: usize,
@@ -266,22 +178,10 @@ fn template_handle(memory: &impl Memory, base: usize, pointer: usize) -> Result<
     }
 }
 
-/// Reads each canonical country's CArmy roster once after the full tick returns.
-/// Country aliases are authenticated but do not duplicate a roster. Rows retain
-/// native order; duplicate-handle checks and sorting belong to the spool thread.
-/// Vtables and nonzero handles validate the roster object's native identity
-/// fields, not independent membership in the engine's reference registry.
-/// A full output buffer still counts every remaining non-null roster slot and
-/// checks its pointer read, without reading that row's fields or allocating.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
     walk_with(memory, base, game_state, output, |_, _| {})
 }
 
-/// Shares this census with allocation-free state readers. Each invocation reads
-/// independently and visits only authenticated rows that fit in `output`.
-/// Pointers are transient sources, never replay identities. Visitors retain
-/// their own capacity/failure outcomes; a truncated or unavailable parent walk
-/// cannot establish a complete dependent census, even after earlier visits.
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,
@@ -353,7 +253,6 @@ pub fn walk_with(
                 .checked_add(ccountry::DIVISIONS)
                 .and_then(|p| Array::read(memory, p, 8))
                 .ok_or("division roster unreadable or invalid")?;
-            // Unlike the country/province tables, this vector has no sentinel.
             for index in 0..roster.count {
                 let pointer = roster
                     .element(index, 8)
@@ -385,14 +284,10 @@ pub fn walk_with(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Fixed native fields captured once from the current authenticated division census.
-/// An absent field records its original failed read; consumers never retry it.
-/// Pointer-bearing fields admit child reads only after their consumer validates them.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionSeed {
     pub pointer: usize,
     pub division: u64,
-    /// Country-roster position; removals swap in the final entry.
     pub country_ordinal: Option<u32>,
     pub primary_vtable: Option<u64>,
     pub secondary_vtable: Option<u64>,
@@ -420,53 +315,28 @@ pub struct DivisionSeed {
     pub entrenchment: Option<i64>,
     pub entrenchment_cap: Option<i64>,
     pub counter_supply_status: Option<i64>,
-    /// [`INVALID_ORDERS`]; the counter's yellow `!` gate.
     pub invalid_orders: Option<u8>,
-    /// [`STRENGTH_FACTOR`]; multiplies the counter's strength ratio.
     pub strength_factor: Option<i64>,
-    /// [`RETAINED_VISUAL_VARIANT`], the stored land model number.
     pub model_number: Option<i32>,
-    /// The first 0x40 bytes of the embedded [`ACCLIMATIZATION`] object.
     pub acclimatization: Option<[u8; 0x40]>,
-    /// [`cunit::MAP_ENTITY`]; only whether it is set is recorded.
     pub map_entity: Option<usize>,
-    /// [`EXILED`], the raid army-reach exile byte.
     pub exiled: Option<u8>,
-    /// Division-name member pointer; operands are copied separately.
     pub name_member: Option<usize>,
     pub supply_grace_maximum: Option<i64>,
     pub supply_grace_remaining: Option<i64>,
-    /// Owned header acquired once for the hourly complete contributor list.
     pub manpower_values: Option<[u8; 24]>,
-    /// [`cunit::MOVEMENT_PRIORITY`], the raw signed movement priority of the
-    /// movement arrow style, beside the retreat byte.
     pub movement_priority: Option<i32>,
-    /// [`cunit::WITHDRAWAL`], the raw saved `withdraw` byte of the movement
-    /// arrow style, beside the retreat byte.
     pub withdrawal: Option<u8>,
-    /// [`FAKE_INTEL_TEMPLATE`], the counter's alternate template pointer,
-    /// beside the standard template's line ([`read_icon_inputs`]).
     pub alternate_template: Option<usize>,
-    /// [`SEPARATE_COUNTER`], on the supply grace scalars' line.
     pub separate_counter: Option<u8>,
-    /// [`NONCORE_SUPPLY_BYPASS`], on the received supply ratio's line.
     pub noncore_supply_bypass: Option<u8>,
-    /// [`OUT_OF_SUPPLY_DAYS`].
     pub out_of_supply_days: Option<i32>,
-    /// [`FUEL_CANDIDATE`], the fuel the movement speed's fuel ratio reads, on the
-    /// supply grace scalars' line.
     pub fuel: Option<i64>,
-    /// [`AIR_SUPPLY`], which selects the noncore-supply term's air define.
     pub air_supply: Option<i64>,
-    /// A mover's first route id; inner `None` failed, outer `None` was not gathered.
     pub route_head: Option<Option<u32>>,
-    /// A mover's location province id, gathered and absent as [`Self::route_head`].
     pub location_id: Option<Option<u32>>,
-    /// The commander selection the census made for every consumer; `None` was not made.
     pub selected: Option<crate::carmy_leader::Selected>,
-    /// [`cunit::THEATRE`], beside the map entity on its line.
     pub theatre: Option<usize>,
-    /// [`cunit::QUEUED_ACTION_COUNT`], on the naval-transfer membership's line.
     pub queued_actions: Option<i32>,
 }
 
@@ -519,10 +389,6 @@ impl DivisionSeed {
     pub const QUEUED_ACTIONS: u64 = 1 << 45;
 }
 
-/// The two arrow-style fields (beside `RETREAT`) share the retreat byte's line, so the census
-/// gathers them there instead of the movement pass reading each division twice more; the counter
-/// icon's alternate template and separate-counter byte share the standard template's and the supply
-/// grace scalars' lines.
 const DIVISION_SEED_SPANS: [(usize, usize); 46] = [
     (0, 8),
     (SECONDARY_BASE, 8),
@@ -575,14 +441,6 @@ const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 46] =
     crate::memory::packed_fields(DIVISION_SEED_SPANS);
 const DIVISION_SEED_STRIDE: usize = crate::memory::packed_stride(DIVISION_SEED_SPANS);
 
-/// Gather exact fixed layouts in bounded row batches. A failed field stays failed;
-/// later fields remain independently available to other tables. The caller sets
-/// each native pointer and expected full handle before capture.
-///
-/// The armies are scattered through the heap, so the gather is bound by their
-/// cache misses; the record copy hints each field of the rows ahead of it.
-/// Hinting whole batches ahead as well made the cold gather slower (the
-/// `bench_division_seed_gather_cold` bench).
 pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) -> u64 {
     const BATCH: usize = 64;
     let mut bytes = [0u8; BATCH * DIVISION_SEED_STRIDE];
@@ -717,7 +575,6 @@ pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) 
     total
 }
 
-/// One four-byte field at `offset` of each object, `None` where it was unreadable.
 fn gather_u32s(
     memory: &impl Memory,
     pointers: &[usize],
@@ -751,7 +608,6 @@ fn gather_u32s(
     total
 }
 
-/// Each mover's first ordinary route id and location id, gathered once for every consumer.
 pub fn capture_division_movers(memory: &impl Memory, seeds: &mut [DivisionSeed]) -> u64 {
     const BATCH: usize = 64;
     let mut movers = [0_usize; BATCH];
@@ -801,18 +657,11 @@ pub struct MovementRow {
     pub numerator: i64,
     pub retreat: u8,
     pub strategic_redeployment: u8,
-    /// Current strategic-action operands, present only on the demanded branch.
     pub strategic_action: StrategicAction,
     pub naval_transfer: u8,
     pub combat_count: u32,
-    /// 0 no combat, 1 first-combat attacker-country, 2 first-combat defender.
     pub combat_role: u8,
-    /// Province of the first referenced combat, zero when absent. The viewer
-    /// derives stack kind from this and effective content.
     pub combat_province: u32,
-    /// One when the unit map entity is set. Combat icons use the first attacker
-    /// with an entity. Stack kind alone cannot establish presence because combat
-    /// roles take kinds nine and ten without one.
     pub map_entity: u8,
     pub path_start: usize,
     pub path_len: usize,
@@ -820,27 +669,13 @@ pub struct MovementRow {
     pub alternate_start: usize,
     pub alternate_len: usize,
     pub alternate_total: u32,
-    /// Raw saved `withdraw` byte, gathered with the division's seed and
-    /// published after the established movement pass. An independent refusal
-    /// withholds only this arrow-style operand.
     pub withdrawal: Option<u8>,
-    /// Raw signed movement priority (saved `move_priority`); the arrow renderer
-    /// tests <1 only for class-zero follow-orders arrows. Never clamp an
-    /// unknown enum. Gathered with the division's seed, as `withdrawal`.
     pub movement_priority: Option<i32>,
-    /// Complete ordered full identities in MovementPacket's owned arena.
     pub combat_references: Option<(usize, usize)>,
     pub combat_references_failure: Option<&'static str>,
-    /// Raw signed fixed5 maximum speed of the authenticated stat block (the stat block's maximum
-    /// speed), read only when the ordinary route count is positive. None is outside demand or a
-    /// guarded refusal.
     pub base_speed: Option<i64>,
-    /// [`FUEL_CANDIDATE`] already held by the census seed, including stationary
-    /// divisions whose panel speed takes the fuel factor. None is a field refusal.
     pub fuel: Option<i64>,
-    /// Regional transport speed acquired only for an embarked unit by the caller's companion.
     pub transport_speed: Option<i64>,
-    /// [`cunit::QUEUED_ACTION_COUNT`] already held by the census seed. None is a field refusal.
     pub queued_actions: Option<i32>,
 }
 
@@ -856,8 +691,6 @@ struct PresentationInput {
     bytes: [u8; 16],
 }
 
-/// Exact dependencies retained only within one acquisition. Storage grows at
-/// each successful reached dependency; a refused growth is its own error.
 pub(crate) struct PresentationInputs {
     entries: std::collections::HashMap<(usize, usize), PresentationInput>,
     refused: bool,
@@ -872,7 +705,6 @@ impl PresentationInputs {
             refused: false,
         })
     }
-    /// Empty; allocates nothing until an operand is retained.
     pub(crate) fn vacant() -> Self {
         Self {
             entries: std::collections::HashMap::new(),
@@ -886,23 +718,19 @@ impl PresentationInputs {
         self.entries.clear();
         self.refused = false;
     }
-    /// A read since the last clear failed only because the storage could not grow.
     pub(crate) fn refused(&self) -> bool {
         self.refused
     }
-    /// `None` for an unreadable operand; an error only for refused growth.
     pub(crate) fn read<T: crate::memory::Raw>(
         &mut self,
         memory: &impl Memory,
         address: usize,
     ) -> std::io::Result<Option<T>> {
         let len = std::mem::size_of::<T>();
-        // These operands are scalar/native record prefixes, at most 16 bytes.
         if address == 0 || len > 16 || len == 0 {
             return Ok(read(memory, address));
         }
         if let Some(entry) = self.entries.get(&(address, len)) {
-            // Raw is sealed to padding-free all-bit-pattern types.
             return Ok(Some(unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() }));
         }
         let mut entry = PresentationInput::default();
@@ -919,8 +747,6 @@ impl PresentationInputs {
     }
 }
 
-/// Owned province identities and consumed geography fields, shared only among
-/// divisions in one movement pass. It never retains unit or render state.
 #[cfg(test)]
 pub struct MovementInputs {
     shared: std::cell::RefCell<PresentationInputs>,
@@ -982,8 +808,6 @@ fn presentation_array(
         .ok_or("division presentation array invalid")
 }
 
-/// (object, offset, length) fields addressed as `presentation_field` does, in
-/// one guarded call; an overflowing field fails there.
 fn presentation_batch<const N: usize>(
     memory: &impl Memory,
     fields: [(usize, usize, usize); N],
@@ -994,7 +818,6 @@ fn presentation_batch<const N: usize>(
     )
 }
 
-/// A gathered field, consulted where `presentation_field` would read it.
 fn presentation_batched<T: crate::memory::Raw, const N: usize>(
     memory: &impl Memory,
     fields: &crate::memory::FieldBatch<N>,
@@ -1057,12 +880,10 @@ pub(crate) fn movement_route_province(
     movement_route_destination(memory, base, movement_province_array(memory, state)?, id)
 }
 
-/// The game state's province array, which route ids index.
 pub fn movement_province_array(memory: &impl Memory, state: usize) -> Result<Array, &'static str> {
     presentation_array(memory, state, cgame_state::PROVINCES, 8)
 }
 
-/// The authenticated province route id `id` names, or 0 for an empty slot.
 pub fn movement_route_destination(
     memory: &impl Memory,
     base: usize,
@@ -1085,7 +906,6 @@ pub fn movement_route_destination(
     Ok(province)
 }
 
-/// A route destination's controller, as `movement_attacking` reads it.
 pub fn movement_destination_controller(
     memory: &impl Memory,
     province: usize,
@@ -1093,7 +913,6 @@ pub fn movement_destination_controller(
     presentation_field(memory, province, cprovince::CONTROLLER)
 }
 
-/// The arrival calculation uses the actual route's final destination rather than a hypothetical edge.
 pub fn movement_attacking(
     memory: &impl Memory,
     base: usize,
@@ -1126,7 +945,6 @@ pub(crate) fn movement_priority_unit(
     base: usize,
     template: usize,
 ) -> Result<usize, &'static str> {
-    // The template's identity and priority unit are one guarded call.
     let fields = presentation_batch(
         memory,
         [
@@ -1186,13 +1004,6 @@ pub(crate) fn movement_priority_unit(
     Ok(selected)
 }
 
-/// The modifier keys the land movement speed reads for `template`'s movement
-/// priority sub-unit ([`movement_priority_unit`]), appended to `keys` in native
-/// order with repeats kept: the sub-unit's own key
-/// ([`crate::csub_unit_definition::SPEED_MODIFIER_KEY`]) when nonzero, then each
-/// nonzero key of its categories
-/// ([`crate::csub_unit_definition::CATEGORY_MODIFIER_KEY`]). On a refusal `keys`
-/// keeps only what it held before.
 pub fn movement_speed_keys(
     memory: &impl Memory,
     base: usize,
@@ -1207,8 +1018,6 @@ pub fn movement_speed_keys(
     result
 }
 
-/// Acquisition demand keeps already-readable keys if a later category refuses.
-/// The complete recorded template list still uses `movement_speed_keys`.
 pub fn movement_speed_key_demands(
     memory: &impl Memory,
     base: usize,
@@ -1260,7 +1069,6 @@ pub use movement::{walk_movement, walk_movement_with_inputs};
 
 #[cfg(test)]
 pub(crate) use cunit::FirstCombatKey as MovementCombatKey;
-/// The capture's shared first-combat memo; see [`cunit::FirstCombatMemo`].
 pub(crate) use cunit::FirstCombatMemo as MovementCombats;
 
 fn movement_seed_value<T>(value: Option<T>) -> Result<T, &'static str> {
@@ -1270,8 +1078,6 @@ fn movement_seed_value<T>(value: Option<T>) -> Result<T, &'static str> {
 #[cfg(test)]
 fn movement_scalar_tail(memory: &impl Memory, army: usize) -> Result<(u8, u8), &'static str> {
     use crate::memory::RecordField;
-    // Movement priority is an independent optional style suffix, acquired only
-    // after the complete movement prefix in both the owned and reference walks.
     const FIELDS: [RecordField; 2] = [
         RecordField {
             source_offset: RETREAT,
@@ -1303,7 +1109,6 @@ pub struct StatusRow {
     pub division: u64,
     pub maximum_hit_points: i64,
     pub maximum_organisation: i64,
-    /// Exact movement organisation pair: outer None refuses; inner None certifies no penalty.
     pub movement_organisation: Option<Option<[i64; 2]>>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
@@ -1314,78 +1119,40 @@ pub struct StatusRow {
     pub attrition_threshold: i64,
     pub attrition: u8,
     pub exercising: u8,
-    /// The no-orders predicate is false for an ungrouped unit, so its glyph needs
-    /// the unit's group.
     pub has_order: u8,
-    /// Invalid-orders byte gating the yellow glyph.
     pub invalid_orders: u8,
-    /// Raw [`cunit::INVALID_ORDERS_REASON`] when the invalid-order gate is
-    /// nonzero; None otherwise or on this field's isolated guarded failure.
     pub invalid_orders_reason: Option<i32>,
-    /// Raw [`STRENGTH_FACTOR`], fixed5.
     pub strength_factor: i64,
-    /// [`RETAINED_VISUAL_VARIANT`], the stored land model number.
     pub model_number: i32,
-    /// The division's acclimatization camouflage category; `None` when it was
-    /// unreadable or its category registry outgrew the packet this hour. Only
-    /// this field fails, never the row.
     pub camouflage: Option<Camouflage>,
-    /// Movement availability from the same acclimatization read, which the
-    /// selected army's attack list scales its region weather term by; `None`
-    /// when it was unreadable this hour.
     pub weather_factor: Option<i64>,
-    /// Raid army-reach and movement-speed supply inputs, `MOVE_*` bits. The
-    /// commander's retreat bans are [`RetreatBanRow`]'s.
     pub move_flags: u8,
-    /// [`OUT_OF_SUPPLY_DAYS`]; `None` when that field alone was unreadable.
     pub out_of_supply_days: Option<i32>,
     pub border_combat_stats: Option<[i64; 3]>,
-    /// Operand spans in the collector's hour-local name arena, never cached display text.
     pub naming: Option<crate::cname_group_member::Inputs>,
     pub country_ordinal: Option<u32>,
-    /// Exact stored supply-footer scalars ([`crate::cunit_supply_inputs`]);
-    /// only this pack fails on a scalar fault.
     pub supply: Option<crate::cunit_supply_inputs::Inputs>,
-    /// The first of the footer's origin rows in [`StatusPacket::supply_origins`].
     pub supply_origins_start: usize,
     pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
 }
 
-/// The division's land-model camouflage: the token of the registered
-/// acclimatization category whose `<entity>_<condition>` variants it may show
-/// (the strongest entry, when its weight reaches the show threshold), or `None`
-/// when no category does. The province and state conditions belong to the
-/// consumer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Camouflage {
     pub category: Option<u32>,
 }
 
 impl StatusRow {
-    /// [`EXILED`] is nonzero.
     pub const MOVE_EXILED: u8 = 1;
-    /// The stat block's [`crate::csub_unit_definition::CAN_EXFILTRATE_FROM_COAST`] is nonzero.
     pub const MOVE_CAN_EXFILTRATE_FROM_COAST: u8 = 2;
-    /// [`NONCORE_SUPPLY_BYPASS`] is nonzero: the movement speed's out-of-supply step
-    /// adds no noncore-supply term.
     pub const MOVE_NONCORE_SUPPLY_BYPASS: u8 = 4;
-    /// [`AIR_SUPPLY`] is positive: the noncore-supply term takes the air
-    /// noncore-supply speed define instead of the ordinary one.
     pub const MOVE_NONCORE_AIR: u8 = 8;
-    /// Air-supply sign unavailable; only the reached noncore speed branch refuses.
     pub const MOVE_NONCORE_AIR_REFUSED: u8 = 64;
 }
 
-/// A division whose commander bans retreat: retain the bits of its selected
-/// unit-modifier block independently of combat membership. Divisions without
-/// a ban emit no row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RetreatBanRow {
     pub division: u64,
-    /// The owner the caller keyed the division's read by.
     pub owner: u32,
-    /// [`crate::carmy_leader::RETREAT_BANNED_DEFENDING`] and
-    /// [`crate::carmy_leader::RETREAT_BANNED_ATTACKING`].
     pub bans: u8,
 }
 
@@ -1402,10 +1169,8 @@ pub use status_parts::StatusPart;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StatusCapacities {
     pub units: usize,
-    /// Ordered distributed-supply rows across the authenticated divisions.
     pub supply_origins: usize,
     pub manpower: usize,
-    /// Registered acclimatization categories.
     pub acclimatization_categories: usize,
     pub thresholds: usize,
     pub modifiers: crate::modifier_accumulator::SnapshotCapacity,
@@ -1413,7 +1178,6 @@ pub struct StatusCapacities {
 }
 
 impl StatusCapacities {
-    /// Only the acquired division census is known before its nested headers.
     pub fn new(units: usize) -> Self {
         Self {
             units,
@@ -1475,7 +1239,6 @@ struct StatusUnitInputs {
     camouflage: Option<Camouflage>,
     weather_factor: Option<i64>,
     exercise: Option<StatusExerciseOperands>,
-    /// Range-local decisions over its membership and exercise arenas.
     has_order: Option<Result<bool, &'static str>>,
     exercising: Option<Result<u8, &'static str>>,
     failure: Option<&'static str>,
@@ -1501,20 +1264,13 @@ struct StatusAttritionMetadata {
     flags: Option<u32>,
 }
 
-/// Owned Status inputs, indexed by the authenticated division prefix. No live
-/// addresses are interpreted during projection. Native child admission and
-/// branch pruning finish here before the game resumes.
 pub struct StatusPacket {
     capacities: StatusCapacities,
     required: StatusCapacities,
     units: Vec<StatusUnitInputs>,
-    /// Certified experience lent to the scalar/exercise ranges.
     prepared_experience: Vec<Option<i64>>,
-    /// Empty selects every footer; otherwise this capture's per-unit demand.
     supply_requested: Vec<bool>,
     organisation_memo: organisation_movement::OrganisationMemo,
-    /// Each unit's supply footer, by unit index; the first `supply_len` are
-    /// this hour's.
     supply: Vec<crate::cunit_supply_inputs::UnitCapture>,
     supply_len: usize,
     supply_origins: Vec<crate::cunit_supply_inputs::Origin>,
@@ -1523,41 +1279,27 @@ pub struct StatusPacket {
     border_stats: Vec<Option<[i64; 3]>>,
     maxima: Vec<crate::csub_unit_definition::DivisionMaxima>,
     maxima_index: Vec<usize>,
-    /// Every maxima-index lookup ([`Self::maxima_slot`]), selection and
-    /// admission alike.
     #[cfg(test)]
     maxima_probes: std::sync::atomic::AtomicUsize,
-    /// Initialized once with packet storage, reused by every hourly pass.
     acclimatization: Option<Box<AcclimatizationBatch>>,
     countries: Vec<StatusCountryInputs>,
     country_index: Vec<usize>,
     groups: Vec<StatusGroupInputs>,
     group_index: Vec<usize>,
-    /// Commander retreat bans by orders group, for divisions in a combat.
-    /// Orders groups of divisions in combat, in first-seen order, and their bans.
     commander_groups: Vec<usize>,
-    /// Each commander group's leader as the census selected it, beside `commander_groups`.
     commander_leaders: Vec<Option<Result<usize, &'static str>>>,
     commander_bans: Vec<Result<Option<crate::carmy_leader::RetreatBans>, &'static str>>,
     commander_index: Vec<usize>,
-    /// Each division the latest [`Self::retreat_bans`] read, by id, with the index of
-    /// its group in `commander_bans` (`usize::MAX` for an ungrouped division).
-    /// In census order; [`Self::commander_order`] finds a division.
     commander_divisions: Vec<(u64, usize)>,
     commander_order: Vec<(u64, u32)>,
-    /// Per-walk ban metadata. Only the exclusive bans pass uses it; the
-    /// mutex permits immutable status preparation to be shared with parts.
     commander_memo: std::sync::Mutex<crate::modifier_definition::DefinitionMemo>,
     modifiers: crate::modifier_accumulator::SnapshotArena,
     membership: MembershipPacket,
     manpower: Vec<i32>,
     exercise_control: Option<cgame_state::AiControl>,
     exercise_autonomy: std::collections::HashMap<u32, bool>,
-    /// The category registry, loaded on the hour's first shown category.
     categories: crate::acclimatization_category::Categories,
     categories_loaded: Option<Result<(), &'static str>>,
-    /// [`crate::acclimatization_data::CAMO_SHOW_AT_RVA`], read on the hour's
-    /// first winning entry.
     camouflage_show_at: Option<Result<i64, &'static str>>,
     category_factors: CategoryFactors,
     thresholds_header: Option<Result<[u8; 16], &'static str>>,
@@ -1569,14 +1311,12 @@ pub struct StatusPacket {
     outcome: Outcome,
 }
 
-/// Seed `index`'s maxima as a parallel preparation read them; `None` when nobody staged its block.
 pub type StagedDivisionMaxima<'a> =
     dyn Fn(usize) -> Option<Result<crate::csub_unit_definition::DivisionMaxima, &'static str>> + 'a;
 
 #[derive(Clone, Copy)]
 struct SelectedMaxima {
     slot: usize,
-    /// The gathered row, or no request for a memo hit or carried block.
     row: usize,
 }
 
@@ -1610,7 +1350,6 @@ impl StatusPacket {
         Self::with_capacities(StatusCapacities::new(units))
     }
 
-    /// Allocation-free placeholder while the complete packet is owned by a job.
     pub fn vacant() -> Self {
         let capacities = StatusCapacities {
             units: 0,
@@ -1717,7 +1456,6 @@ impl StatusPacket {
             commander_index: crate::allocation::filled(index_capacity, 0)?,
             commander_divisions: crate::allocation::vec(capacities.units)?,
             commander_order: crate::allocation::vec(capacities.units)?,
-            // The two retreat-ban keys; a vacant packet stays allocation-free.
             commander_memo: std::sync::Mutex::new(
                 crate::modifier_definition::DefinitionMemo::try_with_capacity(
                     if capacities.units == 0 { 0 } else { 2 },
@@ -1771,7 +1509,6 @@ impl StatusPacket {
         self.commander_index.fill(0);
         self.commander_divisions.clear();
         self.commander_order.clear();
-        // Keep the memo's storage: a fresh memo would allocate on every walk.
         self.commander_memo
             .get_mut()
             .unwrap_or_else(|error| error.into_inner())
@@ -1803,8 +1540,6 @@ impl StatusPacket {
         project_status(self, output)
     }
 
-    /// The complete ordered origin vector; a missing node fragment cannot be
-    /// mistaken for an empty vector or invalidate the row's scalar supply lines.
     pub fn supply_origins(&self, row: &StatusRow) -> Option<&[crate::cunit_supply_inputs::Origin]> {
         let len = row.supply?.origins_len.ok()?;
         let end = row.supply_origins_start.checked_add(len)?;
@@ -1813,9 +1548,6 @@ impl StatusPacket {
             .get(row.supply_origins_start..end)
     }
 
-    /// Caller-owned daily footer selection. This configuration survives packet
-    /// clearing, like growth mode; set it for every acquisition. Failure selects
-    /// all footers, leaving the optional carry unable to suppress a native read.
     pub fn select_supply(&mut self, requested: &[bool]) -> Result<(), &'static str> {
         self.supply_requested.clear();
         crate::allocation::reserve(&mut self.supply_requested, requested.len())
@@ -1823,7 +1555,6 @@ impl StatusPacket {
         self.supply_requested.extend_from_slice(requested);
         Ok(())
     }
-    /// Inspect captured footer bytes only; skipped units have no native sample.
     pub fn supply_at(
         &self,
         index: usize,
@@ -1851,9 +1582,6 @@ impl StatusPacket {
         (inputs, failure, origins)
     }
 
-    /// Rebuild only during buffer recycling. Retain private arena demand and
-    /// membership storage grown during acquisition even when a source fails
-    /// before row projection. `membership` is the shared pooled storage floor.
     pub fn grow(&mut self, units: usize, membership: MembershipCapacity) -> std::io::Result<()> {
         self.capacities.membership = self.membership.capacity();
         let mut next = self.required_capacities();
@@ -1901,7 +1629,6 @@ impl StatusPacket {
         self.membership.capacity()
     }
 
-    /// Off-hour demand only; the existing grow/recycle path provisions it.
     pub fn raise_supply_origins(&mut self, required: usize) {
         self.required.supply_origins = self.required.supply_origins.max(required);
     }
@@ -1947,7 +1674,6 @@ impl StatusPacket {
                 .map_or(0, |_| size_of::<AcclimatizationBatch>())
     }
 
-    /// The only lookup of the maxima index.
     fn maxima_slot(&self, pointer: usize, key: impl Fn(usize) -> usize) -> usize {
         #[cfg(test)]
         self.maxima_probes
@@ -1989,9 +1715,6 @@ impl StatusPacket {
             });
             let resident = self.maxima_index[slot];
             let row = if resident == 0 {
-                // Reserve only a key, never a value. An earlier carried seed
-                // reserves its block without a request, so later aliases also
-                // supply no speculative read.
                 let carried = held
                     .get(index)
                     .copied()
@@ -2015,8 +1738,6 @@ impl StatusPacket {
             };
             selected[index] = SelectedMaxima { slot, row };
         }
-        // Undo reservations before native acquisition or serial admission.
-        // The selected slots retain the same collision order as that admission.
         for pending in &staged[..staged_len] {
             self.maxima_index[pending.slot] = 0;
         }
@@ -2056,8 +1777,6 @@ impl StatusPacket {
         Ok(index)
     }
 
-    /// The stat-block maxima this pass used for seed `index`: read or carried,
-    /// `None` for a seed the pass did not establish.
     pub fn unit_maxima(&self, index: usize) -> Option<crate::csub_unit_definition::DivisionMaxima> {
         let unit = self
             .units
@@ -2091,8 +1810,6 @@ impl StatusPacket {
                         .ok_or("attrition metadata null or overflow")?;
                     let feature_selector =
                         presentation_field::<u32>(memory, entry, metadata::FEATURE_SELECTOR)?;
-                    // Retain the successful selector even when it excludes the
-                    // unproved callback branch. FLAGS is not then demanded.
                     let flags = if feature_selector == 0 {
                         Some(presentation_field::<u32>(memory, entry, metadata::FLAGS)?)
                     } else {
@@ -2127,7 +1844,6 @@ impl StatusPacket {
         self.training_known(memory, pointer, None)
     }
 
-    /// [`Self::training`], taking the byte the census already read for the group.
     fn training_known(
         &mut self,
         memory: &impl Memory,
@@ -2152,8 +1868,6 @@ impl StatusPacket {
         training
     }
 
-    /// Retreat-ban bits for one division. Read both blocks once per group;
-    /// select the unit's block only when they differ.
     fn commander(
         &mut self,
         memory: &impl Memory,
@@ -2186,7 +1900,6 @@ impl StatusPacket {
         if bans.ordinary == bans.alternate {
             return Ok(bans.ordinary);
         }
-        // The census selected this division's block once for every consumer.
         let accumulator = match seed.selected {
             Some(selected) => selected
                 .block
@@ -2197,10 +1910,6 @@ impl StatusPacket {
         bans.select(accumulator)
     }
 
-    /// Reads the bans of every group of a wanted division at once
-    /// (`retreat_bans_many`, which skips the commanders `held` returns),
-    /// keeping each group's own result for [`Self::commander`] to report at
-    /// that division, in source order.
     fn prepare_commanders(
         &mut self,
         memory: &impl Memory,
@@ -2244,12 +1953,6 @@ impl StatusPacket {
         );
     }
 
-    /// The movement entries of `division`'s commander block `block`
-    /// ([`COMMANDER_BLOCK_NONE`], [`COMMANDER_BLOCK_ORDINARY`] or
-    /// [`COMMANDER_BLOCK_SEPARATE_HQ`]) from the latest [`Self::retreat_bans`],
-    /// which reads them with the bans: all absent without a commander, None where
-    /// that read did not reach the division or its commander, or disagrees with
-    /// `block`.
     pub fn commander_movement(
         &self,
         division: u64,
@@ -2262,8 +1965,6 @@ impl StatusPacket {
         self.commander_movement_of(self.commander_order[at].1 as usize, block)
     }
 
-    /// [`Self::commander_movement`] of the division at census `position`, found there without a
-    /// search when it is that division's.
     pub fn commander_movement_at(
         &self,
         position: usize,
@@ -2294,8 +1995,6 @@ impl StatusPacket {
         }
     }
 
-    /// Each commander the latest [`Self::retreat_bans`] reached, with its
-    /// group's result, in read order.
     pub fn commander_bans(
         &self,
     ) -> impl Iterator<Item = Result<Option<crate::carmy_leader::RetreatBans>, &'static str>> + '_
@@ -2303,20 +2002,7 @@ impl StatusPacket {
         self.commander_bans.iter().copied()
     }
 
-    /// The retreat bans of every division whose raw roster owner `owner`
-    /// maps to a read owner, one row per division with a ban, in source
-    /// order. The hourly read of `DivisionRetreatBans`: each wanted group's
-    /// commander is read once, both blocks, unless `held` returns its bans,
-    /// and a division's block is selected only when they differ. A failed
-    /// read fails the table.
-    ///
-    /// `owner` maps a raw roster owner to `Ok(Some(owner))` for a read owner
-    /// and `Ok(None)` for one outside the read; `Err` is an owner that could
-    /// not be resolved. A division whose owner is unreadable (its roster
-    /// owner field or `owner` failed) has no row owner, so the read returns
-    /// no rows at all: it is truncated, with those divisions as its unread
-    /// rows.
-    #[allow(clippy::too_many_arguments)] // The census, its outcome, the owner map, output and held bans.
+    #[allow(clippy::too_many_arguments)]
     pub fn retreat_bans(
         &mut self,
         memory: &impl Memory,
@@ -2413,7 +2099,6 @@ impl StatusPacket {
             })
         })();
         result.unwrap_or_else(|reason| {
-            // A failed read keeps no partly filled, unsorted division list.
             self.commander_divisions.clear();
             self.commander_order.clear();
             Outcome::Unavailable { reason }
@@ -2482,8 +2167,6 @@ impl StatusPacket {
             );
             for word in bytes[..copied * 4].chunks_exact(4) {
                 let value = i32::from_le_bytes(word.try_into().unwrap());
-                // The admitted array header checked the entire stride-8 range. Keep only complete
-                // manpower words, including on a later fault.
                 self.manpower.push(value);
                 manpower = manpower.wrapping_add(value);
             }
@@ -2540,12 +2223,6 @@ impl StatusPacket {
         })
     }
 
-    /// AI control from the first observation of each raw owner in this Status
-    /// pass. The existing country reader and AiControl headers/counts remain
-    /// valid while the capture holds the game's writers; human-control changes
-    /// and loads cannot run before its jobs join. Acquire only at the exercise
-    /// gate, never ahead of a prior unit's work. The first error aborts Status,
-    /// so no failed observation is retried.
     fn exercise_autonomous<M: Memory>(
         &mut self,
         memory: &M,
@@ -2690,9 +2367,6 @@ impl StatusPacket {
                 < inputs.maximum_level)
     }
 
-    /// The same fresh exercise predicate projected into DivisionStatus, over
-    /// already acquired operands. Attrition's on-demand getter consumes this
-    /// predicate without revisiting game memory or using the training byte.
     pub fn exercising_at(&self, index: usize) -> Result<u8, &'static str> {
         let unit = self
             .units
@@ -2711,8 +2385,6 @@ impl StatusPacket {
         self.exercise(inputs, maximum_hp).map(u8::from)
     }
 
-    /// [`Self::status_index`] of the unit at census `position`, found there without a search
-    /// when it is that division's.
     pub fn status_index_at(&self, position: usize, division: u64) -> Option<usize> {
         if self.border_index.len() == self.units.len()
             && self
@@ -2725,7 +2397,6 @@ impl StatusPacket {
         self.status_index(division)
     }
 
-    /// The existing authenticated full-handle index, without another census.
     pub fn status_index(&self, division: u64) -> Option<usize> {
         let position = self
             .border_index
@@ -2734,9 +2405,6 @@ impl StatusPacket {
         Some(self.border_index[position].1)
     }
 
-    /// Camouflage from the division's embedded acclimatization data. A failure,
-    /// including a full category registry, leaves only this division's field
-    /// `None`; the packet still asks for the room it lacked.
     fn capture_camouflage(
         &mut self,
         memory: &impl Memory,
@@ -2756,12 +2424,6 @@ impl StatusPacket {
         self.units[unit].weather_factor = weather_factor.ok();
     }
 
-    /// Winner selection walks every entry for the first strictly greatest weight above zero; one
-    /// span read per 32 entries copies them here. The camouflage decision shows nothing for no
-    /// winner or a null category, and otherwise compares the winner's weight with the maximum times
-    /// the live `ACCLIMATIZATION_CAMO_SHOW_AT`. Only a shown category's pointer is resolved to its
-    /// token through the registry, as only it is used; the define and the registry are read once
-    /// per pass, when first needed.
     fn read_camouflage(
         &mut self,
         memory: &impl Memory,
@@ -2795,8 +2457,6 @@ impl StatusPacket {
         })
     }
 
-    /// Acquisition truncates at this table's own source prefix. Movement's route
-    /// arena admission never changes which Status units are demanded.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -2808,10 +2468,6 @@ impl StatusPacket {
         self.capture_holding(memory, base, state, seeds, source_outcome, &[], &[])
     }
 
-    /// [`Self::capture`] with the caller's carried maxima: `held[i]` is seed
-    /// `i`'s stat-block maxima when no writer touched its block since the
-    /// read they came from, and is used in place of reading that block when
-    /// it names the seed's block. Any other seed's block is read.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_holding(
         &mut self,
@@ -2865,8 +2521,6 @@ impl StatusPacket {
             if source_outcome.len() != seeds.len() {
                 return Err("division status source length invalid");
             }
-            // Serialization retains every division; child-header growth follows the
-            // same acquisition without retrying the walk.
             self.grow(seeds.len(), self.membership.capacity())
                 .map_err(|_| "status seed allocation failed")?;
             let countries = ccountry::Reader::new(memory, base, state)?;
@@ -2955,19 +2609,12 @@ impl StatusPacket {
             }
             Ok((count, countries))
         })();
-        // Query outcomes are independent and retain their first failing root.
-        // Finishing in source order preserves a prior unit's scalar/exercise
-        // error ahead of a later unit's membership or preparation failure.
         if !defer_membership {
             self.membership.acquire(memory, base);
         }
         prepared
     }
 
-    /// Ordered shared maxima/country admission only. Independent membership,
-    /// scalar and exercise acquisition belongs to each final-status range.
-    /// Maxima stay ordered because aliases must retain the first seed's held
-    /// observation, even when a later alias offers contradictory operands.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_holding(
         &mut self,
@@ -2991,9 +2638,6 @@ impl StatusPacket {
         )
     }
 
-    /// [`Self::prepare_holding`] taking each seed's maxima from `staged` where the
-    /// parallel preparation already read its block ([`crate::csub_unit_definition::stage_division_maxima`]):
-    /// the ordered pass then reads only the blocks nobody staged.
     #[allow(
         clippy::too_many_arguments,
         reason = "prepare_holding's operands and the staged reads"
@@ -3043,8 +2687,6 @@ impl StatusPacket {
         self.outcome
     }
 
-    /// Number of prepared units, including the first unit whose preparation
-    /// failed. Later ranges must never manufacture maxima for its suffix.
     pub fn prepared_units(&self) -> usize {
         self.units.len()
     }
@@ -3182,9 +2824,6 @@ impl StatusPacket {
     }
 
     fn capture_status_children(&mut self, memory: &impl Memory, seeds: &[DivisionSeed]) {
-        // Complete the established scalar/exercise prefix before these optional
-        // operands. A failed read must neither withhold that prefix nor
-        // prevent the collector's later naming and border-stat acquisition.
         for (unit, seed) in self.units.iter_mut().zip(seeds).take(self.outcome.len()) {
             if unit.invalid_orders != 0 {
                 unit.invalid_orders_reason = seed
@@ -3193,8 +2832,6 @@ impl StatusPacket {
                     .and_then(|address| read(memory, address));
             }
         }
-        // The supply child's footer for every admitted division, in record
-        // batches; each division's pack and origin rows fail alone.
         self.supply_len = self.outcome.len().min(self.supply.len());
         let used = crate::cunit_supply_inputs::capture_selected_units(
             memory,
@@ -3207,9 +2844,6 @@ impl StatusPacket {
         self.required.supply_origins = self.required.supply_origins.max(used.required);
     }
 
-    /// Augment the same census lineage after state and province membership
-    /// joins. Storage is provisioned with the packet, so this allocates nothing.
-    /// A selected failure withholds Status; None is exclusively outside demand.
     pub fn capture_border_stats(
         &mut self,
         memory: &impl Memory,
@@ -3286,8 +2920,6 @@ fn status_strength_fraction(strength: i64, maximum_hp: i64) -> i64 {
     }
 }
 
-/// Pure row projection over directly indexed owned operands. It cannot read
-/// live game memory or resolve a native object.
 pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcome {
     let result = (|| -> Result<Outcome, &'static str> {
         if let Outcome::Unavailable { reason } = packet.outcome {
@@ -3394,14 +3026,8 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// A division's acclimatization bytes and the selected entry's key and
-/// weight ([`acclimatization_winner`]).
 type AcclimatizationWinner = ([u8; 0x40], Option<(u64, i64)>);
 
-/// Winner selection walks entries in their native order. Each row retains its
-/// first 32 entries; longer arrays continue with the same serial span reads,
-/// with no content cap. Owned CData identities and array arithmetic validate
-/// sources.
 struct AcclimatizationBatch {
     bytes: [[u8; 32 * crate::acclimatization_entry::STRIDE]; 64],
     lengths: [usize; 64],
@@ -3458,9 +3084,6 @@ impl AcclimatizationBatch {
     }
 }
 
-/// The division's embedded acclimatization data (the seed's first `0x40` bytes)
-/// and its selected entry: the first strictly greatest weight above zero, read
-/// 32 entries per span.
 fn acclimatization_winner(
     memory: &impl Memory,
     base: usize,
@@ -3509,9 +3132,6 @@ fn acclimatization_winner(
     Ok((object, strongest.winner()))
 }
 
-/// The acclimatization categories' movement factors read this pass. A category is content every
-/// division in its climate shares, so each is read once a pass; a full memo only costs a fresh
-/// read.
 #[derive(Default)]
 struct CategoryFactors {
     entries: [(u64, i64); 8],
@@ -3539,9 +3159,6 @@ impl CategoryFactors {
     }
 }
 
-/// Movement availability: one without an active climate or when the winner's category is not that
-/// one, otherwise [`crate::acclimatization_data::movement_factor`] with the active category's
-/// factor, read once a pass ([`CategoryFactors`]).
 fn weather_factor(
     memory: &impl Memory,
     object: &[u8; 0x40],
@@ -3562,8 +3179,6 @@ fn weather_factor(
     ))
 }
 
-/// Counter's dig-in duration reads the selected commander's unit modifier
-/// block, not the leader's own weather block.
 pub fn counter_dig_in_factor(
     memory: &impl Memory,
     base: usize,
@@ -3581,21 +3196,13 @@ pub fn counter_dig_in_factor(
     .map(|value| 100_000_i64.wrapping_add(value))
 }
 
-/// One pass's [`counter_dig_in_factor`] reads that the divisions of a group,
-/// or of a commander, share: the leader selection's group reads
-/// ([`crate::carmy_leader::LeaderMemo`]) and each selected modifier block's
-/// entrenchment term. Within one quiescent acquisition neither can change, so
-/// every division under the same commander block reads it once.
 pub struct DigInMemo {
     leaders: crate::carmy_leader::LeaderMemo,
-    /// `leaders` holds an earlier pass's reads, cleared on first use: census selections skip it.
     leaders_stale: bool,
     values: crate::carmy_leader::PassTable<Result<i64, &'static str>>,
 }
 
 impl DigInMemo {
-    /// Room for `divisions` divisions, each in its own group under its own
-    /// commander; zero allocates nothing.
     pub fn try_with_capacity(divisions: usize) -> std::io::Result<Self> {
         Ok(Self {
             leaders: crate::carmy_leader::LeaderMemo::try_with_capacity(divisions)?,
@@ -3604,8 +3211,6 @@ impl DigInMemo {
         })
     }
 
-    /// Keeps nothing: every division reads afresh. Allocates nothing until a
-    /// walk retains a primary root field.
     pub fn vacant() -> Self {
         Self {
             leaders: crate::carmy_leader::LeaderMemo::vacant(),
@@ -3622,16 +3227,12 @@ impl DigInMemo {
         self.leaders.allocated_bytes() + self.values.allocated_bytes()
     }
 
-    /// Starts a pass: nothing a previous pass read is used again.
     pub fn clear(&mut self) {
         self.leaders_stale = true;
         self.values.clear();
     }
 }
 
-/// [`counter_dig_in_factor`] over a pass's [`DigInMemo`]: the same factor and
-/// the same first failure, with each group's selection reads and each
-/// commander block's term read once per pass.
 pub fn counter_dig_in_factor_memoized(
     memory: &impl Memory,
     base: usize,
@@ -3641,15 +3242,10 @@ pub fn counter_dig_in_factor_memoized(
     counter_dig_in_selection_memoized(memory, base, seed, memo).map(|(factor, _)| factor)
 }
 
-/// The commander unit modifier block a division's movement speed, out-of-supply
-/// penalty and dig-in factor read: none without a commander, else the ordinary or
-/// the separate-HQ block its HQ selects.
 pub const COMMANDER_BLOCK_NONE: u8 = 0;
 pub const COMMANDER_BLOCK_ORDINARY: u8 = 1;
 pub const COMMANDER_BLOCK_SEPARATE_HQ: u8 = 2;
 
-/// [`counter_dig_in_factor_memoized`] with the commander block the selection chose
-/// (`COMMANDER_BLOCK_*`), from the same reads.
 pub fn counter_dig_in_selection_memoized(
     memory: &impl Memory,
     base: usize,
@@ -3661,8 +3257,6 @@ pub fn counter_dig_in_selection_memoized(
     })
 }
 
-/// [`counter_dig_in_selection_memoized`] taking each selected block's entrenchment
-/// term from `entrenchment`, given the block's accumulator, once a pass per block.
 pub fn counter_dig_in_selection_with(
     memory: &impl Memory,
     base: usize,
@@ -3670,7 +3264,6 @@ pub fn counter_dig_in_selection_with(
     memo: &mut DigInMemo,
     entrenchment: impl FnOnce(usize) -> Result<i64, &'static str>,
 ) -> Result<(i64, u8), &'static str> {
-    // The census selected the block once for every consumer.
     let block = match seed.selected {
         Some(selected) => selected.block,
         None => {
@@ -3693,8 +3286,6 @@ pub fn counter_dig_in_selection_with(
         .map(|value| (100_000_i64.wrapping_add(value), block))
 }
 
-/// The entrenchment term of the commander modifier block whose accumulator is
-/// `root`, which the dig-in factor adds to one.
 pub fn commander_entrenchment(
     memory: &impl Memory,
     base: usize,
@@ -3714,8 +3305,6 @@ fn status_counter_scalars(
     army: usize,
 ) -> Result<(i64, i64, i64, i64), &'static str> {
     use crate::memory::RecordField;
-    // This batch stays after has_order and before any training/exercise reads.
-    // The discontiguous source gaps are deliberately excluded.
     const FIELDS: [RecordField; 4] = [
         RecordField {
             source_offset: COUNTER_ATTRITION,
@@ -3842,8 +3431,6 @@ fn status_test_capture(
             ..DivisionSeed::default()
         })
         .collect();
-    // The collector's shared census performs this once for all consumers.
-    // This test convenience captures only the independently demanded prefix.
     let count = seeds.len().min(output.len());
     if !matches!(source_outcome, Outcome::Unavailable { .. }) {
         capture_division_seeds(memory, &mut seeds[..count]);
@@ -4009,9 +3596,6 @@ impl<M: Memory> Reader<'_, M> {
         })
     }
 
-    /// The back-pointer is authenticated as either a plain COrdersGroup or a
-    /// CArmyGroup before its native reference replaces it. A null pointer is
-    /// the engine's own "no army", not a failed read.
     fn orders_group(&self, pointer: usize) -> Result<u64, &'static str> {
         if pointer == 0 {
             return Ok(0);

@@ -1,6 +1,3 @@
-//! Single-worker retained-history reducer. Native addresses are scoped to a
-//! baseline/session and removed at destruction; only typed identities and
-//! native ordinals leave this module. It never reads native memory.
 use engine_land_inputs::{combat_log_events as event, combat_log_history as data};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -246,7 +243,6 @@ impl Store {
                         .ok_or("combat log reverse reference underflow")?;
                 }
                 self.order.remove(&(removed.country, removed.ordinal));
-                // The manager swap-removes only its last group.
                 if let Some((&(country, ordinal), &pointer)) = self
                     .order
                     .range((removed.country, 0)..=(removed.country, u32::MAX))
@@ -335,8 +331,6 @@ impl Store {
         }
         Ok(changed)
     }
-    /// Validate only changed references/slots; reverse counts certify every
-    /// unchanged reference. Return the visited demand for the cost regression.
     pub fn validate(&self) -> Result<usize, &'static str> {
         if !self.pending_battles.is_empty() {
             return Err("combat log allocation has no returned slot");

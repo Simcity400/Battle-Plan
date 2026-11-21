@@ -1,7 +1,3 @@
-//! The playhead: the state at the playback head of a recording, kept by steps on the unit's
-//! reader primitives. A [`lane::Lane`] is one table's selected cells; a [`Playhead`] steps every
-//! selected table's lane ahead of the frame and hands out [`Step`]s of owned change sets, and at a
-//! reset each reader's own [`State`], made by its [`Rebuild`] from the sought lane.
 
 pub mod boundary;
 mod budget;

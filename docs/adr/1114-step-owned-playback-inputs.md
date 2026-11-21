@@ -1,0 +1,9 @@
+# Give playback workers step-local inputs
+
+An ahead-of-frame worker gets a snapshot of the columns it reads, keyed by the mirror's slots. It applies every step's changes to that snapshot in mirror order. Lists may keep just their first member when the reader only asks for that member. Each value carries the same missing, unrecorded or named-cell state as the mirror. An unresolved string carries its id and refuses by name when read. Opaque fields decode at the row's recorded format. A gap marks the kept tables unrecorded until a step names them again. Owner-keyed join tables can enumerate the target rows directly.
+
+The playback fixtures write actual recording tables into in-memory pages. A recording name and span identify a shared playhead, so concurrent tests need separate names. Fixtures model complete empty tables differently from tables omitted from the recording. Complete rows get every field the codec requires. When a test drives the head, it lets each step land before inspecting the layer. Comparisons use a head-held whole settle to distinguish completed work from work carried onto a later paced frame.
+
+Viewport and perception tests treat a requested perspective as the authoritative view. The window may hand over that view with data withheld while its layers compose, with named refusals where the recording is incomplete. It never combines layers from different countries. A valid request with a tag absent from the hour falls back to the recorded player. When the speed invalidates ahead steps, replay-based vision, names and snow restart from the applied mirrors. Layers that use vision receive each changed province in the frame that applies the corresponding prepared step.
+
+[Worker-owned inputs](../../crates/viewer-playback/src/layers/owned.rs) · [Playback fixtures](../../crates/viewer-playback/src/layers/recorded.rs) · [Perspective and pace tests](../../crates/viewer-playback/src/layers/p6_tests.rs)

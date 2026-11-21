@@ -1,4 +1,3 @@
-//! Synthetic-world tests of the naval mission operands pack.
 use super::*;
 use engine_native::{
     ccharacter, cfleet, cgame_state, cnaval_mission, cnavy_leader, cprovince, cstrategic_navy,
@@ -8,30 +7,20 @@ use engine_native::{
 };
 
 const GAME_STATE: usize = 0x10000;
-/// Above every module RVA the readers touch.
 const HEAP: usize = 0x0350_0000;
 const REGIONS: u32 = 24;
 const TYPE: u64 = 4713;
-/// Task-force kinds per fleet: strike force, raiding, escort, invasion support and none.
 const KINDS: [u32; 5] = [2, 3, 4, 9, 0];
 const RAIDER: usize = 1;
 const ESCORTING: usize = 2;
 const STRIKE: usize = 0;
 
-/// A many-country world at its own buffer's address, so the capture can read it through the
-/// production guarded copies. Each country has one fleet of five task forces (kinds 2, 3, 4,
-/// 9 and 0), a fleet leader and one headquarters commander on the escort. The escort's
-/// mission files three regions, the raider's the first of them and the strike force's the
-/// second; each region's ledger stores the escort first, against the walk's order, and the
-/// navy keeps a presence ring for each escort region.
 struct World {
     bytes: Vec<u8>,
     base: usize,
     game_state: usize,
-    /// Offsets to patch in tests.
     fleets: Vec<usize>,
     tasks: Vec<[usize; 5]>,
-    /// Each country's ledger data for its first escort region.
     ledgers: Vec<usize>,
 }
 
@@ -53,8 +42,6 @@ fn escort_regions(slot: u32) -> [u32; 3] {
     [0, 1, 2].map(|step| (slot + step) % REGIONS + 1)
 }
 
-/// Robin Hood placement for both mission probes:
-/// the (slot, one-based distance) of each item from its home slot.
 fn robin_hood(homes: &[usize], slots: usize) -> Vec<(usize, u8)> {
     let mut table: Vec<Option<(u8, usize)>> = vec![None; slots];
     for (item, &home) in homes.iter().enumerate() {
@@ -112,7 +99,6 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
     let links = heap.alloc(slots * 4);
     heap.array(GAME_STATE + cgame_state::COUNTRIES, table, slots as u32);
     heap.array(GAME_STATE + cgame_state::COUNTRY_LINKS, links, slots as u32);
-    // Regions, one province each, and their weather records.
     let weather = heap.alloc(0x80);
     heap.u64(GAME_STATE + cgame_state::WEATHER_MANAGER, heap.ptr(weather));
     heap.vtable(weather, cweather_manager::VTABLE_RVA);
@@ -174,13 +160,11 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
         ] {
             heap.vtable(at, rva);
         }
-        // The physical navy pass authenticates each navy's manager backlink.
         heap.u64(
             navy + engine_naval_history::country_naval_movement_inputs::MANAGER,
             heap.ptr(manager),
         );
         heap.u32(navy + cstrategic_navy::OWNER, slot);
-        // Presence map: mask 31, probe 2, each escort region in its hashed slot.
         let entries = heap.alloc((32 + 2 + 2) * 0x28);
         heap.u64(navy + native::PRESENCE + 8, heap.ptr(entries));
         heap.u32(navy + native::PRESENCE + 0x14, 31);
@@ -218,7 +202,6 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
             heap.words(navy + native::HUBS, &[3, 1, 3]);
         }
         navies.push(navy);
-        // The fleet's leader and the escort's headquarters commander.
         let navy_leader = heap.alloc(0x500);
         heap.vtable(navy_leader, cnavy_leader::VTABLE_RVA);
         heap.accumulator(navy_leader + native::LEADER_MODIFIERS, &[(0xcc, 2_500)]);
@@ -314,7 +297,6 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
             }
         }
         heap.pointers(fleet + cfleet::TASK_FORCES, &own);
-        // Each region's ledger: the escort first, then the task force filed with it.
         let mission = |index: usize| own[index] + ctask_force::NAVAL_MISSION;
         let [first, second, third] = escort_regions(slot);
         for (region, filed) in [
@@ -330,7 +312,6 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
                 ledgers.push(data);
             }
         }
-        // Naval mission registration registers each filed mission once in the navy's set.
         heap.pointers(
             navy + cstrategic_navy::REGISTERED_MISSIONS,
             &[mission(ESCORTING), mission(RAIDER), mission(STRIKE)],
@@ -339,7 +320,6 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
         tasks.push(own);
     }
     heap.pointers(manager + cstrategic_navy_manager::NAVIES, &navies);
-    // The high-type reference registry holds every leader and character.
     let capacity = (handles.len() * 2).next_power_of_two().max(8);
     let exponent = capacity.trailing_zeros();
     let overflow = exponent + 2;
@@ -467,20 +447,16 @@ fn a_null_registration_refuses_the_strict_ledgers_after_one_read() {
     );
 }
 
-/// The offset of country `slot`'s navy.
 fn navy_of(world: &World, slot: u32) -> usize {
     let manager = world.pointer(GAME_STATE + cgame_state::STRATEGIC_NAVY_MANAGER) - world.base;
     let navies = world.pointer(manager + cstrategic_navy_manager::NAVIES) - world.base;
     world.pointer(navies + slot as usize * 8) - world.base
 }
 
-/// The address of a navy's region ledger headers.
 fn region_headers(world: &World, slot: u32) -> usize {
     world.pointer(navy_of(world, slot) + cstrategic_navy::REGION_MISSIONS)
 }
 
-/// Zeroes a navy's registered-mission count and, with `ledgers`, every
-/// region ledger count, as the reset does.
 fn empty_navy(world: &mut World, slot: u32, ledgers: bool) {
     let navy = navy_of(world, slot);
     let count = navy + cstrategic_navy::REGISTERED_MISSIONS + 12;
@@ -515,9 +491,6 @@ fn ledger_read(
     (ledgers, captured.ledger_counts(), memory.reads.into_inner())
 }
 
-/// A navy whose registered-mission set is empty has every region ledger
-/// empty (append, remove and reset write both), so its region headers are
-/// not read, and the ledgers are those of a read of every navy.
 #[test]
 fn a_navy_without_registered_missions_reads_no_region_header() {
     let mut world = build(3);
@@ -541,9 +514,6 @@ fn a_navy_without_registered_missions_reads_no_region_header() {
     );
 }
 
-/// A held fleet-leader reference is served without resolution, even when the
-/// registry would now answer differently, until the leader's certificate
-/// moves; then that reference alone resolves and authenticates again.
 #[test]
 fn a_fleet_leader_reference_resolves_again_only_after_its_certificate_moves() {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -577,15 +547,10 @@ fn a_fleet_leader_reference_resolves_again_only_after_its_certificate_moves() {
     assert_eq!(authenticated.get(), 3);
 }
 
-/// A quiet hour republishes every certified navy's held registrations and
-/// reads none of its ledger headers or entries, even when the ledgers changed
-/// underneath; presence is still read. A moved certificate rereads that navy
-/// alone, and a full hour rereads every navy.
 #[test]
 fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fn certificate(navy: usize) -> Option<(u64, u64)> {
-        // Navy addresses differ; a bump below moves only the navy it names.
         let moved = SEQUENCE.load(std::sync::atomic::Ordering::Relaxed);
         Some((1, if navy == moved as usize { 1 } else { 0 }))
     }
@@ -623,7 +588,6 @@ fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
     captured.ledger_sequence = certificate;
     let (all, counts, _) = read(&mut captured, &world, 0, true);
     assert_eq!((counts.read, counts.carried), (3, 0));
-    // A quiet hour: the second navy's first ledger is emptied underneath, unobserved.
     let headers = region_headers(&world, 2);
     let first = escort_regions(2)[0] as usize;
     let count = headers - world.base + first * cstrategic_navy::REGION_MISSIONS_STRIDE + 12;
@@ -632,7 +596,6 @@ fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
     assert_eq!(ledgers, all);
     assert_eq!((counts.read, counts.carried), (0, 3));
     assert!(reads.iter().all(|&(at, _)| at != headers));
-    // The second navy's certificate moves: it alone is read, without its emptied ledger.
     SEQUENCE.store(
         (world.base + navy_of(&world, 2)) as u64,
         std::sync::atomic::Ordering::Relaxed,
@@ -640,7 +603,6 @@ fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
     let (ledgers, counts, _) = read(&mut captured, &world, 2, false);
     assert_eq!((counts.read, counts.carried), (1, 2));
     assert_eq!(ledgers.len(), all.len() - 1);
-    // A full hour reads every navy.
     let (_, counts, _) = read(&mut captured, &world, 3, true);
     assert_eq!((counts.read, counts.carried), (3, 0));
 }
@@ -694,7 +656,6 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
     let mut fingerprints = SliceFingerprints::new();
     let views = capture(&mut captured, &world, 0, true, &mut fingerprints);
     let task_forces = rows::<tables::NavalMissionTaskForces>(&views[0]);
-    // Strike, raid, escort and invasion-support operands, four per country.
     assert_eq!(task_forces.len(), 12);
     let escort = task_forces
         .iter()
@@ -708,7 +669,6 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
             raiding_factor: 20_000,
             local_coordination: None,
             local_raiding: Some(-1_000),
-            // Country 1's task forces sit in region 2.
             weather_coordination: Some(-2_000),
             weather_raiding: None,
             leader: leader(1),
@@ -720,9 +680,6 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
             ..Default::default()
         }
     );
-    // Each navy files its three escort regions. The ledger keeps its stored order, the
-    // escort first, not the walk's; every region holds the escort, so its presence is read:
-    // ring [1, 0, -1] (one above zero, two at least zero).
     let ledgers = rows::<tables::NavalMissionLedgers>(&views[1]);
     assert_eq!(ledgers.len(), 9);
     let [first, second, third] = escort_regions(1);
@@ -758,7 +715,6 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
             ..Default::default()
         }
     );
-    // Per country: the fleet leader (source 0) and the commander's four sources.
     let commanders = rows::<tables::NavalMissionCommanders>(&views[3]);
     assert_eq!(commanders.len(), 15);
     let first: Vec<_> = commanders
@@ -778,8 +734,6 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
     );
 }
 
-/// The game finds a country's navy by the country's slot, so a navy storing
-/// another owner keeps its ledgers under its slot's country.
 #[test]
 fn foreign_navy_keeps_its_ledgers_under_its_slots_country() {
     let mut world = build(3);
@@ -795,7 +749,6 @@ fn foreign_navy_keeps_its_ledgers_under_its_slots_country() {
 #[test]
 fn an_unlisted_escort_still_has_its_region_presence_input() {
     let mut world = build(1);
-    // The first escort region's ledger holds only the raider.
     let raider = world.tasks[1][RAIDER] + ctask_force::NAVAL_MISSION;
     let data = world.ledgers[1];
     world.put(data, (world.base + raider) as u64);
@@ -841,8 +794,6 @@ fn a_ledger_naming_a_task_force_outside_the_census_is_refused_alone() {
     assert_eq!(rows::<tables::NavalMissionCountries>(&views[2]).len(), 2);
 }
 
-/// Every escort mission names an owner no country resolves: no country demands an escort tree,
-/// which this fixture cannot hold, so none is refused and read again each hour.
 fn without_escort_demand(world: &mut World) {
     let owner = ctask_force::NAVAL_MISSION + native::MISSION_OWNER;
     for tasks in world.tasks.iter().skip(1) {
@@ -864,23 +815,18 @@ fn a_quiet_hour_reads_only_countries_whose_commanders_changed() {
             .map(|row| row.country)
             .collect::<Vec<_>>()
     };
-    // No rotating slice: an hour without a changed print reads no country.
     let views = capture(&mut captured, &world, 5, false, &mut fingerprints);
     assert!(owners(&views).is_empty());
     assert!(!captured.selection().contains(5) && !captured.selection().contains(29));
-    // Country 7's fleet takes another leader: it alone is read at the next hour.
     let fleet = world.fleets[7];
     world.put(fleet + native::FLEET_LEADER, leader(99));
     let views = capture(&mut captured, &world, 6, false, &mut fingerprints);
     assert_eq!(owners(&views), [7]);
     assert_eq!(captured.selection().early_count, 1);
-    // The hourly tables are complete every hour.
     assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 120);
     assert_eq!(rows::<tables::NavalMissionLedgers>(&views[1]).len(), 90);
 }
 
-/// A country whose demanded escort tree was refused is read again at the next hour although
-/// its print held; refusals that did not fit read every country.
 #[test]
 fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
     let world = build(3);
@@ -902,7 +848,6 @@ fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
     captured.retry_refused_escort_trees(&mut fingerprints);
     assert_eq!(read(&mut fingerprints, 3), [2]);
     assert!(read(&mut fingerprints, 4).is_empty());
-    // Growing storage appends each refusal once, never doubling.
     captured.escort_retries.clear();
     for country in 0..100 {
         captured.retry_escort_tree(country).unwrap();
@@ -911,9 +856,6 @@ fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
     assert!(captured.escort_retries.capacity() < 1_000);
 }
 
-/// A modifier rebuild the naval tree family observed (its certificate moved)
-/// is read within the hour; nothing else is. An unobservable certificate
-/// reads the country every hour.
 #[test]
 fn a_moved_certificate_is_read_within_the_hour() {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -931,13 +873,11 @@ fn a_moved_certificate_is_read_within_the_hour() {
     };
     let views = capture(&mut captured, &world, 5, false, &mut fingerprints);
     assert!(owners(&views).is_empty());
-    // Every receiver's tree was rebuilt: every country is read at hour 6.
     SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let views = capture(&mut captured, &world, 6, false, &mut fingerprints);
     assert_eq!(owners(&views), (1..=30).collect::<Vec<_>>());
     let views = capture(&mut captured, &world, 7, false, &mut fingerprints);
     assert!(owners(&views).is_empty());
-    // Unobserved: every country, every hour.
     captured.sequence = |_| None;
     let views = capture(&mut captured, &world, 8, false, &mut fingerprints);
     assert_eq!(owners(&views), (1..=30).collect::<Vec<_>>());
@@ -1006,7 +946,6 @@ fn a_bad_mission_read_refuses_dependents_and_preserves_independent_map_witnesses
     }
 }
 
-/// Capture cost through the production guarded copies of quiet hours.
 #[test]
 #[ignore = "timing bench"]
 fn naval_mission_bench() {
@@ -1034,7 +973,6 @@ fn naval_mission_bench() {
             );
             captured.grow(&mut capacity);
         }
-        // SAFETY: the world's bytes are owned, immutable and alive for every read.
         let live = CountedMemory::new(unsafe { LiveMemory::new() });
         let counts = crate::read_accounting::Capture::new();
         let mut hour = 1;
@@ -1082,7 +1020,6 @@ fn naval_mission_bench() {
 #[test]
 fn ledger_discovery_does_not_depend_on_any_accessible_region_list() {
     let mut world = build(1);
-    // Fleet regions can be registered while every mission's accessible-region list is empty.
     for task in world.tasks[1] {
         world.put(
             task + ctask_force::NAVAL_MISSION + cnaval_mission::ACCESSIBLE_REGIONS + 8,
@@ -1235,7 +1172,6 @@ fn stale_leader_has_an_explicit_zero_row() {
 fn ordinary_strict_missions_grow_on_first_and_later_publications() {
     use super::super::{Capacities, Captured, NavalMissionLoan, OrdinaryPart};
 
-    // The navy part alone: the physical pass and the ledgers that borrow it.
     let mut owner = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
         engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
@@ -1256,7 +1192,6 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
             }
         }
         loan = owner.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
-        // Production settles the owned mission operands on FIFO decode before projection.
         owner.decode_mission_tails();
         let count = count as usize;
         let captured = &owner.naval_mission_inputs;
@@ -1325,8 +1260,6 @@ fn growing_strict_missions_preserve_fixed_original_reads_and_first_faults() {
             &fixed.outcomes()[..4],
             "fault {failure:?}"
         );
-        // Optional strike-sibling reads are worker-only. The original mission
-        // acquisition remains an ordered subsequence, with no replaced reads.
         let additional = growing_memory.reads.borrow();
         let original = fixed_memory.reads.borrow();
         let mut remaining = additional.iter();
@@ -1482,8 +1415,6 @@ fn unavailable_map_certificates_preserve_the_original_mission_products() {
     for view in &views[..4] {
         assert!(matches!(view, TableView::Complete(_)), "{view:?}");
     }
-    // No live writer/world observer is installed in this fixture. A failed
-    // map certificate must not be interpreted as a certified empty map.
     assert!(matches!(
         captured.mines_outcome,
         Outcome::Unavailable { .. }
@@ -1576,8 +1507,6 @@ fn patrol_members_reuse_original_stats_and_do_not_duplicate_mission_context() {
 #[test]
 fn omitted_patrol_context_shares_headquarters_until_references_change() {
     let mut world = build(1);
-    // With no registered strike, these sources have neither strict mission
-    // operands nor a demanded sibling range packet.
     for index in [STRIKE, ESCORTING] {
         let at = world.tasks[1][index] + ctask_force::MISSION;
         world.bytes[at..at + 4].copy_from_slice(&1_u32.to_le_bytes());
@@ -1794,8 +1723,6 @@ fn owned_mission_tail_keeps_reordered_weather_and_shared_headquarters_exact() {
             .iter()
             .map(|&(id, _)| (id, Arc::clone(&captured.mission_headquarters[id as usize - 1].1)))
             .collect::<Vec<_>>();
-        // The range reader can reorder initial mission rows; its own weather
-        // and patrol context must not be replaced by the initial-row fan-out.
         captured.task_forces.rows.reverse();
         expected.reverse();
         captured.task_index.reverse();
@@ -1817,7 +1744,6 @@ fn owned_mission_tail_keeps_reordered_weather_and_shared_headquarters_exact() {
             assert!(Arc::ptr_eq(actual, expected));
         }
         captured.decode_owned();
-        // Dropping an unfinished prune forgets that baseline, not the allocation.
         captured.headquarters_pending = true;
         captured.reset();
         assert!(captured.mission_headquarters.is_empty());
@@ -1843,7 +1769,6 @@ fn refused_mission_weather_or_headquarters_admission_does_not_settle_partial_sta
     captured.task_forces.outcome = Outcome::Rows { len: 1 };
     let held = Arc::new(vec![7]);
     captured.mission_headquarters.push((2, Arc::clone(&held)));
-    // Neither native phase completed: their pending bits were never admitted.
     captured.decode_owned();
     assert_eq!(captured.task_forces.rows[0].weather[0].raw, 0);
     assert!(Arc::ptr_eq(&captured.mission_headquarters[0].1, &held));

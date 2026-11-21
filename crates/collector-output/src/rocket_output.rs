@@ -1,7 +1,3 @@
-//! Retained country/design rocket totals from the shared production log.
-//! Spending and delivery settle independently on normal
-//! native return. Publication shares the equipment output slot, with no census
-//! dependency or line handle. Failed world/load coverage stays unavailable.
 use super::output_continuity::{self, Progress, Reasons, State};
 use crate::output_log::Drained;
 use engine_allocation::{collect_vec, mul, reserve_map};
@@ -12,11 +8,8 @@ use replay_data::{BranchId, rows::RocketProductionOutputRow};
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::{collections::HashMap, io};
 
-/// Owned event only; no native receiver or pointer survives acquisition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Entry {
-    /// Preserve the shared log's index for an equipment event; it adds no Rocket
-    /// counter or amount. Never filter entries before continuity accounting.
     #[default]
     Equipment,
     Spending(RocketTick),
@@ -29,10 +22,6 @@ pub enum Entry {
 }
 
 impl Entry {
-    /// The owner comes from the same-thread acquired RocketTick, never from
-    /// treating DELIVERY's CLogisticsStatus as a CProductionStatus. Its variant
-    /// CID is verified at DELIVERY and compared with entry's CID.
-    /// Only a proved normal DELIVERY return may commit this owned event.
     pub fn delivery(scope: Option<RocketTick>, variant: u64, amount: i64) -> Self {
         let units = (amount % UNIT_SCALE == 0)
             .then(|| i32::try_from(amount / UNIT_SCALE).ok())
@@ -50,7 +39,6 @@ impl Entry {
     }
 }
 
-/// Never retired when a site disappears; only a new recorded branch resets it.
 #[derive(Debug)]
 pub struct Totals {
     branch: Option<BranchId>,
@@ -71,10 +59,6 @@ impl Default for Totals {
 }
 
 impl Totals {
-    /// Account one hourly drain. First-frame entries precede observation and
-    /// are discarded; no clock, load-success or census heuristic admits events.
-    /// `rocket` copies owned payload only; it performs no native read. Mapping
-    /// preserves equipment slots' indices without another capture buffer.
     pub fn observe<E>(
         &mut self,
         branch: BranchId,
@@ -140,8 +124,6 @@ impl Totals {
         Ok(())
     }
 
-    /// Call before staggered carry. Only SKIPPED_REASON suppresses a scheduled
-    /// publication; failed/incomplete equipment censuses do not hide Rockets.
     pub fn publication(
         &self,
         production_lines: &TableInput,
@@ -187,8 +169,6 @@ fn apply(
             country, variant, ..
         } => (country, variant),
     };
-    // The singleton counts every event. A known country's failures do not
-    // poison another country; unassignable owners remain world-wide unknown.
     let world = rows.get_mut(&(0, 0)).expect("branch seeded world coverage");
     count(world, entry)?;
     match entry {

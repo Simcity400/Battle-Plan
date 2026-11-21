@@ -63,7 +63,6 @@ fn primary_prefix_preserves_lazy_chunks_and_reuses_members_without_source_reads(
     assert_eq!(cache.resolve(&source, 0, member), Ok(ROOT));
     assert_eq!(source.count(MEMBERS), 1);
     assert_eq!(source.count(MEMBERS + 512), 0);
-    // Each query validates its current member state and prefix header.
     assert_eq!(source.count(member + PRIMARY_ROOT_DIRTY), 2);
     assert_eq!(source.count(ROOT + order::ASSIGNED_MEMBER_DATA), 3);
     cache.clear();
@@ -77,8 +76,6 @@ fn primary_prefix_preserves_lazy_chunks_and_reuses_members_without_source_reads(
 #[test]
 fn primary_zero_capacity_reads_the_direct_trace_once_and_keeps_first_root_and_clean_staleness() {
     let mut fixture = primary_fixture(1);
-    // A later primary root and all parent roots are unreachable after the
-    // first match, including when a warmed membership lookup supplies it.
     fixture.array(GROUP + group::PRIMARY_ORDER_DATA, ROOTS, 2);
     fixture.word(ROOTS + 8, 1);
     fixture.word(GROUP + group::PARENT, 1);
@@ -87,8 +84,6 @@ fn primary_zero_capacity_reads_the_direct_trace_once_and_keeps_first_root_and_cl
     assert_eq!(movement_primary_root(&source, 0, member), Ok(ROOT));
     let direct = source.reads.borrow().clone();
     source.reads.borrow_mut().clear();
-    // The direct walk authenticates its own group before reading the parent
-    // and again as the first owner; the memo serves the second from the first.
     let identity = [(GROUP, 8), (GROUP + group::HANDLE, 4)];
     let parent = direct
         .iter()
@@ -432,11 +427,6 @@ fn seeded_accumulator_keeps_faults_and_class_branch_lazy() {
     assert_eq!(source.count(ARMY + cunit::CLASS), 0);
 }
 
-/// The memoized selection gives each division the seeded selection or its
-/// first failure, reading the group, its leader, the HQ provider with the
-/// HQ's primary root and the feature flags once a pass; each division's own
-/// member is still its own read, while the root orders and member chunks its
-/// own root resolves through are read once a pass.
 #[test]
 fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
     let member = |army: usize| army + crate::corders_group_member::HOST_OFFSET;
@@ -449,8 +439,6 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
         class: Some(class),
         ..Default::default()
     };
-    // ARMY's root differs from its HQ's (alternate); the HQ division's own
-    // root is its HQ's; a nonzero class never reaches the HQ.
     let seeds = [division(ARMY, 0), division(HQ, 0), division(ARMY, 1)];
     for fault in [
         None,
@@ -486,8 +474,6 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
             let actual =
                 seeds.map(|seed| movement_accumulator_memoized(&memoized, 0, &seed, &mut memo));
             assert_eq!(actual, expected, "{fault:?} pass {pass}");
-            // The group's leader word, the HQ provider and the flags are each
-            // read at most once a pass, a failed read included.
             for address in [
                 GROUP + group::LEADER,
                 GROUP + group::HQ_PROVIDER,
@@ -503,12 +489,8 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
                 assert_eq!(seeded.count(GROUP + group::LEADER), seeds.len());
                 assert_eq!(memoized.count(GROUP + group::HQ_PROVIDER), 1);
                 assert_eq!(seeded.count(GROUP + group::HQ_PROVIDER), 2);
-                // Both class-zero divisions still read their own member's
-                // root; the HQ's is read once for the group.
                 assert_eq!(memoized.count(member(ARMY) + PRIMARY_ROOT_DIRTY), 1);
                 assert_eq!(memoized.count(member(HQ) + PRIMARY_ROOT_DIRTY), 2);
-                // The root order's members: once for the HQ's root and once
-                // for both divisions' own roots, which share the chunk.
                 assert_eq!(memoized.count(MEMBERS), 2);
                 assert_eq!(seeded.count(MEMBERS), 4);
             }
@@ -519,7 +501,6 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
             Some(_) => {}
         }
     }
-    // A memo with no room selects exactly as the seeded selection.
     let seeded = Observed::new(Fixture {
         bytes: fixture.bytes.clone(),
         flags: fixture.flags,
@@ -538,7 +519,6 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
     assert!(unkept.count(GROUP + group::LEADER) == seeds.len());
 }
 
-/// A refused memo growth carries the allocation's name, never a field's.
 #[cfg(feature = "alloc-fault-injection")]
 #[test]
 fn refused_memo_growth_is_named_as_the_allocation_failure() {
@@ -565,9 +545,6 @@ fn refused_memo_growth_is_named_as_the_allocation_failure() {
     assert!(refused.roots.metadata.refused());
 }
 
-/// The census selects every division from one read of its group and leader:
-/// the same block and first failure as each division's own selection. A held
-/// leader identity is not read again; an unheld one is read afresh.
 #[test]
 fn census_selection_reads_each_group_and_leader_once_for_every_division() {
     let member = |army: usize| army + crate::corders_group_member::HOST_OFFSET;
@@ -612,7 +589,6 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
         for hour in 0..3 {
             census.reads.borrow_mut().clear();
             let mut seeds = template;
-            // The second hour's leader certificate holds; the third's does not.
             struct Leader(Option<u64>);
             impl SelectionCarry for Leader {
                 fn leader(&mut self, leader: usize) -> Option<u64> {
@@ -643,7 +619,6 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
             assert_eq!(selected.handle, Some(handle));
             assert_eq!(selected.training, Some(Ok(1)));
             assert_eq!((counts.leaders, counts.carried), (1, u64::from(hour == 1)));
-            // One read of each group field for the five divisions.
             for address in [
                 GROUP + group::LEADER,
                 GROUP + group::TRAINING,
@@ -661,8 +636,6 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
     }
 }
 
-/// A group the carry holds reads none of its fields and selects as its fresh read did; a
-/// complete authenticated read is offered to the carry, a mismatched one is not.
 #[test]
 fn held_groups_read_none_of_their_fields_and_select_as_their_fresh_read() {
     #[derive(Default)]
@@ -724,12 +697,10 @@ fn held_groups_read_none_of_their_fields_and_select_as_their_fresh_read() {
     assert_eq!(held, fresh);
     assert!(carry.read.is_empty());
     assert_eq!((counts.groups, counts.carried_groups), (1, 1));
-    // Only the record's read of each field is gone; primary roots still authenticate groups.
     for (offset, before) in offsets.into_iter().zip(before) {
         assert_eq!(census.count(GROUP + offset), before - 1, "{offset:#x}");
     }
     assert_eq!(census.count(GROUP + group::HQ_PROVIDER), 0);
-    // A complete record of another kind of object is never offered to the carry.
     census.fixture.borrow_mut().word(GROUP, 0);
     let mut mismatched = template;
     let mut carry = Groups::default();
@@ -757,8 +728,6 @@ fn different_primary_roots_select_alternate_and_clean_staleness_is_not_repaired(
     assert_eq!(movement_accumulator(&f, 0, ARMY), Ok(Some(LEADER + 0x418)));
 }
 
-/// The land combat skill hover tests separate-HQ eligibility of a side's units
-/// for whichever leader the side selected; it is the movement block's choice.
 #[test]
 fn separate_hq_order_is_the_movement_block_choice_without_the_leader_block() {
     let mut f = Fixture::new();
@@ -773,7 +742,6 @@ fn separate_hq_order_is_the_movement_block_choice_without_the_leader_block() {
     assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(false));
     f.word(ARMY + cunit::CLASS, 0);
     assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(true));
-    // The deployed-leader predicate needs the group's own leader.
     f.word(GROUP + group::LEADER, 0);
     assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(false));
 }
@@ -961,8 +929,6 @@ fn prepared_movement_ranges_preserve_serial_faults_and_shared_admission() {
         }
     }
 
-    // A later range's contradictory observation cannot replace a shared
-    // group's admitted result (success or refusal), nor its feature/HQ gate.
     let source = Fixture::new();
     let seed = carmy::DivisionSeed {
         pointer: ARMY,

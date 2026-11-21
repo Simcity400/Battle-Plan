@@ -1,9 +1,3 @@
-//! The map mode picker over a map view: which mode each slot holds, the clicks and keys that
-//! choose and reassign them, and what the host is told.
-//!
-//! The view's map mode, slots and fog arrive in the host's map options and leave again when the
-//! picker changes them ([`super::Viewer::take_view_events`]); until the host echoes a change,
-//! the view keeps its own choice, so a layout message sent before the click cannot undo it.
 
 use super::Viewer;
 use crate::document::{Content, Document};
@@ -13,8 +7,6 @@ use viewer_foundation::map::native_gui::pointer::Input;
 use viewer_combat::picker::{self, Control, ModeButton, Open, Toggles};
 use viewer_world::map::map_mode::{MapMode, Stock};
 
-/// The picker's slots as the game ships them: the political, naval, air and operative large
-/// buttons, then supply, terrain, resistance, compliance, resources, raids and factions.
 pub const DEFAULT_SLOTS: [Stock; 11] = [
     Stock::Default,
     Stock::StrategicNavy,
@@ -29,45 +21,32 @@ pub const DEFAULT_SLOTS: [Stock; 11] = [
     Stock::Factions,
 ];
 
-/// The slots the user can reassign: the content's `UI_CONFIGURABLE_SLOT_FROM` to `_TO`, within
-/// the picker's slots.
 pub fn configurable(document: &Document) -> std::ops::RangeInclusive<usize> {
     let [from, to] = document.map_modes.defines.configurable_slots;
     let last = DEFAULT_SLOTS.len() - 1;
     (from.max(0) as usize).min(last + 1)..=(to.max(0) as usize).min(last)
 }
 
-/// The runtime DLC bit of the feature that adds the fourth large button.
 const FOURTH_BUTTON_DLC: u32 = 0x20;
 
-/// What the picker sends the host.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ViewEvent {
     Options(dashboard::protocol::MapOptions),
     Toggle(dashboard::protocol::MapToggle),
-    /// The modes the picker offers, once for each content the view loads.
     Modes(Vec<dashboard::protocol::MapModeChoice>),
-    /// A Ctrl+click chose this viewing country.
     Observe(dashboard::protocol::ObservedCountry),
 }
 
-/// The picker's state in one view.
 pub struct PickerState {
-    /// Rotating radar ranges, separately from station icons.
     pub radar: bool,
     pub picker: picker::Picker,
     pub open: Open,
-    /// Tokens of the configurable slots; empty holds the defaults.
     pub slots: Vec<String>,
-    /// The options this view last chose, kept until the host's options match them.
     pub requested: Option<dashboard::protocol::MapOptions>,
     pub events: Vec<ViewEvent>,
-    /// Hidden in the map-only pop-out; its shortcuts still work.
     pub hidden: bool,
-    /// The host pins this view's country, so Ctrl+click never switches it.
     pub country_pinned: bool,
     labels: Option<PickerLabels>,
-    /// The content whose modes the host was last told.
     modes_for: Option<Weak<Content>>,
     pub minimap: super::minimap::MinimapState,
     pub find: super::find_view::FindState,
@@ -93,13 +72,10 @@ impl Default for PickerState {
 }
 
 impl PickerState {
-    /// Whether the primary button holds a control of the picker, the minimap or the find view.
     pub fn holding(&self) -> bool {
         self.picker.holding() || self.minimap.holding() || self.find.view.holding()
     }
 
-    /// Whether the picker, the minimap or the find view still changes on the clock: a held
-    /// button, the minimap's slide, the edit box's caret.
     pub fn pointing(&self) -> bool {
         self.picker.pointing()
             || self.minimap.active()
@@ -199,9 +175,7 @@ pub(crate) fn dump(
     )
 }
 
-/// Localised button and list text depends on content and slot choices, not the frame.
 struct PickerLabels {
-    // Keep the identity alive without retaining a previous load's content.
     content: Weak<Content>,
     configured: Vec<String>,
     four_buttons: bool,
@@ -249,7 +223,6 @@ fn localised(document: &Document, key: &str) -> String {
         .unwrap_or_else(|_| key.to_owned())
 }
 
-/// A mode's button and list entry.
 pub fn mode_button(document: &Document, mode: &MapMode) -> ModeButton {
     match mode {
         MapMode::Stock(stock) => ModeButton {
@@ -276,14 +249,10 @@ pub fn mode_button(document: &Document, mode: &MapMode) -> ModeButton {
     }
 }
 
-/// Every mode the lists offer: the picker's own from the content's first configurable mode
-/// (`NMapMode.UI_CONFIGURABLE_SLOT_FROM`, which numbers the modes as it numbers the slots),
-/// then the content's scripted ones.
 pub fn all_modes(document: &Document, four_buttons: bool) -> Vec<MapMode> {
     Stock::ALL
         .into_iter()
         .skip(*configurable(document).start())
-        // The operatives mode comes with the fourth button's feature.
         .filter(|stock| four_buttons || *stock != Stock::Operatives)
         .map(MapMode::Stock)
         .chain(
@@ -297,8 +266,6 @@ pub fn all_modes(document: &Document, four_buttons: bool) -> Vec<MapMode> {
         .collect()
 }
 
-/// Every mode a user can choose: the fixed buttons' (the fourth with its feature), then those the
-/// configurable slots offer, each once.
 fn choosable_modes(document: &Document, four: bool) -> Vec<MapMode> {
     let mut modes: Vec<MapMode> = DEFAULT_SLOTS[..*configurable(document).start()]
         .iter()
@@ -313,7 +280,6 @@ fn choosable_modes(document: &Document, four: bool) -> Vec<MapMode> {
     modes
 }
 
-/// The modes the slots hold: the defaults with the view's configured slots over them.
 pub fn slot_modes(document: &Document, configured: &[String]) -> Vec<MapMode> {
     DEFAULT_SLOTS
         .iter()
@@ -330,10 +296,6 @@ pub fn slot_modes(document: &Document, configured: &[String]) -> Vec<MapMode> {
         .collect()
 }
 
-/// What the province hover shows in `mode`: the location block only in the default and states
-/// modes, each other mode's own lines otherwise. Where the pointer picks the strategic region
-/// (`region`, see [`picks_region`]), the region's own builder answers outside the strategic modes:
-/// the default mode's dominance, the terrain mode's naval terrain, and nothing in any other.
 pub fn mode_hover(
     mode: &MapMode,
     region: bool,
@@ -376,19 +338,14 @@ pub fn mode_hover(
     }
 }
 
-/// Whether the game's pointer picks a province of `kind` in `region` as that strategic region
-/// outside the strategic modes: a sea province with one; land, a lake or a sea province without
-/// one is picked as itself.
 pub fn picks_region(kind: Option<installed_content_core::map::ProvinceKind>, region: Option<u32>) -> bool {
     kind == Some(installed_content_core::map::ProvinceKind::Sea) && region.is_some()
 }
 
-/// Whether the recording owns the feature of the fourth large button.
 pub fn four_buttons(document: &Document) -> bool {
     document.frame().map_or(true, four_buttons_at)
 }
 
-/// [`four_buttons`] from `frame`'s features.
 pub fn four_buttons_at(frame: &replay_frame::frame::DecodedFrame) -> bool {
     frame
         .complete::<replay_data::rows::tables::SimulationFeatures>()
@@ -397,7 +354,6 @@ pub fn four_buttons_at(frame: &replay_frame::frame::DecodedFrame) -> bool {
         .is_none_or(|mask| mask & FOURTH_BUTTON_DLC != 0)
 }
 
-/// An authored shortcut as the window's keys: modifiers and one key.
 pub fn parse_shortcut(text: &str) -> Option<(egui::Modifiers, egui::Key)> {
     let mut modifiers = egui::Modifiers::NONE;
     let mut key = None;
@@ -420,8 +376,6 @@ pub fn parse_shortcut(text: &str) -> Option<(egui::Modifiers, egui::Key)> {
     key.map(|key| (modifiers, key))
 }
 
-/// Whether the host's options carry back the picker's choice: its map mode and slots. Fog and
-/// the country are the host's own and never hold a choice back.
 pub fn echoes(
     requested: &dashboard::protocol::MapOptions,
     options: &dashboard::protocol::MapOptions,
@@ -429,8 +383,6 @@ pub fn echoes(
     requested.map_mode == options.map_mode && requested.map_mode_slots == options.map_mode_slots
 }
 
-/// The map mode and slots the host's options give. A mode no recording can draw is never shown,
-/// whoever names it.
 pub fn host_choice(options: &dashboard::protocol::MapOptions) -> (MapMode, Vec<String>) {
     let mode = options
         .map_mode
@@ -441,8 +393,6 @@ pub fn host_choice(options: &dashboard::protocol::MapOptions) -> (MapMode, Vec<S
     (mode, options.map_mode_slots.clone())
 }
 
-/// The setting a picker toggle asks the host to flip, given each toggle's current state (`None`
-/// while disabled) and whether a host owns fog.
 pub fn toggle_request(
     name: &str,
     toggles: Toggles,
@@ -463,19 +413,14 @@ pub fn toggle_request(
     })
 }
 
-/// What a picker click asks of the view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Click {
     Nothing,
-    /// Choose this mode.
     Choose(MapMode),
-    /// The configurable slots' new tokens; empty restores the defaults.
     Configure(Vec<String>),
     Toggle(&'static str),
 }
 
-/// A click on `control` (`secondary` is the right button), given the modes the slots hold and
-/// the slots the user can reassign: the open list it leaves and what the view must do.
 pub fn click(
     open: &mut Open,
     slots: &[MapMode],
@@ -484,7 +429,6 @@ pub fn click(
     secondary: bool,
 ) -> Click {
     match control {
-        // Right-clicking a reassignable slot opens the list to reassign it.
         Control::Slot(slot) if secondary => {
             if range.contains(slot) {
                 *open = Open::Assign(*slot);
@@ -551,9 +495,7 @@ pub fn click(
 }
 
 impl Viewer {
-    /// Chooses `mode` and tells the host.
     pub(crate) fn choose_map_mode(&mut self, mode: MapMode) {
-        // A mode the recording cannot draw is offered disabled, and choosing it does nothing.
         if matches!(&mode, MapMode::Stock(stock) if stock.unavailable().is_some())
             || self
                 .document
@@ -569,7 +511,6 @@ impl Viewer {
         }
     }
 
-    /// Records the view's options as chosen here and queues them for the host.
     fn report_options(&mut self) {
         use viewer_foundation::map::perspective::Country;
         let (country, country_slot) = match &self.perspective.country {
@@ -591,8 +532,6 @@ impl Viewer {
         self.picker.events.push(ViewEvent::Options(options));
     }
 
-    /// The host's options for this view: its map mode and slots unless a choice made here is
-    /// still on its way. The picker owns only these; fog and the country are the host's.
     pub(crate) fn apply_host_options(&mut self, options: &dashboard::protocol::MapOptions) {
         self.picker.hidden = options.picker_hidden;
         self.picker.country_pinned = options.country_pinned;
@@ -606,7 +545,6 @@ impl Viewer {
         }
         if self.picker.requested.is_none() {
             (self.map_mode, self.picker.slots) = host_choice(options);
-            // Nor a mode this recording leaves out the tables of.
             if let Some(document) = &self.document
                 && self
                     .map_mode
@@ -618,7 +556,6 @@ impl Viewer {
         }
     }
 
-    /// What the picker told the host since the last call, with its modes when its content changed.
     pub(crate) fn take_view_events(&mut self) -> Vec<ViewEvent> {
         if let Some(document) = &self.document
             && !self
@@ -645,8 +582,6 @@ impl Viewer {
         std::mem::take(&mut self.picker.events)
     }
 
-    /// The toggles' states, each the value its owner last applied: the host's for the settings it
-    /// owns, which the picker never anticipates.
     pub(crate) fn picker_toggles(&self) -> Toggles {
         let host = self.dashboard_map || self.host_graphics;
         Toggles {
@@ -657,7 +592,6 @@ impl Viewer {
                     == viewer_counters::map::counters::CounterColorMode::Country,
             ),
             allied_plans: host.then_some(self.graphics.show_allied_plans),
-            // A recording without the fog inputs draws no fog: the toggle is disabled.
             fog: self
                 .document
                 .as_ref()
@@ -669,9 +603,6 @@ impl Viewer {
         }
     }
 
-    /// The countries whose counters draw: the widget's filter, and with the player-only toggle
-    /// on, only the counters on the viewing country's roster (`ours`, its canonical slot), as the
-    /// game keeps the local player's own. A counter's owner is its roster owner's slot.
     pub(crate) fn shown_counter_owners(
         &self,
         filtered: Option<std::sync::Arc<std::collections::BTreeSet<u32>>>,
@@ -686,7 +617,6 @@ impl Viewer {
         ))
     }
 
-    /// Lays out the picker; `None` while hidden.
     pub(crate) fn draw_picker(
         &mut self,
         document: &Document,
@@ -723,7 +653,6 @@ impl Viewer {
         }))
     }
 
-    /// A click on a picker control; `secondary` is the right button.
     pub(crate) fn picker_click(&mut self, document: &Document, control: &Control, secondary: bool) {
         match control {
             Control::FindView => self.picker.find.toggle(self.picker_now()),
@@ -752,10 +681,6 @@ impl Viewer {
     }
 
     pub(super) fn picker_toggle(&mut self, name: &str) {
-        // The host owns fog (the widget's or the campaign map's switch), day/night and allied
-        // plans: the view asks it to flip the setting, and it flips its own value in order, so
-        // quick clicks each count and the picker shows the host's value as it last applied it.
-        // Without a host the view keeps fog.
         let hosted = self.embedded.is_some() || self.dashboard_map;
         if let Some(setting) = toggle_request(name, self.picker_toggles(), hosted) {
             self.picker
@@ -782,9 +707,7 @@ impl Viewer {
         }
     }
 
-    /// The picker's authored keys pressed this frame, as clicks.
     pub(crate) fn picker_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
-        // The edit box takes the keys while it has focus.
         if self.find_view_keys(ui, document, extent, self.picker_now()) {
             return;
         }
@@ -851,7 +774,6 @@ mod tests {
 
     #[test]
     fn a_fog_change_from_the_host_never_holds_back_the_pickers_choice() {
-        // The picker chose air with fog on; the host carries air back with fog now off.
         assert!(echoes(
             &options(true, Some("strategic_air")),
             &options(false, Some("strategic_air"))
@@ -911,7 +833,6 @@ mod tests {
             toggle_request("button_fog", toggles, true),
             Some(MapSetting::Fog)
         );
-        // Without a host the view keeps fog; a disabled toggle asks for nothing.
         assert_eq!(toggle_request("button_fog", toggles, false), None);
         assert_eq!(
             toggle_request("day_night_toggle", Toggles::default(), true),
@@ -930,8 +851,6 @@ mod tests {
         )
     }
 
-    /// Every load path takes the recording's `settings.txt` options, the command line's first;
-    /// a host's settings own day/night and allied plans.
     #[test]
     fn a_loaded_recording_takes_settings_options_below_the_command_line() {
         use installed_content_settings::settings::MapOptions;
@@ -983,7 +902,6 @@ mod tests {
         let flip = |setting| MapToggle { setting };
         let fog = |viewer: &Viewer| viewer.picker_toggles().fog;
         let mut frame = eframe::Frame::_new_kittest();
-        // The campaign map's host: each Configure action as the desktop applies it.
         let configure = |viewer: &mut Viewer, frame: &mut eframe::Frame, fog| {
             viewer.host_map_action(
                 MapAction::Configure {
@@ -996,7 +914,6 @@ mod tests {
                 frame,
             );
         };
-        // A dashboard host's view snapshot, as one drawn frame of the widget map takes it.
         let dashboard = |viewer: &mut Viewer, frame: &eframe::Frame, fog| {
             let bounds = ViewBounds {
                 x: 0,
@@ -1030,7 +947,6 @@ mod tests {
             output.textures_delta.clear();
         };
 
-        // Each click asks for a flip; the picker keeps showing the host's value meanwhile.
         viewer.picker_toggle("button_fog");
         viewer.picker_toggle("button_fog");
         assert_eq!(fog(&viewer), Some(true));
@@ -1038,20 +954,16 @@ mod tests {
             toggles(&mut viewer),
             [flip(MapSetting::Fog), flip(MapSetting::Fog)]
         );
-        // A coalesced dashboard snapshot after both flips (on, off, on) shows on.
         dashboard(&mut viewer, &frame, true);
         assert_eq!(fog(&viewer), Some(true));
-        // An external change shows at once.
         dashboard(&mut viewer, &frame, false);
         assert_eq!(fog(&viewer), Some(false));
-        // Replayed older Configure snapshots show each value the host sent, the last standing.
         configure(&mut viewer, &mut frame, true);
         configure(&mut viewer, &mut frame, false);
         assert_eq!(fog(&viewer), Some(false));
         viewer.picker_toggle("button_fog");
         assert_eq!(toggles(&mut viewer), [flip(MapSetting::Fog)]);
 
-        // Day/night through the settings the host sends.
         viewer.picker_toggle("day_night_toggle");
         assert_eq!(viewer.picker_toggles().day_night, Some(true));
         let mut settings = ResolvedMapSettings::default();
@@ -1088,7 +1000,6 @@ mod tests {
                 .map(|setting| MapToggle { setting })
                 .collect::<Vec<_>>()
         );
-        // Only the host's resolved settings change the displayed state.
         settings.graphics.day_night = false;
         settings.graphics.show_allied_plans = true;
         viewer.set_embedded_graphics(&settings);
@@ -1117,7 +1028,6 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-campaign-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let previous = std::env::var_os("LOCALAPPDATA");
-        // This test owns its process and sets up both services before starting any workers.
         unsafe { std::env::set_var("LOCALAPPDATA", &root) };
         let mut host = Store::open();
         let service = dashboard::Service::new(Arc::new(|_| true)).unwrap();
@@ -1135,8 +1045,6 @@ mod tests {
         let unchanged = viewer.follow_map_settings(&service, campaign.clone());
         assert!(Arc::ptr_eq(&initial, &unchanged));
 
-        // Apply in global Settings persists the override; the viewer has its own store until
-        // the host's MapSettingsSaved notification reloads it.
         let mut settings = CampaignMapSettings::default();
         settings.graphics.day_night = Some(false);
         host.save("$global".into(), settings).unwrap();
@@ -1157,7 +1065,6 @@ mod tests {
         assert_eq!(dark.hour_fraction, light.hour_fraction);
         assert_eq!(dark.sun_direction, light.sun_direction);
 
-        // A widget override never decides the Campaign map's value.
         let mut settings = CampaignMapSettings::default();
         settings.graphics.day_night = Some(true);
         host.save(widget, settings).unwrap();
@@ -1165,7 +1072,6 @@ mod tests {
         viewer.follow_map_settings(&service, campaign.clone());
         assert_eq!(viewer.frame_day_night(hour, &speeds).strength, 0.0);
 
-        // The Campaign map's picker uses the same host-owned store, at campaign scope.
         viewer.picker_toggle("day_night_toggle");
         let [toggle]: [dashboard::protocol::MapToggle; 1] =
             toggles(&mut viewer).try_into().unwrap();
@@ -1195,7 +1101,6 @@ mod tests {
         assert_eq!(viewer.picker_toggles().player_counters, Some(false));
         viewer.picker_toggle("player_counters_toggle");
         assert_eq!(viewer.picker_toggles().player_counters, Some(true));
-        // The view's own toggle: nothing goes to the host.
         assert!(toggles(&mut viewer).is_empty());
         let filtered = |owners: Option<&[u32]>| {
             viewer
@@ -1205,7 +1110,6 @@ mod tests {
                 )
                 .map(|owners| owners.iter().copied().collect::<Vec<_>>())
         };
-        // Only the viewing country's roster counters draw, within the widget's own filter.
         assert_eq!(filtered(None), Some(vec![4]));
         assert_eq!(filtered(Some(&[2, 4])), Some(vec![4]));
         assert_eq!(filtered(Some(&[2])), Some(vec![]));
@@ -1284,7 +1188,6 @@ mod tests {
         use installed_content_core::map::ProvinceKind::*;
         use viewer_counter_products::map::province_tooltips::ModeHover;
         assert!(picks_region(Some(Sea), Some(40)));
-        // A sea province without a region is picked as itself, as is land or a lake.
         assert!(!picks_region(Some(Sea), None));
         assert!(!picks_region(Some(Land), Some(40)));
         assert!(!picks_region(Some(Lake), Some(40)));
@@ -1295,10 +1198,8 @@ mod tests {
             ModeHover::SeaRegion(std::sync::Arc::new(Err("naval dominance sources not prepared".into())))
         );
         assert_eq!(hover(MapMode::Stock(Stock::Terrain)), ModeHover::Terrain { region: true });
-        // The strategic modes pick the region for every province and build their own hover.
         assert_eq!(hover(MapMode::Stock(Stock::StrategicAir)), ModeHover::StrategicAir(Default::default()));
         assert!(matches!(hover(MapMode::Stock(Stock::StrategicNavy)), ModeHover::StrategicNavy(_)));
-        // The region builder writes nothing of its own in any other stock or scripted mode.
         for stock in Stock::ALL.into_iter().filter(|stock| {
             ![Stock::Default, Stock::Terrain, Stock::StrategicAir, Stock::StrategicNavy].contains(stock)
         }) {
@@ -1345,7 +1246,6 @@ mod tests {
             panic!("an entry in the reassignment list configures the slots");
         };
         assert_eq!(open, Open::None);
-        // Slot 5 is the second configurable slot; the others keep their modes.
         let expected: Vec<String> = defaults()[4..=10]
             .iter()
             .enumerate()
@@ -1358,7 +1258,6 @@ mod tests {
             })
             .collect();
         assert_eq!(configured, expected);
-        // A slot outside the range never indexes the configured list.
         let mut open = Open::Assign(2);
         assert_eq!(
             click(&mut open, &defaults(), 4..=10, &entry, false),
@@ -1378,7 +1277,6 @@ mod tests {
             Click::Choose(MapMode::Stock(Stock::Ideology))
         );
         assert_eq!(open, Open::All);
-        // A right-click on an entry chooses it and closes the list.
         assert_eq!(
             click(&mut open, &defaults(), 4..=10, &entry, true),
             Click::Choose(MapMode::Stock(Stock::Ideology))
@@ -1417,7 +1315,6 @@ mod tests {
             parse_shortcut(","),
             Some((egui::Modifiers::NONE, egui::Key::Comma))
         );
-        // The find view's and the minimap's keys, as the game writes them.
         assert_eq!(
             parse_shortcut("RETURN"),
             Some((egui::Modifiers::NONE, egui::Key::Enter))

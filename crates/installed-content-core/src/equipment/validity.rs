@@ -1,4 +1,3 @@
-//! Saved-design structural validation over content and explicit assignments.
 use super::*;
 use crate::parser::Operator;
 
@@ -26,7 +25,6 @@ impl ModuleCountLimit {
             } else if field.keyword_is("module") {
                 module = Some(text);
             } else if field.keyword_is("count") {
-                // The integer conversion accepts a numeric prefix; nonnumeric is zero.
                 count = Some(crate::fixed5::decimal_i32(&text));
                 operator = field.operator;
             }
@@ -47,8 +45,6 @@ impl ModuleCountLimit {
     }
 
     fn admits(&self, actual: i32) -> bool {
-        // Preserve the stored comparison mapping, including its distinct equals
-        // and greater branches rather than substituting mathematical spelling.
         match self.operator {
             Operator::Equals => actual > self.count,
             Operator::Less => actual < self.count,
@@ -62,8 +58,6 @@ pub struct ModuleValidity {
     pub failures: Vec<String>,
 }
 
-/// Explicit module entries include inactive entries for aggregate counting.
-/// Slot validation treats an inactive assignment as absent, with default fallback.
 pub struct Assignment<'a> {
     pub slot: &'a [u8],
     pub module: &'a [u8],
@@ -179,8 +173,6 @@ impl Database {
         }
         Ok(true)
     }
-    /// The index of a type borrowed from this database. Aliases take over names
-    /// in the name index, so a type's own index is never found through its name.
     fn index_of(&self, equipment: &Equipment) -> Result<usize, String> {
         self.equipment
             .iter()
@@ -193,7 +185,6 @@ impl Database {
             })
     }
 
-    /// `at`, then every type its stored parent and archetype links reach.
     fn chain(&self, at: usize) -> Result<Vec<usize>, String> {
         let mut chain = vec![at];
         while let Some(next) = self.next(chain[chain.len() - 1]) {
@@ -208,7 +199,6 @@ impl Database {
         Ok(chain)
     }
 
-    /// The first default for `slot` along `chain`; `empty` installs none.
     fn default_module(&self, chain: &[usize], slot: &[u8]) -> Option<&[u8]> {
         chain
             .iter()
@@ -405,7 +395,6 @@ impl Database {
             let any = modules.entry(Token::c_str(b"any")).or_default();
             *any = any.wrapping_add(1);
         }
-        // Validate only keys actually collected by the native explicit map.
         for limit in limits {
             let (name, actual) = match &limit.key {
                 CountKey::Category(name) if name == b"any" || name == b"empty" => {

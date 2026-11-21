@@ -207,8 +207,6 @@ fn owner_group_container_preserves_repeated_signed_planes_and_ignores_capacity()
         fuel_allocated_raw: Default::default(),
     }]);
     fixture.wing(|wing| wing.planes = i32::MAX);
-    // order.country differs deliberately. No witnesses, aces, command power,
-    // Ships or TaskForces were supplied, since the nullable region skips them.
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(-2));
 }
 
@@ -293,7 +291,6 @@ fn transfer_and_raid_liveness_use_their_witnesses_without_raid_roster_inference(
             .contains("AirWings.raid_reference not recorded")
     );
     fixture.wing(|wing| wing.base_override = 100);
-    // A live transfer rejects before the missing raid operand.
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(0));
     fixture.wing(|wing| wing.base_override = 999);
     assert!(fixture.context().count(&order(), Some(&group())).is_err());
@@ -315,7 +312,6 @@ fn region_reach_uses_the_wings_pool_base_not_the_orders_source_base() {
     }]);
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(0));
     fixture.put::<tables::AirReferenceWitnesses>(vec![]);
-    // A stale pool base fails before its raid/geometry branch.
     fixture.wing(|wing| wing.raid_reference = Recorded::NotRecorded);
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(0));
 }
@@ -398,8 +394,6 @@ fn nonzero_stale_state_host_uses_state_geometry_without_ship_tables() {
         kind: 0,
         ..Default::default()
     }]);
-    // The current complete witness probed this nonzero raw sentinel and
-    // observed a host miss. Ships/TaskForces remain unavailable.
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(9));
 }
 
@@ -430,7 +424,6 @@ fn a_live_host_takes_precedence_over_the_state_for_mixed_base_geometry() {
         mission: 0,
         ..Default::default()
     }]);
-    // The state is out of range, but the resolved host's TF province is not.
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(9));
     fixture.put::<tables::AirReferenceWitnesses>(vec![AirReferenceWitnessRow {
         handle: 101,
@@ -447,7 +440,6 @@ fn a_live_host_takes_precedence_over_the_state_for_mixed_base_geometry() {
         mission: 0,
         ..Default::default()
     }]);
-    // A reachable state cannot rescue an out-of-range resolved host.
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(0));
 }
 

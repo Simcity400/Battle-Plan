@@ -1,8 +1,5 @@
-//! Global political runtime scalars read with the simulation features.
 use super::*;
 
-/// Shared runtime scalar family. Every Option is an independent read refusal.
-/// The packet is read in the same accepted pass as these six native reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PoliticalRuntimeScalars {
@@ -40,7 +37,6 @@ mod tests {
         let mut input = Decoder::new(&bytes);
         assert_eq!(PoliticalRuntimeScalars::decode(&mut input).unwrap(), values);
         input.finish().unwrap();
-        // Format 101 led with the read hour; it still binds that hour.
         let mut stamped = (-17_i32).to_le_bytes().to_vec();
         stamped.extend_from_slice(&bytes);
         let mut input = Decoder::new(&stamped);
@@ -55,7 +51,6 @@ mod tests {
             }
         );
         assert!(Value::encode(&historical, &mut Vec::new()).is_err());
-        // Change one strict Option tag.
         bytes[0] = 2;
         assert!(PoliticalRuntimeScalars::decode(&mut Decoder::new(&bytes)).is_err());
     }

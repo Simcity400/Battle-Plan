@@ -1,21 +1,3 @@
-//! Scalar simulation operands for recursive order-execution conditions.
-//! Arrow updates store conditions unconditionally; inactive drawing bypasses
-//! execution operands. Ordinary recursive successors have no active/virtual gate.
-//! The viewer owns selection and animation time.
-//!
-//! The stored route-valid byte precedes type-four progress and preparation terms.
-//! Progress is serialized; country, relation, leader, modifier and stat terms are
-//! runtime operands. Nested absence preserves independent acquired prefixes.
-//! Naval selection reaches raw stats only for non-transferred class-zero members.
-//! Paratrooper selection retains exact own/immediate-parent membership, current
-//! province, roster owner and selected commander.
-//!
-//! SnapshotArena acquires complete raw accumulators, a superset of requested-key
-//! lookup reach. A disabled key with an unreadable snapshot remains unavailable;
-//! only metadata errors enter the separate three-key failure latch.
-//!
-//! Pointers, observations and indices belong to one held capture pass, which
-//! grows their storage.
 
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cdiplomacy_status,
@@ -37,7 +19,6 @@ use std::{
 mod demand;
 pub use demand::{Demand, demand};
 
-/// Cached stat operands for naval and paratrooper execution, distinct from derived demand.
 const NAVAL_WEIGHT: usize = 0x2b8;
 const PARADROP_ELIGIBLE: usize = 0x5b5;
 
@@ -87,15 +68,9 @@ pub struct Orders<'a> {
     pub rows: &'a [order::Row],
     pub source: Outcome,
     pub geometry: &'a [u32],
-    /// This pass's complete plan walk's [`order::PlanOrder::rows`], or
-    /// empty: each census order's plan and census row, checked before use.
     pub plan_rows: &'a [u32],
-    /// The census's order ([`order::SuccessorLists::census`]), or empty for
-    /// table order.
     pub census: &'a [u32],
 }
-/// Each source has its own verdict; a healthy geometry prefix cannot certify
-/// missing assigned host ownership or a truncated primary list.
 #[derive(Clone, Copy)]
 pub struct SourceView<'a> {
     pub plans: &'a [PlanRow],
@@ -144,8 +119,6 @@ pub struct Work {
     pub selectors_none: usize,
     pub selectors_refused: usize,
     pub stale_clean: usize,
-    /// Exact-span observations, including null/overflow refusals; not measured
-    /// native calls. The collector's CountedMemory owns actual calls/bytes.
     pub scalar_reads: usize,
     pub scalar_failed: usize,
 }
@@ -154,8 +127,6 @@ pub struct UnitRow {
     pub division: u64,
     pub inputs: Option<DivisionOrderTransportInputs>,
 }
-/// A movable sparse companion. A whole-packet failure never changes Movement's
-/// core outcome. The Presentation owner installs it only after both jobs join.
 pub struct UnitPacket {
     rows: Vec<UnitRow>,
     outcome: Outcome,
@@ -207,9 +178,6 @@ struct ScalarState {
     failed: usize,
     limit: usize,
 }
-/// Only small execution scalar/header reads use this local exact-span memo.
-/// SnapshotArena owns modifier arrays separately; no modifier payload is copied
-/// here. Failed sources are retained; a refused growth never reads live.
 #[derive(Default)]
 struct Scalars(RefCell<ScalarState>);
 impl Scalars {
@@ -344,8 +312,6 @@ type RootResult = Option<Result<usize, &'static str>>;
 type CommanderResult = Option<Result<Option<usize>, &'static str>>;
 type ProvinceResult = Option<Result<u32, &'static str>>;
 
-/// Owned observations for Orders -> Late in ONE held capture pass. Growth
-/// retains the original reads; reset clears identities.
 pub struct Prepared {
     capacity: Capacity,
     required: Capacity,
@@ -439,8 +405,6 @@ impl Prepared {
         self.required = Capacity::default();
         self.groups.clear();
         self.visits.clear();
-        // Retain only census ordinals; index_units validates their ordering
-        // against the current seeds before any identity lookup can use them.
         self.invalid.fill(None);
         self.memberships.clear();
         self.membership_error = None;
@@ -524,8 +488,6 @@ impl Prepared {
             modifier_keys::PARATROOPER_WEIGHT_FACTOR => 2,
             _ => return Err("unexpected execution modifier key"),
         };
-        // Whole-array acquisition superset: raw/header/arena errors stay scoped
-        // to their accumulator and never poison the metadata key's failure lane.
         let value = {
             let mut arena = self.snapshots.borrow_mut();
             let observation = arena.capture_at(memory, accumulator, key)?;
@@ -593,7 +555,6 @@ impl Prepared {
                 continue;
             };
             self.count(|work| work.route_demand += 1);
-            // Read this serialized route-valid byte once and retain it in the plan, including at mid-game attach.
             let route_is_ok = field::<u8>(memory, visit.pointer, order::CONDITION_CACHE).ok();
             if route_is_ok.is_some() {
                 self.count(|work| work.route_available += 1);
@@ -646,8 +607,6 @@ impl Prepared {
             if self.groups.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return Err("execution group census aliases a pointer");
             }
-            // At their plan rows the keys are already sorted, and the sort
-            // below only confirms it in one pass.
             if !self.index_visits(orders, true)? {
                 self.index_visits(orders, false)?;
             }
@@ -662,12 +621,7 @@ impl Prepared {
         })();
         self.index_error = result.err();
     }
-    /// Indexes each census order's key and visit, at its
-    /// [`Orders::plan_rows`] place when `placed` and those place every order
-    /// once, else in census order; `Ok(false)` when the placement did not.
-    /// The entries, their failures and their order once sorted are the same.
     fn index_visits(&mut self, orders: Orders<'_>, placed: bool) -> Result<bool, &'static str> {
-        // Above every key: a group handle and an instance fill 96 bits.
         const UNPLACED: (u128, usize) = (u128::MAX, usize::MAX);
         self.visits.clear();
         let placed = placed
@@ -849,8 +803,6 @@ impl Prepared {
                         .and_then(|value| value.route_is_ok)
                         .is_some_and(|raw| raw != 0)
             };
-            // Only the selected paradrop branch consumes primary membership.
-            // Its original index checks still precede every consuming read.
             if orders
                 .rows
                 .iter()
@@ -892,8 +844,6 @@ impl Prepared {
                     .ok_or("execution host span incomplete")?;
                 for (&handle, &host) in handles.iter().zip(hosts) {
                     self.count(|work| work.assigned_occurrences += 1);
-                    // An aliased handle can still name a refused sparse row;
-                    // it cannot supply any unit field or root proof.
                     let index = self
                         .handles
                         .binary_search_by_key(&handle, |&index| seeds[index].division)
@@ -921,7 +871,6 @@ impl Prepared {
                     let seed = &seeds[index];
                     if naval && attempted[index] & 1 == 0 {
                         attempted[index] |= 1;
-                        // Naval execution skips transferred class-zero hosts.
                         if seed.naval_transfer_membership == Some(0) {
                             self.count(|work| work.naval_demand += 1);
                             inputs.naval_weight = observed.stat::<i64>(seed, NAVAL_WEIGHT).ok();
@@ -964,8 +913,6 @@ impl Prepared {
                     if inputs.paradrop_eligible.is_none_or(|raw| raw == 0) {
                         continue;
                     }
-                    // Seeded location failure remains final. This bounded
-                    // geometry helper validates the current province/definition.
                     let current = self.current_province(&observed, base, index, seed);
                     let Ok(current) = current else {
                         continue;
@@ -975,9 +922,6 @@ impl Prepared {
                     }
                     attempted[index] |= 4;
                     self.count(|work| work.modifiers_demand += 1);
-                    // The game computes weight before eligibility and current province.
-                    // Capture acquires modifiers only for contributing units, bounding acquisition;
-                    // its probe and fault order therefore differs from the getter's.
                     inputs.paradrop_modifiers = (|| {
                         let owner = seed
                             .roster_owner
@@ -1011,8 +955,6 @@ impl Prepared {
             }
             packet.rows.retain(|row| row.division != 0);
             packet.rows.sort_unstable_by_key(|row| row.division);
-            // Duplicate census handles were marked invalid before any read.
-            // Keep one explicit unavailable row rather than an ambiguous join.
             packet.rows.dedup_by_key(|row| row.division);
             packet.outcome = Outcome::Rows {
                 len: packet.rows.len(),
@@ -1023,8 +965,6 @@ impl Prepared {
             Ok(Ok(())) => {}
             Ok(Err(reason)) => packet.fail(reason),
             Err(payload) => {
-                // Keep the loaned arenas on unwind, then let the collector's
-                // existing typed panic/failure handling decide publication.
                 self.units = packet;
                 self.attempted = attempted;
                 std::panic::resume_unwind(payload);
@@ -1153,7 +1093,6 @@ impl Prepared {
             {
                 return Err("execution primary groups not uniquely ordered");
             }
-            // First compute exact full demand without admitting a partial index.
             for group in plans.groups {
                 let end = group
                     .primary_start
@@ -1330,8 +1269,6 @@ impl<M: Memory> UnitMemory<'_, M> {
                 .stat_block
                 .filter(|&pointer| pointer != 0)
                 .ok_or(STAT_REFUSALS[0])?;
-            // The unit stat selects its sub-unit definition. The capture-pass memo
-            // retains the first identity read for both leaves and aliased stat sources.
             let vtable = field::<u64>(self, pointer, 0).map_err(|_| STAT_REFUSALS[1])?;
             if Some(vtable)
                 != engine_sites::at(self.prepared.base, csub_unit_definition::VTABLE_RVA)
@@ -1357,8 +1294,6 @@ impl<M: Memory> UnitMemory<'_, M> {
 }
 impl<M: Memory> Memory for UnitMemory<'_, M> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        // Existing helper's unit/HQ identity/group/class reads consume the
-        // original DivisionSeed observation, including failure, without retry.
         let position = self
             .prepared
             .pointers
@@ -1412,8 +1347,6 @@ impl<M: Memory> Memory for UnitMemory<'_, M> {
         base: usize,
         member_pointer: usize,
     ) -> Option<Result<usize, &'static str>> {
-        // ALWAYS Some: no missing source, alias, capacity or failure can invoke
-        // carmy_leader's native primary/assigned-array fallback.
         Some((|| {
             if base != self.prepared.base {
                 return Err("execution member module mismatch");
@@ -1434,8 +1367,6 @@ impl<M: Memory> Memory for UnitMemory<'_, M> {
                 let own = self.seeds[index]
                     .orders_group
                     .ok_or("execution member group unavailable")?;
-                // The clean-cache assertion validates cache state; it supplies no expected
-                // root or recorded DTO field.
                 let dirty = field::<u8>(self, member_pointer, member::ORDER_CACHE_DIRTY)?;
                 let cached = pointer(self, member_pointer, member::ROOT_ORDER)?;
                 let mut expected = 0;
@@ -1469,7 +1400,6 @@ impl<M: Memory> Memory for UnitMemory<'_, M> {
         })())
     }
 }
-/// None outside exact seeded fields; Some(None) is that field's retained fault.
 fn seeded_scalar(seed: &carmy::DivisionSeed, offset: usize, len: usize) -> Option<Option<[u8; 8]>> {
     let word = match (offset, len) {
         (0, 8) => seed.primary_vtable,

@@ -37,8 +37,6 @@ impl Fixture {
             records: Vec::new(),
             values: Vec::new(),
         };
-        // Repeated record references preserve their original occurrences;
-        // each history still has its own authenticated window and vector.
         for record in 0..*fixture.capacities.iter().max().unwrap_or(&0) {
             let object = fixture.allocate(8);
             let values = fixture.allocate(cloop_history::air_stats::FIELD_COUNT as usize * 8);

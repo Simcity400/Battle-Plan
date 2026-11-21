@@ -1,18 +1,3 @@
-//! The country vectors the flying-aircraft map walks for the viewing country.
-//! The viewer builds the viewpoint's participant arrays from them.
-//!
-//! Their native writers are observed ([`crate::relation_changes`]). The hour's
-//! work is split: [`PARTS`] pool jobs, each owning every [`PARTS`]th slot,
-//! copy only the raw vectors of countries a writer touched (or whose slot
-//! changed, or that were never observed) into their staging buffers, in
-//! batched gathers and scattered copies ([`engine_air_history::air_participant_vectors`]).
-//! A quiet hour copies nothing. The decode thread then turns the staged
-//! entries into held rows off the game thread, in hour order.
-//!
-//! The table is sliced by canonical slot ([`crate::slicing`]): each hour
-//! emits the held rows of that hour's slice and of every country whose rows
-//! changed since it was last scanned. A country's fingerprint is the
-//! generation of its held rows, which moves only when a copy differs.
 
 use crate::{
     clock::qpc,
@@ -31,15 +16,12 @@ use std::sync::{Mutex, MutexGuard};
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::AirCountryRelations];
 
-/// Pool jobs splitting the copies; slot `s` belongs to part `s % PARTS`.
 pub const PARTS: usize = 8;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
-    /// Staging bytes per part.
     bytes: usize,
-    /// Country slots, which bound each part's per-country staging.
     countries: usize,
 }
 
@@ -57,33 +39,24 @@ impl Capacities {
 
 type Sequence = Option<(u64, u64)>;
 
-/// What one part's job did this hour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum State {
-    /// Not dispatched for this frame.
     #[default]
     Idle,
-    /// Every certificate held; nothing copied.
     Quiet,
     Copied,
     Failed(&'static str),
 }
 
-/// One part's copies for one hour, loaned to its job and read by the decode
-/// thread. Buffers keep their capacity and grow off-thread.
 #[derive(Default)]
 pub struct Staging {
     bytes: Vec<u8>,
     used: usize,
     staged: Vec<native::Staged>,
-    /// Each staged country's certificate index and sequences.
     certify: Vec<(usize, [Sequence; 2])>,
-    /// Slots found empty whose earlier country is gone.
     removed: Vec<u32>,
-    /// The registry's slot count.
     slots: u32,
     state: State,
-    /// Bytes this hour's copies needed.
     needed: usize,
     reused: u64,
     ticks: u64,
@@ -99,7 +72,6 @@ impl Staging {
         staging
     }
 
-    /// Off the hour: room for a part's share of `slots` countries.
     fn reserve_countries(&mut self, slots: usize) {
         let owned = slots.div_ceil(PARTS);
         let _ = reserve(&mut self.staged, owned);
@@ -126,7 +98,6 @@ impl Staging {
             + self.removed.capacity() * 4
     }
 
-    /// A failed job: nothing it staged may be applied.
     pub fn fail(&mut self, reason: &'static str) {
         self.state = State::Failed(reason);
     }
@@ -134,10 +105,8 @@ impl Staging {
 
 pub struct Captured {
     rows: CaptureRows<native::Row>,
-    /// The countries this hour's rows cover.
     selection: SliceSelection,
     parts: Vec<Staging>,
-    /// The parts ran for this frame and their copies await decoding.
     staged: bool,
 }
 
@@ -153,8 +122,6 @@ impl Captured {
         }
     }
 
-    /// Game thread, at the start of a frame's hour: its last hour's copies
-    /// were decoded or dropped before the frame was freed.
     pub fn reset(&mut self) {
         debug_assert!(!self.staged, "a frame was reused before its copies settled");
         self.rows.reset();
@@ -189,40 +156,31 @@ impl Captured {
         }
     }
 
-    /// Start a frame's selection at its hour.
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
     }
 
-    /// The countries whose rows this frame emitted.
     pub fn selection(&self) -> &SliceSelection {
         &self.selection
     }
 
-    /// Loan one part's staging to its job.
     pub fn take_part(&mut self, part: usize) -> Staging {
         std::mem::take(&mut self.parts[part])
     }
 
-    /// Return a part's staging after its job.
     pub fn restore_part(&mut self, part: usize, staging: Staging) {
         self.parts[part] = staging;
         self.staged = true;
     }
 
-    /// Worker time of the parts' copies.
     pub fn ticks(&self) -> [u64; N] {
         [self.parts.iter().map(|part| part.ticks).sum()]
     }
 
-    /// Whether the parts ran for this frame.
     pub fn staged(&self) -> bool {
         self.staged
     }
 
-    /// The parts did not run for this frame; production always dispatches
-    /// them. Nothing is read or decoded here: the decode thread publishes
-    /// the table unavailable and invalidates the frame's selection.
     pub fn unstaged(&mut self) -> [u64; N] {
         for part in &mut self.parts {
             part.fail("air relation parts not dispatched");
@@ -231,17 +189,12 @@ impl Captured {
         [0]
     }
 
-    /// The frame was dropped before decoding: its copies are lost, so every
-    /// certificate they advanced is withdrawn.
     pub fn dropped(&mut self) {
         if std::mem::take(&mut self.staged) {
             forget_certificates();
         }
     }
 
-    /// Apply the staged copies to the held rows, then scan and publish this
-    /// hour's slice. Decode thread, in hour order; a frame whose parts did not
-    /// run keeps its outcome.
     pub fn decode(&mut self) {
         if self.staged {
             self.decode_into(&mut HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
@@ -330,8 +283,6 @@ impl Captured {
     }
 }
 
-/// What a part's jobs last observed of each of its slots: the country and
-/// diplomacy status and their notification sequences taken before the copy.
 #[derive(Clone, Copy, Default)]
 struct Certificate {
     country: usize,
@@ -339,8 +290,6 @@ struct Certificate {
     sequences: [(u64, u64); 2],
 }
 
-/// Whether each of the part's slots still holds the country object it
-/// certified.
 fn same_countries(
     countries: &ccountry::Reader<'_, impl Memory>,
     part: usize,
@@ -364,12 +313,9 @@ fn same_countries(
 }
 
 pub struct Certificates {
-    /// Whole-domain certificate of the last complete hour.
     quiet: Sequence,
     complete: bool,
-    /// The registry's slot count when certified.
     slots: usize,
-    /// Indexed by slot / [`PARTS`].
     known: Vec<Certificate>,
 }
 
@@ -388,7 +334,6 @@ impl Certificates {
             known: Vec::new(),
         }
     }
-    /// Nothing observed so far certifies anything: copy afresh.
     pub fn forget(&mut self) {
         self.complete = false;
     }
@@ -403,15 +348,12 @@ pub fn certificates(part: usize) -> MutexGuard<'static, Certificates> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Nothing observed so far certifies anything: every part copies afresh.
 pub fn forget_certificates() {
     for part in 0..PARTS {
         certificates(part).forget();
     }
 }
 
-/// One part's hour: copy its touched countries' vectors into `staging`.
-/// A failure withdraws the part's certificates.
 pub fn stage(
     memory: &impl Memory,
     base: usize,
@@ -452,8 +394,6 @@ fn stage_part(
 ) -> Result<State, &'static str> {
     let quiet = changes.quiet();
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    // A quiet hour still checks every slot's country object against the
-    // roster, which costs no guarded read.
     let quiet_hour = certificates.complete
         && quiet.is_some()
         && quiet == certificates.quiet
@@ -473,8 +413,6 @@ fn stage_part(
     let owned = (staging.slots as usize)
         .saturating_sub(part)
         .div_ceil(PARTS);
-    // Presized off the hour; a larger registry grows here, failing the part
-    // rather than aborting the game when memory runs out.
     reserve(&mut certificates.known, owned)?;
     reserve(&mut staging.staged, owned)?;
     reserve(&mut staging.certify, owned)?;
@@ -489,10 +427,7 @@ fn stage_part(
             continue;
         }
         let known = certificates.known[index];
-        // The roster cache answers this without a read in the hour.
         let country = countries.at(slot as u32)?;
-        // A cached pair holds while the slot keeps its country object and
-        // neither receiver's writers ran.
         let carried = complete
             && known.country != 0
             && country.is_some_and(|country| country.pointer == known.country)
@@ -522,10 +457,6 @@ fn stage_part(
         }
     }
     pending.flush(memory, base, changes, staging)?;
-    // Every header is known and no vector is longer than the country links:
-    // size the destination, then copy. A change larger than any before grows
-    // the buffer here instead of failing the hour; the pool's other buffers
-    // grow off-thread from `needed`.
     staging.needed = staging.used;
     if staging.bytes.len() < staging.used {
         reserve(&mut staging.bytes, staging.used)?;
@@ -534,7 +465,6 @@ fn stage_part(
     native::copy_entries(memory, &staging.staged, &mut staging.bytes)?;
     let mut observed = true;
     for (staged, &(index, sequences)) in staging.staged.iter().zip(&staging.certify) {
-        // An unobserved (e.g. refused) receiver is copied again next hour.
         observed &= sequences.iter().all(Option::is_some);
         certificates.known[index] = Certificate {
             country: staged.country,
@@ -542,23 +472,17 @@ fn stage_part(
             sequences: sequences.map(|sequence| sequence.unwrap_or((0, u64::MAX))),
         };
     }
-    // A quiet hour may skip the part only when every receiver it holds is
-    // watched: a writer of an unwatched one moves the revision, but the
-    // refused receiver must still be read afresh every hour.
     certificates.quiet = quiet.filter(|_| observed);
     certificates.complete = true;
     Ok(State::Copied)
 }
 
-/// Room for `len` elements, allocated fallibly.
 fn reserve<T>(vector: &mut Vec<T>, len: usize) -> Result<(), &'static str> {
     let additional = len.saturating_sub(vector.len());
     allocation::reserve(vector, additional).map_err(|_| "air relation staging allocation failed")
 }
 
-/// Up to [`native::BATCH`] countries awaiting their headers.
 struct Pending {
-    /// The live country-link count, which bounds every vector.
     links: u32,
     len: usize,
     index: [usize; native::BATCH],
@@ -589,8 +513,6 @@ impl Pending {
         self.len += 1;
     }
 
-    /// Read the pending countries' headers, taking each diplomacy sequence
-    /// before its status is read, and give each its place in the buffer.
     fn flush(
         &mut self,
         memory: &impl Memory,
@@ -620,19 +542,15 @@ impl Pending {
     }
 }
 
-/// One country's vectors as last applied.
 #[derive(Default)]
 struct HeldCountry {
-    /// Zero for an empty slot.
     country: usize,
     counts: [u32; 3],
     entries: Vec<u32>,
-    /// Moves whenever the entries or country change.
     generation: u64,
 }
 
 impl HeldCountry {
-    /// Whether these are a staged country's vectors, `bytes` its entries.
     fn holds(&self, staged: &native::Staged, bytes: &[u8]) -> bool {
         self.country == staged.country
             && self.counts == staged.counts
@@ -644,11 +562,8 @@ impl HeldCountry {
     }
 }
 
-/// The decode thread's rows, applied in hour order, and the family's
-/// fingerprints.
 pub struct Held {
     countries: Vec<HeldCountry>,
-    /// The last generation handed out, unique across slots.
     generation: u64,
     fingerprints: Option<Box<SliceFingerprints>>,
 }
@@ -670,7 +585,6 @@ impl Held {
         }
     }
 
-    /// Rows held.
     #[cfg(any(test, feature = "test-support"))]
     pub fn rows(&self) -> usize {
         self.countries
@@ -714,8 +628,6 @@ impl Held {
         Ok(())
     }
 
-    /// Expand the selected countries' rows into the pack's buffer in slot
-    /// order, growing it here on the decode thread when this hour needs more.
     fn publish(&self, selection: &SliceSelection, output: &mut Vec<native::Row>) -> Outcome {
         let selected = || {
             self.countries
@@ -790,8 +702,6 @@ pub fn allocation_failure_exercise() {
         });
 }
 
-/// Bench and test access to one hour outside the frame pool: stage every
-/// part (in parallel when `threads`), then decode into `pack`.
 #[cfg(any(test, feature = "test-support"))]
 pub mod hour {
     use super::*;
@@ -800,8 +710,6 @@ pub mod hour {
         pub pack: Captured,
         pub certificates: Vec<Certificates>,
         pub held: Held,
-        /// Make the next hour a full hour, as the spool's recovery does;
-        /// hour 0 always is one.
         pub force_full: bool,
     }
 
@@ -819,7 +727,6 @@ pub mod hour {
             }
         }
 
-        /// Stage, returning the wall time of the parts, then decode.
         pub fn run<M: Memory + Sync>(
             &mut self,
             memory: &M,
@@ -871,7 +778,6 @@ pub mod hour {
             self.pack.rows.outcome
         }
 
-        /// The rows this hour emitted, in slot order.
         pub fn emitted_rows(&self) -> &[native::Row] {
             &self.pack.rows.rows[..self.pack.rows.outcome.len()]
         }
@@ -880,7 +786,6 @@ pub mod hour {
             self.pack.parts.iter().map(|part| part.staged.len()).sum()
         }
 
-        /// Grow the buffers as the spool would.
         pub fn grow(&mut self) {
             let mut capacity = Capacities {
                 rows: self.pack.rows.rows.len(),

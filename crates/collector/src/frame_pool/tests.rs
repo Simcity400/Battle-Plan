@@ -14,10 +14,8 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     assert_eq!(free.len(), STEADY);
     assert!(free.take(1, 1));
     assert!(!free.take(1, 0));
-    // Three free: a take that must leave three is refused.
     assert!(!free.take(2, STEADY - 1));
     assert_eq!(free.len(), STEADY - 1);
-    // A return while the lease is out is newer than the leased frame.
     let newest = free.pop().unwrap();
     assert_eq!(newest, STEADY - 1);
     free.push(newest).unwrap();
@@ -29,13 +27,11 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     assert_eq!(newest_first, (0..STEADY).rev().collect::<Vec<_>>());
     assert_eq!(free.len(), 0);
     assert!(!free.take(0, 0));
-    // The frame returned last is the next one taken.
     free.push(2).unwrap();
     free.push(0).unwrap();
     assert_eq!(free.pop(), Some(0));
     free.push(0).unwrap();
     assert_eq!(free.pop(), Some(0));
-    // The last free frame stays for the game.
     assert!(!free.take(2, 1));
     assert!(free.take(2, 0));
     assert_eq!(free.len(), 0);
@@ -44,8 +40,6 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     }
 }
 
-/// A stalled spool returns no frame, so neither an hour nor the frame builder adds one while it
-/// lasts; free frames are still taken. A spool only slower than the game still grows.
 #[test]
 fn a_stalled_spool_adds_no_frame_and_its_free_frames_are_still_taken() {
     assert_eq!(hour_frame(Some(3), false), HourFrame::Free(3));
@@ -73,15 +67,11 @@ fn slots_keep_their_place_as_segments_are_added() {
     assert_eq!(pool.slot(first) as *const Slot, address);
     assert_eq!(pool.made(), 201);
     assert_eq!(pool.live(), 0);
-    // A slot given up goes back to vacant and is the next one handed out.
     pool.abandon(57);
     assert_eq!(pool.vacant().unwrap(), 57);
     assert!(pool.slot_bytes() >= 201 * size_of::<Slot>() as u64);
 }
 
-/// The game thread and the sizing thread make slots at once: each slot goes to exactly one of
-/// them, every segment is installed once, and none waits on the other. On the base a second
-/// caller could hand out the slot the first was making.
 #[test]
 fn two_builders_making_slots_at_once_never_share_one() {
     let pool = std::sync::Arc::new(FramePool::new());
@@ -112,7 +102,6 @@ fn two_builders_making_slots_at_once_never_share_one() {
         .take_while(|segment| !segment.load(Ordering::Acquire).is_null())
         .count();
     assert_eq!(locate(2 * per_builder - 1).0 + 1, segments);
-    // A slot given back is claimed by one builder only.
     pool.abandon(5);
     let (first, second) = std::thread::scope(|scope| {
         let first = scope.spawn(|| pool.vacant().unwrap());
@@ -146,7 +135,6 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
         match pool.pop_decode() {
             Some(index) => {
                 popped.push(index);
-                // Each frame goes on to the ready FIFO, as decode hands it to the spool.
                 pool.push_ready(index);
             }
             None => std::thread::yield_now(),
@@ -159,7 +147,6 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
     let ready: Vec<_> = std::iter::from_fn(|| pool.pop_ready()).collect();
     assert_eq!(ready, (0..count).collect::<Vec<_>>());
     assert!(pool.ready_is_empty());
-    // An index popped is free to queue again, in either FIFO.
     pool.push_decode(3);
     pool.push_decode(1);
     assert_eq!((pool.pop_decode(), pool.pop_decode(), pool.pop_decode()), (Some(3), Some(1), None));

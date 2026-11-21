@@ -1,31 +1,3 @@
-//! AvailableAdvisors and AdvisorTokens rows held between hours
-//! ([`crate::advisor_pool_changes`]).
-//!
-//! AvailableAdvisors is read once a game day per country, at its owner
-//! slice (`slicing::AVAILABLE_ADVISORS`); the walk reads and authenticates
-//! each country of the hour's selection, its `CCountryCharacters` and the
-//! available array's header. A pool's held rows are carried, without reading
-//! its advisors, characters or idea bytes, only when all of these hold at
-//! this boundary: the same country, `CCountryCharacters` and array data
-//! pointer and count as the held read; no hooked writer touched the pool
-//! since that read registered it (same watch epoch and sequence; a load,
-//! gap, recovery, table change, poison, remove_advisor_role or a running
-//! writer revokes it); and every listed advisor's character has the
-//! certificate the held read took ([`crate::character_changes`], whose sites
-//! cover every write of a listed advisor's character link and idea and of the
-//! character's identity). A fresh read holds its rows only when no character
-//! writer ran during it. Each hour of the day holds its own latest complete
-//! walk, so a pool's next read, a day later at the same slice, finds the read
-//! it may carry.
-//!
-//! The AdvisorTokens table is read every hour and carried whole when its
-//! manager and table header are those of the held read and no hooked writer
-//! touched the manager since. HiredAdvisors' latest complete walk is held
-//! here too ([`super::appointed`]).
-//!
-//! The store follows the Slow job's loan and holds only the latest complete
-//! walks, so its size follows live demand. Allocation is advisory: what
-//! cannot be held is read afresh at its next read.
 use crate::advisor_pool_changes::{Changes, Counts, Table};
 use engine_allocation as allocation;
 use engine_characters::{advisor_tokens, advisor_tokens::TokenCarry};
@@ -35,8 +7,6 @@ use engine_native::{
 use std::ops::Range;
 
 type Certified = (u64, u64);
-/// A planned pool: its token, certificate, the held entry it carries and
-/// the character domain's quiet state before its read.
 type Planned = (
     usize,
     Option<PoolCertificate>,
@@ -59,11 +29,8 @@ struct Entry {
     characters: Range<usize>,
 }
 
-/// One walk's held pools: rows with idea offsets relative to their pool's
-/// bytes, and each row's character with its certificate.
 #[derive(Default)]
 struct Held {
-    /// Sorted by `CCountryCharacters` once the walk finishes.
     entries: Vec<Entry>,
     rows: Vec<Row>,
     bytes: Vec<u8>,
@@ -88,8 +55,6 @@ impl Held {
         (self.entries[index].certificate == *certificate).then_some(index)
     }
 
-    /// Holds one pool; `false` when the storage could not grow, which only
-    /// withholds the certificate.
     fn hold(
         &mut self,
         certificate: PoolCertificate,
@@ -146,42 +111,27 @@ struct Tokens {
     certificate: Option<TokenCertificate>,
     rows: Vec<advisor_tokens::Row>,
     bytes: Vec<u8>,
-    /// Names the held table ([`collector_projection::projection::generation`]).
     generation: u64,
-    /// The held table's generation when the latest walk published exactly it.
     published: Option<u64>,
 }
 
-/// Hours in a day: AvailableAdvisors reads each pool at one of them.
 const SLICES: usize = replay_data::cadence::STAGGER_PERIOD as usize;
 
-/// The latest complete walks and the walk being made.
 #[derive(Default)]
 pub struct AdvisorStore {
-    /// Each hour of the day's latest complete walk, by `hour % SLICES`. A
-    /// pool is read at its country's slice hour, so the read its next walk
-    /// may carry is the one its slice held a day earlier; a full hour's walk
-    /// holds every pool in its own hour's place.
     slices: [Held; SLICES],
-    /// The place in the day of the walk being made.
     slice: usize,
     current: Held,
     previous: Held,
-    /// The pool being planned or read afresh.
     planned: Option<Planned>,
-    /// The characters the pool read afresh registered so far.
     pending: Option<Vec<(usize, Certified)>>,
     pools: usize,
     counts: Counts,
     tokens: Tokens,
     token_counts: Counts,
-    /// HiredAdvisors' latest complete walk ([`super::appointed`]).
     appointed: super::appointed::Appointed,
-    /// The character records' latest complete walk ([`super::records`]).
     records: super::records::Records,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walks drop every held row.
     forgotten: bool,
 }
 
@@ -190,13 +140,10 @@ impl AdvisorStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next walks read afresh.
-    /// Allocation-free for the game thread.
     pub fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -206,7 +153,6 @@ impl AdvisorStore {
         (self.counts, self.token_counts)
     }
 
-    /// Held generations the latest appointed, record and token walks published.
     pub fn published(&self) -> [Option<u64>; 3] {
         [
             self.appointed.published(),
@@ -215,15 +161,11 @@ impl AdvisorStore {
         ]
     }
 
-    /// HiredAdvisors' held walk, after a forgotten store dropped every held
-    /// row.
     pub fn appointed(&mut self) -> &mut super::appointed::Appointed {
         self.take_forgotten();
         &mut self.appointed
     }
 
-    /// The character records' held walk, after a forgotten store dropped
-    /// every held row.
     pub fn records(&mut self) -> &mut super::records::Records {
         self.take_forgotten();
         &mut self.records
@@ -256,15 +198,12 @@ impl AdvisorStore {
     }
 }
 
-/// One AvailableAdvisors walk's view of the store.
 pub struct PoolReuse<'a> {
     store: &'a mut AdvisorStore,
     changes: &'a dyn Changes,
 }
 
 impl<'a> PoolReuse<'a> {
-    /// A walk at `hour`, which carries from that hour of the day's held walk
-    /// and replaces it.
     pub fn begin(store: &'a mut AdvisorStore, changes: &'a dyn Changes, hour: i32) -> Self {
         store.take_forgotten();
         store.slice = hour.rem_euclid(SLICES as i32) as usize;
@@ -277,17 +216,11 @@ impl<'a> PoolReuse<'a> {
         Self { store, changes }
     }
 
-    /// Keeps this walk's pools, in its hour's place, only when every pool
-    /// was read or carried completely, and publishes its counts. `census` is
-    /// the number of countries the hour's slice scan saw (zero without a
-    /// scan): the pool watches are sized for every pool of the day, not only
-    /// the slice this walk read.
     pub fn finish(self, complete: bool, census: usize) {
         let store = self.store;
         if complete {
             let entries = &mut store.current.entries;
             entries.sort_unstable_by_key(|entry| entry.certificate.pool.object);
-            // An object occurring twice names no single held read.
             let mut index = 0;
             while index < entries.len() {
                 let object = entries[index].certificate.pool.object;
@@ -316,8 +249,6 @@ impl<'a> PoolReuse<'a> {
 }
 
 impl AvailableCarry for PoolReuse<'_> {
-    /// Registration of the pool, and the character domain's quiet state,
-    /// precede every read they certify.
     fn plan(&mut self, pool: &Pool) -> (usize, Option<(usize, usize)>) {
         let store = &mut *self.store;
         store.pools += 1;
@@ -376,7 +307,6 @@ impl AvailableCarry for PoolReuse<'_> {
         bytes.copy_from_slice(&previous.bytes[entry.bytes.clone()]);
         counts.reused += 1;
         counts.reused_rows += rows.len() as u64;
-        // A failed hold only withholds the next hour's certificate.
         let _ = current.hold(
             certificate,
             rows,
@@ -399,7 +329,6 @@ impl AvailableCarry for PoolReuse<'_> {
             _ => false,
         };
         if !held && let Some((_, certificate, _, _)) = store.planned.as_mut() {
-            // This pool cannot be certified; it is read afresh next hour.
             *certificate = None;
         }
     }
@@ -429,11 +358,9 @@ impl AvailableCarry for PoolReuse<'_> {
     }
 }
 
-/// One AdvisorTokens walk's view of the store.
 pub struct TokenReuse<'a> {
     store: &'a mut AdvisorStore,
     changes: &'a dyn Changes,
-    /// The certificate this walk registered, held with a complete read.
     certificate: Option<TokenCertificate>,
     carried: bool,
     read: Option<bool>,
@@ -453,8 +380,6 @@ impl<'a> TokenReuse<'a> {
         }
     }
 
-    /// Keeps the table only when it was read or carried completely, and
-    /// publishes its counts.
     pub fn finish(self, complete: bool) {
         let store = self.store;
         if !complete || !(self.carried || self.read == Some(true)) {

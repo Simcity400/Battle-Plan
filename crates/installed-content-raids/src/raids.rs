@@ -1,20 +1,3 @@
-//! `common/raids`: raid categories (`categories/*.txt`) and raid types
-//! (`*.txt`), loaded categories first. Types keep database order, which
-//! decides their index and the order of every per-target type list.
-//!
-//! The map icon uses the type's nonempty `custom_map_icon`, otherwise
-//! `GFX_raid_type_icon_<name>`, with `_<building template>` appended when
-//! that sprite exists.
-//!
-//! The retained fields supply available-target icons and `allowed`, evaluated
-//! in country scope when the player cache rebuilds its allowed list. An
-//! empty `allowed` block allows. Each declaration updates the type's
-//! persistent target selector, equipment pools, starting point, arrow and
-//! unit model. Triggers accumulate, scalars overwrite, and failed conversions
-//! keep their values. Reported and skipped fields change nothing and remain
-//! in [`Catalog::misreads`]. Quoted trigger keys remain unsupported triggers.
-//! A type with an indeterminate value is refused by name in
-//! [`Catalog::unsupported`]; the rest of the catalogue still loads.
 
 use std::{collections::BTreeMap, io};
 
@@ -32,8 +15,6 @@ use crate::{
 
 pub const RAIDS_DIR: &str = "common/raids";
 
-/// Whether a folded bare key names an equipment type; `None` when the
-/// equipment database was lost before it could hold the key.
 pub type Equipment<'a> = &'a dyn Fn(&[u8]) -> Option<bool>;
 pub const CATEGORIES_DIR: &str = "common/raids/categories";
 
@@ -42,18 +23,13 @@ pub struct RaidCategory {
     pub name: String,
     pub visible: Triggers,
     pub available: Triggers,
-    /// The category filter always admits it.
     pub free_targeting: bool,
 }
 
-/// One arm of the type's target selector, selected by the target's scope.
-/// Every `target_type` field reads into that same selector; the projection
-/// keeps an arm only when it can match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
     Provinces(Vec<u32>),
     Building(BuildingSelector),
-    /// Explicit state ids, else the trigger block in a state-only scope.
     State {
         ids: Vec<u32>,
         triggers: Triggers,
@@ -70,7 +46,6 @@ pub struct BuildingSelector {
     pub is_coastal: bool,
 }
 
-/// `starting_point.types` in source-kind order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SourceKind {
     AirBase = 0,
@@ -87,7 +62,6 @@ pub struct StartingPoint {
     pub allow_faction_buildings: bool,
 }
 
-/// One `unit_requirements` block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UnitRequirement {
     pub battalions: Vec<BattalionRequirement>,
@@ -104,7 +78,6 @@ pub struct BattalionRequirement {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EquipmentRequirement {
     pub types: Vec<String>,
-    /// Each list needs one of its modules on the variant.
     pub modules: Vec<Vec<String>>,
     pub min: Option<i32>,
     pub max: Option<i32>,
@@ -113,60 +86,35 @@ pub struct EquipmentRequirement {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RaidType {
     pub name: String,
-    /// Text and chance inputs used only on hover. A refused text form does
-    /// not remove the ordinary map icon.
     pub tooltip: tooltips::Definition,
     pub category: Option<String>,
     pub custom_map_icon: Option<String>,
-    /// Whether the type is allowed for a country at all.
     pub allowed: Triggers,
     pub visible: Triggers,
     pub show_target: Triggers,
     pub available: Triggers,
-    /// `launchable` and `launchable_from` are the additional execution
-    /// triggers; `available` controls target availability. Each authored
-    /// field updates its own persistent trigger list.
     pub launchable: Triggers,
     pub launchable_from: Triggers,
     pub fire_only_once: bool,
-    /// `target_type = { province = any }`: such a type never becomes an
-    /// offer; it is targeted through the raid interface.
     pub any_province: bool,
     pub target_types: Vec<TargetType>,
-    /// `command_power`, fixed5.
     pub command_power_raw: i64,
-    /// `essential_equipment` archetypes and amounts, in authored order.
     pub essential_equipment: Vec<(String, i32)>,
-    /// `essential_equipment.nukes`.
     pub nukes: i32,
-    /// `additional_equipment` archetypes, amounts and `nukes`, read like
-    /// `essential_equipment`. Execution checks the raid's own pool against
-    /// both lists.
     pub additional_equipment: Vec<(String, i32)>,
     pub additional_nukes: i32,
-    /// `nuke_type = thermonuclear_bomb` selects the thermonuclear kind.
     pub thermonuclear: bool,
     pub starting_point: StartingPoint,
     pub unit_requirements: Vec<UnitRequirement>,
-    /// `max_distance`, fixed5.
     pub max_distance_raw: Option<i64>,
-    /// `range_factor`, fixed5.
     pub range_factor_raw: i64,
     pub unlimited_ai_range: bool,
-    /// `arrow = { type = ... }` selects the drawn raid arrow; a rejected
-    /// value keeps the previous kind.
     pub arrow: RaidArrowKind,
-    /// `unit_model`, the raid's in-flight model.
     pub unit_model: RaidUnitModel,
-    /// `speed_multiplier`, fixed5; its constructor value is 100000.
     pub speed_multiplier_raw: i64,
-    /// `unit_animations`: `stage` blocks in authored order, appended across
-    /// every declaration of the field.
     pub unit_animations: Vec<RaidAnimationStage>,
 }
 
-/// One `unit_animations` stage: `state`, `intro` and fixed5 `at_progress`
-/// (0 unless given). Other keys are reader errors the game skips.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RaidAnimationStage {
     pub state: String,
@@ -174,25 +122,17 @@ pub struct RaidAnimationStage {
     pub at_progress_raw: i64,
 }
 
-/// Raid arrow kinds. The constructor selects line, integer value 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RaidArrowKind {
-    /// 0: one straight segment.
     #[default]
     Line,
-    /// 1: straight, cut into segments and lifted by the ballistic callback.
     Ballistic,
-    /// 2: straight, cut into segments and lifted by the air callback.
     Air,
-    /// 3: the naval raid path.
     Naval,
-    /// 4: the land raid path.
     Land,
 }
 
 impl RaidArrowKind {
-    /// The folded bare value keyword for each kind; a quoted value has
-    /// no keyword identity and selects none.
     pub fn parse(keyword: &str) -> Option<Self> {
         Some(match keyword {
             "line" => Self::Line,
@@ -204,7 +144,6 @@ impl RaidArrowKind {
         })
     }
 
-    /// The `maparrows.txt` arrow type each raid arrow draws with.
     pub fn arrow_type(self) -> &'static str {
         match self {
             Self::Line => "active_raid_line",
@@ -224,20 +163,12 @@ impl RaidArrowKind {
     ];
 }
 
-/// `unit_model` constructor values: no category, empty names, start
-/// offset 0 and fixed5 scale 100000.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RaidUnitModel {
-    /// `equipment`: the value token's category mask. Unknown tokens store
-    /// 0, and any mask outside the air categories is cleared.
     pub equipment: u64,
-    /// `entity`, tried with the country tag and culture prefixes first.
     pub entity: Option<String>,
-    /// `default_entity`.
     pub default_entity: Option<String>,
-    /// `start_offset`, fixed5 world units along the arrow.
     pub start_offset_raw: i64,
-    /// `scale`, fixed5.
     pub scale_raw: i64,
 }
 
@@ -254,8 +185,6 @@ impl Default for RaidUnitModel {
 }
 
 impl RaidType {
-    /// The sprite key before the building-template suffix. An authored
-    /// override is used only when its string is nonempty.
     pub fn base_icon(&self) -> String {
         match &self.custom_map_icon {
             Some(icon) if !icon.is_empty() => icon.clone(),
@@ -263,8 +192,6 @@ impl RaidType {
         }
     }
 
-    /// The sprite key for a target building template; `known` says which
-    /// sprites exist.
     pub fn icon(&self, template: Option<&str>, known: impl Fn(&str) -> bool) -> Option<String> {
         let base = self.base_icon();
         if let Some(template) = template.filter(|template| !template.is_empty()) {
@@ -279,34 +206,19 @@ impl RaidType {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Catalog {
-    /// Database order.
     pub types: Vec<RaidType>,
     pub categories: BTreeMap<String, RaidCategory>,
-    /// Type names declared more than once, each listed once. The later
-    /// declaration resets and rereads the same type, but the database's
-    /// ordered list then holds it twice. Its index is therefore not
-    /// established and no declaration is used.
     pub refused: Vec<String>,
-    /// Types refused for a field the port cannot read, with the reason, in
-    /// database order.
     pub unsupported: Vec<(String, String)>,
-    /// Each place the game reports and skips a field these readers take
-    /// or its reading leaves the text, by file and line.
     pub misreads: Vec<crate::Diagnostic>,
-    /// Every refused or unsupported type, which the database still holds and
-    /// may offer: consumers must treat its offers as undecided, by name,
-    /// rather than drop them.
     pub uncertain: Vec<UncertainType>,
 }
 
-/// A raid type the port cannot use, in first-declaration order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UncertainType {
     pub name: String,
     pub kind: crate::DiagnosticKind,
     pub reason: String,
-    /// Each declaration, when every one parsed: the stored type is one of
-    /// these. Empty when one could not be read, so nothing about it is known.
     pub declarations: Vec<RaidType>,
 }
 
@@ -315,12 +227,6 @@ impl Catalog {
         self.types.iter().find(|kind| kind.name == name)
     }
 
-    /// Each archetype some raid type lists as essential equipment, by name,
-    /// with the largest amount any raid type requires of it: the stock
-    /// StockpileArchetypes records, capped there. A type holds a repeated
-    /// key once, with its last amount, as the native map does. A refused or
-    /// unsupported type may list essential equipment the port does not see,
-    /// so it leaves the caps unknown.
     pub fn essential_caps(
         &self,
         equipment: &crate::equipment::Database,
@@ -352,12 +258,10 @@ impl Catalog {
     }
 }
 
-/// A field's folded keyword; a quoted key has none.
 fn keyword(item: &Item) -> Option<Vec<u8>> {
     item.keyword().map(parser::Keyword::folded)
 }
 
-/// The value token's keyword; a quoted value has none.
 fn value_keyword(item: &Item) -> Option<String> {
     item.value_keyword()
 }
@@ -372,7 +276,6 @@ fn text<'a>(value: &'a Value, what: &str) -> io::Result<&'a str> {
         .map_err(|e| invalid(format!("{what}: {e}")))
 }
 
-/// Scan an integer into a slot that a failed scan leaves unchanged.
 fn integer(value: &Value, slot: &mut i32) {
     if let crate::crt::Scanned::Stored(read) =
         crate::crt::scan_i32(value.scalar().unwrap_or_default())
@@ -381,8 +284,6 @@ fn integer(value: &Value, slot: &mut i32) {
     }
 }
 
-/// Scan an integer into an uninitialized bounds value: a failed scan
-/// leaves an indeterminate word, which the reader refuses by name.
 fn indeterminate(value: &Value, what: &str) -> io::Result<i32> {
     match crate::crt::scan_i32(value.scalar().unwrap_or_default()) {
         crate::crt::Scanned::Stored(read) => Ok(read),
@@ -392,22 +293,18 @@ fn indeterminate(value: &Value, what: &str) -> io::Result<i32> {
     }
 }
 
-/// Exactly `yes` or `no`; any other value keeps the flag unchanged.
 fn boolean(value: &Value, slot: &mut bool) {
     if let Some(read) = value.scalar().and_then(parser::read_bool) {
         *slot = read;
     }
 }
 
-/// Read fixed5 into a slot that a failed conversion leaves unchanged.
 fn fixed(value: &Value, slot: &mut i64) {
     if let Some(read) = crate::fixed5::script_fixed5(value.scalar().unwrap_or_default()) {
         *slot = read;
     }
 }
 
-/// A list of names registered by their text, quoted or bare: the entries
-/// of a `{` list, or the one value.
 fn names(value: &Value, what: &str) -> io::Result<Vec<String>> {
     match value {
         Value::Block(items) => items
@@ -418,16 +315,11 @@ fn names(value: &Value, what: &str) -> io::Result<Vec<String>> {
     }
 }
 
-/// Each trigger field appends its children to one conjunction, retaining
-/// token kinds for the shared evaluator (`dashboard::triggers`). A value
-/// without a block is reported and adds no children.
 fn append_trigger(out: &mut Triggers, value: &Value) -> io::Result<()> {
     out.extend(triggers::body(value).unwrap_or_default());
     Ok(())
 }
 
-/// Read one category declaration: triggers accumulate and
-/// `free_targeting` accepts exactly `yes` or `no`.
 fn category(name: &str, items: &[Item]) -> io::Result<RaidCategory> {
     let mut out = RaidCategory {
         name: name.to_owned(),
@@ -444,21 +336,16 @@ fn category(name: &str, items: &[Item]) -> io::Result<RaidCategory> {
     Ok(out)
 }
 
-/// An id the selector compares with a province or state id. A negative
-/// stored id wraps to one no province or state has, as it matches none.
 fn id(value: i32) -> u32 {
     value as u32
 }
 
-/// Scan an integer into a zero-initialized slot; a failed scan leaves 0.
 fn scanned_i32(bytes: &[u8]) -> i32 {
     let mut out = 0;
     integer(&Value::Scalar(bytes.to_vec()), &mut out);
     out
 }
 
-/// A bounds pair: each `min`/`max` field sets its value and flag; the
-/// object persists across the fields that read into it.
 fn bounds(
     value: &Value,
     min: &mut Option<i32>,
@@ -475,16 +362,6 @@ fn bounds(
     Ok(())
 }
 
-/// The type's persistent target selector after each `target_type` field:
-/// - `province`: bare `any` sets the unrestricted flag; a block appends
-///   integer-scanned ids; any other value appends one integer-scanned id;
-/// - `state`: a block appends trigger children; bare `any` sets a flag that
-///   state matching does not read; any other value appends a decimal id;
-/// - `building`: `type` and `tags` append name lists, `level` updates its
-///   bounds, and `is_coastal` accepts exactly `yes` or `no`;
-/// - `captured_army_leader`: accepts exactly `yes` or `no`.
-///
-/// Other keys are reported and skipped, as noted by the reader.
 fn target_types(items: &[Item], name: &str) -> io::Result<(Vec<TargetType>, bool)> {
     let what = format!("raid {name} target_type");
     let mut any_province = false;
@@ -533,8 +410,6 @@ fn target_types(items: &[Item], name: &str) -> io::Result<(Vec<TargetType>, bool
             }
         }
     }
-    // The building arm needs a type or tag; the province arm needs an id
-    // or `any`; the state arm needs an id or a trigger child.
     let mut out = Vec::new();
     if !building.types.is_empty() || !building.tags.is_empty() {
         out.push(TargetType::Building(building));
@@ -554,12 +429,6 @@ fn target_types(items: &[Item], name: &str) -> io::Result<(Vec<TargetType>, bool
     Ok((out, any_province))
 }
 
-/// Each `unit_requirements` field creates a new requirement. Its
-/// `battalion_types` fields share one table: repeated tokens are reported
-/// and their blocks skipped. Quoted keys cannot identify a sub-unit and
-/// are refused by name. Each `equipment` field creates an entry: `type`
-/// replaces its list, each `modules` adds a list, and `amount` sets bounds.
-/// Other keys are reported and skipped.
 fn unit_requirement(value: &Value, what: &str) -> io::Result<UnitRequirement> {
     let mut out = UnitRequirement::default();
     for item in fields(value) {
@@ -607,11 +476,6 @@ fn unit_requirement(value: &Value, what: &str) -> io::Result<UnitRequirement> {
     Ok(out)
 }
 
-/// The type's persistent starting point: `types` appends each list
-/// token's source kind, reporting unknown kinds. `building_types` keeps
-/// its tokens for [`resolve_launch_buildings`], and
-/// `allow_faction_buildings` accepts exactly `yes` or `no`. Kind 5,
-/// `building`, is an unmodelled source and is refused by name.
 fn starting_point(items: &[Item], what: &str) -> io::Result<StartingPoint> {
     let mut out = StartingPoint::default();
     for point in items
@@ -650,8 +514,6 @@ fn starting_point(items: &[Item], what: &str) -> io::Result<StartingPoint> {
     Ok(out)
 }
 
-/// The type's arrow reads `type` by its value token. A rejected token
-/// is reported and keeps the previous kind; other keys are reported.
 fn arrow(items: &[Item]) -> RaidArrowKind {
     let mut out = RaidArrowKind::default();
     for block in items.iter().filter(|item| item.keyword_is("arrow")) {
@@ -668,9 +530,6 @@ fn arrow(items: &[Item]) -> RaidArrowKind {
     out
 }
 
-/// The type's unit model reads names as strings, numeric fields as
-/// fixed5 and `equipment` as the value token's category mask.
-/// Other keys are reported.
 fn unit_model(items: &[Item], what: &str) -> io::Result<RaidUnitModel> {
     let mut out = RaidUnitModel::default();
     for block in items.iter().filter(|item| item.keyword_is("unit_model")) {
@@ -699,8 +558,6 @@ fn unit_model(items: &[Item], what: &str) -> io::Result<RaidUnitModel> {
     Ok(out)
 }
 
-/// Every `unit_animations` field appends its `stage` blocks; a stage
-/// reads `state` and `intro` as strings and `at_progress` as fixed5.
 fn unit_animations(items: &[Item], what: &str) -> io::Result<Vec<RaidAnimationStage>> {
     let mut out = Vec::new();
     for animations in items
@@ -726,10 +583,6 @@ fn unit_animations(items: &[Item], what: &str) -> io::Result<Vec<RaidAnimationSt
     Ok(out)
 }
 
-/// Read one type declaration. Triggers accumulate, scalars overwrite
-/// (failed conversions keep their values), and persistent sub-objects
-/// take every field of their key: selector, equipment pools, starting
-/// point, arrow and unit model.
 fn raid_type(name: &str, items: &[Item], registry: Equipment<'_>) -> io::Result<RaidType> {
     let what = format!("raid {name}");
     let (target_types, any_province) = target_types(items, name)?;
@@ -747,7 +600,6 @@ fn raid_type(name: &str, items: &[Item], registry: Equipment<'_>) -> io::Result<
     };
     for item in items {
         match keyword(item).as_deref() {
-            // Find the category by the value's folded text.
             Some(b"category") => kind.category = Some(text(&item.value, &what)?.to_owned()),
             Some(b"custom_map_icon") => {
                 kind.custom_map_icon = Some(text(&item.value, &what)?.to_owned())
@@ -763,13 +615,11 @@ fn raid_type(name: &str, items: &[Item], registry: Equipment<'_>) -> io::Result<
             Some(b"command_power") => fixed(&item.value, &mut kind.command_power_raw),
             Some(b"range_factor") => fixed(&item.value, &mut kind.range_factor_raw),
             Some(b"speed_multiplier") => fixed(&item.value, &mut kind.speed_multiplier_raw),
-            // Read fixed5 into a zeroed local, then assign it.
             Some(b"max_distance") => {
                 let mut read = 0;
                 fixed(&item.value, &mut read);
                 kind.max_distance_raw = Some(read);
             }
-            // `thermonuclear_bomb` selects the thermonuclear kind; other values do not.
             Some(b"nuke_type") => {
                 kind.thermonuclear = value_keyword(item).as_deref() == Some("thermonuclear_bomb")
             }
@@ -794,10 +644,6 @@ fn raid_type(name: &str, items: &[Item], registry: Equipment<'_>) -> io::Result<
     Ok(kind)
 }
 
-/// Read into one pool across every field of its key. `nukes` uses integer
-/// scanning; a known equipment token sets its decimal amount, preserving
-/// the position of an existing type. Other keys are reported by the reader.
-/// Keys left undecided by an incomplete equipment database are refused.
 fn equipment_pool(
     value: &Value,
     registry: Equipment<'_>,
@@ -845,45 +691,31 @@ fn all<'a>(items: &'a [Item], key: &'a str) -> impl Iterator<Item = &'a Value> {
         .map(|item| &item.value)
 }
 
-/// The `NDefines` used by raid arrow geometry, colour and unit movement.
-/// Floats retain `f32` width; `speed_multiplier_raw` is fixed5 `i64`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RaidGraphicsDefines {
-    /// `NMapMode.PREPARING/READY/ACTIVE_RAID_ARROW_COLOR`.
     pub preparing_color: [f32; 4],
     pub ready_color: [f32; 4],
     pub active_color: [f32; 4],
-    /// `NGraphics.RAID_ARROW_BALLISTIC_*`.
     pub ballistic_shape: f32,
     pub ballistic_max_height: f32,
     pub ballistic_max_segment_length: f32,
-    /// At least 1: smaller values are raised, including the integer
-    /// getter's 0 for a missing or non-number value.
     pub ballistic_max_segments: i32,
-    /// `NGraphics.RAID_ARROW_AIR_*`.
     pub air_height: f32,
     pub air_source_steepness: f32,
     pub air_source_length: f32,
     pub air_target_steepness: f32,
     pub air_target_length: f32,
     pub air_max_segment_length: f32,
-    /// At least 1, with the same lower bound as the ballistic segment count.
     pub air_max_segments: i32,
-    /// `NGraphics.RAID_ARROW_NAVAL_*` and `RAID_ARROW_LAND_*`.
     pub naval: PathArrowDefines,
     pub land: PathArrowDefines,
-    /// `NGraphics.RAID_UNIT_ENTITY_BASE_SCALE` and `RAID_UNIT_ENTITY_OFFSET`.
     pub unit_base_scale: f32,
     pub unit_offset: [f32; 3],
-    /// `NRaids.RAID_UNIT_SPEED_MULTIPLIER`, fixed5.
     pub speed_multiplier_raw: i64,
 }
 
-/// The path arrows' spline defines.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PathArrowDefines {
-    /// At least 1: smaller values are raised, including the integer
-    /// getter's 0 for a missing or non-number value.
     pub subdivisions: i32,
     pub sharp_turn_smoothness: f32,
     pub use_midpoints: bool,
@@ -893,9 +725,6 @@ impl RaidGraphicsDefines {
     pub fn read(defines: &crate::defines::Defines) -> io::Result<Self> {
         const GRAPHICS: &str = "NGraphics";
         let float = |name: &str| defines.number(GRAPHICS, name).map(|value| value as f32);
-        // Segment and subdivision counts are raised to 1 when smaller.
-        // The integer getter stores 0 for missing or non-number values;
-        // a missing section remains an error.
         let at_least_one = |name: &str| defines.int32(GRAPHICS, name).map(|value| value.max(1));
         let floats = |section: &str, name: &str, count: usize| -> io::Result<Vec<f32>> {
             let values = defines.numbers(section, name)?;
@@ -943,7 +772,6 @@ impl RaidGraphicsDefines {
     }
 }
 
-/// Categories and types, each file already parsed, in load order.
 pub fn parse(
     categories: &[parser::Document],
     types: &[parser::Document],
@@ -951,14 +779,10 @@ pub fn parse(
 ) -> io::Result<Catalog> {
     let mut out = Catalog::default();
     for document in categories {
-        // A container without a block is reported and entered nowhere;
-        // the reader already noted it.
         for root in all(&document.items, "categories").filter(|root| root.items().is_some()) {
             for item in block(root, "raid categories")? {
                 let name = key_str(item, "raid categories")?;
                 let items = block(&item.value, name)?;
-                // A repeated name resets the category and reads the later declaration
-                // alone. Name tokens compare with the lexer's ASCII fold.
                 out.categories
                     .retain(|held, _| !held.eq_ignore_ascii_case(name));
                 out.categories
@@ -969,12 +793,9 @@ pub fn parse(
     let mut declared: Vec<String> = Vec::new();
     let mut declarations: BTreeMap<String, Vec<io::Result<RaidType>>> = BTreeMap::new();
     for document in types {
-        // Type containers require a block, just as category containers do.
         for root in all(&document.items, "types").filter(|root| root.items().is_some()) {
             for item in block(root, "raid types")? {
                 let name = key_str(item, "raid types")?;
-                // Type names compare by folded token: a repeat in any case names
-                // the same type.
                 let first = match declared.iter().find(|seen| seen.eq_ignore_ascii_case(name)) {
                     Some(seen) => {
                         if !out.refused.contains(seen) {
@@ -1027,7 +848,6 @@ pub fn parse(
             declarations: parsed.unwrap_or_default(),
         });
     }
-    // Find a type's category by its folded token.
     let names: Vec<String> = out.categories.keys().cloned().collect();
     for kind in out.types.iter_mut().chain(
         out.uncertain
@@ -1041,7 +861,6 @@ pub fn parse(
         {
             category.clone_from(name);
         }
-        // Custom modifiers without configured formulas are reported and dropped.
         out.misreads
             .extend(kind.tooltip.misreads.iter().map(|note| {
                 (
@@ -1054,8 +873,6 @@ pub fn parse(
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
-    // Where the equipment database cannot be followed to its end, the types
-    // read before the loss are known and any other key is undecided.
     let database = crate::equipment::Database::load(layers)?;
     let types: std::collections::BTreeSet<Vec<u8>> = database
         .equipment
@@ -1068,7 +885,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
         (found || complete).then_some(found)
     };
     let mut misreads = Vec::new();
-    // Raids load after buildings.
     let names = layers.key_names()?;
     let mut documents = |folder: &str| -> io::Result<Vec<parser::Document>> {
         triggers::folder_files(layers, folder)?
@@ -1096,11 +912,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     Ok(catalog)
 }
 
-/// Resolve `building_types` against the building database, in database
-/// order. A template is selected when its token or a tag appears in the
-/// list, with ASCII case folding. Only provincial templates with province
-/// cap at least 1 become launch buildings; state buildings are reported
-/// and left out. Source enumeration uses these resolved types.
 pub fn resolve_launch_buildings(catalog: &mut Catalog, buildings: &crate::buildings::Buildings) {
     let resolve = |kind: &mut RaidType, misreads: &mut Vec<crate::Diagnostic>| {
         let wanted = std::mem::take(&mut kind.starting_point.building_types);

@@ -1,27 +1,3 @@
-//! Rows of [`Cadence::Sliced`](crate::cadence::Cadence::Sliced) tables.
-//!
-//! A sliced table is read, at each hour, for the owners of that hour's slice
-//! and for every owner whose change fingerprint differs or cannot be read,
-//! so a steady hour does not read the whole table; an hour whose fingerprint
-//! pass is incomplete, or whose native writers are not observed, reads every
-//! owner. Each row belongs to one owner, whose read hour SliceReads records.
-//! Owners are native country IDs, canonical country slots or native state
-//! IDs, one kind per table. A recorder merges each hour's read
-//! into the previous complete rows and records each owner's read hour in
-//! SliceReads ([`read_hour`]); consumers use that hour, never the frame's hour.
-//! Rows carry no hour, so an owner's unchanged rows stay unchanged when it is
-//! read again. A [`SliceUpdate`] describes the same merge as an update of the
-//! encoder's shared baseline, which the encoder writes and commits without
-//! materialising the merged table. Register a new sliced table here: implement [`SlicedRow`] for
-//! its row and add its variant to the dispatch below.
-//! CountryMarket, MarketContractTerms and LendLeaseAgreements also use owner
-//! updates (contracts and lend-lease select exact holder keys), but have Hourly cadence: complete writer certificates certify the
-//! current hour, without a daily slice or a stale supplying hour.
-//!
-//! TechnologyDefinitions is the one keyed table: it has no owner and no
-//! sample hour. Its rows are the templates the hour's rosters reached, so a
-//! read replaces the rows whose keys it returned and keeps the others; a full
-//! hour reads every roster and replaces the table.
 
 use crate::rows::{
     AirCountryRelationRow, AirNavalPatrolHistoryRow, AvailableAdvisorRow, CombatLogEquipmentRow,
@@ -42,10 +18,6 @@ mod update;
 pub use update::{SliceUpdate, takes_keyed_updates};
 
 pub trait SlicedRow: RowCodec {
-    /// The slice owner: a native country ID, canonical country slot or native
-    /// state ID. It must be
-    /// the most significant part of the row key, so one owner's rows are
-    /// contiguous in key order.
     fn owner(&self) -> u32;
 }
 
@@ -56,7 +28,6 @@ macro_rules! sliced_by {
         }
     )+};
 }
-// Native country IDs.
 sliced_by!(
     country: CountryMarketRow, MarketContractTermsRow, LendLeaseAgreementRow, ResearchInputRow,
     ResearchAppliedBonusRow,
@@ -68,30 +39,20 @@ sliced_by!(
     CombatLogEquipmentRow,
     NavalMissionCountryRow,
     NavalMissionCommanderRow,
-    // The supply companion's native country ID, whose node and vertex
-    // rows and inventory are read together.
     SupplyNodeRow,
-    // The country holding the route: an origin's list owner, a delivery route's
-    // exporter or a supply transfer's country.
     TradeRouteRow,
     TrainInventoryRow,
     AvailableAdvisorRow,
-    // A country's focus state and completed roster, read together.
     FocusRow,
     CompletedFocusRow
 );
-// A project's stored owner tag: a raw id of its country.
 sliced_by!(owner: ProjectRow, ProjectHistoryRow);
-// Canonical country slots: the raid launch family keys its rows by slot.
 sliced_by!(
     canonical_slot: RaidAirSiteRow
 );
-// Canonical country slots, held in the row's `country` field.
 sliced_by!(country: AirCountryRelationRow, AirNavalPatrolHistoryRow);
-// Native state IDs.
 sliced_by!(state: StateResourceInputRow, StateResourceRow, StateDynamicModifierRow, StateCoreRow);
 
-/// A relation row belongs to the country whose relation status holds it.
 macro_rules! sliced_by_owner_country {
     ($($row:ty),+) => {$(
         impl SlicedRow for $row {
@@ -101,12 +62,6 @@ macro_rules! sliced_by_owner_country {
 }
 sliced_by_owner_country!(RelationOpinionRow, RelationTupleRow);
 
-/// Replace the rows of every owner `read` selects in `previous` (a complete
-/// table in key order) with `fresh` (in key order), in one linear pass.
-/// `fresh` must hold only selected owners' rows. Rows of owners that are no
-/// longer `live` are dropped. Other owners keep their rows and their own
-/// sample hours. For the keyed table, `read` and `live` are ignored: fresh
-/// rows replace the rows with their keys and every other row is kept.
 pub fn merge_slice(
     previous: &TableRows,
     fresh: TableRows,
@@ -179,8 +134,6 @@ pub fn merge_slice(
     )
 }
 
-/// The hour `owner`'s rows of `table` were read at, from SliceReads rows
-/// (in key order).
 pub fn read_hour(reads: &[SliceReadRow], table: TableId, owner: u32) -> Option<i32> {
     let key = (table.index() as u32, owner);
     reads
@@ -189,26 +142,18 @@ pub fn read_hour(reads: &[SliceReadRow], table: TableId, owner: u32) -> Option<i
         .map(|index| reads[index].sample_hour)
 }
 
-/// Whether a sliced table has no owners: its read replaces rows by key
-/// ([`merge_slice`]) and SliceReads has no rows for it.
 pub fn is_keyed(table: TableId) -> bool {
     table == TableId::TechnologyDefinitions
 }
 
-/// Whether a complete read of this sliced table replaces the held table.
-/// A technology roster has one instance per template, so a complete,
-/// nonempty definitions read covers the whole table. Templates removed by
-/// `reloadtechnologies` leave with it.
 pub fn replaces_whole(fresh: &TableRows) -> bool {
     matches!(fresh, TableRows::TechnologyDefinitions(rows) if !rows.is_empty())
 }
 
-/// The distinct owners of a sliced table's rows, ascending.
 pub fn owners(rows: &TableRows) -> Vec<u32> {
     try_owners(rows).expect("sliced owner allocation failed")
 }
 
-/// Checked owner enumeration for collector-owned threads.
 pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
     fn collect<R: SlicedRow>(rows: &[R]) -> io::Result<Vec<u32>> {
         let mut owners = allocation::vec(rows.len())?;
@@ -216,7 +161,6 @@ pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
         owners.dedup();
         Ok(owners)
     }
-    // The tables merge_slice merges, so a slice it merges always names its owners.
     sliced_pair!(
         rows,
         rows,
@@ -253,8 +197,6 @@ mod tests {
         }
     }
 
-    /// A truncated read of combat equipment losses names its rows' owners, so its rows replace
-    /// exactly those owners' held rows, as a spool merges a truncated slice.
     #[test]
     fn a_truncated_equipment_loss_read_replaces_only_its_owners() {
         let row = |country, variant, amount_raw| CombatLogEquipmentRow {
@@ -361,12 +303,10 @@ mod tests {
             TableRows::ResearchInputs(vec![row(1, 0, 1), row(2, 0, 0), row(3, 0, 1)])
         );
         assert_eq!(owners(&merged), [1, 2, 3]);
-        // A fresh row of an unread owner, or out of key order, is a producer error.
         let only_one = TableRows::ResearchInputs(vec![row(2, 0, 1)]);
         assert!(merge_slice(&previous, only_one, |owner| owner == 1, |_| true).is_err());
         let unordered = TableRows::ResearchInputs(vec![row(3, 0, 1), row(1, 0, 1)]);
         assert!(merge_slice(&previous, unordered, |_| true, |_| true).is_err());
-        // Mismatched tables are refused, not mixed.
         assert!(
             merge_slice(
                 &previous,
@@ -376,7 +316,6 @@ mod tests {
             )
             .is_err()
         );
-        // Owners that are gone lose their held rows even outside their slice.
         let gone = merge_slice(
             &merged,
             TableRows::ResearchInputs(vec![]),
@@ -455,7 +394,6 @@ mod tests {
             definition(3, 1936),
             definition(5, 1936),
         ]);
-        // A read that reached handles 3 and 4 only; the owner filter is ignored.
         let fresh =
             TableRows::TechnologyDefinitions(vec![definition(3, 1940), definition(4, 1941)]);
         let merged = merge_slice(&previous, fresh, |_| false, |_| false).unwrap();
@@ -468,7 +406,6 @@ mod tests {
                 definition(5, 1936),
             ])
         );
-        // An empty read (no live country in the slice) keeps every row.
         let empty = merge_slice(
             &merged,
             TableRows::TechnologyDefinitions(vec![]),
@@ -478,7 +415,6 @@ mod tests {
         .unwrap();
         assert_eq!(empty, merged);
         assert!(owners(&merged).is_empty());
-        // A complete non-empty definitions read is the whole table; an empty one is not.
         assert!(replaces_whole(&TableRows::TechnologyDefinitions(vec![
             definition(1, 0)
         ])));
@@ -490,9 +426,6 @@ mod tests {
         assert!(merge_slice(&merged, unordered, |_| true, |_| true).is_err());
     }
 
-    /// Merges hour 25's slice (owner 1, plus owner 3 early) into hour 24's
-    /// complete rows, `parts` rows per owner, marking a row's hour in `mark`,
-    /// and returns each surviving row's (owner, mark).
     fn merged_marks<R: SlicedRow>(
         wrap: fn(Vec<R>) -> TableRows,
         unwrap: fn(&TableRows) -> &[R],
@@ -523,9 +456,6 @@ mod tests {
         marks
     }
 
-    /// The daily panel families merge by their country: a node row and the
-    /// node-less vertex rows of its parent chains leave and arrive together,
-    /// as do a country's inventory and its available advisors.
     #[test]
     fn supply_trains_and_advisor_pools_merge_by_country() {
         let expected = [(1, 25), (2, 24), (3, 25)];
@@ -591,7 +521,6 @@ mod tests {
         );
     }
 
-    /// A country's projects and their histories merge by their owner tag.
     #[test]
     fn project_tables_merge_by_owner() {
         let expected = [(1, 25), (2, 24), (3, 25)];
@@ -636,7 +565,6 @@ mod tests {
         );
     }
 
-    /// A country's focus state and its completed roster merge by country.
     #[test]
     fn focus_tables_merge_by_country() {
         let expected = [(1, 25), (2, 24), (3, 25)];

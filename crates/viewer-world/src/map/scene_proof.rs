@@ -1,9 +1,6 @@
-//! Test-only observations from the real Scene; no mock presentation or allocator.
 use super::*;
 use std::collections::BTreeSet;
 
-/// Same-frame semantic observations, including a fatal attempt's reached partial state.
-/// These do not replace the App's earlier warning snapshot or consume its audio reset.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneReports {
     pub generation: u64,
@@ -39,8 +36,6 @@ impl SceneReports {
 #[derive(Debug, PartialEq)]
 pub struct SceneProof {
     pub reports: SceneReports,
-    /// Canonical model layer owners for comparisons between independent Scenes.
-    /// The reports above keep their actual, unmodified event keys.
     pub sound_owner_keys: Vec<u64>,
     pub arena: Vec<u8>,
     pub sound_bits: Vec<([u32; 3], u32)>,

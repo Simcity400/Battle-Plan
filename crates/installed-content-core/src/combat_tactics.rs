@@ -1,16 +1,3 @@
-//! Ordered combat-tactic identities, fields and effects from the recorded
-//! content stack: the reader of `common/combat_tactics.txt`.
-//!
-//! ID 0 is the null entry; each top-level entry except exact text `phases`
-//! constructs a tactic, so `Phases` is a tactic. IDs follow source order,
-//! including duplicate names. One reader processes the file token by token
-//! ([`native`]). Definitions `@name = value` are consumed wherever it reads
-//! by key, taking no ID and contributing no field; later references resolve
-//! their values. Each field uses its own reader ([`Shaper`]); deviations
-//! from balanced-tree reading follow the game and join [`Database::logged`].
-//! An unsettled block (`native::Read::unsettled`) leaves the current and all
-//! later tactics unproven ([`Tactic::unproven`]). Lexer-assigned unlock IDs
-//! are campaign state and are not inferred here.
 
 use std::io;
 
@@ -29,46 +16,26 @@ use crate::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Database {
-    /// Phase names in declaration order across all `phases` blocks.
     pub phases: Vec<Vec<u8>>,
-    /// Tactic ID 1 is the first entry; ID 0 is the native null entry.
     pub tactics: Vec<Tactic>,
-    /// Where the file's reading cannot be followed, naming the place and
-    /// why: the tactic being read then and every later one are unproven.
     pub unsupported: Vec<String>,
-    /// Errors the game's readers log and read past, and the places the
-    /// game's reading leaves the text, each read as the game reads it.
     pub logged: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tactic {
     pub id: i32,
-    /// Raw authored name, preserving case, bytes, and duplicate identities.
     pub token: Vec<u8>,
-    /// Reader-projected fields: definitions consumed and every value token
-    /// resolved. Scalar `trigger` fields report an error, contribute no
-    /// condition, and are omitted.
     pub fields: Vec<Item>,
-    /// `phase` and `display_phase`: an exact phase-name index among phases
-    /// read before this tactic, [`NO_PHASE`] for literal `no`, and
-    /// [`UNKNOWN_PHASE`] when absent or unmatched.
     pub phase: i32,
     pub display_phase: i32,
-    /// Effects in [`effect_slot`] order, retaining zero for absent fields.
     pub effects: [i64; 6],
-    /// Why this tactic's ID, phase IDs or fields are unproven: this or an
-    /// earlier entry holds a block the port cannot settle.
     pub unproven: Option<String>,
 }
 
-/// A phase field that is absent or names no phase read before it.
 pub const UNKNOWN_PHASE: i32 = -1;
-/// A phase field spelled exactly `no`.
 pub const NO_PHASE: i32 = -2;
 
-/// A folded effect keyword's slot in [`Tactic::effects`]. The fixed slot order
-/// is shared with tactic tooltip and popup consumers.
 pub fn effect_slot(keyword: &[u8]) -> Option<usize> {
     match keyword {
         b"combat_width" => Some(0),
@@ -81,57 +48,31 @@ pub fn effect_slot(keyword: &[u8]) -> Option<usize> {
     }
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
-    /// The tactic-file loop.
     Top,
     Tactic,
-    /// A trigger body: a tactic's `trigger`,
-    /// every block under it or under a weight modifier, a scripted
-    /// trigger's body.
     Trigger,
-    /// A weight's `modifier` reads `factor` and `add` as one scoped-variable
-    /// value each, before trigger dispatch. These fields skip no block;
-    /// other keys are triggers.
     Modifier,
-    /// A bound-localisation block: `localization_key` reads one formatted
-    /// value; other keys bind arguments, recursively for opening values.
     BoundLocalization,
-    /// A conditional body (`if`, `else`, `else_if`), indexed in [`Shaper`].
     Conditional(usize),
-    /// A conditional's limit, retaining children added by trigger dispatch.
     Limit(usize),
-    /// The body of a coded trigger, by its token, whose class reads its keys
-    /// through a key reader of its own ([`trigger_keys::key_reader`]).
     Class(u32),
-    /// A specialized key loop selected by its reader identity.
     KeyReader(u64),
-    /// A weight: a tactic's base or railway priority.
     Mtth,
     CollectionOperator,
     ScalarFields,
 }
 
-/// What a conditional's limit holds as its loader fills it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Limit {
     Empty,
     Children,
-    /// Whether it holds a child is not known where it is read, and why.
     Unknown(String),
 }
 
-/// Trigger field dispatch and per-read conditional state. `limit` reads
-/// only while its current body has no child; later limits use error recovery,
-/// reading and defining nothing. Shared by tactic and scripted triggers,
-/// tag aliases, scripted localisation, and content-reader conditions
-/// ([`Shape::Trigger`]).
 pub struct Shaper<'n> {
     limits: Vec<Limit>,
-    /// The content names trigger dispatch reads at this point of the load; `None`
-    /// where the reader was given none, so that a key naming content is
-    /// unknown ([`key_names::load_key`]).
     names: Option<&'n KeyNames>,
 }
 
@@ -143,28 +84,19 @@ impl<'n> Shaper<'n> {
         }
     }
 
-    /// Tactic field dispatch by keyword identity: bare keys fold; quoted keys
-    /// are not keywords.
     pub fn shape(&mut self, node: Node, field: &Field<'_>) -> Shape<Node> {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();
         match node {
             Node::KeyReader(address) => self.native_key(address, field),
-            // The weight uses this Shaper's modifier reader so nested triggers
-            // retain its names and limits.
             Node::Mtth if keyword == Some(b"modifier") => Shape::Body(Node::Modifier),
             Node::Mtth => Shape::One,
             Node::CollectionOperator => self.collection_operator(field),
             Node::ScalarFields => Shape::One,
-            // `phases` compares text exactly and reads a string list, resolving
-            // references without registering definitions. Every other key reads
-            // a tactic object regardless of whether its value opens a block.
             Node::Top if c_string(&field.key.text) == b"phases" => Shape::List,
             Node::Top => Shape::Object(Node::Tactic),
             Node::Tactic => match keyword {
-                // `base` reads a weight object.
                 Some(b"base") => Shape::Object(Node::Mtth),
-                // An AND trigger reads no condition from a value that opens no block.
                 Some(b"trigger") => Shape::Body(Node::Trigger),
                 Some(keyword)
                     if effect_slot(keyword).is_some()
@@ -182,10 +114,8 @@ impl<'n> Shaper<'n> {
                 {
                     Shape::One
                 }
-                // Report and skip an unexpected field.
                 _ => Shape::Skip,
             },
-            // Dispatch the key regardless of the field-read result.
             Node::Modifier if matches!(keyword, Some(b"factor" | b"add")) => Shape::One,
             Node::BoundLocalization if keyword == Some(b"localization_key") => Shape::One,
             Node::BoundLocalization => Shape::ObjectIfOpen(Node::BoundLocalization),
@@ -201,8 +131,6 @@ impl<'n> Shaper<'n> {
                 self.note_child(index, &load);
                 self.trigger_field(field, load)
             }
-            // Each class reads its own keys with its value reader; fallback
-            // uses trigger dispatch or unexpected-field recovery.
             Node::Class(token) => {
                 let reader = trigger_keys::key_reader(token);
                 if let KeyReader::ThenLoadKey(keys) | KeyReader::Only(keys) = reader
@@ -239,13 +167,11 @@ impl<'n> Shaper<'n> {
         }
     }
 
-    /// A new conditional's body, its limit empty.
     fn conditional(&mut self) -> Shape<Node> {
         self.limits.push(Limit::Empty);
         Shape::Body(Node::Conditional(self.limits.len() - 1))
     }
 
-    /// Whether a limit field adds a child ([`Load::adds_child`]).
     fn note_child(&mut self, index: usize, load: &Load) {
         if self.limits[index] == Limit::Children {
             return;
@@ -266,17 +192,6 @@ impl<'n> Shaper<'n> {
         ))
     }
 
-    /// Read one trigger child. Every field reaches dispatch, including keys
-    /// without operators. Such keys retain the last value slot; error skips
-    /// test the token consumed in place of the operator ([`Field::skips_block`]).
-    /// Classification ([`key_names::load_key`]) selects consumption:
-    /// - coded single-value triggers report failed reads without skipping, so
-    ///   a block becomes the enclosing trigger body and its `}` ends it; body
-    ///   readers consume nested children, and specialized readers follow [`own`];
-    /// - scopes read a context trigger body;
-    /// - content counts and scripted triggers read one value and skip no block;
-    /// - invalid keys skip the block at the current lexer token;
-    /// - ambiguous names leave divergent block consumption unsettled and refused.
     fn trigger_field(&mut self, field: &Field<'_>, load: Load) -> Shape<Node> {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();
@@ -301,10 +216,7 @@ impl<'n> Shaper<'n> {
     }
 }
 
-/// Resolve a phase field as it is read: exact text `no` first, then an
-/// exact match against phases registered so far. `NO` is a phase name.
 fn phase_id(phases: &[Vec<u8>], value: &Value) -> i32 {
-    // Phase comparison uses first-NUL value text.
     let Some(name) = value.scalar().map(c_string) else {
         return UNKNOWN_PHASE;
     };
@@ -318,7 +230,6 @@ fn phase_id(phases: &[Vec<u8>], value: &Value) -> i32 {
         .unwrap_or(UNKNOWN_PHASE)
 }
 
-/// Read the effective, hash-verified file from the recorded content layers.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     Ok(parse(
         &layers.read("common/combat_tactics.txt")?,
@@ -326,10 +237,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     ))
 }
 
-/// Parse one combat-tactics file using initialized runtime metadata, with
-/// authored triggers resolved against `names`.
 pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
-    // The file lexer uses mode 0.
     let mut shaper = Shaper::new(Some(names));
     let read = native::read(
         bytes,
@@ -347,11 +255,8 @@ pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
         ..Database::default()
     };
     for item in read.items {
-        // The key comparison and tactic name use the same first-NUL text.
         let token = c_string(item.key.as_deref().unwrap_or_default()).to_vec();
         if token == b"phases" {
-            // Every list entry, including `=`, is a phase name. Text ends at its
-            // first NUL; line-feed text uses the shared unreadable-string value.
             for entry in item.value.items().unwrap_or_default() {
                 database
                     .phases
@@ -364,7 +269,6 @@ pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
         let name = String::from_utf8_lossy(&token).into_owned();
         let mut fields = match item.value {
             Value::Block(fields) => fields,
-            // Only a block the tactic reader reads is a tactic's value.
             Value::Scalar(_) | Value::Tagged { .. } => Vec::new(),
         };
         fields.retain_mut(|field| keep(&name, field, &mut database.logged));
@@ -376,7 +280,6 @@ pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
                 (Some(b"display_phase"), value) => {
                     display_phase = phase_id(&database.phases, value)
                 }
-                // The AND trigger and the weight's modifiers read triggers.
                 (Some(b"trigger"), Value::Block(items)) => {
                     let place = format!("tactic {name}'s trigger");
                     empty_scalar_groups(&place, items, &mut database.logged);
@@ -406,8 +309,6 @@ pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
         });
     }
     if let Some(unsettled) = read.unsettled {
-        // The tactic being read then, and every later one, which the text
-        // after it holds.
         let reason = format!("combat_tactics.txt {unsettled}");
         database.unsupported.push(reason.clone());
         if let Some(last) = database.tactics.last_mut() {
@@ -417,15 +318,12 @@ pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
     database
 }
 
-/// Project tactic fields retained by trigger and weight readers; their
-/// reported errors join `logged`.
 fn keep(tactic: &str, field: &mut Item, logged: &mut Vec<String>) -> bool {
     let key = String::from_utf8_lossy(field.key.as_deref().unwrap_or_default()).into_owned();
     match (
         field.keyword().map(|keyword| keyword.folded()).as_deref(),
         &mut field.value,
     ) {
-        // A value without an opening brace reports an error and consumes nothing.
         (Some(b"trigger"), Value::Scalar(text)) => {
             logged.push(format!(
                 "tactic {tactic}'s {key} = {} is not a block: the trigger reader reports an error and reads no condition from it",
@@ -460,7 +358,6 @@ fn keep(tactic: &str, field: &mut Item, logged: &mut Vec<String>) -> bool {
     }
 }
 
-/// How a value reads in a message: its text, or that it is a block.
 fn shown(value: &Value) -> String {
     match value {
         Value::Scalar(text) => String::from_utf8_lossy(text).into_owned(),
@@ -468,9 +365,6 @@ fn shown(value: &Value) -> String {
     }
 }
 
-/// Reads effect occurrences in source order. Movement speed keeps its previous
-/// value after a failed scan; the other fields use decimal fixed-point conversion.
-/// Undefined bare references retain their own text as the value.
 fn effects(tactic: &str, fields: &[Item], logged: &mut Vec<String>) -> [i64; 6] {
     let mut values = [0_i64; 6];
     for field in fields {
@@ -502,10 +396,6 @@ fn effects(tactic: &str, fields: &[Item], logged: &mut Vec<String>) -> [i64; 6] 
     values
 }
 
-/// Normalises scalar AND, OR, NOT and custom-tooltip groups to empty bodies,
-/// retaining the logged error. Empty AND and NOT evaluate true, OR false.
-/// Custom-tooltip localisation bindings have already been consumed and add no
-/// condition, even when authored content defines a trigger with the same name.
 pub fn empty_scalar_groups(place: &str, items: &mut [Item], logged: &mut Vec<String>) {
     normalise_trigger_body(place, items, logged, false);
 }
@@ -541,7 +431,6 @@ pub(crate) fn normalise_trigger_body(
                     });
                 }
                 for child in children {
-                    // Localisation argument keys are not triggers.
                     if tooltip_bindings
                         && bindings
                         && (child.keyword_is("tooltip") || child.keyword_is("not_tooltip"))
@@ -561,17 +450,11 @@ pub(crate) fn normalise_trigger_body(
     }
 }
 
-/// A `phase` trigger in tactic conditions or weight modifiers resolves
-/// while being read. Exact `no` and unregistered names store -1; evaluation
-/// compares the stored ID with the combat phase. Replace the operand with
-/// that ID in decimal for viewer evaluation. The trigger name is a folded
-/// keyword; the operand's `no` comparison is exact.
 pub fn resolve_phase_triggers(phases: &[Vec<u8>], items: &mut [Item]) {
     for item in items {
         let is_phase = item.keyword_is("phase");
         match &mut item.value {
             Value::Scalar(operand) if is_phase => {
-                // Compare `no` after truncating the operand at its first NUL.
                 let id = if c_string(operand) == b"no" {
                     UNKNOWN_PHASE
                 } else {

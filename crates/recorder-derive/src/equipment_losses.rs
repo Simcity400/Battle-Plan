@@ -1,29 +1,3 @@
-//! `EquipmentLossTotals`, `CombatLogDropped`, `ShipLosses` and `EquipmentLossCoverage`: the
-//! equipment each country identity (canonical slot, raw id of its Countries row, its link
-//! resolving to that slot) lost, by source and design. A loss row's raw country resolves through
-//! CountryLinks to a slot, and the loss goes to every identity of that slot.
-//!
-//! - Drains: every complete EquipmentDestruction read is the hour's drain, added whether or not
-//!   its rows changed, from the run's first complete drain. A partial interval before it claims
-//!   nothing; after it, a partial interval, an hour not read, an owner no link resolves or a
-//!   missing supplemental writer makes the drain totals lower bounds from then. Any other refusal,
-//!   truncation or "not recorded" withholds the drain for the rest of the run: its leaves are not
-//!   recorded from that hour.
-//! - Combat Log: a leaf is the sum of the amounts the log holds and the last amounts of the rows
-//!   the game deleted (`CombatLogDropped`, deleted again when the key returns). One entry under
-//!   two raw aliases of a slot counts once, its highest alias standing.
-//! - Ships: a log. Each signature a complete SunkShips read lists more often than the read before
-//!   it is a row of the hour, with its entries in the read and its sinking hour; at a run's first
-//!   hour and after an hour not compared every listed one is, and every one of a slot whose raw ids
-//!   or identities the hour moved. The most entries one read listed is the reply's most of its rows.
-//! - Convoys and lend-lease add from the run's first read of each: a convoy count that fell counts
-//!   whole as a new entry; a pool the game deleted makes its leaf a lower bound from the hour after
-//!   the read before.
-//!
-//! Countries and CountryLinks are required: an hour without them is not run, and the next hour
-//! reads every input whole. The resume blob holds the convoy and lend-lease counts it compares
-//! against (bounded by those tables' live rows) and the run's read hours; everything else is the
-//! tables, the last complete SunkShips read's counts read again from it at a resume.
 
 use crate::framework::{Columns, Definition, Hour, Output, Read, Rows, Uses, Value, Watch, Writer};
 use engine_land_inputs::ncombat_log_cequipment_loss::month_bucket;
@@ -68,15 +42,12 @@ const NOT_RECORDED: &str = Coverage::DRAIN_NOT_RECORDED;
 const NOT_READ: &str = Coverage::DRAIN_NOT_READ;
 const LOST: &str = Coverage::DRAIN_LOST;
 
-/// The bit of the runtime DLC feature mask the Combat Log's equipment losses need.
 const EQUIPMENT_LOSSES_MASK: u32 = engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK;
 
-/// `EquipmentLossTotals`' freed amount column.
 const FREED: usize = 2;
 
 const RUN_KEY: u128 = (Coverage::RUN as u128) << 32 | Coverage::RUN as u128;
 
-/// A leaf's key in `EquipmentLossTotals`.
 fn leaf(slot: u32, country: u32, source: u8, variant: Option<u32>) -> u128 {
     (slot as u128) << 73 | (country as u128) << 41 | (source as u128) << 33 | variant.map_or(0, |variant| 1 << 32 | variant as u128)
 }
@@ -93,7 +64,6 @@ fn ship_key(slot: u32, country: u32, hour: i32, signature: u64) -> u128 {
     ShipLossRow { slot, country, hour, signature, ..Default::default() }.key()
 }
 
-/// A stable 64-bit hash of a sunk ship's signature, seeded.
 fn signature(entry: &SunkShipEntry, seed: u64) -> u64 {
     let mut hash = seed;
     let mut eat = |bytes: &[u8]| {
@@ -117,10 +87,8 @@ fn signature(entry: &SunkShipEntry, seed: u64) -> u64 {
 const SIGNATURE_SEED: u64 = 0xCBF2_9CE4_8422_2325;
 const CHECK_SEED: u64 = 0x6C62_272E_07BB_0142;
 
-/// A sunk ship signature of a slot as one SunkShips read lists it.
 struct Listed {
     slot: u32,
-    /// Its 48-bit hash.
     signature: u64,
     count: u32,
     sink_hour: i32,
@@ -128,7 +96,6 @@ struct Listed {
     check: u64,
 }
 
-/// What the hour does to one leaf's total.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Change {
     Add(i128),
@@ -136,7 +103,6 @@ enum Change {
     Unknown,
 }
 
-/// The run's facts that outlive an hour, as the run's coverage row holds them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Run {
     counted_from: Option<i32>,
@@ -147,31 +113,24 @@ struct Run {
     lend_from: Option<i32>,
 }
 
-/// The Combat Log admission inputs this hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Gate {
-    /// CombatLogState read, and with a positive operand Players too.
     known: bool,
     all: bool,
     players: HashSet<u32>,
-    /// A player's country no link resolves.
     unresolved: bool,
     features: Option<bool>,
     prune_observed: bool,
 }
 
-/// What one hour sets, gathered before it is written.
 #[derive(Default)]
 struct Pending {
     totals: HashMap<u128, Change>,
     incomplete: HashMap<u128, i32>,
-    /// Identities whose coverage row the hour must write.
     coverage: HashSet<u128>,
     drops: HashMap<u128, u32>,
-    /// Lend-lease exchanges of each identity that ended this hour, and the hour they are lost from.
     ended: HashMap<u128, u32>,
     ended_from: Option<i32>,
-    /// What the hour does to Combat Log leaves' freed amounts.
     freed: HashMap<u128, Change>,
 }
 
@@ -201,12 +160,9 @@ impl Pending {
     }
 }
 
-/// Which slots' Combat Log leaves the hour counts again from the tables, beside the rows it changed.
 enum Recount {
     None,
-    /// The slots whose raw ids or identities the hour moved.
     Slots(HashSet<u32>),
-    /// Every slot: the writer did not run the hour before.
     All,
 }
 
@@ -220,7 +176,6 @@ impl Recount {
     }
 }
 
-/// A Combat Log row the hour deleted: its key, the slot it held and its last amount.
 #[derive(Clone, Copy)]
 struct Gone {
     key: u128,
@@ -228,9 +183,6 @@ struct Gone {
     amount: Option<i64>,
 }
 
-/// The Combat Log rows the hour deleted, by key: for each key once (its last deletion), its place
-/// among the store's deletions and among the cells it kept, 8 bytes a row beside what the store
-/// holds of the hour.
 struct Deleted<'a> {
     log: &'a [(u32, u128)],
     kept: &'a Dropped,
@@ -269,7 +221,6 @@ impl<'a> Deleted<'a> {
         self.rows.iter().map(|&(at, _)| self.log[at as usize].1)
     }
 
-    /// Each key once, ascending, and the cells its last deletion kept.
     fn cells(&self) -> impl Iterator<Item = (u128, &'a [Kept])> + '_ {
         self.rows.iter().map(|&(at, row)| (self.log[at as usize].1, self.kept.row(row as usize)))
     }
@@ -285,36 +236,23 @@ fn earliest(held: &mut Option<i32>, hour: i32) {
 
 #[derive(Default)]
 pub struct EquipmentLosses {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
-    /// The last hour it ran.
     last: Option<i32>,
     links: HashMap<u32, u32>,
-    /// Each slot's raw ids, ascending.
     aliases: HashMap<u32, Vec<u32>>,
-    /// Each Countries row's slot and whether its link resolves to it, by raw id.
     countries: HashMap<u32, (u32, bool)>,
-    /// Each slot's identities whose link resolves, ascending.
     identities: HashMap<u32, Vec<u32>>,
     run: Run,
-    /// Each live SunkConvoys row's count as last counted, and whether the run read the table.
     convoys: HashMap<u128, i32>,
     convoys_seen: bool,
-    /// Each live LendLeaseEquipment pool's amount as last counted, the run's last read of it, and
-    /// whether the run read it.
     lend: HashMap<u128, i64>,
     lend_read: Option<i32>,
     lend_seen: bool,
-    /// Raw countries the run's drain, ship, convoy and lend-lease rows named that no link resolved,
-    /// and those only its Combat Log rows named.
     unresolved: HashSet<u32>,
     unresolved_combat: HashSet<u32>,
-    /// The last complete SunkShips read compared: each (slot, signature) and its entries,
-    /// ascending; none when it is not known.
     listed: Option<Vec<(u32, u64, u32)>>,
     gate: Gate,
     census_complete: bool,
-    /// Raw countries with nonzero census counts no link resolves.
     census_unresolved: HashSet<u32>,
 }
 
@@ -328,7 +266,6 @@ impl EquipmentLosses {
         Some((slot, self.ids(slot)))
     }
 
-    /// Every identity, link and alias from the tables as they stand.
     fn read_identities(&mut self, hour: &Hour<'_>) {
         self.links.clear();
         self.aliases.clear();
@@ -355,7 +292,6 @@ impl EquipmentLosses {
         self.identities.values_mut().for_each(|ids| ids.sort_unstable());
     }
 
-    /// The run's facts from its coverage row as the store holds it.
     fn read_run(&mut self, out: &Rows<'_>) {
         let view = out.table(TableId::EquipmentLossCoverage);
         let Some(slot) = view.slot(RUN_KEY) else {
@@ -371,7 +307,6 @@ impl EquipmentLosses {
         self.run = Run { counted_from: at(6), withheld_from, withheld, incomplete_from: at(8), convoys_from: at(9), lend_from: at(10) };
     }
 
-    /// Coverage rows: one for every Countries row, none for a row gone.
     fn identities_changed(&mut self, pending: &mut Pending, out: &mut Rows<'_>) {
         for key in crate::forces::held(out, TableId::EquipmentLossCoverage) {
             if key != RUN_KEY && !self.countries.get(&(key as u32)).is_some_and(|&(slot, _)| slot == (key >> 32) as u32) {
@@ -381,12 +316,10 @@ impl EquipmentLosses {
         pending.coverage.extend(self.countries.iter().map(|(&raw, &(slot, _))| identity_key(slot, raw)));
     }
 
-    /// A Combat Log group's (one entry under every alias of a slot) value: its highest alias's.
     fn group_value(&self, aliases: &[u32], suffix: u128, value: impl Fn(u128) -> Option<Option<i64>>) -> Option<Option<i64>> {
         aliases.iter().rev().find_map(|&raw| value(combat_key(raw, suffix)))
     }
 
-    /// The slots whose raw ids or identities differ from `aliases` and `identities`, held before.
     fn moved_slots(&self, aliases: &HashMap<u32, Vec<u32>>, identities: &HashMap<u32, Vec<u32>>) -> HashSet<u32> {
         let mut moved = HashSet::new();
         for (before, now) in [(aliases, &self.aliases), (identities, &self.identities)] {
@@ -402,8 +335,6 @@ impl EquipmentLosses {
         let deleted = Deleted::read(hour)?;
         let gone: Vec<u128> = deleted.keys().collect();
         let freed = freed_lines(hour, &live, &out.table(TableId::CombatLogDropped), &gone, whole, turned);
-        // A row the game deleted twice in the hour is dropped as its last deletion left it; one
-        // whose line the game freed with it is never held.
         for (key, cells) in deleted.cells() {
             if live.slot(key).is_none() && freed.binary_search(&key).is_err() {
                 let (date, amount) = combat_dropped(cells);
@@ -418,11 +349,9 @@ impl EquipmentLosses {
                 out.delete(TableId::CombatLogDropped, key);
             }
         }
-        // Rows set this hour are the hour's deleted rows, which `deleted` gives before the table.
         let dropped = out.table(TableId::CombatLogDropped);
         let now = |key: u128| live.slot(key).map(|slot| combat_amount(&live, slot));
         let held = |key: u128| dropped.slot(key).map(|slot| dropped_amount(&dropped, slot));
-        // What the tables hold of a key once the hour is written: live, dropped now, or dropped before.
         let after = |key: u128| now(key).or_else(|| deleted.get(key).map(|gone| gone.amount)).or_else(|| held(key));
         let release: Vec<u128> = freed.iter().copied().filter(|&key| dropped.slot(key).is_some()).collect();
         let mut unresolved = HashSet::new();
@@ -440,7 +369,6 @@ impl EquipmentLosses {
             };
             let written = hour.written_rows(table, Columns::These(&COMBAT_AMOUNT));
             let touched = written.iter().filter_map(|&slot| live.key(slot)).chain(deleted.keys());
-            // Only a slot of several raw ids can see one entry twice: a group is visited once.
             let mut groups: HashSet<(u32, u128)> = HashSet::new();
             for key in touched {
                 let Some(&slot) = self.links.get(&combat_country(key)) else {
@@ -485,8 +413,6 @@ impl EquipmentLosses {
         Ok(())
     }
 
-    /// Moves the dropped rows whose lines the game freed (`freed`, ascending) into their leaves'
-    /// freed amounts: every total stays, and the table holds nothing more of them.
     fn free(&self, freed: &[u128], after: &impl Fn(u128) -> Option<Option<i64>>, pending: &mut Pending) -> io::Result<()> {
         let without = |key: u128| if freed.binary_search(&key).is_ok() { None } else { after(key) };
         let mut groups: HashSet<(u32, u128)> = HashSet::new();
@@ -510,7 +436,6 @@ impl EquipmentLosses {
         Ok(())
     }
 
-    /// Raw countries Combat Log rows named that no link resolved.
     fn note_combat_unresolved(&mut self, raws: HashSet<u32>) {
         for raw in raws {
             if !self.unresolved.contains(&raw) {
@@ -519,14 +444,11 @@ impl EquipmentLosses {
         }
     }
 
-    /// A raw country a drain, ship, convoy or lend-lease row named that no link resolved.
     fn note_unresolved(&mut self, raw: u32) {
         self.unresolved_combat.remove(&raw);
         self.unresolved.insert(raw);
     }
 
-    /// The Combat Log leaves of the slots `recount` names, from what the log holds and what the
-    /// game dropped: one pass over both tables, holding a sum per leaf and nothing per row.
     #[allow(clippy::too_many_arguments, reason = "the totals, the three views of the log, the slots, what it gathers and the raw countries no link resolved")]
     fn combat_levels(&self, totals: &TableView<'_>, live: &TableView<'_>, dropped: &TableView<'_>, deleted: &Deleted<'_>, recount: &Recount, pending: &mut Pending, unresolved: &mut HashSet<u32>) -> io::Result<()> {
         let present = |key: u128| live.slot(key).is_some() || deleted.get(key).is_some() || dropped.slot(key).is_some();
@@ -569,8 +491,6 @@ impl EquipmentLosses {
                 }
             }
         }
-        // Each leaf's freed amount, the same for every identity of its slot: an identity newer than
-        // the others takes theirs.
         let mut freed: HashMap<(u32, u8, u32), Option<i128>> = HashMap::new();
         let mut baseline = Vec::new();
         for row in totals.rows() {
@@ -605,7 +525,6 @@ impl EquipmentLosses {
         Ok(())
     }
 
-    /// The hour's drain; gives the drain's reason this hour.
     fn destruction(&mut self, hour: &Hour<'_>, out: &Rows<'_>, pending: &mut Pending) -> io::Result<String> {
         if let Some(reason) = &self.run.withheld {
             return Ok(reason.clone());
@@ -681,7 +600,6 @@ impl EquipmentLosses {
         Ok(reason)
     }
 
-    /// The drain withheld for the rest of the run: every drain leaf not recorded from this hour.
     fn withhold(&mut self, hour: i32, out: &Rows<'_>, reason: String, pending: &mut Pending) -> String {
         self.run.withheld_from = Some(hour);
         self.run.withheld = Some(reason.clone());
@@ -695,8 +613,6 @@ impl EquipmentLosses {
         reason
     }
 
-    /// The SunkShips read's signatures of resolved victims, by slot, ascending; none without its
-    /// row.
     fn sunk(&mut self, hour: &Hour<'_>) -> io::Result<Option<Vec<Listed>>> {
         let Some(entries) = sunk_ships(hour)? else { return Ok(None) };
         let mut counts: HashMap<(u32, u64), Listed> = HashMap::new();
@@ -718,10 +634,6 @@ impl EquipmentLosses {
         Ok(Some(listed))
     }
 
-    /// The ShipLosses log: the last hour's rows go, and each signature a complete read lists more
-    /// often than the read before it is a row of each identity of its slot; every listed one when
-    /// that read is not known or the writer did not run the hour before, and every one of a slot
-    /// `recount` covers.
     fn ships(&mut self, hour: &Hour<'_>, recount: &Recount, out: &mut Rows<'_>) -> io::Result<()> {
         for key in crate::forces::held(out, TableId::ShipLosses) {
             out.delete(TableId::ShipLosses, key);
@@ -865,7 +777,6 @@ impl EquipmentLosses {
             }
         }
         if !removed.is_empty() {
-            // An exchange ends when the game deletes it whole: none of its pools is left.
             let open: HashSet<u128> = self.lend.keys().map(|&key| exchange_of(key)).collect();
             let ended: HashSet<u128> = removed.into_iter().map(exchange_of).filter(|exchange| !open.contains(exchange)).collect();
             for exchange in ended {
@@ -883,7 +794,6 @@ impl EquipmentLosses {
         Ok(())
     }
 
-    /// The Combat Log admission inputs and the census: which identities' coverage the hour moved.
     fn land(&mut self, hour: &Hour<'_>, whole: bool, pending: &mut Pending) {
         let moved = |table: TableId, columns: Columns| hour.changes(table).status_changed || hour.wrote(table, columns);
         let mut every = whole;
@@ -949,7 +859,6 @@ impl EquipmentLosses {
         gate
     }
 
-    /// An identity's land coverage and, while partial, its divisions outside orders groups.
     fn coverage(&self, hour: &Hour<'_>, slot: u32, resolved: bool) -> (u8, Option<u32>) {
         if !resolved || !self.gate.known {
             return (Coverage::UNKNOWN, None);
@@ -980,7 +889,6 @@ impl EquipmentLosses {
         land_coverage(found, grouped, ungrouped, self.gate.prune_observed)
     }
 
-    /// The hour's sets of every table, from what it gathered.
     fn write(&self, hour: &Hour<'_>, pending: Pending, drain: &str, out: &mut Rows<'_>) {
         let mut keys: HashSet<u128> = pending.totals.keys().copied().collect();
         keys.extend(pending.incomplete.keys().copied());
@@ -1070,10 +978,8 @@ impl EquipmentLosses {
     }
 }
 
-/// Units per equipment of every amount (fixed5).
 const AMOUNT_SCALE: i64 = 100_000;
 
-/// A LendLeaseEquipment pool's exchange: its giver and exchange id.
 fn exchange_of(key: u128) -> u128 {
     key >> 40
 }
@@ -1098,8 +1004,6 @@ fn lend_source(kind: u8) -> io::Result<u8> {
     }
 }
 
-/// The game's Combat Log land coverage of a country whose log is admitted, from its census
-/// counts summed over its aliases (`found`: some alias has a census row).
 fn land_coverage(found: bool, grouped: u32, ungrouped: u32, prune_observed: bool) -> (u8, Option<u32>) {
     if !found {
         (Coverage::UNKNOWN, None)
@@ -1131,7 +1035,6 @@ impl Writer for EquipmentLosses {
         READS
     }
 
-    // Hourly: a month's turn frees Combat Log lines, and lost drains date from its last hour.
     fn hourly(&self) -> bool {
         true
     }
@@ -1147,7 +1050,6 @@ impl Writer for EquipmentLosses {
     fn hour(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         let whole = hour.fresh || self.rebuild;
         let mut pending = Pending::default();
-        // Hours it was not run (an input it requires was not complete) lost their drains.
         let lost = hour.fresh && !hour.first && self.last.is_some_and(|last| last.saturating_add(1) < hour.hour);
         if whole {
             self.read_run(out);

@@ -1,5 +1,3 @@
-//! Stored army-group child-front geometry. The first path province's controller
-//! area selects the small-area guard independently of UI state.
 
 use engine_sites::Rva;
 use super::{PlanRow, Row, TYPE_LINE, Visit, grow_payload, plan_field};
@@ -12,7 +10,6 @@ use crate::{
     walk::Outcome,
 };
 
-/// Serialized child-front record; stride 72 bytes.
 const ENTRY_VTABLE_RVA: Rva = Rva(0x02a0_2698);
 const DATA: usize = 0x380;
 const STRIDE: usize = 0x48;
@@ -37,7 +34,6 @@ pub struct Section {
     pub segment_start: i32,
     pub segment_end: i32,
 }
-/// Healthy earlier operands survive a later optional child-array refusal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Inputs {
     pub area_province_count: i32,
@@ -50,11 +46,6 @@ struct OwnerInputs {
     state: u8,
     child_count: i32,
 }
-/// A plan whose stored child array [`walk_areas`] read, left for
-/// [`walk_groups`] in census visit order: an empty array, whose zero-length
-/// span takes its place in the section arena, or a nonempty type-2 array,
-/// whose owner's army-group operands come from the OOB source. `owner` is
-/// the visit's root index and `array` the header the area phase read.
 #[derive(Clone, Copy, Debug, Default)]
 struct Pending {
     plan: usize,
@@ -65,7 +56,6 @@ struct Pending {
 pub struct Scratch {
     groups: Vec<(usize, u64)>,
     owners: Vec<OwnerInputs>,
-    /// The plans the area phase of this pass left for its group phase.
     pending: Vec<Pending>,
 }
 impl Scratch {
@@ -74,8 +64,6 @@ impl Scratch {
             + self.owners.capacity() * std::mem::size_of::<OwnerInputs>()
             + self.pending.capacity() * std::mem::size_of::<Pending>()
     }
-    /// Whether the group phase reads an owner's army-group operands, so it
-    /// needs the OOB source; an empty array needs none.
     pub fn needs_group_source(&self) -> bool {
         self.pending.iter().any(|pending| pending.array.count != 0)
     }
@@ -85,11 +73,8 @@ impl Scratch {
         self.pending.clear();
         crate::allocation::reserve(&mut self.owners, roots.len())
             .map_err(|_| "child front group inputs allocation failed")?;
-        // At most one pending entry per plan: the area phase never allocates.
         crate::allocation::reserve(&mut self.pending, plans)
             .map_err(|_| "child front group inputs allocation failed")?;
-        // 0 unreached, 1 ordinary, 2 AG/count captured, 3 discriminator failed,
-        // 4 count failed. Never retry a refused operand in this held pass.
         self.owners.resize(roots.len(), OwnerInputs::default());
         Ok(())
     }
@@ -129,10 +114,6 @@ impl Scratch {
             return Ok(None);
         }
         owner.state = 4;
-        // Reuse the same-pass OOB producer's full 16-byte front-binding observation, including
-        // failure. Its exact-span source cannot serve a new 4-byte request inside it. The header's
-        // final signed count bounds the loop; vector pointer/capacity validation is not this
-        // scalar's demand.
         let address = root
             .pointer()
             .checked_add(carmy_group::MEMBER_DATA)
@@ -245,8 +226,6 @@ fn sections(
                 segment_end: i32::from_le_bytes(raw[20..24].try_into().unwrap()),
             };
         }
-        // Never allocate from an unreadable header count. Growth follows only
-        // this successfully copied/authenticated bounded batch.
         let end = used
             .checked_add(count)
             .ok_or("child front arena overflow")?;
@@ -257,14 +236,6 @@ fn sections(
     Ok((start, *used - start))
 }
 
-/// `orders` and `paths` are complete owned bytes of this same held acquisition.
-/// `plans` is the core walk's complete sorted result. No previous-hour census is admitted.
-/// `group_source` serves only this pass's owned OOB discriminator and full child
-/// header observations. A missing or failed source never falls back to `memory`.
-///
-/// The walk is [`walk_areas`] then [`walk_groups`] over the same plans and
-/// scratch; the Orders job runs the first and the ChildFronts job, once the
-/// OOB copy is in, the second.
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     memory: &impl Memory,
@@ -306,19 +277,6 @@ pub fn walk(
     )
 }
 
-/// The child-front operands every plan takes from `memory` alone: the first
-/// path province's controller-area count and, above two, the stored child
-/// array's header. Each plan with a front and a path gets its [`Inputs`]; an
-/// empty array's zero-length span and a nonempty type-2 array's owner operands
-/// are left in `scratch` for [`walk_groups`], which must follow over the same
-/// plans and scratch in this same held pass. Reads nothing from the OOB source
-/// and appends no section. Its reads and their failures are those the single
-/// walk makes before an owner's operands, since memory cannot change while the
-/// pass holds the game thread.
-///
-/// `placement` is this pass's complete plan walk's [`super::PlanOrder::rows`]
-/// (or empty): each census order's plan, and census row, is taken from it when
-/// that row holds the order's key, and searched for otherwise.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_areas(
     memory: &impl Memory,
@@ -338,7 +296,6 @@ pub fn walk_areas(
     for plan in plans.iter_mut() {
         plan.child_fronts = None;
     }
-    // Nothing of an earlier pass is left for this pass's group phase.
     scratch.pending.clear();
     if source != (Outcome::Rows { len: plans.len() })
         || orders.len() != plans.len()
@@ -363,7 +320,6 @@ pub fn walk_areas(
         if plan.front_valid == 0 {
             continue;
         }
-        // The census rows hold the plans' keys in the same order.
         let Ok(order_index) =
             super::keyed_row(orders, Some(index as u32), key, |order| order.key())
         else {
@@ -398,12 +354,8 @@ pub fn walk_areas(
             if let Some(array) = array {
                 inputs.count = Some(array.count);
                 if array.count == 0 {
-                    // The group phase moves this span to its place in the
-                    // arena; an empty span projects the same anywhere.
                     inputs.sections = Some((0, 0));
                 }
-                // `begin` reserved one entry per plan and each visit names a
-                // distinct plan, so this never grows.
                 if array.count == 0 || order.order_type == TYPE_LINE {
                     if scratch.pending.len() < scratch.pending.capacity() {
                         scratch.pending.push(Pending {
@@ -424,12 +376,6 @@ pub fn walk_areas(
     report
 }
 
-/// The rest of [`walk`] after [`walk_areas`] (`areas` is its report for these
-/// same plans and scratch, in this same held pass): each nonempty type-2
-/// array's owner discriminator and signed army-group child count from
-/// `group_source`, then the demanded stored prefix from `memory`, appended to
-/// `output` in census visit order, and each empty array's zero-length span at
-/// its place among them. Returns the single walk's report.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_groups(
     memory: &impl Memory,
@@ -464,9 +410,6 @@ pub fn walk_groups(
                             memory,
                             base,
                             array,
-                            // The child-front group walk passes stored[i].group
-                            // directly to the first-match span scan, so every
-                            // demanded match is at or before i.
                             array.count.min(count as u32),
                             scratch,
                             output,

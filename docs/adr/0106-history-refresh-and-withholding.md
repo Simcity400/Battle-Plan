@@ -1,0 +1,9 @@
+# Fence history handoff and preserve named table withholding
+
+The history worker handles request I/O. It hands close and release commands to the spool only after every capture sequence through the request’s fence has released ownership. Waiting uses nonblocking mailbox access on the spool. A busy mailbox defers transfer of the refresh-failure flag so status can report it later. The history worker runs optional refresh requests with the spool status allocation phase even though refresh polling moved off that thread. Tests exercise the warning, request-removal boundary, and finalization through the session’s last journal frame.
+
+`recorder refresh` uses its own request and acknowledgement filenames per token. Accept a request once even if acknowledgement or removal fails. The requester may withdraw it after acknowledgement and before removal. Refresh covers every scheduled table, including daily, static, and sliced ones, for the first update that returns after acceptance. Capture reads that hour on the next hourly entry. This preserves observation continuity and leaves recovery’s `force_next` separate. The history worker handles the request files without holding the spool or sending anything to the game. For history close requests, a newer token supersedes an earlier close even if the earlier operation completed without acknowledgement.
+
+The recorder supplies scripted map demand before attachment. The collector keeps the demand fixed for the session. If a table encounters a withheld game site, subsequent frames report the withheld site by name instead of carrying rows taken without it.
+
+[History mailbox](../../crates/collector/src/runtime/history_requests.rs) · [Scripted map demand](../../crates/collector/src/scripted_maps.rs) · [Table withholding](../../crates/collector/src/site_withholding.rs)

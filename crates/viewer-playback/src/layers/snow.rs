@@ -1,22 +1,3 @@
-//! The snow and mud layer: today's snow fold of WeatherProvinces kept per entity ([`fold`]), run
-//! on the layer's own worker, fed the steps themselves: ahead of the head as the host offers them,
-//! or when the frame applies them. The worker keeps its own copy of the table from each step's
-//! change set alone, folds it and builds the grid of the step's last hour with the bands of rows
-//! where it differs from the grid made before it (of steps queued that the frame has applied
-//! already, only the last makes one: its bands cover theirs). The frame side takes every grid up
-//! to the hour it applied, in order, never one ahead of it, joining their bands, and the upload
-//! writes them to the scene a band at a time. Nothing on the frame waits for it, except an
-//! unlimited settle (compose, the proof).
-//!
-//! The worker holds no device and no queue: every texel the scene is shown is written by the
-//! frame's own upload, from the grid the worker handed over.
-//!
-//! **Only the bands the camera shows are written.** Zoomed in, 3% of the grid is on screen and the
-//! whole of it was written for every grid (23 MB a second of queue writes on the stress test); a
-//! band the camera does not show stays owed ([`Changed`]) and is written by the first upload that
-//! shows it, from the newest grid there is. Nothing is left stale on screen: the layer owes an
-//! install while a band in view is owed ([`Layer::uploaded`]), so a camera that moves while the
-//! hours stand still is answered by the next frame.
 
 mod fold;
 
@@ -41,17 +22,9 @@ use std::{
 };
 use viewer_foundation::map::presentation::Continuity;
 
-/// Rows of the grid a band holds: the grain at which a change is kept.
 const BAND: u32 = 8;
-/// Bands one piece of an upload writes at most, as one rectangle: a write a call costs more than
-/// its bytes, so neighbouring changed bands go together (at most 64 rows, 360 KB on the
-/// 1,408-cell grid).
 const RUN: u32 = 8;
 
-/// The cells where one grid differs from another, as the columns changed in each band of
-/// [`BAND`] rows (an empty range: none); or not known (a grid made whole, a product discarded,
-/// a refusal), which is written whole. Two join exactly and cheaply: a band's columns are the
-/// union's bound.
 #[derive(Clone, Debug, PartialEq)]
 enum Changed {
     Unknown,
@@ -65,7 +38,6 @@ impl Default for Changed {
 }
 
 impl Changed {
-    /// The bands holding `cells` of a `width`-cell row.
     fn of_cells(cells: &[u32], width: u32) -> Self {
         let mut changed = Self::default();
         for &cell in cells {
@@ -88,7 +60,6 @@ impl Changed {
         *held = if held.start >= held.end { columns } else { held.start.min(columns.start)..held.end.max(columns.end) };
     }
 
-    /// Every cell of `self` or `other`.
     fn join(&mut self, other: Changed) {
         match other {
             Self::Unknown => *self = Self::Unknown,
@@ -100,7 +71,6 @@ impl Changed {
         }
     }
 
-    /// Bands holding a change; every band of a grid `height` rows high when unknown.
     fn bands(&self, height: u32) -> usize {
         match self {
             Self::Unknown => height.div_ceil(BAND) as usize,
@@ -108,10 +78,6 @@ impl Changed {
         }
     }
 
-    /// The next piece of a `width` by `height` grid: the rows from the first changed band through
-    /// at most [`RUN`] changed bands in a row, and the bound of their columns, among the cells
-    /// `shown` holds (none: the whole grid). A band the camera does not show is passed over and
-    /// stays changed, for the first upload that shows it.
     fn run_in(&self, [width, height]: [u32; 2], shown: Option<&Shown>) -> Option<(Range<u32>, Range<u32>)> {
         let bands = height.div_ceil(BAND);
         let columns = |band: u32| {
@@ -135,7 +101,6 @@ impl Changed {
         Some((first * BAND..((last + 1) * BAND).min(height), bound.start.min(width)..bound.end.min(width)))
     }
 
-    /// The bands of `rows` written, of a grid `height` rows high.
     fn written(&mut self, rows: Range<u32>, [width, height]: [u32; 2]) {
         if let Self::Unknown = self {
             *self = Self::Bands(vec![0..width; height.div_ceil(BAND) as usize]);
@@ -156,20 +121,13 @@ impl Changed {
     }
 }
 
-/// The grid's cells the camera shows, in grid rows and columns: what an upload writes of a grid.
-/// A band whose rows or columns fall outside is written by the first upload that shows it.
 #[derive(Clone, Debug, PartialEq)]
 struct Shown {
     rows: Range<u32>,
-    /// The columns the camera shows: one range, or the two a view across the world's seam shows.
     columns: [Range<u32>; 2],
 }
 
 impl Shown {
-    /// The cells of a grid `[width, height]` cells across that `camera` shows at `viewport`, each
-    /// cell being [`map_snow::SNOW_MUD_BLOCK`] map pixels of world and the world's z growing with
-    /// the row. None: the camera shows ground the whole grid may cover (it is above the map, or
-    /// its view is wider than the world), where every band is written as before.
     fn of(
         camera: &viewer_foundation::map::camera::Camera,
         viewport: [u32; 2],
@@ -183,7 +141,6 @@ impl Shown {
         };
         let (first, last) = cells(ground[1], ground[3])?;
         let rows = first.clamp(0, i64::from(height)) as u32..last.clamp(0, i64::from(height)) as u32;
-        // The world wraps in x: the columns a view across the seam shows are at both ends.
         let (first, last) = cells(ground[0], ground[2])?;
         let (span, width) = (last - first, i64::from(width));
         if span >= width {
@@ -198,7 +155,6 @@ impl Shown {
         Some(Self { rows, columns })
     }
 
-    /// Whether the camera shows any cell of the band at `band` whose changed columns are `columns`.
     fn shows(&self, band: u32, columns: &Range<u32>) -> bool {
         let rows = band * BAND..(band + 1) * BAND;
         rows.start < self.rows.end
@@ -210,16 +166,11 @@ impl Shown {
     }
 }
 
-/// World units of ground kept beyond the view's own, so a band reaching the edge of the picture is
-/// written before the camera reaches it: one band of grid rows.
 const MARGIN: f32 = (BAND * map_snow::SNOW_MUD_BLOCK) as f32;
 
-/// What the uploads did, for the paced report: grids taken and how many bands each changed (and
-/// how many were not known), pieces written, their bytes and their time; and the grids taken whole.
 #[derive(Clone, Copy, Debug, Default)]
 struct Figures {
     grids: u64,
-    /// Bands owed when an upload ended, because the camera does not show them.
     unshown: u64,
     bands: u64,
     unknown: u64,
@@ -231,9 +182,7 @@ struct Figures {
     wholes_ns: u64,
 }
 
-/// Where the upload writes: the scene, or a test's stand-in.
 trait Target {
-    /// Whether `grid` can be written a band at a time as it would be taken whole.
     fn takes_parts(&self, grid: &SnowMud, continuity: Continuity) -> bool;
     fn whole(&mut self, grid: &Arc<SnowMud>, continuity: Continuity) -> io::Result<()>;
     fn begin(&mut self, grid: &SnowMud, continuity: Continuity) -> io::Result<()>;
@@ -268,17 +217,13 @@ impl Target for OnScene<'_, '_> {
     }
 }
 
-/// What the layer reads of the content: the cell composition and the winter volumes.
 pub struct Content {
     cells: SnowCells,
     winter: Winter,
-    /// The map's size and camera defines, for the ground a view's camera shows.
     size: viewer_foundation::map::camera::MapSize,
     defines: viewer_foundation::map::camera::MapDefines,
-    /// Per province id: the volumes whose records name it.
     volumes: Vec<Vec<u32>>,
     boundary: Vec<u32>,
-    /// Per cell: whether it is a boundary cell.
     on_boundary: Vec<bool>,
 }
 
@@ -323,16 +268,10 @@ impl Columns {
 }
 
 enum Job {
-    /// The table whole (none when the hour's tables hold no mirror of it): the fold made anew,
-    /// its grid stamped `stamp` (the hour applied when it starts over; none at a compose).
     Reset { epoch: u64, table: Option<Box<Table>>, columns: Columns, stamp: Option<Hour> },
     Step { epoch: u64, step: Arc<Step> },
 }
 
-/// What the worker made of the steps it folded through the hour it is stamped with (none: the
-/// compose's): the grid (none while refused), the bands of rows where it differs from the grid
-/// made before it (none when made whole), why the hour is refused, the marks, and the grid's error
-/// if it could not be built.
 struct Made {
     epoch: u64,
     stamp: Option<Hour>,
@@ -344,9 +283,6 @@ struct Made {
     ns: u64,
 }
 
-/// The next job is a step of `epoch` the frame has applied already, or a reset: the step folded
-/// before it makes no grid (the next grid's bands cover its cells, which the fold keeps until a
-/// grid is made).
 fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     match next {
         Some(Job::Reset { .. }) => true,
@@ -356,7 +292,6 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
 }
 
 fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due) {
-    // The fold, its table, its marks as last handed back, and the hour folded through.
     let mut work: Option<(Fold, Option<Table>, [u64; 3], Option<Hour>)> = None;
     let mut epoch = 0;
     while let Ok(job) = jobs.recv() {
@@ -413,25 +348,17 @@ pub struct Snow {
     jobs: Option<Sender<Job>>,
     made: Option<Receiver<Made>>,
     epoch: u64,
-    /// The steps handed to the worker and the grids it made, each taken once its hour is applied.
     fed: Fed<Made>,
-    /// What the worker last made.
     grid: Result<Option<Arc<SnowMud>>, String>,
     refused: Option<String>,
     marked: [u64; 3],
     worker_held: usize,
-    /// The cells the camera shows, as the last view placed it; none before a frame has placed the
-    /// camera, where the whole grid is written as before.
     in_view: Option<Shown>,
-    /// The grid the scene holds whole, and whether the next upload starts the presentation over;
-    /// where the newest grid differs from it, and the run of pieces under way on the scene.
     shown: Option<Arc<SnowMud>>,
     reset: bool,
     owed: Changed,
     parting: Option<Continuity>,
     figures: Figures,
-    /// Nanoseconds on the frame since the layer was made: handing steps to the worker, exchanging
-    /// with it, the scene's take; and on the worker, with its folds.
     spent: [u64; 3],
     worker: (u64, u64),
 }
@@ -464,7 +391,6 @@ impl Snow {
         Self { columns: self.columns, ..Self::new(self.content.clone()) }
     }
 
-    /// Why the hour is refused, in today's words; none when it draws.
     pub fn refused(&self) -> Option<String> {
         self.refused.clone()
     }
@@ -473,7 +399,6 @@ impl Snow {
         self.grid.as_ref().ok().and_then(Option::as_deref)
     }
 
-    /// The texels, RGBA a cell; none while refused.
     pub fn texels(&self) -> Vec<[u8; 4]> {
         self.drawn().map_or_else(Vec::new, |grid| grid.texels.to_vec().chunks_exact(4).map(|texel| [texel[0], texel[1], texel[2], texel[3]]).collect())
     }
@@ -482,7 +407,6 @@ impl Snow {
         self.drawn().map_or_else(Vec::new, |grid| grid.unknown.to_vec())
     }
 
-    /// Each province's snow word, none where no row holds it.
     pub fn province_snow(&self) -> impl Iterator<Item = Option<i64>> {
         self.drawn().map_or_else(Vec::new, |grid| grid.province_snow.to_vec()).into_iter()
     }
@@ -503,13 +427,10 @@ impl Snow {
         self.marked
     }
 
-    /// Microseconds on the frame, by part: handing steps to the worker, exchanging with it, the
-    /// scene's take.
     pub fn spent(&self) -> [u64; 3] {
         self.spent.map(|ns| ns / 1000)
     }
 
-    /// Microseconds on the worker, and its folds, since the layer was made.
     pub fn worker(&self) -> (u64, u64) {
         (self.worker.0 / 1000, self.worker.1)
     }
@@ -518,7 +439,6 @@ impl Snow {
         self.content.as_ref().map_or(0, |content| content.bytes())
     }
 
-    /// The newest hour its worker has made a grid of, as received on the frame.
     #[cfg(any(test, feature = "test-support"))]
     pub fn made_through(&self) -> Option<Hour> {
         self.fed.made_through()
@@ -531,7 +451,6 @@ impl Snow {
             self.figures.unknown += u64::from(made.changed == Changed::Unknown);
             self.owed.join(made.changed);
         } else {
-            // While refused nothing is written: what the scene holds is not known against the next.
             self.owed = Changed::Unknown;
         }
         (self.grid, self.refused, self.worker_held) = (made.grid, made.refused, made.held);
@@ -542,9 +461,6 @@ impl Snow {
         self.worker.1 += 1;
     }
 
-    /// Receives what the worker made and takes every grid due, in order: those of the hours applied,
-    /// each marking its bands, so the bands owed join those of every grid passed over. With `wait`,
-    /// until the grid of the last hour applied has arrived.
     fn exchange(&mut self, wait: bool) {
         if let Some(receive) = self.made.take() {
             loop {
@@ -563,8 +479,6 @@ impl Snow {
         }
     }
 
-    /// The newest grid written to `target`: whole when it cannot be taken in parts, else every
-    /// band where it differs from the grid there.
     fn push(&mut self, target: &mut dyn Target) -> io::Result<()> {
         let grid = match &self.grid {
             Err(why) => return Err(io::Error::other(why.clone())),
@@ -582,7 +496,6 @@ impl Snow {
 
     fn push_grid(&mut self, target: &mut dyn Target, grid: &Arc<SnowMud>) -> io::Result<()> {
         let size = [grid.width, grid.height];
-        // A run under way whose grid can no longer be taken a band at a time is taken over whole.
         if self.parting.is_some_and(|run| run == Continuity::Continue && (grid.refresh.is_some() || self.shown.as_ref().is_some_and(|shown| [shown.width, shown.height] != size))) {
             (self.parting, self.reset) = (None, true);
         }
@@ -619,8 +532,6 @@ impl Snow {
     }
 }
 
-/// The snow uploads' figures for the paced report: per grid taken, the bands of rows it changed
-/// (of 64 on a 512-row grid), and per piece written its bytes and microseconds.
 pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Snow>())) else { return serde_json::Value::Null };
     let figures = layer.figures;
@@ -640,7 +551,6 @@ pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     })
 }
 
-/// The snow layer of a loaded recording's content: its cell composition and winter volumes.
 pub fn for_document(document: &crate::document::Document) -> Box<dyn Layer> {
     let size = viewer_foundation::map::camera::MapSize::of(&document.content.map);
     let defines = document.content.map_defines;
@@ -653,7 +563,6 @@ impl Layer for Snow {
         "snow"
     }
 
-    /// The cells the camera shows, taken here: a camera that moves writes the bands it reaches.
     fn placed(&mut self, view: &crate::layers::View) -> Option<u64> {
         let size = self.content.as_ref().map(|content| content.cells.dimensions()).unwrap_or([0, 0]);
         self.in_view = match (view.camera, self.content.as_ref()) {
@@ -693,7 +602,6 @@ impl Layer for Snow {
             (self.jobs, self.made) = (Some(jobs), Some(made));
         }
         self.epoch += 1;
-        // What was made ahead for the old epoch is dropped unseen; the scene starts over whole.
         self.fed.compose(mirrors.get(TableId::WeatherProvinces).and_then(Mirror::head));
         let table = mirrors.get(TableId::WeatherProvinces).map(|mirror| Box::new(Table::from_mirror(mirror, &columns.shape())));
         if let Some(jobs) = &self.jobs {
@@ -714,8 +622,6 @@ impl Layer for Snow {
         true
     }
 
-    /// The worker starts over from the mirrors at the hour applied; its first grid there is whole,
-    /// and stands for that hour: a void in the frame that applied a step hands no step after it.
     fn void_ahead(&mut self, mirrors: &Mirrors, _kept: Option<Hour>) {
         let (Some(columns), Some(jobs)) = (self.columns, &self.jobs) else { return };
         self.epoch += 1;
@@ -746,8 +652,6 @@ impl Layer for Snow {
         self.push(&mut OnScene(gpu))
     }
 
-    /// Everything the camera shows is on the GPU: a band it does not show stays owed and is
-    /// written by the first upload that shows it, so a camera that moves is answered at once.
     fn uploaded(&self) -> bool {
         match (&self.grid, &self.shown) {
             (Ok(Some(grid)), Some(shown)) => Arc::ptr_eq(grid, shown) && self.owed.run_in([grid.width, grid.height], self.in_view.as_ref()).is_none(),
@@ -757,7 +661,6 @@ impl Layer for Snow {
     }
 
     fn carried(&self) -> Carried {
-        // Its settle sends whatever it gathered: what the worker holds is published, not carried.
         Carried::default()
     }
 

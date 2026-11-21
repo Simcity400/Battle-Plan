@@ -1,5 +1,3 @@
-//! Resistance and Compliance map percentages and retained active-definition badges.
-//! The state census supplies identities; the content stack supplies presentation.
 use super::{map_mode::ColorList, resource_icons::anchor_provinces};
 use installed_content_core::{defines::Defines, gui::native, occupation_modifiers};
 use replay_data::{rows, rows::Recorded, rows::tables};
@@ -90,8 +88,6 @@ impl Content {
     }
 }
 
-/// Both runtime-bound badge sprites and the speed text's inline icons load into
-/// the existing map GUI resources. Authored template assets load with NativeWindows.
 pub fn gui_assets(content: &Content) -> native_gui::Assets {
     let mut assets = native_gui::Assets::default();
     for definition in content.definitions.definitions.values() {
@@ -104,7 +100,6 @@ pub fn gui_assets(content: &Content) -> native_gui::Assets {
 pub struct Inputs<'a> {
     pub content: &'a Content,
     pub mode: Option<Mode>,
-    /// The viewing country's canonical CountryLinks slot, including the reserved slot.
     pub country: u32,
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
     pub centroid: &'a dyn Fn(u32) -> Option<[f32; 3]>,
@@ -147,7 +142,6 @@ pub struct PreparedOccupationIcons {
     pub report: Report,
 }
 
-/// The formatter retains a negative sign even when the truncated magnitude is zero.
 pub fn percentage(raw: i64, speed: i64, mode: Mode) -> String {
     let mut text = format!(
         "{}{}%",
@@ -163,8 +157,6 @@ pub fn percentage(raw: i64, speed: i64, mode: Mode) -> String {
     text
 }
 
-/// Whether a state's resistance shows: an occupier, and a level, a compliance or a cached target
-/// at the re-enable threshold.
 fn admitted(country: u32, level: i64, compliance: i64, map: &Recorded<Option<rows::OccupationMap>>, reenable: i64) -> Result<bool, String> {
     if country as i32 <= 0 {
         return Ok(false);
@@ -181,8 +173,6 @@ fn admitted(country: u32, level: i64, compliance: i64, map: &Recorded<Option<row
         >= reenable)
 }
 
-/// Active source occurrences are joined in recorded order, then stably sorted by
-/// authored threshold. Neither current levels nor aggregate effects choose badges.
 fn badges(content: &Content, tokens: &[Vec<u8>]) -> Result<Vec<Badge>, BTreeMap<String, usize>> {
     let mut definitions = Vec::with_capacity(tokens.len());
     let mut refused = BTreeMap::new();
@@ -222,28 +212,21 @@ pub fn prepare(inputs: &Inputs<'_>, frame: &DecodedFrame) -> PreparedOccupationI
     lay_out(inputs, &hour_marks(frame, inputs.content))
 }
 
-/// What one state's occupation icon reads at an hour, apart from the camera and the viewer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
-    /// The state's controller, raw, and its canonical slot when CountryLinks names it.
     pub controller: u32,
     pub slot: Option<u32>,
-    /// None when StateResistance has no row for the state; else whether it shows, and its values.
     pub resistance: Option<Result<Option<Occupation>, String>>,
 }
 
-/// A shown state's resistance and compliance, and its badges in each mode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Occupation {
     pub level: i64,
     pub speed: i64,
     pub compliance: i64,
-    /// The resistance mode's badges, then the compliance mode's.
     pub badges: [Result<Vec<Badge>, BTreeMap<String, usize>>; 2],
 }
 
-/// Every state's mark at an hour (by state id), each canonical slot's first Countries row, and a
-/// StateResistance not complete.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HourMarks {
     pub marks: BTreeMap<u32, Mark>,
@@ -251,10 +234,8 @@ pub struct HourMarks {
     pub resistance: Option<String>,
 }
 
-/// The hour's marks, or why no icon is drawn.
 pub type Marks = Result<HourMarks, String>;
 
-/// A shown state's values from its StateResistance cells; none when it does not show.
 pub fn occupation(content: &Content, country: u32, level: i64, speed: i64, compliance: i64, map: &Recorded<Option<rows::OccupationMap>>) -> Result<Option<Occupation>, String> {
     if !admitted(country, level, compliance, map, content.defines.reenable)? {
         return Ok(None);
@@ -266,7 +247,6 @@ pub fn occupation(content: &Content, country: u32, level: i64, speed: i64, compl
     Ok(Some(Occupation { level, speed, compliance, badges: [badges(|map| &map.resistance), badges(|map| &map.compliance)] }))
 }
 
-/// The marks of the hour `frame` holds.
 pub fn hour_marks(frame: &DecodedFrame, content: &Content) -> Marks {
     let states = frame.complete::<tables::States>().map_err(|e| e.to_string())?;
     let links: HashMap<u32, u32> = frame.complete::<tables::CountryLinks>().map_err(|e| e.to_string())?.iter().map(|row| (row.id, row.canonical_slot)).collect();
@@ -288,7 +268,6 @@ pub fn hour_marks(frame: &DecodedFrame, content: &Content) -> Marks {
     Ok(HourMarks { marks, viewers, resistance })
 }
 
-/// The marks laid out for the camera and viewing country of `inputs`.
 pub fn lay_out(inputs: &Inputs<'_>, marks: &Marks) -> PreparedOccupationIcons {
     let mut out = PreparedOccupationIcons {
         priority: inputs.content.defines.priority,
@@ -402,7 +381,6 @@ pub fn lay_out(inputs: &Inputs<'_>, marks: &Marks) -> PreparedOccupationIcons {
                 (row.compliance, &defines.compliance_colors)
             };
             let mut color = colors.color(raw as f32 / 100_000.);
-            // Percentage text uses the gradient's RGB independently of map-fill alpha.
             color[3] = 1.0;
             out.placed.push(Placed {
                 state,
@@ -443,7 +421,6 @@ struct Entry {
     definition: Option<String>,
 }
 impl OccupationIconView {
-    /// Whether a window changed on its own at the last frame, not cleared.
     pub fn running(&self) -> bool {
         self.active
     }
@@ -547,8 +524,6 @@ impl OccupationIconView {
             }
         }
         if let Some(tick) = tick {
-            // Held rows participate in the same phases as every pooled parent,
-            // including free slots whose fade or movement can hide them later.
             pool.tick_clocks(root, context.resources, tick)?;
             for entries in self.entries.values_mut() {
                 for entry in entries {
@@ -691,8 +666,6 @@ fn reach_entries(
     Ok(())
 }
 
-/// Fill retained rows, append through the authored grid admission, then centre
-/// the grid using the number of admitted slots and its authored slot width.
 fn update(
     instance: &mut Instance,
     root: &native::Element,
@@ -795,9 +768,6 @@ fn control_hit(
 }
 
 impl PreparedOccupationIcons {
-    /// The existing map-icon manager owns admission, pooled windows and rounding.
-    /// Badge rows keep their own native windows and register only the icon child;
-    /// the percentage independently registers the parent text child's geometry.
     pub fn draw(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,

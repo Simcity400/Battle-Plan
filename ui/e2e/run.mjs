@@ -62,5 +62,4 @@ phases.compare = performance.now() - began;
 const result = { ...comparison, base, head, phases, wallMs: performance.now() - started };
 await writeJSON(path.join(head, 'comparison.json'), result);
 console.log(JSON.stringify(result, null, 2));
-// Publish first; the supervisor then reaps Edge through its retained Job.
 process.exit(comparison.pass ? 0 : 1);

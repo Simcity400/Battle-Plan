@@ -1,12 +1,3 @@
-//! The air force and navy size races, read from the recorder's AirForceTotals and NavyTotals
-//! (declared series, ranked) and their parts, AirForceParts, AirForceWingKinds and NavyClasses
-//! (sub-keyed series): each window (a block of a run) hour by hour for chosen countries or the
-//! top N there, each run a total beside its parts grouped and named from the recorded content;
-//! the ranked charts are the declared totals' ranked series. A tag reads its holder by the one
-//! identity rule.
-//! The parts of an hour split its total exactly where the rows the hour holds add up to it: a
-//! part without a row then holds none; otherwise every part is not known. A total not recorded is
-//! a gap, never zero.
 
 use dashboard_base::products::Country;
 use super::{
@@ -36,11 +27,8 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The part key of what no recorded content identifies.
 const UNIDENTIFIED: &str = ":not-identified";
-/// The part key of a total no recorded part splits.
 const NOT_KNOWN: &str = ":not-known";
-/// The first characters of a part key the content does not resolve.
 const UNRESOLVED: &str = ":";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -99,7 +87,7 @@ pub struct AirForceParams {
     pub top: Option<usize>,
     pub measure: AirForceMeasure,
     pub ownership: AirForceOwnership,
-    /// None is the window manifest; a window's runs name it by its index.
+    #[doc = " None is the window manifest; a window's runs name it by its index."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub window: Option<usize>,
@@ -136,14 +124,14 @@ pub struct ForceRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub starts_segment: bool,
-    /// Null where the total is not recorded.
+    #[doc = " Null where the total is not recorded."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub total: Option<i64>,
-    /// Parallel to the reply's parts; every one null where the hour's rows do not split the total.
+    #[doc = " Parallel to the reply's parts; every one null where the hour's rows do not split the total."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number | null>"))]
     pub values: Vec<Option<i64>>,
-    /// The navy's maximum hull HP (fixed5) for the strength measure, null for ships or where not
-    /// recorded; absent for the air force.
+    #[doc = " The navy's maximum hull HP (fixed5) for the strength measure, null for ships or where not"]
+    #[doc = " recorded; absent for the air force."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number | null"))]
     pub reference_total: Option<Option<i64>>,
@@ -175,8 +163,6 @@ pub struct ForceSizeReply {
 
 dashboard_base::reply_warnings!(ForceSizeReply);
 
-/// What one race reads: its totals series and measure, the reference measure beside it, and its
-/// parts series, measure and ownership.
 #[derive(Clone, Copy)]
 struct Race {
     totals: &'static str,
@@ -184,7 +170,6 @@ struct Race {
     reference: Option<&'static str>,
     parts: &'static str,
     part: &'static str,
-    /// Where a part's ownership byte sits within the part bits, and the ownership asked.
     ownership_shift: u32,
     ownership: u128,
 }
@@ -296,7 +281,6 @@ impl Product for NavySize {
             let content = Content::read(source, context, "Ship class names", warnings);
             navy_classes(recording, run, hour, &parts.keys().copied().collect(), &content, params.grouping, warnings)
         })?;
-        // The maximum is the strength measure's reference; ships have none.
         if params.measure == NavyMeasure::Ships {
             for run in reply.series.iter_mut().flat_map(|series| series.runs.iter_mut()) {
                 run.reference_total = Some(None);
@@ -306,7 +290,6 @@ impl Product for NavySize {
     }
 }
 
-/// What a race request asks.
 #[derive(Clone, Copy)]
 struct Asked<'a> {
     branch_id: &'a str,
@@ -315,7 +298,6 @@ struct Asked<'a> {
     window: Option<usize>,
 }
 
-/// Parts named: the reply's parts, and the index each recorded part counts under.
 #[derive(Default)]
 struct Named {
     parts: Vec<ForcePart>,
@@ -323,7 +305,6 @@ struct Named {
 }
 
 impl Named {
-    /// Groups `resolved` (each recorded part's reply part) into parts in key order.
     fn group(resolved: BTreeMap<u128, ForcePart>) -> Self {
         let mut keys: BTreeMap<String, ForcePart> = BTreeMap::new();
         for part in resolved.values() {
@@ -336,7 +317,6 @@ impl Named {
     }
 }
 
-/// The value of the run in `runs` (ascending) holding `hour`, `at` moved on to it.
 fn holding(runs: &[(i32, i32, Option<i64>)], at: &mut usize, hour: i32) -> Option<i64> {
     while runs.get(*at).is_some_and(|run| run.1 < hour) {
         *at += 1;
@@ -344,8 +324,6 @@ fn holding(runs: &[(i32, i32, Option<i64>)], at: &mut usize, hour: i32) -> Optio
     runs.get(*at).filter(|run| run.0 <= hour).and_then(|run| run.2)
 }
 
-/// The parts' values at an hour: the split of `total` by group where the parts' rows add up to
-/// it exactly, else none known.
 fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> Vec<Option<i64>> {
     let Some(total) = total else { return vec![None; groups] };
     let mut known = 0i128;
@@ -361,8 +339,6 @@ fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> Ve
     out
 }
 
-/// `tag`'s identity segments meeting `first..=last`: each keeps its first hour and ends at the
-/// window's end at the latest.
 pub(crate) fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<ArmySpan> {
     query
         .holders
@@ -383,10 +359,8 @@ pub(crate) fn identities(parts: &[Part]) -> Vec<ArmyIdentityRun> {
     })
 }
 
-/// One owner's part runs: each recorded part, the group it counts under and its runs.
 type Owned<'r> = Vec<(usize, &'r [(i32, i32, Option<i64>)])>;
 
-/// Runs of one holder part over `lo..=hi`: cut wherever its total, reference or a part changes.
 fn part_runs(part: &Part, lo: i32, hi: i32, totals: &[(i32, i32, Option<i64>)], reference: Option<&[(i32, i32, Option<i64>)]>, owned: &Owned<'_>, groups: usize, out: &mut Vec<ForceRun>) {
     let mut edges = vec![lo];
     for &(from, to, _) in totals.iter().chain(reference.into_iter().flatten()).chain(owned.iter().flat_map(|(_, runs)| runs.iter())) {
@@ -412,16 +386,12 @@ fn part_runs(part: &Part, lo: i32, hi: i32, totals: &[(i32, i32, Option<i64>)], 
     }
 }
 
-/// The race's reply: the window manifest, or window `asked.window`'s runs of the asked tags or
-/// the top N there, its parts named by `name` (given the run, the window's last hour, the
-/// recorded parts met and the warnings).
 fn window_reply(
     source: &Source,
     query: &Query<'_>,
     race: Race,
     asked: Asked<'_>,
     cancelled: &AtomicBool,
-    // Each part met in the window, with the last hour it lives there (no later than the window's).
     name: impl FnOnce(&Recording, u32, i32, &BTreeMap<u128, i32>, &mut Vec<String>) -> io::Result<Named>,
 ) -> io::Result<ForceSizeReply> {
     let windows = super::army::windows(query)?;
@@ -440,8 +410,6 @@ fn window_reply(
     let run = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?.run;
     let totals = declared(race.totals)?;
     let line = Line::new(query, totals, measure(totals, race.total)?)?;
-    // A ranked window's members from the summaries' top N at six-hour bins: no country's runs are
-    // read unless it ranks.
     let membership: Option<BTreeMap<Country, Vec<(i32, i32)>>> = match asked.top {
         Some(top) => {
             let width = ((i64::from(last) - i64::from(first) + 1) / 6).max(1) as u32;
@@ -533,7 +501,6 @@ fn window_reply(
         });
     }
     let mut named = named;
-    // A total no recorded part splits still needs a part to say its split is not known.
     if named.parts.is_empty() && reply.series.iter().flat_map(|series| &series.runs).any(|run| run.total.is_some_and(|total| total != 0)) {
         named.parts.push(ForcePart { key: NOT_KNOWN.into(), name: Some("Not known".into()), unresolved: true });
         for run in reply.series.iter_mut().flat_map(|series| series.runs.iter_mut()) {
@@ -549,7 +516,6 @@ fn window_reply(
     Ok(reply)
 }
 
-/// The recorded content a race's names read, or the warning of why not.
 struct Content {
     catalogue: Option<Arc<Catalogue>>,
 }
@@ -576,7 +542,6 @@ impl Content {
     }
 }
 
-/// The literal each of `tokens` holds in LexicalTokens at `hour`.
 fn literals(recording: &Recording, run: u32, hour: i32, tokens: &BTreeSet<u32>) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
         return Ok(HashMap::new());
@@ -592,7 +557,6 @@ fn literals(recording: &Recording, run: u32, hour: i32, tokens: &BTreeSet<u32>) 
         .collect())
 }
 
-/// Each of `variants`' equipment token in VariantDefinitions at `hour`, spelled.
 fn variant_tokens(recording: &Recording, run: u32, hour: i32, variants: &BTreeSet<u64>) -> io::Result<HashMap<u64, String>> {
     if variants.is_empty() {
         return Ok(HashMap::new());
@@ -606,7 +570,6 @@ fn variant_tokens(recording: &Recording, run: u32, hour: i32, variants: &BTreeSe
     Ok(tokens.into_iter().filter_map(|(variant, token)| Some((variant, spelled.get(&token)?.clone()))).collect())
 }
 
-/// A variant's part: its equipment's archetype, or the variant kept apart, named by number.
 fn variant_part(variant: u64, token: Option<&str>, units: Option<&installed_content_core::equipment::Database>, content: &Content, warnings: &mut BTreeSet<String>) -> ForcePart {
     if let (Some(token), Some(units)) = (token, units) {
         let archetype = units
@@ -649,8 +612,6 @@ fn equipment(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<instal
     }
 }
 
-/// Air force parts by planes: each recorded variant (identified bit 64, the variant below) under
-/// its archetype.
 fn air_planes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u128>, content: &Content, warnings: &mut Vec<String>) -> io::Result<Named> {
     let variant_of = |part: u128| ((part >> 64) & 1 == 1).then_some(part as u64);
     let variants: BTreeSet<u64> = parts.iter().filter_map(|&part| variant_of(part)).collect();
@@ -671,10 +632,6 @@ fn air_planes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u128>
     Ok(Named::group(resolved))
 }
 
-/// Air force parts by wings: each recorded composition (its number below the ownership byte) as
-/// the one archetype its variants share, or a mix of them.
-/// Wing compositions, each read at the last hour a wing held it in the window: a signature lives
-/// only while a live wing holds it, one unbroken stretch, so it is live then.
 fn air_wings(recording: &Recording, run: u32, hour: i32, met: &BTreeMap<u128, i32>, content: &Content, warnings: &mut Vec<String>) -> io::Result<Named> {
     let parts: BTreeSet<u128> = met.keys().copied().collect();
     let mut by_hour: BTreeMap<i32, Vec<u128>> = BTreeMap::new();
@@ -735,8 +692,6 @@ fn air_wings(recording: &Recording, run: u32, hour: i32, met: &BTreeMap<u128, i3
     Ok(Named::group(resolved))
 }
 
-/// Navy parts: each recorded class token, by its registered sub-unit (grouping `Class`) or the
-/// broad role its category mask names (`Type`); a class the content does not resolve stays its own.
 fn navy_classes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u128>, content: &Content, grouping: NavyGrouping, warnings: &mut Vec<String>) -> io::Result<Named> {
     let tokens: BTreeSet<u32> = parts.iter().map(|&part| part as u32).collect();
     let spelled = literals(recording, run, hour, &tokens)?;

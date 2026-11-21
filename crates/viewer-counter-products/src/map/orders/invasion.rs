@@ -1,6 +1,3 @@
-//! Choose the first assigned member, else the first group member, else the
-//! request country's roster slot zero (`CountryCounterInputs.first_division`).
-//! No unit means no route, even when both ports open onto one sea.
 
 use replay_data::{rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::OrdersGroupRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -103,7 +100,6 @@ impl<'a> Routes<'a> {
                 .filter(|&id| id != 0);
         }
         if unit.is_none() {
-            // Use the resolved request country's roster slot zero.
             let own = world
                 .raw_country(country)
                 .ok_or_else(|| format!("invasion request country {raw} has no country row"))?;
@@ -120,8 +116,6 @@ impl<'a> Routes<'a> {
         let Some(unit) = unit.filter(|&id| id != 0) else {
             return Ok(Vec::new());
         };
-        // The collector reads the cost operands of the unit it selects the
-        // same way; an unavailable table only matters when costs are read.
         let recorded_owner = self
             .frame
             .complete::<tables::InvasionPreparations>()

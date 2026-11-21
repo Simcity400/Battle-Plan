@@ -1,6 +1,3 @@
-//! Whether a scientist shows in the roster: its retained role's authored `visible` triggers, the
-//! template the daily read recorded, evaluated over the world as that read saw it. No trigger is
-//! called in the live game.
 
 use super::{Context, ProjectContent};
 use crate::products::at_hour::{self, Read};
@@ -17,16 +14,12 @@ use std::{
 type Templates = Result<Arc<Vec<ScientistVisibilityTemplate>>, String>;
 type Verdicts = HashMap<u32, Result<bool, String>>;
 
-/// What a follow or a request keeps: the templates of each content file read, and the verdicts of
-/// the last daily read evaluated, by branch, read hour and country.
 #[derive(Default)]
 pub(super) struct Cache {
     templates: Mutex<BTreeMap<String, Templates>>,
     last: Mutex<Option<((u64, i32, u32), Verdicts)>>,
 }
 
-/// A daily row's verdict without the world: a null or empty retained template is visible (`Some`),
-/// a nonempty one needs its triggers (`None`).
 fn without_world(row: &ScientistDailyRow) -> Result<Option<bool>, String> {
     match row.template_visibility {
         Recorded::Value(Some(0 | 2)) => Ok(Some(true)),
@@ -60,7 +53,6 @@ fn templates(cache: &Cache, content: &ProjectContent, path: &str) -> Templates {
         .clone()
 }
 
-/// The triggers `row`'s retained role carries; none where they are empty (visible).
 fn triggers_of(cache: &Cache, content: Option<&ProjectContent>, row: &ScientistDailyRow) -> Result<Option<(Arc<Vec<ScientistVisibilityTemplate>>, u32)>, String> {
     let Recorded::Value(Some(origin)) = &row.template_origin else {
         return Err("Scientist visibility: nonempty retained role has no recorded authored origin".into());
@@ -74,9 +66,6 @@ fn triggers_of(cache: &Cache, content: Option<&ProjectContent>, row: &ScientistD
     Ok(Some((templates, origin.line)))
 }
 
-/// Each of `observed`'s scientists' visibility at its daily read `read` of the country in slot
-/// `slot`, or why it cannot be had. The world is read at that hour once, only where a nonempty
-/// template needs it.
 pub(super) fn verdicts(context: &Context, query: &Query<'_>, read: i32, slot: u32, observed: &[(u32, &ScientistDailyRow)]) -> io::Result<Verdicts> {
     let key = (query.timeline.id, read, slot);
     let cached: Verdicts = match &*context.visibility.last.lock().unwrap_or_else(|error| error.into_inner()) {
@@ -140,7 +129,6 @@ mod tests {
     fn a_null_or_empty_retained_template_is_visible_without_content_or_a_world() {
         let mut scientist = ScientistDailyRow { template_visibility: Recorded::Value(Some(0)), ..Default::default() };
         assert_eq!(without_world(&scientist), Ok(Some(true)));
-        // Empty generated or replacement roles need neither the character's authored template nor triggers.
         scientist.template_visibility = Recorded::Value(Some(2));
         assert_eq!(without_world(&scientist), Ok(Some(true)));
         scientist.template_visibility = Recorded::Value(Some(1));

@@ -1,21 +1,3 @@
-//! Which country the map is viewed as, whether fog of war is on, and what that
-//! country sees.
-//!
-//! Choice retains a viewing country and a separate fog switch. Disabling fog still draws from a
-//! country viewpoint; no omniscient view is available.
-//!
-//! Fog off supplies full unit, province and country intel and a clear fog texture. Shared vision
-//! remains country-specific, as do counter silhouettes, allegiance and battle plans.
-//!
-//! The unit byte, for a unit the viewer does not own:
-//!
-//! Shared vision supplies detection level three; otherwise use recorded UnitIntel. Naval levels map
-//! to base values 0, 100, 150 and 250. Land levels map to 0, 150 and 250 and take the maximum with
-//! province visibility. Apply the viewing-country modifier with fixed-point integer arithmetic and
-//! clamp to byte range.
-//!
-//! Counters draw in full from 250 and as a question mark from 150. The province
-//! bytes are rebuilt per viewer by [`super::visibility::derive`].
 
 use std::sync::Arc;
 pub mod incremental;
@@ -33,10 +15,8 @@ use super::{
     visibility::{self, AirDefines, FogContent, NavalDefines, Relations},
 };
 
-/// Branch, hour and viewing choice, in addition to the memo's table identities.
 pub type VisionKey = (replay_data::BranchId, replay_data::Hour, Choice);
 
-/// Derive visibility only on a miss in the shared table-identity memo.
 pub fn cached_vision(
     frame: &DecodedFrame,
     perspective: &Choice,
@@ -62,48 +42,30 @@ pub fn cached_vision(
     })
 }
 
-/// The detection level a land unit needs to draw in full.
 pub const LAND_FULL_LEVEL: i8 = 2;
-/// The detection level a land unit needs for a counter at all.
 pub const LAND_SEEN_LEVEL: i8 = 1;
-/// The detection level a naval unit needs to draw in full.
 pub const NAVAL_FULL_LEVEL: i8 = 3;
-/// The detection level a naval unit needs for a counter at all (level 1 reaches
-/// only 100 on the naval ladder).
 pub const NAVAL_SEEN_LEVEL: i8 = 2;
-/// The unit byte at which a counter draws in full.
 pub const FULL_VISIBILITY: u16 = 250;
-/// The unit byte at which a stack has a counter at all.
 pub const SHOWN_VISIBILITY: u16 = 150;
-/// Province-byte threshold below which province-anchored map objects hide.
 pub const MAP_OBJECT_VISIBILITY: u8 = 50;
 
-/// How much of one stack this perspective is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sight {
-    /// Byte 250 or more: bars, glyphs and count.
     Full,
-    /// Byte 150..250: the game's question mark, no bars.
     Partial,
-    /// Below 150: the unit never enters the stack-icon bucket.
     None,
 }
 
-/// Which country the map is viewed as.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Country {
-    /// The recording client's viewpoint, resolved by [`allegiance::perspective`].
     #[default]
     Recorded,
-    /// A named country tag.
     Tag(String),
-    /// A canonical country slot, followed through tag changes; `tag` names it in messages.
     Slot { slot: u32, tag: String },
 }
 
 impl Country {
-    /// Parses `--perspective <value>`: `recorded`, or a tag.
-    /// `omniscient` is refused by name: the game has no such view.
     pub fn parse(value: &str) -> io::Result<Self> {
         match value.trim() {
             "" => Err(io::Error::new(
@@ -132,10 +94,6 @@ impl fmt::Display for Country {
     }
 }
 
-/// Tables used by [`Vision::read`], including links and tags used through `allegiance` and
-/// `visibility`. The window retains one hour's vision while these tables share identity
-/// (`crate::map::memo`), and builds a frame containing only these inputs. Missing tables are
-/// unavailable rather than stale.
 pub const VISION_TABLES: &[TableId] = &[
     TableId::CountryLinks,
     TableId::Countries,
@@ -164,11 +122,9 @@ pub const VISION_TABLES: &[TableId] = &[
     TableId::VolunteerHosts,
 ];
 
-/// The game's two map controls: a viewing country and the fog-of-war switch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Choice {
     pub country: Country,
-    /// Fog of war; the map option's default until chosen.
     pub fog: bool,
 }
 
@@ -182,7 +138,6 @@ impl Default for Choice {
 }
 
 impl Choice {
-    /// Parses `--fog on|off`.
     pub fn parse_fog(value: &str) -> io::Result<bool> {
         match value.trim() {
             value if value.eq_ignore_ascii_case("on") => Ok(true),
@@ -206,23 +161,14 @@ impl fmt::Display for Choice {
     }
 }
 
-/// Why a vision-sharing test cannot prove its negative.
-/// A proven positive never carries one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SharingUnknown {
-    /// A country reference `CountryLinks` does not place.
     Reference,
-    /// The viewer's relations are not whole this hour: `Relations::read`
-    /// refused on this input, so only the viewer is known to share.
     Relations(&'static str),
-    /// A census the test reads is not whole this hour; the text names the
-    /// table and why (a combat's country list, the combats in a province, or
-    /// a side census).
     Census(&'static str),
 }
 
 impl SharingUnknown {
-    /// The missing input, for a report line.
     pub fn describe(self) -> String {
         match self {
             Self::Reference => "a country reference is not in CountryLinks".into(),
@@ -233,8 +179,6 @@ impl SharingUnknown {
         }
     }
 
-    /// The whole clause for a counter line: a sharing input is reported as
-    /// unknown, a census names itself.
     pub fn clause(self) -> String {
         match self {
             Self::Census(input) => input.into(),
@@ -243,22 +187,15 @@ impl SharingUnknown {
     }
 }
 
-/// How the viewing country was settled for this hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Resolution {
-    /// The recording client's stored viewpoint.
     #[default]
     Recorded,
-    /// The tag or slot the caller named.
     Requested,
-    /// No client viewpoint available: the viewer takes the lowest canonical slot.
     NoPlayer,
-    /// The named tag or slot has no country this hour; the default is used instead.
     Absent(String),
 }
 
-/// The viewing country's slot this hour, and how it was chosen. The only
-/// error is an hour with no country at all.
 pub fn viewer(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -273,7 +210,6 @@ pub fn viewer(
     })
 }
 
-/// The unit-sight and province-sight inputs a capture mode may leave out.
 const FOG_TABLES: [TableId; 5] = [
     TableId::UnitIntel,
     TableId::CountryVisibility,
@@ -282,52 +218,33 @@ const FOG_TABLES: [TableId; 5] = [
     TableId::RadarCoverage,
 ];
 
-/// A recording without the fog inputs draws no fog.
 pub fn fog_recorded(mode: CaptureMode) -> bool {
     FOG_TABLES.iter().all(|table| scope::records(mode, *table))
 }
 
-/// What one country can see this hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Vision {
     ours: u32,
     resolution: Resolution,
     fog: bool,
-    /// The first unit-sight input the hour does not hold.
     undecided: Option<&'static str>,
-    /// Slots whose units this one sees in full by relation, including itself.
     shares: Values<u32, ()>,
-    /// Canonical slots in active wars from WarRelations; empty when relations_gap is set.
     wars: Values<u32, ()>,
-    /// The relation input `Relations::read` lacked this hour; `shares` then
-    /// holds only the viewer, and no other slot's negative is proven.
     relations_gap: Option<&'static str>,
-    /// The first `UnitIntel` entry keyed to this country, per unit.
     levels: Values<u64, i8>,
-    /// The viewer's modifier 0x24B.
     unit_modifier: i64,
-    /// Rebuilt province bytes for this country (fog on only).
     visibility: Arc<Values<u32, u8>>,
-    /// The input the province rebuild lacked, when it failed.
     visibility_gap: Option<&'static str>,
-    /// A land unit invading from sea takes intel from its landing province.
     sight_provinces: Values<u64, u32>,
-    /// Tables used in part, named for the limitation lines.
     truncated: Vec<&'static str>,
-    /// This country's `CountryIntel` air lane per target slot; `None` unless complete.
     air_intel: Option<Values<u32, i64>>,
     air_defines: Option<AirDefines>,
-    /// This country's `CountryIntel` navy lane per target slot; `None` unless complete.
     navy_intel: Option<Values<u32, i64>>,
     naval_defines: Option<NavalDefines>,
-    /// Slots whose relation status grants this country air-base access; `None` unless `RelationLinks`
-    /// is complete.
     air_access: Option<Values<u32, ()>>,
-    /// Province id to its controller's canonical slot.
     province_controllers: Values<u32, u32>,
 }
 
-/// Every part of a [`Vision`], for a reader that keeps them itself (the map's vision layer).
 #[derive(Clone, Debug, Default)]
 pub struct Parts {
     pub ours: u32,
@@ -351,8 +268,6 @@ pub struct Parts {
     pub province_controllers: BTreeMap<u32, u32>,
 }
 
-/// The army intel cutoff of `MAP_INTEL_VISIBILITY_CUTOFFS` pairs for an intel fraction: the value
-/// of the first pair whose threshold exceeds it, otherwise the last; zero without a pair.
 pub fn map_cutoff(cutoffs: &[i64], fraction: i64) -> i32 {
     let mut result = 0;
     for pair in cutoffs.chunks_exact(2) {
@@ -364,12 +279,10 @@ pub fn map_cutoff(cutoffs: &[i64], fraction: i64) -> i32 {
     result
 }
 
-/// An occupied state's network term from its cutoff and network modifier.
 pub fn network_term(cutoff: i32, modifier: i64) -> i32 {
     visibility::network_term(cutoff, modifier)
 }
 
-/// A province byte with an additive term, saturated.
 pub fn saturate(current: u8, term: i32) -> u8 {
     visibility::saturate(current, term)
 }
@@ -377,8 +290,6 @@ pub fn saturate(current: u8, term: i32) -> u8 {
 pub use replay_derive::visibility::{active_war, intel_fraction, map_intel_subject};
 
 impl Vision {
-    /// This vision with `visibility` as its province bytes: values a copy made by writing only the
-    /// provinces that changed since the one before ([`Values::insert`] shares the rest).
     pub fn with_visibility(mut self, visibility: Arc<Values<u32, u8>>) -> Self {
         self.visibility = visibility;
         self
@@ -408,7 +319,6 @@ impl Vision {
         }
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first few described.
     pub fn differences(&self, other: &Self) -> (u64, Vec<String>) {
         fn maps<K: values::Key + fmt::Debug, V: Clone + Eq + fmt::Debug>(name: &str, a: &Values<K, V>, b: &Values<K, V>, count: &mut u64, out: &mut Vec<String>) {
             let (a, b) = (a.flat(), b.flat());
@@ -470,16 +380,12 @@ impl Vision {
         (count, out)
     }
 
-    /// The entries [`Self::differences`] compares.
     pub fn entries(&self) -> u64 {
         let maps = [self.shares.flat().len(), self.wars.flat().len(), self.levels.flat().len(), self.visibility.flat().len(), self.sight_provinces.flat().len(), self.province_controllers.flat().len()];
         let optional = [self.air_intel.as_ref(), self.navy_intel.as_ref()].into_iter().flatten().map(|values| values.flat().len()).sum::<usize>() + self.air_access.as_ref().map_or(0, |values| values.flat().len());
         10 + (maps.iter().sum::<usize>() + optional) as u64
     }
 
-    /// Resolves `choice` against one decoded hour. `fog` is the content half
-    /// of the fog rebuild, or the reason it failed to load. The only error is
-    /// an hour with no country at all.
     pub fn read(
         frame: &DecodedFrame,
         links: &BTreeMap<u32, u32>,
@@ -526,7 +432,6 @@ impl Vision {
             Available::Truncated { .. } => vision.truncated.push("UnitIntel"),
             Available::Complete(_) => {}
         }
-        // Use the first matching recorded viewer-level entry.
         let mut ordered: Vec<_> = intel.rows().iter().filter(|r| r.viewer == ours).collect();
         ordered.sort_by_key(|r| (r.unit, r.ordinal));
         for row in ordered {
@@ -551,7 +456,6 @@ impl Vision {
             vision.truncated.push("CountryIntel");
         }
         if let Available::Complete(rows) = &intel_rows {
-            // Only the viewer's own key-sorted slice, under each of its references.
             let (mut air, mut navy) = (BTreeMap::new(), BTreeMap::new());
             for (&raw, _) in links.iter().filter(|(_, slot)| **slot == ours) {
                 for row in visibility::owner_rows(rows, raw) {
@@ -604,8 +508,6 @@ impl Vision {
         Ok(vision)
     }
 
-    /// The viewer and every slot of `slots` that shares vision with it, and
-    /// the slots at war with it; without relations, only the viewer.
     fn relate(
         &mut self,
         relations: Result<&Relations, &'static str>,
@@ -626,47 +528,34 @@ impl Vision {
         }
     }
 
-    /// The viewing country's canonical slot.
     pub fn ours(&self) -> u32 {
         self.ours
     }
 
-    /// How the viewing country was settled.
     pub fn resolution(&self) -> &Resolution {
         &self.resolution
     }
 
-    /// Whether fog of war is on.
     pub fn fog(&self) -> bool {
         self.fog
     }
 
-    /// The unit-sight input missing with fog on. An unavailable table is not
-    /// evidence that it is empty, so every stack is then drawn as fog off
-    /// draws it and the limitation names the table.
     pub fn undecided(&self) -> Option<&'static str> {
         self.undecided.filter(|_| self.fog)
     }
 
-    /// The input the province fog rebuild lacked, with fog on. The map then
-    /// draws no fog, and land stacks are drawn in full, as an undecided hour
-    /// draws every stack: the detection ladder alone would hide stacks the
-    /// missing province term may reveal.
     pub fn visibility_gap(&self) -> Option<&'static str> {
         self.visibility_gap.filter(|_| self.fog)
     }
 
-    /// Tables used in part, with fog on.
     pub fn truncated(&self) -> &[&'static str] {
         if self.fog { &self.truncated } else { &[] }
     }
 
-    /// Provinces with a nonzero rebuilt byte.
     pub fn revealed_provinces(&self) -> usize {
         self.visibility.values().filter(|&&byte| byte > 0).count()
     }
 
-    /// The province bytes for the intel texture, or `None` when no fog is drawn.
     pub fn province_fog(&self) -> Option<&BTreeMap<u32, u8>> {
         (self.fog && self.visibility_gap.is_none()).then(|| self.visibility.flat())
     }
@@ -675,8 +564,6 @@ impl Vision {
         (self.fog && self.visibility_gap.is_none()).then_some(&self.visibility)
     }
 
-    /// The province byte as the engine's direct readers see it: `0xff` with fog
-    /// off, `None` when the rebuild failed or the province is unknown.
     pub fn province_byte(&self, province: u32) -> Option<u8> {
         if self.fog {
             self.visibility.get(&province).copied()
@@ -685,7 +572,6 @@ impl Vision {
         }
     }
 
-    /// A viewer that shares vision with `shares` (itself included), fog on.
     #[cfg(any(test, feature = "test-support"))]
     pub fn sharing(ours: u32, shares: impl IntoIterator<Item = u32>) -> Self {
         let mut vision = Self {
@@ -698,14 +584,12 @@ impl Vision {
         vision
     }
 
-    /// This viewer with fog of war off.
     #[cfg(any(test, feature = "test-support"))]
     pub fn without_fog(mut self) -> Self {
         self.fog = false;
         self
     }
 
-    /// This viewer in an hour whose `UnitIntel` census was truncated after `levels`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_truncated_unit_intel(
         mut self,
@@ -722,7 +606,6 @@ impl Vision {
         self.visibility_gap = None;
     }
 
-    /// Map buildings hide below MAP_OBJECT_VISIBILITY unless always_shown.
     pub fn sees_province_object(&self, province: u32, always_shown: bool) -> Option<bool> {
         if always_shown {
             return Some(true);
@@ -731,8 +614,6 @@ impl Vision {
             .map(|byte| byte >= MAP_OBJECT_VISIBILITY)
     }
 
-    /// Air-port detail level from authored thresholds and the simulation feature. Also used for
-    /// carrier-base summaries.
     pub fn air_port_level(&self, owner: u32) -> Option<u8> {
         let shared = self.shares.contains_key(&owner);
         if self.fog && self.undecided.is_some() && !shared {
@@ -745,14 +626,10 @@ impl Vision {
         self.air_defines.as_ref()?.level(raw, shared, self.fog)
     }
 
-    /// Air-base detail above level zero.
     pub fn sees_air_port_detail(&self, owner: u32) -> Option<bool> {
         self.air_port_level(owner).map(|level| level > 0)
     }
 
-    /// Carrier-base count estimate from the viewer's air intel lane. Its wrapping clock/country/base
-    /// seed is independent of the controller whose intel is queried. Missing relations or an unread
-    /// intel lane stay unknown.
     pub fn air_count_range(
         &self,
         controller: u32,
@@ -770,9 +647,6 @@ impl Vision {
             .count_range(count, raw, shared, self.fog, seed, hour)
     }
 
-    /// Air-base icons are admitted by access to their controller, province visibility of at least 50,
-    /// or the air-intel gate. A positive term decides; otherwise any unknown term leaves admission
-    /// undecided.
     pub fn sees_air_base(&self, province: u32, controller: u32) -> Option<bool> {
         if !self.fog || controller == self.ours {
             return Some(true);
@@ -804,14 +678,10 @@ impl Vision {
         }
     }
 
-    /// The recorded controller's canonical slot for a province.
     pub fn province_controller(&self, province: u32) -> Option<u32> {
         self.province_controllers.get(&province).copied()
     }
 
-    /// Shared vision admits our own country, faction partners, overlords and subjects, with a war veto
-    /// independent of fog. A negative result requires complete relations; otherwise only the viewer
-    /// is proven and `Err` names the missing input.
     pub fn shares_vision_proven(&self, slot: u32) -> Result<bool, SharingUnknown> {
         if self.shares.contains_key(&slot) {
             return Ok(true);
@@ -820,8 +690,6 @@ impl Vision {
             .map_or(Ok(false), |input| Err(SharingUnknown::Relations(input)))
     }
 
-    /// The country's shared-vision result, with fog off short-circuiting to true. Ordinary shared vision
-    /// remains independent.
     pub fn shares_vision_or_fog(&self, slot: u32) -> Result<bool, SharingUnknown> {
         if self.fog {
             self.shares_vision_proven(slot)
@@ -830,8 +698,6 @@ impl Vision {
         }
     }
 
-    /// How much of one land unit the viewer is shown; `province` is where it stands. A unit
-    /// whose detection the hour cannot establish is drawn as fog off draws it.
     pub fn sees_land(&self, unit: u64, owner: u32, province: u32) -> Sight {
         if self.in_full(owner) || self.visibility_gap.is_some() || !self.detection_known(unit, owner) {
             return Sight::Full;
@@ -849,7 +715,6 @@ impl Vision {
         sight(visibility::unit_byte(base, self.unit_modifier))
     }
 
-    /// Land unit intel without the counter fallback for unavailable fog or detection operands.
     pub fn land_byte_known(&self, unit: u64, owner: u32, province: u32) -> Option<u16> {
         if !self.fog || owner == self.ours {
             return Some(u16::from(u8::MAX));
@@ -874,13 +739,10 @@ impl Vision {
         ))
     }
 
-    /// How much of one task force the viewer is shown.
     pub fn sees_navy(&self, unit: u64, owner: u32) -> Sight {
         sight(self.navy_byte(unit, owner))
     }
 
-    /// Task-force intel is 255 with fog off, for our own force or where the hour cannot establish
-    /// its detection; otherwise apply the viewer modifier to its detection-ladder base.
     pub fn navy_byte(&self, unit: u64, owner: u32) -> u16 {
         if self.in_full(owner) || !self.detection_known(unit, owner) {
             return u16::from(u8::MAX);
@@ -894,14 +756,10 @@ impl Vision {
         visibility::unit_byte(base, self.unit_modifier)
     }
 
-    /// [`Self::navy_byte`] where the hour can establish it: `None` for a foreign task force
-    /// with no `UnitIntel` entry while that table is truncated, since the omitted entry could
-    /// hold any level. A unit seen in full, shared vision and a recorded entry decide it.
     pub fn navy_byte_known(&self, unit: u64, owner: u32) -> Option<u16> {
         (self.in_full(owner) || self.detection_known(unit, owner)).then(|| self.navy_byte(unit, owner))
     }
 
-    /// Port detail level from zero to four; `None` when defines or the intel census are unavailable.
     pub fn naval_port_detail(&self, owner: u32) -> Option<u8> {
         let shared = self.shares.contains_key(&owner);
         let raw = self
@@ -911,15 +769,6 @@ impl Vision {
         self.naval_defines.as_ref()?.level(raw, shared, self.fog)
     }
 
-    /// Test shared vision for canonical country slots independently of fog. A positive stands;
-    /// missing links or incomplete negative relation evidence leave it unknown. The recorded engaged
-    /// flag can lag diplomacy and includes viewer roster ownership, so markers and windows read that
-    /// separate flag from the engaged index.
-    ///
-    /// `missing` names the census when `countries` may lack an entry (a
-    /// table unavailable or truncated, or no row for the combat): a
-    /// positive among the entries held still stands, a negative does not.
-    /// Every caller states it; a list read whole passes `None`.
     pub fn sees_combat(
         &self,
         countries: impl Iterator<Item = Option<u32>>,
@@ -943,9 +792,6 @@ impl Vision {
         }
     }
 
-    /// Walk attacking primary countries in order to orient progress. The viewer or a vision-sharing
-    /// country turns it; a hostile country stops it unturned. End-of-list remains unturned. An
-    /// undecidable entry prevents reaching later entries and leaves orientation unknown.
     pub fn turns_naval_progress(
         &self,
         attackers: impl Iterator<Item = Option<u32>>,
@@ -962,7 +808,6 @@ impl Vision {
         Ok(false)
     }
 
-    /// Active war between the viewer and `slot`. A negative result requires complete relations.
     pub fn at_war_proven(&self, slot: u32) -> Result<bool, SharingUnknown> {
         if self.wars.contains_key(&slot) {
             return Ok(true);
@@ -974,15 +819,12 @@ impl Vision {
             .map_or(Ok(false), |input| Err(SharingUnknown::Relations(input)))
     }
 
-    /// Whether [`Self::detection`] holds: shared vision, a recorded entry, or a census read whole.
-    /// A truncated census may have omitted the unit's entry, which could hold any level.
     fn detection_known(&self, unit: u64, owner: u32) -> bool {
         self.shares.contains_key(&owner)
             || self.levels.contains_key(&unit)
             || !self.truncated.contains(&"UnitIntel")
     }
 
-    /// Shared vision is detection level 3 and still takes the modifier.
     fn detection(&self, unit: u64, owner: u32) -> i8 {
         if self.shares.contains_key(&owner) {
             3
@@ -991,7 +833,6 @@ impl Vision {
         }
     }
 
-    /// Fog off, our own unit, or an undecided hour.
     fn in_full(&self, owner: u32) -> bool {
         !self.fog || owner == self.ours || self.undecided.is_some()
     }
@@ -1005,8 +846,6 @@ fn sight(byte: u16) -> Sight {
     }
 }
 
-/// A land unit at sea whose next path province is hostile land takes intel from that province.
-/// The unit itself does not move.
 fn invasion_sight(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,

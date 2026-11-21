@@ -1,7 +1,3 @@
-//! `rows-digest`: each table's rows as a consumer is handed them, at chosen hours, as digests:
-//! a line a table and hour, then a total. Nothing in a line depends on how the recording stores
-//! the table, only on the rows, their keys and the view's status.
-
 use crate::{Options, invalid, open, table_named};
 use rayon::prelude::*;
 use replay::{cells::TableReader, columnar_frames::Recording};
@@ -15,7 +11,6 @@ use replay_frame::frame::{TableView, Unsayable, cells_view};
 use serde_json::{Value, json};
 use std::io::{self, Write};
 
-/// One table at one hour: its view's status, and its rows' count and digest when it has rows.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Line {
     table: TableId,
@@ -40,8 +35,6 @@ impl Line {
     }
 }
 
-/// Every table, or those `--tables` names, at each block's first hour of every run, or every
-/// `--every` hours: a line each, tables in the order named, then the total.
 pub fn rows_digest(path: &str, options: &Options) -> io::Result<Value> {
     let tables = match options.get("tables") {
         Some(names) => names.split(',').map(table_named).collect::<io::Result<Vec<_>>>()?,
@@ -77,8 +70,6 @@ pub fn rows_digest(path: &str, options: &Options) -> io::Result<Value> {
     }))
 }
 
-/// `tables` of `recording` at every `every`th ordinal of each run from its first, each as the
-/// product's frames read it: sought there, its view built at the recording's capture mode.
 pub fn digests(recording: &Recording, tables: &[TableId], every: u32) -> io::Result<Vec<Line>> {
     let mode = CaptureMode::from_byte(recording.root_identity().capture_mode)?;
     let format = FormatVersion::CURRENT.version();
@@ -125,7 +116,6 @@ fn described(view: &TableView) -> io::Result<(Value, Option<(usize, String)>)> {
     })
 }
 
-/// The rows' count and a blake3 of them in their order, each row as [`digest_row`] hashes it.
 fn digest(rows: &TableRows) -> io::Result<(usize, String)> {
     let mut hasher = blake3::Hasher::new();
     let mut encoded = Vec::new();
@@ -139,8 +129,6 @@ const EMPTY: u8 = 0;
 const NOT_RECORDED: u8 = 1;
 const VALUE: u8 = 2;
 
-/// A row's key, then each field `fields` visits: a marker for an empty or a not-recorded cell,
-/// or a value's marker and its wire encoding behind its length.
 fn digest_row(
     hasher: &mut blake3::Hasher,
     encoded: &mut Vec<u8>,
@@ -173,8 +161,6 @@ mod tests {
 
     const CHANGED: u32 = BLOCK + 10;
 
-    /// Countries over two blocks of one run, `change` made to the row keyed 2 at the hour of
-    /// ordinal [`CHANGED`] alone.
     fn recording(campaign: &[u8], change: fn(&mut CountryRow)) -> Recording {
         let (bytes, _) = fixtures::written(campaign, &[(7, 1000, 2)], &[TableId::Countries], |synthetic, _, ordinal| {
             let rows: Vec<CountryRow> = (1..=3)

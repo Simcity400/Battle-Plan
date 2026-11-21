@@ -1,9 +1,3 @@
-//! CGameState roots and stored session state.
-//!
-//! `local_player` copies playing and observer-view references together.
-//! Its writer gates, lobby restore and observer selection are documented beside it.
-//! Synthetic fixtures preserve raw words, reject short reads and verify the
-//! constant guarded read cost.
 
 use engine_sites::Rva;
 use crate::{
@@ -13,75 +7,44 @@ use crate::{
     read,
 };
 
-/// CGameState singleton.
 pub const SINGLETON_RVA: Rva = Rva(0x033d_d6b0);
 
-/// Play-session start Unix seconds.
 pub const PLAY_SESSION_STARTED_AT_RVA: Rva = Rva(0x033d_d888);
-/// CGameState current date (`CURRENT_DATE`), its raw i32 hour.
 pub const CURRENT_HOUR: usize = 0x468;
-/// CGameState persisted u64 play time.
 pub const PLAY_TIME: usize = 0x490;
-/// Dense published variant pointer array, appended and saved in slot order from zero.
 pub const EQUIPMENT_VARIANTS: usize = 0x708;
-/// CGameState equipment-variant capacity, signed i32.
 #[cfg(any(test, feature = "test-support"))]
 pub const EQUIPMENT_VARIANTS_CAPACITY: usize = 0x710;
-/// CGameState equipment-variant count, signed i32.
 #[cfg(test)]
 pub const EQUIPMENT_VARIANTS_COUNT: usize = 0x714;
-/// CGameState i32 seed.
 pub const CAMPAIGN_SEED: usize = 0x720;
-/// Stored campaign unique-id MSVC string.
 pub const CAMPAIGN_ID: usize = 0x728;
-/// CGameState speed index (0..4).
 pub const SPEED: usize = 0x4bc;
-/// CGameState `navy_id` allocation counter, signed i32.
 pub const NAVY_ID: usize = 0x74c;
-/// CGameState `land_combat_id` allocation counter, signed i32.
 pub const LAND_COMBAT_ID: usize = 0x748;
-/// Tick marker, set before date advancement and cleared near return.
 pub const TICK_BUSY: usize = 0x4c0;
-/// CGameState CPdxArray<CCountry*>.
 pub const COUNTRIES: usize = 0x310;
-/// CGameState retained CPdxArray<i32> country slots.
 pub const DAILY_COUNTRY_ROSTER: usize = 0x9a0;
-/// CGameState country link indices.
 pub const COUNTRY_LINKS: usize = 0x340;
-/// Country-link tag strings, including released dynamic tags.
 pub const COUNTRY_TAGS: usize = 0x358;
-/// CGameState CPdxArray<CProvince*>.
 pub const PROVINCES: usize = 0x2b0;
 
-/// CGameState retained save-header player array; the CHuman serializer preserves it separately from live players (`PLAYER_RECORDS`).
 pub const SAVED_PLAYER_RECORDS: usize = 0xa8;
-/// CGameState live CHuman pointer array; the world-clock reader and native player serializer distinguish it from saved records (`SAVED_PLAYER_RECORDS`).
 pub const PLAYER_RECORDS: usize = 0xf8;
-/// CGameState embedded CCombatManager.
 pub const COMBATS: usize = 0x260;
-/// CGameState u32 province-vector capacity.
 #[cfg(test)]
 pub const PROVINCES_CAPACITY: usize = 0x2b8;
-/// CGameState u32 province-vector count.
 pub const PROVINCES_COUNT: usize = 0x2bc;
-/// CGameState u32 country-vector capacity; CPdxArray layout and current guarded walker agree.
 #[cfg(any(test, feature = "test-support"))]
 pub const COUNTRIES_CAPACITY: usize = 0x318;
-/// CGameState u32 country-vector count.
 pub const COUNTRIES_COUNT: usize = 0x31c;
-/// CGameState u32 country-link capacity; current guarded CPdxArray reader confirms it.
 #[cfg(any(test, feature = "test-support"))]
 pub const COUNTRY_LINKS_CAPACITY: usize = 0x348;
-/// CGameState u32 country-link count; current guarded CPdxArray reader confirms it.
 pub const COUNTRY_LINKS_COUNT: usize = 0x34c;
-/// CGameState u32 country-tag string vector count.
 pub const COUNTRY_TAGS_COUNT: usize = 0x364;
-/// CGameState human-controller counts, native signed bytes; CHuman controller walk authenticates canonical country slots independently.
 pub const HUMAN_STATUS: usize = 0x388;
-/// Per-canonical-country autonomous-control flags.
 pub const AUTONOMOUS_STATUS: usize = 0x370;
 
-/// Exercise-level AI-control gate, including live-player fallback.
 #[cfg(test)]
 pub fn autonomous_country(
     memory: &impl Memory,
@@ -98,29 +61,17 @@ pub fn autonomous_country(
     AiControl::read(memory, state)?.autonomous(memory, base, &reader, raw, canonical)
 }
 
-/// Slots whose human-controller counts and autonomy flags one gather copies.
 const CONTROL_CHUNK: usize = 256;
 
-/// AI-control operands for many countries. Within the human-controller
-/// counts, a country is AI-controlled exactly when its autonomy flag is
-/// nonzero and count is zero. Past those counts, it is AI-controlled unless
-/// a live human names it.
-///
-/// Slot-order census gathers up to `CONTROL_CHUNK` counts and flags in one
-/// guarded copy. The first failure inside the counts, including gather
-/// failure, fails control for the remainder of the sample. Covered operands
-/// are never reread to hide a fault.
 pub struct AiControl {
     state: usize,
     counts: crate::cpdx_array::Array,
-    /// Read lazily when the first slot within controller counts needs it.
     flags: Option<crate::cpdx_array::Array>,
     first: u32,
     counts_len: u32,
     flags_len: u32,
     gathered_counts: [u8; CONTROL_CHUNK],
     gathered_flags: [u8; CONTROL_CHUNK],
-    /// The first failure inside the counts, returned for every later slot.
     failed: Option<&'static str>,
 }
 
@@ -143,8 +94,6 @@ impl AiControl {
         })
     }
 
-    /// Whether AI control applies to the country with raw tag `raw` and
-    /// canonical slot `canonical`.
     pub fn autonomous<M: Memory>(
         &mut self,
         memory: &M,
@@ -189,8 +138,6 @@ impl AiControl {
         Ok(true)
     }
 
-    /// AI-control verdict within controller counts from gathered operands.
-    /// A slot past the flag count fails without additional memory reads.
     fn inside_counts(
         &mut self,
         memory: &impl Memory,
@@ -227,9 +174,6 @@ impl AiControl {
         Ok(flag != 0 && humans == 0)
     }
 
-    /// Copy counts and flags from `first` in one guarded call. Flag-count
-    /// shortages fail at their individual check. Copy faults remain the original
-    /// observation failure; covered operands are never reread.
     fn gather(
         &mut self,
         memory: &impl Memory,
@@ -245,7 +189,6 @@ impl AiControl {
             .counts
             .element(first, 1)
             .ok_or("human-controller count unreadable")?;
-        // An empty span is complete without its address being read.
         let flags_at = flags.element(first, 1).unwrap_or(0);
         let copied = memory.copy_scattered(
             [counts_at, flags_at],
@@ -262,83 +205,41 @@ impl AiControl {
         Ok(())
     }
 }
-/// Embedded technology-sharing vector data, not a manager pointer.
 pub const TECH_SHARING_GROUPS: usize = 0x3a0;
-/// CGameState technology-sharing vector u32 count.
 #[cfg(any(test, feature = "test-support"))]
 pub const TECH_SHARING_GROUPS_COUNT: usize = 0x3ac;
-/// CGameState CSupplySystem*.
 pub const SUPPLY_SYSTEM: usize = 0x3d8;
-/// Rail-manager pointer owning its province table.
 pub const RAIL_MANAGER: usize = 0x3e0;
-/// CGameState international-market manager pointer.
 pub const MARKET_MANAGER: usize = 0x3e8;
-/// CGameState CRaidSystem*.
 pub const RAID_SYSTEM: usize = 0x3f0;
-/// CGameState faction-system pointer.
 pub const FACTION_SYSTEM: usize = 0x3f8;
-/// Inline game date with its raw hour eight bytes later.
 pub const CURRENT_DATE: usize = 0x460;
-/// Tick-progress word, independent of the game-speed field.
 pub const TICK_PROGRESS: usize = 0x4b8;
-/// Sunk-convoy history vector with 0x18-byte rows.
 pub const SUNK_CONVOY_HISTORY: usize = 0x5a8;
-/// CGameState CWeatherManager*.
 pub const WEATHER_MANAGER: usize = 0x688;
-/// CGameState strategic-air manager pointer.
 pub const STRATEGIC_AIR_MANAGER: usize = 0x690;
-/// CGameState CStrategicNavyManager pointer.
 pub const STRATEGIC_NAVY_MANAGER: usize = 0x698;
-/// CGameState CStrategicOperativeManager*.
 pub const STRATEGIC_OPERATIVE_MANAGER: usize = 0x6a0;
-/// CGameState CCharacterManager*.
 pub const CHARACTER_MANAGER: usize = 0x6a8;
-/// CGameState CWorldThreat*.
 pub const WORLD_THREAT: usize = 0x6b0;
-/// Player-input eligibility byte, set before load completion.
-/// It does not establish world readiness.
 pub const PLAYER_INPUT_ELIGIBLE: usize = 0xa39;
-/// Game-state constructor/reset initializes input state.
 pub const RESET_RVA: Rva = Rva(0x001f_6610);
-/// Load setup sets eligibility before remaining calls; it does not establish world readiness.
 pub const LOAD_SETUP_RVA: Rva = Rva(0x00e4_7560);
 
-/// CGameState global scripted flag-manager pointer.
 pub const GLOBAL_FLAGS: usize = 0x258;
-/// CGameState state pointer table.
 pub const STATES: usize = 0x2c8;
-/// CGameState strategic-region pointer array.
 pub const STRATEGIC_REGIONS: usize = 0x2e0;
-/// CGameState strategic-region native signed count.
 #[cfg(any(test, feature = "test-support"))]
 pub const STRATEGIC_REGIONS_COUNT: usize = 0x2ec;
-/// CGameState power-balance manager pointer.
 pub const POWER_BALANCE_MANAGER: usize = 0x450;
-/// CGameState next event instance u32.
 pub const NEXT_EVENT_INSTANCE: usize = 0x498;
-/// CGameState peace-conference data pointer.
 pub const PEACE_CONFERENCES_DATA: usize = 0x4e8;
-/// CGameState peace-conference count i32.
 #[cfg(any(test, feature = "test-support"))]
 pub const PEACE_CONFERENCES_COUNT: usize = 0x4f4;
-/// Combat-log manager pointer array indexed by canonical country slot,
-/// with null slot zero. Serialization and combat-log writers use this ordering.
 pub const COMBAT_LOGS: usize = 0x880;
-/// Local playing country, as a raw tag reference. Tag-switch and controller
-/// assignment commands update it only for the local player's key. Observer
-/// commands switch it to reference zero.
 pub const LOCAL_PLAYER_COUNTRY: usize = 0x520;
-/// Observer's viewed country. A positive playing tag clears it, but any
-/// player's observer switch can update it, so it can remain nonzero while
-/// this client plays. Viewing uses the positive playing tag first, otherwise this.
 pub const OBSERVED_COUNTRY: usize = 0x524;
 
-/// The client's two stored references, independent of the human roster.
-/// Commands, load, lobby and editing paths write them outside the hourly tick.
-/// Sampling at hourly-update entry observes the same choice used by combat
-/// management. Switching to the viewed country also refreshes combat state.
-/// The save's player tag is the viewing choice. Read both references in one
-/// eight-byte guarded copy, independent of country count and resolution.
 pub fn local_player(memory: &impl Memory, state: usize) -> Result<[u32; 2], &'static str> {
     const { assert!(OBSERVED_COUNTRY == LOCAL_PLAYER_COUNTRY + 4) };
     state
@@ -347,55 +248,31 @@ pub fn local_player(memory: &impl Memory, state: usize) -> Result<[u32; 2], &'st
         .map(|words| [words as u32, (words >> 32) as u32])
         .ok_or("local player references unreadable")
 }
-/// CGameState pointer vector of the viewing country's own units, in the order the
-/// model picker walks it. A roster-owner change removes a unit and appends it again
-/// only when the new owner is the viewing country; deletion removes it keeping the
-/// order; a playing-country change appends that country's units again.
 pub const VIEWER_UNITS: usize = 0x640;
-/// CGameState inline fired-event set.
 pub const FIRED_EVENTS: usize = 0x538;
-/// CGameState pending-event vector.
 pub const PENDING_EVENTS: usize = 0x560;
-/// CGameState pending-event vector count u32.
 pub const PENDING_EVENTS_COUNT: usize = 0x56c;
-/// CGameState sunk-ship history vector.
 pub const SUNK_SHIP_HISTORY: usize = 0x590;
-/// CGameState sunk-convoy history u32 capacity.
 #[cfg(any(test, feature = "test-support"))]
 pub const SUNK_CONVOY_HISTORY_CAPACITY: usize = 0x5b0;
-/// CGameState sunk-convoy history u32 count.
 #[cfg(any(test, feature = "test-support"))]
 pub const SUNK_CONVOY_HISTORY_COUNT: usize = 0x5b4;
-/// CGameState naval combat-result vector.
 pub const NAVAL_COMBAT_RESULTS: usize = 0x5c0;
-/// CGameState global scripted variables object.
 pub const GLOBAL_VARIABLES: usize = 0x980;
 
-/// CGameState sunk-ship history capacity u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const SUNK_SHIP_HISTORY_CAPACITY: usize = 0x598;
-/// CGameState sunk-ship history count u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const SUNK_SHIP_HISTORY_COUNT: usize = 0x59c;
-/// CGameState retained-result map list-head pointer.
 pub const NAVAL_RESULTS_MAP_LIST_HEAD: usize = 0x5e0;
-/// CGameState retained-result map node count u64 (MSVC list size).
 pub const NAVAL_RESULTS_MAP_LIST_SIZE: usize = 0x5e8;
-/// CGameState retained-result map buckets pointer.
 #[cfg(any(test, feature = "test-support"))]
 pub const NAVAL_RESULTS_MAP_BUCKETS: usize = 0x5f0;
-/// CGameState retained-result map bucket mask.
 #[cfg(any(test, feature = "test-support"))]
 pub const NAVAL_RESULTS_MAP_MASK: usize = 0x608;
 
-/// Per-hour update boundary. Entry observes settled end-of-hour state:
-/// all commands drained and tick_busy zero, before this tick increments the
-/// date. Command drain uses server polymorphic dispatch; this fixed entry
-/// fires once per game hour.
 pub const HOURLY_UPDATE_RVA: Rva = Rva(0x001f_34d0);
-/// Per-frame command batch: runs every queued command, the hourly update among them.
 pub const COMMAND_BATCH_RVA: Rva = Rva(0x022c_6480);
-/// Exact hourly-update entry bytes.
 pub const HOURLY_UPDATE_SENTINEL: [u8; 16] = [
     0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,
 ];
@@ -439,8 +316,6 @@ impl Clock {
     }
 }
 
-/// Campaign id is an unrestricted stored string. Header-only demand
-/// prepares storage and never supplies a campaign observation.
 pub fn campaign_id_len(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     let state = singleton(memory, base).ok_or("clock game state unreadable")?;
     let address = state
@@ -449,7 +324,6 @@ pub fn campaign_id_len(memory: &impl Memory, base: usize) -> Result<usize, &'sta
     Ok(Descriptor::read(memory, address)?.len)
 }
 
-/// Read fresh native bytes into storage prepared before the callback.
 pub fn read_clock_prepared<'a>(
     memory: &impl Memory,
     base: usize,
@@ -476,8 +350,6 @@ pub fn read_clock_prepared<'a>(
     })
 }
 
-/// The clock's globals resolve, or the first withheld one's reason: a withheld clock is never
-/// mistaken for a campaign that has not loaded.
 pub fn clock_sites(base: usize) -> Result<(), &'static str> {
     engine_sites::require(base, &[SINGLETON_RVA, PLAY_SESSION_STARTED_AT_RVA])
 }
@@ -498,30 +370,19 @@ pub fn read_clock(memory: &impl Memory, base: usize) -> Option<Clock> {
     })
 }
 
-/// Live element counts of the three country registries, read once before the
-/// hourly hook is installed so capture buffers can be sized to the loaded
-/// content instead of a vanilla-sized guess. Header words only: no country
-/// object is read and nothing here is recorded.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryRegistrySize {
-    /// `CPdxArray<CCountry*>` count (`COUNTRIES_COUNT`), including the reserved slot zero.
     pub countries: u32,
-    /// Raw country-reference link count (`COUNTRY_LINKS_COUNT`), including its zero sentinel.
     pub links: u32,
-    /// `_CountryLinkTags` string count (`COUNTRY_TAGS_COUNT`).
     pub tags: u32,
 }
 
 impl CountryRegistrySize {
-    /// The largest registry, which bounds every per-country table.
     pub fn slots(self) -> usize {
         self.countries.max(self.links).max(self.tags) as usize
     }
 }
 
-/// Reads the registry counts from a consistent array header. An unreadable
-/// singleton or header returns `None`; a registry the game has not filled yet
-/// (for example at the main menu) reads as zero.
 pub fn read_country_registry_size(
     memory: &impl Memory,
     base: usize,
@@ -534,9 +395,6 @@ pub fn read_country_registry_size(
     })
 }
 
-/// Loaded strategic-region count from [`STRATEGIC_REGIONS`]. Like
-/// [`read_country_registry_size`], only header words are read; an unfilled
-/// roster reports zero.
 pub fn read_strategic_region_count(memory: &impl Memory, base: usize) -> Option<u32> {
     array_count(memory, singleton(memory, base)?, STRATEGIC_REGIONS)
 }
@@ -546,13 +404,10 @@ fn singleton(memory: &impl Memory, base: usize) -> Option<usize> {
     usize::try_from(game_state).ok().filter(|ptr| *ptr != 0)
 }
 
-/// The count of the CPdxArray header at `state + array`.
 fn array_count(memory: &impl Memory, state: usize, array: usize) -> Option<u32> {
     let header = read::<[u8; 16]>(memory, state.checked_add(array)?)?;
     let capacity = u32::from_le_bytes(header[8..12].try_into().ok()?);
     let count = u32::from_le_bytes(header[12..16].try_into().ok()?);
-    // The CPdxArray header keeps count within its capacity, which is a
-    // signed i32 in every growth path; anything else is a torn read.
     (count <= capacity && capacity <= i32::MAX as u32).then_some(count)
 }
 
@@ -608,7 +463,6 @@ mod tests {
             bytes[at + 8..at + 12].copy_from_slice(&capacity.to_le_bytes());
             bytes[at + 12..at + 16].copy_from_slice(&count.to_le_bytes());
         };
-        // One country per province of a large mod, plus dynamic tags.
         header(COUNTRIES, 20_000, 15_001);
         header(COUNTRY_LINKS, 20_000, 15_101);
         header(COUNTRY_TAGS, 16_384, 15_001);
@@ -622,7 +476,6 @@ mod tests {
             read_strategic_region_count(&RootMemory(&bytes), 0),
             Some(2_500)
         );
-        // A torn header (count above capacity) is refused rather than trusted.
         bytes[COUNTRIES + 12..COUNTRIES + 16].copy_from_slice(&30_000_u32.to_le_bytes());
         assert_eq!(read_country_registry_size(&RootMemory(&bytes), 0), None);
         let regions = STRATEGIC_REGIONS + 12;

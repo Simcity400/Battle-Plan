@@ -13,7 +13,6 @@ export const definition = {
   description: 'A general or admiral’s skill, traits, commands and battles.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
-  // The automatic subject is the top of these countries; the dashboard's by default.
   defaultCountries: { kind: 'selected' },
   minSize: { w: 4, h: 7 }, defaultSize: { w: 6, h: 10 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

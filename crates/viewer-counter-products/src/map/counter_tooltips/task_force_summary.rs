@@ -1,11 +1,3 @@
-//! Task-force vector summaries for detailed and coarse counters.
-//! Neither summary reads client selection.
-//!
-//! Recorded ship identity retains the original sub-unit spelling across cloning,
-//! loading, refitting and stat recalculation. Its signed index selects the original
-//! `SubUnits` definition, including country-local clones of rejected-name definitions.
-//! A lexer token alone cannot distinguish those definitions. A null definition has
-//! index zero and an empty name.
 
 use super::*;
 use installed_content_core::unit_leader::SubUnits;
@@ -26,9 +18,6 @@ fn members<'a>(context: &Context<'a>, ids: &[u64]) -> Result<Vec<Member<'a>>, St
         .complete::<tables::TaskForces>()
         .map_err(|e| e.to_string())?;
     ids.iter()
-        // Append only resolved task-force references.
-        // Complete absence establishes a dangling reference; an incomplete
-        // census above cannot. The caller separately admits its first member.
         .filter_map(|&id| {
             rows.binary_search_by_key(&id, |row| row.id)
                 .ok()
@@ -174,7 +163,6 @@ fn header(
                 counter_order::is_capital(model).expect("counter operands admitted"),
             ))
         });
-    // Exact intel never demands the NNavy approximation defines.
     let (count, capital_count) = if member.visibility >= 250 {
         (total.to_string(), capitals.to_string())
     } else {
@@ -215,8 +203,6 @@ fn header(
     )
 }
 
-/// Resolve the copied signed ABI word, preserving its grouping order. No token
-/// fallback: rejected names can select different country-local definitions.
 fn ship_type(sub_units: &SubUnits, model: &ShipModelRow) -> Result<(i32, String), String> {
     let index = model
         .subunit_index
@@ -235,8 +221,6 @@ fn ship_type(sub_units: &SubUnits, model: &ShipModelRow) -> Result<(i32, String)
 
 fn type_database(sub_units: &SubUnits) -> Result<&SubUnits, String> {
     if sub_units.registered().any(|name| name.contains(&0)) {
-        // The existing database reader retains whole authored keys whereas
-        // Register C strings. Such keys can change later indices.
         return Err("sub-unit registration with embedded-NUL keys is unsupported".into());
     }
     Ok(sub_units)
@@ -299,7 +283,6 @@ fn type_range(
     if visibility >= 250 {
         return (count, count);
     }
-    // Test raw bit 6 only, unlike the header's carrier-inclusive count.
     let minimum = if flags & counter_order::CAPITAL_FLAG != 0 {
         if total_ships > 3 {
             defines.medium_min_capitals
@@ -334,7 +317,6 @@ fn composition(
 ) -> Result<String, String> {
     let mut ordered = groups.values().collect::<Vec<_>>();
     let mut missing = None;
-    // The stable insertion and buffered-merge sort reverses ties between null variants.
     sort(&mut ordered, |a, b| {
         if missing.is_some() {
             return false;
@@ -605,7 +587,6 @@ mod tests {
             );
             assert!(members(context, &[99]).unwrap().is_empty());
         });
-        // Missing/unfinished census cannot establish that a reference dangles.
         frame.tables[TableId::TaskForces.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "unfinished task-force census".into(),
         }
@@ -926,7 +907,6 @@ mod tests {
     #[test]
     fn null_variant_sort_reverses_ties_and_distinct_nonnull_tie_is_named() {
         let null = model(1, 0);
-        // One group beyond insertion sorting exercises the buffered merge.
         let groups = (0..33)
             .map(|index| (index, group(&null, &format!("type{index}"), 1, 1, 1)))
             .collect::<BTreeMap<_, _>>();

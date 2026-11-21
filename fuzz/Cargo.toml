@@ -20,7 +20,6 @@ dashboard = { path = "../crates/dashboard" }
 [workspace]
 members = ["."]
 
-# Match the app's fast default artifacts despite this separate workspace.
 [profile.dev]
 debug = 0
 

@@ -30,10 +30,8 @@ fn counts_are_known_only_after_the_baseline_while_read_whole_and_a_missing_row_c
     let ships = row_key(owner, Row::LOST, Row::SHIPS);
     let run = run_key(Row::SHIPS);
     let start = month_start(HOUR_EPOCH + 4 * 365 * 24 + 40 * 24);
-    // The table is read whole from start, except hours start + 100 through start + 110.
     let known = HashMap::from([(run, vec![(start, start + 99, Some(1)), (start + 100, start + 110, Some(0)), (start + 111, start + 2000, Some(1))])]);
     let counted = HashMap::from([(run, vec![(start, start + 2000, Some(i64::from(start + 10)))])]);
-    // No row until start + 50; three by start + 50, five by start + 900 (next month).
     let totals = HashMap::from([(ships, vec![(start + 50, start + 899, Some(3)), (start + 900, start + 2000, Some(5))])]);
     let counts = Counts::of(known, counted, totals);
     assert_eq!(counts.count(Row::SHIPS, ships, start + 5, NavalPeriod::Running), None, "before the baseline nothing is counted");
@@ -49,7 +47,6 @@ fn counts_are_known_only_after_the_baseline_while_read_whole_and_a_missing_row_c
 
 #[test]
 fn a_months_ranking_subtracts_each_kind_at_its_own_baseline_as_its_counts_do() {
-    // Within one month ships are counted from h and convoys from h + 10; A loses five ships at h + 5, B one at h + 15.
     let h = month_start(HOUR_EPOCH + 4 * 365 * 24 + 40 * 24) + 48;
     let (a, b) = (7u128 << 32 | 1, 8u128 << 32 | 2);
     let kinds = [Row::SHIPS, Row::CONVOYS];
@@ -84,8 +81,6 @@ fn an_entry_is_known_at_the_first_read_at_or_after_its_sinking() {
 #[test]
 fn a_window_keeps_the_sinkings_its_first_read_listed_that_the_game_pruned_before_its_end() {
     let entry = |sink_hour, ship: &[u8]| SunkShipEntry { sink_hour, ship_name: ship.to_vec(), ..Default::default() };
-    // 100 is the window's first read; 5 an earlier window's. By 148 the game pruned one of two
-    // identical old sinkings, an older one, and one an earlier window listed.
     let reads = [(5, 5), (100, 100), (124, 124), (148, 148)];
     let earlier = [entry(3, b"Z"), entry(10, b"A"), entry(10, b"A"), entry(20, b"B"), entry(30, b"C"), entry(99, b"D")];
     let later = [entry(10, b"A"), entry(30, b"C"), entry(99, b"D"), entry(130, b"E")];
@@ -207,7 +202,6 @@ mod details {
         frame.metrics.table_ns[T::ID.index()] = 1;
     }
 
-    /// Combats 7, 8 and 9 sink a ship each, at 101, 103 and 106, listed from then on; 7 and 8 are live throughout.
     fn recording() -> Source {
         let frames = (100..=110)
             .map(|hour| {

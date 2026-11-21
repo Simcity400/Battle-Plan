@@ -1,12 +1,6 @@
-//! Sides use the recorded bilateral war participation (there is no full war id).
-//! Distinct shared enemies define fighting alongside; directly hostile groups
-//! never merge. Lone-country ties count enemies also fought by the side leader,
-//! then choose the numeric faction anchor. Keys use historical ally components,
-//! independent of current country membership or the regional score leader.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// A tag's membership or leadership of a group over consecutive recorded hours.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Run {
     pub tag: String,
@@ -14,7 +8,6 @@ pub struct Run {
     pub last_hour: i32,
 }
 
-/// One recorded faction's history.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FactionHistory {
     pub first_hour: i32,
@@ -23,7 +16,6 @@ pub struct FactionHistory {
     pub incomplete: Vec<(i32, i32)>,
 }
 
-/// Two countries at war with each other over consecutive recorded hours.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarRun {
     pub first: String,
@@ -32,7 +24,6 @@ pub struct WarRun {
     pub last_hour: i32,
 }
 
-/// A stretch one country held a tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub first_hour: i32,
@@ -41,14 +32,12 @@ pub struct Identity {
     pub country_id: u32,
 }
 
-/// The group histories of one timeline the sides are assigned from.
 #[derive(Clone, Debug, Default)]
 pub struct Groups {
     pub factions: BTreeMap<u64, FactionHistory>,
     pub wars: Vec<WarRun>,
     pub unobserved_factions: Vec<(i32, i32)>,
     pub unobserved_wars: Vec<(i32, i32)>,
-    /// Each tag's holders, in hour order.
     pub identities: BTreeMap<String, Vec<Identity>>,
 }
 
@@ -81,7 +70,6 @@ pub struct AssignedSide {
 }
 
 impl AssignedSide {
-    /// A lone country: no faction, one member.
     pub fn lone(&self) -> bool {
         self.factions.is_empty() && self.members.len() == 1
     }
@@ -95,12 +83,9 @@ struct Faction {
 
 #[cfg(test)]
 thread_local! {
-    /// Group runs an indexed assignment visited.
     pub(super) static VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Intervals found by the hours they hold: a max-end tree over the
-/// intervals in start order, which visits only those holding an hour.
 struct Stab<T> {
     runs: Vec<(i32, i32, T)>,
     ends: Vec<i32>,
@@ -142,18 +127,13 @@ impl<T> Stab<T> {
     }
 }
 
-/// A group run an assignment reads.
 enum Active {
-    /// Unobserved factions or wars, or a faction's incomplete roster.
     Unknown,
     Member(u64, String),
-    /// A faction's leader, by the run's order among the faction's leaders.
     Leader(u64, usize, String),
     War(String, String),
 }
 
-/// Every group run an assignment reads, found by hour: an assignment at an
-/// hour visits the runs active then, not the history around them.
 pub struct GroupIndex {
     runs: Stab<Active>,
 }
@@ -182,8 +162,6 @@ impl GroupIndex {
     }
 }
 
-/// The sides `hour` assigns `countries`, before any key is resolved, reading only the group runs
-/// active at `hour`: None where the groups are not known then, or a member has no holder.
 pub fn indexed_roster(groups: &Groups, index: &GroupIndex, hour: i32, countries: &BTreeSet<String>) -> Option<Vec<AssignedSide>> {
     let mut unknown = false;
     let mut members = BTreeMap::<u64, BTreeSet<String>>::new();
@@ -211,8 +189,6 @@ pub fn indexed_roster(groups: &Groups, index: &GroupIndex, hour: i32, countries:
     sides.iter().flat_map(|side| &side.members).all(|tag| groups.identity_run(tag, hour).is_some()).then_some(sides)
 }
 
-/// The sides `countries` form under the groups of one hour: each faction's present members, its
-/// first leader by order where a member, and the war pairs.
 pub fn roster(members: BTreeMap<u64, BTreeSet<String>>, leaders: &BTreeMap<u64, (usize, &str)>, wars: Vec<(String, String)>, countries: &BTreeSet<String>) -> Option<Vec<AssignedSide>> {
     let factions = members
         .into_iter()
@@ -225,7 +201,6 @@ pub fn roster(members: BTreeMap<u64, BTreeSet<String>>, leaders: &BTreeMap<u64, 
     assign(factions, countries, wars)
 }
 
-/// The sides of `hour` with their keys resolved against the branch's anchors.
 pub fn keyed(groups: &Groups, hour: i32, mut sides: Vec<AssignedSide>, anchors: &SideAnchors) -> Option<Vec<AssignedSide>> {
     let (present, identities) = native_side_keys(groups, hour, &sides)?;
     for (side, key) in sides.iter_mut().zip(resolve_keys(&identities, &present, anchors)) {
@@ -237,7 +212,6 @@ pub fn keyed(groups: &Groups, hour: i32, mut sides: Vec<AssignedSide>, anchors: 
     Some(sides)
 }
 
-/// Only assignment identity is needed to check whether keys change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideKey {
     pub present: String,
@@ -285,8 +259,6 @@ pub fn resolve_keys(sides: &[SideKey], countries: &BTreeSet<String>, anchors: &S
             *present.entry(anchor.clone()).or_insert(0_usize) += 1;
         }
     }
-    // A lone country that is the only present country of an alliance that held more keeps its
-    // alliance's key.
     let sole_remnant = |identity: &str| {
         anchors
             .countries
@@ -321,8 +293,6 @@ pub fn resolve_keys(sides: &[SideKey], countries: &BTreeSet<String>, anchors: &S
         collisions.entry(key.clone()).or_default().push(index);
     }
     for (key, indices) in collisions.into_iter().filter(|(_, indices)| indices.len() > 1) {
-        // A historical identity stays with its anchor's present side. If that
-        // anchor left, earliest recorded participation, then id/tag, wins it.
         let contains = |side: &SideKey| {
             if let Some(id) = key.strip_prefix("f:").and_then(|id| id.parse::<u64>().ok()) {
                 side.factions.contains(&id)
@@ -361,7 +331,6 @@ fn assign(factions: Vec<Faction>, countries: &BTreeSet<String>, wars: impl IntoI
         for tag in &faction.members {
             original_membership.insert(tag.clone(), faction.id);
             if member_of.insert(tag.clone(), faction.id).is_some() {
-                // Duplicate faction membership cannot supply an honest partition.
                 return None;
             }
         }
@@ -386,8 +355,6 @@ fn assign(factions: Vec<Faction>, countries: &BTreeSet<String>, wars: impl IntoI
         enemies.entry(first.clone()).or_default().insert(second.clone());
         enemies.entry(second).or_default().insert(first);
     }
-    // Common-enemy participation is the recorded evidence of an alliance.
-    // Collapse allied factions before assigning lone countries or reading scores.
     let ids: Vec<_> = sides.keys().copied().collect();
     let tags: Vec<_> = ids.iter().map(ToString::to_string).collect();
     let indexes: BTreeMap<_, _> = tags.iter().enumerate().map(|(index, tag)| (tag.clone(), index)).collect();
@@ -440,7 +407,6 @@ fn assign(factions: Vec<Faction>, countries: &BTreeSet<String>, wars: impl IntoI
         }
     }
     let mut unassigned = BTreeSet::new();
-    // Lone countries already placed on a side: an enemy of one cannot join it.
     let mut joined = BTreeMap::<&str, u64>::new();
     for tag in countries.iter().filter(|tag| !member_of.contains_key(*tag)) {
         let mut candidates = BTreeMap::<u64, usize>::new();
@@ -569,8 +535,6 @@ pub fn historical_anchors(groups: &Groups) -> SideAnchors {
             })
             .or_insert(id);
     }
-    // Earliest recorded faction war participation, then numeric id. A later
-    // lower-id ally cannot replace an already participating faction's anchor.
     let (countries, country_reads) = historical_country_anchors(groups);
     let faction_reads = groups
         .factions
@@ -669,7 +633,6 @@ impl Memberships {
     fn overlapping(&self, first: i32, last: i32) -> impl Iterator<Item = &(u64, i32, i32)> {
         let from = self.ends.partition_point(|end| *end < first);
         let mut runs: Vec<_> = self.runs[from..].iter().take_while(|(_, (_, start, _))| *start <= last).filter(|(_, (_, _, end))| *end >= first).collect();
-        // Overlapping malformed memberships keep the original faction order.
         runs.sort_unstable_by_key(|(order, _)| *order);
         runs.into_iter().map(|(_, run)| run)
     }
@@ -720,8 +683,6 @@ impl Coalitions {
         }
         self.parents[second] = first;
         self.sizes[first] += self.sizes[second];
-        // Keep hostility indexed by current roots. Failed joins are constant
-        // work; successful joins move only the smaller component's neighbours.
         for opponent in std::mem::take(&mut self.opponents[second]) {
             self.opponents[opponent].remove(&second);
             self.opponents[opponent].insert(first);
@@ -747,8 +708,6 @@ impl Coalitions {
                 available.remove(&slot);
             }
             let root = self.root(index);
-            // Existing representatives are mutually hostile. A component
-            // already represented cannot join an earlier one: use its index.
             let selected = by_root.get(&root).copied().or_else(|| {
                 let first = *available.first()?;
                 if !self.opponents[root].contains(&representatives[&first].0) {
@@ -931,7 +890,6 @@ mod tests {
     #[test]
     fn distinct_enemies_beat_member_link_counts_and_leader_participation_breaks_ties() {
         let tags = countries(&["A", "A2", "A3", "B", "B2", "C", "X", "Y"]);
-        // A2 and B2 are direct enemies, so these factions cannot merge.
         let relations = wars(&[("A", "X"), ("A2", "X"), ("A3", "X"), ("B", "X"), ("B", "Y"), ("A2", "B2"), ("C", "X"), ("C", "Y")]);
         let sides = assign(vec![faction(10, &["A", "A2", "A3"]), faction(9, &["B", "B2"])], &tags, relations).unwrap();
         assert!(side(&sides, "f:9").members.contains(&"C".into()));
@@ -974,8 +932,6 @@ mod tests {
         vec![Identity { first_hour: 0, last_hour: 1_000, slot, country_id: slot }]
     }
 
-    /// The old frame tests' cases, on group histories: a membership change applies at its hour, a
-    /// dissolved faction is no side, and unobserved groups assign none.
     #[test]
     fn membership_changes_apply_at_their_hour_and_unobserved_groups_assign_no_sides() {
         let groups = Groups {

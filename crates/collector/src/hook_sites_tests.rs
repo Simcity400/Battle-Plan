@@ -1,7 +1,3 @@
-//! Every native site any collector hook family patches. A site has one patch
-//! owner: two families patching one entry, or patches whose spans overlap,
-//! make publication fail at attach for that optional family. Dependent
-//! observers dispatch through the owner's detour instead.
 use engine_mutations::{
     army_stat_mutations, template_mutations, unit_leader_mutations, world_input_mutations,
 };
@@ -19,7 +15,6 @@ fn timed_hook_families() -> std::collections::BTreeSet<&'static str> {
     Family::ALL
         .into_iter()
         .map(|family| match family {
-            // Separate timing buckets share one runtime publication owner.
             Family::PoliticsCapture | Family::PoliticsCaptureTaps => "politics_changes",
             Family::EventFeed | Family::EventFeedProvenance => "event_feed_observer",
             Family::VariantChanges => "design_changes",
@@ -53,7 +48,6 @@ fn missing_runtime_families(patches: &[Patch]) -> Vec<&'static str> {
 }
 
 fn assert_family_completeness(patches: &[Patch]) {
-    // Timing has its own exhaustive guard; it must not mask patch safety diagnostics.
     let missing = missing_runtime_families(patches);
     assert!(
         missing.is_empty(),
@@ -148,7 +142,6 @@ fn market_inventory_covers_exactly_the_installed_detours_and_fuel_taps() {
             }
         );
     }
-    // Active removal precedes deferred destruction and reference retirement.
     let removal = &market_mutations::SITES[market_mutations::CONTRACT_REMOVAL_SITE];
     assert!(registered.iter().any(|patch| patch.name == removal.name
         && patch.rva == removal.rva
@@ -165,8 +158,6 @@ fn market_inventory_covers_exactly_the_installed_detours_and_fuel_taps() {
 #[test]
 fn no_two_hooks_share_a_site_or_overlap() {
     let mut patches = patches();
-    // Guard the MIO lane's complete registration through the family catalogue.
-    // The three shared design setters/move remain this family's patches.
     for name in [
         "mio_queue_append",
         "mio_state_copy",
@@ -202,7 +193,6 @@ fn no_two_hooks_share_a_site_or_overlap() {
             .all(|patch| patch.len.is_none_or(|len| len >= PATCH))
     );
     patches.sort_by_key(|patch| patch.rva);
-    // A tap's span decodes from the located bytes; it writes at least a CALL.
     let collisions: Vec<String> = patches
         .windows(2)
         .filter(|pair| pair[0].rva.0 + pair[0].len.unwrap_or(PATCH) > pair[1].rva.0)
@@ -291,7 +281,6 @@ fn faction_phase_and_advisor_sites_are_registered_and_shared_resource_helpers_ar
             .iter()
             .any(|name| name.contains("extraction_call") || *name == "rebuild_advisor_slots")
     );
-    // These are the generic pool helpers, not faction-specific simulation stores.
     const SHARED_POOL_CLEAR: Rva = Rva(0xc22500);
     const SHARED_POOL_ADD_ASSIGN: Rva = Rva(0xc20ee0);
     for rva in [SHARED_POOL_CLEAR, SHARED_POOL_ADD_ASSIGN] {

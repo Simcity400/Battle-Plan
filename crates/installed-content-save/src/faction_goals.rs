@@ -1,4 +1,3 @@
-//! The faction goal serializer's ordered lists, signed slots and date scalars.
 use crate::{SavedDate, block, bytes, field, integer, invalid, scalar};
 use installed_content_core::parser::Item;
 use std::{collections::BTreeMap, io};

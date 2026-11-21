@@ -1,19 +1,3 @@
-//! Saved global targets, separate from event-chain and description arrays.
-//! Loading appends records, erasure shifts them and reset clears the registry.
-//! Tag switching and annexation change player/control or country ownership
-//! without rewriting these targets. Character retirement retains the object;
-//! destruction unregisters its handle. State destruction also leaves targets
-//! unchanged. Each retained record is serialized independently.
-//!
-//! Names are case-sensitive FNV-1a interned strings, resolved through the
-//! reverse string vector. The reader retains registry order, stored selectors,
-//! character ID, all nine reference-liveness bits, region/combatant presence
-//! and the save omission of an intern-ID-zero name. The selected unit leader
-//! may come from a fallback reference not covered by UnitLeaders. Null leader
-//! identity refuses only that row's leader consumer. Wrapped 16-bit name IDs
-//! make a nonempty registry unavailable by name, since the reverse vector
-//! cannot reconstruct aliases; an empty registry remains complete. Synthetic
-//! fixtures cover strings, ID wrapping, invalid reads and capacity demand.
 use crate::{
     Memory,
     cpdx_array::Array,
@@ -22,17 +6,11 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Saved-global target array in game state.
 pub const REGISTRY: usize = 0x6c0;
-/// Reverse interned-name vector.
 pub const NAMES_RVA: Rva = Rva(0x033e_b2b0);
-/// Saved-target record stride; its final u16 ends it.
 pub const STRIDE: usize = 0x70;
-/// Saved-target record vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0279_f280);
-/// Fallback target receiver used only outside an initialized game, gated by `cgame_state::PLAYER_INPUT_ELIGIBLE`.
 pub const IN_GAME: usize = 0xa39;
-/// Stored reference fields in validity-bit order.
 pub const REFERENCES: [usize; 9] = [0x10, 0x18, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58, 0x60];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,9 +21,7 @@ pub struct Row {
     pub state: i32,
     pub country: i32,
     pub character: u32,
-    /// Nine live references, region/combatant presence, then an unsaved name.
     pub live: u16,
-    /// None: no leader. Some(0): a leader with null identity, refused per row.
     pub character_leader: Option<u64>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,8 +67,6 @@ fn name_header(memory: &impl Memory, names: Array, id: u16) -> Result<[u8; 32], 
     }
     Ok(text)
 }
-/// Off-thread sizing, from the live target header and each named string's
-/// stored length. No country multiplier or chosen target/name cap.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Option<Demand> {
     let result = count(memory, base, state);
     (!matches!(result.outcome, Outcome::Unavailable { .. })).then_some(result.required)
@@ -101,8 +75,6 @@ pub fn count(memory: &impl Memory, base: usize, state: usize) -> Walk {
     walk_buffer(memory, base, state, Buffer::Count, Buffer::Count)
 }
 
-/// Visit the saved registry and retained name lengths. Grow owned worker
-/// storage from original observations before copying.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -150,10 +122,6 @@ fn walk_buffer(
         let (rh, registry) = header(memory, registry_at, STRIDE)?;
         let (nh, names) = header(memory, names_at, 32)?;
         required.rows = registry.count as usize;
-        // Each new interned name truncates map size to u16. After wrap, distinct
-        // strings alias a stored ID; reverse-vector names cannot reproduce the
-        // full name-to-ID map. Refuse this named unsupported form instead of
-        // resolving the wrong name.
         if registry.count != 0 && names.count as usize > usize::from(u16::MAX) + 1 {
             return Err(
                 "saved event target intern IDs have wrapped: name aliases are not recorded",
@@ -218,25 +186,16 @@ fn walk_buffer(
             let target_state = i32::from_le_bytes(raw[8..12].try_into().unwrap());
             let country = i32::from_le_bytes(raw[12..16].try_into().unwrap());
             let mut live = u16::from(qword(0x20) != 0) << 9 | u16::from(qword(0x28) != 0) << 10;
-            // The first interned string has ID zero. Saving omits its name, while
-            // lookup retains the string.
             live |= u16::from(id == 0) << 11;
             let mut character_leader = None;
             if target_state == 0 && country <= 0 {
-                // Observe all object references, including kinds shadowed by a context
-                // or variable selector.
                 for (bit, handle) in REFERENCES.map(qword).into_iter().enumerate() {
                     if let Some(object) = creference_registry::resolve(memory, base, handle)? {
-                        // Unit reference resolution yields the enclosing object; its secondary base alone is null.
                         if bit == 3 && object == 0x10 {
                             continue;
                         }
                         live |= 1 << bit;
                         if bit == 0 {
-                            // Unit-leader selection uses the direct unit leader
-                            // (`ccharacter::UNIT_LEADER`), else the reference
-                            // (`ccharacter::OPERATIVE`). UnitLeaders captures only the direct unit
-                            // leader and cannot supply the fallback.
                             let direct = read::<u64>(
                                 memory,
                                 object.checked_add(0xa8).ok_or("saved character overflow")?,
@@ -512,14 +471,12 @@ mod tests {
         assert_eq!(rows[0].live, 1 | (1 << 9));
         assert_eq!(rows[0].character, 3);
         assert_eq!(rows[0].character_leader, Some(leader));
-        // A null identity affects this row's leader consumer, not the table.
         memory.saved.put(0x8008, &0u64.to_le_bytes());
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows, &mut text).outcome,
             Outcome::Rows { len: 2 }
         );
         assert_eq!(rows[0].character_leader, Some(0));
-        // The reference resolves even though UnitLeaders' direct path is null.
         memory.saved.put(0x5000 + 0xa8, &0u64.to_le_bytes());
         memory.saved.put(0x5000 + 0xc8, &fallback.to_le_bytes());
         memory.saved.put(0x8108, &leader.to_le_bytes());
@@ -528,7 +485,6 @@ mod tests {
             Outcome::Rows { len: 2 }
         );
         assert_eq!(rows[0].character_leader, Some(leader));
-        // Later references are probed even when the character wins selection.
         memory.saved.0.remove(&(r::LOW_ROOTS_RVA.0 + 55 * 8));
         assert!(matches!(
             walk(&memory, 0, 0x1000, &mut rows, &mut text).outcome,

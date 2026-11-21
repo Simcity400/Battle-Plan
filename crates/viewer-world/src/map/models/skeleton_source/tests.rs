@@ -15,7 +15,6 @@ fn transform_bits(value: &mesh::Transform) -> [[u32; 3]; 4] {
 }
 
 fn skeleton_equal(left: &mesh::Mesh, right: &mesh::Mesh) {
-    // Exhaustive: a new retained Mesh field must extend this comparison.
     let mesh::Mesh {
         lod_distances,
         shapes,
@@ -114,7 +113,6 @@ fn bits(values: &[f32]) -> Vec<u32> {
     values.iter().map(|value| value.to_bits()).collect()
 }
 
-/// Compare retained banks and sampled channels by bits, including one frame past the end.
 type AnimationBits = (
     u32,
     u32,
@@ -173,7 +171,6 @@ fn same_animation(left: Option<&Arc<mesh::Animation>>, right: Option<&Arc<mesh::
     );
 }
 
-/// Exhaustive state and event comparison: new fields must extend it; floats compare by bits.
 fn state_bits(state: &mesh::EntityState) -> impl PartialEq + std::fmt::Debug {
     let mesh::EntityState {
         name,
@@ -228,7 +225,6 @@ fn state_bits(state: &mesh::EntityState) -> impl PartialEq + std::fmt::Debug {
     )
 }
 
-/// Number each allocation by its first reference; compare sharing classes, never addresses.
 fn sharing(library: &ModelLibrary) -> [Vec<usize>; 5] {
     use std::collections::BTreeMap;
     fn class<T>(classes: &mut BTreeMap<*const T, usize>, item: &Arc<T>) -> usize {
@@ -285,7 +281,6 @@ fn sharing(library: &ModelLibrary) -> [Vec<usize>; 5] {
     walk
 }
 
-/// Exhaustive mesh comparison: new fields must extend it; floats compare by bits.
 fn meshes_equal(left: &ModelMesh, right: &ModelMesh) {
     let ModelMesh {
         asset,
@@ -354,7 +349,6 @@ fn meshes_equal(left: &ModelMesh, right: &ModelMesh) {
     }
 }
 
-/// Exhaustive rig-node comparison: new fields must extend it; floats compare by bits.
 fn nodes_equal(
     left: &crate::map::entity_animation::Node,
     right: &crate::map::entity_animation::Node,
@@ -468,7 +462,6 @@ fn nodes_equal(
     }
 }
 
-/// Compare all retained payloads, refusals and sharing, excluding allocation addresses and capacities.
 fn libraries_equal(left: &ModelLibrary, right: &ModelLibrary) {
     assert_eq!(left.decode(), right.decode());
     assert_eq!(left.layers.is_some(), right.layers.is_some());
@@ -482,7 +475,7 @@ fn libraries_equal(left: &ModelLibrary, right: &ModelLibrary) {
     }
     assert_eq!(left.index, right.index);
     assert_eq!(left.materials, right.materials);
-    assert_eq!(left.textures, right.textures); // All mip metadata AND encoded/texel bytes.
+    assert_eq!(left.textures, right.textures);
     assert_eq!(left.spaces, right.spaces);
     assert_eq!(left.paths, right.paths);
     assert_eq!(left.failed, right.failed);
@@ -787,7 +780,6 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
 
 #[test]
 fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
-    // Explicit source-order construction keeps attachment and merge expectations visible.
     let root =
         std::env::temp_dir().join(format!("hoi4_skeleton_bytes_{}_{}", std::process::id(), 8));
     std::fs::create_dir_all(&root).unwrap();
@@ -965,8 +957,6 @@ fn repeated_hour_bakes_keep_fixed_names_bytes_and_source_ordered_refusals() {
         assert_eq!(report.overlay_refusals(), fresh_report.overlay_refusals());
     }
     assert_eq!(failures, 34);
-    // Direct add appends duplicates too: 96 * 3 requests minus 34 failures.
-    // The latest occurrence supplies each name's slot, unlike load's deduped input.
     assert_eq!(warm.meshes.len(), 254);
     assert_eq!(warm.rigs.len(), 254);
     assert_eq!(warm.palette.len(), 254);
@@ -982,7 +972,6 @@ fn repeated_hour_bakes_keep_fixed_names_bytes_and_source_ordered_refusals() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// One PDX property: its name, value kind (`f`, `i` or `s`), count and payload.
 fn pdx_property(
     name: &str,
     kind: u8,
@@ -1061,7 +1050,6 @@ fn dds_file(side: u32, fill: u8) -> Vec<u8> {
     bytes
 }
 
-/// Identical rest poses with different retained banks discriminate pose-only comparisons.
 fn rest_animation(with_samples: bool) -> Vec<u8> {
     let mut bytes = [
         b"@@b@[info\0".to_vec(),
@@ -1081,7 +1069,6 @@ fn rest_animation(with_samples: bool) -> Vec<u8> {
     bytes
 }
 
-/// Two states share one decode, allowing the comparator to detect a broken sharing class.
 fn paired(name: &str, animation: &[u8]) -> ModelLibrary {
     let root = std::env::temp_dir().join(format!(
         "hoi4_comparator_{name}_{}_{:?}",
@@ -1105,7 +1092,6 @@ fn paired(name: &str, animation: &[u8]) -> ModelLibrary {
         "synthetic.asset",
     )
     .unwrap();
-    // Independent fixtures use one synthetic namespace so only the compared payload differs.
     let mut library = ModelLibrary {
         asset_namespace: Some(Arc::from([])),
         ..ModelLibrary::empty(Decode::default())
@@ -1115,7 +1101,6 @@ fn paired(name: &str, animation: &[u8]) -> ModelLibrary {
     library
 }
 
-/// Whether the comparison refuses the two libraries.
 fn refused(left: &ModelLibrary, right: &ModelLibrary) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         libraries_equal(left, right)
@@ -1123,7 +1108,6 @@ fn refused(left: &ModelLibrary, right: &ModelLibrary) -> bool {
     .is_err()
 }
 
-/// The first clip's state of the library's only rig, to change in place.
 fn first_state(library: &mut ModelLibrary) -> &mut mesh::EntityState {
     &mut Arc::get_mut(&mut library.rigs[0])
         .expect("a baked rig is the library's own")
@@ -1132,7 +1116,6 @@ fn first_state(library: &mut ModelLibrary) -> &mut mesh::EntityState {
         .state
 }
 
-/// Signed zeros, NaN payloads, retained banks and sharing discriminate weaker comparisons.
 #[test]
 fn the_comparison_tells_apart_what_derived_equality_does_not() {
     let rest = rest_animation(false);
@@ -1147,20 +1130,17 @@ fn the_comparison_tells_apart_what_derived_equality_does_not() {
         shared[0].animation.as_ref().unwrap(),
         shared[1].animation.as_ref().unwrap()
     ));
-    // Signed zero: equal under derived equality, different bits.
     let mut signed = paired("signed", &rest);
     first_state(&mut same).blend = 0.0;
     first_state(&mut signed).blend = -0.0;
     assert_eq!(first_state(&mut signed).blend, first_state(&mut same).blend);
     assert!(refused(&same, &signed));
-    // Identical NaN bits compare equal; another payload does not.
     let (mut left, mut right) = (paired("nan_left", &rest), paired("nan_right", &rest));
     first_state(&mut left).speed = f32::from_bits(0x7fc0_1234);
     first_state(&mut right).speed = f32::from_bits(0x7fc0_1234);
     assert!(!refused(&left, &right));
     first_state(&mut right).speed = f32::from_bits(0x7fc0_4321);
     assert!(refused(&left, &right));
-    // Equal poses from different retained banks.
     let banked = paired("banked", &rest_animation(true));
     let (poses, banks) = (
         animation_bits(base.animations["gfx/models/rest.anim"].as_ref().unwrap()),
@@ -1169,7 +1149,6 @@ fn the_comparison_tells_apart_what_derived_equality_does_not() {
     assert_eq!(poses.4, banks.4);
     assert_ne!(poses.3, banks.3);
     assert!(refused(&base, &banked));
-    // One shared decode against two equal separate ones.
     let mut separate = paired("separate", &rest);
     let clip = &mut Arc::get_mut(&mut separate.rigs[0]).unwrap().nodes[0].clips[1];
     clip.animation = clip

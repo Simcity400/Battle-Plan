@@ -5,7 +5,6 @@
 [data-worker-panel] .special-project-progress > i { opacity: 0; }
 [data-ink-content] [data-paint]:not([data-prose]) { font-variant-numeric: tabular-nums; }
 
-/* Tabular digits make the full percentage the widest label in either slot view. */
 :is(.active-card-foot, .research-now-cell) > [data-paint="percent"]::after {
   content: "100%" / "";
   display: block;

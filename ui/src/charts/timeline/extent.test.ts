@@ -16,7 +16,6 @@ test('grow with playback keeps a chosen zoom or pan while default source changes
 test('an explicit label read hour avoids naming the right edge after the final recording hour', () => {
   assert.equal(labelMoment(null, 101, 100), 100);
   assert.equal(labelMoment(40, 101, 40), 40);
-  // Other timelines keep their existing defaults.
   assert.equal(labelMoment(null, 100), 100);
   assert.equal(labelMoment(40, 100), 40);
 });

@@ -1,14 +1,3 @@
-//! `FuelDemandTotals`: each country's current daily fuel demand by family (army, air, navy, the
-//! Fuel consumers' order), from its CountryFuel row's demand pack and that pack's lists, which
-//! FuelDemandParts holds. Per family: the game's own wrapping sum of its parts' rates projected
-//! over a day, or why it is not known; and the widened sums of each known part's daily projection,
-//! as is and clamped at zero. While the pack is not known (not recorded, read at another hour,
-//! refused, or its parts not making whole lists) every cell is not recorded, never zero, and each
-//! reason names why.
-//!
-//! A country is recomputed when its pack header or one of its parts changes, or when its pack
-//! carries its own read hour and the table is read again. State: each country's part keys, and the
-//! countries whose packs carry their own hour, rebuilt from the tables at a fresh hour or a resume.
 
 use crate::{
     deployed::{invalid, row},
@@ -35,7 +24,6 @@ const READS: &[Read] = &[
     Read { table: TableId::FuelDemandParts, columns: Columns::Every, watch: Watch::Changed, required: false },
 ];
 
-/// The country a FuelDemandParts key belongs to.
 fn country_of(key: u128) -> u32 {
     (key >> 83) as u32
 }
@@ -46,14 +34,10 @@ fn reason(bytes: &[u8], otherwise: &str) -> Vec<u8> {
 
 const MISMATCH: &[u8] = b"Current fuel consumption supplying read or native country identity does not match";
 
-/// Whether `row`'s pack was read at another hour than `read`: then it is not known, whatever its
-/// parts, and they need not be read.
 fn stale(row: &CountryFuelRow, read: i32) -> bool {
     matches!(&row.demand, Recorded::Value(pack) if pack.hour.at(read) != read)
 }
 
-/// A country's pack as its table holds it, its lists put back from `parts`; or why it is not
-/// known at a read at `read`.
 fn pack(row: CountryFuelRow, parts: Result<&[FuelDemandPartRow], &'static str>, read: i32) -> Result<FuelDemandRead, Vec<u8>> {
     let mut rows = [row];
     assemble_demand_parts(&mut rows, parts);
@@ -70,12 +54,10 @@ fn pack(row: CountryFuelRow, parts: Result<&[FuelDemandPartRow], &'static str>, 
     Ok(pack)
 }
 
-/// A unit's daily projection, when its rate was read.
 fn unit(row: &FuelDemandUnit) -> Option<i64> {
     row.rate_raw.map(daily_required)
 }
 
-/// The row's cells for a pack, or for why it is not known; `text` makes the cell of a text.
 fn cells(pack: Result<FuelDemandRead, Vec<u8>>, text: &mut dyn FnMut(&[u8]) -> Value) -> Vec<Value> {
     let pack = match pack {
         Ok(pack) => pack,
@@ -122,16 +104,12 @@ fn cells(pack: Result<FuelDemandRead, Vec<u8>>, text: &mut dyn FnMut(&[u8]) -> V
 
 #[derive(Default)]
 pub struct FuelDemand {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
-    /// Each country's FuelDemandParts keys.
     parts: HashMap<u32, Vec<u128>>,
-    /// The countries whose packs carry their own read hour.
     stamped: HashSet<u32>,
 }
 
 impl FuelDemand {
-    /// Country `country`'s parts as the table holds them, in key order.
     fn parts_of(&self, hour: &Hour<'_>, country: u32) -> io::Result<Vec<FuelDemandPartRow>> {
         let view = hour.table(TableId::FuelDemandParts);
         let mut keys = self.parts.get(&country).cloned().unwrap_or_default();
@@ -139,7 +117,6 @@ impl FuelDemand {
         keys.into_iter().filter_map(|key| view.slot(key)).map(|slot| row(&view, slot, &PART)).collect()
     }
 
-    /// Writes country `country`'s row as the tables hold it now; none without a CountryFuel row.
     fn country(&mut self, hour: &Hour<'_>, country: u32, out: &mut Rows) -> io::Result<()> {
         let view = hour.table(TableId::CountryFuel);
         let Some(slot) = view.slot(u128::from(country)) else {
@@ -164,7 +141,6 @@ impl FuelDemand {
         Ok(())
     }
 
-    /// Every row again from the tables as they stand.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         *self = Self::default();
         let parts = hour.table(TableId::FuelDemandParts);
@@ -184,7 +160,6 @@ impl FuelDemand {
         Ok(())
     }
 
-    /// Writes the countries whose pack or parts the hour changed.
     fn apply(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         let mut dirty: HashSet<u32> = hour.deleted_keys(TableId::CountryFuel).map(|key| key as u32).collect();
         let fuel = hour.table(TableId::CountryFuel);
@@ -249,7 +224,6 @@ impl Writer for FuelDemand {
         if hour.fresh || self.rebuild { self.rebuild(hour, out) } else { self.apply(hour, out) }
     }
 
-    /// Nothing but the tables: a resume rebuilds every row from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

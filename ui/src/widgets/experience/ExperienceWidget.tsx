@@ -42,10 +42,6 @@ const NO_WARNINGS: string[] = [];
 const NO_PAINT = () => {};
 const branchDash = (branch: ExperienceBranch) => lineDashes(BRANCHES.indexOf(branch)).primary;
 
-/** Banked experience, daily gain or net change, a line per country and branch from the declared series' tiles: one
- * country's branches in the branch colours, several countries each in its colour with a dash per branch. The first
- * country's values at the head (or the hovered hour) come from the followed `country-experience` panel, each value not
- * recorded with its reason. */
 export default function ExperienceWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
@@ -69,25 +65,22 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     [following, runtime.clock, axisOffset]);
   const lane = (branch: ExperienceBranch) => track && resolved.tags.length && branches.includes(branch) ? { source: track.source, branchId: track.branch.id,
     family: experienceFamily(measure, branch), tags: resolved.tags, ...(resolved.membership ? { within: resolved.membership } : {}), lastHour } : null;
-  // One tile set a branch, each asked only while its branch is shown; tiles landing while following repaint, never render.
   const tiles = { army: useTiles(runtime.client, lane('army'), active, following), navy: useTiles(runtime.client, lane('navy'), active, following),
     air: useTiles(runtime.client, lane('air'), active, following) };
-  // Each line's last bin is drawn to the head at its followed value, the value the legend's card holds; unfollowed, the
-  // tiles would draw it at the bin before's last value.
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
     ? { product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
   const followed = {
-    army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT), // eslint-disable-line react-hooks/exhaustive-deps
-    navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT), // eslint-disable-line react-hooks/exhaustive-deps
-    air: useFollow(store, useMemo(() => headQuery('air'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT), // eslint-disable-line react-hooks/exhaustive-deps
+    army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
+    navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
+    air: useFollow(store, useMemo(() => headQuery('air'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
   };
   const entryOf = (branch: ExperienceBranch) => followsHead(followed[branch]) ? followed[branch].entry : null;
   const heads = { army: entryOf('army'), navy: entryOf('navy'), air: entryOf('air') };
   useEffect(() => followExperienceHeads(heads, resolved.tags, (branch, tag) => tiles[branch].head(tag)),
-    [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]); // eslint-disable-line react-hooks/exhaustive-deps
+    [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]);
   const first = resolved.tags[0] ?? null;
   const [hover, setHover] = useState<number | null>(null);
   const card = useHeadProduct(runtime, widget, 'country-experience', track && first ? { country: countryFromKey(first)} : null,
@@ -99,7 +92,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const single = resolved.tags.length === 1;
   const lines = useMemo(() => experienceLines(resolved.tags, branches, single,
     countryLineColours(resolved.tags, styles.known, tokens.surface, tokens.countryColours === 'fixed'), tokens.categories),
-  [resolved.tags, branches.join(), single, styles.known, tokens]); // eslint-disable-line react-hooks/exhaustive-deps
+  [resolved.tags, branches.join(), single, styles.known, tokens]);
   const warnings = card.data?.warnings;
   useLayoutEffect(() => {
     onDiagnostics(warnings?.length ? warnings : NO_WARNINGS);
@@ -114,7 +107,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
       if (!made) scaled.set(summary, made = pointsSummary(summary));
       return made;
     };
-  }, [tiles.army.read, tiles.navy.read, tiles.air.read]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tiles.army.read, tiles.navy.read, tiles.air.read]);
   const until = shownUntil(playhead, options.playback as PlaybackMode, options.afterPlayhead === true);
   const layers = useMemo<ChartLayer[]>(() => lines.map(line => ({
     draw: (ctx, frame, chartTokens, state) => {
@@ -125,7 +118,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   })), [lines, summaryOf, until, single]);
   const data = useMemo<ChartData>(() => ({ revision: () => BRANCHES.map(branch => tiles[branch].read()),
     subscribe: listener => { const stops = BRANCHES.map(branch => tiles[branch].subscribe(listener)); return () => stops.forEach(stop => stop()); } }),
-  [tiles.army.subscribe, tiles.navy.subscribe, tiles.air.subscribe]); // eslint-disable-line react-hooks/exhaustive-deps
+  [tiles.army.subscribe, tiles.navy.subscribe, tiles.air.subscribe]);
   const menu = useContextMenu('Experience actions');
   const head = card.data ? card.data : null;
   const error = BRANCHES.map(branch => tiles[branch].error).find(Boolean);

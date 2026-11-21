@@ -1,0 +1,11 @@
+# Reuse chart tiles across views and prefetch by their visible bounds
+
+Identify tiles by recording revision, branch, series, bin size, index and line. Views share the same pending requests and decoded arrays. A visible view can promote a tile request already queued by preparation. Pin visible tiles even when they take the cache over its byte bound, since evicting them would immediately start the same requests again. Evict unpinned tiles by recency. When a recording grows, reread incomplete tiles that no longer cover their requested end while continuing to reuse immutable ones.
+
+Choose bins by frame width and history extent independently of the moving head. Start the next tile ahead of the head. A growing view can keep its current resolution up to the pixel density threshold to avoid fetching its whole visible range again. Request bounded groups of tags so one large group does not consume the response budget for a frame. Assemble lines only when the required set changes and has landed. After the first live lines, a new tile wakes chart drawing without a component commit.
+
+Decode the binary sections with aligned typed arrays. A binned tile has presence and break flags, followed by first, last, low and high values and their positions, or a single level value. Its raw integers use the series scale. Hourly tiles carry run starts. Seam flags let a run continue across tiles, and a new holder segment breaks a line. Marks carry their ordinal from previous tiles and use cells anchored to the absolute grid, so scrolling keeps their grouping. Small changes in viewport span keep the current mark cell size and a real zoom can change it.
+
+Register follows by logical line so they survive tile arrivals and assembly changes. At the live head, prefer the followed value and preserve the difference between a pending answer and an explicit missing value. Otherwise the previous known bin can supply the head extension. A gap stops that extension. Choose the dominant unrecorded reason only when all relevant line ranges are covered by missing spans.
+
+[Tile wire reader](../../ui/src/dashboard/tiles/tile.ts) · [Cache](../../ui/src/dashboard/tiles/cache.ts) · [Viewport and assembly](../../ui/src/dashboard/tiles/view.ts) · [Followed head](../../ui/src/dashboard/tiles/head.ts) · [Consumer](../../ui/src/dashboard/tiles/useTiles.ts)

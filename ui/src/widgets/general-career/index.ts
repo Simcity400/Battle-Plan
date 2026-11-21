@@ -22,7 +22,6 @@ function useLeaderChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionCho
   const names = useCountryNamesAt(runtime.client, track, wanted, true);
   if (!track || selectionReason) return { leader: [] };
   if (error) return { leader: { error, retry } };
-  // A failed country-groups read never starts the leaders read; its failure is the picker's.
   if (group.error) return { leader: { error: group.error, retry: group.retry } };
   if (!choices) return { leader: LOADING };
   return { leader: leaderChoices(choices, track.source.metadata.campaignKey, (hour, tag) => nameReadMetadata(names.get(nameKey(hour, tag)))) };

@@ -57,7 +57,6 @@ impl Image {
         self.u32(at + 12, count);
     }
     fn accumulator(&mut self, at: usize, data: usize, entries: &[(u32, i64)]) {
-        // Capacity is intentionally absent; keyed lookup never reads it.
         self.u64(at, data as u64);
         self.u32(at + 12, entries.len() as u32);
         for (index, &(key, raw)) in entries.iter().enumerate() {
@@ -96,7 +95,6 @@ fn fixture() -> Image {
     image.u32(STATE + crate::cstate::CONTROLLER, 2);
     image.put(STATE + crate::cstate::COUNTRY_MODIFIERS, &[0; 17]);
     image.u64(STATE + crate::cstate::COUNTRY_MODIFIERS, BUCKET as u64);
-    // Probing can pass the mask into the declared overflow allocation.
     image.put(STATE + crate::cstate::COUNTRY_MODIFIERS + 16, &[1]);
     image.put(BUCKET + crate::cstate::COUNTRY_MODIFIER_STRIDE + 4, &[0]);
     image.put(BUCKET + 4, &[0]);
@@ -151,7 +149,6 @@ fn strategic_action_state_override_uses_roster_and_base_fallback() {
     let selected = read_action(&image).unwrap().unwrap();
     assert_eq!(selected.state_modifier, Some(-9));
     assert!(!image.touched(STATE + crate::cstate::CONTROLLER));
-    // A non-roster bucket falls back even though it is the expeditionary owner.
     image.u32(BUCKET + 8, 2);
     image.fault = None;
     assert_eq!(read_action(&image).unwrap(), Some(base));

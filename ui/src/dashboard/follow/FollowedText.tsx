@@ -4,8 +4,6 @@ import { textCell } from './painters.ts';
 import type { TextCell } from './painters.ts';
 import { measuredWidget } from '../widgetPerf.ts';
 
-/** A text that follows the head: rendered once, then written by its painter in the animation frame whenever its
- * entry's answer moves, never by a render. */
 export function FollowedText({ store, entry, write }: { store: FollowStore; entry: FollowEntry; write: (entry: FollowEntry, cell: TextCell) => void }) {
   const span = useRef<HTMLSpanElement>(null);
   const writing = useRef(write);

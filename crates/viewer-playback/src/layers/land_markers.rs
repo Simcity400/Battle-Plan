@@ -1,12 +1,3 @@
-//! The map's land combat markers, from the mirrors: per land combat its marker for the viewing
-//! country (province, first mapped attacker, seen, progress, tint, frame, bombardment), or why it
-//! has none, with the gaps and limitations it is named in. These are the hour part of today's land
-//! combat icons (`viewer_counters::map::counters::combat_markers::land_marker` decides each combat
-//! for both); placing them for the camera stays camera-bound.
-//!
-//! The engaged flags and the combats whose flag changed come from the engagement layer, registered
-//! before this one; an unseen icon's frame from the same engaged index, given to the constructor.
-//! Vision is an input set from outside until the vision layer can be read.
 
 use super::{
     Carried, Change, Settling, Dirty, Inputs, KeptAt, Keys, Layer, List, Num, Upstream, View,
@@ -43,13 +34,10 @@ use viewer_foundation::{
     unit_class::CounterClass,
 };
 
-/// What the markers read of the content: stack anchors, the movement map, the defines, and which
-/// provinces a camera admits.
 pub trait Front: Send + Sync {
     fn anchor(&self, province: u32, slot: u32) -> Option<[f32; 3]>;
     fn movement(&self) -> Option<&MovementMap>;
     fn defines(&self) -> LandCombatDefines;
-    /// The camera height at and above which no land combat marker is drawn.
     fn cutoff(&self) -> f32;
     fn admits(&self, placement: Placement, viewport: [u32; 2]) -> Option<Admits>;
 }
@@ -106,13 +94,11 @@ pub(super) fn u64s(bytes: &[u8]) -> Vec<u64> {
     bytes.chunks_exact(8).map(|word| u64::from_le_bytes(word.try_into().expect("eight bytes"))).collect()
 }
 
-/// An opaque cell's value; `None` when it holds none, is not recorded or does not decode.
 pub(super) fn opaque<T: NativeValue>(mirror: &Mirror, column: List, slot: u32) -> Option<T> {
     let Cell::Value(bytes) = mirror.list(column, slot) else { return None };
     T::from_field(Field::Opaque(Opaque::Encoded(bytes, mirror.format()))).ok()
 }
 
-/// An opaque cell as a `Recorded` value: not recorded when the cell is.
 pub(super) fn recorded<T: NativeValue>(mirror: &Mirror, column: List, slot: u32) -> Recorded<T> {
     match mirror.list(column, slot) {
         Cell::Value(bytes) => <Recorded<T> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, mirror.format()))).unwrap_or(Recorded::NotRecorded),
@@ -120,7 +106,6 @@ pub(super) fn recorded<T: NativeValue>(mirror: &Mirror, column: List, slot: u32)
     }
 }
 
-/// A fixed-point cell's native value: a field stored at a display step holds units of it.
 fn native(mirror: &Mirror, column: Num<i64>, slot: u32) -> Cell<i64> {
     match (mirror.number(column, slot), column.table.display_step(column.column)) {
         (Cell::Value(units), Some(step)) => step.value(units).map_or(Cell::Unrecorded, Cell::Value),
@@ -128,12 +113,10 @@ fn native(mirror: &Mirror, column: Num<i64>, slot: u32) -> Cell<i64> {
     }
 }
 
-/// The rows a table holds at the head: none when unavailable, not recorded or in a gap.
 pub(super) fn held(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
-/// How a table holds its rows, for a gap's wording.
 pub(super) fn held_as(mirror: Option<&Mirror>) -> Held<'_> {
     match mirror.map(|mirror| (mirror, mirror.status())) {
         Some((_, Some(Status::Complete))) => Held::Complete,
@@ -147,7 +130,6 @@ pub(super) fn held_as(mirror: Option<&Mirror>) -> Held<'_> {
     }
 }
 
-/// The panel words `LandCombatMemberValues::joined` and the maxima read.
 const PANEL: [usize; 12] = [0, 1, 3, 9, 10, 11, 12, 13, 14, 15, 20, 21];
 
 #[derive(Clone, Copy)]
@@ -189,8 +171,6 @@ struct Columns {
 }
 
 impl Columns {
-    /// Whether a marker reads `column` of division-keyed `table` or of the combats' sides and
-    /// details: a write to any other column changes no marker.
     fn reads(&self, table: TableId, column: usize) -> bool {
         let lists = |lists: &[List]| lists.iter().any(|list| list.column == column);
         match table {
@@ -222,10 +202,8 @@ const TABLES: [TableId; 9] = [
     TableId::CountryLinks,
 ];
 
-/// The division-keyed tables a marker reads.
 const BY_DIVISION: [TableId; 4] = [TableId::Divisions, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::DivisionMovement];
 
-/// The mirrors a settle reads.
 struct Tables<'a> {
     combats: Option<&'a Mirror>,
     sides: Option<&'a Mirror>,
@@ -269,12 +247,10 @@ fn row(mirror: Option<&Mirror>, key: u64) -> Option<(&Mirror, u32)> {
     Some((mirror, mirror.slot(u128::from(key))?))
 }
 
-/// A combat member's side and division: the one place `LandCombatDivisions`' key is read.
 fn member_of(key: u128) -> (u64, u8) {
     ((key >> 33) as u64, ((key >> 32) & 1) as u8)
 }
 
-/// The joins of one settle.
 struct Joins<'a> {
     field: &'a dyn Front,
     tables: &'a Tables<'a>,
@@ -283,7 +259,6 @@ struct Joins<'a> {
     flags: &'a BTreeMap<u64, Engaged>,
     kept: &'a HashMap<u64, Kept>,
     defines: LandCombatDefines,
-    /// The combat's member slots, in key order.
     members: &'a [u32],
 }
 
@@ -293,7 +268,6 @@ impl Joins<'_> {
         native(divisions, self.columns.organisation, slot).value()
     }
 
-    /// A member's division values: its own copy, else its division's rows joined.
     fn values(&self, member: u32) -> Option<LandCombatMemberValues> {
         let (columns, members) = (self.columns, self.tables.members?);
         let own: Option<LandCombatMemberValues> = opaque::<Option<LandCombatMemberValues>>(members, columns.own, member).flatten();
@@ -315,7 +289,6 @@ impl Joins<'_> {
     }
 }
 
-/// A combat's members by side and division, as today's survival estimate keys them.
 struct Members<'a> {
     joins: &'a Joins<'a>,
     by: BTreeMap<(u8, u64), (Option<[i64; 5]>, [i64; 4])>,
@@ -440,8 +413,6 @@ impl MarkerJoins for Joins<'_> {
     }
 }
 
-/// One made combat: its id and province, its outcome, the divisions it named, and the frame kept
-/// it was made with.
 #[derive(Clone, Debug)]
 struct Made {
     id: u64,
@@ -451,39 +422,25 @@ struct Made {
     kept: Kept,
 }
 
-/// The land markers layer's arrays and what keeps them.
 pub struct LandMarkers {
     field: Arc<dyn Front>,
     index: Option<Index>,
     columns: Option<Columns>,
     refused: Option<String>,
-    /// Per `LandCombats` slot, when made.
     outcomes: Vec<Option<Made>>,
-    /// Per division: the `LandCombats` slots naming it.
     by_division: HashMap<u64, Vec<u32>>,
-    /// Per combat: its `LandCombatDivisions` slots; per such slot, its combat.
     members: HashMap<u64, Vec<u32>>,
     member_rows: Vec<u64>,
     member_slots: Dirty,
-    /// `LandCombats` slots marked, admitted or not: a settle leaves one outside the view in `out`.
     combats: Dirty,
-    /// Per made combat whose marker is not seen, its `LandCombats` slot: an unseen marker draws
-    /// the frame the index keeps, so a change of that frame makes it again.
     unseen: HashMap<u64, u32>,
-    /// Each live combat's kept frame as the index keeps it at the head, and where that stands.
     kept: HashMap<u64, Kept>,
     kept_at: KeptAt,
-    /// Combats whose row a step changed: their kept frame is read again.
     kept_owed: Keys,
-    /// Combats whose kept frame was read, since the layer was made.
     frames_read: usize,
-    /// Rows the steps changed, resolved by a settle to the combats they name: the sides and
-    /// details, and per division-keyed table ([`BY_DIVISION`]).
     side_rows: [Rows; 2],
     division_rows: [Rows; 4],
-    /// The engagement layer's land flags and provenance, as last taken.
     flags: Option<(BTreeMap<u64, Engaged>, Provenance)>,
-    /// The engagement layer's land provenance's limitation, named for every combat.
     limit: Option<&'static str>,
     all: bool,
     hidden: bool,
@@ -500,18 +457,14 @@ pub struct LandMarkers {
     admitted: Vec<u64>,
     out: Vec<u64>,
     outside: usize,
-    /// Moves on with every change of what [`Self::published`] holds.
     version: u64,
-    /// The markers as the window's counters draw them, and the version they were made at.
     published: Option<(u64, Arc<Product>)>,
-    /// Combats made since the layer was made, and rows its `apply` read: none, by the contract.
     #[cfg(any(test, feature = "test-support"))]
     made: usize,
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
-/// The land markers as today's counters lay them out.
 pub type Product = viewer_counters::map::counters::combat_markers::LandMarkers;
 
 impl LandMarkers {
@@ -560,7 +513,6 @@ impl LandMarkers {
         }
     }
 
-    /// Combats made, and rows `apply` read, since the layer was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn made(&self) -> usize {
         self.made
@@ -571,7 +523,6 @@ impl LandMarkers {
         self.applied_reads
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let index = self.index.as_ref().map(|index| Index { history: Arc::clone(&index.history), branch: index.branch });
         let fresh = Self { columns: self.columns, hidden: self.hidden, camera: self.camera, admits: self.admits.clone(), flags: self.flags.clone(), ..Self::new(Arc::clone(&self.field), index) };
@@ -601,7 +552,6 @@ impl LandMarkers {
         self.refused.as_deref()
     }
 
-    /// The view draws no land combat marker: today places none there either.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
@@ -610,29 +560,23 @@ impl LandMarkers {
         self.marked
     }
 
-    /// Combats whose kept frame was read from the index, since the layer was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn frames_read(&self) -> usize {
         self.frames_read
     }
 
-    /// Every made combat: its id, province and outcome.
     pub fn outcomes(&self) -> impl Iterator<Item = (u64, u32, &MarkerOutcome)> + '_ {
         self.outcomes.iter().flatten().map(|made| (made.id, made.province, &made.outcome))
     }
 
-    /// The limitation the engagement layer's provenance names for every combat.
     pub fn limit(&self) -> Option<&'static str> {
         self.limit
     }
 
-    /// The markers the window's counters draw, as of the last settle: the admitted combats', in
-    /// key order, with their gaps and limitations; none while refused or hidden.
     pub fn published(&self) -> Option<&Arc<Product>> {
         self.published.as_ref().filter(|_| self.refused.is_none() && !self.hidden).map(|(_, product)| product)
     }
 
-    /// Makes the published product again when what it holds changed since.
     fn publish(&mut self) {
         if self.refused.is_none() && !self.hidden && self.published.as_ref().is_none_or(|(version, _)| *version != self.version) {
             self.published = Some((self.version, Arc::new(self.product())));
@@ -684,8 +628,6 @@ impl LandMarkers {
 
     fn readmit(&mut self) {
         self.camera_dirty = false;
-        // The product holds the markers of the combats the view admits: a move that admits the
-        // same ones publishes nothing new, so the overlay laid out over it is not asked again.
         let admitted = |layer: &Self| -> Vec<u64> { layer.outcomes.iter().flatten().filter(|made| layer.admitted(made.province)).map(|made| made.id).collect() };
         let before = admitted(self);
         self.admits = self.camera.and_then(|(placement, viewport)| self.field.admits(placement, viewport));
@@ -700,14 +642,12 @@ impl LandMarkers {
         out.into_iter().for_each(|slot| self.mark(slot));
     }
 
-    /// Marks a combat, reading nothing: a settle decides whether the view admits it.
     fn mark(&mut self, slot: u32) {
         if self.combats.mark(slot, self.frame) {
             self.marked += 1;
         }
     }
 
-    /// Whether the view admits combat `slot`: its province now or as made.
     fn inside(&mut self, combats: Option<&Mirror>, slot: u32) -> bool {
         self.admits.is_none() || {
             let columns = self.columns();
@@ -740,12 +680,10 @@ impl LandMarkers {
         slots.into_iter().for_each(|slot| self.mark(slot));
     }
 
-    /// Rows the steps changed and not yet resolved.
     fn rows_carried(&self) -> usize {
         self.side_rows.iter().chain(&self.division_rows).map(Rows::len).sum()
     }
 
-    /// The rows the steps changed resolved to the combats they name, within `settling`.
     fn resolve(&mut self, mirrors: &Mirrors) {
         for (which, table) in [TableId::LandCombatSides, TableId::LandCombatDetails].into_iter().enumerate() {
             let mirror = mirrors.get(table);
@@ -782,7 +720,6 @@ impl LandMarkers {
         Ok(vision)
     }
 
-    /// One `LandCombatDivisions` slot's combat taken in, its old one taken out; both marked.
     fn member_row(&mut self, mirrors: &Mirrors, slot: u32) {
         let at = slot as usize;
         if self.member_rows.len() <= at {
@@ -811,10 +748,6 @@ impl LandMarkers {
         }
     }
 
-    /// Everything dropped, reading no mirror: a hidden layer's tables may have left them.
-    /// Everything it holds dropped, as a layer made anew holds it, reading no mirror (a hidden
-    /// layer's tables may have left them); its view, camera admission, index, the engagement
-    /// layer's flags, vision and counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.field), None);
         let kept = std::mem::replace(self, empty);
@@ -827,7 +760,6 @@ impl LandMarkers {
         }
     }
 
-    /// Refused for `why`: nothing held, marked or carried until it draws again, whole.
     fn refuse(&mut self, why: String) {
         if self.refused.as_ref() != Some(&why) {
             self.release();
@@ -864,14 +796,12 @@ impl LandMarkers {
         self.mark_all(mirrors);
     }
 
-    /// The live combats at the head, in key order.
     fn live(&self, mirrors: &Mirrors) -> Vec<u64> {
         let mut live: Vec<u64> = held(mirrors.get(TableId::LandCombats)).map(|combats| combats.rows().filter_map(|slot| combats.key(slot)).map(|key| key as u64).collect()).unwrap_or_default();
         live.sort_unstable();
         live
     }
 
-    /// Each unseen icon's frame as the index keeps it at the head, for `combats`.
     fn kept_of(&self, mirrors: &Mirrors, vision: &Vision, combats: &[u64]) -> HashMap<u64, Kept> {
         let head = mirrors.get(TableId::LandCombats).and_then(Mirror::head);
         let found = match (&self.index, head) {
@@ -884,11 +814,6 @@ impl LandMarkers {
         }
     }
 
-    /// The kept frames brought to the head: the hours the steps moved through name the icons the
-    /// index changed and the steps' own rows the combats that began or ended, while a change of
-    /// where the index answers from reads every live combat's again. A marker not seen draws the
-    /// frame it was made with, so one whose frame moved is made again. The map is taken out for
-    /// the settle to read and put back after it.
     fn take_kept(&mut self, mirrors: &Mirrors, vision: &Vision) -> HashMap<u64, Kept> {
         let index = self.index.as_ref().map(|index| (&index.history, index.branch));
         let now = KeptAt::of(index, mirrors.get(TableId::LandCombats).and_then(Mirror::head), vision.ours());
@@ -925,8 +850,6 @@ impl LandMarkers {
         std::mem::take(&mut self.kept)
     }
 
-    /// A combat whose made marker is not seen is made again when the frame it was made with is no
-    /// longer the one the index keeps.
     fn mark_unseen(&mut self, combat: u64) {
         let Some(&slot) = self.unseen.get(&combat) else { return };
         let used = self.outcomes.get(slot as usize).and_then(Option::as_ref).map(|made| made.kept);
@@ -947,7 +870,6 @@ impl LandMarkers {
         let old = self.outcomes[at].take();
         let held_id = old.as_ref().map(|made| made.id);
         self.make_combat(tables, joins, slot);
-        // Made again to what it was, the published markers do not change: no new version.
         fn laid(made: &Option<Made>) -> Option<(u64, u32, &MarkerOutcome)> {
             made.as_ref().map(|made| (made.id, made.province, &made.outcome))
         }
@@ -981,7 +903,6 @@ impl LandMarkers {
         }
     }
 
-    /// Combat `slot` made from the mirrors into its outcome, its divisions not yet indexed.
     fn make_combat(&mut self, tables: &Tables<'_>, joins: (&Vision, &BTreeMap<u64, Engaged>, &HashMap<u64, Kept>), slot: u32) {
         let at = slot as usize;
         let columns = self.columns();
@@ -1005,18 +926,12 @@ impl LandMarkers {
         self.outcomes[at] = Some(Made { id, province, outcome, divisions, kept: used });
     }
 
-    /// `upstream` is the engagement layer, with the slots of the combats it changed this frame that
-    /// still have a row, whether it changed any, and whether it changed everything; none for a copy
-    /// composed from the flags its original took.
-    /// Marks made while it settles (rows resolved, groups and plans expanded) carry the frame of the
-    /// steps that brought them: the frame advances once the settle is done.
     fn settle_dirty(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, &[u32], bool, bool)>) {
         self.settle_marks(mirrors, upstream);
         self.frame += 1;
     }
 
     fn settle_marks(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, &[u32], bool, bool)>) {
-        // Hidden, it holds not even the engagement layer's flags: shown again, it takes them anew.
         if self.hidden {
             self.flags = None;
             self.refuse("not drawn at this view".to_owned());
@@ -1098,8 +1013,6 @@ impl LandMarkers {
         self.flags = Some((flags, provenance));
     }
 
-    /// One table's changes of a step marked, reading no row: `LandCombats` slots directly, the
-    /// sides', details' and division-keyed rows kept for a settle to resolve.
     fn apply_table(&mut self, table: TableId, changes: &Changes, columns: Columns) {
         let frame = self.frame;
         let slots = || changes.deleted().slots().iter().chain(changes.inserted().slots()).chain(changes.columns().iter().flat_map(|written| written.slots())).copied();
@@ -1124,7 +1037,6 @@ impl LandMarkers {
         }
     }
 
-    /// Entries of `self` that differ from `other`'s at the same mirrors, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -1272,7 +1184,6 @@ impl Layer for LandMarkers {
     }
 
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
-        // The engagements name a changed combat by its id; one whose row is gone is marked by its own delete.
         let combats = mirrors.get(TableId::LandCombats);
         let (whole, named): (bool, &[u64]) = match upstream.changed::<Engagements>() {
             Change::Whole => (true, &[]),

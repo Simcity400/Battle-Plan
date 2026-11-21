@@ -72,7 +72,6 @@ fn written_sections_apply_like_the_same_runs_on_the_state() {
         .unwrap();
     assert_eq!(read, direct);
 
-    // A later hour: deletes, a reused slot, SET/ADD/NOOP runs, a FILL with an exception.
     let reinsert = [
         Values::U32(&[8]),
         Values::OptionalI64 {
@@ -117,7 +116,6 @@ fn written_sections_apply_like_the_same_runs_on_the_state() {
         changes,
         Changes {
             changed: vec![0, 2],
-            // Slot 0: SET 0 and ADD 1; slot 2: ADD 1, SET 2 and the NOOP of 3.
             masks: vec![0b0011, 0b1110],
             written: vec![0b0011, 0b0110],
             deleted: vec![1],
@@ -157,8 +155,6 @@ fn written_sections_apply_like_the_same_runs_on_the_state() {
     );
 }
 
-/// A section inserting a slot far past the table, which the writer never assigns, is
-/// refused before the table grows to it; slots run on from the table's last.
 #[test]
 fn an_insert_past_the_next_free_slot_is_refused_before_growing() {
     let inserts = [
@@ -203,7 +199,6 @@ fn an_insert_past_the_next_free_slot_is_refused_before_growing() {
     assert_eq!(table.slots(), 1);
 }
 
-/// FILL targets are reported, and a partly read table may fill only slots it read.
 #[test]
 fn fills_report_their_targets_and_stay_within_a_partial_read() {
     let inserts = [
@@ -233,7 +228,6 @@ fn fills_report_their_targets_and_stay_within_a_partial_read() {
     let mut whole = table.clone();
     let changes = applied(&mut whole, &write(&KINDS, &complete).unwrap());
     assert_eq!(changes.fill_slots, [0, 1]);
-    // Read in part: slot 0 only, yet the FILL names no exception, so it would set slot 1.
     let partial = TableHour {
         read: Some(&[0]),
         ..hour(&[], &[], &[], &[], &[], &fill)
@@ -252,8 +246,6 @@ fn fills_report_their_targets_and_stay_within_a_partial_read() {
     );
 }
 
-/// A cell the recording did not record is unknown, not the value its column holds there,
-/// until a value is written to it; only changed or inserted slots become unrecorded.
 #[test]
 fn unrecorded_cells_stay_unknown_until_written() {
     let inserts = [
@@ -350,7 +342,6 @@ fn sections_that_disagree_with_the_schema_or_end_early_are_refused() {
         )
         .is_err()
     );
-    // A SET to a slot this table never inserted.
     let stray = [run(0, Op::Set, &[0], Some(Values::U32(&[1])))];
     let bytes = write(&KINDS, &hour(&[5], &[], &[], &[], &[], &stray)).unwrap();
     let mut fresh = Table::new(&KINDS).unwrap();
@@ -443,7 +434,6 @@ fn patch_runs_edit_held_cells_and_refuse_edits_past_them() {
         &mut table,
         &write(&KINDS, &hour(&[], &[], &[0, 1], &[5, 6], &inserts, &[])).unwrap(),
     );
-    // Slot 0: keep 1, remove 2, insert [99]; keep 1, remove 0, insert [7, 8]. Slot 1: no hunks.
     let patches = Patches {
         hunks: &[2, 0],
         edits: &[(1, 2, 1), (1, 0, 2)],
@@ -506,7 +496,6 @@ fn patch_runs_edit_held_cells_and_refuse_edits_past_them() {
     );
 }
 
-/// Each FILL marks the slots it set with its own column, whatever the other FILLs except.
 #[test]
 fn fills_with_different_exceptions_mark_each_slot_with_its_own_columns() {
     let inserts = [

@@ -2,8 +2,6 @@ use std::mem::{MaybeUninit, size_of};
 
 pub use crate::read_counts::{CountedMemory, ReadCounts};
 
-/// One exact source span and its position in each packed destination record.
-/// The same borrowed layout is reused for every source pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct RecordField {
@@ -12,9 +10,6 @@ pub struct RecordField {
     pub len: usize,
 }
 
-/// Immutable exact-field layout, prepared once before gathering records.
-/// Only destination geometry is validated here. Invalid source arithmetic is
-/// still reported at its ordered field, after any earlier successful reads.
 #[derive(Debug, Clone, Copy)]
 pub struct RecordLayout<'a> {
     fields: &'a [RecordField],
@@ -80,8 +75,6 @@ impl<'a> RecordLayout<'a> {
         self.fields.len()
     }
 
-    /// Successful payload bytes for accounting, saturated if the sum overflows.
-    /// The ordinary complete-row case does not scan the layout again.
     #[inline(always)]
     pub fn completed_bytes(&self, completed: usize) -> usize {
         if self.fields.is_empty() {
@@ -96,8 +89,6 @@ impl<'a> RecordLayout<'a> {
             })
     }
 
-    /// Nonempty source requests in a field prefix; complete rows use the
-    /// geometry cached at construction, so accounting is O(1) on success.
     #[inline(always)]
     pub fn completed_spans(&self, completed: usize) -> usize {
         if self.fields.is_empty() {
@@ -123,7 +114,6 @@ impl<'a> RecordLayout<'a> {
     }
 }
 
-/// Packs `(source_offset, len)` spans back to back into record fields.
 pub const fn packed_fields<const N: usize>(spans: [(usize, usize); N]) -> [RecordField; N] {
     let mut fields = [RecordField {
         source_offset: 0,
@@ -144,7 +134,6 @@ pub const fn packed_fields<const N: usize>(spans: [(usize, usize); N]) -> [Recor
     fields
 }
 
-/// The record stride of [`packed_fields`].
 pub const fn packed_stride<const N: usize>(spans: [(usize, usize); N]) -> usize {
     let mut index = 0;
     let mut at = 0;
@@ -155,10 +144,6 @@ pub const fn packed_stride<const N: usize>(spans: [(usize, usize); N]) -> usize 
     at
 }
 
-/// The record position of each source byte of [`packed_fields`], or
-/// `u16::MAX` for a byte no span covers; `M` is the end of the last span.
-/// Spans must ascend without overlapping, so a source range whose two ends map
-/// `len - 1` positions apart lies in the record exactly as in the object.
 pub const fn packed_map<const N: usize, const M: usize>(spans: [(usize, usize); N]) -> [u16; M] {
     let mut map = [u16::MAX; M];
     let mut index = 0;
@@ -181,10 +166,6 @@ pub const fn packed_map<const N: usize, const M: usize>(spans: [(usize, usize); 
     map
 }
 
-/// Gathers one record per pointer. `complete[row]` is set only when every
-/// field of that row copied. A failed row does not stop later rows: the copy
-/// resumes after it, so each object is read by one guarded record request
-/// and a failed object by at most one.
 pub fn gather_records(
     memory: &impl Memory,
     pointers: &[usize],
@@ -212,10 +193,6 @@ pub fn gather_records(
     }
 }
 
-/// One guarded gather, retaining only complete records before its first
-/// incomplete one. The caller decodes in serial order and reads the incomplete
-/// record and the rest of this batch by its original per-object path, once.
-/// No partial bytes or speculative suffix can supply a published value.
 pub(crate) fn gather_records_once(
     memory: &impl Memory,
     pointers: &[usize],
@@ -236,13 +213,8 @@ pub(crate) fn gather_records_once(
     }
 }
 
-/// One object's fields from [`gather_records`], or nothing when its record
-/// did not complete. Readers take a value from here first and otherwise make
-/// their original per-field read, so rows and failures are those of the
-/// per-field walk: every gathered byte is the byte that read would copy.
 #[derive(Clone, Copy)]
 pub struct Gathered<'a> {
-    /// The layout's [`packed_map`].
     map: &'a [u16],
     bytes: Option<&'a [u8]>,
 }
@@ -272,9 +244,6 @@ impl<'a> Gathered<'a> {
         }
     }
 
-    /// The gathered value at `offset`, if the record completed and its spans
-    /// cover every byte of it. The map is constant, so a constant offset
-    /// resolves at compile time.
     #[inline(always)]
     pub fn get<T: Raw>(self, offset: usize) -> Option<T> {
         let bytes = self.bytes?;
@@ -289,8 +258,6 @@ impl<'a> Gathered<'a> {
     }
 }
 
-/// Current source addresses, either explicit pointers or an exact strided array.
-/// Strided addresses are evaluated only when a nonempty field requires them.
 #[derive(Debug, Clone, Copy)]
 pub enum RecordSources<'a> {
     Pointers(&'a [usize]),
@@ -327,22 +294,6 @@ impl RecordSources<'_> {
     }
 }
 
-/// x86-64 canonical range check for a guarded source span.
-///
-/// A user address is canonical when bits 63:48 equal bit 47 (low half
-/// `0x0000_...` or high half `0xFFFF_...`). Windows reports a fault on a
-/// noncanonical source as `ExceptionInformation[1] == -1`, which the C
-/// `copy_fault` filter cannot attribute to the requested range and would
-/// otherwise return `EXCEPTION_CONTINUE_SEARCH` (process crash). Gating here
-/// records the same graceful `false`/prefix failure the typed walk produces
-/// for an unreadable source, before any guarded instruction runs.
-///
-/// Empty spans succeed without a check, matching `Memory`. Overflow is
-/// reported by the caller's existing null/overflow path; this helper returns
-/// `false` for it as well so callers record a fault without touching memory.
-/// Both range ends must be canonical and in the same half; a span crossing
-/// the noncanonical gap is noncanonical even when both ends look canonical
-/// in isolation.
 #[inline]
 pub(crate) fn is_canonical_range(addr: usize, len: usize) -> bool {
     if len == 0 {
@@ -351,22 +302,15 @@ pub(crate) fn is_canonical_range(addr: usize, len: usize) -> bool {
     let Some(end) = addr.checked_add(len.wrapping_sub(1)) else {
         return false;
     };
-    // Bit 47 is part of the sign extension, not an independent address bit.
     let high = addr >> 47;
     matches!(high, 0 | 0x1FFFF) && end >> 47 == high
 }
 
-/// Return the row-major prefix whose nonempty source spans have valid address
-/// arithmetic and are canonical. `RecordLayout::count` validates the complete
-/// count first. This reads immutable metadata only, never any source bytes.
 #[inline(always)]
 fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -> usize {
     if layout.nonempty == 0 || sources.is_empty() {
         return sources.len() * layout.fields.len();
     }
-    // A valid union envelope proves every address in a strided batch at once.
-    // It does not read source gaps or prove readability. Failed envelopes fall
-    // back to field order, preserving partial rows and earlier actual faults.
     if matches!(sources, RecordSources::Strided { .. })
         && let Some((first, end)) = layout.envelope
         && let Some(base) = sources.pointer(0).filter(|&pointer| pointer != 0)
@@ -387,9 +331,6 @@ fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -
                         && is_canonical_range(pointer + first, end - first)
                 })
         }) {
-            // Every nonempty field is inside this canonical, nonoverflowing
-            // range. Holes are not read; readability is still decided by SEH
-            // in field order. A failed envelope proves nothing about a prefix.
             completed += layout.fields.len();
             continue;
         }
@@ -412,17 +353,9 @@ fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -
     completed
 }
 
-/// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
 
-    /// [`copy`](Self::copy) into scratch bytes that need not be initialized
-    /// first. On success every byte of `destination` holds its source byte and
-    /// is returned initialized; on failure nothing is returned, because a
-    /// failed copy may be partial and no byte of it may be read. The same
-    /// observation as `copy`: the default initializes the destination and
-    /// calls `copy`, so every adapter keeps its own caching, recording and
-    /// accounting. Leaf sources that can write uninitialized bytes override it.
     #[inline]
     fn copy_uninit<'a>(
         &self,
@@ -433,26 +366,16 @@ pub trait Memory {
         self.copy(address, destination).then_some(destination)
     }
 
-    /// Advisory hint for an already selected source. No value is acquired;
-    /// recording adapters may retain the hint with its selecting dependencies.
     #[inline]
     fn prefetch(&self, address: usize, len: usize) {
         crate::prefetch::span(address, len);
     }
 
-    /// Acquire one value with the same observation and failure semantics as
-    /// `copy`. Adapters must retain their own caching, recording and accounting
-    /// before forwarding this operation. The default uses their existing copy.
     #[inline]
     fn read_scalar<T: Raw>(&self, address: usize) -> Option<T> {
         copy_scalar(self, address)
     }
 
-    /// Execute prepared scalar reads and owned-control comparisons in order.
-    /// The default preserves this adapter's `copy` observations. `None` means
-    /// unsupported execution or insufficient destination geometry, never a
-    /// changed control/read fault. Wrappers must not forward to a different
-    /// source implementation unless their acquisition protocol permits it.
     fn execute_read_plan(
         &self,
         plan: &crate::read_plan::PreparedPlan,
@@ -461,21 +384,10 @@ pub trait Memory {
         plan.execute(self, destination)
     }
 
-    /// Optional immutable, already-owned bytes for this exact address range.
-    /// Every contained nonempty read must equal `copy` without consuming any
-    /// observation cursor. Implementations must exclude overriding failures,
-    /// repeated observations and competing bulk ranges, not merely find a
-    /// readable enclosing allocation. The borrow never exposes live memory.
-    /// Observation-recording wrappers must not forward this capability.
     fn immutable_view(&self, _address: usize, _len: usize) -> Option<SliceMemory<'_>> {
         None
     }
 
-    /// Optional authentication derived from this callback's complete country
-    /// census. The view must belong to the exact module/game-state pair and
-    /// retain its initial authentication only within the quiescent hourly lease.
-    /// Observation-recording wrappers must not forward this capability: their
-    /// readers still need every original byte request in order.
     fn authenticated_countries(
         &self,
         _base: usize,
@@ -484,10 +396,6 @@ pub trait Memory {
         None
     }
 
-    /// Actual country slot zero's first authentication result in this pass.
-    /// Success and failure belong to the exact module/state and hourly lease,
-    /// independently of the positive census. Owned replay adapters copy this
-    /// scalar; observation-recording wrappers must not silently retry a failure.
     fn authenticated_reserved_country(
         &self,
         _base: usize,
@@ -496,10 +404,6 @@ pub trait Memory {
         None
     }
 
-    /// The same pass-local reserved result with its original slot selection.
-    /// This optional capability performs no source read. Its module/state and
-    /// quiescent lease are exactly those of authenticated_reserved_country;
-    /// failed selection/authentication must never be retried by a forwarder.
     fn authenticated_reserved_country_observation(
         &self,
         _base: usize,
@@ -508,12 +412,6 @@ pub trait Memory {
         None
     }
 
-    /// Optional raw lookup from a complete, sorted accumulator snapshot owned
-    /// by this acquisition pass. Its header and entries come from the current
-    /// source acquisition and remain owned for the entire lookup.
-    /// Absence of this capability preserves the ordinary live reader. This
-    /// hook must not evaluate modifier metadata or escape its pass lifetime;
-    /// observation-recording wrappers must not forward it.
     fn modifier_accumulator_value(
         &self,
         _address: usize,
@@ -522,18 +420,10 @@ pub trait Memory {
         None
     }
 
-    /// Optional modifier metadata shared within one acquisition pass: the
-    /// eligibility verdict and flags word of each key already read in full.
-    /// Absence keeps the ordinary reads. Observation-recording wrappers must
-    /// not forward this capability.
     fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
         None
     }
 
-    /// Optional exact core-supply predicate shared only within an acquisition
-    /// pass. All keys and results are acquired from the current source and
-    /// cleared between passes; collisions/capacity use the ordinary
-    /// reader. Observation-recording wrappers must not forward this capability.
     fn core_supply_access(
         &self,
         _base: usize,
@@ -544,11 +434,6 @@ pub trait Memory {
         None
     }
 
-    /// Optional primary-order membership dependency cache for one ETA pass.
-    /// Own/parent first-match traversal, dirty/clean cache checks and read-lazy
-    /// prefixes must be preserved. Retained metadata, vector headers and chunks
-    /// belong to the current acquisition and are cleared between passes.
-    /// Observation-recording wrappers must not forward this capability.
     fn movement_primary_root(
         &self,
         _base: usize,
@@ -557,10 +442,6 @@ pub trait Memory {
         None
     }
 
-    /// Copies fields in order and returns the number fully copied before the first
-    /// failure. The failed field may be partial; later destinations are untouched.
-    /// Empty fields count as complete without accessing their source address.
-    /// The caller owns every buffer; no allocation or retry occurs.
     fn copy_scattered<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -584,16 +465,6 @@ pub trait Memory {
         N
     }
 
-    /// The same exact ordered scattered copy with advisory cache hints for its
-    /// independent source spans. Callers should supply bounded batches of fields
-    /// whose addresses are already known. Hints neither read values nor consume
-    /// guard pages; the first failed copy still leaves every later destination
-    /// untouched. No sorting, allocation, retry or retained observation occurs.
-    ///
-    /// Adapters retain their existing `copy_scattered` implementation, including
-    /// read logging and cached-source rules. LiveMemory rolls a four-span hint
-    /// window inside the native guard; adapters hint this batch before forwarding
-    /// through their own scattered-copy protocol.
     fn copy_scattered_prefetched<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -611,14 +482,6 @@ pub trait Memory {
         self.copy_scattered(addresses, destinations)
     }
 
-    /// Gather a fixed exact layout from independently addressed records into
-    /// initialized caller-owned bytes. Returns completed fields in row-major
-    /// order; a failed field may be partial and later fields stay untouched.
-    /// Empty fields count as complete without reading their source. Invalid
-    /// destination bounds/count arithmetic returns zero before any access;
-    /// null or overflowing source addresses stop at that particular field.
-    /// Destination bytes outside the declared spans are left alone. No
-    /// allocation, source padding read, retry or observation cache is involved.
     fn copy_records(
         &self,
         sources: RecordSources<'_>,
@@ -659,8 +522,6 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// Padding-free types for which every bit pattern is valid. Sealed to prevent
-/// decoding pointers, references, bools, or enums with invalid representations.
 pub trait Raw: sealed::Sealed + Copy {
     const ZERO: Self;
 }
@@ -680,29 +541,23 @@ impl<const N: usize> Raw for [u8; N] {
 #[inline]
 fn copy_scalar<T: Raw>(memory: &(impl Memory + ?Sized), address: usize) -> Option<T> {
     let mut value = T::ZERO;
-    // SAFETY: Raw is sealed to initialized, padding-free, all-bit-pattern types.
     let bytes = unsafe {
         std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
     };
     memory.copy(address, bytes).then_some(value)
 }
 
-/// The initialized exact bytes of a padding-free scalar or byte array.
 #[inline]
 pub fn scalar_bytes<T: Raw>(value: &T) -> &[u8] {
-    // SAFETY: Raw is sealed to initialized, padding-free, all-bit-pattern types.
     unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-/// Reconstruct a scalar without a numeric conversion or an extra observation.
 #[inline]
 pub fn scalar_from_bytes<T: Raw>(source: &[u8]) -> Option<T> {
     if source.len() != size_of::<T>() {
         return None;
     }
     let mut value = T::ZERO;
-    // SAFETY: Raw has no padding or invalid bit patterns; the exact destination
-    // is initialized, writable and cannot overlap the borrowed source.
     let destination = unsafe {
         std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
     };
@@ -730,7 +585,6 @@ pub fn read<T: Raw>(memory: &impl Memory, address: usize) -> Option<T> {
     }
 }
 
-/// The caller owns the buffer. No allocation occurs, including on a read failure.
 #[inline(always)]
 pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) -> bool {
     if destination.is_empty() {
@@ -741,14 +595,6 @@ pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) 
         && memory.copy(address, destination)
 }
 
-/// Independent scalar fields gathered in one guarded call ahead of the reader
-/// that consumes them. The reader consults each field where it would otherwise
-/// read it: a gathered field is served, the field the gather failed on fails
-/// again without another read, and a field after that failure is read singly
-/// on first use. A field the reader never consults cannot affect its result,
-/// so a gather may run ahead of the branches that select its fields; callers
-/// only include module globals and fields of objects the reader already
-/// dereferences on that path.
 pub(crate) struct FieldBatch<const N: usize> {
     addresses: [usize; N],
     lens: [usize; N],
@@ -756,12 +602,9 @@ pub(crate) struct FieldBatch<const N: usize> {
     completed: usize,
 }
 
-/// The widest field a batch holds: a 16-byte array header or a 17-byte hash header.
 const FIELD_BATCH_BYTES: usize = 24;
 
 impl<const N: usize> FieldBatch<N> {
-    /// `fields` are (address, byte length <= 24). A null or overflowing
-    /// address fails its field, exactly as a single read of it would.
     #[inline]
     pub(crate) fn gather(memory: &impl Memory, fields: [(usize, usize); N]) -> Self {
         let mut batch = Self {
@@ -795,8 +638,6 @@ impl<const N: usize> FieldBatch<N> {
     }
 }
 
-/// [`read_slice`] into uninitialized scratch: the same checks and the same
-/// single copy, returning the bytes only when every one of them was copied.
 #[inline]
 pub(crate) fn read_slice_uninit<'a>(
     memory: &impl Memory,
@@ -812,18 +653,14 @@ pub(crate) fn read_slice_uninit<'a>(
     memory.copy_uninit(address, destination)
 }
 
-/// Zeroes `bytes` and returns them initialized.
 #[inline]
 fn initialized(bytes: &mut [MaybeUninit<u8>]) -> &mut [u8] {
     for byte in bytes.iter_mut() {
         byte.write(0);
     }
-    // SAFETY: every byte was written just above, and `u8` has the layout of
-    // `MaybeUninit<u8>`; the borrow is the caller's unique borrow.
     unsafe { &mut *(std::ptr::from_mut(bytes) as *mut [u8]) }
 }
 
-/// An immutable address space backed by borrowed, already-owned bytes.
 pub struct SliceMemory<'a> {
     pub base: usize,
     pub bytes: &'a [u8],
@@ -853,9 +690,6 @@ impl Memory for SliceMemory<'_> {
         let source = self
             .bytes
             .get(start..start.checked_add(destination.len())?)?;
-        // SAFETY: `source` and `destination` have the same length and cannot
-        // overlap (one is borrowed shared, the other unique). The copy writes
-        // every destination byte, so all of them are initialized after it.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 source.as_ptr(),
@@ -866,9 +700,6 @@ impl Memory for SliceMemory<'_> {
         }
     }
 
-    /// Hints the slice bytes that back `address`, not `address` itself: the
-    /// default would hint an unrelated host address. Bytes outside the slice
-    /// are not hinted.
     #[inline]
     fn prefetch(&self, address: usize, len: usize) {
         if let Some(start) = address.checked_sub(self.base)
@@ -884,11 +715,11 @@ pub struct LiveMemory(std::marker::PhantomData<std::rc::Rc<()>>);
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 impl LiveMemory {
-    /// # Safety
-    /// Use only for foreign game memory under the caller's consistency protocol,
-    /// or immutable synthetic storage in tests.
-    /// SEH protects against invalid addresses, not concurrent writes or Rust aliasing violations.
-    /// This handle is deliberately neither Send nor Sync.
+    #[doc = " # Safety"]
+    #[doc = " Use only for foreign game memory under the caller's consistency protocol,"]
+    #[doc = " or immutable synthetic storage in tests."]
+    #[doc = " SEH protects against invalid addresses, not concurrent writes or Rust aliasing violations."]
+    #[doc = " This handle is deliberately neither Send nor Sync."]
     pub unsafe fn new() -> Self {
         Self(std::marker::PhantomData)
     }
@@ -910,9 +741,6 @@ impl LiveMemory {
             fn seh_guarded_copy_scattered(spans: *const Span, count: usize) -> usize;
             fn seh_guarded_copy_scattered_prefetched(spans: *const Span, count: usize) -> usize;
         }
-        // Only the validated prefix crosses the C boundary. Avoid clearing the
-        // entire metadata array before replacing that prefix, especially for
-        // large batches with an invalid address or a short populated tail.
         let mut spans = [std::mem::MaybeUninit::<Span>::uninit(); N];
         let mut count = 0;
         let mut copy_count = 0;
@@ -941,11 +769,6 @@ impl LiveMemory {
         if copy_count == 0 {
             return count;
         }
-        // SAFETY: spans[..count] is initialized, including empty entries, and
-        // metadata and writable destinations outlive C. Both native paths copy
-        // the same exact spans in order, returning the completed prefix on a
-        // fault. The opt-in path only hints validated future spans; it performs
-        // no future loads, and hints cannot consume a guard-page exception.
         let copied = unsafe {
             if PREFETCH {
                 seh_guarded_copy_scattered_prefetched(spans.as_ptr().cast::<Span>(), copy_count)
@@ -954,8 +777,6 @@ impl LiveMemory {
             }
         };
         if copied == copy_count {
-            // Trailing empty spans succeed without entering the C loop. Empty
-            // spans before a failure retain their original prefix positions.
             count
         } else {
             copied
@@ -963,12 +784,12 @@ impl LiveMemory {
     }
 }
 
-/// One guarded copy of `len` foreign bytes from `address` to `destination`,
-/// true only when all of them were copied; a fault may leave a written prefix.
-///
-/// # Safety
-/// `destination` must be valid for `len` byte writes, and `address..+len`
-/// must have passed the null, overflow and canonical gates.
+#[doc = " One guarded copy of `len` foreign bytes from `address` to `destination`,"]
+#[doc = " true only when all of them were copied; a fault may leave a written prefix."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " `destination` must be valid for `len` byte writes, and `address..+len`"]
+#[doc = " must have passed the null, overflow and canonical gates."]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 #[inline(always)]
 unsafe fn guarded_copy(destination: *mut u8, address: usize, len: usize) -> bool {
@@ -977,8 +798,6 @@ unsafe fn guarded_copy(destination: *mut u8, address: usize, len: usize) -> bool
         fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;
         fn seh_guarded_copy8(dst: *mut u8, src: *const u8) -> i32;
     }
-    // SAFETY: the caller's contract; C catches faults in the source range.
-    // Inlined scalar readers fold this selection to a fixed-width call.
     let copied = unsafe {
         match len {
             8 => seh_guarded_copy8(destination, address as *const u8),
@@ -1002,9 +821,6 @@ impl Memory for LiveMemory {
         unsafe extern "C" {
             fn seh_guarded_read4(src: *const u8) -> u64;
         }
-        // SAFETY: C guards exactly the admitted four-byte foreign source. Its
-        // upper word is one on success and zero on failure, independently of
-        // every possible lower-word value. Failed loads publish no value.
         let packed = unsafe { seh_guarded_read4(address as *const u8) };
         if packed >> 32 == 0 {
             return None;
@@ -1039,10 +855,6 @@ impl Memory for LiveMemory {
             return plan.execute(self, destination);
         };
         let mut completed = 0;
-        // SAFETY: PreparedPlan owns immutable repr(C) descriptors and expected
-        // bytes; its constructor validates every source and destination bound.
-        // The writable owned destination outlives C, which guards only the
-        // active exact source copy and stops before every later read on failure.
         let result = unsafe {
             seh_execute_read_plan(
                 native.reads.as_ptr(),
@@ -1076,14 +888,9 @@ impl Memory for LiveMemory {
         if address == 0 || address.checked_add(destination.len()).is_none() {
             return false;
         }
-        // Noncanonical sources fault with ExceptionInformation[1] == -1, which
-        // the C filter cannot attribute to the requested range. Fail here with
-        // the same `false` an unreadable canonical source produces; the typed
-        // walk then reports its own site-specific reason instead of crashing.
         if !is_canonical_range(address, destination.len()) {
             return false;
         }
-        // SAFETY: destination is writable; C catches faults in the foreign source range.
         unsafe { guarded_copy(destination.as_mut_ptr(), address, destination.len()) }
     }
 
@@ -1096,18 +903,12 @@ impl Memory for LiveMemory {
         if destination.is_empty() {
             return Some(initialized(destination));
         }
-        // The same gates as `copy`, before any guarded instruction.
         if address == 0
             || address.checked_add(destination.len()).is_none()
             || !is_canonical_range(address, destination.len())
         {
             return None;
         }
-        // SAFETY: the destination pointer covers `len` writable bytes the
-        // caller borrows uniquely; C only stores to them and never reads them.
-        // C returns nonzero only when it copied the whole source range, so
-        // then every destination byte is initialized. On a fault it returns
-        // zero, possibly after storing a prefix, and no byte is exposed.
         unsafe {
             guarded_copy(
                 destination.as_mut_ptr().cast::<u8>(),
@@ -1165,15 +966,6 @@ impl Memory for LiveMemory {
         if validated_field_count == 0 {
             return 0;
         }
-        // SAFETY: the two immutable metadata slices and initialized writable
-        // destination outlive the call. RecordField has the C layout, and the
-        // checked row count/stride and field bounds cover every destination.
-        // Every nonempty source within validated_field_count has passed the
-        // Rust null/overflow/canonical checks. C only evaluates that prefix,
-        // including a possible partial final row; invalid and later sources
-        // never reach a guarded instruction. SEH still decides readability in
-        // order, so an earlier unreadable field wins over a later invalid one.
-        // C preserves its completed-field witness and exact fault-range filter.
         let (pointers, source_base, source_stride) = match sources {
             RecordSources::Pointers(pointers) => (pointers.as_ptr(), 0, 0),
             RecordSources::Strided { base, stride, .. } => (std::ptr::null(), base, stride),
@@ -1193,9 +985,6 @@ impl Memory for LiveMemory {
     }
 }
 
-/// Test support for capture benches: counts the guarded calls a live reader
-/// would make (each top-level `copy`, `copy_scattered` and `copy_records` is
-/// one guard) and the bytes they read, forwarding to the wrapped memory.
 #[cfg(any(test, feature = "test-support"))]
 pub struct CountingMemory<'a> {
     pub inner: SliceMemory<'a>,
@@ -1218,8 +1007,6 @@ impl<'a> CountingMemory<'a> {
         self.bytes.set(self.bytes.get() + bytes);
     }
 
-    /// Runs `walk` `runs` times and prints the median wall time with the
-    /// guarded calls and bytes of one run.
     pub fn bench(&self, label: &str, runs: usize, mut walk: impl FnMut(&Self) -> String) {
         let mut times = Vec::with_capacity(runs);
         let mut summary = String::new();

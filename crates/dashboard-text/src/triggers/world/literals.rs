@@ -14,7 +14,6 @@ impl<'a> Lookup<'a> {
             Rowset::Decoded(slice) if slice.is_sorted_by(|a, b| a.token < b.token) => {
                 Self::Sorted(rows)
             }
-            // Preserve last-row wins for unordered or duplicate tokens, including zero.
             Rowset::Decoded(slice) => Self::Map(
                 slice
                     .iter()

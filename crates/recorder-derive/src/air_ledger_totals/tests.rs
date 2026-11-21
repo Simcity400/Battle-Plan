@@ -20,11 +20,9 @@ fn writers() -> Writers {
 struct Input {
     losses: Vec<AirLossEventRow>,
     damage: Vec<BuildingBombingDamageRow>,
-    /// A table not read this hour.
     unread: Option<TableId>,
 }
 
-/// GER (10, alias 11) at slot 1 and ITA (20) at slot 2; raw 55 no link names.
 fn run(store: &mut Store, writers: &mut Writers, hour: i32, input: &Input) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     for table in [TableId::Countries, TableId::CountryLinks, TableId::AirLossEvents, TableId::BuildingBombingDamage] {
@@ -60,7 +58,6 @@ fn bombing(id: u64, attacker: Option<u32>, victim: u32, cause: BuildingBombingDa
 
 type Totals<const N: usize> = Vec<(u128, [Option<i64>; N], i64)>;
 
-/// `table`'s rows: key, totals, most hours late.
 fn totals<const N: usize>(store: &Store, table: TableId) -> Totals<N> {
     let view = store.view(table.index());
     let mut rows: Totals<N> = view.rows().map(|slot| (view.key(slot).unwrap(), std::array::from_fn(|column| view.number(column, slot)), view.number(N, slot).unwrap())).collect();
@@ -68,11 +65,6 @@ fn totals<const N: usize>(store: &Store, table: TableId) -> Totals<N> {
     rows
 }
 
-/// Each loss counts once, at the read that supplied it, under the holder its country resolved to
-/// then (an alias as its holder, a raw id no link names as none), by region and cause, its side
-/// split by whether its opponent resolved; the backlog of the run's first hour counts, as the
-/// ledger folds it; a read the log or the links were not available adds nothing, and the table
-/// stays complete; `late` is the most hours a counted loss was read after it happened.
 #[test]
 fn losses_add_at_their_read_under_the_holder_resolved_then_and_only_where_the_ledger_counts_them() {
     let (mut store, mut writers) = (testing::store(), writers());
@@ -93,8 +85,6 @@ fn losses_add_at_their_read_under_the_holder_resolved_then_and_only_where_the_le
     );
 }
 
-/// Only the aircraft callers count, once for the attacker (dealt) and once for the victim (taken);
-/// an attacker not recorded is none; a land-combat or unknown caller adds nothing.
 #[test]
 fn bombing_counts_aircraft_callers_once_on_each_side() {
     let (mut store, mut writers) = (testing::store(), writers());
@@ -117,8 +107,6 @@ fn bombing_counts_aircraft_callers_once_on_each_side() {
     );
 }
 
-/// A total leaving 64 bits is not recorded from then on, the row's other totals kept; the state is
-/// the tables, so a run taken up adds to the totals it held.
 #[test]
 fn a_total_past_64_bits_is_not_recorded_and_a_resume_adds_to_the_held_totals() {
     let (mut store, mut writers) = (testing::store(), writers());

@@ -1,15 +1,10 @@
-//! Doctrine state. Ordinals preserve the native folder, track and grant order.
-//! Keys use canonical doctrine-array slots, including entries without a live country.
-//! Numeric track columns change independently of selections and completions.
 use super::*;
 
-/// Every doctrine-array slot, including an unassigned slot and empty inventories.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DoctrineCountryRow {
     pub slot: u32,
     pub country: u32,
-    /// Observed expiry occurrences while this country has grants; refresh re-anchors it.
     pub expiry_events: u64,
 }
 typed_codec!(DoctrineCountryRow, 32, |row| row.slot as u128,
@@ -40,7 +35,6 @@ pub struct DoctrineTrackRow {
     pub mastery: i64,
     pub mastery_bank: i64,
     pub daily_mastery: i64,
-    /// Stored effective gain cache, including the game's selected sources.
     pub effective_daily_mastery: i64,
 }
 typed_codec!(DoctrineTrackRow, 96,
@@ -55,7 +49,6 @@ pub struct DoctrineLeaderMasteryRow {
     pub folder: u32,
     pub track: u32,
     pub ordinal: u32,
-    /// Both native reference words, including an unresolved or invalid reference.
     pub leader: u64,
     pub mastery: i64,
 }
@@ -85,7 +78,6 @@ pub struct DoctrineTrackFilter {
     pub folder: Option<u32>,
     pub grand_doctrine: Option<u32>,
     pub sub_doctrine: Option<u32>,
-    /// None is the native unfiltered index; zero selects the first track.
     pub track_index: Option<i32>,
 }
 value_struct!(DoctrineTrackFilter { track: Option<u32>, folder: Option<u32>, grand_doctrine: Option<u32>, sub_doctrine: Option<u32>, track_index: Option<i32> });
@@ -104,8 +96,6 @@ pub struct DoctrineMasteryGrantRow {
     pub expiry_events_at_anchor: u64,
 }
 impl DoctrineMasteryGrantRow {
-    /// The native signed day word decrements with wrapping arithmetic at each
-    /// observed expiry occurrence; no clock schedule or interpolation is assumed.
     pub fn days_at(&self, expiry_events: u64) -> i32 {
         self.days_at_anchor
             .wrapping_sub(expiry_events.wrapping_sub(self.expiry_events_at_anchor) as i32)

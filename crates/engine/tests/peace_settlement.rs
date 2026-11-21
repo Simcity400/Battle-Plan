@@ -40,7 +40,6 @@ fn peace_authentication_short_reads_and_cycles_never_become_empty_success() {
         Some("peace action vtable unsupported")
     );
     f.u64(0x20000, engine_peace::ctake_state_action::VTABLE_RVA.0 as u64);
-    // Keep the pointer list readable while shortening only the action.
     f.array(0x910, 0xa00, 1, 8);
     f.u64(0xa00, 0x20000);
     f.bytes.truncate(0x20000 + 0x4f);
@@ -120,7 +119,6 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
     for (i, status) in [(1, 3), (2, 4)] {
         f.u32(0x20000 + i * 0x70 + peace_action::STATUS, status);
     }
-    // An excluded bid's form-specific operands are never read.
     f.u64(
         0x20000 + 2 * 0x70,
         engine_peace::ctake_navy_peace_action::VTABLE_RVA.0 as u64,
@@ -134,18 +132,15 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
     assert_eq!(result.failure, None);
     assert_eq!((result.actions, result.omitted), (1, 0));
     assert_eq!(actions[0].ordinal, 0);
-    // With no accepted bid at all, an empty action arena is enough.
     f.u32(0x20000 + peace_action::STATUS, 3);
     let result = f.copy(Buffer::Count, Buffer::Count);
     assert_eq!(result.failure, None);
     assert_eq!((result.actions, result.omitted), (0, 0));
-    // An excluded bid is still authenticated before its status is trusted.
     f.u64(0x20000 + 0x70, 99);
     assert_eq!(
         f.copy(Buffer::Count, Buffer::Count).failure,
         Some("peace action vtable unsupported")
     );
-    // Resident bids still keep every status, so the same arena truncates.
     f.u64(
         0x20000 + 0x70,
         engine_peace::ctake_state_action::VTABLE_RVA.0 as u64,

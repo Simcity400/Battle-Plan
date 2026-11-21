@@ -1,4 +1,3 @@
-//! Callbacks against synthetic native objects in this process's memory.
 use crate::{hooks, interval, lanes};
 use engine_events::map_event_sites as site;
 use engine_native::{cgame_state, cprovince, cunit};
@@ -12,12 +11,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-/// The callbacks, lanes and interval are process-wide.
 pub(crate) static LOCK: Mutex<()> = Mutex::new(());
 
-/// Plain heap memory the callbacks read as native objects. The module
-/// window maps `base + SINGLETON_RVA.0` (and the fog switch beside it) into
-/// the first page.
 struct World {
     bytes: Vec<u64>,
     next: usize,
@@ -63,8 +58,6 @@ impl World {
         self.u32(at + 8, count);
         self.u32(at + 12, count);
     }
-    /// A game state at `hour`, with fog `fog` and provinces 1..=count, each
-    /// controlled by `controller(id)`.
     fn game(
         &mut self,
         hour: i32,
@@ -198,7 +191,6 @@ fn a_building_notification_records_only_a_lowered_level_with_text_and_a_reason()
     let building = world.alloc(0x200);
     world.u32(building + site::BUILDING_TYPE, 41);
     world.u64(building + site::BUILDING_STATUS, status as u64);
-    // Three levels, two healthy, the third at 4,000,000.
     world.put(building + site::BUILDING_LEVEL, &3_u16.to_le_bytes());
     world.put(
         building + site::BUILDING_HEALTHY_LEVEL,
@@ -222,17 +214,13 @@ fn a_building_notification_records_only_a_lowered_level_with_text_and_a_reason()
             }
         };
     ORIGINALS.store(0, Ordering::SeqCst);
-    // The partial third level lowered from full, with text: the event.
     assert_eq!(call(1, 3, 10_000_000, 1, 1, &mut world), 0x5150);
-    // Raised (a repair step), unchanged, a full level, text off, client
-    // off, no reason: none.
     call(4, 3, 1_000_000, 1, 1, &mut world);
     call(1, 3, 4_000_000, 1, 1, &mut world);
     call(1, 2, 10_000_000, 1, 1, &mut world);
     call(1, 3, 10_000_000, 1, 0, &mut world);
     call(1, 3, 10_000_000, 0, 1, &mut world);
     call(0, 3, 10_000_000, 1, 1, &mut world);
-    // Each lowered level is its own event, even above a full level's health.
     call(3, 0, 10_000_000 + 1, 1, 1, &mut world);
     assert_eq!(ORIGINALS.load(Ordering::SeqCst), 8);
     let row = drain(77);
@@ -254,7 +242,6 @@ fn a_building_notification_records_only_a_lowered_level_with_text_and_a_reason()
             (77, expected(MapEventBuildingReason::Collateral)),
         ]
     );
-    // The first interval of an epoch is incomplete; the next is complete.
     assert!(
         row.health(Family::BuildingDamage)
             .faults
@@ -313,7 +300,6 @@ fn a_revealed_fake_division_keeps_its_owner_province_fog_and_whole_intel_array()
                 .collect(),
         })
     );
-    // An unreadable division refuses the event, counts it and still asks the game.
     let unreadable = 0x10;
     unsafe { hooks::fake_reveal_for_tests(unreadable) };
     assert_eq!(ORIGINALS.load(Ordering::SeqCst), 2);
@@ -421,7 +407,6 @@ fn an_event_left_pending_by_an_ended_world_is_never_listed_by_the_next_one() {
     let old = seal(7, Some(3));
     assert_eq!(old.events.len(), 1);
     assert!(old.continues(&first));
-    // The old world's last event after its last cut, then a load.
     critical(3);
     let stale = interval::stale();
     let loaded = seal(8, Some(4));
@@ -434,7 +419,6 @@ fn an_event_left_pending_by_an_ended_world_is_never_listed_by_the_next_one() {
             .iter()
             .all(|health| health.faults.contains(Fault::ObservationStart))
     );
-    // The new world's events are its own; an unadmitted cut lists none.
     let new = critical(4);
     let next = seal(9, Some(4));
     assert_eq!(
@@ -459,7 +443,6 @@ fn a_world_change_while_the_operands_are_read_refuses_the_event() {
     let family = Family::CriticalShoreBombardment;
     let missed = hooks::missed(family);
     let old = crate::world_lifetime::generation();
-    // A load lands between the callback's first read and its publication.
     let overlapped = hooks::publish_in_world(family, 7, old, 4, |writer| {
         writer.u32(77);
         crate::world_lifetime::invalidate_for_test();
@@ -469,7 +452,6 @@ fn a_world_change_while_the_operands_are_read_refuses_the_event() {
         panic!("an event read across a world change was published");
     };
     assert!(matches!(refusal, lanes::Refusal::Read(_)));
-    // The callback counts it, which marks the interval incomplete.
     hooks::refuse_for_tests(family, refusal);
     assert_eq!(hooks::missed(family), missed + 1);
     let new = crate::world_lifetime::generation();
@@ -563,11 +545,6 @@ unsafe extern "system-unwind" fn native_building_quiet(
     0
 }
 
-/// Release per-call costs against synthetic native callers: the quiet hourly
-/// seal and assembly, the building notifier's rejected calls (the game's own
-/// gates: a repair, no text, no reason), a burst of published building events,
-/// a fake reveal carrying a 1,500-country intel array, and the same callers
-/// without the hooks.
 #[test]
 #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
 fn hook_cost_map_events() {
@@ -626,7 +603,6 @@ fn hook_cost_map_events() {
     });
     let rejected = collector_test_support::per_call_ns(CALLS, || {
         for call in 0..CALLS {
-            // A repair step raises health; every fourth call has its text off.
             let text = usize::from(call % 4 != 0);
             std::hint::black_box(unsafe {
                 hooks::building_notification_for_tests(building, repair, 3, 1_000_000, 1, text)
@@ -663,8 +639,6 @@ fn hook_cost_map_events() {
     );
 }
 
-/// The spool writes nothing for three hours while each publishes more events than a lane
-/// holds: every event is kept in order and every interval is complete.
 #[test]
 fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_every_interval() {
     use replay_data::rows::MapEventCriticalBombardment;
@@ -676,7 +650,6 @@ fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_e
     let world = crate::world_lifetime::generation();
     drain(1);
     let missed = hooks::missed(family);
-    // 29-byte frames: a 64 KiB lane holds 2,259 of them unwritten.
     let per_hour = 3_000_u32;
     let mut queued = Vec::new();
     let mut province = 0_u32;
@@ -684,7 +657,6 @@ fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_e
         let mut expected = Vec::new();
         for _ in 0..per_hour {
             province += 1;
-            // As the callback does: a refusal is counted and marks the interval.
             match hooks::publish_in_world(family, hour, world, 4, |writer| {
                 writer.u32(province);
                 Ok(())

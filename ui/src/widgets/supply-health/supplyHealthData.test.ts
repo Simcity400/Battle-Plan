@@ -45,14 +45,12 @@ test('stacked shares take each bin at its first hour, merge equal neighbours, an
   assert.deepEqual(shareRunsFromLines([none, strained, undefined]), [], 'a line not yet drawn draws nothing');
   const shifted = line([bucket(1, 6, 0.5), bucket(7, 12, 0.5)]);
   assert.deepEqual(shareRunsFromLines([shifted, strained, held]), [], 'bins of other views never stack');
-  // Tiled lines with the head at hour 14: the bins before the head's (12-17), then the shares at the head to it.
   const tiled = (summary: ChartSummary, value: number | null): ChartSummary => ({ ...summary, tiles: { binHours: 6, valueAt: () => value } });
   const headed = shareRunsFromLines([tiled(none, 0.1), tiled(strained, 0.2), tiled(held, 0.7)], 14);
   assert.deepEqual(headed.map(run => [run.firstHour, run.lastHour, run.counts.map(count => count / 1e9)]), [[0, 11, [0.25, 0.25, 0.5]], [12, 14, [0.1, 0.2, 0.7]]],
     'the head bin is the followed shares, never its first hour’s nor an hour past the head');
   assert.deepEqual(shareRunsFromLines([tiled(none, null), tiled(strained, 0.2), tiled(held, 0.7)], 14).map(run => run.lastHour), [11],
     'no share at the head while any is not known');
-  // Supply not recorded at 8 and 9 (and 13): the bin holding them is a gap, never the shares of its recorded hours.
   const broken = shareRunsFromLines([none, line([bucket(0, 5, 0.25), bucket(6, 11, 0.25, { hasBreak: true }), ...strained.buckets.slice(2)]), held]);
   assert.deepEqual(broken.map(run => [run.firstHour, run.lastHour, run.breakBefore]), [[0, 5, false], [12, 17, false], [24, 29, true]],
     'a bin with hours not recorded is no share');
@@ -65,7 +63,6 @@ test('stacked shares take each bin at its first hour, merge equal neighbours, an
 });
 
 test('live shares are made again when a followed answer at the head moves, and wake the chart', () => {
-  // Paused at 14, the tiles held: the answer at the head lands after a first draw read the shares before it.
   let share: number | null = null, version = 0;
   const tiled = (value: () => number | null) => ({ from: 0, to: 100, width: 3, buckets: [bucket(0, 5, 0.25), bucket(6, 11, 0.25)],
     tiles: { binHours: 6, valueAt: value } });

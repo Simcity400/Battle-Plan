@@ -1,4 +1,3 @@
-//! Shared synthetic allocation-denial support.
 use super::*;
 
 pub struct DeniedAllocator;

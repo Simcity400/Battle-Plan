@@ -15,7 +15,6 @@ export type NavalBattleRow = BattleRow & {
   provinceId: number;
   windowIndex: number;
   observedHour: number;
-  /** The first hour of the run the row is read from: everything the row says holds from then to the hour shown. */
   runHour: number;
   peakHour: number | null;
   measures: BattleValue[];
@@ -84,8 +83,6 @@ export function navalBattleMeasureText(value: BattleValue, row: NavalBattleRow):
   return text;
 }
 
-/** The hours at which the rows' structure changes: any battle where a window begins or is read; a battle where its run
- * begins or ends (its sides, losses or measures change), or it ends with a result. */
 export function navalBattleChanges(windows: ReadonlyMap<number, NavalBattlesReply>): BattleChanges {
   const whole: number[] = [];
   const battles: [string, number[]][] = [];
@@ -102,8 +99,6 @@ export function navalBattleChanges(windows: ReadonlyMap<number, NavalBattlesRepl
   return battleChanges(whole, battles);
 }
 
-/** Every battle's place in the windows (its province at the hour each run names it at), each once, in hour order: what
- * a log following the head asks as a window lands. */
 export function navalWindowPlaces(windows: ReadonlyMap<number, NavalBattlesReply>): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
   for (const window of windows.values()) for (const history of window.rows) for (const run of history.runs) {
@@ -113,8 +108,6 @@ export function navalWindowPlaces(windows: ReadonlyMap<number, NavalBattlesReply
   return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
 }
 
-/** Every battle run in the windows, by battle and the hour it begins: the details a log following the head asks as a
- * window lands, each read at a recorded hour no later than any the run's rows show. */
 export function navalRunDetails(windows: ReadonlyMap<number, NavalBattlesReply>): { id: string; hour: number }[] {
   const asks = new Map<string, { id: string; hour: number }>();
   for (const window of windows.values()) for (const history of window.rows) for (const run of history.runs) {
@@ -123,12 +116,10 @@ export function navalRunDetails(windows: ReadonlyMap<number, NavalBattlesReply>)
   return [...asks.values()];
 }
 
-/** Merge loaded reads in recording order; prefetched future windows cannot backfill facts. */
 type Windows = ReadonlyMap<number, NavalBattlesReply>;
 type CountryMatch = (tag: string, hour: number) => boolean;
 const battleEntries = new WeakMap<Windows, Map<string, { history: NavalBattleHistory; index: number; firstHour: number }[]>>();
 
-/** The row of the battle `id` at `at`, as `navalBattleRows` lists it; null where it is not listed. */
 export function navalBattleRow(windows: Windows, id: string, at: number, matches: CountryMatch, all: boolean, from: number | null = null): NavalBattleRow | null {
   let entries = battleEntries.get(windows);
   if (!entries) {
@@ -197,7 +188,6 @@ function navalRowAt(h: NavalBattleHistory, index: number, at: number, matches: C
   const sides: BattleSide[] = run.row.sides.map(side => ({ ...side,
     countries: side.countries.map(country => ({ ...country, hour: Math.min(read, country.hour) })) }));
   if (!all && !sides.some(side => side.countriesUnknown || side.countries.some(country => matches(country.tag, country.hour)))) return null;
-  // Ended length is supplied by the native link, never extended to result_hour.
   const measures = run.measures.map(value => run.row.end === null && value.label === 'Length' && run.row.start !== null
     ? { label: 'Length', value: read - run.row.start.hour, atLeast: true } : value);
   return { ...run.row, provinceId: h.provinceId, windowIndex: index, sides, observedHour: read, runHour: run.firstHour, peakHour: run.peakHour, measures };

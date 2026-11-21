@@ -1,6 +1,3 @@
-//! Passive recording, finalization and offline inspection. The `recorder`
-//! binary is the command line; [`controller`] is the small API the tray
-//! recorder drives in-process.
 mod clock;
 #[cfg(test)]
 mod command_tests;

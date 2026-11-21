@@ -1,8 +1,6 @@
 use super::TableId;
 
 impl TableId {
-    /// What the table holds in plain lowercase words, for a reason a user reads: its name spelled
-    /// out ("DivisionEquipmentDeletions" is "division equipment deletions"), never the name itself.
     pub fn words(self) -> String {
         let name = format!("{self:?}");
         let chars: Vec<char> = name.chars().collect();
@@ -21,8 +19,6 @@ impl TableId {
         out
     }
 
-    /// One of its fields in plain words, for a reason a user reads: "pride_name" of
-    /// CountryCounterInputs is "pride name of country counter inputs", never `CountryCounterInputs.pride_name`.
     pub fn field_words(self, field: &str) -> String {
         format!("{} of {}", field.replace('_', " "), self.words())
     }

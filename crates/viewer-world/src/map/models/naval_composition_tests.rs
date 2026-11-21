@@ -1,4 +1,3 @@
-//! Actual library composition must share the current native attachment path.
 
 use super::*;
 

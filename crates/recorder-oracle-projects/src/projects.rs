@@ -1,4 +1,3 @@
-//! Exact comparisons for saved project, nuclear, raid and conference fields.
 use super::{Report, complete, country_tag, invalid, required_country_tag};
 use installed_content_save::{characters as characters_saved, projects as saved};
 use replay_data::{rows::CountryRow, rows::RaidScope, rows::RaidSource, rows::tables};
@@ -110,9 +109,6 @@ pub fn compare(
     succeeded &= report.attempt("projects RaidFacilities", |report| {
         compare_facilities(frame, pack, countries, tokens, report)
     });
-    // Each table's refresh comes from the cadence table: Projects and
-    // ProjectHistory are read every hour, the panel-only programs and
-    // breakthroughs on their daily slot.
     use replay_data::rows::TableId;
     let [programs, projects, history, breakthroughs] = [
         TableId::ProjectPrograms,
@@ -198,16 +194,6 @@ pub fn compare(
     }
 }
 
-/// Scientist roster membership and its specialization records.
-///
-/// The country scientist roster itself is not saved: the save
-/// carries a scientist only as the `scientist={...}` block of its own
-/// `character={...}`, whose `country=` is the character's country reference.
-/// The character writer emits that tag only while the raw reference is strictly
-/// positive, so a saved scientist
-/// without one has no country at all and cannot be in a country roster. Every
-/// recorded roster entry is therefore compared against its saved character, and
-/// every saved scientist that does carry a country is required to be recorded.
 pub fn compare_scientists(
     frame: &DecodedFrame,
     characters: &characters_saved::Pack,
@@ -328,8 +314,6 @@ pub fn compare_scientists(
                 }
             }
         }
-        // The roster country and the character's country reference are two different native
-        // fields; the save carries only the second one.
         equal(
             report,
             format!("{label}.roster country"),
@@ -374,7 +358,6 @@ pub fn compare_scientists(
                 ),
                 None => nonpositive_levels += 1,
             }
-            // The game gates the record's signed experience on positivity too.
             match &expected_skill.experience {
                 Some(experience) => equal(
                     report,
@@ -540,8 +523,6 @@ fn compare_facilities(
             row.active_project,
             saved.active_project.as_deref(),
         );
-        // The hash index is runtime-only; compare its resolved stored value
-        // with the same definition present in the saved owner's pool.
         let owner_tag = required_country_tag(row.owner, countries)?;
         let definitions = &status(pack, owner_tag)?.projects;
         let definition = saved.active_project.as_deref().filter(|key| {
@@ -1069,10 +1050,6 @@ fn reconstructed_turn(saved: &saved::Conference) -> Option<i32> {
         .all(|&count| count == first)
         .then_some(first)
 }
-/// `FacilityMapFlags` against the saved programs. The flag is the recording client's
-/// facility-presence display byte, which only program code sets, so a flagged province must hold a
-/// saved program. The save does not hold the flag, and dynamic-country reuse clears every flag
-/// until the next load, so an unflagged program province is counted rather than a difference.
 fn compare_facility_flags(
     frame: &DecodedFrame,
     pack: &saved::Pack,

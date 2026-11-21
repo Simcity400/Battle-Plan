@@ -10,7 +10,6 @@ export interface SinkingItem extends ShipsSunkRow { index: number; windowIndex: 
 type SinkingPages = ReadonlyMap<number, ShipsSunkWindowReply>;
 type CountryFilter = (tag: string | null, hour: number) => boolean;
 const playbacks = new WeakMap<SinkingPages, WeakMap<CountryFilter, Map<string, LogPlayback<SinkingItem>>>>();
-/** Each row keeps the dictionary that supplied it and its immutable scan index. */
 export function sinkingWindowRows(pages: ReadonlyMap<number, ShipsSunkWindowReply>, hour: number,
   classes: readonly string[], role: CountryRole, country: (tag: string | null, hour: number) => boolean,
   first: number | null, campaign: string): ReadonlyArray<LogRow<SinkingItem>> {

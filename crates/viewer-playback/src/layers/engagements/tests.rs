@@ -14,7 +14,6 @@ use viewer_foundation::{
     engagement_history::{Covered, History, LAND, Provenance},
 };
 
-/// Combat 100 from hour 0, combat 101 from hour 6.
 fn combats(at: u32, store: &mut replay_columnar::store::Store) {
     complete(store, at, &[TableId::LandCombats, TableId::NavalCombats, TableId::NavalCombatDetails]);
     match at {
@@ -68,10 +67,6 @@ fn an_hour_the_index_has_not_reached_shows_unknown_and_a_covered_one_the_folded_
 }
 
 
-/// A still publication (paused, or a switch of viewing country at a held hour) runs under the side's
-/// lock: it reads the fold as it stands instead of waiting for it, the flags pending by name, and
-/// the publication after the fold arrives reads them. Before, it waited up to two minutes for the
-/// fold under the lock, so the frame was handed no window meanwhile.
 #[test]
 fn a_still_publication_waits_for_no_fold_and_the_next_reads_it_once_folded() {
     let history = Arc::new(History::default());
@@ -97,7 +92,6 @@ fn a_still_publication_waits_for_no_fold_and_the_next_reads_it_once_folded() {
     assert_eq!((provenance[LAND], land.get(&100)), (Provenance::Indexed, Some(&Engaged::No)), "the publication after the fold reads it");
 }
 
-/// Combat 100 from hour 0, 101 from hour 6 and gone at hour 10.
 fn passing(at: u32, store: &mut replay_columnar::store::Store) {
     complete(store, at, &[TableId::LandCombats, TableId::NavalCombats, TableId::NavalCombatDetails]);
     match at {
@@ -108,7 +102,6 @@ fn passing(at: u32, store: &mut replay_columnar::store::Store) {
     }
 }
 
-/// The index of [`passing`]'s combats: 100 is engaged from hour 7, 101 is not, through hour 15.
 fn folded() -> Arc<History> {
     let history = Arc::new(History::default());
     let mut covered = Covered::new(0);
@@ -136,9 +129,6 @@ fn a_step_reads_the_flags_its_hours_and_rows_changed_and_no_others() {
         marked = now;
         frame.applied.unwrap() >= 12
     });
-    // Hours 1 to 4 change no flag and no row: the step reads none. The step over hour 6 reads the
-    // combat that began, the one over hour 7 the combat whose flag the index flipped, and the one
-    // over hour 10 the combat whose row went (dropped, never read).
     for &(hour, count) in &read {
         let expected = match hour {
             4 => 0,
@@ -151,7 +141,6 @@ fn a_step_reads_the_flags_its_hours_and_rows_changed_and_no_others() {
     let (land, _, provenance) = layer(&side).flags();
     assert_eq!(provenance[LAND], Provenance::Indexed);
     assert_eq!(land, &std::collections::BTreeMap::from([(100, Engaged::Yes)]), "101's row is gone");
-    // The flags stepped to equal the flags composed whole from the same mirrors.
     side.settle_all().unwrap();
     let (mirrors, _) = side.parts().unwrap();
     let mut fresh = layer(&side).fresh();
@@ -160,13 +149,9 @@ fn a_step_reads_the_flags_its_hours_and_rows_changed_and_no_others() {
     assert_eq!((layer(&side).flags().0, provenance), (whole, whole_provenance));
 }
 
-/// A whole settle waits for the background fold, but a fold that cannot answer (cancelled at
-/// shutdown, or one the head has outrun) leaves the flags unknown and never refuses the settle: a
-/// background pass must not stop the window, and the layers that read the flags name the gap.
 #[test]
 fn a_whole_settle_whose_fold_cannot_answer_leaves_the_flags_unknown() {
     let history = Arc::new(History::default());
-    // A cancelled fold answers at once, so the wait's limit is never spent.
     history.cancelled.store(true, std::sync::atomic::Ordering::Release);
     let entry = open(units(record(16, combats), "engagements fold cancelled"), quick()).unwrap();
     let index = Index { history: Arc::clone(&history), branch: 3 };
@@ -178,7 +163,6 @@ fn a_whole_settle_whose_fold_cannot_answer_leaves_the_flags_unknown() {
     assert_eq!(land.get(&100), Some(&Engaged::Unknown), "never a guess");
 }
 
-/// The same settle, once the fold covers the hour: it waits for nothing and reads the folded flags.
 #[test]
 fn a_whole_settle_reads_the_flags_the_fold_covers() {
     let history = folded();

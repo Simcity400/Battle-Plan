@@ -25,7 +25,6 @@ fn deferred_trait_effect_keeps_unsupported_kind() {
 }
 use std::collections::BTreeSet;
 
-/// Files read through the loader's two passes, `file0.txt` onwards.
 fn leaders(files: &[&[u8]], terrain: &dyn Fn(&str) -> Option<String>) -> Leaders {
     let files: Vec<_> = files
         .iter()
@@ -39,8 +38,6 @@ fn skills(files: &[&[u8]]) -> Skills {
     leaders(files, &|_| None).skills
 }
 
-/// A block's listed entries (not hidden) as stored: the key as last
-/// authored and the fixed5.
 fn entries(block: &Modifiers) -> Vec<(String, i64)> {
     block
         .listed()
@@ -48,9 +45,6 @@ fn entries(block: &Modifiers) -> Vec<(String, i64)> {
         .collect()
 }
 
-/// The name pass registers every `leader_traits` key across the files,
-/// a name in another case being the same trait, kept with its first
-/// spelling; a quoted `"leader_traits"` is no keyword.
 #[test]
 fn registered_traits_keep_their_first_spelling_in_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -68,7 +62,6 @@ fn registered_traits_keep_their_first_spelling_in_order() {
     );
 }
 
-/// The content's terrain types, found without ASCII case.
 fn terrain_named<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> Option<String> + 'a {
     move |name| {
         names
@@ -78,8 +71,6 @@ fn terrain_named<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> Option<String> + 
     }
 }
 
-/// One trait `t` with `body`, beside `infantry_leader`, read through the
-/// loader with the terrain type `forest`.
 fn effects(body: &str) -> TraitEffects {
     let text = format!("leader_traits = {{ infantry_leader = {{}} t = {{ {body} }} }}");
     leaders(&[text.as_bytes()], &terrain_named(&["forest"]))
@@ -234,9 +225,6 @@ fn component_skill_modifier_conditions_settle_with_the_registry() {
     );
 }
 
-/// Signed integer field conversion reports a value that does not scan
-/// and keeps the field, so an undefined `@cost` leaves the earlier value,
-/// as the game has it.
 #[test]
 fn an_unscannable_cost_keeps_the_previous_value() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -249,7 +237,6 @@ fn an_unscannable_cost_keeps_the_previous_value() {
             "Commander skill levels: file0.txt: leader_skills level 2 cost @cost does not scan as an integer; the game reports it and keeps 50."
         ]
     );
-    // Past 32 bits the CRT keeps the low 32 bits.
     let skills = self::skills(&[b"leader_skills={ 2={type=navy cost=4294967297} }"]);
     assert_eq!(skills.next_required_experience(1, 2), Some(Some(1)));
 }
@@ -289,16 +276,13 @@ fn trait_blocks_keep_authored_entries_adjusters_and_sub_units() {
         entries(&effects.blocks[0]),
         [("army_attack_factor".to_owned(), 5_000)]
     );
-    // One key per text in the modifier set.
     assert_eq!(effects.blocks[0].tooltips(), ["my_tt"]);
     assert_eq!(effects.blocks[0].children.len(), 1);
-    // Stored with the others, and hidden.
     assert_eq!(
         effects.blocks[0].hidden,
         BTreeSet::from(["army_org_factor".to_owned()])
     );
     assert_eq!(effects.blocks[0].values[1].value, 10_000);
-    // Adjusters in first-appearance order across the blocks.
     assert_eq!(
         effects.adjusters,
         [
@@ -315,7 +299,6 @@ fn trait_blocks_keep_authored_entries_adjusters_and_sub_units() {
             }
         ]
     );
-    // The variable resolves; an unknown one reads as the game's zero.
     assert_eq!(
         entries(&effects.blocks[2]),
         [
@@ -331,8 +314,6 @@ fn trait_blocks_keep_authored_entries_adjusters_and_sub_units() {
         [("naval_speed_factor".to_owned(), 10_000)]
     );
     assert_eq!(effects.sub_units[1].block.tooltips(), ["b_tt"]);
-    // The trait's registered spelling; a key naming no trait is skipped
-    // with its block.
     assert_eq!(
         effects.experience_factors,
         [("infantry_leader".to_owned(), 100_000)]
@@ -352,11 +333,6 @@ fn trait_blocks_keep_authored_entries_adjusters_and_sub_units() {
     );
 }
 
-/// A repeat of an adjuster other than the default token leaves its
-/// block unread: the game reads `{` and the block's entries as the
-/// modifier block's, whose end its `}` becomes. A new `none` adjuster
-/// is read twice: the second read takes what follows as its fields.
-/// `Forest` and `forest` are one.
 #[test]
 fn repeated_adjusters_follow_the_default_token_rule() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -371,7 +347,6 @@ fn repeated_adjusters_follow_the_default_token_rule() {
     );
     assert_eq!((t.adjusters[0].attack, t.adjusters[0].defence), (10_000, 0));
     assert_eq!(entries(&t.blocks[0]), [("defence".to_owned(), 20_000)]);
-    // `attack_skill = 3` came after the trait's end: never its field.
     assert_eq!(t.skills[0], 0);
     assert!(misreads[0].contains("field `Forest` is a block where its reader takes one value"));
     let (t, _) = read("modifier = { NONE = { attack = 0.1 } x = 0.5 } y = 1");
@@ -381,11 +356,6 @@ fn repeated_adjusters_follow_the_default_token_rule() {
     assert_eq!(entries(&t.blocks[0]), [("y".to_owned(), 100_000)]);
 }
 
-/// The name pass registers each name once without case, the first spelling
-/// kept; every body of that name merges into the first trait. Where a
-/// reading leaves the text, the next reader goes on from there: here a
-/// repeated adjuster's block ends the modifier block, so b's own `}` closes
-/// the trait table early and c is read at the top level, which skips it.
 #[test]
 fn repeated_trait_keys_merge_and_a_misread_reading_goes_on() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -411,8 +381,6 @@ fn repeated_trait_keys_merge_and_a_misread_reading_goes_on() {
     assert!(traits.unsupported.is_empty());
     assert_eq!(leaders.misreads.len(), 2, "{:?}", leaders.misreads);
     assert!(leaders.misreads[0].starts_with("file0.txt line 4: field `forest` is a block"));
-    // A scalar body makes the trait's reader take what follows as its
-    // fields: c's block is an unknown field of `scalar`, skipped.
     let leaders = self::leaders(
         &[b"leader_traits = { scalar = 5 c = { attack_skill = 3 } }"],
         &|_| None,
@@ -425,12 +393,6 @@ fn repeated_trait_keys_merge_and_a_misread_reading_goes_on() {
     assert!(leaders.misreads[0].contains("field `scalar` is `5` where its reader reads a block"));
 }
 
-/// The file's reader variables through the loader's own read: a chain
-/// resolves when it is defined, names keep their case, a quoted token is
-/// never a reference (its quoted flag is checked first), a definition
-/// anywhere the reader reads by key holds for the rest of the file,
-/// `leader_skills` and `leader_traits` share it, and the next file
-/// starts empty.
 #[test]
 fn variables_follow_the_game_reader_through_the_file() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -478,8 +440,6 @@ fn variables_follow_the_game_reader_through_the_file() {
             ("q".to_owned(), 0)
         ]
     );
-    // A reference before its definition, and a quoted one, stay text;
-    // the set holds each text once.
     let mut tooltips = t.blocks[0].tooltips();
     tooltips.sort();
     assert_eq!(tooltips, ["@tooltip", "my_tt"]);
@@ -492,7 +452,6 @@ fn variables_follow_the_game_reader_through_the_file() {
             "unknown trait key mystery"
         ]
     );
-    // `@b` holds for the rest of the file; the skipped block defined nothing.
     let u = leaders.traits.get("u").unwrap();
     assert_eq!(
         entries(&u.blocks[0]),
@@ -509,10 +468,6 @@ fn variables_follow_the_game_reader_through_the_file() {
     assert!(leaders.traits.unsupported.is_empty());
 }
 
-/// The game keeps a quoted `"@a"` as text, and its lexer ends a token at
-/// `(`: `@(1+1)` is the reference `@`, then `(`, `1+1` and `)`, read as keys
-/// without operators, the last consuming the modifier block's `}`, so
-/// e's `}` ends the modifier block and `after` is e's unknown field.
 #[test]
 fn quoted_references_stay_text_and_expressions_split() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -532,19 +487,12 @@ fn quoted_references_stay_text_and_expressions_split() {
         [("x".to_owned(), 0)]
     );
     let e = traits.get("e").unwrap();
-    // `(` and `)` are punctuation, whose token ids name no modifier:
-    // no entries.
     assert_eq!(entries(&e.blocks[0]), [("y".to_owned(), 0)]);
     assert!(e.ignored.contains(&"unknown trait key after".to_owned()));
     assert_eq!(traits.get("after").unwrap().skills[0], 0);
     assert!(traits.unsupported.is_empty());
 }
 
-/// Blocks the hovers do not read still define as their readers do, in
-/// document order: by key for triggers, effects, mean-time fields, parent
-/// traits, added_modifier and a component skill table's level modifier;
-/// a token list, a string list, an unknown key and a non-positive level
-/// define nothing.
 #[test]
 fn unread_blocks_define_as_their_readers_do() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -592,10 +540,6 @@ fn unread_blocks_define_as_their_readers_do() {
     );
 }
 
-/// Dispatch `type` on the value token's id, keeping a definition's token,
-/// so a quoted category, direct or through a variable, is no keyword:
-/// reported, the level keeps category 4 and no shard holds it. A bare
-/// one through a variable is a category.
 #[test]
 fn a_quoted_skill_type_is_no_category_keyword() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -620,9 +564,6 @@ fn a_quoted_skill_type_is_no_category_keyword() {
     assert_eq!(leaders.skills.next_required_experience(0, 2), Some(Some(5)));
 }
 
-/// `type` dispatches on the value token up to its NUL, in the reader and in what it keeps
-/// alike: a retained category value is still a category for a `type` without an operator,
-/// which reads one value, so the block after it is the level's own fields.
 #[test]
 fn a_skill_type_dispatches_on_the_token_up_to_its_nul() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -632,12 +573,6 @@ fn a_skill_type_dispatches_on_the_token_up_to_its_nul() {
     assert_eq!(skills.next_required_experience(0, 1), Some(Some(7)));
 }
 
-/// Forms the tree cannot hold are read as the game reads them, each
-/// named: a taken name (leaving `= value` for the next key), a block value
-/// (only its `{` is kept), a taken name inside a block read by key, a block
-/// where one value is read, a definition ending its block (the reader takes
-/// `}` as a key), and an undefined `@` value (read again as a definition).
-/// What reaches `t` follows.
 #[test]
 fn forms_the_tree_cannot_hold_are_read_as_the_game_reads_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -686,7 +621,6 @@ fn forms_the_tree_cannot_hold_are_read_as_the_game_reads_them() {
                 "{misread}: {:?}",
                 leaders.misreads
             );
-            // The next file has its own reader.
             assert_eq!(
                 leaders.skills.next_required_experience(0, 2),
                 Some(Some(5))
@@ -699,16 +633,10 @@ fn forms_the_tree_cannot_hold_are_read_as_the_game_reads_them() {
     assert_eq!(leaders.skills.next_required_experience(0, 2), Some(Some(5)));
 }
 
-/// A block where a reader takes one value (none skips it, so the persistent
-/// reader reads its contents as the enclosing fields) and a value without
-/// a key (consuming the next token as its operator and handing the key
-/// the previous value) are read as the game reads them.
 #[test]
 fn scalar_fields_given_blocks_and_keyless_values_read_on() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // The block's fields become t's; its `}` ends t, so `after`'s body is
-    // read at the table level, and t's own `}` ends the table.
     let leaders = leaders(
             &[b"leader_traits = { t = { attack_skill = { defense_skill = 2 } planning_skill = 4 } after = { attack_skill = 1 } }"],
             &|_| None,
@@ -716,9 +644,6 @@ fn scalar_fields_given_blocks_and_keyless_values_read_on() {
     let t = leaders.traits.get("t").unwrap();
     assert_eq!(t.skills[..4], [0, 2, 0, 0]);
     assert_eq!(leaders.traits.get("after").unwrap().skills[0], 0);
-    // `stray` takes the previous value 3 and consumes `slot`; `=` then
-    // consumes `x`; the trait goes on. `=` is punctuation (token 1),
-    // which the lexer never looks up as a keyword (parser::looked_up).
     let leaders = self::leaders(
         &[b"leader_traits = { t = { attack_skill = 3 stray slot = x Coordination_Skill = 5 } }"],
         &|_| None,
@@ -736,10 +661,6 @@ fn scalar_fields_given_blocks_and_keyless_values_read_on() {
     assert_eq!(leaders.misreads.len(), 2);
 }
 
-/// Mean-time and parent-trait readers only log a key they do not know,
-/// skipping nothing: a block there is read as their fields and its `}`
-/// ends them, so the trait's own `}` ends the trait before `defense_skill`.
-/// Known keys read on.
 #[test]
 fn mean_time_and_parent_readers_skip_nothing_for_unknown_keys() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -767,8 +688,6 @@ fn mean_time_and_parent_readers_skip_nothing_for_unknown_keys() {
     assert!(leaders.misreads.is_empty(), "{:?}", leaders.misreads);
 }
 
-/// Text that is not UTF-8 is not a block: an integer scans its bytes, a
-/// string field names the encoding, never the block shape.
 #[test]
 fn text_that_is_not_utf8_is_named_as_such() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -778,8 +697,6 @@ fn text_that_is_not_utf8_is_named_as_such() {
     let traits = leaders(&[text], &|_| None).traits;
     let t = traits.get("t").unwrap();
     assert_eq!(t.skills[0], 3);
-    // A modifier block's text through the shared reader's first failure
-    // (Modifiers::unheld).
     assert_eq!(
         t.unsupported,
         [
@@ -789,9 +706,6 @@ fn text_that_is_not_utf8_is_named_as_such() {
     );
 }
 
-/// The name pass registers a non-UTF-8 name as bytes; the body pass finds
-/// its token and reads its body, including file-local definitions. A
-/// display refusal must not change the later traits' operands.
 #[test]
 fn non_utf8_trait_names_still_dispatch_their_bodies() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -821,10 +735,6 @@ fn non_utf8_trait_names_still_dispatch_their_bodies() {
     assert_eq!(traits.unsupported.len(), 2);
 }
 
-/// A quoted key is token 0xF: no keyword, adjuster or `trait_xp_factor`
-/// trait, so the readers take their other branch; a quoted modifier name
-/// is still found by its text; a quoted `leader_traits` is skipped by
-/// both passes.
 #[test]
 fn quoted_keys_are_no_keywords() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -860,8 +770,6 @@ fn quoted_keys_are_no_keywords() {
         "trait key attack_skill is not a keyword (quoted, or never looked up by the lexer)"
     );
     assert!(t.ignored[1].starts_with("modifier.forest is a block"));
-    // The quoted `"forest"` block names no adjuster: whether it is a
-    // registered modifier decides the rest (a Conditional).
     assert_eq!(t.conditions[0].modifier, "forest");
     assert_eq!(
         t.experience_factors,
@@ -870,11 +778,6 @@ fn quoted_keys_are_no_keywords() {
     assert!(leaders.traits.get("u").is_none());
 }
 
-/// A block under a modifier entry leaves the rest of the file depending
-/// on the registry: the trait holding it and every later trait and
-/// `leader_skills` of that file carry the condition, earlier ones and
-/// other files do not; the entry itself is not kept, and nothing inside
-/// defines.
 #[test]
 fn a_block_under_a_modifier_entry_conditions_the_rest_of_the_file() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -913,10 +816,6 @@ fn a_block_under_a_modifier_entry_conditions_the_rest_of_the_file() {
     );
 }
 
-/// With the registry, a block under a registered modifier is one value,
-/// taking `{`: its contents are the modifier block's entries and its `}`
-/// ends that block; under a name that is no modifier it is skipped.
-/// Neither leaves a condition.
 #[test]
 fn the_registry_settles_a_block_under_a_modifier_entry() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -928,7 +827,6 @@ fn the_registry_settles_a_block_under_a_modifier_entry() {
     let registered = unknown.reread(&|_| None, &|name| Some(name == b"army_org"));
     assert!(!registered.conditional());
     let t = registered.traits.get("t").unwrap();
-    // `x = 0.1` and `attack_skill = 3` fall out of the modifier block.
     assert_eq!(
         entries(&t.blocks[0]),
         [("army_org".to_owned(), 0), ("y".to_owned(), 20_000)]
@@ -936,7 +834,6 @@ fn the_registry_settles_a_block_under_a_modifier_entry() {
     assert_eq!(t.skills[0], 0);
     let skipped = unknown.reread(&|_| None, &|_| Some(false));
     let t = skipped.traits.get("t").unwrap();
-    // The skipped block is stored as the zero Modifiers keeps for it.
     assert_eq!(
         entries(&t.blocks[0]),
         [("army_org".to_owned(), 0), ("x".to_owned(), 10_000)]
@@ -1046,13 +943,6 @@ fn sub_unit_group_gaps_require_an_explicit_assignment_to_recover() {
     assert_eq!(units.group(b"a"), Ok(None));
 }
 
-/// `is_artillery_brigade` as the sub-unit reader reads it: exact texts
-/// `yes` and `no`, anything else leaving the value; a repeated name, in
-/// any case, is one definition reset before its body; the file's variables;
-/// a quoted key is no keyword; a block where the value is read leaves
-/// its contents to the definition, whose unknown readers then decide
-/// the rest; and a file whose reading cannot be followed leaves every
-/// value unknown.
 #[test]
 fn artillery_brigade_follows_the_sub_unit_reader() {
     let units = sub_units(&[
@@ -1064,16 +954,12 @@ fn artillery_brigade_follows_the_sub_unit_reader() {
     assert_eq!(units.artillery(b"artillery"), Ok(true));
     assert_eq!(units.artillery(b"Artillery"), Ok(true));
     assert_eq!(units.artillery(b"infantry"), Ok(false));
-    // The repeat is reset and its quoted key sets nothing.
     assert_eq!(units.artillery(b"RESET"), Ok(false));
-    // `YES` fails the boolean scan: the default `no` stays.
     assert_eq!(units.artillery(b"odd"), Ok(false));
     assert_eq!(
         units.artillery(b"absent"),
         Err("sub-unit absent is not in the content's sub_units".into())
     );
-    // `{` fails too; the block's `yes` is a key that consumes `}` as its
-    // operator and is handed the stale `{`, which its reader decides.
     let units = sub_units(&[
             b"sub_units = { bad = { is_artillery_brigade = { yes } } later = { is_artillery_brigade = yes } }",
         ]);
@@ -1093,11 +979,6 @@ fn artillery_brigade_follows_the_sub_unit_reader() {
     assert_eq!(units.artillery(b"c"), Err(refused));
 }
 
-/// A file whose reading stops leaves every `is_artillery_brigade` unknown,
-/// before the stop or not: its unread tail may define any name again.
-/// A later file's appearance settles the name, since the value resets
-/// before the body, whatever the body assigns; a later stop makes every
-/// value unknown again.
 #[test]
 fn an_unread_tail_leaves_every_artillery_brigade_unknown_until_defined_again() {
     let mut units = sub_units(&[
@@ -1142,10 +1023,6 @@ fn an_unread_tail_leaves_every_artillery_brigade_unknown_until_defined_again() {
     assert!(stops[1].contains(&second) && !stops[1].contains("unknown index"));
 }
 
-/// The name pass registers every `leader_traits` key whatever its value,
-/// on each file's own reader: a name in another case is the same trait,
-/// a quoted `"leader_traits"` is no keyword, the skip defines nothing,
-/// and a name that is not UTF-8 is named and not kept.
 #[test]
 fn trait_names_follow_the_append_pass() {
     let mut traits = Traits::default();
@@ -1179,10 +1056,6 @@ fn trait_names_follow_the_append_pass() {
     );
 }
 
-/// Lookup finds the first definition the name pass appended for a name
-/// in any case: its ordinal counts every earlier definition, repeated
-/// and non-UTF-8 names included, after the null object. A repeated key
-/// is a later definition no lookup finds.
 #[test]
 fn a_trait_name_finds_its_first_definitions_ordinal() {
     let mut traits = Traits::default();
@@ -1201,13 +1074,10 @@ fn a_trait_name_finds_its_first_definitions_ordinal() {
     assert_eq!(traits.first_ordinal(b"absent"), Ok(None));
 }
 
-/// First appearance takes the next index; lookup folds case and the
-/// first spelling names the sub-unit.
 #[test]
 fn sub_unit_indices_follow_first_appearance_without_case() {
     let indices = sub_units(&[
             &b"sub_units = { Infantry = {} cavalry = {} }"[..],
-            // `SUB_UNITS` folds; a key that is not UTF-8 still takes index 3.
             b"SUB_UNITS = { CAVALRY = {} @x = 1 \xfe = {} destroyer = {} } critical_parts = { part = {} }",
             b"\"sub_units\" = { quoted = {} }",
         ]);
@@ -1222,8 +1092,6 @@ fn sub_unit_indices_follow_first_appearance_without_case() {
     assert!(indices.warnings().is_empty());
 }
 
-/// Byte names are hashed; invalid UTF-8 bytes neither collapse into each
-/// other nor alias an authored Unicode replacement character.
 #[test]
 fn sub_unit_indices_keep_distinct_byte_names() {
     let indices = sub_units(&[b"sub_units = {
@@ -1263,10 +1131,6 @@ fn sub_unit_token_lookup_keeps_first_zero_token_name_and_null_fallback() {
     );
 }
 
-/// `sub_units = no`: definition creation reads the tokens after it as
-/// its keys, so `sub_units` itself becomes a sub-unit whose body holds
-/// infantry and cavalry; a non-block entry's body takes the next entry;
-/// a value without a key consumes the next token.
 #[test]
 fn a_scalar_sub_units_is_read_as_the_game_reads_it() {
     let indices = sub_units(&[
@@ -1287,8 +1151,6 @@ fn a_scalar_sub_units_is_read_as_the_game_reads_it() {
     assert_eq!(indices.get("c"), SubUnit::Unknown);
 }
 
-/// Keywords fold with lexer identity; modifier identifiers keep their
-/// text, and a terrain adjuster takes the content's spelling.
 #[test]
 fn mixed_case_keywords_read_as_the_lowercase_ones() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1332,7 +1194,6 @@ fn mixed_case_keywords_read_as_the_lowercase_ones() {
     assert_eq!(effects.blocks[0].tooltips(), ["my_tt"]);
     assert_eq!(effects.blocks[0].hidden.len(), 1);
     assert_eq!(effects.blocks[0].children.len(), 1);
-    // Adjusters keep the registered spelling of their token.
     assert_eq!(
         effects
             .adjusters
@@ -1357,9 +1218,6 @@ fn mixed_case_keywords_read_as_the_lowercase_ones() {
     assert_eq!(effects.custom_tooltips, ["extra_tt"]);
 }
 
-/// Mixed-case `leader_skills`, `cost`, `type` and category keywords read
-/// as the lowercase ones; what the game reports and goes on from is a
-/// note.
 #[test]
 fn mixed_case_leader_skills_fold_and_notes_name_the_field() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1391,13 +1249,10 @@ fn mixed_case_leader_skills_fold_and_notes_name_the_field() {
             [format!("Commander skill levels: file0.txt: {note}.")]
         );
     }
-    // A level given a scalar reads the next level's tokens as its fields.
     let skills = skills(&[b"leader_skills = { 1 = 5 type = navy cost = 9 }"]);
     assert_eq!(skills.next_required_experience(0, 2), Some(Some(9)));
 }
 
-/// A `type` that is no category keyword is reported and a block skipped:
-/// the level keeps its category and the cost after the block is its own.
 #[test]
 fn an_invalid_skill_type_skips_its_block() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1411,11 +1266,6 @@ fn an_invalid_skill_type_skips_its_block() {
         }
 }
 
-/// Where a file's reading cannot be followed, its unread rest could
-/// hold another body of any registered trait, merging into that trait
-/// (the name pass registered every file's names first), or another
-/// `leader_skills`: every trait, one read before the gap or in another
-/// file included, and the skill table are refused.
 #[test]
 fn a_gap_leaves_every_trait_and_the_skills_unknown() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1439,11 +1289,6 @@ fn a_gap_leaves_every_trait_and_the_skills_unknown() {
     assert_eq!(leaders.skills.next_required_experience(0, 2), None);
 }
 
-/// `override_effect_tooltip` and `custom_effect_tooltip` are copied as
-/// C strings (to the NUL, no line-feed check); `slot` is the lexer's
-/// current token's text to its NUL, so a variable stays its name;
-/// `custom_modifier_tooltip` reads one string to the NUL, a line feed
-/// read as `Unreadable String`.
 #[test]
 fn string_fields_convert_as_their_readers_do() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1462,9 +1307,6 @@ fn string_fields_convert_as_their_readers_do() {
     assert_eq!(effects.advisor_slot.as_deref(), Some("@s"));
 }
 
-/// Resolve the lexer's current token: a bare name is looked up, a quoted
-/// one is token 0xF and a variable's own token (resolution only updates
-/// the value slot) names no trait either.
 #[test]
 fn advisor_traits_keep_the_current_tokens_kind() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1483,8 +1325,6 @@ fn advisor_traits_keep_the_current_tokens_kind() {
     );
 }
 
-/// Leader and sub-unit loaders list each folder's own `.txt` files:
-/// a subdirectory's traits, skill costs and sub-units are not read.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loaders_do_not_read_subdirectories() {
@@ -1526,7 +1366,6 @@ fn the_loaders_do_not_read_subdirectories() {
     assert_eq!(sub_units.get("hidden"), SubUnit::Unknown);
 }
 
-// Direct catalogue coverage supplements effect fixtures.
 #[test]
 fn support_category_follows_lexer_current_raw_lists_and_redefinition_reset() {
     let units = sub_units(&[
@@ -1562,8 +1401,6 @@ fn support_category_follows_lexer_current_raw_lists_and_redefinition_reset() {
     );
 }
 
-// The category loop starts with an unconditional advance. The first
-// `}` is itself a category token; support after it is still in this raw list.
 #[test]
 fn support_category_empty_list_takes_its_first_close_before_peeking_for_the_end() {
     let units = sub_units(&[b"sub_units={unit={type={} support}}"]);
@@ -1611,8 +1448,6 @@ fn inline_unit_icon_categories_follow_mask_or_and_reset() {
     assert!(units.category(b"absent").unwrap_err().contains("absent"));
 }
 
-/// `special_forces` reads as `is_artillery_brigade` does: only an exact `yes` or `no`
-/// assigns it, each appearance starts at `no`, and the last appearance gives it.
 #[test]
 fn special_forces_follows_the_last_appearance() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1630,7 +1465,6 @@ fn special_forces_follows_the_last_appearance() {
     assert_eq!(units.special_forces(b"MARINE"), Ok(true));
     assert_eq!(units.special_forces(b"line"), Ok(false));
     assert_eq!(units.special_forces(b"plain"), Ok(false));
-    // A value that is neither `yes` nor `no` leaves the flag as it was.
     assert_eq!(units.special_forces(b"unclear"), Ok(true));
     assert_eq!(units.special_forces(b"redefined"), Ok(false));
     assert!(

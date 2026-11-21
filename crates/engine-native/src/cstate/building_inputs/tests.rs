@@ -6,7 +6,6 @@ use crate::{
 };
 
 const MODULE: usize = 0x1_4000_0000;
-/// The test's own indices for [`NAMES`], in its order.
 const KEYS: [u32; 8] = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
 
 fn keys() -> [Key; 8] {
@@ -23,7 +22,6 @@ fn accumulator(world: &mut World, at: usize, entries: &[(u32, i64)]) {
     world.array(at, data, entries.len() as u32);
 }
 
-/// A state with its base accumulator and a two-bucket country hash holding `overrides`.
 fn state(
     world: &mut World,
     id: u32,
@@ -122,9 +120,6 @@ fn rows(world: &World, keys: &[Key; 8]) -> Result<Vec<Row>, &'static str> {
     }
 }
 
-/// The owner's and controller's accumulators answer their own groups: an occupied state's
-/// controller reads the country-specific override and its owner the base, each country its
-/// own modifiers and factor; an absent key is the game's zero, and an empty roster slot has no row.
 #[test]
 fn each_state_reads_its_owners_and_controllers_operands() {
     let world = world();
@@ -157,8 +152,6 @@ fn each_state_reads_its_owners_and_controllers_operands() {
     );
 }
 
-/// A modifier the definition table does not name refuses only the groups that use it, and a
-/// controller whose production status is not one refuses only its factor.
 #[test]
 fn an_unresolved_key_or_status_refuses_only_its_group() {
     let mut world = world();
@@ -182,7 +175,6 @@ fn an_unresolved_key_or_status_refuses_only_its_group() {
     assert_eq!(rows[1].energy_factor, None);
 }
 
-/// A roster entry that is not a state, or whose id is not its slot, refuses the table by name.
 #[test]
 fn a_foreign_roster_entry_refuses_the_table() {
     let mut world = world();

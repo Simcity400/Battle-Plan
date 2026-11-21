@@ -1,4 +1,3 @@
-//! combat details save comparisons and recorded consistency checks.
 use installed_content_save as save;
 use installed_content_save::Decimal;
 use installed_content_save::Save;

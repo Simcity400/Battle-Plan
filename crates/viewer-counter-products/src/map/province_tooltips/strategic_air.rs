@@ -1,6 +1,3 @@
-//! Air mode's province hover: detection, selected-wing assignment feedback and
-//! the shared regional mine summary, with independent named input failures.
-//! Received-damage grids belong to the Air view rather than this map hover.
 mod selection;
 pub use selection::assignment_checks;
 use super::{Arg, Context, Tooltip, line};
@@ -10,8 +7,6 @@ use viewer_foundation::map::{
     air_detection as detection, air_range::FrameSources, visibility::Relations,
 };
 
-/// The native pool-location query returns this region with a valid value
-/// when the base or its host's location does not resolve.
 const UNRESOLVED_BASE_REGION: u32 = 0xaa;
 
 fn keyed<T, K: Ord>(rows: &[T], key: K, field: impl FnMut(&T) -> K) -> Option<&T> {
@@ -69,10 +64,6 @@ pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip)
     );
 }
 
-/// The strategic region the game places a pool's base in (its pool-location query) and whether
-/// its carrier host is on a mission: the base province's region, the first province of its
-/// state's base kind, or the host task force's (its port's sea region while in port);
-/// [`UNRESOLVED_BASE_REGION`] when none resolves.
 pub(crate) fn pool_region(
     content: &super::counter_content::Content,
     frame: &replay_frame::frame::DecodedFrame,
@@ -447,8 +438,6 @@ fn effective(
     replay_derive::naval_mission_derive::effective(definition, features, raw).map_err(str::to_owned)
 }
 
-/// The native regional radar counts are rebuilt by grouping the same covered
-/// province IDs. Controller share follows the host state's controller writers.
 fn radar(
     context: &DetectionContext<'_, '_>,
     region: u32,
@@ -548,8 +537,6 @@ mod tests {
         for invalid in [i64::MIN, i64::MIN + 1, i64::MAX] {
             assert_eq!(fraction(invalid, 3, 0), 0xffff_ffff);
         }
-        // The native multiply/divide pair cannot be cancelled for a large
-        // covered list and the controller fraction's empty-state sentinel.
         assert_eq!(radar_contribution(30_000, 0xffff_ffff), -55_618_421_887_095);
     }
 

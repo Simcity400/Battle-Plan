@@ -20,7 +20,6 @@ test('a value at an hour is its run, with why where it is not known and the stre
   assert.deepEqual(valueAt(model, 20), { value: null, reason: 'windowIncomplete', index: 1, stretch: 0 });
   assert.equal(valueAt(model, 58), null);
   assert.deepEqual(valueAt(model, 70.5), { value: 3, reason: null, index: 3, stretch: 1 });
-  // Lines leave an unknown run as a gap and start again after it and at a break.
   assert.deepEqual(seriesRuns(model, 0), [
     { firstHour: 0, lastHour: 9, value: 0, breakBefore: true },
     { firstHour: 34, lastHour: 57, value: 7, breakBefore: true },
@@ -78,14 +77,11 @@ test('the windows held join in hour order into the reply of their hours together
   const merged = mergeProducedWindows(new Map([[1, validateProducedWindow(second)], [0, validateProducedWindow(first)]]));
   assert.ok(merged);
   assert.deepEqual(merged.lines.map(line => line.tag), ['AAA', 'BBB']);
-  // Equal values across the edge join; a run starting afresh does not.
   assert.deepEqual(merged.lines[0].series, series([[100, 199, null], [200, W + 9, 4], [W + 10, 2 * W - 1, 4]], [{ run: 0, reason: 'windowIncomplete' }], [2]));
-  // An unknown run joins one with the same reason only.
   assert.deepEqual(merged.lines[1].series, series([[100, W + 5, null], [W + 6, 2 * W - 1, 2]], [{ run: 0, reason: 'typeNotRecorded' }]));
   assert.deepEqual(merged.reads, [100, 124, W + 4]);
   assert.deepEqual(merged.observations, [0, W + 10]);
   assert.equal(validateProducedReply(merged), merged);
-  // A window missing between two held leaves a gap, never a joined run.
   const third = windowReply(3, 3 * W, 3 * W + 9, [{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[3 * W, 3 * W + 9, 4]]) }], [], [0]);
   const gapped = mergeProducedWindows(new Map([[0, first], [3, third]]));
   assert.deepEqual(gapped?.lines[0].series.firstHours, [100, 200, 3 * W]);

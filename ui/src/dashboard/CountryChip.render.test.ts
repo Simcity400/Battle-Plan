@@ -6,7 +6,6 @@ import { createServer } from 'vite';
 import type { BoundTrack, CountrySelection, WidgetSpec } from './model';
 import type { WidgetCountryChipProps, WidgetPreset, WidgetRuntime } from './definitions';
 
-// Breakdowns whose body lets you choose a country keep the header for the body even unpinned.
 const CHOOSING: readonly [kind: string, chip: string][] = [
   ['army-size', 'army-size/ArmyCountryChip.tsx'],
 ];

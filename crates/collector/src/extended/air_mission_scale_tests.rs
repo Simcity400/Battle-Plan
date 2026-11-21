@@ -1,32 +1,3 @@
-//! AirRegionalMissions and AirReferenceWitnesses at 5,000
-//! countries, with thousands of registered wings.
-//!
-//! Slot `s` holds country id `s` (links resolve every id to its own slot),
-//! except one empty slot with no country, air or navy object. Every live
-//! country has a CStrategicAir object. Every third country registers missions
-//! in one to four regions; one heavy country has 70 active regions and a region
-//! of 130 missions, so the walk crosses both of its 64-entry batch boundaries.
-//! Each region's vector lists its wings in the reverse of census order, and
-//! wing handles are a permutation of census order, so neither the mission
-//! pointer nor the handle order can stand in for the vector order.
-//!
-//! Every wing with a non-null region is registered. Unregistered wings are
-//! training wings (some with no pool base, some sharing a registered wing's base, some with
-//! a base of their own) and idle wings, whose resolvable pool bases must not
-//! be probed. Pool bases repeat across wings; a tenth of the wings name a
-//! transfer base, some shared with pool bases, some of their own and some
-//! that never resolve, and a few pool bases never resolve either. A quarter
-//! of the registered wings lay mines; some of them fly for another country
-//! (a positive override), so (country, region) pairs repeat.
-//!
-//! A stateless base's host is a carrier with a task force, a carrier
-//! without one, or a handle the registry does not hold. A state base without
-//! a cached province takes the first province of its state's list for its
-//! kind; a fourth of those lists are empty.
-//!
-//! Memory is two windows: a heap holding every object, and the reference
-//! registry's low-type root cells in the module. Anything else, including the
-//! wings themselves (the joins never read a wing), is unreadable.
 
 use super::*;
 use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
@@ -43,14 +14,10 @@ use std::{
 
 const BASE: usize = 0x1_4000_0000;
 const HEAP: usize = 0x10_0000;
-/// Unmapped: the joins follow a wing only by its mission address.
 const WINGS: usize = 0x7000_0000_0000;
 const COUNTRIES: u32 = 5_000;
-/// An hour outside the daily slots, so only the hourly air tables walk.
 const HOUR: i32 = 1;
-/// Every navy's regional mine vector covers region ids below this.
 const REGIONS: u32 = 400;
-/// Pool bases are ids `1..=POOL_BASES`, transfer bases `1..=TRANSFER_BASES`.
 const POOL_BASES: u64 = 2_500;
 const TRANSFER_BASES: u64 = 3_000;
 const STATES: u64 = 300;
@@ -65,21 +32,16 @@ fn province_id(index: u64) -> u32 {
     100 + 3 * (index % PROVINCES) as u32
 }
 
-/// The first province of a state's list for a base kind, if it has one.
 fn first_province(state: u32, kind: i32) -> Option<u32> {
     let (state, kind) = (u64::from(state), kind as u64);
     (!(state + kind).is_multiple_of(4)).then(|| province_id(state * 7 + kind * 101))
 }
 
-/// The fields a registered base's object holds, as the reference reads
-/// them (without the object's address).
 fn reference(id: u64) -> BaseReference {
     let kind = (id % 3) as i32;
     let state = 1 + (id % STATES) as u32;
     let (state, province) = match id % 10 {
-        // Stateless: a hosted base, whose cached province is ignored.
         3 => (None, None),
-        // No cached province: the state's first one for the kind.
         7 => (Some(state), first_province(state, kind)),
         _ => (Some(state), Some(province_id(id))),
     };
@@ -92,8 +54,6 @@ fn reference(id: u64) -> BaseReference {
     }
 }
 
-/// A stateless base's host: a carrier in a task force, a carrier without
-/// one, or a handle that does not resolve.
 fn host(id: u64) -> Host {
     match id / 10 % 3 {
         0 => Host::Owner(1 + (id % u64::from(COUNTRIES)) as u32),
@@ -102,11 +62,8 @@ fn host(id: u64) -> Host {
     }
 }
 
-/// A probed handle's witness: the base, its host's owner and whether the
-/// host has no task force.
 type Witness = (u64, Option<BaseReference>, Option<u32>, bool);
 
-/// A country's raw regional mine level; zero for a fifth of the pairs.
 fn mines(slot: u32, region: u32) -> i64 {
     if (slot + region).is_multiple_of(5) {
         0
@@ -115,21 +72,14 @@ fn mines(slot: u32, region: u32) -> i64 {
     }
 }
 
-/// The two memory windows.
 struct World {
     heap: Vec<u8>,
     roots: Vec<u8>,
     game_state: usize,
-    /// Region IDs, region vectors and mission pointers: only the
-    /// registration walk's regional phase reads them.
     missions: std::ops::Range<usize>,
-    /// Each live country's navy, by slot.
     navies: BTreeMap<u32, usize>,
-    /// Each state's object, by index.
     states: Vec<usize>,
-    /// Each registered base's object, by handle.
     bases: BTreeMap<u64, usize>,
-    /// Each registered carrier host, by handle.
     ships: BTreeMap<u64, usize>,
 }
 
@@ -170,8 +120,6 @@ impl World {
         object
     }
 
-    /// A reference registry table of `kind` holding `objects` by handle,
-    /// filled by Robin Hood insertion.
     fn registry(&mut self, kind: u32, objects: &BTreeMap<u64, usize>) {
         let exponent = (objects.len() * 2)
             .next_power_of_two()
@@ -238,8 +186,6 @@ impl Memory for World {
     }
 }
 
-/// One registered country's regions in ascending order, each with its
-/// wings' census indices in vector order.
 struct Registered {
     slot: u32,
     regions: Vec<(u32, Vec<usize>)>,
@@ -247,10 +193,8 @@ struct Registered {
 
 struct Scale {
     world: World,
-    /// The AirWings census in visit order.
     census: Vec<cair_wing::Source>,
     registered: Vec<Registered>,
-    /// The absent country slot in this fixture's world definition.
     _empty: u32,
 }
 
@@ -274,7 +218,6 @@ impl Scale {
         world.game_state = state;
         let live = |slot: u32| slot != empty;
 
-        // The country registry.
         let table = world.alloc(slots as usize * 8);
         let links = world.alloc(slots as usize * 4);
         world.array(state + gs::COUNTRIES, table, slots);
@@ -288,7 +231,6 @@ impl Scale {
             world.u32(links + slot as usize * 4, slot);
         }
 
-        // The wing census, country by country.
         let mut census = Vec::new();
         let mut registered = Vec::new();
         let mut unique_bases = BTreeSet::new();
@@ -298,7 +240,6 @@ impl Scale {
                 pointer: WINGS + index * 0x200,
                 pool: 0,
                 row: cair_wing::Row {
-                    // A permutation of census order.
                     id: ((index as u64 * 7_919) % 1_000_003 + 1) << 32 | 0x47,
                     base_override: match index % 10 {
                         0 => handle(1 + (index as u64 * 13) % TRANSFER_BASES),
@@ -358,7 +299,6 @@ impl Scale {
                 registered.push(Registered { slot, regions });
             }
             match slot % 12 {
-                // Training without a region: no base, a shared base, its own.
                 1 | 5 | 9 => {
                     let air_base = match slot % 12 {
                         1 => 0,
@@ -378,8 +318,6 @@ impl Scale {
                         },
                     );
                 }
-                // Idle, and a mine layer, but without a region: its pool
-                // base resolves and is never probed.
                 2 | 6 | 10 => {
                     unique_bases.insert(20_000 + u64::from(slot));
                     wing(
@@ -396,7 +334,6 @@ impl Scale {
             }
         }
 
-        // Country air objects and, in one window, their registrations.
         let manager = world.object(0x100, cstrategic_air_manager::VTABLE_RVA);
         world.u64(state + gs::STRATEGIC_AIR_MANAGER, manager as u64);
         let roster = world.alloc(slots as usize * 8);
@@ -435,12 +372,10 @@ impl Scale {
                 ids,
                 country.regions.len() as u32,
             );
-            // Only the count is compared; the data is never read.
             world.array(object + cstrategic_air::ALL_ACTIVE_MISSIONS, ids, all);
         }
         world.missions = start..world.alloc(0);
 
-        // The reference registry's air-base table and its bases.
         world.states = (0..STATES)
             .map(|index| {
                 let object = world.object(0x60, cstate::VTABLE_RVA);
@@ -455,7 +390,6 @@ impl Scale {
                 object
             })
             .collect();
-        // The province roster by id, and each kind's state province lists.
         let ids = province_id(PROVINCES - 1) as usize + 1;
         let roster = world.alloc(ids * 8);
         world.array(state + gs::PROVINCES, roster, ids as u32);
@@ -529,7 +463,6 @@ impl Scale {
         world.registry(cair_base::TYPE, &bases);
         let ships = world.ships.clone();
         world.registry(cship::HANDLE_TYPE, &ships);
-        // The navies of the registered countries and their mine levels.
         let navies = world.object(0x20, cstrategic_navy_manager::VTABLE_RVA);
         world.u64(state + gs::STRATEGIC_NAVY_MANAGER, navies as u64);
         let roster = world.alloc(slots as usize * 8);
@@ -565,9 +498,6 @@ impl Scale {
             .flat_map(|(_, wings)| wings.iter().map(|&wing| &self.census[wing].row))
     }
 
-    /// Every wing's pool base and every transfer base, each once in handle
-    /// order, with the
-    /// fields of those the registry resolves.
     fn witnesses(&self) -> Vec<Witness> {
         let probes: BTreeSet<u64> = self
             .census
@@ -604,9 +534,6 @@ impl Scale {
             .collect()
     }
 
-    /// One hour of the owned path: the wing job's census installed, the
-    /// registered missions captured without history parts (as the Late job
-    /// does when no AirMissions job ran), then the pack's capture.
     fn hour(&self, census: &[cair_wing::Source], air: &mut Captured) -> [Outcome; N] {
         let mut job = AirWingJob {
             sources: census.to_vec(),
@@ -648,8 +575,6 @@ impl Scale {
     }
 }
 
-/// The census as the joins receive it after a complete hour: sorted by
-/// handle, with the registrations in walk order.
 fn joined(air: &Captured) -> (Vec<WingIdentity>, Vec<cair_regional_mission::Row>) {
     let (Outcome::Rows { len: wings }, Outcome::Rows { len }) =
         (air.identity_outcome, air.registrations.outcome)
@@ -662,9 +587,6 @@ fn joined(air: &Captured) -> (Vec<WingIdentity>, Vec<cair_regional_mission::Row>
     )
 }
 
-/// Guarded calls by kind: gathers, copies inside the registration window,
-/// reads of the air-base registry root and of the air manager pointer, all
-/// copies, and each base object's field copy.
 struct Counted<'a> {
     world: &'a World,
     gathers: Cell<usize>,
@@ -712,8 +634,6 @@ impl Memory for Counted<'_> {
     ) -> usize {
         self.gathers.set(self.gathers.get() + 1);
         let completed = self.world.copy_records(sources, layout, destination);
-        // A base's six fields, gathered (`Pass::read_bases`): each base read
-        // counts as its per-object scatter does.
         if layout.field_count() == 6
             && let RecordSources::Pointers(pointers) = sources
         {
@@ -735,7 +655,6 @@ impl Memory for Counted<'_> {
     }
 }
 
-/// Room for every row of the scale world.
 fn ample() -> Capacities {
     let mut capacity = Capacities {
         wings: 1 << 14,
@@ -759,8 +678,6 @@ fn witnessed(output: &[BaseWitness]) -> Vec<Witness> {
         .collect()
 }
 
-/// The AirMissions job's pack once its missions are captured, after the
-/// wing census was installed, before its joins.
 fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
     let mut air = Captured::with_capacities(&ample());
     let len = scale.census.len();
@@ -794,8 +711,6 @@ fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
     air
 }
 
-/// The joins resolve their countries from the hour's snapshot bytes: the
-/// same tables with fewer reads of the game.
 #[test]
 fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
     let scale = Scale::new();
@@ -826,9 +741,6 @@ fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
     assert_eq!(loaned.tables()[6..12], native.tables()[6..12]);
 }
 
-/// The AirMissions job joins the registered missions itself: once it
-/// returns, the base witnesses, sortie inputs and mine levels are complete,
-/// and the Late job's capture keeps them without probing a base again.
 #[test]
 fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
     let scale = Scale::new();
@@ -841,7 +753,6 @@ fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
         }
         air
     };
-    // The Late capture's probes of the base registry.
     let late = |air: &mut Captured| {
         let memory = Counted::new(&scale.world);
         air.capture(
@@ -858,11 +769,8 @@ fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
     for table in [6, 7] {
         assert_eq!(joined.outcomes()[table], expected[table], "table {table}");
     }
-    // Without the mission job's joins the Late capture reads the base
-    // registry's header itself.
     let mut unjoined = missions(false);
     assert_eq!(late(&mut unjoined), late(&mut joined) + 1);
-    // This fixture has no transfer writer store; all other joins are identical.
     assert_eq!(joined.outcomes()[..15], expected[..15]);
     assert_eq!(
         joined.outcomes()[15],
@@ -874,10 +782,6 @@ fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
     assert_eq!(unjoined.tables()[6..12], reference.tables()[6..12]);
 }
 
-/// AirReferenceWitnesses over thousands of wings: each distinct probed
-/// handle is looked up once and its base's fields copied once, a short
-/// output is truncated with the unread count, and a read failure fails the
-/// table even past the output's end.
 #[test]
 fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let mut scale = Scale::new();
@@ -887,12 +791,8 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         .filter(|(_, base, ..)| base.is_some())
         .count();
     assert!(resolved > 2_500 && expected.len() - resolved > 100);
-    // Shared pool bases, shared and unregistered transfer bases.
     let registered = scale.registered_wings().count();
     assert!(expected.len() < registered);
-    // Stateless bases hosted by a task-force carrier, a carrier without a
-    // task force and an unresolved host; state bases without a cached
-    // province, with and without a first province for their kind.
     let stateless = |host_owner: bool, bare: bool| {
         expected.iter().any(|&(_, base, owner, without)| {
             base.is_some_and(|base| base.state.is_none())
@@ -928,8 +828,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         })
     );
     assert_eq!(witnessed(&output), expected);
-    // One pass reads the base registry's header and the air manager once,
-    // however many bases it probes or finds without a cached province.
     assert_eq!((memory.roots.get(), memory.managers.get()), (1, 1));
     let fields: BTreeMap<usize, usize> = expected
         .iter()
@@ -938,7 +836,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         .collect();
     assert_eq!(*memory.fields.borrow(), fields);
 
-    // A registered wing without a pool base is an error.
     let mut null = wings.clone();
     let at = null
         .binary_search_by_key(&registrations[0].wing, |wing| wing.wing)
@@ -950,7 +847,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         Some("registered wing has a null pool base")
     );
 
-    // A task-force carrier host whose stored handle differs is an error.
     let (_, base, ..) = expected
         .iter()
         .find(|(_, _, owner, _)| owner.is_some())
@@ -964,8 +860,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     );
     scale.world.u64(ship + cship::HANDLE, base.unwrap().host);
 
-    // The last probed state base's state fails authentication: the table
-    // fails, even when the output ends long before it.
     let id = expected
         .iter()
         .rev()
@@ -1000,7 +894,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
             reason: reason.into()
         }
     );
-    // The registrations stand independently of the failed witness.
     assert_eq!(
         outcomes[5],
         Outcome::Rows {
@@ -1009,7 +902,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     );
 }
 
-/// The Air family no longer touches navy mines, including forced full hours.
 #[test]
 fn retired_air_mine_table_has_no_producer_metadata_or_output() {
     let scale = Scale::new();

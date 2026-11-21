@@ -1,5 +1,3 @@
-//! Construction and occupation acquisition; building growth runs on the reserved
-//! acquisition worker, with other growth and conversion off the game thread.
 use crate::{
     clock::qpc,
     raw::RawLog,
@@ -99,7 +97,6 @@ impl Capacities {
         crate::country_scale::raise(&mut self.occupied, crate::country_scale::rows(entries, 1));
     }
 
-    /// OccupationSettings has one row per canonical country.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[5], rows(slots, 1));
@@ -135,9 +132,6 @@ impl Buildings {
         self.capture_carried(memory, base, game_state, hour, force_full, None)
     }
 
-    /// `store` carries the rows of statuses no hooked writer touched since
-    /// the held read, and both tables whole on a quiet hour
-    /// ([`BuildingStore`]); without it every status is read.
     pub fn capture_carried(
         &mut self,
         memory: &impl Memory,
@@ -159,9 +153,6 @@ impl Buildings {
         )
     }
 
-    /// One capture, carrying through `reuse` when present. A quiet hour
-    /// walks no location; its ticks and reads are charged to the same
-    /// table, like a walk's.
     fn capture_with(
         &mut self,
         memory: &impl Memory,
@@ -219,16 +210,10 @@ pub struct Captured {
     law_bytes: Arena<u8>,
     occupied: Arena<u32>,
     equipment: Arena<cstate_garrison_data::equipment::Row>,
-    /// Raw-copy split gate for scheduled construction-rest tables.
-    /// Set when an acquisition job returns a valid raw payload; `capture`
-    /// then skips those typed walks and the decode worker fills the rows
-    /// (plus route/law arenas) before the ready handoff. Preserved across
-    /// `reset` (set per hour, cleared by the worker after decode).
     pub rest_raw_mode: bool,
 }
 
 impl Captured {
-    /// Buildings belong to Governance; staged rest rows belong to World.
     pub fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         if !self.rest_raw_mode {
             let reason =
@@ -242,7 +227,6 @@ impl Captured {
         }
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -399,8 +383,6 @@ impl Captured {
         }
     }
 
-    /// All elapsed values are raw QPC ticks; the containing callback owns their
-    /// conversion to nanoseconds and its own complete callback measurement.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -507,7 +489,6 @@ impl Captured {
         self.equipment.len = occupation.equipment_len;
         self.equipment.required = occupation.required_equipment;
         ticks[5] = elapsed(begin);
-        // The host supplies this table from the hourly state worker.
         self.resistance.outcome = Outcome::Unavailable {
             reason: "state resistance is acquired by the state worker",
         };
@@ -552,8 +533,6 @@ impl Captured {
         rows::Recorded::Value(inputs)
     }
 
-    /// Runs only on the spool thread. All twelve tables use shared sort,
-    /// duplicate-key checks, field masks and native-width serialization.
     pub fn tables(&self) -> [TableView; N] {
         [
             table::<tables::StateBuildings, _>(
@@ -751,7 +730,6 @@ fn railway_table(
         created_hour: row.created_hour,
         base_level: row.base_level,
         target_level: row.target_level,
-        // The native byte's verified save name is cancel.
         cancelled: row.completed,
         current_segment: row.current_segment,
         remaining_cost: row.remaining_cost,
@@ -861,10 +839,6 @@ fn law_table(
     })
 }
 
-/// Shared synthetic address space for the scheduled construction-rest
-/// copy/decode split: one state with resources and resistance, one
-/// country with a building+railway queue, occupation settings with laws,
-/// garrisons, manpower and reserve, plus one collaboration relation.
 #[cfg(any(test, feature = "test-support"))]
 pub mod construction_rest_test_kit;
 

@@ -1,0 +1,13 @@
+# 0207. Reuse only complete projection evidence
+
+A projection is scoped to a branch and committed encoder baseline. An equal observation witness admits reuse only if both hours proved complete rows and the preceding hour committed the same table on this branch. A refusal, first observation, branch change, dropped frame or gap needs conversion. Without complete writer coverage, compare all source fields against the committed replay rows after ordinary row and arena checks. A saved permutation is an ordering optimization. Verify it against this hour's keys before use. Each table has its own ordering lock so borrowed projections can convert disjoint tables concurrently.
+
+The key used for comparison is the key conversion writes. Treat fields rounded for display at their encoded step on both sides of the comparison. A stable keyed baseline admits insertions, updates and removals by replay key; a positional baseline retains its original comparison. Reserve change indices only after the first difference so an equal projection allocates no intermediate row storage. Unequal key order triggers complete conversion when no keyed baseline is available. Terminal allocation failures prevent subsequent publication of fallback table outcomes.
+
+Complete writer certificates permit partial replacement of affected owners or keys. Certified snapshots are immutable. Replacement copies the paths to changed ranges, once per change batch, and leaves the remaining payloads shared. Keyframes and recovery serialize the complete resulting state. The staggered-table path retains its own complete skipped-hour recovery cache rather than switching it to an hourly equality token.
+
+A ledger can skip the row conversion when every recorded comparison input matches that of the committed row. It ties its inputs to the encoder, branch and hour. Store exact variable-length runs with presence and length, preserving the distinction between absent and empty, and force conversion when a row has no comparable evidence. Ordered keys determine removals and source positions. A successful completed keyed projection establishes the next ledger. A missing ledger uses the ordinary keyed merge, and owned fixtures still use positional comparison.
+
+Conversion timing is thread-local and armed on the spool worker and its helpers. Include nested conversion time in the outer table once. Dropping the timing guard disarms the thread.
+
+[Projection](../../crates/collector-projection/src/projection.rs) · [Certified snapshots](../../crates/collector-projection/src/certified.rs) · [Checked conversion](../../crates/collector-projection/src/table_conversion.rs) · [Table timing](../../crates/collector-projection/src/table_clock.rs)

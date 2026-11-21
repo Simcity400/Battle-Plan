@@ -1,5 +1,3 @@
-//! Neutral recorded speed terms for estimate tests: rows under which a division's edge
-//! speed is its base speed times the movement scale.
 use replay_data::rows::{
     CoreSupplyAccessRow, CountryCounterInputRow, CountryLinkRow, CountryMovementModifiers,
     CountryRow, DivisionMovementStats, DivisionStatusRow, DivisionTemplateIconRow, LexicalTokenRow,
@@ -13,8 +11,6 @@ fn put(frame: &mut DecodedFrame, rows: TableRows) {
     *frame.tables[id.index()] = TableView::Complete(rows);
 }
 
-/// A status row whose speed terms are all neutral: full supply, no commander, no fuel
-/// capacity, not in combat and no movement on any of `terrains` terrain categories.
 pub fn neutral_status(division: u64, terrains: usize) -> DivisionStatusRow {
     DivisionStatusRow {
         organisation_exact: Recorded::Value(None),
@@ -37,15 +33,7 @@ pub fn neutral_status(division: u64, terrains: usize) -> DivisionStatusRow {
     }
 }
 
-/// The shared rows every estimate reads: `country` (its own canonical slot unless the
-/// frame already links it) with no movement entry, the recorded defines, no weather,
-/// template 0 with no movement priority sub-unit speed key, and the modifier metadata
-/// the movement family validates. Over the frame's Provinces (put them first), the
-/// country, as roster owner and owner, has no location state entry, core supply access
-/// everywhere and no relation river crossing factor towards any controller; no
-/// transport speed is recorded. Needs the installation's executable tables.
 pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
-    // A frame that already links the country keeps its own country rows.
     let linked = frame
         .complete::<tables::CountryLinks>()
         .is_ok_and(|rows| rows.iter().any(|row| row.id == country));

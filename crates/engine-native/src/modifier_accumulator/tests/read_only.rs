@@ -1,4 +1,3 @@
-//! Read-only accumulator fixtures reuse the parent module's SnapshotMemory.
 use super::*;
 
 #[test]

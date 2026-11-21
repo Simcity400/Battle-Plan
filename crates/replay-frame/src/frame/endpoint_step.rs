@@ -78,7 +78,6 @@ struct Section {
     boundaries: Vec<MembershipBoundary>,
 }
 
-/// An owned, fully bounded payload. No borrowed read buffer survives decoding.
 #[derive(Debug)]
 pub struct EndpointStep {
     pub from: Option<Point>,
@@ -92,7 +91,6 @@ impl EndpointStep {
         self.sections.iter().flat_map(|section| &section.boundaries)
     }
 
-    /// The tables it holds a section for, in ascending table order.
     pub fn tables(&self) -> impl Iterator<Item = TableId> + '_ {
         self.sections.iter().map(|section| section.table)
     }
@@ -303,7 +301,6 @@ impl EndpointStep {
             {
                 return Err(invalid("invalid endpoint sample hour"));
             }
-            // Carrying a Clock into another hour is not a complete hour.
             if let TableView::Complete(rows) = &*view {
                 validate_singleton(table, rows, self.to.hour)?;
             }
@@ -437,7 +434,6 @@ fn apply_section(
     {
         return Err(invalid("invalid endpoint sample hour"));
     }
-    // Carrying a Clock into another hour is not a complete hour.
     if let TableView::Complete(rows) = &*view {
         validate_singleton(table, rows, hour)?;
     }
@@ -490,7 +486,6 @@ fn apply_jobs(
                     on_worker();
                     work()
                 });
-            // A worker the system cannot start leaves its share to the others.
             match worker {
                 Ok(worker) => others.push(worker),
                 Err(_) => break,
@@ -508,7 +503,6 @@ fn apply_jobs(
     })
 }
 
-/// Physical typed bytes, including the independently bounded history records.
 #[derive(Clone, Debug)]
 pub struct EndpointStats {
     pub bytes: usize,
@@ -531,9 +525,6 @@ impl Default for EndpointStats {
 fn put<T: Value>(value: &T, out: &mut Vec<u8>) -> io::Result<()> {
     Value::encode(value, out)
 }
-/// The step a writer of every table in `parts` writes, from the steps writers of disjoint
-/// table selections wrote between the same two points: their header, then every table's
-/// entry in table order. Parts of other points, or naming one table twice, are refused.
 pub fn merge(parts: &[&[u8]], out: &mut Vec<u8>) -> io::Result<()> {
     let mut header: Option<&[u8]> = None;
     let mut entries: Vec<(u16, &[u8])> = Vec::new();

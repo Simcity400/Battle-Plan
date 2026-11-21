@@ -1,4 +1,3 @@
-//! CFactionSystem's autonomous live roster, with signed capacity/count geometry.
 
 use engine_sites::Rva;
 use crate::{
@@ -6,23 +5,17 @@ use crate::{
     walk::Outcome,
 };
 
-/// CFactionSystem primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_2fd0);
 
-/// CFactionSystem faction pointer-array data.
 pub const FACTIONS: usize = 0x20;
-/// Independent system-wide extracted-resource pool.
 pub const EXTRACTED_RESOURCES: usize = 0x38;
-/// CFactionSystem signed live count.
 #[cfg(test)]
 pub const FACTION_COUNT: usize = 0x2c;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {
-    /// Current native reference of the member CCountry, retaining alias identity.
     pub country: u32,
     pub faction: u64,
-    /// Native member-vector position. Position zero is the leader when present.
     pub ordinal: u32,
 }
 
@@ -44,8 +37,6 @@ pub fn roster(memory: &impl Memory, base: usize, game_state: usize) -> Result<Ar
         .ok_or("faction roster unreadable or invalid")
 }
 
-/// Header-only demand for the independent account array. The sizing census
-/// uses this once off-thread; ordinary account capture follows writer marks.
 pub fn accounts(memory: &impl Memory, base: usize, state: usize) -> Result<Array, &'static str> {
     let system = state
         .checked_add(cgame_state::FACTION_SYSTEM)
@@ -81,8 +72,6 @@ pub fn faction(
 ) -> Result<(usize, u64), &'static str> {
     let address = pointer(memory, roster, index)?;
     let id = cfaction::identity(memory, base, address)?;
-    // Faction populations are small; checking earlier native identity words
-    // avoids an allocation or a fixed-capacity identity cache on the game thread.
     for previous in 0..index {
         let other = pointer(memory, roster, previous)?;
         let other_id = other
@@ -100,13 +89,6 @@ pub fn count_members(memory: &impl Memory, base: usize, game_state: usize) -> Ou
     walk_members_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads native member order, preserving each country's current raw reference.
-/// A complete result checks both membership directions against every positive
-/// canonical country. A reached raw-zero member is authenticated separately;
-/// its absence does not certify a null reserved faction. Empty factions and a
-/// valid empty system are retained. A full buffer
-/// counts omitted members and checks their pointers without allocating; its
-/// truncated prefix cannot assert the reverse census is complete.
 pub fn walk_members(
     memory: &impl Memory,
     base: usize,
@@ -138,7 +120,6 @@ fn walk_members_buffer(
                 .checked_add(cfaction::MEMBERS)
                 .and_then(|p| Array::read(memory, p, 8))
                 .ok_or("faction members unreadable or invalid")?;
-            // The faction member roster grows from this live count.
             output.ensure(
                 len.checked_add(members.count as usize)
                     .ok_or("faction member count overflow")?,
@@ -248,11 +229,9 @@ mod tests {
     const SYSTEM: usize = 0x2200;
     const FACTION_POINTERS: usize = 0x2300;
     const FIRST: usize = 0x3000;
-    // A CFaction spans past its colour (`cfaction::COLOR`), so the second one sits after every other object.
     const SECOND: usize = 0xb000;
     const TEMPLATE_OBJECT: usize = 0xbc00;
     const TEMPLATE_TOKEN: u32 = 0x4c1a_0042;
-    /// The first faction's colour as `CColor` components: 81, 78 and 74 of 255, and alpha 1.
     const FIRST_COLOR: [f32; 4] = [81.0 / 255.0, 78.0 / 255.0, 74.0 / 255.0, 1.0];
     const HEAP_NAME: usize = 0x4000;
     const MEMBER_POINTERS: usize = 0x4300;
@@ -296,7 +275,6 @@ mod tests {
         let mut bytes = vec![0; 0xc000];
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 4, 4);
         array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 8, 8);
-        // Slot zero is not a country; slot three aliases the object in slot one.
         for (slot, pointer) in [u64::MAX, C1 as u64, C2 as u64, C1 as u64]
             .into_iter()
             .enumerate()
@@ -331,7 +309,6 @@ mod tests {
         array(&mut bytes, SYSTEM + FACTIONS, FACTION_POINTERS, 4, 2);
         put64(&mut bytes, FACTION_POINTERS, FIRST as u64);
         put64(&mut bytes, FACTION_POINTERS + 8, SECOND as u64);
-        // Spare capacity is deliberately unreadable as an object and must be ignored.
         put64(&mut bytes, FACTION_POINTERS + 16, u64::MAX);
         for (faction, id, color, overridden) in [
             (FIRST, FIRST_ID, FIRST_COLOR, 0),
@@ -353,7 +330,6 @@ mod tests {
             }
             bytes[faction + cfaction::COLOR_OVERRIDDEN] = overridden;
         }
-        // The first faction was formed from a template; the second has none.
         put64(
             &mut bytes,
             FIRST + cfaction::TEMPLATE,
@@ -373,7 +349,6 @@ mod tests {
         name(&mut bytes, SECOND, b"");
         array(&mut bytes, FIRST + cfaction::MEMBERS, MEMBER_POINTERS, 3, 2);
         array(&mut bytes, SECOND + cfaction::MEMBERS, 0, 0, 0);
-        // Member order, unlike country-table order, makes country two the leader.
         put64(&mut bytes, MEMBER_POINTERS, C2 as u64);
         put64(&mut bytes, MEMBER_POINTERS + 8, C1 as u64);
         put64(&mut bytes, MEMBER_POINTERS + 16, u64::MAX);
@@ -509,7 +484,7 @@ mod tests {
         let mut bytes = fixture();
         let value: Vec<u8> = (0..=255).collect();
         name(&mut bytes, FIRST, &value);
-        put64(&mut bytes, FIRST + cfaction::REFERENCE, 9000); // Other word may be zero too.
+        put64(&mut bytes, FIRST + cfaction::REFERENCE, 9000);
         let mut rows = vec![cfaction::Row::default(); 2];
         let mut enough = vec![0; 128];
         assert_eq!(
@@ -559,8 +534,6 @@ mod tests {
         ));
     }
 
-    /// The presentation costs one record copy per faction (template pointer, the whole
-    /// colour and the override byte) and one more span per faction with a template.
     #[test]
     fn presentation_is_one_record_copy_per_faction_and_one_span_per_template() {
         let counted = |bytes: &[u8]| {
@@ -583,9 +556,6 @@ mod tests {
         assert_eq!(templated.record_calls, 2);
         assert_eq!(plain.record_calls, 2);
         assert_eq!(templated.copy_calls, plain.copy_calls + 1);
-        // A record cut short (the second faction's colour past readable memory) fails the
-        // walk rather than keeping the fields read before it.
-        // (`bytes` has no template, which lies past the cut too.)
         assert_eq!(
             names(
                 &bytes[..SECOND + cfaction::COLOR + 8],
@@ -599,8 +569,6 @@ mod tests {
         );
     }
 
-    /// A template or colour that is not the object it should be fails the walk, rather than a
-    /// faction being recorded with a guessed template or colour.
     #[test]
     fn a_foreign_template_or_colour_is_unavailable() {
         for at in [TEMPLATE_OBJECT, FIRST + cfaction::COLOR] {
@@ -664,7 +632,7 @@ mod tests {
     fn membership_requires_canonical_countries_and_both_directions_of_crosslinks() {
         for (at, value) in [
             (MEMBER_POINTERS, 0),
-            (MEMBER_POINTERS + 8, C2 as u64), // Duplicate membership.
+            (MEMBER_POINTERS + 8, C2 as u64),
             (C2, 0),
             (D2, 0),
             (D2 + cdiplomacy_status::COUNTRY, C1 as u64),
@@ -690,7 +658,6 @@ mod tests {
                 reason: "country faction is missing from member roster",
             }
         );
-        // An invalid member table affects membership, not independently readable names.
         put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 4);
         assert!(matches!(
             members(&bytes, &mut vec![MemberRow::default(); 4]),
@@ -753,6 +720,6 @@ mod tests {
             |_, _| {},
         );
         assert!(!complete);
-        assert_eq!(failed.outcome, names.outcome); // first independent failure survives
+        assert_eq!(failed.outcome, names.outcome);
     }
 }

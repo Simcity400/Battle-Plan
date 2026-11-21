@@ -1,9 +1,7 @@
-// Checks of the territory and faction replies the generated contract types.
 import type { Decoded } from '../charts/chartSummary';
 import { chartSummaryLines } from '../charts/chartSummary.ts';
 import type { FactionLine, FactionLinesReply, FactionRostersReply } from '../generated/dashboard';
 
-/** Faction lines as the UI holds them: each summary decoded. */
 export type FactionLines = Omit<FactionLinesReply, 'lines'> & { lines: Decoded<FactionLine>[] };
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);

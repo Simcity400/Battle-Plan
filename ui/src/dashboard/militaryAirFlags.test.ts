@@ -35,8 +35,6 @@ test('actual bombing adapter forwards dated native flag status without labelling
     wanted: [] as [string, number][], exact: false };
   const host = globalThis as typeof globalThis & { __militaryFlags?: typeof state };
   host.__militaryFlags = state;
-  // Leave the real view's holder joins, event/publication visibility and exact
-  // hover formatting in place; only asynchronous operands and the canvas are stubbed.
   const replacements: Record<string, string> = {
     '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__militaryFlags.data, track: globalThis.__militaryFlags.track, retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',

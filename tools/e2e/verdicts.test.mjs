@@ -5,7 +5,6 @@ import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, 
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
-  // The page evaluates it from its source: it must stand alone.
   const inPage = new Function(`return (${settingDrawn.toString()});`)();
   for (const drawn of [settingDrawn, inPage]) {
     assert.equal(drawn({ settings: 'b', drawn: 'b', state: 'content' }, 'a'), true);
@@ -13,7 +12,6 @@ test('a setting that changed nothing is known once its widget reports drawing it
     assert.equal(drawn({ settings: 'b', drawn: 'b', state: 'loading' }, 'a'), false, 'still loading what the setting asked for');
     assert.equal(drawn({ settings: 'b', drawn: 'a', state: 'content' }, 'a'), false, 'committed, not yet painted');
     assert.equal(drawn({ settings: 'a', drawn: 'a', state: 'content' }, 'a'), false, 'never given the setting: only the timeout tells');
-    // An app that reports no drawn settings leaves the step to its timeout, as before.
     assert.equal(drawn({ settings: 'b', drawn: null, state: 'content' }, 'a'), false);
   }
   assert.equal(noVisibleChange('a', 'a'), 'no visible change after the setting: the widget was never given it');
@@ -23,7 +21,6 @@ test('a setting that changed nothing is known once its widget reports drawing it
 
 test('the report header gives each phase its seconds, in the order the sessions ran them', () => {
   const sessions = [{ phases: ['pages'], pagesSeconds: 68.8 }, { phases: ['visual', 'map', 'playback'], visualSeconds: 129, mapSeconds: 44.9 }];
-  // A phase that stopped before it recorded its time is left out, not shown as nothing.
   assert.deepEqual(phaseSeconds(sessions), [['pages', 68.8], ['visual', 129], ['map', 44.9]]);
   assert.deepEqual(phaseSeconds(undefined), []);
 });
@@ -43,28 +40,23 @@ test('a phase the run did not ask for is not judged; one asked for is, whether o
   assert.equal(asked(quick, 'playback'), true);
   assert.equal(asked(quick, 'seeks'), false);
   assert.equal(asked(quick, 'mapfps'), false);
-  // A run from before the field judges everything, as it did.
   assert.equal(asked({}, 'mapfps'), true);
   assert.equal(asked({ requested: ['mapfps'] }, 'mapfps'), true, 'asked for: its failure to start fails it');
 });
 
 test('a page pass step saves its screenshot whether it passed, ran over time or failed; elsewhere only a failure does', () => {
-  // A page visit's steps ask for one (session.step's `shot`), so a passing or merely slow step is still pictured.
   assert.equal(takesShot({ pass: true, screenshot: true }), true);
   assert.equal(takesShot({ pass: false, screenshot: true }), true);
   assert.equal(takesShot({ pass: false, screenshot: undefined }), true);
-  // A step failing on its time alone, and a passing step, save none unless asked.
   assert.equal(takesShot({ pass: false, screenshot: false }), false);
   assert.equal(takesShot({ pass: true, screenshot: undefined }), false);
 });
 
 test('a page switch is done only once the page it clicked is the one shown, its grid laid out', () => {
-  // A page as the probe evaluates the expression: the sidebar row marked current, and the dashboard grid (none on the Campaign map).
   const shown = (current, grid) => new Function('document', `return ${pageShown('Overview')};`)({
     querySelector: selector => selector.includes('aria-current') ? (current === null ? null : { textContent: ` ${current} ` })
       : selector === '.dash-grid-scroll' ? (grid === null ? null : { getClientRects: () => grid ? [{}] : [] }) : null,
   });
-  // Run 13: the Overview click made while the Campaign map was opening; the map stayed, and the step settled on no widget.
   assert.equal(shown(null, null), false, 'the Campaign map shown: no page row current, no grid');
   assert.equal(shown('Overview', false), false, 'the row current, its grid not laid out yet');
   assert.equal(shown('Politics', true), false, 'another page shown');
@@ -77,7 +69,6 @@ test('a saved map setting is drawn once the map reports every setting the menu s
   const expected = [['graphics.shadows', 'false'], ['graphics.samples', '2'], ['graphics.natoCounters', 'null'], ['audio.music', '15'],
     ['counters', '{"kind":"countries","tags":["B","A"]}'], ['visualMods', '["workshop/1","workshop/2"]']];
   assert.equal(mapDrew(state, expected), null);
-  // A setting the map still draws as it was names itself; a map state without settings is unobserved, never drawn.
   assert.equal(mapDrew(state, [['graphics.shadows', 'true']]), 'it drew graphics.shadows as false, the menu saved true');
   assert.equal(mapDrew(state, [['counters', '{"kind":"countries","tags":["A","B"]}']]), 'it drew counters as {"tags":["B","A"],"kind":"countries"}, the menu saved {"kind":"countries","tags":["A","B"]}');
   assert.equal(mapDrew(state, [['visualMods', '[]']]), 'it drew visualMods as ["workshop/2","workshop/1"], the menu saved []');
@@ -164,14 +155,12 @@ test('the map is judged at 120 Hz on its main process frames, and a highlight af
     { t: 'map_open', pid: 1, role: 'main' }, { t: 'map_open', pid: 2, role: 'popout' },
     { t: 'map', pid: 1, frame: 1, at: 110, work_ms: 4, dt: 10.5 }, { t: 'map', pid: 1, frame: 2, at: 121, work_ms: 6.5, dt: 10.5, acquire_ms: 0, painted_at: 110.25 },
     { t: 'map', pid: 2, frame: 1, at: 115, work_ms: 30, dt: 40 },
-    // GPU times land a few frames later, naming the frame they measured.
     { t: 'map', pid: 1, frame: 3, at: 140, work_ms: 4, dt: 10.5, acquire_ms: 0, painted_at: 121.25, gpu_frame: 1, gpu_ms: 3 },
     { t: 'map', pid: 1, frame: 4, at: 151, work_ms: 4, dt: 10.5, acquire_ms: 0, painted_at: 140.25, gpu_frame: 2, gpu_ms: 3.5 },
   ];
   const fine = mapFrames(records, 100, 130);
   assert.deepEqual([fine.frames, fine.dropped, fine.pass], [2, 0, true]);
   assert.equal(fine.gpu.max, 3.5);
-  // A slower frame between them: its paint ended half a millisecond after its interface pass.
   const slow = mapFrames([...records.map(r => (r.frame === 3 && r.pid === 1 ? { ...r, painted_at: 125.5 } : r)),
     { t: 'map', pid: 1, frame: 9, at: 125, work_ms: 9, dt: 10.5, acquire_ms: 0, painted_at: 121.25 }], 100, 130);
   assert.deepEqual([slow.dropped, slow.pass], [1, false]);
@@ -197,7 +186,6 @@ test('a widget kind fails by name when a placement never reports the hour it sho
     [{ kind: 'feed', page: 'Overview', title: 'Feed', widget: 'c', at: 50, hour: 10 }]);
   assert.deepEqual(kinds.map(kind => [kind.kind, kind.pass]), [['feed', false], ['scoreboard', true], ['map', false]]);
   assert.match(kinds[2].reasons[0], /does not report the hour it shows \(Overview: Map\)/);
-  // Out of view while playing it is not judged; paused in view it must report.
   assert.match(kinds[0].reasons[0], /does not report the hour it shows \(Overview: Feed\)/);
 });
 
@@ -250,7 +238,6 @@ test('a map frame counts its work through tessellation to the end of its paint, 
   const records = [
     { t: 'map_open', pid: 1, role: 'main' },
     { t: 'map', pid: 1, frame: 1, at: 110, work_ms: 4, gpu_frame: 1, gpu_ms: 2 },
-    // The next record carries frame 1's paint: it ended 8 ms after the interface pass, 3 of them waiting for an image.
     { t: 'map', pid: 1, frame: 2, at: 150, work_ms: 1, paint_ms: 6, acquire_ms: 3, painted_at: 118, gpu_frame: 2, gpu_ms: 2 },
   ];
   assert.equal(mapFrames(records, 100, 120).work.max, 9);
@@ -268,14 +255,12 @@ test('every record a perf log dropped is a loss by its source', () => {
 });
 
 test('with the app\'s count of what it has in flight, a step is over one frame after it reaches zero; without it, after its quiet window', () => {
-  // The page evaluates it from its source: it must stand alone.
   const inPage = new Function(`return (${stepOver.toString()});`)();
   for (const over of [stepOver, inPage]) {
     assert.equal(over({ settled: true, busy: 0, idle: 1, heldMs: 0, wait: 200 }), false, 'zero for one sample: a request may start on the next');
     assert.equal(over({ settled: true, busy: 0, idle: 2, heldMs: 17, wait: 200 }), true, 'one frame later, without the 200 ms window');
     assert.equal(over({ settled: true, busy: 1, idle: 0, heldMs: 900, wait: 200 }), false, 'a late request in flight holds the step however long it looked settled');
     assert.equal(over({ settled: false, busy: 0, idle: 0, heldMs: 0, wait: 200 }), false, 'a widget still loading, or its change not shown');
-    // An app with no count: the quiet window, as before.
     assert.equal(over({ settled: true, busy: null, idle: 0, heldMs: 199, wait: 200 }), false);
     assert.equal(over({ settled: true, busy: null, idle: 0, heldMs: 200, wait: 200 }), true);
   }

@@ -102,7 +102,6 @@ fn world() -> TestMemory {
             cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         u64_at(&mut bytes, navy + MANAGER, MANAGER_ROOT as u64);
-        // Navy observation deliberately does not read this word.
         u32_at(&mut bytes, navy + cstrategic_navy::OWNER, u32::MAX);
     }
     header(
@@ -160,7 +159,6 @@ fn physical_alias_slot_and_null_slot_zero_are_exact() {
     assert!(countries.at(3).unwrap().is_none());
     let reader = Reader::new(&memory, 0, STATE);
     assert_eq!(reader.bounds(), Bounds { navy_slots: Ok(4) });
-    // A physical slot is observed even when no country link selects it.
     let alias = reader.observe_navy(3).unwrap();
     assert!(alias.present);
     assert_eq!(alias.ledger_navy(), Ok(NAVY_ALIAS_SLOT));
@@ -204,9 +202,6 @@ fn navy_pass_reads_no_province_roster_or_access_modes() {
         let _ = reader.observe_navy(slot).unwrap();
     }
     reader.clear();
-    // The retired selected-route area domain and selected-transport access
-    // modes: neither the province roster header, a province object nor any
-    // navy's access-mode header or payload is read.
     let touched = |from: usize, to: usize| {
         memory
             .calls

@@ -4,7 +4,6 @@ import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 
 export const PARTNERS = { id: 'partners', label: 'Partners' };
-/** The game's own recorded lend-lease measures. */
 export const MEASURES = [{ value: 'industry', label: 'Industry' }, { value: 'fuel', label: 'Fuel' }] as const;
 
 export const OPTIONS: readonly OptionField[] = [

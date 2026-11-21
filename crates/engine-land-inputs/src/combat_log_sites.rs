@@ -1,4 +1,3 @@
-//! Authenticated retained-log writer and lifetime boundaries.
 use engine_sites::Rva;
 pub const OWN_EQUIPMENT_RVA: Rva = Rva(0x00d39de0);
 pub const OWN_VARIANT_RVA: Rva = Rva(0x00d39c10);

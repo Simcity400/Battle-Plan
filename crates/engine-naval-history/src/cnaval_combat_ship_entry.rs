@@ -1,12 +1,8 @@
-//! Retained naval ship entry in its result side's ship vector; it holds either a ship or convoy
-//! handle.
 
 use engine_sites::Rva;
 use crate::capture_text::Value;
 use crate::{Memory, read};
 
-/// Caller-owned arenas, shared by result ships and aircraft. Lanes are air,
-/// then naval. Worker-only acquisition grows them from the original counts.
 pub struct HitBuffers<'a> {
     pub air_hits: &'a mut Vec<crate::naval_combat_air_hit::Row>,
     pub naval_hits: &'a mut Vec<crate::naval_combat_hit::Row>,
@@ -14,8 +10,6 @@ pub struct HitBuffers<'a> {
     pub required: [usize; 2],
 }
 
-/// Copied cached information and transferred hit arrays remain retained even after the referenced
-/// ship disappears.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub member: u64,
@@ -26,7 +20,6 @@ pub struct DetailsRow {
     pub strength_ratio: i64,
     pub pride: u8,
     pub is_convoy: u8,
-    // Copied std::strings preserve their retained lengths.
     pub name: crate::capture_text::Owned,
     pub type_name: crate::capture_text::Owned,
     pub sprite: crate::capture_text::Owned,
@@ -46,7 +39,6 @@ impl DetailsRow {
     }
 }
 
-/// No live ship lookup: the result entry itself authenticates the copied data.
 pub fn capture_details(
     memory: &impl Memory,
     base: usize,
@@ -98,8 +90,6 @@ pub fn capture_details(
 
 type HitSpans = ([usize; 2], [[usize; 2]; 2]);
 
-/// The three ship hit arrays transfer to the result's ship arrays, and the three air arrays to its
-/// air arrays.
 pub(crate) fn capture_hits(
     memory: &impl Memory,
     base: usize,
@@ -150,18 +140,12 @@ pub(crate) fn capture_hits(
     Ok((naval, air))
 }
 
-/// CNavalCombatShipEntry vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a620);
-/// CNavalCombatShipEntry extent.
 pub const SIZE: usize = 0x120;
-/// Ship or convoy full native reference u64.
 pub const HANDLE: usize = 8;
 
-/// Raw string length u64 in the copied snapshot.
 pub const PRESENCE: usize = 0xb0;
 
-/// Full member reference and raw retained u64 value; the value is
-/// not a process pointer.
 pub(crate) fn values(
     memory: &impl Memory,
     base: usize,
@@ -331,7 +315,6 @@ mod detail_tests {
         let trace = memory.reads.borrow().clone();
         assert_eq!(trace.iter().filter(|p| **p == (ENTRY, 16)).count(), 1);
         assert!(!trace.contains(&(ENTRY, 0xd8)));
-        // The payload reader reuses the headers from the initial demand census.
         for offset in [0xd8, 0xf0, 0x108] {
             assert_eq!(
                 trace.iter().filter(|p| **p == (ENTRY + offset, 16)).count(),
@@ -377,7 +360,6 @@ mod detail_tests {
         assert_eq!(buffers.naval_hits[0].damage, i64::MIN);
         assert_eq!(buffers.air_hits[0].count, -3);
         let trace = memory.reads.borrow().clone();
-        // Each hit array's pointers are read as one run.
         assert_eq!(trace.iter().filter(|p| **p == (0x800, 16)).count(), 1);
         assert!(!trace.contains(&(0x800, 8)) && !trace.contains(&(0x808, 8)));
         for capacity in [0, 1, 8] {
@@ -413,13 +395,6 @@ mod detail_tests {
                     &reference_buffers.naval_hits[..reference_buffers.lengths[1]]
                 );
                 if let Some(ordinal) = fault {
-                    // A one-touch fault (this test's positional fault, met
-                    // once) refuses no more than the per-entry reads: the
-                    // capture stops at the read that met it, or a hit run's
-                    // copy met it and the run's entries were read again one
-                    // at a time, giving the healthy row. Lasting faults keep
-                    // the parent's per-entry result exactly
-                    // (cfex_member::entry_run_tests).
                     if expected.is_err() {
                         assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
                     } else {
@@ -505,8 +480,6 @@ mod detail_tests {
                 lengths: [0; 2],
                 required: [0; 2],
             };
-            // Refused at the read that met the fault, or, when a hit run's
-            // copy met it, read again one hit at a time: never harsher.
             match air::capture_details(&memory, BASE, ENTRY, &mut buffers) {
                 Err(_) => assert_eq!(*memory.reads.borrow(), trace[..=ordinal]),
                 Ok(observed) => assert_eq!(

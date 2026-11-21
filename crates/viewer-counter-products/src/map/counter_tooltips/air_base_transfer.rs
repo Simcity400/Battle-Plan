@@ -1,4 +1,3 @@
-//! Selected-wing transfer feedback is derived in this viewer alone.
 use super::{Arg, Context, Tooltip, localise, refuse};
 use replay_data::{rows::AirBaseRow, rows::AirWingRow, rows::RaidSource, rows::tables};
 
@@ -19,7 +18,6 @@ pub(super) fn append(context: &Context<'_>, base: u64, selected: &[u64], out: &m
             .frame
             .complete::<tables::AirBaseRegistrations>()
             .map_err(|error| error.to_string())?;
-        // Wrapper access is container presence, independently of capacity.
         if !registrations
             .iter()
             .any(|row| row.base == base && row.slot == context.vision.ours())
@@ -73,8 +71,6 @@ pub(super) fn append(context: &Context<'_>, base: u64, selected: &[u64], out: &m
         feedback(context.loc, selected.len(), all_special, counts).map(Some)
     })();
     match result {
-        // The wrapper assigns the delayed body, including the empty-selection
-        // result; it does not append to the base summary's fuel description.
         Ok(Some(text)) => match viewer_foundation::tooltip_text::displayable(context.icons, text) {
             Ok(text) => out.body = text,
             Err(why) => {
@@ -138,8 +134,6 @@ fn destination(
             .find(|row| (u64::from(row.id) << 32 | u64::from(row.reference_type)) == raid.raw)
             .ok_or("selected wing resolved raid is absent from Raids")?;
         if source_province(context, &raid.source)? != base_province(context, target)? {
-            // The native reason slot is deliberately unnamed and contributes
-            // to rejected count without a per-reason text line.
             return Ok(7);
         }
     }
@@ -311,7 +305,6 @@ fn feedback(
                 text.push_str(&(localise(loc, key, &[("COUNT", Arg::Int32(count))])? + "\n"));
             }
         }
-        // The caller appends the aggregated explanation with a final newline.
         text.push('\n');
     }
     Ok(text)

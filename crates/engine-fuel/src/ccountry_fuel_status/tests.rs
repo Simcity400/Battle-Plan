@@ -2,7 +2,6 @@ use super::*;
 use crate::{cgame_state, memory::SliceMemory};
 
 const MEMORY_BASE: usize = 0x1000;
-/// Status, consumer entries and history ring of each fixture country.
 const STATUSES: [(usize, usize, usize); 2] = [(0x7000, 0x7400, 0x7800), (0x7200, 0x7480, 0x8000)];
 const UNMAPPED: u64 = 0x2_0000;
 
@@ -10,15 +9,11 @@ fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
     bytes[address - MEMORY_BASE..address - MEMORY_BASE + value.len()].copy_from_slice(value);
 }
 
-/// The qword a fixture history entry holds at `field`, distinct per status,
-/// slot and field, with odd fields negative. Slot -1 is the pending entry.
 fn history_value(status: usize, slot: i32, field: usize) -> i64 {
     let value = ((status as i64 + 1) << 40) + (i64::from(slot) + 1) * 16 + field as i64;
     if field % 2 == 1 { -value } else { value }
 }
 
-/// The sum over the 24 ring slots of one entry field; the pending entry is
-/// never part of it.
 fn ring_sum(status: usize, field: usize) -> i64 {
     (0..HISTORY_RING_ENTRIES as i32)
         .map(|slot| history_value(status, slot, field))
@@ -108,7 +103,6 @@ fn fixture() -> Vec<u8> {
                 &row.received_raw.to_le_bytes(),
             );
         }
-        // The pending entry holds values too; they must not reach the sums.
         for slot in -1..HISTORY_RING_ENTRIES as i32 {
             let entry = if slot == -1 {
                 status + PENDING_HISTORY
@@ -212,7 +206,6 @@ fn full_read_preserves_native_values_ring_sums_alias_identity_and_dormant_sentin
 #[test]
 fn the_count_probe_counts_whole_countries_without_reading_their_entries() {
     let mut bytes = fixture();
-    // The second country's arrays are never read by the count probe.
     put(&mut bytes, 0x7200 + CONSUMERS, &UNMAPPED.to_le_bytes());
     put(&mut bytes, 0x7200 + HISTORY_RING, &UNMAPPED.to_le_bytes());
     assert_eq!(
@@ -273,7 +266,6 @@ fn unreadable_or_foreign_history_ring_withholds_only_the_fuel_rows() {
             }
         );
     }
-    // A ring that ends one byte short is unreadable, never a shorter sum.
     let bytes = fixture();
     assert_eq!(
         capture(&bytes[..0x8780 - MEMORY_BASE - 1], FULL).outcomes,
@@ -313,7 +305,6 @@ fn ring_sums_are_checked_in_both_directions() {
             "field {field:#x}"
         );
     }
-    // A sum that fits i64 is kept even when a partial sum leaves it.
     for (field, values, expected) in [
         (entry::GAIN, [i64::MAX, 1, -1], i64::MAX),
         (entry::CONSUMED, [i64::MIN, -1, 1], i64::MIN),
@@ -342,7 +333,6 @@ fn ring_sums_are_checked_in_both_directions() {
         };
         assert_eq!(sum, expected, "field {field:#x}");
     }
-    // Extreme values that stay in range sum exactly.
     let mut bytes = fixture();
     for slot in 0..24 {
         let value = if slot % 2 == 0 { i64::MAX } else { -i64::MAX };
@@ -355,8 +345,6 @@ fn ring_sums_are_checked_in_both_directions() {
     let captured = capture(&bytes, FULL);
     assert_eq!(captured.outcomes, complete(2, 6));
     assert_eq!(captured.rows[0].ring_other_raw, 0);
-    // The retired requested slots are not summed, so even a sum past i64
-    // keeps the row.
     let mut bytes = fixture();
     for slot in [5, 6] {
         put(
@@ -389,8 +377,6 @@ fn invalid_or_unreadable_consumer_array_fails_only_consumers() {
             }
         );
     }
-    // The failed consumer span stops the shared scatter; the ring is then
-    // read on its own and both countries keep their sums.
     let mut bytes = fixture();
     put(&mut bytes, 0x7000 + CONSUMERS, &UNMAPPED.to_le_bytes());
     let captured = capture(&bytes, FULL);
@@ -404,7 +390,6 @@ fn invalid_or_unreadable_consumer_array_fails_only_consumers() {
         }
     );
     assert_eq!(captured.rows[0].ring_consumed_raw, ring_sum(0, 2));
-    // An empty array is a complete country with no consumers.
     let mut bytes = fixture();
     header(&mut bytes, 0x7200 + CONSUMERS, 0, 0, 0);
     assert_eq!(capture(&bytes, FULL).outcomes, complete(2, 3));
@@ -444,9 +429,6 @@ fn missing_wrong_or_partially_read_status_fails_both_tables() {
 
 #[test]
 fn a_later_walk_failure_keeps_each_tables_first_failure() {
-    // The first country's ring or consumers fail on their own; the second
-    // country's status then stops the walk. The table that failed first
-    // keeps its reason and only the other takes the walk's.
     let pointer = "fuel status pointer unreadable or null";
     for (header, first) in [
         (0x7000 + HISTORY_RING, "fuel history ring unreadable"),
@@ -472,7 +454,6 @@ fn a_later_walk_failure_keeps_each_tables_first_failure() {
         };
         assert_eq!(capture(&bytes, FULL).outcomes, expected, "{first}");
     }
-    // A status failure before any table failed withholds both with it.
     let mut bytes = fixture();
     put(
         &mut bytes,

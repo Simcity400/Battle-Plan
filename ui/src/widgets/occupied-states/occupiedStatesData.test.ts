@@ -83,7 +83,6 @@ test('the tooltip reads the live values and names why one is missing, and a stre
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
-/** Humans holding `tags` every hour of 0..200, their group's history not recorded over `gap`. */
 const gapGroups = (tags: readonly string[], gap = { firstHour: 110, lastHour: 120 }): CountryGroupReply => ({ branchId: '1', warnings: [],
   humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })), factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),

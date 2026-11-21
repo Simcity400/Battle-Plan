@@ -1,47 +1,5 @@
-//! What the selected army's attack-modifier list reads, including river, fort, snow and
-//! the fort base, that playback cannot take from other recorded fields or the recorded
-//! content. The playback derivation computes the list from them.
-//!
-//! From [`ATTACK_INPUTS_FORMAT`] the rows record the inputs:
-//!
-//! - DivisionStatus: each division's stat-block operands
-//!   ([`DivisionAttackStats`]), carried while no hooked writer rewrote the
-//!   stat block, and its acclimatization factor.
-//! - OrdersGroupCounterInputs: each group's direct commander's terrain
-//!   adjusters and fort, river, snow and night values ([`CommanderAttackStats`]).
-//! - CountryCounterInputs: each country's raw `land_night_attack` and
-//!   `land_bunker_effectiveness_factor` accumulator entries
-//!   ([`CountryAttackModifiers`]).
-//! - Provinces: for a fortified province with a positive controller, its
-//!   state's `land_bunker_effectiveness_factor` for that controller.
-//! - WeatherRegions: the raw `army_attack_factor` and `breakthrough_factor`
-//!   entries of the region's weather modifier ([`RegionCombatWeather`]).
-//!
-//! Everything else the list reads is recorded already or static content: the
-//! province controllers and states, the direct-war cells
-//! ([`crate::directed_war_derive`]), the four defines
-//! (SimulationFeatures.runtime_scalars), the healthy land fort level (the
-//! province's active ProvinceBuildings rows and each building's `land_fort`),
-//! snow (WeatherProvinces, WeatherRegions), the night factor
-//! ([`crate::day_night`]), the commander's identity (OrdersGroups), enemy air
-//! superiority (RaidAirScores), and the terrains, crossings and regions of the
-//! map.
-//!
-//! Recordings through format 101 recorded the native operands themselves
-//! ([`DivisionAttackInputs`] and its siblings, each per-terrain value already the
-//! combined stat-block and terrain adjuster attack), which still answer for those
-//! recordings. From format 102 those fields are [`Witnessed`] packets: current writers
-//! leave them empty, except for the divisions the collector's off-by-default
-//! `attack_witness` diagnostic samples, which the recorder's derivation check compares
-//! with the derived operands.
-//!
-//! [`ATTACK_INPUTS_FORMAT`]: crate::rows::compatibility::ATTACK_INPUTS_FORMAT
 use super::*;
 
-/// A packet only some rows hold: an empty payload is a row without it, which
-/// costs that row nothing, and any other payload is the packet. A diagnostic
-/// packet is held only where the diagnostic witnessed it; older recordings hold
-/// the attack packets in every row, whose payload is never empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Witnessed<T>(pub Option<T>);
@@ -91,35 +49,18 @@ impl<T: Value> Value for Witnessed<T> {
     }
 }
 
-/// The division's stat block (the division's stat block pointer), as the attack list reads it. The
-/// active-stat refresh rewrites it through equipment-stat calculation, the only caller writing a
-/// live stat block, once a day per division and on ability refreshes; every value is an exact
-/// fixed5 word.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionAttackStats {
-    /// The terrain `unit adjuster` array, each entry's attack, in array order and as many as its
-    /// live count. Terrain attack reads entry `index - 1` for the terrain whose database index is
-    /// `index`, and adds the terrain's own adjuster.
     pub terrain: Vec<i64>,
-    /// The river crossing pair the attack list adds to.
     pub river: [i64; 2],
-    /// The fort pair.
     pub fort: [i64; 2],
-    /// The snow term.
     pub snow: i64,
-    /// The night term.
     pub night: i64,
 }
 value_struct!(DivisionAttackStats { terrain: Vec<i64>, river: [i64; 2], fort: [i64; 2], snow: i64, night: i64 });
 opaque_value!(Option<DivisionAttackStats>);
 
-/// The stat block's movement operands, read with [`DivisionAttackStats`] and carried under the same
-/// certificate: each terrain adjuster's movement, parallel to [`DivisionAttackStats::terrain`]
-/// (entry `i` serves terrain database index `i + 1`); the fort, river and snow adjusters' movement,
-/// `None` when those adjusters did not authenticate; the word the movement speed's fuel capacity
-/// scales (`MOVEMENT_FUEL_RATE`) and the anti-air word its air term reads (`MOVEMENT_AIR_DEFENSE`),
-/// each raw fixed5.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionMovementStats {
@@ -132,7 +73,6 @@ value_struct!(DivisionMovementStats { terrain: Vec<i64>, scalars: Option<[i64; 3
 opaque_value!(Option<DivisionMovementStats>);
 
 impl DivisionMovementStats {
-    /// The fort, river and snow movement words.
     pub fn fort(&self) -> Option<i64> {
         self.scalars.map(|[fort, _, _]| fort)
     }
@@ -144,8 +84,6 @@ impl DivisionMovementStats {
     }
 }
 
-/// A direct commander's movement operands, read with [`CommanderAttackStats`]: each terrain
-/// adjuster's movement, parallel to [`CommanderAttackStats::terrain`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CommanderMovementStats {
@@ -154,20 +92,11 @@ pub struct CommanderMovementStats {
 value_struct!(CommanderMovementStats { terrain: Vec<i64> });
 opaque_value!(Option<Option<CommanderMovementStats>>);
 
-/// An orders group's direct commander (its direct-commander getter) as the attack list reads it.
-/// Unit-leader and army-leader trait-adjuster refreshes rebuild every value from the leader's
-/// traits, the field marshal's and the country's effects.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CommanderAttackStats {
-    /// The commander's full `unit leader` reference.
     pub leader: u64,
-    /// The terrain adjuster vector's attack values in order. The commander's terrain-adjuster
-    /// lookup takes the entry at the terrain's database index and the first entry for an index
-    /// outside the live count, even a count of zero; with a zero count the first entry is that
-    /// retained one, so this holds one value there, and none only when the vector has no storage.
     pub terrain: Vec<i64>,
-    /// The fort, river, snow and night adjusters' attack values.
     pub fort: i64,
     pub river: i64,
     pub snow: i64,
@@ -176,26 +105,15 @@ pub struct CommanderAttackStats {
 value_struct!(CommanderAttackStats { leader: u64, terrain: Vec<i64>, fort: i64, river: i64, snow: i64, night: i64 });
 opaque_value!(Option<Option<CommanderAttackStats>>);
 
-/// A country modifier accumulator's raw entries for the two keys the attack list reads, `None` for
-/// an absent key. The effective-value getter applies the key's ModifierDefinitions row to a present
-/// one ([`crate::naval_mission_derive::effective`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryAttackModifiers {
-    /// `land_night_attack` (0x103), read for the division's owner.
     pub land_night_attack: Option<i64>,
-    /// `land_bunker_effectiveness_factor` (0x272), read for the target's controller by
-    /// the fort-base calculation.
     pub land_bunker_effectiveness_factor: Option<i64>,
 }
 value_struct!(CountryAttackModifiers { land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
 opaque_value!(Option<CountryAttackModifiers>);
 
-/// A country accumulator's raw entries for the movement speed and the attrition hover,
-/// `None` for an absent key: the army speed, armour speed, attack speed, retreat speed,
-/// out-of-supply and special-forces out-of-supply factors the movement speed adds or
-/// scales its supply penalty by, and the attrition and winter and heat attrition factors
-/// the attrition hover multiplies by. Country modifier recalculation rewrites them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryMovementModifiers {
@@ -216,59 +134,35 @@ value_struct!(CountryMovementModifiers { army_speed_factor: Option<i64>,
     army_attack_speed_factor: Option<i64>, army_retreat_speed_factor: Option<i64> });
 opaque_value!(Option<CountryMovementModifiers>);
 
-/// A weather region's modifier (held by its weather record, returned through the weather manager):
-/// raw entries, `None` for an absent key. Weather refresh rebuilds it from the region's weather
-/// flags, the six static weather modifiers and the region's own weather states.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RegionCombatWeather {
-    /// `army_attack_factor` (0xAD).
     pub army_attack_factor: Option<i64>,
-    /// `breakthrough_factor` (0x1DD).
     pub breakthrough_factor: Option<i64>,
-    /// `army_speed_factor`, which the movement speed adds scaled by acclimatization.
     pub army_speed_factor: Option<i64>,
-    /// `army_attack_speed_factor`, added the same way for a move into an enemy's
-    /// province.
     pub army_attack_speed_factor: Option<i64>,
 }
 value_struct!(RegionCombatWeather { army_attack_factor: Option<i64>, breakthrough_factor: Option<i64>,
     army_speed_factor: Option<i64>, army_attack_speed_factor: Option<i64> });
 opaque_value!(Option<RegionCombatWeather>);
 
-// The native operands recordings through format 101 captured, decoded
-// through their unchanged layouts. Each `sample_hour` is the packet's
-// stamped read hour there; a witnessed packet of a current recording is
-// read with its host row.
 
-/// A division's operands: the stat block's scalars and, for every terrain of the live
-/// database, the combined terrain attack (the stat block's entry plus the terrain's own
-/// adjuster).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionAttackInputs {
     pub sample_hour: PacketHour,
-    /// `Some(0)`: a null division template. Nonzero is a type-52 template handle.
     pub template: Option<u64>,
-    /// Stat-block scalars; each refused alone.
     pub stats: AttackStats,
-    /// One entry per terrain database index, ascending; `None` refuses the
-    /// whole domain and an entry's `None` that terrain.
     pub terrain: Option<Vec<AttackTerrain>>,
-    /// The freshly read acclimatization factor.
     pub acclimatization: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AttackStats {
-    /// The river crossing pair.
     pub river: [Option<i64>; 2],
-    /// The fort pair.
     pub fort: [Option<i64>; 2],
-    /// The snow term.
     pub snow: Option<i64>,
-    /// The night term.
     pub night: Option<i64>,
 }
 
@@ -283,7 +177,6 @@ pub struct AttackTerrain {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OrdersGroupAttackInputs {
     pub sample_hour: PacketHour,
-    /// `None`: refusal. `Some(None)`: a null direct commander.
     pub commander: Option<Option<CommanderAttackInputs>>,
 }
 
@@ -291,12 +184,10 @@ pub struct OrdersGroupAttackInputs {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CommanderAttackInputs {
     pub leader: u64,
-    /// The fort, river, snow and night adjusters' attack values.
     pub fort: Option<i64>,
     pub river: Option<i64>,
     pub snow: Option<i64>,
     pub night: Option<i64>,
-    /// The commander's terrain attack for each terrain database index, ascending.
     pub terrain: Option<Vec<AttackTerrain>>,
 }
 
@@ -304,7 +195,6 @@ pub struct CommanderAttackInputs {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WeatherRegionAttackInputs {
     pub sample_hour: PacketHour,
-    /// Effective `army_attack_factor` and `breakthrough_factor`.
     pub attack: Option<i64>,
     pub breakthrough: Option<i64>,
 }
@@ -313,7 +203,6 @@ pub struct WeatherRegionAttackInputs {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryAttackInputs {
     pub sample_hour: PacketHour,
-    /// Effective `land_night_attack` and `land_bunker_effectiveness_factor`.
     pub land_night_attack: Option<i64>,
     pub land_bunker_effectiveness_factor: Option<i64>,
 }
@@ -322,10 +211,7 @@ pub struct CountryAttackInputs {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProvinceAttackInputs {
     pub sample_hour: PacketHour,
-    /// The healthy land fort level, the wrapping `i32` sum.
     pub fort_sum: Option<i32>,
-    /// The state's effective factor for the controller; demanded only for a
-    /// positive `fort_sum`.
     pub land_bunker_effectiveness_factor: Option<i64>,
 }
 
@@ -345,7 +231,6 @@ opaque_value!(Witnessed<ProvinceAttackInputs>);
 opaque_value!(Witnessed<Option<CountryAttackInputs>>);
 opaque_value!(Witnessed<u64>);
 
-/// The terrain values of a recorded domain, ascending by terrain index.
 pub fn attack_terrain(domain: &[AttackTerrain], terrain: i32) -> Result<Option<i64>, String> {
     if !domain
         .windows(2)
@@ -418,8 +303,6 @@ mod tests {
         }));
     }
 
-    /// A current writer's empty witness costs no bytes and reads back
-    /// empty in any format; a format-101 payload is its packet, stamp first.
     #[test]
     fn witnessed_packets_are_empty_unless_a_payload_holds_one() {
         let empty = Witnessed::<CountryAttackInputs>(None);
@@ -450,7 +333,6 @@ mod tests {
                 ..packet
             })
         );
-        // A witnessed packet of a current recording is read with its row.
         let witnessed = Witnessed(Some(packet));
         assert!(!round_trip(&witnessed).is_empty());
     }

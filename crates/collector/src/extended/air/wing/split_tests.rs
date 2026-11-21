@@ -1,5 +1,3 @@
-//! The AirWing census walked in owner-slot parts and joined as the callback
-//! joins them, against the serial walk of the same world.
 use super::*;
 use crate::{unit_scale_tests::fixture, wing_changes::Watches};
 use engine_native::{
@@ -27,15 +25,12 @@ struct Config {
     game_score: bool,
 }
 
-/// Every table walked, with the score inputs.
 const FULL: Config = Config {
     hour: 0,
     force_full: true,
     game_score: true,
 };
 
-/// An ordinary hour that walks neither WingCumulative nor the theatre
-/// memberships, without the score inputs.
 fn quiet() -> Config {
     let hour = (0..24)
         .find(|&hour| {
@@ -50,8 +45,6 @@ fn quiet() -> Config {
     }
 }
 
-/// The first job and its parts, kept across hours as the callback keeps them,
-/// with a watch domain of their own that certifies their stores' carry.
 struct Jobs {
     census: AirWingJob,
     parts: Vec<AirWingJob>,
@@ -72,9 +65,6 @@ impl Jobs {
         }
     }
 
-    /// One hour's census in parts from each of `starts`, lent as the
-    /// callback lends them (later parts grow their own storage), each on its
-    /// own thread as the pool's workers run them, and joined.
     fn hour(&mut self, world: &fixture::World, config: Config, starts: &[u32]) -> &AirWingJob {
         self.walk(world, config, starts);
         if self.census.split {
@@ -86,7 +76,6 @@ impl Jobs {
         &self.census
     }
 
-    /// [`Self::hour`]'s parts, before the join.
     fn walk(&mut self, world: &fixture::World, config: Config, starts: &[u32]) {
         let ctx = AirWingCopyContext {
             base: world.base,
@@ -111,7 +100,6 @@ impl Jobs {
                 });
             }
         });
-        // Each part built its own identities and memberships on its worker.
         for job in std::iter::once(&self.census).chain(&self.parts[..starts.len()]) {
             assert_ne!(job.identity_outcome, NO_WING_SOURCE);
             assert_ne!(job.naval_membership_outcome, NO_WING_SOURCE);
@@ -119,12 +107,10 @@ impl Jobs {
     }
 }
 
-/// Wings whose held rows a certificate covered: carried.
 fn certified(job: &AirWingJob) -> u64 {
     job.carry.0.reused
 }
 
-/// One serial census of `world`.
 fn walk_serial(world: &fixture::World, config: Config) -> AirWingJob {
     let mut jobs = Jobs::new();
     jobs.hour(world, config, &[]);
@@ -200,7 +186,6 @@ fn manager(world: &fixture::World) -> usize {
     )
 }
 
-/// `slot`'s strategic-air owner.
 fn owner(world: &fixture::World, slot: u32) -> usize {
     element(
         &world.live(),
@@ -209,12 +194,10 @@ fn owner(world: &fixture::World, slot: u32) -> usize {
     )
 }
 
-/// The only pool of `slot`'s owner.
 fn pool(world: &fixture::World, slot: u32) -> usize {
     element(&world.live(), owner(world, slot) + cstrategic_air::POOLS, 0)
 }
 
-/// Writes `value` at `address` in the world, returning what was there.
 fn put(world: &mut fixture::World, address: usize, value: u64) -> u64 {
     let at = address - world.base;
     let old = u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap());
@@ -222,9 +205,6 @@ fn put(world: &mut fixture::World, address: usize, value: u64) -> u64 {
     old
 }
 
-/// Gives each of `slots` two first air sites, the stateless bases of its
-/// own and the next slot, so owners on both sides of a part boundary index
-/// nonempty runs of the joined site arena.
 fn first_sites(world: &mut fixture::World, slots: &[u32]) {
     let bases = array(
         &world.live(),
@@ -247,16 +227,11 @@ fn parts_kept_across_hours_carry_and_join_whatever_the_split() {
     let mut jobs = Jobs::new();
     let wings = WINGS as u64;
     let quarters = [1_250, 2_500, 3_750];
-    // The split repeats, shrinks to none, leaves parts idle and grows again,
-    // then moves; every part reuses the storage an earlier, different range
-    // left in it. Its stores certify every wing whose part held it.
     let some = |certified: u64| certified > 0 && certified < wings;
     for (config, starts, reference, expected) in [
         (FULL, &quarters[..], &full, Some(0)),
         (quiet(), &quarters[..], &ordinary, Some(wings)),
-        // The first part's store held only its own quarter.
         (FULL, &[][..], &full, None),
-        // The idle parts' stores still hold their quarters.
         (FULL, &quarters[..], &full, Some(wings)),
         (quiet(), &[2_000][..], &ordinary, None),
     ] {
@@ -277,7 +252,6 @@ fn idle_parts_keep_their_stores_in_the_retained_bytes() {
     let world = world();
     let mut jobs = Jobs::new();
     jobs.hour(&world, FULL, &[1_250, 2_500, 3_750]);
-    // The split shrinks to none: the parts go idle with their held rows.
     jobs.hour(&world, FULL, &[]);
     let census = retained_store_bytes(jobs.census.wing_store.as_deref_mut(), &mut [], false);
     let retained = retained_store_bytes(
@@ -289,8 +263,6 @@ fn idle_parts_keep_their_stores_in_the_retained_bytes() {
         return;
     }
     assert!(retained > census, "{retained} {census}");
-    // A failed acquisition forgets every store, idle ones too, which keep
-    // their allocations; the next census certifies nothing.
     assert_eq!(
         retained_store_bytes(jobs.census.wing_store.as_deref_mut(), &mut jobs.parts, true),
         retained
@@ -301,10 +273,6 @@ fn idle_parts_keep_their_stores_in_the_retained_bytes() {
     );
 }
 
-/// A join refused after it grew part of the census, as a refused
-/// allocation is: it refuses with the growth's own reason, as the serial
-/// walk's growth would; its growth stays charged; the callback forgets every
-/// store, which keeps its bytes; and the next hour certifies nothing.
 #[test]
 fn a_join_refused_after_partial_growth_forgets_every_store() {
     use crate::raw_memory::{Charge, Tracker};
@@ -313,8 +281,6 @@ fn a_join_refused_after_partial_growth_forgets_every_store() {
     let quarters = [1_250, 2_500, 3_750];
     let mut jobs = Jobs::new();
     jobs.hour(&world, FULL, &quarters);
-    // A first job whose storage holds only its own share, as a cold pooled
-    // job's does: the join grows its names, then its rows.
     jobs.census.capacity_charge = Charge::empty_on(&LOCAL);
     jobs.census.names = Vec::new();
     jobs.census.map_rows = Vec::new();
@@ -352,8 +318,6 @@ fn the_join_charges_the_storage_it_grew() {
     let world = world();
     let mut jobs = Jobs::new();
     jobs.census.capacity_charge = Charge::empty_on(&LOCAL);
-    // The first part's worker charged only its own share; the join grew
-    // its vectors to the whole census.
     jobs.hour(&world, FULL, &[2_500]);
     let joined = LOCAL.snapshot().current;
     jobs.census.update_capacity_charge();
@@ -368,8 +332,6 @@ fn a_fault_in_any_part_refuses_what_the_serial_walk_refuses() {
     let starts = [1_250, 2_500, 3_750];
     for config in [FULL, quiet()] {
         for slot in [1, 1_250, 2_600, COUNTRIES] {
-            // A roster fault ends the walk at its owner: nothing after it
-            // joins, and the score inputs witness no later owner.
             let pool = pool(&world, slot);
             let vtable = put(&mut world, pool, 0);
             let serial = walk_serial(&world, config);
@@ -381,9 +343,6 @@ fn a_fault_in_any_part_refuses_what_the_serial_walk_refuses() {
             );
             assert_same(Jobs::new().hour(&world, config, &starts), &serial);
             put(&mut world, pool, vtable);
-            // A wing's mission region that does not authenticate refuses
-            // the census rows. With the score inputs the serial walk goes on
-            // with their leaves alone; without them it ends there.
             let wing = element(&world.live(), pool + cair_wing_pool::WINGS, 0);
             let region = wing + cair_wing::MISSION + air_mission::REGION;
             let unset = put(&mut world, region, wing as u64);
@@ -399,8 +358,6 @@ fn a_fault_in_any_part_refuses_what_the_serial_walk_refuses() {
             put(&mut world, region, unset);
         }
     }
-    // Faults of the dependent tables and the names leave the census rows,
-    // and the first of two census faults in slot order leads.
     let wing = |world: &fixture::World, slot| {
         element(&world.live(), pool(world, slot) + cair_wing_pool::WINGS, 0)
     };
@@ -437,7 +394,6 @@ fn a_fault_in_any_part_refuses_what_the_serial_walk_refuses() {
     ));
     assert_eq!(serial.name_failures, 1);
     assert_eq!(serial.map_outcome, Outcome::Rows { len: WINGS });
-    // A roster header that does not read ends every part at once.
     let owners = manager(&world) + cstrategic_air_manager::COUNTRY_AIR + 8;
     let header = put(&mut world, owners, (u64::from(COUNTRIES) + 1) << 32 | 1);
     let serial = walk_serial(&world, FULL);
@@ -449,8 +405,6 @@ fn a_fault_in_any_part_refuses_what_the_serial_walk_refuses() {
     );
     assert_same(Jobs::new().hour(&world, FULL, &starts), &serial);
     put(&mut world, owners, header);
-    // Without a manager only the first part witnesses the owners, every one
-    // of them as the serial walk does.
     let manager = world.state + cgame_state::STRATEGIC_AIR_MANAGER;
     put(&mut world, manager, 0);
     let serial = walk_serial(&world, FULL);
@@ -468,19 +422,15 @@ fn parts_start_at_the_owners_holding_each_share_and_never_split_an_owner() {
     let starts = |census: &AirWingJob, parts: &[AirWingJob]| {
         part_starts(census, parts).map(|(starts, split)| starts[..split].to_vec())
     };
-    // Both shares' first units fall in the second owner's wings.
     assert_eq!(starts(&census, &[]), Some(vec![2]));
-    // A later part's owners follow this one's units.
     let part = AirWingJob {
         owner_costs: vec![(4, 0), (5, 500)],
         cost: 1_000,
         ..Default::default()
     };
     assert_eq!(starts(&census, &[part]), Some(vec![2, 4, 5]));
-    // Too little for two parts walks in one.
     census.cost = 300;
     assert_eq!(starts(&census, &[]), Some(vec![]));
-    // An incomplete census keeps the current split.
     census.map_outcome = NO_WING_SOURCE;
     assert_eq!(starts(&census, &[]), None);
 }

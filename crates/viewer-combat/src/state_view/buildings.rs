@@ -1,6 +1,3 @@
-//! The state view's building grids: every state building type in database order, the shared
-//! slots, the clicked province's building types, its landmark (special icon) buildings, and the
-//! building modifiers icon. Each level text needs the building's current maximum level, which is not recorded.
 use super::{entry, paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
 use crate::content::Content;
@@ -13,19 +10,13 @@ use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use viewer_foundation::map::{building_facts, perspective::Vision};
 
-/// The lexer keyword the game leaves out of the province grid and lists last among the state's.
 const RAILWAY: &str = "rail_way";
-/// The DLC mask bits gating `gun_emplacement` and `naval_headquarter` types.
 const GUN_EMPLACEMENT_FEATURE: u32 = 1 << 13;
 const NAVAL_HEADQUARTER_FEATURE: u32 = 1 << 15;
-/// The sprites the game gives a shared slot's picture: a building's strip, an empty slot, and a
-/// slot the observed country has no intelligence on.
 const SLOT_STRIP: &str = "GFX_buildings_strip";
 const NO_BUILDING: &str = "GFX_no_building";
 const NO_INTEL: &str = "GFX_building_intel_icon";
-/// The damage overlay frame of a damaged level.
 const DAMAGED_OVERLAY: i64 = 3;
-/// A level's whole health, as the game stores it.
 const WHOLE_HEALTH: i64 = 10_000_000;
 const SLOT_NO_INTEL_HOVER: &str = "state view shared slot hover without intelligence: its estimate of the state's factories from the observed country's intelligence is not ported";
 const SLOT_EMPTY_HOVER: &str = "state view empty shared slot hover: its slot modifier breakdown is not recorded";
@@ -33,8 +24,6 @@ const MAX_LEVEL: &str = "the building's current maximum level is not recorded";
 const ENABLED: &str = "state view building pictures' enabled state: whether the observed country can construct each needs the building's current maximum level, which is not recorded";
 const BUILDING_TOOLTIP: &str = "state view building tooltip: it gives the building's current maximum level, which is not recorded";
 
-/// A building's damage bar frame, one-based as the game sets it: the damaged share of its levels
-/// in whole percent, zero without levels.
 pub(super) fn damage_frame(level: i16, healthy: i16) -> i64 {
     let level = i64::from(level);
     if level == 0 {
@@ -45,8 +34,6 @@ pub(super) fn damage_frame(level: i16, healthy: i16) -> i64 {
     ratio * 100 / 100_000
 }
 
-/// A province railway's health, fixed5: whole without damage, else its healthy levels and the
-/// partial health of the next over its levels; none without levels, -1 where the game overflows.
 pub(super) fn railway_health(row: Option<&BuildingRow>) -> i64 {
     let Some(row) = row else { return 0 };
     let (level, healthy) = (i64::from(row.level), i64::from(row.healthy_level));
@@ -63,14 +50,9 @@ pub(super) fn railway_health(row: Option<&BuildingRow>) -> i64 {
     .unwrap_or(-1)
 }
 
-/// The railway entry's damage bar and its hover, from the state's provinces with a railway info
-/// whose controller the supply country's system marks.
 #[derive(Debug, PartialEq)]
 struct Railway {
-    /// The worst damage, fixed5; none without such a province.
     damage: i64,
-    /// The highest railway level of the province that first reached the worst damage, and the
-    /// highest among them all, or why the levels are not recorded.
     levels: Result<(i32, i32), String>,
 }
 
@@ -80,23 +62,16 @@ impl Default for Railway {
     }
 }
 
-/// A railway info's highest level towards any neighbour, none without one.
 fn railway_level(edges: &[replay_data::rows::RailEdgeRow], province: u32) -> i32 {
     let first = edges.partition_point(|edge| edge.from < province);
     edges[first..].iter().take_while(|edge| edge.from == province).map(|edge| edge.level).fold(0, i32::max)
 }
 
-/// The damaged railway levels the hover gives: the worst damage's share of its province's
-/// levels, rounded up.
 fn damaged_levels(level: i32, damage: i64) -> i32 {
     let product = i64::from(level).wrapping_mul(damage);
     ((product / 100_000) as i32).wrapping_add(i32::from(product % 100_000 > 0))
 }
 
-/// The railway bar and hover, walking the state's provinces in their order. The supply country is
-/// the clicked province's building status's own, else that province's controller, as the game
-/// reads a province-scoped type's status; its marks are its daily supply access. A railway info
-/// without a building counts as wholly damaged.
 fn railway(frame: &DecodedFrame, names: &TokenNames<'_>, facts: &Facts<'_>, members: &[u32], province_rows: &[BuildingRow]) -> Result<Railway, String> {
     let clicked = facts.province;
     let supply = located(province_rows, clicked.id)
@@ -149,8 +124,6 @@ fn railway(frame: &DecodedFrame, names: &TokenNames<'_>, facts: &Facts<'_>, memb
 }
 
 impl Railway {
-    /// One marked province's damage and highest level: the first to exceed the worst so far
-    /// gives the damaged levels' base; every one raises the highest level.
     fn step(&mut self, damage: i64, level: Result<i32, String>) {
         self.levels = match (std::mem::replace(&mut self.levels, Ok((0, 0))), level) {
             (Ok((mut worst, current)), Ok(level)) => {
@@ -165,7 +138,6 @@ impl Railway {
     }
 }
 
-/// The state's building inputs, read for its owner and controller of the hour.
 pub(super) fn building_inputs<'f>(frame: &'f DecodedFrame, state: &StateRow) -> Result<&'f StateBuildingInputRow, String> {
     let rows = frame.complete::<tables::StateBuildingInputs>().map_err(|e| e.to_string())?;
     rows.binary_search_by_key(&state.id, |row| row.state)
@@ -173,7 +145,6 @@ pub(super) fn building_inputs<'f>(frame: &'f DecodedFrame, state: &StateRow) -> 
         .map_err(|_| format!("state {} has no StateBuildingInputs row", state.id))
 }
 
-/// The state's unlocked shared building slots from its owner's modifiers, as the game counts them.
 pub(super) fn shared_slots(inputs: &StateBuildingInputRow, owner: u32, maximum: i32) -> Result<i32, String> {
     if inputs.owner != owner {
         return Err("its building inputs were read for another owner".into());
@@ -190,9 +161,6 @@ pub(super) fn shared_slots(inputs: &StateBuildingInputRow, owner: u32, maximum: 
     Ok(((base / 100_000) as i32).wrapping_add(inputs.extra_shared_slots).max(0).min(maximum))
 }
 
-/// The state's factory energy usage, fixed5, from its controller's modifiers: each active
-/// building's levels in each factory group it counts in, scaled by the state and country energy
-/// consumption and the controller's energy per factory level.
 pub(super) fn energy_usage(inputs: &StateBuildingInputRow, controller: u32, infrastructure: i64, buildings: &[(i16, installed_content_core::buildings::FactoryFlags)]) -> Result<i64, String> {
     if inputs.controller != controller {
         return Err("its building inputs were read for another controller".into());
@@ -224,7 +192,6 @@ pub(super) fn energy_usage(inputs: &StateBuildingInputRow, controller: u32, infr
     Ok(sum.wrapping_mul(factor) / 100_000)
 }
 
-/// The state's energy usage from the hour's rows ([`energy_usage`]).
 pub(super) fn state_energy(content: &Content, frame: &DecodedFrame, state: &StateRow) -> Result<i64, String> {
     let inputs = building_inputs(frame, state)?;
     let names = TokenNames::new(frame).map_err(|e| e.to_string())?;
@@ -247,24 +214,19 @@ pub(super) fn state_energy(content: &Content, frame: &DecodedFrame, state: &Stat
     energy_usage(inputs, state.controller, infrastructure, &active)
 }
 
-/// A building type's entry by its name under the lexer's fold.
 fn named<'m, V>(map: &'m BTreeMap<String, V>, name: &str) -> Option<&'m V> {
     map.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value)
 }
 
-/// The game's rounding of a fixed5 value to a whole number, half away from zero.
 pub(super) fn round_whole(value: i64) -> i64 {
     let half = if value < 0 { -50_000 } else { 50_000 };
     value.wrapping_add(half) / 100_000
 }
 
-/// The widget frame of a one-based native frame, wrapping as the game's zero does.
 fn frame(native: i64) -> u32 {
     (native as u32).wrapping_sub(1)
 }
 
-/// Whether the game hides the type for this DLC set ([`BuildingType::dlc_allowed`] decided by
-/// `allowed`).
 fn dlc_hidden(building: &BuildingType, mask: u32, allowed: impl FnOnce(&[Item]) -> Result<bool, String>) -> Result<bool, String> {
     if building.gun_emplacement && mask & GUN_EMPLACEMENT_FEATURE == 0 || building.naval_headquarter && mask & NAVAL_HEADQUARTER_FEATURE == 0 {
         return Ok(true);
@@ -275,7 +237,6 @@ fn dlc_hidden(building: &BuildingType, mask: u32, allowed: impl FnOnce(&[Item]) 
     allowed(&building.dlc_allowed).map(|allowed| !allowed)
 }
 
-/// Whether a type's authored state modifiers hold a non-zero value.
 fn has_state_modifier(building: &BuildingType) -> Result<bool, String> {
     let mut any = false;
     for item in &building.state_modifiers {
@@ -311,7 +272,6 @@ impl<'a> Hour<'a> {
     }
 }
 
-/// Each location's recorded buildings by folded type name.
 fn by_location<'f>(rows: &'f [BuildingRow], names: &TokenNames<'_>, location: u32) -> Result<BTreeMap<String, &'f BuildingRow>, String> {
     rows.iter()
         .filter(|row| row.location == location)
@@ -417,8 +377,6 @@ fn grid(out: &mut Bindings, root: &native::Element, name: &str, template: &str, 
     }
 }
 
-/// One building entry's picture frame and damage bar, and their hovers: the damage bar's damaged
-/// levels, the picture's and level's building tooltip withheld.
 fn building_entry(out: &mut Bindings, content: &Content, building: &BuildingType, row: Option<&BuildingRow>) -> crate::Values {
     let mut values = crate::Values::new();
     values.entry("building_picture".into()).or_default().frame = Some(frame(i64::from(building.icon_frame)));
@@ -429,7 +387,6 @@ fn building_entry(out: &mut Bindings, content: &Content, building: &BuildingType
     values
 }
 
-/// `BUILDING_DAMAGED` on an entry's damage bar: the damaged levels of its current levels.
 fn damage_hover(out: &mut Bindings, content: &Content, values: &mut crate::Values, level: i16, healthy: i16) {
     let text = damaged_text(content, level, healthy);
     match text {
@@ -455,8 +412,6 @@ fn building_tooltip(out: &mut Bindings, values: &mut crate::Values, keys: &[&str
     out.refuse(BUILDING_TOOLTIP.into());
 }
 
-/// Every state-level type the DLC set allows that takes no shared slot, then the railway, whose
-/// level and damage read the state's provinces' railways.
 fn state_entries(out: &mut Bindings, hour: &Hour<'_>, types: &[Result<&BuildingType, String>], rows: &BTreeMap<String, &BuildingRow>, damage: Result<Railway, String>) -> Result<Vec<crate::Values>, String> {
     let mut entries = Vec::new();
     let mut railway = None;
@@ -502,7 +457,6 @@ fn state_entries(out: &mut Bindings, hour: &Hour<'_>, types: &[Result<&BuildingT
     Ok(entries)
 }
 
-/// The state's provinces in its own order, which the railway walk follows.
 fn members(content: &Content, state: u32) -> Result<&[u32], String> {
     content
         .air_context
@@ -515,15 +469,12 @@ fn members(content: &Content, state: u32) -> Result<&[u32], String> {
         .ok_or_else(|| format!("state {state} has no provinces in the content"))
 }
 
-/// What fills a shared slot: a building type's level (one-based), or nothing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Slot<'a> {
     Level(&'a BuildingType, &'a BuildingRow, i16),
     Empty { unlocked: bool },
 }
 
-/// The shared slots in the game's fill order, `maximum` of them: one per level of each slot-sharing
-/// type in turn, then empty slots, those at positions below `unlocked` open.
 fn shared_slot_fill<'a>(types: &[(&'a BuildingType, Option<&'a BuildingRow>)], unlocked: i32, maximum: i32) -> Vec<Slot<'a>> {
     let maximum = usize::try_from(maximum).unwrap_or(0);
     let mut slots = Vec::with_capacity(maximum);
@@ -543,8 +494,6 @@ fn shared_slot_fill<'a>(types: &[(&'a BuildingType, Option<&'a BuildingRow>)], u
     slots
 }
 
-/// A level's health as the game keeps it: whole up to the healthy levels, the next its partial
-/// health, the rest none.
 fn level_health(row: &BuildingRow, index: i16) -> i64 {
     if row.level == 0 {
         return 0;
@@ -558,13 +507,10 @@ fn level_health(row: &BuildingRow, index: i16) -> i64 {
     }
 }
 
-/// The damage bar frame of a level's health, one-based: its missing whole percent.
 fn level_damage_frame(health: i64) -> i64 {
     100 - health.div_euclid(100_000)
 }
 
-/// Refuses the slots while construction targets a slot-sharing type in the state: the game adds
-/// the levels its lines queue and convert, whose contributions are not recorded.
 fn queued_shared(frame: &DecodedFrame, names: &TokenNames<'_>, state: u32, shared: &[(&BuildingType, Option<&BuildingRow>)]) -> Result<(), String> {
     let rows = frame.complete::<tables::BuildingConstruction>().map_err(|e| e.to_string())?;
     for row in rows.iter().filter(|row| row.target_state == state) {
@@ -576,8 +522,6 @@ fn queued_shared(frame: &DecodedFrame, names: &TokenNames<'_>, state: u32, share
     Ok(())
 }
 
-/// The shared slot grid's entries: each slot's picture, damage bar and overlay as the game sets
-/// them for the observed country.
 fn shared_slots_bound(out: &mut Bindings, hour: &Hour<'_>, names: &TokenNames<'_>, types: &[Result<&BuildingType, String>], rows: &BTreeMap<String, &BuildingRow>, vision: &Vision) -> Result<Vec<crate::Values>, String> {
     let content = hour.content;
     let facts = hour.facts;
@@ -654,7 +598,6 @@ fn shared_slot_entry(out: &mut Bindings, content: &Content, slot: Slot<'_>, sees
     values
 }
 
-/// The clicked province's types: the plain grid and the landmark grid, in database order.
 fn province_entries(
     out: &mut Bindings,
     hour: &Hour<'_>,
@@ -705,7 +648,6 @@ fn province_entries(
     Ok((plain, landmarks))
 }
 
-/// The facility button's scale: the entry template's scale position's x in tenths.
 fn facility_scale(content: &Content) -> Result<f32, String> {
     let template = content
         .assets
@@ -724,8 +666,6 @@ fn scale_of(x: i32) -> f32 {
     x as f32 / 10.0
 }
 
-/// A landmark entry: its special icon, on its second frame while damaged, a facility's at the
-/// template's facility scale, and its damage bar.
 fn landmark(out: &mut Bindings, content: &Content, building: &BuildingType, row: Option<&BuildingRow>) -> crate::Values {
     let mut values = crate::Values::new();
     let (level, healthy) = row.map_or((0, 0), |row| (row.level, row.healthy_level));
@@ -747,7 +687,6 @@ fn landmark(out: &mut Bindings, content: &Content, building: &BuildingType, row:
     values
 }
 
-/// Whether the observed country has detected a built foreign `need_detection` building.
 fn detected(hour: &Hour<'_>, row: &BuildingRow, viewer: u32) -> Result<bool, String> {
     let frame = hour.frame;
     let facts = hour.facts;
@@ -780,7 +719,6 @@ fn detected(hour: &Hour<'_>, row: &BuildingRow, viewer: u32) -> Result<bool, Str
     .ok_or_else(|| "whether the observed country detected the building cannot be decided this hour".into())
 }
 
-/// Whether any built, healthy building in the state or its provinces carries state modifiers.
 fn modifiers_shown(
     frame: &DecodedFrame,
     names: &TokenNames<'_>,
@@ -813,8 +751,6 @@ fn modifiers_shown(
     Ok(false)
 }
 
-/// The building modifiers icon's hover: each state building's state modifiers at its healthy
-/// levels, then those of the buildings in each of the state's provinces its controller holds.
 fn modifiers_hover(
     content: &Content,
     frame: &DecodedFrame,
@@ -880,16 +816,12 @@ fn modifiers_hover(
     Ok(text)
 }
 
-/// The rows of one location, which the tables keep together.
 fn located(rows: &[BuildingRow], location: u32) -> &[BuildingRow] {
     let first = rows.partition_point(|row| row.location < location);
     let end = first + rows[first..].partition_point(|row| row.location == location);
     &rows[first..end]
 }
 
-/// A building's state modifiers scaled by its healthy levels, as the game's building keeps them
-/// (dropping names without a definition, as the game does), or `None` when that block is empty
-/// and the hover leaves the building out.
 fn scaled_state_modifiers(
     definitions: &crate::modifier_text::Definitions<'_>,
     building: &BuildingType,
@@ -907,7 +839,6 @@ fn scaled_state_modifiers(
     Ok(block.kept(definitions).map_err(|e| e.to_string())?.then_some(block))
 }
 
-/// A newline unless the text is empty or ends with one.
 fn end_line(text: &mut String) {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
@@ -950,7 +881,6 @@ mod tests {
                 Slot::Empty { unlocked: false },
             ]
         );
-        // Levels beyond the maximum take no slot, and no empty slot follows.
         assert_eq!(shared_slot_fill(&types, 4, 2), [Slot::Level(&civilian, &two, 1), Slot::Level(&civilian, &two, 2)]);
         assert!(shared_slot_fill(&types, 4, -1).is_empty());
     }
@@ -981,7 +911,6 @@ mod tests {
         railway.step(40_000, Ok(1));
         railway.step(0, Ok(5));
         assert_eq!(railway, Railway { damage: 40_000, levels: Ok((3, 5)) });
-        // 40% of three levels is 1.2, which the hover rounds up.
         assert_eq!(damaged_levels(3, 40_000), 2);
         assert_eq!(damaged_levels(5, 40_000), 2);
         assert_eq!(damaged_levels(0, 100_000), 0);
@@ -995,7 +924,6 @@ mod tests {
         assert_eq!(railway_health(None), 0);
         assert_eq!(railway_health(Some(&row(0, 0, 0))), 0);
         assert_eq!(railway_health(Some(&row(4, 4, 0))), 100_000);
-        // Two healthy of four and half the third: 2.5 of 4.
         assert_eq!(railway_health(Some(&row(4, 2, 5_000_000))), 62_500);
         assert_eq!(railway_health(Some(&row(4, 2, i64::MAX))), -1);
     }
@@ -1033,7 +961,6 @@ mod tests {
         };
         let civilian = FactoryFlags { general_production: 1, ..Default::default() };
         let both = FactoryFlags { military_production: 1, general_production: 1, ..Default::default() };
-        // b = 1 + 2 infrastructure x 0.1 = 1.2; 3 civilian levels and 1 level counted twice: 5 x 1.2 x 0.5.
         assert_eq!(energy_usage(&inputs, 5, 2, &[(3, civilian), (1, both), (9, FactoryFlags::default())]), Ok(300_000));
         assert!(energy_usage(&inputs, 6, 2, &[]).unwrap_err().contains("another controller"));
         assert_eq!(round_whole(250_000), 3);

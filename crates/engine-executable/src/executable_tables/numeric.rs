@@ -12,11 +12,8 @@ use std::{
     io,
 };
 
-/// Length and FNV-1a of the text only the numeric property dispatcher reports.
 const DISPATCHER_TEXT: (usize, u64) = (29, 0x962d_6ca5_bde6_e20d);
-/// FNV-1a of the decorated callable type every numeric callback implements.
 const CALLBACK_TYPE: u64 = 0xccac_759a_1467_1f98;
-/// Length and FNV-1a of the name the executable documents each scope's properties under.
 const COUNTRY_SCOPE: (usize, u64) = (7, 0x9cf7_402f_e920_f7d1);
 const STATE_SCOPE: (usize, u64) = (5, 0xae23_9213_b7c7_0376);
 const UNIT_LEADER_SCOPE: (usize, u64) = (10, 0x0699_b0f6_19e0_73d2);
@@ -78,7 +75,6 @@ pub struct NumericTables {
     pub properties: Vec<NumericProperty>,
 }
 
-/// A registry the dispatcher searches: its row count and table, and the handlers it pairs with.
 struct Registry {
     count: u32,
     table: u32,
@@ -86,7 +82,6 @@ struct Registry {
 }
 
 impl NumericTables {
-    /// SHA-256 of this table's build-independent content, comparable across builds.
     pub fn content_digest(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
         for property in &self.properties {
@@ -115,7 +110,6 @@ impl NumericTables {
             if callbacks.binary_search(&lea.target).is_ok() {
                 callback_references.push((lea.target, lea.instruction));
             }
-            // Initializers pass each row's address in the second argument.
             if lea.register == Register::RDX.number() {
                 row_references.push((lea.target, lea.instruction));
             }
@@ -159,7 +153,6 @@ impl NumericTables {
                 },
             }));
         }
-        // Each callback's own copy also names its vtable; only the initializer names them all.
         let mut common: Option<BTreeSet<(u32, u32)>> = None;
         for &vtable in &callbacks {
             let holders: BTreeSet<_> = callback_references
@@ -180,7 +173,6 @@ impl NumericTables {
         Ok(Self { properties })
     }
 
-    /// Exact spelling and registry order are significant to numeric admission.
     pub fn exact(&self, name: &str) -> Option<&NumericProperty> {
         self.properties
             .iter()
@@ -188,8 +180,6 @@ impl NumericTables {
     }
 }
 
-/// The registries the numeric property dispatcher searches, each with the handlers it calls on
-/// the index that registry's search found.
 fn registries(image: &PeImage, anchors: Vec<u32>) -> io::Result<Vec<Registry>> {
     let (start, end) = match image.referencing_functions(anchors)?[..] {
         [extent] => extent,
@@ -206,7 +196,6 @@ fn registries(image: &PeImage, anchors: Vec<u32>) -> io::Result<Vec<Registry>> {
         let Some((count, table)) = lookup(image, target) else {
             continue;
         };
-        // The search stores the index it finds in a stack slot before the next call.
         let slot = code[at + 1..]
             .iter()
             .take_while(|instruction| instruction.mnemonic() != Mnemonic::Call)
@@ -280,7 +269,6 @@ fn direct_call(image: &PeImage, instruction: &Instruction) -> Option<u32> {
         .flatten()
 }
 
-/// A registry lookup: it stores the row count through its argument and returns the rows.
 fn lookup(image: &PeImage, function: u32) -> Option<(u32, u32)> {
     let mut decoder = Decoder::with_ip(
         64,
@@ -305,7 +293,6 @@ fn lookup(image: &PeImage, function: u32) -> Option<(u32, u32)> {
         .flatten()
 }
 
-/// A dword stack slot an instruction stores to or loads from, as (base, displacement).
 fn stack_slot(instruction: &Instruction) -> Option<(Register, u64)> {
     let memory =
         (0..instruction.op_count()).any(|operand| instruction.op_kind(operand) == OpKind::Memory);
@@ -325,7 +312,6 @@ fn stack_base(register: Register) -> bool {
     matches!(register, Register::RSP | Register::RBP)
 }
 
-/// The rows a registry's initializer constructs and the one scope all of them document.
 fn decode_registry(
     image: &PeImage,
     registry: &Registry,
@@ -395,8 +381,6 @@ fn decode_registry(
     Ok((scope, rows))
 }
 
-/// A row constructor's property name and ordinal, and the scopes whose documented name it
-/// loads, as a mask.
 fn decode_row(image: &PeImage, constructor: u32) -> io::Result<(String, u32, u8)> {
     let (start, end) = image.function(constructor)?;
     if start != constructor {
@@ -473,7 +457,6 @@ fn receiver_memory(instruction: &Instruction, receiver: Register) -> bool {
         && instruction.memory_displacement64() == 0
 }
 
-/// Sorted vtables of every implementation of the numeric callback's callable type.
 fn callback_vtables(image: &PeImage) -> io::Result<Vec<u32>> {
     let mut locators = Vec::new();
     let mut names = HashMap::new();
@@ -525,7 +508,6 @@ fn decode_callbacks(
             && instruction.is_ip_rel_memory_operand()
         {
             let source = image.va_to_rva(instruction.ip_rel_memory_address())?;
-            // A name is copied from its start; later pieces load from inside it.
             if source
                 .checked_sub(1)
                 .is_some_and(|before| image.u8(before).ok() == Some(0))

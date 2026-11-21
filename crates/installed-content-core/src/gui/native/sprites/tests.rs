@@ -13,9 +13,6 @@ fn plain(text: &str) -> (Plain, Vec<Refusal>) {
     (sprite.kind.plain().unwrap().clone(), sprite.refusals)
 }
 
-/// Plain sprites retain their stored fields: `%i` frames, `anchor` and `dx_offset` components
-/// (fourth anchor component sets stretch, third offset component sets flag bytes), and the
-/// zeroed-local `framedirectiony`.
 #[test]
 fn a_plain_sprite_keeps_what_its_reader_keeps() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -46,32 +43,22 @@ fn a_plain_sprite_keeps_what_its_reader_keeps() {
         (stretched.anchor, stretched.stretch, stretched.v_scale),
         ([7.0, 8.0], 2.0, 3.0)
     );
-    // 1.0's bits are 00 00 80 3F: the third `dx_offset` component clears
-    // `transparencecheck` and its flag and sets `can_be_lowres` and `legacy_lazy_load`.
     let (bytes, _) = plain("transparencecheck = yes dx_offset = { 0.5 0.5 1.0 }");
     assert!(!bytes.transparence_check && !bytes.transparence_check_set);
     assert!(bytes.can_be_lowres && bytes.legacy_lazy_load);
     assert_eq!(bytes.dx_offset, [0.5, 0.5]);
 }
 
-/// The axis component reader writes `anchor`'s components on from the anchor into the sprite type:
-/// each lands on its field ([`SpriteBytes`]), stored when a later read sees it, nothing when the
-/// game rewrites it first.
 #[test]
 fn anchor_components_land_on_the_fields_past_the_anchor() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // The sixth component reaches the frame index rewritten before drawing; the third reaches
-    // the geometry scale rewritten during vertex buffer creation.
     let (sixth, refusals) = plain("anchor = { 0 0 1 1 1 7 }");
     assert!(refusals.is_empty(), "{refusals:?}");
     assert_eq!(
         (sixth.anchor, sixth.stretch, sixth.v_scale),
         ([0.0, 0.0], 1.0, 1.0)
     );
-    // The seventh and eighth are the frame step, the tenth the direction (1.4e-45 is the
-    // bits 1: the frames run down), the eleventh's low bytes the U flip and
-    // `alwaystransparent` (1.0000001 is 0x3F800001).
     let (down, refusals) = plain(
         "noOfFrames = 4 anchor = { 1 2 3 4 5 6 0.25 0.5 9 1.4e-45 1.0000001 } \
          alwaystransparent = yes",
@@ -85,17 +72,14 @@ fn anchor_components_land_on_the_fields_past_the_anchor() {
     assert_eq!((down.frame_direction, down.grid()), (1, [1, 4]));
     assert!(down.flip_u && down.always_transparent);
     assert_eq!(down.draw_step([0.1, 0.2]), [0.0, 0.2]);
-    // A direction other than 0, 1 and 2: geometry construction leaves the written step.
     let (kept, _) = plain("anchor = { 0 0 0 0 0 0 0.25 0.5 0 2.5 }");
     assert_eq!(kept.frame_direction, 2.5f32.to_bits() as i32);
     assert_eq!(
         (kept.grid(), kept.draw_step([0.1, 0.2])),
         ([1, 1], [0.25, 0.5])
     );
-    // A later key rewrites what a component wrote.
     let (rewritten, _) = plain("anchor = { 0 0 0 0 0 0 0 0 0 1.4e-45 } framedirectiony = no");
     assert_eq!(rewritten.frame_direction, 0);
-    // The 47th is the texture id base texture loading reads only while it is -1.
     let mut ids = vec!["0"; 46];
     ids.push("1.4e-45");
     let (id, refusals) = plain(&format!("anchor = {{ {} }}", ids.join(" ")));
@@ -103,9 +87,6 @@ fn anchor_components_land_on_the_fields_past_the_anchor() {
     assert_eq!(id.texture_id, 1);
 }
 
-/// Past the texture id the components reach the animation records' vector: zeros over the null
-/// vector are nothing, a data pointer or a count the readers follow is refused, a capacity or an
-/// allocator only when a later record is appended through them.
 #[test]
 fn anchor_components_reaching_the_animation_records() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -119,17 +100,14 @@ fn anchor_components_reaching_the_animation_records() {
         refusals[0].reason.contains("animation records' vector"),
         "{refusals:?}"
     );
-    // A count of 1 over no record: texture release reads one from the null pointer.
     let (_, refusals) = plain(&format!("anchor = {{ {} 1.4e-45 }}", zeros(15)));
     assert!(
         refusals[0].reason.contains("texture release"),
         "{refusals:?}"
     );
-    // A capacity of 1: the next record is copied through the null pointer.
     let record = "animation = { animationtype = scrolling }";
     let (_, refusals) = plain(&format!("anchor = {{ {} 1.4e-45 }} {record}", zeros(14)));
     assert_eq!(refusals[0].key, "animation", "{refusals:?}");
-    // The allocator written: nothing until a record is appended through it.
     let written = format!("anchor = {{ {} 7 7 }}", zeros(16));
     let (_, refusals) = plain(&written);
     assert!(refusals.is_empty(), "{refusals:?}");
@@ -138,8 +116,6 @@ fn anchor_components_reaching_the_animation_records() {
         refusals[0].reason.contains("allocator pointer"),
         "{refusals:?}"
     );
-    // After a record, the count lowered to 0 hides it from every reader.
-    // (`-` is a number `%f` stores nothing for: the data pointer and capacity are skipped.)
     let (hidden, refusals) = plain(&format!("{record} anchor = {{ {} - - - 0 }}", zeros(12)));
     assert!(refusals.is_empty(), "{refusals:?}");
     assert!(hidden.animations.is_empty());
@@ -147,16 +123,10 @@ fn anchor_components_reaching_the_animation_records() {
     assert_eq!(shown.animations.len(), 2);
 }
 
-/// `dx_offset`'s components from the sprite's flag bytes: the flags' bytes, `generate_mip_maps`,
-/// the second vector's null data pointer, then the end of the kind's allocation or its own tail.
 #[test]
 fn dx_offset_components_land_to_the_end_of_the_object() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // `anchor`'s components through the vectors, handles and texture pointers (zeros, with
-    // no record), then the masking string's buffer kept and its size written: past the
-    // 16-byte buffer the readers stop at the size's own zero byte; past the object's
-    // 0x70 bytes from the string they read past the allocation.
     let masking = |size: u32| {
         let mut components = vec!["0"; 42];
         for slot in &mut components[38..42] {
@@ -178,7 +148,6 @@ fn dx_offset_components_land_to_the_end_of_the_object() {
         refusals[0].reason.contains("past the heap block"),
         "{refusals:?}"
     );
-    // 1.0000305 is 0x3F800100: the logged-once byte 0, `generate_mip_maps` 1.
     let (flags, refusals) = plain("dx_offset = { 0.5 0.5 0 1.0000305 0 0 3 4 5 6 }");
     assert!(refusals.is_empty(), "{refusals:?}");
     assert!(flags.generate_mip_maps && !flags.legacy_lazy_load);
@@ -222,8 +191,6 @@ fn dx_offset_components_land_to_the_end_of_the_object() {
     );
 }
 
-/// Global offsets use an 8-byte temporary. Further components reach its enclosing frame, where
-/// only the sub-reader's object pointer is read before the saved registers.
 #[test]
 fn global_offset_components_land_on_the_readers_frame() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -240,10 +207,6 @@ fn global_offset_components_land_on_the_readers_frame() {
     assert!(past.refusals[0].reason.contains("saved R14"));
 }
 
-/// Mesh settings dispatch by token id. Unhandled registered keys (`size`) skip a block.
-/// Unregistered words (0xF) are texture overrides and skip nothing, so their block's `}` ends
-/// the settings and closes enclosing levels early. Later declarations are read at the resulting
-/// level.
 #[test]
 fn mesh_settings_keys_follow_their_token_ids() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -266,27 +229,19 @@ fn mesh_settings_keys_follow_their_token_ids() {
     let registered = read_sprites(text("size").as_bytes());
     assert_eq!(names(&registered), [b"GFX_a".to_vec(), b"GFX_b".to_vec()]);
     assert!(registered.refusals.is_empty(), "{:?}", registered.refusals);
-    // `texture_extra = {`: logged, nothing skipped; its `}` ends the settings,
-    // `texture_diffuse = "d"` is the pdxmesh's (unexpected), the settings' `}` ends the
-    // pdxmesh and the pdxmesh's `}` the `spriteTypes` block; `spriteType` at the file level
-    // is unexpected (its block skipped), and the `spriteTypes` block's `}` ends the file's
-    // level.
     let unregistered = read_sprites(text("texture_extra").as_bytes());
     assert!(
         names(&unregistered).is_empty(),
         "{:?}",
         names(&unregistered)
     );
-    // A dynamic token is no string: unexpected, its block skipped, as a keyword's.
     let dynamic = DynamicTokens::from_files([&b"texture_extra\n"[..]]);
     let tokened = read_sprites_with(text("texture_extra").as_bytes(), &dynamic);
     assert_eq!(names(&tokened), [b"GFX_a".to_vec(), b"GFX_b".to_vec()]);
-    // A quoted key is a string (0xF) too.
     let quoted = read_sprites(text("\"size\"").as_bytes());
     assert!(names(&quoted).is_empty());
 }
 
-/// Animation fields, unknown blocks read as keys, and untyped records dropped.
 #[test]
 fn animation_blocks_keep_every_field() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -301,8 +256,6 @@ fn animation_blocks_keep_every_field() {
          animation = { animationtime = 3 }",
     );
     assert!(refusals.is_empty(), "{refusals:?}");
-    // The unknown key's block was read as the animation's keys: its `}` closed the block,
-    // and the rest was read as the sprite's.
     assert_eq!(sprite.animations.len(), 1);
     let animation = &sprite.animations[0];
     assert_eq!(animation.rotation, 90.0 * RADIANS);
@@ -313,10 +266,6 @@ fn animation_blocks_keep_every_field() {
     assert_eq!(animation.rotation_offset, [1.0, 2.0]);
     assert_eq!(animation.frames, 0b1010);
     assert_eq!(animation.trigger_frames, 0b10100);
-    // `animationtexturescale`'s components go on over the key loop's frame: its argument
-    // slots, then its buffer pointer (a null one skips the free), the capacity and count,
-    // the allocator (read only to free an intact pointer), the inline entries and tokens,
-    // and its saved XMM6.
     let scale = |components: &str| {
         plain(&format!(
             "animation = {{ animationtype = scrolling animationtexturescale = {{ {components} }} }}"
@@ -345,15 +294,12 @@ fn animation_blocks_keep_every_field() {
     far.push("3");
     let (_, refusals) = scale(&far.join(" "));
     assert!(refusals[0].reason.contains("XMM6"), "{refusals:?}");
-    // Two keys write one frame: the halves of a null pointer, across keys.
     let (split, refusals) = plain(
         "animation = { animationtype = scrolling animationtexturescale = { 2 4 - - - - 0 } \
          animationtexturescale = { 2 4 - - - - - 0 } }",
     );
     assert!(refusals.is_empty(), "{refusals:?}");
     assert_eq!(split.animations.len(), 1);
-    // `animationrotationoffset` from the record's type: the type, blend mode and masks, then the
-    // texture pointers (null here, so nothing), the texel size, and past the record.
     let offset = |components: &str, eager: bool| {
         plain(&format!(
             "legacy_lazy_load = {} animation = {{ animationtexturefile = \"t\" \
@@ -365,7 +311,6 @@ fn animation_blocks_keep_every_field() {
     assert!(refusals.is_empty(), "{refusals:?}");
     let record = &sized.animations[0];
     assert_eq!((record.kind, record.texture_size), (1, [2, 1]));
-    // A mask pointer written without a mask file: an eager sprite binds it.
     let (_, refusals) = offset("1 2 1.4e-45 0 0 0 1", true);
     assert!(
         refusals[0].reason.contains("(mask or texture)"),
@@ -385,9 +330,6 @@ fn animation_blocks_keep_every_field() {
     );
 }
 
-/// Each kind's own switch: frame rates inverted where the reader inverts them, the progress
-/// bar's colours and textures, the text and resizeable kinds' `%u`, the masked shield's
-/// fields checked first, the circular bar's radians, the charts.
 #[test]
 fn every_kind_reads_its_own_switch() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -493,8 +435,6 @@ fn every_kind_reads_its_own_switch() {
     assert_eq!(line.effect_file, b"gfx/FX/linechart.lua");
 }
 
-/// The color reader on the lexer's current token: a `%x` number that `sscanf` returns
-/// EOF for stores zeroes; a reference value is no colour; a component above 1 is divided.
 #[test]
 fn colours_are_read_from_the_current_token() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -521,9 +461,6 @@ fn colours_are_read_from_the_current_token() {
     assert_eq!(bar.color, [1.0; 4]);
 }
 
-/// A failed read retains the lexer's token and its quoted flag; variable resolution also leaves
-/// a quoted token. At EOF or 0xFF after `"@v"`, further color reads retain that literal, which
-/// `%f` cannot scan, leaving white.
 #[test]
 fn a_failed_read_keeps_a_quoted_reference_literal() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -543,9 +480,6 @@ fn a_failed_read_keeps_a_quoted_reference_literal() {
     }
 }
 
-/// Only the three container keys are read at file level; inside them, the object kinds'
-/// walks are followed, an unknown key skipped, and the latest declaration of a name is the
-/// one the lookup finds.
 #[test]
 fn the_file_level_and_the_registry_follow_the_game() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -582,8 +516,6 @@ fn the_file_level_and_the_registry_follow_the_game() {
     assert!(sprites.refusals.is_empty(), "{:?}", sprites.refusals);
 }
 
-/// Arrows retain raw strings and use shared token-reader variables and scanners. Colors use the
-/// The lexer's current token rather than the resolved value slot.
 #[test]
 fn arrows_keep_native_fields_and_scalar_failures() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -615,8 +547,6 @@ fn arrows_keep_native_fields_and_scalar_failures() {
     assert_eq!(arrow.effect, b"e");
 }
 
-/// The constructor leaves height/type uninitialised; assigning a block to the scalar size
-/// reader still lets its contents run as object keys and its closing brace end the object.
 #[test]
 fn arrows_preserve_uninitialised_fields_and_native_block_walk() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -639,7 +569,6 @@ fn arrows_preserve_uninitialised_fields_and_native_block_walk() {
     assert_eq!(arrow.arrow_type, None);
 }
 
-/// All object kinds share lookup, while sprites and case variants remain independent.
 #[test]
 fn object_registry_keeps_later_cross_kind_collisions() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -672,9 +601,6 @@ fn object_registry_keeps_later_cross_kind_collisions() {
     assert_eq!(files[1].1.object(b"a").unwrap().kind, ObjectKind::PdxMesh);
 }
 
-/// A preceding object whose position write corrupts the heap cannot leave later object
-/// registrations certified. The fourth component is still inside its allocation; the fifth
-/// writes past it and carries a named refusal to every declaration completed after it.
 #[test]
 fn object_registry_refuses_after_an_animated_position_overrun() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -695,8 +621,6 @@ fn object_registry_refuses_after_an_animated_position_overrun() {
     }
 }
 
-/// An animated map text type keeps its speed, maximum width, position and
-/// the whole text block its reader updates in place, font included.
 #[test]
 fn animated_map_text_keeps_its_speed_width_position_and_text_block() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -723,8 +647,6 @@ fn animated_map_text_keeps_its_speed_width_position_and_text_block() {
     assert_eq!(plain.max_width, -1);
 }
 
-/// The global `textcolors` table is the last block read; a table the file ends inside
-/// stops on a frozen `}` and loops forever on anything else.
 #[test]
 fn text_colour_tables_follow_the_game() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -744,7 +666,6 @@ fn text_colour_tables_follow_the_game() {
     assert!(!open.refusals.is_empty());
 }
 
-/// Every shipped `interface/**/*.gfx` reads with nothing refused.
 #[test]
 #[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
 fn every_shipped_gfx_file_reads() {

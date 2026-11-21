@@ -1,4 +1,3 @@
-//! Type-53 army/order container.
 
 use engine_sites::Rva;
 use crate::{
@@ -13,76 +12,37 @@ use crate::{
     walk::Outcome,
 };
 
-/// COrdersGroup vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_edc0);
-/// COrdersGroup reference type.
 pub use engine_executable::native_values::orders_group::REFERENCE_TYPE;
-/// COrdersGroup packed type/id u64 handle.
 pub const HANDLE: usize = 0x08;
-/// Army-group discriminator byte, initialized to zero or one and always serialized.
 pub const IS_ARMY_GROUP: usize = 0x39;
-/// Motorization-level byte, always serialized.
 pub const MOTORIZATION_LEVEL: usize = 0x38;
-/// Raw country reference resolved before allocating order IDs.
 pub const COUNTRY: usize = 0x3c;
-/// Member-vector data containing 8-byte embedded membership pointers.
 pub const MEMBER_DATA: usize = 0x50;
-/// Member u32 capacity between data pointer and signed live count in the
-/// array header; no individual writer identifies it.
 pub const MEMBER_CAPACITY: usize = 0x58;
-/// Signed i32 member count; only positive counts enter the loop.
 pub const MEMBER_COUNT: usize = 0x5c;
-/// HQ-provider embedded membership pointer, serialized as the leader unit.
 pub const HQ_PROVIDER: usize = 0x68;
-/// Army-leader pointer; serialization uses its identity subobject when present.
 pub const LEADER: usize = 0x88;
-/// COrdersGroup primary order pointer-vector data.
 pub const PRIMARY_ORDER_DATA: usize = 0x98;
-/// COrdersGroup secondary order pointer-vector data.
 pub const SECONDARY_ORDER_DATA: usize = 0xb0;
-/// COrdersGroup tertiary order pointer-vector data.
 pub const TERTIARY_ORDER_DATA: usize = 0xc8;
-/// Four raw colour components copied for arrow presentation.
 pub const COLOUR: usize = 0x110;
-/// The group's stored name is free text when renamed by a player and already
-/// localised when generated at creation. Generation substitutes the smallest
-/// unused sequence number into a loaded name format and retains only the result.
-/// No key or sequence number survives here; serialization writes the same text.
 pub const NAME: usize = 0x160;
-/// COrdersGroup CTheaterGroup pointer.
 pub const THEATER_GROUP: usize = 0x180;
-/// Training byte; hourly writer coverage unresolved.
 pub const TRAINING: usize = 0x19d;
-/// COrdersGroup stop-at-max training byte.
 pub const STOP_AT_MAXIMUM: usize = 0x1a0;
-/// COrdersGroup border-war 8-byte presence operand.
 pub const BORDER_WAR: usize = 0x1b0;
-/// Withdrawing byte, serialized and used when withdrawing the general
-/// and selecting the HQ leader-en-route flag.
 pub const WITHDRAWING: usize = 0x19b;
-/// Stored signed HQ distance read directly by the counter tooltip.
-/// Construction initializes it to -1, and serialization emits it only when
-/// nonnegative. Preserve other negative values; omission proves negativity
-/// rather than a particular sentinel. Invasion-source distance is separate.
 pub const HQ_DISTANCE: usize = 0x1c4;
-/// Province paired with the stored headquarters communication distance.
 pub const HQ_NEAREST_FRONT: usize = 0x1c8;
-/// Signed distance selected for a kind-3 primary HQ root. Serialization
-/// emits it only when nonnegative; omission proves negativity rather than
-/// a particular sentinel.
 pub const INVASION_SOURCE_DISTANCE: usize = 0x1cc;
-/// Parent army-group pointer, separate from a vector or child-owned orders.
 pub const PARENT: usize = 0x1b8;
-/// COrdersGroup parent CTheatre pointer.
 pub const THEATRE: usize = 0x40;
-/// COrdersGroup allocation size.
 pub const SIZE: usize = 0x230;
-/// Group constructor initializing the non-group discriminator.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c3_f480);
 
 mod counter_tooltips;
 
-/// An authenticated type-53 registry root. Fields are copied, never engine pointers in the replay.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
     pub(crate) pointer: usize,
@@ -91,15 +51,11 @@ pub struct Root {
 }
 
 impl Root {
-    /// The authenticated group's address, for a raw copy of the same
-    /// acquisition pass that authenticated it; never a published field.
     pub fn pointer(self) -> usize {
         self.pointer
     }
 }
 
-/// One group's colour and ordered root-order lists; the lists are ranges of
-/// the caller's instance arena.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PlanRow {
     pub group: u64,
@@ -111,7 +67,6 @@ pub struct PlanRow {
     pub primary_len: usize,
     pub fallback_start: usize,
     pub fallback_len: usize,
-    /// Byte span of the group's name in the caller's name arena.
     pub name_start: usize,
     pub name_len: usize,
 }
@@ -124,7 +79,6 @@ pub fn plan_pointer_handle(
     gathered_pointer_handle(memory, base, pointer, Gathered::NONE)
 }
 
-/// [`plan_pointer_handle`] taking what `record` gathered from `pointer`.
 fn gathered_pointer_handle(
     memory: &impl Memory,
     base: usize,
@@ -157,8 +111,6 @@ pub(crate) fn plan_identity(
     plan_identity_gathered(memory, base, root, Gathered::NONE)
 }
 
-/// Re-authenticates a census root's handle and country, taking what
-/// `record` gathered from the root.
 pub(crate) fn plan_identity_gathered(
     memory: &impl Memory,
     base: usize,
@@ -177,17 +129,10 @@ pub(crate) fn plan_identity_gathered(
 #[derive(Clone, Copy, Debug)]
 pub struct PlanWalk {
     pub outcome: Outcome,
-    /// Instance ids written to the arena.
     pub orders: usize,
-    /// Name bytes written to the name arena.
     pub names: usize,
 }
 
-/// The COrdersGroup spans [`walk_plans`] reads, as `(offset, len)`: identity
-/// through country, the primary and fallback root headers, colour and name.
-/// They are hinted a batch ahead and gathered in one record per group. Each
-/// is a width the guarded record copy moves inline (64, 16 or 32 bytes); the
-/// eight bytes between the two root headers are not copied.
 const PLAN_SPANS: [(usize, usize); 5] = [
     (0, COUNTRY + 4),
     (PRIMARY_ORDER_DATA, 16),
@@ -201,7 +146,6 @@ const PLAN_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PLAN_FIELDS, PLAN_STRIDE).expect("valid group plan layout");
 const PLAN_MAP: [u16; NAME + crate::msvc_string::STRIDE] = packed_map(PLAN_SPANS);
 
-/// Hints one census group's spans; advisory only.
 fn prefetch_plan(memory: &impl Memory, root: &Root) {
     for (offset, len) in PLAN_SPANS {
         if let Some(address) = root.pointer.checked_add(offset) {
@@ -210,9 +154,6 @@ fn prefetch_plan(memory: &impl Memory, root: &Root) {
     }
 }
 
-/// Hints what a gathered group record points at: its heap name. Hints read
-/// nothing. The root arrays are not hinted: in the paired capture-cost bench
-/// that cost more than it saved.
 fn prefetch_dependents(memory: &impl Memory, record: Gathered<'_>) {
     if let Some(header) = record.get::<[u8; crate::msvc_string::STRIDE]>(NAME)
         && let Some((address, len)) = crate::msvc_string::heap_span(&header)
@@ -221,13 +162,6 @@ fn prefetch_dependents(memory: &impl Memory, record: Gathered<'_>) {
     }
 }
 
-/// Four colour components retain their raw bit patterns, including NaNs and
-/// signed zero. Member orders resolve from primary and fallback root arrays
-/// in array order, so both retain ordered authenticated ArmyOrders instance IDs.
-///
-/// Groups are read in batches: one guarded record per group gathers every fixed
-/// span before decoding. An incomplete record falls back to its original
-/// per-field reads, preserving rows and first failure.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_plans(
     memory: &impl Memory,
@@ -258,10 +192,6 @@ pub fn walk_plans(
         }
         let len = count.min(output.len());
         let walked = &roots[..len];
-        // Hints only, as in the order walk: they overlap group misses and
-        // leave every value and its failure precedence unchanged. A batch's
-        // own spans are hinted two batches ahead; it is gathered, and its
-        // heap names hinted, one batch before it is decoded.
         for root in walked.iter().take(2 * BATCH) {
             prefetch_plan(memory, root);
         }
@@ -361,9 +291,6 @@ pub fn walk_plans(
                         .and_then(|header| Array::from_header(header, 8))
                         .ok_or("group plan root array invalid")?;
                     *start = used;
-                    // Up to 64 slots per guarded copy. If a copy fails, its
-                    // slots are read one by one as before, so the first
-                    // unreadable slot still fails in array order.
                     for first in (0..array.count).step_by(64) {
                         let batched = (array.count - first).min(64);
                         let copied = array.element(first, 8).is_some_and(|address| {
@@ -411,24 +338,17 @@ pub fn walk_plans(
     }
 }
 
-/// The orders-group byte used by command execution, keyed by the group's full
-/// handle.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CounterInputsRow {
     pub group: u64,
     pub withdrawing: u8,
-    /// [`HQ_DISTANCE`]; None is this field's isolated guarded-read failure.
     pub hq_distance: Option<i32>,
-    /// Passive modifier-cooldown-days operands, independent of distance.
     pub leader_enroute_days: Option<i32>,
-    /// Presence of the raw border-war pointer; the pointee is never followed.
     pub border_war_presence: Option<u8>,
-    /// Distinct from `HQ_DISTANCE`; unknown negative values remain exact signed words.
     pub invasion_source_distance: Option<i32>,
     pub hq_nearest_front: Option<i32>,
 }
 
-/// Reads each root of a complete registry census after re-authenticating its identity.
 pub fn walk_counter_inputs(
     memory: &impl Memory,
     base: usize,
@@ -450,11 +370,6 @@ pub fn walk_counter_inputs_in_state(
     counter_inputs(memory, base, game_state, roots, source, output)
 }
 
-/// What [`counter_inputs`] reads from each group before its optional
-/// suffix, as `(offset, len)`: identity through country and the withdrawing
-/// byte; and the suffix's own: the leader pointer and the border-war pointer
-/// through the invasion-source distance. Each is gathered in one record per
-/// group a batch at a time.
 const COUNTER_PREFIX_SPANS: [(usize, usize); 2] = [(0, COUNTRY + 4), (WITHDRAWING, 1)];
 const COUNTER_PREFIX_FIELDS: [RecordField; 2] = packed_fields(COUNTER_PREFIX_SPANS);
 const COUNTER_PREFIX_STRIDE: usize = packed_stride(COUNTER_PREFIX_SPANS);
@@ -473,14 +388,12 @@ const COUNTER_SUFFIX_LAYOUT: RecordLayout<'static> =
         .expect("valid group counter suffix layout");
 const COUNTER_SUFFIX_MAP: [u16; INVASION_SOURCE_DISTANCE + 4] = packed_map(COUNTER_SUFFIX_SPANS);
 const COUNTER_BATCH: usize = crate::corder_instance::PLAN_BATCH;
-/// What the registry census reads from each group: its identity and country.
 const ROOT_SPANS: [(usize, usize); 2] = [(0, 16), (COUNTRY, 4)];
 const ROOT_FIELDS: [RecordField; 2] = packed_fields(ROOT_SPANS);
 const ROOT_STRIDE: usize = packed_stride(ROOT_SPANS);
 const ROOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ROOT_FIELDS, ROOT_STRIDE).expect("valid group root layout");
 
-/// Gathers one `layout` record for each of `roots`.
 fn gather_counter_records(
     memory: &impl Memory,
     roots: &[Root],
@@ -501,12 +414,6 @@ fn gather_counter_records(
     );
 }
 
-/// Groups are read a batch at a time: one guarded record per group gathers
-/// its identity, country and withdrawing byte, and once every root is
-/// established, a second its suffix pointers and distances. A group whose
-/// record did not complete makes its original per-field reads instead, so
-/// rows, the established prefix and every failure are those of the
-/// per-field walk; a suffix fault never reaches the prefix.
 fn counter_inputs(
     memory: &impl Memory,
     base: usize,
@@ -574,8 +481,6 @@ fn counter_inputs(
         })
     })();
     let outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
-    // Every established root identity/withdrawing byte is copied before the
-    // optional tooltip suffix. A failure here does not truncate those roots.
     let established = outcome.len();
     let mut resolver = registry::HeaderResolver::default();
     for first in (0..established).step_by(COUNTER_BATCH) {
@@ -601,7 +506,6 @@ fn counter_inputs(
                     .checked_add(HQ_DISTANCE)
                     .and_then(|address| read(memory, address))
             });
-            // Already present between the two distance words in this suffix.
             row.hq_nearest_front = record.get::<i32>(HQ_NEAREST_FRONT).or_else(|| {
                 root.pointer
                     .checked_add(HQ_NEAREST_FRONT)
@@ -615,7 +519,6 @@ fn counter_inputs(
                         .and_then(|address| read::<u64>(memory, address))
                 })
                 .map(|pointer| u8::from(pointer != 0));
-            // `leader_enroute_days` with the gathered leader pointer.
             let leader = match record.get::<u64>(LEADER) {
                 Some(pointer) => {
                     usize::try_from(pointer).map_err(|_| "HQ cooldown leader pointer overflow")
@@ -649,8 +552,6 @@ pub fn count_roots(memory: &impl Memory, base: usize) -> Outcome {
     walk_roots_buffer(memory, base, crate::walk::Buffer::Count)
 }
 
-/// Worker storage follows the original registry count before any occupied
-/// bucket is decoded. Fixed callback storage keeps its verdict.
 pub fn walk_roots(memory: &impl Memory, base: usize, output: &mut Vec<Root>) -> Outcome {
     walk_roots_buffer(memory, base, crate::walk::Buffer::Growing(output))
 }
@@ -690,8 +591,6 @@ pub fn walk_roots_buffer(
         }
         let static_empty = engine_sites::at(base, registry::STATIC_EMPTY_RVA)
             .ok_or("module address overflow")?;
-        // Construction uses the static-empty header. Growth uses 2^exponent buckets
-        // and exponent+2 overflow cells.
         let exponent = capacity.trailing_zeros();
         if capacity == 1 {
             if entries != static_empty || count != 0 || distance != 0 {
@@ -721,8 +620,6 @@ pub fn walk_roots_buffer(
         let mut copied = 0_usize;
         let mut occupied = 0_u32;
         let mut first = 0_u32;
-        // Batching contiguous buckets amortizes SEH without reading beyond the
-        // native terminal or retaining a second registry-sized allocation.
         let mut bytes = [0_u8; 64 * bucket::STRIDE];
         while first < terminal {
             let slots = (terminal - first).min(64) as usize;
@@ -732,15 +629,6 @@ pub fn walk_roots_buffer(
             if !read_slice(memory, address, &mut bytes[..slots * bucket::STRIDE]) {
                 return Err("orders registry buckets unreadable");
             }
-            // The chunk's buckets are validated first, in bucket order, and
-            // the groups they name, up to the first invalid bucket and within
-            // the output's capacity, are gathered in one guarded record copy
-            // (read order relaxed, owner 2026-10-12): their misses overlap.
-            // Each group is then decoded in bucket order with the single
-            // walk's checks, so healthy memory gives its roots and a
-            // persistent fault its first failure. From the first group the
-            // gather did not complete, the groups are read alone, as the
-            // single walk reads them: one counted fallback per chunk.
             let mut pointers = [0_usize; 64];
             let mut handles = [0_u64; 64];
             let mut gathered = 0;
@@ -793,8 +681,6 @@ pub fn walk_roots_buffer(
             for index in 0..gathered {
                 let (pointer, handle) = (pointers[index], handles[index]);
                 let mut record = [0_u8; ROOT_STRIDE];
-                // Identity and country; the fields a gather completed name
-                // the one that failed.
                 let fields = if completed >= (index + 1) * ROOT_FIELDS.len() {
                     record.copy_from_slice(&records[index * ROOT_STRIDE..][..ROOT_STRIDE]);
                     ROOT_FIELDS.len()
@@ -853,33 +739,18 @@ pub fn walk_roots_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One authenticated type-53 group's own identity. Engine pointers never leave
-/// this crate: each reference becomes the pointee's native handle, and a null
-/// native pointer stays zero rather than becoming a missing row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GroupRow {
     pub handle: u64,
-    /// Raw country reference (`COUNTRY`); aliases are preserved, never canonicalized.
     pub country: u32,
-    /// Raw discriminator byte (`IS_ARMY_GROUP`), the save's field_marshal_group source.
     pub is_army_group: u8,
-    /// Raw motorization byte, always serialized.
     pub motorization_level: u8,
-    /// Full CTheatre reference, or zero for the native null parent pointer.
     pub theatre: u64,
-    /// Native index in that theatre's regular (`ctheatre::ORDERS_GROUP_DATA`) or army-group
-    /// (`ctheatre::ARMY_GROUP_DATA`) roster, chosen by `is_army_group`. None is absence, not
-    /// position zero.
     pub theatre_ordinal: Option<u32>,
-    /// Full CTheaterGroup reference, or zero for the native null pointer.
     pub theater_group: u64,
-    /// Full parent CArmyGroup reference, or zero when this group has no parent.
     pub parent: u64,
-    /// Full CUnitLeader reference, or zero when no leader is assigned.
     pub leader: u64,
-    /// Full CUnit reference of the HQ-providing unit, or zero when absent.
     pub hq_provider: u64,
-    /// Callback/worker-only source pointer, never serialized.
     pub pointer: usize,
     pub name_start: usize,
     pub name_len: usize,
@@ -943,22 +814,17 @@ mod command_name_tests {
     }
 }
 
-/// One entry of a group's own ordered member vector (`MEMBER_DATA`). Native order is state: the
-/// ordinal is the vector index, not a generated key.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {
     pub group: u64,
     pub ordinal: u32,
-    /// Full CUnit reference recovered from the embedded COrdersGroupMember.
     pub unit: u64,
 }
 
-/// One entry of a CArmyGroup's ordered child vector, which follows the orders group's own fields.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ChildRow {
     pub group: u64,
     pub ordinal: u32,
-    /// Full child COrdersGroup reference.
     pub child: u64,
 }
 
@@ -969,7 +835,6 @@ pub struct OrderOfBattle<'a> {
     pub roster_scratch: &'a mut Vec<RosterEntry>,
 }
 
-/// Worker-owned OOB buffers grow from the complete census and original member headers.
 pub struct OrderOfBattleStorage<'a> {
     pub groups: crate::walk::Buffer<'a, GroupRow>,
     pub members: crate::walk::Buffer<'a, MemberRow>,
@@ -977,9 +842,6 @@ pub struct OrderOfBattleStorage<'a> {
     pub roster_scratch: crate::walk::Buffer<'a, RosterEntry>,
 }
 
-/// Per-census scratch only; native pointers are never serialized. Kept in
-/// root order, with each group reachable by pointer through chains threaded
-/// through the entries themselves; see `theatre_ordinals`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RosterEntry {
     pointer: usize,
@@ -988,19 +850,11 @@ pub struct RosterEntry {
     is_army_group: bool,
     ordinal: Option<u32>,
     walked: bool,
-    /// First entry of the chain of groups whose pointer hashes to this slot.
     head: u32,
-    /// Next entry in this group's chain.
     next: u32,
-    /// Only while resolving a failure: this entry's theatre was walked,
-    /// successfully, before the failed one.
     walked_before: bool,
 }
 
-/// Reuse a successful complete OOB walk for one freshly authenticated theatre.
-/// Both slices must be that walk's exact complete root prefix, with Groups Rows.
-/// The walk has validated both native rosters, all their pointer occurrences,
-/// backlinks, subtypes and ordinals. This helper reads no native memory.
 pub fn captured_theatre_rosters(
     groups: &[GroupRow],
     scratch: &[RosterEntry],
@@ -1040,12 +894,8 @@ pub fn captured_theatre_rosters(
     Ok(found)
 }
 
-/// Ends a [`RosterEntry`] chain.
 const END: u32 = u32::MAX;
 
-/// Independent outcomes: a full member buffer must not silently shorten the
-/// group census, and an army group with unreadable children must not turn its
-/// identity row into an invented empty membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrderOfBattleWalk {
     pub groups: Outcome,
@@ -1085,14 +935,6 @@ impl Count {
     }
 }
 
-/// Reads the order of battle for an already authenticated registry census.
-///
-/// `roots` must be the exact prefix the caller's registry walk filled; the caller keeps that
-/// census's own outcome, because a truncated or unavailable registry cannot establish a complete
-/// order of battle. Every reference is authenticated by its pointee's vtable and reference type
-/// before it becomes a row field. Members are resolved by subtracting the embedded
-/// COrdersGroupMember offset and re-authenticating the CUnit host, including its reciprocal
-/// `carmy::ORDERS_GROUP` back-pointer, so no unresolved pointer becomes a row.
 #[cfg(any(test, feature = "test-support"))]
 pub fn walk_order_of_battle(
     memory: &impl Memory,
@@ -1198,14 +1040,6 @@ pub fn walk_order_of_battle_buffers(
     }
 }
 
-/// Theatre simulation rosters visit army groups first, then each group's
-/// roots. Serialization keeps both rosters separately in source order. Read
-/// each roster once and validate against this root census.
-/// Theatres follow first-seen root order, matching recorded staged spans;
-/// resolve entries through scratch pointer chains without sorting. Success
-/// and ordinals are independent of theatre order, but first failure is not.
-/// `first_sorted_failure` restores pointer-ordered failure without rereading.
-/// Repeated pointers or an extent too long to chain use the direct walk.
 fn theatre_ordinals<M: Memory>(
     reader: &Reader<'_, M>,
     scratch: &mut [RosterEntry],
@@ -1216,9 +1050,6 @@ fn theatre_ordinals<M: Memory>(
     }
     for index in 0..scratch.len() {
         let theatre = scratch[index].theatre;
-        // A root already placed was reached through its theatre's walk. Only a
-        // root its theatre's rosters omit can see that theatre walked twice,
-        // and the second walk finds every position already equal.
         if theatre == 0 || scratch[index].ordinal.is_some() || scratch[index].walked {
             continue;
         }
@@ -1230,9 +1061,6 @@ fn theatre_ordinals<M: Memory>(
     Ok(())
 }
 
-/// The original walk: the scratch sorted by group pointer, each theatre
-/// walked when its first unplaced group in that order is reached, and each
-/// roster entry found by binary search.
 fn theatre_ordinals_sorted<M: Memory>(
     reader: &Reader<'_, M>,
     scratch: &mut [RosterEntry],
@@ -1250,13 +1078,6 @@ fn theatre_ordinals_sorted<M: Memory>(
     Ok(())
 }
 
-/// The failure the original pointer-ordered walk reports, after the root-order
-/// walk failed at the theatre of root `failed_at`. Theatres whose first root
-/// precedes it were walked without failing, and the original walk passes them
-/// the same way; the failed theatre fails with the same reason, since a
-/// theatre's walk depends only on its own rosters. So the original order is
-/// replayed with those outcomes known, and only a theatre neither walk has
-/// reached yet is read, for the first time.
 fn first_sorted_failure<M: Memory>(
     reader: &Reader<'_, M>,
     scratch: &mut [RosterEntry],
@@ -1279,8 +1100,6 @@ fn first_sorted_failure<M: Memory>(
             entry.walked_before = walked_before;
             entry.walked = false;
             if theatre == failed {
-                // The failed walk may have placed some of its groups; the
-                // original walk has not walked this theatre yet.
                 entry.ordinal = None;
             }
         }
@@ -1303,9 +1122,6 @@ fn first_sorted_failure<M: Memory>(
     Err(reason)
 }
 
-/// Reads one theatre's two rosters in native order and places each listed
-/// group, after checking it is a census root that names this theatre and has
-/// the roster's subtype.
 fn walk_theatre<M: Memory>(
     reader: &Reader<'_, M>,
     scratch: &mut [RosterEntry],
@@ -1347,7 +1163,6 @@ fn find_sorted(scratch: &[RosterEntry], pointer: usize) -> Result<usize, &'stati
         .map_err(|_| "theatre roster group absent from census")
 }
 
-/// The chain slot of `pointer` among `buckets`, a power of two.
 fn chain_slot(pointer: usize, buckets: usize) -> usize {
     let mut hash = pointer as u64;
     hash ^= hash >> 30;
@@ -1356,15 +1171,10 @@ fn chain_slot(pointer: usize, buckets: usize) -> usize {
     hash as usize & (buckets - 1)
 }
 
-/// The largest power of two not above the census length: the chain count.
 fn chain_buckets(len: usize) -> usize {
     1 << (usize::BITS - 1 - len.leading_zeros())
 }
 
-/// Threads a chain per pointer hash through the scratch, in place: entry
-/// `h`'s `head` starts the chain of slot `h`, and each entry's `next`
-/// continues its own. False, with nothing to rely on, when two roots share a
-/// pointer or the census is too long for 32-bit links.
 fn chain_by_pointer(scratch: &mut [RosterEntry]) -> bool {
     if scratch.is_empty() {
         return true;
@@ -1437,15 +1247,12 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("orders group vector entry unreadable or null")
     }
 
-    /// Optional engine pointer: zero preserves the native absence exactly.
     fn optional(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
         usize::try_from(self.field::<u64>(pointer, offset)?)
             .map_err(|_| "orders group pointer overflow")
     }
 
     fn identity(&self, root: &Root) -> Result<(GroupRow, usize), &'static str> {
-        // The census already authenticated the root's vtable, handle and
-        // country; this reads only the fields it does not carry.
         let is_army_group = self.field::<u8>(root.pointer, IS_ARMY_GROUP)?;
         let motorization_level = self.field::<u8>(root.pointer, MOTORIZATION_LEVEL)?;
         let theatre_pointer = self.optional(root.pointer, THEATRE)?;
@@ -1499,7 +1306,6 @@ impl<M: Memory> Reader<'_, M> {
         ))
     }
 
-    /// Authenticates a group pointer that is not already a census root.
     fn group_handle(&self, pointer: usize) -> Result<u64, &'static str> {
         let identity =
             read::<[u8; 16]>(self.memory, pointer).ok_or("orders group identity unreadable")?;
@@ -1541,15 +1347,10 @@ impl<M: Memory> Reader<'_, M> {
         Ok(handle)
     }
 
-    /// Recovers the CUnit that owns an embedded COrdersGroupMember. The engine reaches the unit
-    /// through a virtual accessor the callback may not call, so the host is authenticated instead:
-    /// both CArmy vtables, a nonzero handle and the reciprocal `carmy::ORDERS_GROUP` back-pointer
-    /// must all agree.
     fn member_unit(&self, member: usize, group: usize) -> Result<u64, &'static str> {
         let unit = member
             .checked_sub(corders_group_member::HOST_OFFSET)
             .ok_or("orders group member is below its embedded base offset")?;
-        // Vtable, class word, secondary vtable and handle are one exact span.
         let header = read::<[u8; 32]>(self.memory, unit)
             .ok_or("orders group member host identity unreadable")?;
         let primary = engine_sites::at(self.base, carmy::VTABLE_RVA)
@@ -1559,8 +1360,6 @@ impl<M: Memory> Reader<'_, M> {
         if u64::from_le_bytes(header[..8].try_into().unwrap()) != primary {
             return Err("orders group member host primary vtable mismatch");
         }
-        // Army construction supplies class zero; formation-division counts select
-        // only this class.
         if u32::from_le_bytes(header[8..12].try_into().unwrap()) != 0 {
             return Err("orders group member host is not a class-zero army");
         }

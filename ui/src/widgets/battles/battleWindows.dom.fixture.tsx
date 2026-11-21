@@ -1,5 +1,3 @@
-/** Land battles following the head at 1,440 h/s in a real browser, over a recording cut in windows of 720 hours as the
- * service cuts a long campaign: every request the widget makes, with the head it was sent at and the hour it asks from. */
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import LandBattlesWidget from '../land-battles/LandBattlesWidget';
@@ -36,8 +34,6 @@ class Clock {
 }
 
 const WINDOWS = Array.from({ length: HOURS / WINDOW_HOURS }, (_, index) => ({ firstHour: index * WINDOW_HOURS, lastHour: (index + 1) * WINDOW_HOURS - 1 }));
-/** Thirty battles begin in each window, a day apart, each lasting 300 hours, in a province of its own: the rows in view
- * are the window's at the head, as a recording's are. */
 const BATTLES = 30;
 const battle = (window: number, at: number) => {
   const start = WINDOWS[window]!.firstHour + 10 + at * 24, last = Math.min(start + 300, WINDOWS[window]!.lastHour);
@@ -61,7 +57,6 @@ function reply(product: string, params: Record<string, unknown>): unknown {
   throw new Error(`${product} is not served here`);
 }
 
-/** The hour a request asks from, as the perf log names it: its own `asksFrom`, else the earliest hour its params list. */
 function askedFrom(request: { asksFrom?: number; params: Record<string, unknown> }): number | null {
   if (typeof request.asksFrom === 'number') return request.asksFrom;
   for (const name of ['from', 'firstHour', 'hour', 'at']) if (typeof request.params[name] === 'number') return request.params[name] as number;
@@ -101,7 +96,6 @@ export const fixture = {
       <LandBattlesWidget {...{ widget, runtime, active: true, onDiagnostics() {}, setOption() {} } as unknown as WidgetProps} /></Scoped></div>);
     await settle(40);
   },
-  /** Plays `frames` frames of `hours` each, settling a moment after anchoring as the app does. */
   async play(frames: number, hours: number) {
     clock.playing = true; clock.anchor();
     for (let at = 0; at < frames; at++) { clock.step(hours); await frame(); }
@@ -109,7 +103,6 @@ export const fixture = {
   },
   pause() { clock.playing = false; clock.anchor(); },
   head: () => clock.getHour(),
-  /** Every request made while playing, with the head it was sent at and the hour it asks from. */
   played: () => requests.filter(request => request.playing),
   rows: () => host!.querySelectorAll('.log-row').length,
 };

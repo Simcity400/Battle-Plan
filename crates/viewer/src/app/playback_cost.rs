@@ -14,58 +14,28 @@ pub(crate) mod pictures;
 pub(crate) mod toggle;
 pub(crate) mod viewpoint;
 
-/// Which hours the frames show: every `step`th hour, one hour under a camera moving `pan`
-/// map units a frame, or, `paced`, whatever the builders finished under a head running free at that
-/// many hours a second while frames go out on the refresh clock.
 #[derive(Clone)]
 pub(crate) struct Schedule {
     pub step: u32,
     pub pan: Option<f32>,
-    /// Frames whose scene is also written to `<out>/frame-<index>.png`, after their timing.
     pub pngs: Vec<u32>,
-    /// Wheel lines turned at once, every so many frames, over the map's centre: the window's own
-    /// camera takes them through the game's law, reversing at its limits.
     pub zoom: Option<Zoom>,
-    /// The hour is held, as when playback is paused.
     pub paused: bool,
-    /// The display refresh a dropped frame is counted against.
     pub refresh_hz: f64,
     pub complete_models: bool,
     pub paced: Option<f64>,
-    /// Paced, with the map's layers on: seeks while playing, spread over the run.
     pub seeks: u32,
-    /// After the run's hours, a seek to this hour as the window seeks: stepped, one more frame
-    /// there; paced, playing on from it for [`SEEK_BACK_SECONDS`] or to the branch end.
     pub seek_back: Option<i32>,
-    /// The layers the window registers, by name; every layer when none are named.
     pub layers: Option<Vec<String>>,
-    /// Paced: the camera flies this path ([`crate::playback_cost::flight`]).
     pub flight: Option<crate::playback_cost::flight::Flight>,
-    /// Paced: each frame goes out through the window's own swap chain, so the run measures the
-    /// interval a display really gives it.
     pub windowed: bool,
-    /// Each frame is the frame the app's campaign map tab runs: the window's own frame path, with
-    /// the frame's audio presented to a silent system.
     pub campaign_tab: bool,
-    /// Counting mode: windows of frames whose picture is compared with the frame before it
-    /// ([`pictures`]). None times the run and counts nothing.
     pub count_pictures: Option<pictures::Counting>,
-    /// Paced: the consecutive display frames whose presented pixels are written to
-    /// `<out>/frame-<index>.png` ([`Presented`]), as the run presented them.
     pub png_frames: Option<Presented>,
-    /// Windowed: whether the swap chain waits for vertical sync, as the app's vsync setting
-    /// chooses; the map's own present mode when not given.
     pub vsync: Option<bool>,
-    /// Paced and windowed: the run keeps no record of its own and reports only its frame
-    /// intervals ([`lean`]).
     pub lean: bool,
 }
 
-/// Which consecutive display frames of a paced run have their pixels saved: the frame the run
-/// starts saving at and how many follow it. The frames are saved as the run presented them —
-/// nothing is settled for them and no model is completed — so what the files hold is the picture
-/// the watcher saw at the frame's own head, which is the only place the motion between two
-/// publications can be seen.
 #[derive(Clone, Copy)]
 pub(crate) struct Presented {
     pub first: u64,
@@ -73,7 +43,6 @@ pub(crate) struct Presented {
 }
 
 impl Presented {
-    /// `<first frame saved>:<how many consecutive frames>`.
     pub(crate) fn parse(value: &str) -> io::Result<Self> {
         value
             .split_once(':')
@@ -89,17 +58,13 @@ impl Presented {
             })
     }
 
-    /// Whether frame `index` is one of them.
     pub(crate) fn saves(self, index: u64) -> bool {
         (self.first..self.first.saturating_add(self.frames)).contains(&index)
     }
 }
 
-/// How long a paced run sought back plays on before it ends.
 const SEEK_BACK_SECONDS: f64 = 2.0;
 
-/// A frame's camera in its record: the game's look-at camera by its centre and height, a free eye
-/// by its place, heading, pitch and lens.
 fn camera_record(placement: Option<Placement>) -> Value {
     match placement {
         None => Value::Null,
@@ -112,8 +77,6 @@ fn camera_record(placement: Option<Placement>) -> Value {
     }
 }
 
-/// The camera a frame drew with: the eye a placed walk walked through, the harness's pinned one
-/// (`--camera`, `--free-camera`, a pan or a flight), else the window's own.
 fn pinned_camera(viewer: &Viewer) -> Option<Placement> {
     if viewer.walk.placed() {
         return viewer.walk.eye();
@@ -121,7 +84,6 @@ fn pinned_camera(viewer: &Viewer) -> Option<Placement> {
     viewer.capture.as_ref().and_then(|capture| capture.pinned).and_then(|(_, placement)| placement).or(viewer.camera)
 }
 
-/// The frame's flight record ([`viewer_foundation::view_record`]): each part's section and counts.
 fn view_record() -> Value {
     Value::Object(
         viewer_foundation::view_record::take()
@@ -135,8 +97,6 @@ fn view_record() -> Value {
     )
 }
 
-/// The parts today's builder draws that a layers-only run hides by the map's own switches, and
-/// those with no switch, which stay at the first hour.
 
 #[derive(Clone, Copy)]
 pub(crate) struct Zoom {
@@ -144,8 +104,6 @@ pub(crate) struct Zoom {
     pub every: u32,
 }
 
-/// The window thread's charged time by label, and every lap note, for one frame's difference:
-/// its CPU, and the wall time it was on top (none for a lap note).
 #[derive(Clone, Copy, Default)]
 struct Memory {
     working_set_peak: u64,
@@ -259,8 +217,6 @@ fn process_cycles() -> Option<u64> {
     None
 }
 
-/// A copy of the frame's presented output, taken on the device: the frame pays one texture copy
-/// and the picture is read back once the run is over ([`Presented`]).
 fn copy_of_output(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -294,12 +250,6 @@ fn drain(state: &eframe::egui_wgpu::RenderState) -> io::Result<()> {
         .map_err(io::Error::other)
 }
 
-/// Waits to a millisecond short of `due`, then spins; returns when the last wait returned.
-///
-/// The wait is a high-resolution timer, not `thread::sleep`: a sleep returns on the system's timer
-/// tick, which overshoots a 16.7 ms frame's due time by one to four milliseconds, and the frame then
-/// starts that late with its spin never reached, so the run reads an uneven interval the product
-/// never had.
 fn wait_until(due: Instant) -> Option<Instant> {
     let mut woke = None;
     while let Some(left) = due.checked_duration_since(Instant::now()) {
@@ -313,9 +263,6 @@ fn wait_until(due: Instant) -> Option<Instant> {
     woke
 }
 
-/// Blocks this thread for `left` as closely as the platform allows, leaving every other thread the
-/// core meanwhile. On Windows that is a timer of its own asked for at high resolution, which no
-/// system-wide setting is touched for; where one cannot be made, a sleep stands in.
 fn precise_wait(left: Duration) {
     #[cfg(windows)]
     {
@@ -329,10 +276,7 @@ fn precise_wait(left: Duration) {
             fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
         }
         thread_local! {
-            /// One timer a thread, kept for the run: null where the platform has no high-resolution one.
             static TIMER: *mut c_void = {
-                // SAFETY: a nameless, uninherited timer with no attributes; the handle is kept for
-                // this thread's life and only ever set and waited on.
                 let timer = unsafe { CreateWaitableTimerExW(std::ptr::null_mut(), std::ptr::null(), HIGH_RESOLUTION, TIMER_ALL_ACCESS) };
                 timer
             };
@@ -341,9 +285,7 @@ fn precise_wait(left: Duration) {
             if timer.is_null() {
                 return false;
             }
-            // A negative hundred-nanosecond count is a wait of that length from now.
             let due = -((left.as_nanos() / 100).min(i64::MAX as u128) as i64);
-            // SAFETY: `timer` is this thread's live timer handle and `due` outlives the call.
             unsafe {
                 if SetWaitableTimer(timer, &due, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0) == 0 {
                     return false;
@@ -359,16 +301,11 @@ fn precise_wait(left: Duration) {
     std::thread::sleep(left);
 }
 
-/// A stepped run's clock: a step of the run's own length, held, so that a table a saved frame
-/// learns joins at the frame's hour; playing, it would join past the newest step built, which the
-/// frame's rows reach only at a later frame.
 pub(crate) fn hold_at_step(entry: &crate::playhead_host::Entry, start: replay_data::Hour, speed: f64) {
     entry.anchor(start, true, speed, false);
     entry.anchor(start, false, speed, false);
 }
 
-/// Why the map has no drawn hour: the layer furthest behind, and each layer's name, whether it is
-/// drawn, the hour it shows, what it carried and whether its upload was left.
 fn warm_up_state(side: &crate::playhead_host::MapSide) -> String {
     let on = side.on_screen();
     let shown: Vec<_> = side.layer_states().into_iter().zip(&side.last_frame().layers).map(|((name, drawn, upload_left), part)| (name, drawn, part.shown, upload_left)).collect();
@@ -399,8 +336,6 @@ fn frame_ui(
             ..Default::default()
         },
         |ui| {
-            // `--campaign-tab`: the window's own frame, in its central panel, as the app's map tab
-            // draws it; what it could not draw it holds as the window does, in `error`.
             result = if viewer.campaign_tab {
                 let drawn = viewer.window_frame(ui, Some(state), document);
                 match &viewer.error {
@@ -415,9 +350,6 @@ fn frame_ui(
     result.map(|()| output)
 }
 
-/// A frame the run draws but does not present: its texture changes still reach the window's egui
-/// renderer, as `host::driver::run` sends a hidden window's. Dropped, the next frame's partial
-/// update would name a texture the renderer never allocated.
 fn absorb_textures(
     surface: Option<&mut crate::renderer_host::WindowSurface>,
     state: &eframe::egui_wgpu::RenderState,
@@ -471,10 +403,6 @@ fn gpu_counts() -> serde_json::Map<String, Value> {
         .collect()
 }
 
-/// The window thread's labels and every note, by "family/category": CPU and wall nanoseconds and
-/// entries, as the snapshot's main-role rows and notes give them, read without the whole snapshot.
-/// The run's `frames.jsonl`, written on its own thread: a frame hands its finished record over and
-/// pays nothing for serializing or writing it, which is the harness's cost and not the product's.
 struct Records {
     records: Option<std::sync::mpsc::Sender<Value>>,
     writer: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -511,7 +439,6 @@ impl Records {
         Err(io::Error::other("the run's record writer stopped"))
     }
 
-    /// Every record written and the file flushed, with what the writer met.
     fn finish(&mut self) -> io::Result<()> {
         drop(self.records.take());
         match self.writer.take() {
@@ -525,15 +452,10 @@ impl Records {
 
 impl Drop for Records {
     fn drop(&mut self) {
-        // A run that gave up still leaves the records it handed over on disk.
         let _ = self.finish();
     }
 }
 
-/// The window thread's labels charged since `before`, which becomes now: each label's CPU, its
-/// wall time on top of the thread's labels (the difference is the thread off its CPU there), and
-/// how many times it was entered (a label reads the thread's cycle time twice each time; a note,
-/// a span's or a lap's, twice too, and notes are every thread's).
 fn frame_scopes(
     before: &mut std::collections::HashMap<String, [Option<u64>; 3]>,
 ) -> (serde_json::Map<String, Value>, serde_json::Map<String, Value>, serde_json::Map<String, Value>) {
@@ -593,8 +515,6 @@ fn thread_us(before: Option<Duration>) -> Option<f64> {
         .map(|used| used.as_secs_f64() * 1e6)
 }
 
-/// The map's device and render state for `window`, with its surface, exactly as the driver makes
-/// them for a map in a window.
 fn window_state(
     window: &crate::host::Window,
 ) -> io::Result<(
@@ -607,7 +527,6 @@ fn window_state(
     Ok((state, crate::renderer_host::WindowSurface::new(surface)))
 }
 
-/// The map's device and the window's render state, without a window.
 fn render_state() -> io::Result<eframe::egui_wgpu::RenderState> {
     pollster::block_on(async {
         let lifecycle = shader_pipeline::gpu::device_lifecycle();
@@ -646,18 +565,15 @@ pub(crate) fn measure(
     output: &std::path::Path,
     window: crate::playback_cost::Window,
 ) -> io::Result<Value> {
-    // This thread draws the harness's frames, as a map thread draws the window's own.
     viewer_foundation::worker_priority::frame_priority();
     if !schedule.lean {
         crate::layers::count_in_view(true);
-        // Before the device, so it is asked for the per-pass timestamps the record keeps.
         viewer_foundation::view_record::enable();
     }
     let (window, inputs) = match window {
         crate::playback_cost::Window::Own(window, inputs) => (Some(window), Some(inputs)),
         crate::playback_cost::Window::None => (None, None),
     };
-    // Held for the run: the window's message pump sends its input through this channel.
     let _inputs = inputs;
     let (state, mut surface) = match &window {
         Some(window) => {
@@ -671,7 +587,6 @@ pub(crate) fn measure(
         None => (render_state()?, None),
     };
     let info = state.adapter.get_info();
-    // A paced run loads icons in the background as the window does; a stepped one settles them.
     document.icons.lazy.set_background(schedule.paced.is_some());
     if !document.map_modes.knows(&options.map_mode) {
         return Err(io::Error::other("Unknown --map-mode"));
@@ -705,11 +620,9 @@ pub(crate) fn measure(
         &Default::default(),
     )?);
     viewer.scene.as_mut().unwrap().set_graphics(viewer.graphics);
-    // The map draws its layers from the recording's playhead, sought here.
     if let Some(names) = &schedule.layers {
         crate::playhead_host::register_only(names.clone());
     }
-    // Held paused at the paced run's speed: the steps built ahead of the head are those it will play.
     let at = crate::playhead_host::At { branch, hour: start, playing: false, speed: schedule.paced.unwrap_or(0.0) };
     let side = crate::playhead_host::for_document_at(&document, Some(at)).map_err(io::Error::other)?;
     viewer.playhead_map = Some(crate::playhead_host::side::SideThread::new(side).map_err(io::Error::other)?);
@@ -719,14 +632,10 @@ pub(crate) fn measure(
     viewer.playhead_opened = true;
     viewer.dashboard_map = extra_maps::as_dashboard_map();
     let mut extras = extra_maps::Extras::open(&document, viewer.playhead_map.as_ref(), schedule.paced.unwrap_or(1440.0))?;
-    // `BATTLE_PLAN_HOVER_FAMILY`: the pointer held on that hover family's first presented target, its figures timed.
     let hovered = super::hover_rows::Family::from_env()?;
     if hovered.is_some() {
         viewer.hover_rows.time();
     }
-    // A run that saves its pixels draws every frame as a capture must: its models build in
-    // place and every figure is posed on the frame that draws it, never one frame behind
-    // ([`viewer_world::map::scene::Scene::settle_poses`]).
     let scene = viewer.scene.as_mut().unwrap();
     scene.settle_builds(schedule.complete_models);
     scene.settle_poses(schedule.complete_models);
@@ -734,7 +643,6 @@ pub(crate) fn measure(
     viewer.speed = schedule.paced.unwrap_or(1440.0);
     viewer.animation_seek = true;
     viewer.camera_step = Some(1.0 / schedule.refresh_hz as f32);
-    // The run's own frame rate is what its render scale is judged against, not the display's.
     viewer.last_view = Some(crate::app::View {
         camera,
         viewport: pixels,
@@ -743,7 +651,6 @@ pub(crate) fn measure(
     viewer.capture = Some(Capture {
         path: PathBuf::new(),
         remaining: u32::MAX,
-        // A zoom run's camera is the window's own, moved only by its wheel.
         pinned: schedule.zoom.is_none().then_some((pixels, options.camera)),
         exit: false,
         time: Some(0.0),
@@ -757,8 +664,6 @@ pub(crate) fn measure(
     ctx.set_theme(egui::Theme::Dark);
     viewer_foundation::profiling::cpu_clock_hz();
     drain(&state)?;
-    // Before the clock starts, the map's layers compose and upload their first picture at the
-    // run's first hour, so the run's first frame is the scene's first render.
     viewer.playhead = Some(Playhead { branch, hour: start, fraction: 0.0 });
     let warming = Instant::now();
     viewer.warming = true;
@@ -787,8 +692,6 @@ pub(crate) fn measure(
         report["memory"] = json!(monitor.finish().map(|memory| memory.working_set_peak));
         return Ok(report);
     }
-    // The counting mode's own device objects, made at its first counted frame from that frame's
-    // targets: the map makes them when it first draws into a view of this size.
     let mut pictures = None::<pictures::Pictures>;
     drop(cpu::scope("viewer", Some("other")));
     let before = cpu::snapshot();
@@ -814,16 +717,11 @@ pub(crate) fn measure(
         viewer.camera = Some(camera.placement());
         viewer.camera_manual = true;
     }
-    // Zoom in first; a burst that moved the camera no farther than the last reverses it.
     let mut zoom_in = true;
     let mut burst_height = None::<f32>;
     let center = egui::pos2(pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5);
     let mut paced_frames = Vec::new();
     let mut layered = Layered::default();
-    // The map's layers run on the playhead's clock, as the window's do through its anchors: held at
-    // a seek's hour until its reset is shown, and from that frame on at the run's speed.
-    // A stepped run plays at its own step, so a step ends on each frame's hour but after a block
-    // end, where the held frame is sought.
     if let Some(side) = &viewer.playhead_map {
         let rate = crate::playhead_host::settings().rate;
         match schedule.paced {
@@ -844,12 +742,9 @@ pub(crate) fn measure(
         let mut drawn = None::<i32>;
         let mut previous_start_us = None::<f64>;
         let mut reached_end = false;
-        // The seeks spread over the frames the run would take unsought, at least 15 frames apart.
         let seek_every = (f64::from(end - start) / speed * schedule.refresh_hz / f64::from(schedule.seeks + 1)).max(15.0) as u64;
         let t0 = Instant::now();
-        // The run's own directory: the frame's egui output takes the name `output` below.
         let saved_to = output;
-        // The frames `--png-frames` asked for, copied on the device as they were presented.
         let mut saved_frames: Vec<(u64, wgpu::Texture)> = Vec::new();
         for index in 0u64.. {
             let due_us = paced::due_us(index, schedule.refresh_hz);
@@ -865,9 +760,7 @@ pub(crate) fn measure(
             let frame_start = if index == 0 { t0 } else { Instant::now() };
             let start_us = frame_start.duration_since(t0).as_secs_f64() * 1e6;
             let interval_us = previous_start_us.replace(start_us).map(|before| start_us - before);
-            // What this loop does around the product's frame is the harness's own, not the frame's.
             let harness_cost = cpu::scope("frame.harness", Some("other"));
-            // The frame after the head reached the end seeks back, as the window seeks, and draws.
             if let Some(back) = schedule.seek_back
                 && sought_back.is_none()
                 && reached_end
@@ -876,7 +769,6 @@ pub(crate) fn measure(
                 layered.seek(index, back, start_us);
                 sought_back = Some(paced::seek_back_end(back, speed, SEEK_BACK_SECONDS, last));
             }
-            // Held (`--paused`), the hour stays and the run is `--hours` frames, the camera panning.
             let head = match &viewer.playhead_map {
                 _ if schedule.paused => f64::from(start),
                 Some(side) => f64::from(side.head(Instant::now())),
@@ -920,7 +812,6 @@ pub(crate) fn measure(
             });
             viewer.capture.as_mut().unwrap().time = Some((start_us / 1e6) as f32);
             if extras.main_hidden(index) {
-                // The map covered: not drawn, it lets its reader go; the other maps draw on.
                 viewer.close_playhead();
                 let extra = extras.frame(&document, None, index, crate::playhead_host::Head::Paced(hour));
                 frames.write(json!({"frame": index, "hour": hour, "head_hour": head, "covered": true, "extra": extra}))?;
@@ -935,7 +826,6 @@ pub(crate) fn measure(
             crate::perf_log::frame_start();
             let perf_frame = crate::perf_log::frame_id();
             drop(harness_cost);
-            // The product's frame alone: what work_us, thread_us and frame.product measure.
             let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
             let product_start = Instant::now();
             let product_cost = cpu::scope("frame.product", Some("other"));
@@ -955,11 +845,8 @@ pub(crate) fn measure(
             let other_cost = cpu::scope("frame.harness", Some("other"));
             let output = result.map_err(io::Error::other)?;
             let extra = extras.frame(&document, viewer.playhead_map.as_ref(), index, crate::playhead_host::Head::Paced(hour));
-            // Windowed, the frame goes out through the window's own swap chain, as a map's does:
-            // nothing drains the GPU, and the wait for a swap chain image is timed on its own.
             let acquire_us = match (&mut surface, &window) {
                 (Some(surface), Some(window)) => {
-                    // A window's own swap chain is the product's presentation, not the harness's.
                     let _present = cpu::scope("frame.present", Some("other"));
                     let acquire = lean::present(surface, window, &state, &viewer, &ctx, output, pixels)?.acquire;
                     Some(f64::from(acquire) * 1e6)
@@ -989,12 +876,6 @@ pub(crate) fn measure(
                 };
                 pictures.count(&state.device, &state.queue, targets, index);
             }
-            // The pixels of this display frame, as it was presented: the frames of one
-            // publication's interval are the only place a mover's motion between two of them can
-            // be seen. The frame pays a copy on the device and nothing else; reading the copies
-            // back and writing them is the run's own work, after its last frame, because a
-            // readback inside the frame stops it for about a second and the head, which follows
-            // the clock, then stands 1,400 game hours from the frame before it.
             if schedule.png_frames.is_some_and(|presented| presented.saves(index))
                 && let Some(targets) = viewer.scene.as_ref().and_then(viewer_world::map::scene::Scene::targets)
             {
@@ -1026,7 +907,6 @@ pub(crate) fn measure(
                     "Frame {index} drew nothing after hour {previous} was on screen"
                 )));
             }
-            // None of the overlay is on screen until its first layout: its hour is none until then.
             layered.overlay = viewer.overlay_hour().or(layered.overlay);
             let oldest = viewer.playhead_map.as_ref().and_then(|side| side.last_frame().oldest);
             let made = viewer.playhead_map.as_ref().map(|side| side.last_frame().made);
@@ -1048,8 +928,6 @@ pub(crate) fn measure(
             };
             drawn = now_drawn.or(drawn);
             let layers = viewer.playhead_map.as_ref().map(|side| {
-                // The record's own reads of the side, outside the frame's work: one look for all,
-                // and none at all while its thread prepares a step, which the record never holds.
                 let (models, meshes) = side
                     .try_with_side(|side| {
                         if index % 30 == 0 {
@@ -1059,8 +937,6 @@ pub(crate) fn measure(
                         (units.and_then(crate::layers::units::Units::take_model_counts), units.and_then(crate::layers::units::Units::take_mesh_counts))
                     })
                     .unwrap_or_default();
-                // The timed layers' installs, which the frame makes without the side: what each
-                // wrote this frame and the hour its picture stands at.
                 let phases = side.installed().find(|(name, ..)| *name == "political").map(|(_, _, wrote)| wrote.phases);
                 let installs: Vec<Value> = side
                     .installed()
@@ -1068,17 +944,12 @@ pub(crate) fn measure(
                     .collect();
                 layered.political = side.names().iter().position(|&name| name == "political");
                 let mut record = layered.frame(side.last_frame(), head, cycle_hz, (index, start_us + wall_us), side.entry().playhead().newest(), phases);
-                // Whether this display frame took the side at all, and what its thread was doing
-                // when it could not: a frame without the side installs nothing of its own hour.
                 record["side_missed"] = json!(side.products().missed);
                 record["installs"] = json!(installs);
-                // The playhead's own state, as last summed: steps kept, and how long its stepper sat behind the head.
                 let (kept, _, counters) = side.entry().playhead().held();
                 record["ring_steps"] = json!(kept.ring_steps);
                 record["room_held_ms"] = json!(counters.room_held_ns as f64 / 1e6);
                 record["join_held_ms"] = json!(counters.join_held_ns as f64 / 1e6);
-                // The land meshes' worker since the last frame: builds started, products taken, stacks chosen again, selections, camouflages and country contexts made, and its time.
-                // The models' worker (ships, raid units, convoys) since the last frame: jobs answered and its time.
                 if let Some(models) = models {
                     let parts: serde_json::Map<String, Value> = models.parts.iter().map(|&(name, ns)| (name.to_owned(), json!(ns / 1000))).collect();
                     record["unit_models"] = json!({"jobs": models.jobs, "busy_us": models.busy_ns / 1000, "parts_us": parts});
@@ -1092,9 +963,6 @@ pub(crate) fn measure(
             let counts = gpu_counts();
             let (scopes, scope_walls, scope_calls) = frame_scopes(&mut labels_before);
             let cycle_reads = cpu::cycle_reads() - std::mem::replace(&mut reads_before, cpu::cycle_reads());
-            // Per map-icon pool presented this frame: [presented, stood still, kept every window,
-            // windows laid out, windows kept]. And, per pool, why the frames that laid a window
-            // out again did so, by the first change met.
             let mut icon_pools = serde_json::Map::new();
             let mut icon_pools_why = serde_json::Map::new();
             for (name, counted, whys) in viewer_foundation::map::icon_windows::take_counts() {
@@ -1104,8 +972,6 @@ pub(crate) fn measure(
                 }
                 icon_pools.insert(name, json!(counted));
             }
-            // The overlay this frame: what asked it to lay out or draw again (asked.*), what it
-            // made (made.*), what it waited for or missed, and what it answered from what it kept.
             let overlay_redraws: serde_json::Map<String, Value> = viewer_foundation::map::redraws::take()
                 .into_iter()
                 .map(|(name, count)| (name.to_owned(), json!(count)))
@@ -1130,8 +996,6 @@ pub(crate) fn measure(
             }
             paced_frames.push(frame);
         }
-        // The run is over: the copies it kept are read back and written here, where no frame is
-        // waiting on them.
         for (index, kept) in saved_frames {
             crate::render::write_texture_png(&kept, &state.device, &state.queue, &saved_to.join(format!("frame-{index}.png")))?;
         }
@@ -1165,7 +1029,6 @@ pub(crate) fn measure(
         let process_before = process_cycles();
         let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
         let frame_start = Instant::now();
-        // Each frame is a window frame of the perf map log, when it is written.
         crate::perf_log::frame_start();
         let perf_frame = crate::perf_log::frame_id();
         let _other_cost = cpu::scope("frame.harness", Some("other"));
@@ -1220,7 +1083,6 @@ pub(crate) fn measure(
         frame_thread_cpu.extend(thread_us(thread_before));
         gpu.sample(&state);
         warning_frames += u32::from(!viewer.map_warnings.is_empty());
-        // The frame's own bookkeeping below is charged to no frame scope.
         drop(_other_cost);
         if let Some(side) = &viewer.playhead_map
             && side.last_frame().drawn != Some(hour)
@@ -1268,9 +1130,6 @@ pub(crate) fn measure(
     let mut report = crate::playback_cost::accounting(&before, &after, process_ns, cycle_ns, hours);
     report["schema"] = json!(1);
     report["pictures"] = json!(counted);
-    // What a world unit is worth in pixels at the run's camera, so a thing that moved so many map
-    // units a frame is read in pixels. The runs that count pictures hold their camera's height, so
-    // this is one pair of numbers for the run; a flight or a walk changes it frame by frame.
     if schedule.count_pictures.is_some() {
         let ground = [camera.center[0], 0.0, camera.center[1]];
         let along = |axis: usize, by: f32| {
@@ -1286,8 +1145,6 @@ pub(crate) fn measure(
             "scope": "Pixels a world unit at the camera's own centre on the ground plane, by the frame's own projection: a mover's glide in world units times this is what it moved on screen there. The view's edges differ under the game's pitched camera.",
         });
     }
-    // One read of a thread's cycle time, in wall nanoseconds: a frame's `cycle_reads` times this is
-    // what the accounting itself cost that frame.
     report["cycle_read_ns"] = after["cycleReadNs"].clone();
     report["model_build_mode"] = json!(if schedule.complete_models {
         "complete"
@@ -1350,16 +1207,11 @@ pub(crate) fn measure(
     report["presentation"] = json!({
         "surface": if schedule.windowed { json!("the window's own swap chain, present mode as the map's") } else { Value::Null },
         "vertical_sync": false,
-        // What the map asks its swap chain for, windowed: the product's own choice, so a run says
-        // what it presented through rather than what the harness believes about it.
         "present_mode": schedule.windowed.then(|| format!("{:?}", state.surface_config.present_mode)),
         "desired_maximum_frame_latency": schedule.windowed.then_some(state.surface_config.desired_maximum_frame_latency),
-        // The display attached, which a windowed run's presents are paced by; the harness's own
-        // --refresh-hz stands for the display in every other figure.
         "attached_display_hz": installed_content_settings::settings::display_refresh_hz(
             window.as_ref().map(|window| window.hwnd()),
         ),
-        // The app's frame rate limit (`--frame-limit`), which `refresh_hz` already stands held to.
         "frame_limit_hz": viewer_foundation::map::frame_limit::limit(),
         "scope": "The harness renders to offscreen textures with no surface, so no frame waits for vertical sync or a swap chain. gpu_wait_us is the harness's own drain after each submission, which a window does not pay: there the next frame's CPU work overlaps the GPU's, and a frame waits only when the GPU is a whole frame behind (the swap chain's queue is full). A frame's GPU work by pass is each frame's view record `gpu_passes` (microseconds, read back frames later: `frames_ago`), or `not_recorded` on an adapter without timestamps.",
     });
@@ -1405,20 +1257,15 @@ pub(crate) fn measure(
                 report["trains"] = crate::layers::trains::summary(side);
             });
             report["scope"] = layered.scope_summary(side.names());
-            // `BATTLE_PLAN_VIEWER_CHECK_INSTALL`: the installs that trust what their maker said changed,
-            // prepared whole beside it at a bounded rate, and the differences that were named.
             let (checked, differing) = viewer_foundation::install_check::counted();
             report["install_checks"] = json!({"checks": checked, "differing": differing, "on": viewer_foundation::install_check::on()});
             let (checked, differing, carried, longest) = viewer_foundation::map::frame_budget::check::counted();
             let (judged, refused) = viewer_foundation::map::publication_check::counted();
             report["publication_checks"] = json!({"checks": judged, "differing": refused, "on": viewer_foundation::map::publication_check::on()});
-            // `BATTLE_PLAN_VIEWER_CHECK_OVERLAY`: what the overlay's content gate looked at and compared.
-            // A run it never compared on is not a run it judged.
             let [looked, compared, nothing_new, art_moved, rows_missed, layers_moved, no_overlay] = crate::app::overlay_checks::counted();
             report["overlay_checks"] = json!({"looked": looked, "checks": compared, "not_compared": {"nothing_new": nothing_new,
                 "the_art_moved": art_moved, "the_rows_held_no_table_it_read": rows_missed,
                 "a_layers_product_moved": layers_moved, "no_overlay_yet": no_overlay}});
-            // `BATTLE_PLAN_VIEWER_CHECK_HOUR`: every timed layer shows its frame's own head hour.
             let (hours_judged, hours_differing) = viewer_foundation::map::hour_check::counted();
             report["hour_checks"] = json!({"checks": hours_judged, "differing": hours_differing, "on": viewer_foundation::map::hour_check::on()});
             report["budget_checks"] = json!({"checks": checked, "differing": differing, "frames_carrying": carried, "longest_carry_frames": longest,
@@ -1465,89 +1312,52 @@ pub(crate) fn measure(
     Ok(report)
 }
 
-/// The map's layers frame by frame in a paced run: each layer's apply, settle and upload, its own
-/// cycles, carried entities, and the content lag of what the layers show.
 #[derive(Default)]
 struct Layered {
-    /// Per frame after the first reset is shown: per layer its part, the lag in hours with every
-    /// layer counted, and the lag of the window clock's drawn hour alone.
     frames: Vec<(Vec<Part>, Option<f64>, Option<f64>)>,
-    /// The hour the overlay on screen stands at, as last known; none before its first layout.
     overlay: Option<i32>,
     mirror_ms: Vec<f64>,
-    /// The mirrors' apply by table index, summed over the frames of `mirror_ms`: wall nanoseconds
-    /// and the frame thread's own cycles.
     mirror_tables: Vec<(u64, u64)>,
-    /// The apply summed over the frames of `mirror_ms`, split by whether a drawn layer or a maker
-    /// reads the table.
     mirror_split: crate::playhead_host::mirror::Split,
-    /// Per frame of `mirror_ms`: the mirrors' apply in the thread's own milliseconds.
     mirror_cpu_ms: Vec<f64>,
-    /// Per frame: the build time of the steps it took, on the playhead's threads.
     step_ms: Vec<f64>,
     side_step_ms: Vec<f64>,
-    /// Per frame: the political upload's phases (naval, country fill, plans built, plans written).
     phases: Vec<[f64; 4]>,
-    /// The host's mirrors, layers and whole side, held bytes at their peaks.
     held_peak: [usize; 3],
-    /// Frames from the run's start until the first reset is swapped in, and those composing since.
     before_shown: u32,
-    /// Seeks while playing, each with the marks of its way to the screen.
     seeks: Vec<Sought>,
-    /// The political layer's place, which says when a seek's first content is on screen.
     political: Option<usize>,
-    /// Per frame: the head, the newest step built, the newest applied, the hour shown whole.
     trace: Vec<(f64, Option<i32>, Option<i32>, Option<i32>)>,
-    /// Per frame of `frames`: outside every seek's window (from the seek to its lag within a step).
     outside: Vec<bool>,
     composing: u32,
-    /// Per layer, over the frames drawn: entities settled; of those in frames that counted the
-    /// view, the entities and those in view; and the frames that settled any.
     scope: Vec<[u64; 5]>,
 }
 
-/// One layer's frame: apply, settle and upload, each in wall milliseconds and in the window
-/// thread's own milliseconds (none without a cycle rate), and what it carried.
 #[derive(Clone, Copy)]
 struct Part {
-    /// The hours its published product is behind the head.
     lag: Option<f64>,
     wall: [f64; 4],
     cpu: [Option<f64>; 4],
     upload_carried: bool,
-    /// GPU writes and their bytes in its upload.
     uploads: (u64, u64),
-    /// Of its upload's milliseconds, those inside the queue's writes and inside buffer and bind
-    /// group creation.
     inside: [f64; 2],
-    /// Fed the steps ahead, in a frame that applied a step: its product of the applied hour was
-    /// ready; and the hand-over's milliseconds on the frame thread.
     ready_at_hour: Option<bool>,
     ahead_ms: f64,
 }
 
 const SCOPES: [&str; 4] = ["apply", "settle", "stage", "upload"];
 
-/// A seek while playing: the frame that asked it, the hour, and the frames that mark its way to
-/// the screen, each with the milliseconds from the start of the asking frame to the mark frame's end.
 #[derive(Default)]
 struct Sought {
     frame: u64,
     hour: i32,
     asked_us: f64,
-    /// The host took the seek's reset step and began composing.
     held: Option<(u64, f64)>,
-    /// The compose came back and was swapped in (`frames_to_shown`).
     composed: Option<(u64, f64)>,
-    /// The political layer shows its picture made since the swap: the first content.
     first: Option<(u64, f64)>,
-    /// Every drawn layer does: all content.
     all: Option<(u64, f64)>,
-    /// The first frame after the swap whose lag was within a step.
     within: Option<u64>,
-    /// Composes a newer seek discarded meanwhile.
     superseded: u32,
-    /// Each layer's compose on the worker, from the swap, and what the playhead's seek took.
     compose_ns: Vec<u64>,
     seeking: Option<playhead::Seeking>,
 }
@@ -1559,13 +1369,10 @@ impl Sought {
 }
 
 impl Layered {
-    /// No seek is waiting for its picture or its lag.
     fn settled(&self) -> bool {
         self.seeks.last().is_none_or(|seek| seek.within.is_some())
     }
 
-    /// No seek is waiting for all its content: the next may be asked. The lag within a step is
-    /// not waited for (a worker layer a step behind keeps it at 25 hours in some stretches).
     fn ready_to_seek(&self) -> bool {
         self.seeks.last().is_none_or(|seek| seek.all.is_some())
     }
@@ -1574,14 +1381,12 @@ impl Layered {
         self.seeks.push(Sought { frame: index, hour, asked_us, ..Sought::default() });
     }
 
-    /// The mirrors' apply by table, dearest first: the mean a frame of `mirror_ms`.
     fn mirror_by_table(&self) -> Vec<Value> {
         let mut tables: Vec<(usize, u64)> = self.mirror_tables.iter().map(|&(ns, _)| ns).enumerate().filter(|(_, ns)| *ns > 0).collect();
         tables.sort_by_key(|&(_, ns)| std::cmp::Reverse(ns));
         tables.into_iter().map(|(table, ns)| json!({"table": format!("{:?}", replay_data::rows::TableId::ALL[table]), "mean_ms": ns as f64 / 1e6 / self.mirror_ms.len().max(1) as f64})).collect()
     }
 
-    /// The host's held bytes now, kept at their peaks.
     fn sample_held(&mut self, side: &crate::playhead_host::MapSide) {
         let held = side.held();
         let mirrors: usize = held.mirrors.iter().map(|(_, bytes)| bytes).sum::<usize>() + held.views.iter().map(|(_, bytes)| bytes).sum::<usize>();
@@ -1589,7 +1394,6 @@ impl Layered {
         self.held_peak = [self.held_peak[0].max(mirrors), self.held_peak[1].max(layers), self.held_peak[2].max(held.total())];
     }
 
-    /// One frame's record: frame `index`, which ended `end_us` after the run's start.
     fn frame(&mut self, frame: &crate::playhead_host::Frame, head: f64, hz: Option<f64>, (index, end_us): (u64, f64), newest: Option<i32>, phases: Option<[u64; 4]>) -> Value {
         if let Some(phases) = phases {
             self.phases.push(phases.map(|ns| ns as f64 / 1e6));
@@ -1712,8 +1516,6 @@ impl Layered {
         record
     }
 
-    /// Per layer: the entities its settles made, and the share of them the view showed (for sounds,
-    /// within hearing), from the frames that counted the view.
     fn scope_summary(&self, names: &[&str]) -> Value {
         let layers: Vec<Value> = names
             .iter()
@@ -1814,8 +1616,6 @@ impl Layered {
     }
 }
 
-/// Each registered layer's record in the paced summary (its apply, settle and upload a frame), by
-/// name.
 fn layer_costs(layers: &Value) -> std::collections::BTreeMap<String, Value> {
     layers["layers"].as_array().into_iter().flatten().filter_map(|layer| Some((layer["name"].as_str()?.to_owned(), layer.clone()))).collect()
 }
@@ -1825,8 +1625,6 @@ mod seek_record_tests {
     use super::Layered;
     use crate::playhead_host::{Frame, LayerFrame};
 
-    /// One frame of a political and a snow layer: whether the seek's reset was taken and its
-    /// compose swapped in, which layers show their picture made since the swap, and the hours.
     fn frame(sought: bool, swapped: bool, fresh: [bool; 2], drawn: i32) -> Frame {
         Frame {
             sought: sought.then(playhead::Seeking::default),
@@ -1838,10 +1636,6 @@ mod seek_record_tests {
         }
     }
 
-    /// A backward seek: the old picture's hour is past the hour sought, so no hour tells the marks
-    /// apart. The reset taken, the swap, the political layer's new picture and every layer's are
-    /// each marked once, at their frame, with the milliseconds since the frame that asked; the
-    /// next seek waits for all the content, not for the lag within a step.
     #[test]
     fn a_seek_record_marks_the_reset_held_the_compose_done_the_first_and_all_content() {
         let mut layered = Layered { political: Some(0), ..Layered::default() };

@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-// The acceptance suite lost its first click on a speed preset twice in six runs: reopened, the menu was open with its
-// kept presets but hidden until React repositioned it, so a click went through it to the page and dismissed it.
 test('the speed menu reopened takes a click at once: its presets are shown where they are the moment it opens', async () => {
   await withNativePage('playback-speed', '/ui/src/components/PlaybackSpeed.dom.fixture.tsx', page => page.stage('playback speed', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.playbackSpeed.${expression}`);

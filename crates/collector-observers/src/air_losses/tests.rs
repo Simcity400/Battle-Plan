@@ -60,7 +60,6 @@ fn assembly_forwards_seven_slots_and_native_return() {
         unsafe { entry(11, 22, 33, 44, 55, 66, 77) },
         0xfeed_0123_abcd_4567
     );
-    // Both halves are counted; the stub runs the original between them.
     let after = crate::hook_timing::counts(family);
     assert!(after.calls > timed.calls && after.returns > timed.returns);
     assert_eq!(*FORWARDED.lock().unwrap(), [11, 22, 33, 44, 55, 66, 77]);
@@ -78,15 +77,9 @@ unsafe extern "system" fn passed_through(
     g: usize,
 ) -> usize {
     *PASSED.lock().unwrap() = [a, b, c, d, e, f, g];
-    // No observer flight: the writer runs with no collector frame below it.
     assert_eq!(active(), 0);
     0x0bad_cafe_f00d_1234
 }
-/// The hooked CALLs' target sends the writer's no-write calls (a null
-/// region, or a credited loss of cause 3, by the low byte and dword the
-/// observer and the native writer test) straight to it, with every argument
-/// and its return intact, counting them apart and entering neither observer
-/// half; every other call reaches the observer as before.
 #[test]
 fn the_dispatch_passes_the_writers_no_write_calls_straight_through() {
     let _owner = ObservationOwner::new();
@@ -119,8 +112,6 @@ fn the_dispatch_passes_the_writers_no_write_calls_straight_through() {
         assert_eq!((after.calls, after.returns), (timed.calls, timed.returns));
         assert_eq!(LEDGER.calls.load(Ordering::Relaxed), calls);
     }
-    // Any other call is the observer's: own losses of every cause, credited
-    // losses of other causes, with a region.
     ORIGINAL.store(forwarding as *const () as usize, Ordering::Release);
     for arguments in [[11, 22, 33, 0, 55, 66, 3], [11, 22, 33, 1, 55, 66, 2]] {
         let fast = FAST_ZERO_WRITES.load(Ordering::Relaxed);
@@ -454,7 +445,6 @@ fn production_observers_keep_family_cause_opponent_and_refuse_saturation() {
     world.invoke(0, 1);
     world.invoke(1, 6);
     world.invoke(1, 3);
-    // Generic capture fixtures on another test thread must not consume or poison us.
     std::thread::spawn(|| {
         boundary(clock(49));
         lost_drain();
@@ -485,9 +475,6 @@ fn production_observers_keep_family_cause_opponent_and_refuse_saturation() {
     assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 1);
     assert_eq!(active(), 0);
 }
-/// The gathered operands publish the rows the serial reads publish, and a
-/// withheld gather (here forced; live a fault, a refusal or a new history)
-/// takes the serial reads once and counts it.
 #[test]
 fn gathered_and_serial_operands_publish_identical_rows() {
     let _owner = ObservationOwner::new();
@@ -524,7 +511,6 @@ fn gathered_and_serial_operands_publish_identical_rows() {
         runs.push(rows);
     }
     assert_eq!(runs[0], runs[1]);
-    // A refusal the serial reads make withholds the gather and still refuses.
     setup(&world);
     let fallbacks = SERIAL_FALLBACKS.load(Ordering::Relaxed);
     world.owner(5001);
@@ -540,8 +526,6 @@ fn hook_cost_air_losses() {
     let _owner = ObservationOwner::new();
     let mut world = World::new(COUNTRIES);
     setup(&world);
-    // Room for the eight timed and warm-up rounds' events, installed at the
-    // next drain.
     LEDGER.prepare(8 * COUNTRIES);
     boundary(clock(49));
     assert_eq!(drain(&mut Vec::new()), Ok(0));
@@ -570,7 +554,6 @@ fn hook_cost_air_losses() {
             });
         }
     });
-    // The guarded native reads alone: family, before and after.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let (base, game) = (world.base(), world.pointer(World::GAME));
     let reads = crate::test_support::per_call_ns(COUNTRIES, || {
@@ -638,8 +621,6 @@ struct Context(windows_sys::Win32::System::Diagnostics::Debug::CONTEXT);
 
 #[test]
 fn system_unwind_crosses_assembly_and_patched_native_caller_frames() {
-    // Publishing the patch suspends every thread; other patching tests take
-    // the same lock.
     let _family = crate::hook::FAMILY_TEST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

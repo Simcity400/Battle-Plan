@@ -1,23 +1,14 @@
-//! A marked design's read witness: every span its last complete walk read, with the bytes or
-//! the failure each returned. The walk is a function of those reads alone: each address it
-//! reads comes from a constant site or from bytes an earlier read returned. So when every span
-//! reads back the same, in order, the walk would read the same spans and return the same rows,
-//! pointers and layout included, and the design needs no walk, decode or effect.
 use super::*;
 use std::cell::{Cell, RefCell};
 
-/// One design's witness, keyed by its pointer in [`WITNESSES`].
 pub(super) struct Witness {
     pub id: u64,
-    /// Address, length and whether the read succeeded; a successful read's bytes follow in order.
     spans: Vec<(usize, u32, bool)>,
     bytes: Vec<u8>,
     longest: usize,
-    /// The design's own team and its liveness, which its read re-asserts every hour.
     pub team: (u64, bool),
 }
 impl Witness {
-    /// Whether every span reads back as recorded.
     pub(super) fn unchanged(&self, memory: &impl Memory, scratch: &mut Vec<u8>) -> bool {
         if scratch.len() < self.longest {
             let short = self.longest - scratch.len();
@@ -41,22 +32,17 @@ impl Witness {
         }
         at == self.bytes.len()
     }
-    /// The span and byte counts, to presize the next recording of this design.
     pub(super) fn size(&self) -> (usize, usize) {
         (self.spans.len(), self.bytes.len())
     }
 }
 
-/// The marked designs' witnesses; only the drain and its lanes touch them.
 static WITNESSES: Mutex<Option<HashMap<usize, Witness>>> = Mutex::new(None);
 fn witnesses() -> std::sync::MutexGuard<'static, Option<HashMap<usize, Witness>>> {
     WITNESSES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-/// The witnesses of `watches` that name the same design, moved out for the lanes; none for a
-/// receiver retired this hour (`removed`), whose held state its tombstone drops. Every watched
-/// receiver's witness leaves the map, so only this boundary's walks can put one back.
 pub(super) fn take(watches: &[Watch], removed: &[usize]) -> Vec<Option<Witness>> {
     let mut held = witnesses();
     let mut out = Vec::new();
@@ -73,7 +59,6 @@ pub(super) fn take(watches: &[Watch], removed: &[usize]) -> Vec<Option<Witness>>
     }
     out
 }
-/// Keeps each witness as its pointer's; a refused allocation only loses the shortcut.
 pub(super) fn keep_all(kept: Vec<(usize, Witness)>) {
     let mut held = witnesses();
     let held = held.get_or_insert_with(HashMap::new);
@@ -86,12 +71,10 @@ pub(super) fn remove(pointer: usize) {
         held.remove(&pointer);
     }
 }
-/// Drops every witness: the held state they prove may be replaced without their designs' walks.
 pub(super) fn release() {
     drop(witnesses().take());
 }
 
-/// Records every read a walk makes through it.
 pub(super) struct Recording<'a, M> {
     pub source: &'a M,
     spans: RefCell<Vec<(usize, u32, bool)>>,
@@ -99,7 +82,6 @@ pub(super) struct Recording<'a, M> {
     refused: Cell<bool>,
 }
 impl<'a, M> Recording<'a, M> {
-    /// Presized to `(spans, bytes)`, the design's last witness, when it has one.
     pub(super) fn new(source: &'a M, (spans, bytes): (usize, usize)) -> Self {
         let (mut span_storage, mut byte_storage) = (Vec::new(), Vec::new());
         let refused = engine_allocation::reserve(&mut span_storage, spans).is_err()
@@ -111,7 +93,6 @@ impl<'a, M> Recording<'a, M> {
             refused: Cell::new(refused),
         }
     }
-    /// The walk's witness; none when a span could not be held or one is too long to name.
     pub(super) fn witness(self, id: u64, team: (u64, bool)) -> Option<Witness> {
         let spans = self.spans.into_inner();
         let longest = spans.iter().map(|&(_, len, _)| len as usize).max().unwrap_or(0);
@@ -131,7 +112,6 @@ impl<M: Memory> Memory for Recording<'_, M> {
             return ok;
         }
         let (mut spans, mut bytes) = (self.spans.borrow_mut(), self.bytes.borrow_mut());
-        // Storage doubles as it fills, so a long walk reserves a handful of times.
         let held = u32::try_from(output.len()).ok().and_then(|len| {
             if spans.len() == spans.capacity() {
                 let more = spans.capacity().max(64);
@@ -170,7 +150,6 @@ mod tests {
             }
         }
     }
-    /// A walk-like read: a pointer at 0, then 4 bytes where it points, then an unreadable span.
     fn walk(memory: &impl Memory) {
         let mut pointer = [0; 1];
         assert!(memory.copy(0, &mut pointer));
@@ -190,16 +169,13 @@ mod tests {
         assert_eq!((held.id, held.team, held.size()), (7, (3, true), (3, 5)));
         let mut scratch = Vec::new();
         assert!(held.unchanged(&world, &mut scratch));
-        // A field byte the walk read.
         world.0.borrow_mut()[6] = 9;
         assert!(!held.unchanged(&world, &mut scratch));
         world.0.borrow_mut()[6] = 3;
         assert!(held.unchanged(&world, &mut scratch));
-        // A pointer the walk followed: the layout moved, so its first read differs.
         world.0.borrow_mut()[0] = 3;
         assert!(!held.unchanged(&world, &mut scratch));
         world.0.borrow_mut()[0] = 4;
-        // A read that failed now succeeds.
         world.0.borrow_mut().resize(1_002, 0);
         assert!(!held.unchanged(&world, &mut scratch));
     }

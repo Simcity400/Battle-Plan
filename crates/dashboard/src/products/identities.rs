@@ -1,6 +1,3 @@
-//! `country-identities`: every tag's holders over a timeline, from the one identity table
-//! (`TagHolders`) by the one rule ([`dashboard_query::identity`]). The dashboard's country index
-//! is built from it; every per-country product reads the same holders.
 
 use super::{BranchParams, LoadContext, Product};
 use crate::Source;
@@ -12,7 +9,6 @@ use ts_rs::TS;
 
 pub struct CountryIdentities;
 
-/// A stretch of hours one country held a tag.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +27,6 @@ pub struct IdentitySpan {
     pub last_hour: i32,
 }
 
-/// One tag's holders, and the hours its countries were there but no link resolved them.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -46,9 +41,9 @@ pub struct TagIdentities {
 #[serde(rename_all = "camelCase")]
 pub struct CountryIdentitiesReply {
     pub branch_id: String,
-    /// By tag.
+    #[doc = " By tag."]
     pub countries: Vec<TagIdentities>,
-    /// Hours the identity table was not available: no tag's holder is known there.
+    #[doc = " Hours the identity table was not available: no tag's holder is known there."]
     pub unknown: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
@@ -78,7 +73,6 @@ impl Product for CountryIdentities {
     }
 }
 
-/// The reply of `holders`.
 pub fn reply(branch_id: &str, holders: &dashboard_query::identity::Holders) -> CountryIdentitiesReply {
     let countries = holders
         .tags

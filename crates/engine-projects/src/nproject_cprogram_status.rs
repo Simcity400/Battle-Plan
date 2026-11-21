@@ -1,29 +1,16 @@
-//! Country-owned project-program status. Each country constructs one status;
-//! the described fields remain within its allocation.
 
 use crate::{Memory, ccountry, cpdx_array::Array, read};
 use engine_sites::Rva;
 
-/// Program-status primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_e0d8);
-/// Program-status secondary vtable.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029e_e0f8);
-/// Program-status secondary-vtable pointer.
 pub const SECONDARY_VTABLE: usize = 0x08;
-/// Program-status allocation size.
 pub const SIZE: usize = 0xa0;
-/// Program-status u32 owner country link.
 pub const OWNER: usize = 0x10;
-/// Project-pool pointer.
 pub const PROJECT_POOL: usize = 0x18;
-/// Program pointer array.
 pub const PROGRAMS: usize = 0x20;
-/// Inline breakthrough-progress object.
 pub const BREAKTHROUGH: usize = 0x50;
 
-/// Every country owns a status. Null denotes failed allocation or an
-/// unavailable root; it cannot certify an empty collection. Serialization and
-/// daily updates require the status, so a null root remains a country failure.
 pub fn from_country(
     memory: &impl Memory,
     base: usize,

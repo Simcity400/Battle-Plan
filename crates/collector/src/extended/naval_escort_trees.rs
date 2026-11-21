@@ -1,5 +1,3 @@
-//! Demand-only escort sources inside the existing certified country slice.
-//! Arenas are shared by selected countries and retained between passes.
 use engine_executable::modifier_keys;
 use engine_native::{Memory, ccountry};
 use engine_naval_history::naval_modifier_trees as native;
@@ -34,8 +32,6 @@ impl Trees {
             + self.text.capacity()
             + self.stack.capacity() * size_of::<native::Frame>()
     }
-    /// Called only for countries selected by the family's first/change certificate.
-    /// Never falls back to an uncertified hourly tree read.
     pub(crate) fn read(
         &mut self,
         memory: &impl Memory,

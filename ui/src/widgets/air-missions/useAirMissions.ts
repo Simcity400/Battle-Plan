@@ -10,12 +10,8 @@ import { choicesAt, regionLabel, validateAirMissions } from './airMissionsData';
 import type { AirMissionsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 
-/** What a render shows: the regions, the missions each records, their names, the theatres. The counts are live cells
- * and the read hour moves with them: neither is structure. */
 const structure = (reply: AirMissionsReply) => JSON.stringify([reply.missions, reply.regions, reply.theatres, reply.theatresMissing, reply.missing, reply.warnings]);
 
-/** The country's missions at the widget's hour: followed at the head as a panel, asked for a pinned hour; the counts
- * come from `live` either way. */
 export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -25,7 +21,6 @@ export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, activ
   return { track, tag, options, ...product };
 }
 
-/** Missions, regions and theatres at the hour shown, as the recording names them, and the sortable columns. */
 export function useAirMissionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data, track, options } = useAirMissions(widget, runtime, true);
   const missions = data?.missions ?? [];

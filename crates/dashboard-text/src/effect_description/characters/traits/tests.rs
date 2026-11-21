@@ -173,7 +173,6 @@ fn assert_render(body: &str, scopes: &mut EventScopes, expected: &str) {
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);
 }
 
-// A block selects a country trait for the current character.
 #[test]
 fn add_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -185,7 +184,6 @@ fn add_trait() {
     );
 }
 
-// Remove a trait selected by block.
 #[test]
 fn remove_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -197,7 +195,6 @@ fn remove_trait() {
     );
 }
 
-// A scalar country trait uses the ruling leader.
 #[test]
 fn add_country_leader_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -209,7 +206,6 @@ fn add_country_leader_trait() {
     );
 }
 
-// A scalar country trait uses the character leader.
 #[test]
 fn remove_country_leader_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -221,7 +217,6 @@ fn remove_country_leader_trait() {
     );
 }
 
-// Untimed scalar add/remove effects share viewing-country trait names and raw modifiers.
 #[test]
 fn scalar_unit_leader_traits_use_viewing_country_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -243,8 +238,6 @@ fn scalar_unit_leader_traits_use_viewing_country_name() {
     }
 }
 
-// Untimed effects read a scalar; only the timed reader
-// consumes a trait/days block.
 #[test]
 fn untimed_unit_traits_do_not_read_timed_own_fields() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -258,7 +251,6 @@ fn untimed_unit_traits_do_not_read_timed_own_fields() {
     }
 }
 
-// Replace a ruling leader trait by removing and adding definitions.
 #[test]
 fn swap_ruler_traits() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -270,7 +262,6 @@ fn swap_ruler_traits() {
     );
 }
 
-// Replace a character leader trait with raw wrapper text.
 #[test]
 fn swap_country_leader_traits() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -282,7 +273,6 @@ fn swap_country_leader_traits() {
     );
 }
 
-// The timed block accepts an integer with leading zeroes.
 #[test]
 fn add_timed_unit_leader_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -294,7 +284,6 @@ fn add_timed_unit_leader_trait() {
     );
 }
 
-// A list filters out already held traits before selecting.
 #[test]
 fn add_random_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -306,7 +295,6 @@ fn add_random_trait() {
     );
 }
 
-// Half-way fixed5 values round away from zero.
 #[test]
 fn add_max_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -403,7 +391,6 @@ fn country_helper_equipment_uses_stat_labels_and_polarity() {
 fn targeted_trait_uses_country_prefix_and_default_mask() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Store the authored flag marker as control byte 0x12.
     assert_render(
         "add_country_leader_trait=syn_targeted",
         &mut character(),
@@ -411,8 +398,6 @@ fn targeted_trait_uses_country_prefix_and_default_mask() {
     );
 }
 
-// Use the caller separator for numeric rows and successive targets.
-// Resolve ROOT in a fresh empty scope rather than the caller scope.
 #[test]
 fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -447,8 +432,6 @@ fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
     )]));
 }
 
-// Unit/country blocks use all 32 category bits, while targeted blocks
-// keep the formatter's 24-bit default mask.
 #[test]
 fn trait_masks_keep_high_categories_only_in_primary_blocks() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -645,8 +628,6 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
             "common/unit_leader/test.txt",
             "leader_traits={syn_conditional={modifier={syn_modifier={}}}}",
         ),
-        // Try terrain before the modifier fallback;
-        // the fixture must supply that first catalogue.
         ("common/terrain/test.txt", "categories={syn_plain={}}"),
     ]);
     catalogue

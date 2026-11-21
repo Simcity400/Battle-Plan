@@ -122,7 +122,6 @@ fn forward_war_self_check_keeps_raw_retirement_and_rejects_impossible_null() {
             "{war:?}"
         );
         assert!(limits(&report, "pointed raw retired byte"));
-        // Even corrupt war does not suppress the independently known MIL field.
         assert!(limits(&report, "exact eight-byte pointer presence"));
         assert_eq!(report.scalar_checks, 0);
     }
@@ -168,8 +167,6 @@ fn forward_raw_targets_and_parties_remain_native_witnesses_without_link_coercion
             }),
             ..null_packet()
         })));
-        // This structural oracle does not resolve even positive target aliases.
-        // Native target/link equality still needs the explicit matched witness.
         *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
             reason: "target alias witness intentionally absent".into(),
         };

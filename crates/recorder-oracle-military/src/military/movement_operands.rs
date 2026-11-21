@@ -1,7 +1,3 @@
-//! The land movement speed's runtime operand tables. Each holds runtime
-//! accumulator entries, predicates or getter results the save omits, so the
-//! oracle checks the rows' own contract (key order, the recorded branch) and
-//! names the values a paused-memory comparison must certify.
 use std::io;
 
 use replay_data::rows::StateMovementTerms;
@@ -86,8 +82,6 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) {
     });
 }
 
-/// The state term rows are in key order and each read's branch names one of
-/// the three controller relations.
 fn state_terms(frame: &DecodedFrame) -> io::Result<usize> {
     let rows = frame.complete::<tables::MovementStateTerms>()?;
     in_key_order(
@@ -155,8 +149,6 @@ mod tests {
             .cloned()
     }
 
-    /// Every table refuses rows out of key order and names its values as runtime
-    /// operands the save omits.
     #[test]
     fn movement_operand_tables_check_key_order_and_name_their_runtime_values() {
         let (mut frame, ..) = crate::fixtures::fixture();
@@ -266,7 +258,6 @@ mod tests {
             let reason = failure(&frame, table).unwrap_or_default();
             assert!(reason.contains("key order"), "{table:?}: {reason}");
         }
-        // A branch outside the three controller relations is malformed.
         let mut bad = frame.clone();
         put(
             &mut bad,

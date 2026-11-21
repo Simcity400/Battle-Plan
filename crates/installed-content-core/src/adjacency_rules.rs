@@ -1,16 +1,3 @@
-//! Rules from the `adjacency_rules` file named by `map/default.map`.
-//!
-//! Each verdict (contested, enemy, friend, neutral) has four permission bits,
-//! all initially set and cleared or set one key at a time: army 1, navy 2,
-//! submarine 4, trade 8. Adjacencies name a rule; the first of that name answers.
-//!
-//! A rule's `icon` province and `offset` place its map icon ([`IconPlacement`]); they are read
-//! apart from the permissions, so a rule refused for another field still keeps its icon.
-//!
-//! Keys dispatch as the game's lexer keywords: bare keys in any ASCII case, never quoted
-//! ones. Where the tree cannot follow the game's token-by-token reading (a script
-//! variable, or a field whose value has another shape than its reader takes), the
-//! whole file is refused by name, since the game's reading of every later rule changes.
 
 use std::io;
 
@@ -22,7 +9,6 @@ use crate::{
     triggers::{self, Triggers},
 };
 
-/// A verdict's index into [`AdjacencyRule::permissions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Contested = 0,
@@ -36,8 +22,6 @@ pub const NAVY: u8 = 2;
 pub const SUBMARINE: u8 = 4;
 pub const TRADE: u8 = 8;
 
-/// Where a rule's map icon stands: the `icon` province's position plus the authored 3-D
-/// `offset` (zero when the rule names none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IconPlacement {
     pub province: u32,
@@ -46,38 +30,25 @@ pub struct IconPlacement {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdjacencyRule {
-    /// The name as text. A name whose bytes are not UTF-8 is held escaped, and its
-    /// rule refused.
     pub name: String,
-    /// The stored name bytes adjacency rows are matched against.
     pub(crate) identity: Vec<u8>,
-    /// Permission bits by [`Verdict`].
     pub permissions: [u8; 4],
     pub required_provinces: Vec<u32>,
-    /// A custom-tooltip AND block: its `tooltip` and `not_tooltip` are not triggers.
     pub is_disabled: Triggers,
-    /// The key the game localises for why the rule is disabled: `not_tooltip`, else `tooltip`
-    /// with `_NOT` appended, else empty; or why it cannot be read.
     pub disabled_reason: Result<Vec<u8>, String>,
     pub is_enemy: Triggers,
     pub is_friend: Triggers,
     pub is_neutral: Triggers,
-    /// Why this rule is refused: a field the port cannot read. A crossing
-    /// that names it is then unknown, never guessed.
     pub unsupported: Option<String>,
-    /// The rule's map icon: `None` when it names no `icon` province, or why its `icon` or
-    /// `offset` cannot be read.
     pub icon: Result<Option<IconPlacement>, String>,
 }
 
 impl AdjacencyRule {
-    /// A disabled rule answers no permission at all.
     pub fn permits(&self, verdict: Option<Verdict>, bit: u8) -> bool {
         verdict.is_some_and(|verdict| self.permissions[verdict as usize] & bit != 0)
     }
 }
 
-/// The value of the last field that is the keyword `key`.
 fn last<'a>(items: &'a [Item], key: &str) -> Option<&'a Value> {
     items
         .iter()
@@ -94,8 +65,6 @@ fn permissions(value: &Value, what: &str) -> io::Result<u8> {
             Some(b"navy") => NAVY,
             Some(b"submarine") => SUBMARINE,
             Some(b"trade") => TRADE,
-            // The game reports an unknown key and goes on, keeping the flag its
-            // value read for the next entry; this reader refuses the rule.
             _ => {
                 return Err(invalid(format!(
                     "{what} has unknown permission {}",
@@ -112,15 +81,11 @@ fn permissions(value: &Value, what: &str) -> io::Result<u8> {
     Ok(bits)
 }
 
-/// A trigger field's body. The tree read cannot follow the game's reading of
-/// a value that opens no block, so the rule is refused by name.
 fn trigger(value: &Value, what: &str) -> io::Result<Triggers> {
     triggers::body(value).ok_or_else(|| invalid(format!("{what} is not a block")))
 }
 
-/// One rule; a field it cannot read refuses the rule, not the file.
 fn rule(items: &[Item]) -> AdjacencyRule {
-    // The name the game stores, through its first NUL.
     let identity = last(items, "name")
         .and_then(Value::read_string)
         .unwrap_or_default()
@@ -159,8 +124,6 @@ fn rule(items: &[Item]) -> AdjacencyRule {
     rule
 }
 
-/// The rule's `icon` province and `offset`, each the last assignment of its key. The
-/// province is a signed integer scan; the offset is three numbers.
 fn icon(items: &[Item], name: &str) -> io::Result<Option<IconPlacement>> {
     let what = |key: &str| format!("adjacency_rule {name:?} {key}");
     let Some(province) = last(items, "icon") else {
@@ -193,8 +156,6 @@ fn icon(items: &[Item], name: &str) -> io::Result<Option<IconPlacement>> {
     Ok(Some(IconPlacement { province, offset }))
 }
 
-/// The permissions, provinces and triggers. `name`, `icon` and `offset` are read
-/// apart ([`rule`], [`icon`]); the game reports any other key and skips it.
 fn read_rule(items: &[Item], name: &str) -> io::Result<AdjacencyRule> {
     let mut rule = AdjacencyRule {
         name: name.to_owned(),
@@ -237,8 +198,6 @@ fn read_rule(items: &[Item], name: &str) -> io::Result<AdjacencyRule> {
     Ok(rule)
 }
 
-/// The failure key of an `is_disabled` block: its last `not_tooltip`, else its last `tooltip`
-/// with `_NOT` appended when that is not empty. A bound localisation with arguments is refused.
 fn disabled_reason(items: &[Item], what: &str) -> Result<Vec<u8>, String> {
     let key = |name: &str| -> Result<Option<Vec<u8>>, String> {
         let Some(value) = last(items, name) else {
@@ -261,8 +220,6 @@ fn disabled_reason(items: &[Item], what: &str) -> Result<Vec<u8>, String> {
     })
 }
 
-/// The first `@` variable a definition or unquoted value names, at any depth: the
-/// game replays them while reading, which the tree does not.
 fn variable(items: &[Item]) -> Option<&[u8]> {
     items.iter().find_map(|item| {
         if let Some(key) = item.key.as_deref()
@@ -280,9 +237,6 @@ fn variable(items: &[Item]) -> Option<&[u8]> {
     })
 }
 
-/// Why the game's reading of a rule's fields leaves the tree: a field whose value has
-/// another shape than its reader takes reads the following tokens out of step. Keys
-/// the game reports are skipped whole and cannot.
 fn out_of_step(items: &[Item]) -> Option<String> {
     items.iter().find_map(|item| {
         let Some(key) = item.key.as_deref() else {
@@ -317,9 +271,6 @@ fn out_of_step(items: &[Item]) -> Option<String> {
     })
 }
 
-/// The file loop: an `adjacency_rule` keyword reads a rule. Any other key has only its
-/// value consumed, so a block's fields are read as the loop's own and its `}` ends
-/// the loop.
 fn read_loop(items: &[Item], rules: &mut Vec<AdjacencyRule>) -> io::Result<()> {
     for item in items {
         if item.key.is_none() || matches!(item.value, Value::Tagged { .. }) {
@@ -350,9 +301,6 @@ fn read_loop(items: &[Item], rules: &mut Vec<AdjacencyRule>) -> io::Result<()> {
     Ok(())
 }
 
-/// Every `adjacency_rule` in file order. A rule the port cannot read is kept
-/// refused ([`AdjacencyRule::unsupported`]); a file whose reading the port cannot
-/// follow is refused.
 pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
     let document = parser::parse(input).map_err(|error| invalid(error.to_string()))?;
     if let Some(variable) = variable(&document.items) {
@@ -366,11 +314,6 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
     Ok(rules)
 }
 
-/// The `map/` file `default.map` names under `key` (`adjacencies` or
-/// `adjacency_rules`). Both paths start empty and are set to `map/` plus
-/// the field's value. An empty path opens nothing, so the game loads no
-/// straits or rules. That changes every crossing, so a map without the key
-/// is refused by name rather than read as empty.
 pub fn map_file(map: &DefaultMap, key: &str) -> io::Result<String> {
     map.file(key).map_err(|_| {
         invalid(format!(
@@ -379,12 +322,10 @@ pub fn map_file(map: &DefaultMap, key: &str) -> io::Result<String> {
     })
 }
 
-/// The rules in file order.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AdjacencyRule>> {
     read_map(layers, &crate::terrain::read_default_map(layers)?)
 }
 
-/// The rules of an already read `default.map`.
 pub fn read_map(layers: &ResolvedLayers, map: &DefaultMap) -> io::Result<Vec<AdjacencyRule>> {
     let path = map_file(map, "adjacency_rules")?;
     parse(
@@ -394,7 +335,6 @@ pub fn read_map(layers: &ResolvedLayers, map: &DefaultMap) -> io::Result<Vec<Adj
     )
 }
 
-/// The rule an adjacency names: the first of that name.
 pub fn find<'a>(rules: &'a [AdjacencyRule], name: &str) -> Option<&'a AdjacencyRule> {
     rules.iter().find(|rule| rule.name == name)
 }
@@ -431,7 +371,6 @@ mod tests {
         };
         let named = reason("tooltip = a not_tooltip = b always = yes");
         assert_eq!(named.disabled_reason.as_deref(), Ok(&b"b"[..]));
-        // Neither key is a trigger.
         assert_eq!(named.is_disabled.len(), 1);
         assert_eq!(reason("always = yes").disabled_reason.as_deref(), Ok(&b""[..]));
         assert!(reason("tooltip = { localization_key = a } always = yes").disabled_reason.is_err());
@@ -464,7 +403,6 @@ mod tests {
                 offset: [-31.0, 0.0, -2.5]
             }))
         );
-        // The permissions are refused; the icon is not.
         assert!(rules[1].unsupported.is_some());
         assert_eq!(
             rules[1].icon,
@@ -502,7 +440,6 @@ mod tests {
         assert_eq!(rules[1].permissions[Verdict::Friend as usize], 0x0e);
     }
 
-    /// Keys dispatch as lexer keywords: in any ASCII case, never quoted.
     #[test]
     fn rule_keys_dispatch_as_case_folded_keywords() {
         let rules = parse(
@@ -514,14 +451,11 @@ mod tests {
         assert_eq!(rules[0].name, "canal");
         assert_eq!(rules[0].unsupported, None);
         assert_eq!(rules[0].permissions, [0x0d, 0x0e, 0x0f, 0x0f]);
-        // A quoted permission key is no keyword; the rule is refused rather than guessed.
         let quoted = parse(br#"adjacency_rule = { name = q enemy = { "army" = no } }"#).unwrap();
         let refused = quoted[0].unsupported.as_deref().unwrap();
         assert!(refused.contains("unknown permission"), "{refused}");
     }
 
-    /// The file loop consumes only another key's value: a block's fields become the
-    /// loop's own and its `}` ends the file.
     #[test]
     fn a_block_under_another_key_is_read_as_the_file_loop() {
         let rules =
@@ -531,7 +465,6 @@ mod tests {
         assert_eq!(names, ["inner"]);
     }
 
-    /// Where the game's reading leaves the tree, the file is refused by name.
     #[test]
     fn readings_the_tree_cannot_follow_refuse_the_file() {
         for (text, why) in [

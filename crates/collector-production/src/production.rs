@@ -1,5 +1,3 @@
-//! Production/equipment acquisition. Only construction/growth and conversion
-//! allocate; worker-owned variants grow during their original acquisition.
 
 use crate::{
     clock::qpc,
@@ -57,7 +55,6 @@ pub const TABLES: [TableId; N] = [
     TableId::DesignOrganisationLiveness,
 ];
 
-/// Borrowed current census owned by shared acquisition, in native source order.
 pub struct Sources<'a, T> {
     pub rows: &'a [T],
     pub outcome: Outcome,
@@ -81,9 +78,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Advisory attach/refresh demand includes the embedded pool, army-owned
-    /// requests and every delivery, including groups absent from the active
-    /// country registry.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -197,7 +191,6 @@ impl Capacities {
     }
 }
 
-/// Variant leaves loaned to the worker-only acquisition job.
 pub struct Variants {
     baseline_admitted: bool,
     nested_bytes: usize,
@@ -400,7 +393,6 @@ impl Variants {
         )
     }
 
-    /// `mark` receives each serial phase after the census: its begin and end ticks.
     #[allow(
         clippy::too_many_arguments,
         reason = "the capture context, its four dispatches and the phase marks"
@@ -429,9 +421,6 @@ impl Variants {
             return [0; N];
         }
         self.liveness = design_changes::liveness::Observation::refused();
-        // A failed recovery consumes its immediate read request. The next
-        // ordinary daily visit still rebuilds its missing proof, while an
-        // admitted daily visit preserves every certified dependency.
         let forced = full;
         let full = full || (design_changes::enabled() && design_changes::needs_baseline());
         design_changes::begin_read();
@@ -511,9 +500,6 @@ impl Variants {
             }
             mark(VariantPhase::Setup, prepared, qpc());
         } else if full {
-            // A failed recovery can leave shared forwarding withdrawn during
-            // the following native interval. Its old object proofs cannot
-            // survive until a later scheduled retry.
             design_changes::refuse_census();
         }
         ticks
@@ -523,10 +509,6 @@ impl Variants {
         self.canonicalize_definitions();
     }
 
-    /// Acquisition and coupled module/context visits retain native order.
-    /// Only after those visits finish, normalize the owned definition rows
-    /// for replay comparison; their text spans and authenticated values move
-    /// together. Sorting needs no extra storage.
     fn canonicalize_definitions(&mut self) {
         if let Outcome::Rows { len } = self.definitions.outcome
             && let Some(rows) = self.definitions.rows.get_mut(..len)
@@ -583,8 +565,6 @@ impl Variants {
         drop(census);
         drop(held);
         if retry {
-            // Uncertain evidence never supplies the census. Reacquire all deep
-            // inputs through the same full reader used without certificates.
             capture_text(
                 &mut self.definitions,
                 &mut self.definition_bytes,
@@ -629,7 +609,6 @@ impl Variants {
             cequipment_variant::walk_stats_carried(memory, source, rows, &mut organisation_carry)
         });
         self.organisations_complete = matches!(self.stats.outcome, Outcome::Rows { .. });
-        // Heap accounting is cached by the daily worker, never scanned hourly.
         self.organisation_bytes = self
             .stats
             .rows
@@ -647,18 +626,12 @@ impl Variants {
     }
 }
 
-/// The serial phases of a variant capture after its census, for the hour's stages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VariantPhase {
-    /// The census's lanes, from dispatch until the last returned.
     Lanes,
-    /// Joining the lanes' rows in census order.
     Join,
-    /// The bonus dictionary's snapshot and the rows' heap accounting.
     Snapshot,
-    /// The design context's seed and its lanes.
     Context,
-    /// The design change store's preparation and its lanes.
     Setup,
 }
 
@@ -729,21 +702,8 @@ pub struct Captured {
     pub line_custom_name_bytes: Arena<u8>,
     pub license_records: CaptureRows<cproduction_status::LicenseRecordRow>,
     pub license_handles: Arena<u64>,
-    /// Raw-copy split gate for scheduled division equipment and upgrade details.
-    /// Set when an acquisition job returns a valid raw payload;
-    /// `acquire` then skips those typed detail
-    /// walks and the decode worker fills the rows before the ready handoff.
-    /// Preserved across `reset` and cleared by the worker after decode.
-    /// Production and deployment use the independent rest payload below.
     pub divisions_raw_mode: bool,
-    /// Raw-copy split gate for scheduled production rest (lines 0,
-    /// stockpiles 1, licences 11, deployment 12..15, licence records 16).
-    /// Set when an acquisition job returns a valid raw payload; `acquire`
-    /// then skips those typed walks and the decode worker fills the rows
-    /// (plus the licence/name arenas) before the ready handoff. Preserved
-    /// across `reset` (set per hour, cleared by the worker after decode).
     pub rest_raw_mode: bool,
-    /// The acquisition's selected detail activity survives through decode failures.
     division_details_active: bool,
 }
 
@@ -895,8 +855,6 @@ impl Captured {
         self.division_details_active
     }
 
-    /// Acquire scheduled non-variant tables from the current shared census.
-    /// Durations are QPC ticks.
     pub fn acquire(
         &mut self,
         memory: &impl Memory,
@@ -1041,7 +999,6 @@ impl Captured {
         ticks
     }
 
-    /// One shared traversal fills all four deployment buffers.
     fn deployment(
         &mut self,
         memory: &impl Memory,
@@ -1061,11 +1018,6 @@ impl Captured {
         )
     }
 
-    /// Decode-worker interpretation of a scheduled production-rest payload.
-    /// Replays the existing lines, stockpile, licence, deployment and licence-
-    /// record walks against the recorded spans, installing identical rows,
-    /// arenas, truncation counts and failure reasons into the frame's pooled
-    /// buffers. Clears `rest_raw_mode` so the next capture starts clean.
     pub fn decode_production_rest_payload(
         &mut self,
         base: usize,
@@ -1282,9 +1234,6 @@ impl Captured {
         })
     }
 
-    /// Fresh owned division payloads compare directly with the encoder's exact
-    /// complete baseline before allocating replay rows. Other production tables
-    /// retain their existing arena validation and conversion paths.
     pub fn table_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
         let history = self.changes.history();
         let observed = matches!(
@@ -1502,8 +1451,6 @@ impl Captured {
     }
 }
 
-/// Produced-variant handles live in a shared arena; a span outside it fails the
-/// table rather than publishing a shortened or borrowed list.
 fn license_records(
     rows: &CaptureRows<cproduction_status::LicenseRecordRow>,
     arena: &Arena<u64>,
@@ -1545,8 +1492,6 @@ fn span(arena: &[u64], start: usize, len: usize) -> Option<&[u64]> {
     arena.get(start..start.checked_add(len)?)
 }
 
-/// Conveyor names live in a shared arena; a span outside it fails the table
-/// rather than publishing a truncated or borrowed-from-elsewhere name.
 fn conveyors(rows: &CaptureRows<cdeployment_status::ConveyorRow>, arena: &Arena<u8>) -> TableView {
     let result = rows.outcome;
     if let Outcome::Unavailable { reason } = result {
@@ -1579,8 +1524,6 @@ fn conveyors(rows: &CaptureRows<cdeployment_status::ConveyorRow>, arena: &Arena<
     })
 }
 
-/// Line custom names live in a shared arena; a span outside it fails the table
-/// rather than publishing a truncated or borrowed-from-elsewhere name.
 fn deployment_lines(
     rows: &CaptureRows<cdeployment_status::LineRow>,
     arena: &Arena<u8>,
@@ -1803,10 +1746,6 @@ fn definitions_owned(source: &DefinitionCapture, bytes: &[u8]) -> TableView {
     }
 }
 
-/// Complete current census rows may reuse the exact observed baseline too.
-/// Compare borrowed deep values before allocating; never turn a skipped or
-/// partial source into an equality certificate. Changed membership/order uses
-/// the ordinary checked full conversion.
 fn definitions_input(
     projection: Option<&Projection<'_>>,
     source: &DefinitionCapture,
@@ -1864,10 +1803,6 @@ fn definitions_input(
     definitions_owned(source, bytes).into()
 }
 
-/// Shared synthetic address space for the scheduled production-rest
-/// copy/decode split: one country with one line, one stockpile entry,
-/// one licence, one licence record with one handle, and a one-conveyor
-/// deployment queue with one line, manpower and equipment.
 #[cfg(any(test, feature = "test-support"))]
 pub mod production_rest_test_kit;
 

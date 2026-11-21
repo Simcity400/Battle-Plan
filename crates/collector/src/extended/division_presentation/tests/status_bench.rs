@@ -1,4 +1,3 @@
-//! Naming timing over an owned synthetic arena, independent of world fixtures.
 use super::*;
 use crate::{
     army_stat_changes::Watches,
@@ -51,8 +50,6 @@ fn world(countries: usize, divisions: usize) -> (Arena, Vec<DivisionSeed>) {
                 .copy_from_slice(&((base + cname_group_member::VTABLE_RVA.0) as u64).to_le_bytes());
             let order = cname_group_member::ORDER;
             span[order..order + 4].copy_from_slice(&(index as i32).to_le_bytes());
-            // A stored literal override supplies the naming operands. Cache text
-            // is independent: inline and heap descriptors both appear in the arena.
             let custom = cname_group_member::OVERRIDE_NAME;
             span[custom..custom + 4].copy_from_slice(b"Unit");
             span[custom + 16..custom + 24].copy_from_slice(&4_u64.to_le_bytes());
@@ -124,12 +121,10 @@ fn bench_division_status_naming() {
     if cfg!(debug_assertions) {
         panic!("run with --release");
     }
-    // Sparse writer marks leave about 99.9% of names carried.
     for countries in [1_500, 5_000] {
         for divisions in [20_000, 60_000] {
             let (arena, seeds) = world(countries, divisions);
             let base = arena.base();
-            // SAFETY: the arena retains every member and text through all runs.
             let memory = unsafe { LiveMemory::new() };
             let capacities = Capacities {
                 status: divisions,

@@ -18,7 +18,6 @@ fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     put(bytes, at + 12, &count.to_le_bytes());
 }
 
-/// Province 1 has no combats; province 2 holds naval, land, naval in that order.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x5000];
     array(&mut bytes, STATE + cgame_state::PROVINCES, SLOTS, 3);
@@ -99,12 +98,10 @@ fn every_combat_keeps_its_vector_place_and_class() {
     );
     assert_eq!(handles[..3], [7 << 32 | 4713, 9 << 32 | 62, 8 << 32 | 4713]);
     assert_eq!(kinds[..3], [COMBAT_NAVAL, COMBAT_LAND, COMBAT_NAVAL]);
-    // A short arena grows to the demand.
     let (short, _, handles, _) = walk(&bytes, 2, 2);
     assert_eq!(short.outcome, Outcome::Rows { len: 1 });
     assert_eq!(short.required, 3);
     assert_eq!(handles[..3], [7 << 32 | 4713, 9 << 32 | 62, 8 << 32 | 4713]);
-    // A border war keeps its own class.
     let mut border = bytes.clone();
     put(
         &mut border,
@@ -112,7 +109,6 @@ fn every_combat_keeps_its_vector_place_and_class() {
         &(crate::cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     assert_eq!(walk(&border, 2, 4).3[1], COMBAT_BORDER_WAR);
-    // An unknown combat class refuses the table.
     let mut unknown = bytes.clone();
     put(&mut unknown, LAND, &1u64.to_le_bytes());
     assert!(matches!(
@@ -211,12 +207,10 @@ fn a_listed_walk_reads_only_its_provinces_as_the_whole_walk_does() {
     assert_eq!(listed_rows[..1], rows[..1]);
     assert_eq!(listed_handles[..3], handles[..3]);
     assert_eq!(listed_kinds[..3], kinds[..3]);
-    // An empty province publishes no row; an unlisted one is not read.
     let mut unread = bytes.clone();
     put(&mut unread, PROVINCES[1], &0u64.to_le_bytes());
     assert_eq!(listed(&unread, &[1]).0.outcome, Outcome::Rows { len: 0 });
     assert_eq!(listed(&bytes, &[]).0.outcome, Outcome::Rows { len: 0 });
-    // A listed id outside the census refuses.
     assert!(matches!(
         listed(&bytes, &[3]).0.outcome,
         Outcome::Unavailable { .. }

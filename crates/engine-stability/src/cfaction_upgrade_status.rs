@@ -1,6 +1,3 @@
-//! Faction upgrade status and its independent research, doctrine and advisor
-//! slot companions. Read only after an owning writer notification; the existing
-//! faction census supplies the authenticated faction.
 
 use crate::cmodifier;
 use engine_native::{
@@ -16,7 +13,6 @@ pub const RESEARCH_SHARING: usize = 0x28;
 pub const DOCTRINE_SHARING: usize = 0x78;
 pub const SLOTS: usize = 0x98;
 pub const OWNER: usize = 0xb0;
-/// Loaded null change-date scalar used by the slot serializer.
 pub const UNSET_CHANGE_HOUR_RVA: Rva = Rva(0x30feb68);
 pub const SLOT_STRIDE: usize = 0x1a8;
 pub const SLOT_ADVISOR: usize = 0;
@@ -69,9 +65,6 @@ fn advisor(memory: &impl Memory, base: usize, slot: usize) -> Result<Option<u64>
     Ok(Some(handle))
 }
 
-/// One upgrade status authenticated within the caller's quiescent lease. Its
-/// independent parts have separate reads: a failed sharing group cannot hide
-/// advisor slots, and an unchanged part needs no native read at all.
 #[derive(Clone, Copy)]
 pub struct Status {
     address: usize,
@@ -99,7 +92,6 @@ pub fn authenticate(
 }
 
 impl Status {
-    /// Use the same memory and lease that authenticated this status.
     pub fn member_upgrades_into(
         &self,
         memory: &impl Memory,
@@ -140,14 +132,11 @@ impl Status {
         )
     }
 
-    /// Read the header once; select only slots whose writer marked them.
     pub fn slots(&self, memory: &impl Memory) -> Result<Array, &'static str> {
         Array::read(memory, at(self.address, SLOTS)?, SLOT_STRIDE)
             .ok_or("faction upgrade slots unreadable or invalid")
     }
 
-    /// A failed slot is unavailable independently of every other slot. The
-    /// supplied array must come from `slots` in the same lease.
     pub fn slot_into(
         &self,
         memory: &impl Memory,

@@ -1,4 +1,3 @@
-/* An uploaded icon fills the box its glyph would, whole and in its own colours. */
 .icon-image { display: block; flex: none; width: 16px; height: 16px; object-fit: contain; }
 .sidebar-row > .icon-image, .sidebar-utility .icon-image { width: 20px; height: 20px; }
 .dash-widget-icon .icon-image { width: 15px; height: 15px; }

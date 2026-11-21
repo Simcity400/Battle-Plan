@@ -1,17 +1,3 @@
-//! `politics-state-history`: every election schedule, or one country's balances of power, over the
-//! whole branch, as runs per holder (canonical slot) named by the tags it held.
-//!
-//! - Elections: the recorded game predicate (`has_elections`) for a country owning states (the
-//!   game holds no others' elections), the stored signed interval, the next date from the native
-//!   calendar step and the term's start. A known "not held" and an unrecorded eligibility stay
-//!   apart (`refused`).
-//! - Balances: records have no identity beyond their stored position, so the history follows
-//!   what each holder belongs to: per holder and balance token, the record's value and stored
-//!   position, range and trending while the holder is a member, and the balance the game shows it
-//!   (the first record listing it). The records a holder was listed by are read as one history of
-//!   their rows per stretch; no other record is read.
-//!
-//! Every run is read from its column's tracks per stretch; nothing carries across a gap.
 
 use dashboard_base::products::Country;
 use super::{
@@ -41,12 +27,8 @@ use ts_rs::TS;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum PoliticsHistoryMode {
-    /// One country's balances over the whole branch.
     Country,
-    /// Every election schedule over the whole branch.
     Elections,
-    /// Every holder's balances over the whole branch, as the records listing it only: no values,
-    /// ranges or leanings.
     Memberships,
 }
 
@@ -56,31 +38,29 @@ pub enum PoliticsHistoryMode {
 pub struct PoliticsHistoryParams {
     pub branch_id: String,
     pub mode: PoliticsHistoryMode,
-    /// The country, for [`PoliticsHistoryMode::Country`].
+    #[doc = " The country, for [`PoliticsHistoryMode::Country`]."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub country: Option<Country>,
 }
 
-/// One holder's election schedule over the branch.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ElectionHistory {
     pub tags: Vec<HolderTag>,
-    /// "1" when the game holds elections, "0" when it does not.
+    #[doc = r#" "1" when the game holds elections, "0" when it does not."#]
     pub held: Vec<PoliticsRun>,
-    /// "1" while its schedule was read but its eligibility was not: unknown, not denied.
+    #[doc = r#" "1" while its schedule was read but its eligibility was not: unknown, not denied."#]
     pub refused: Vec<PoliticsRun>,
-    /// Signed months.
+    #[doc = " Signed months."]
     pub interval: Vec<PoliticsRun>,
-    /// The next election's hour.
+    #[doc = " The next election's hour."]
     pub next: Vec<PoliticsRun>,
-    /// The term's start: the stored last election's hour, where it is a date.
+    #[doc = " The term's start: the stored last election's hour, where it is a date."]
     pub last: Vec<PoliticsRun>,
 }
 
-/// One holder's balances over the branch.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -88,11 +68,10 @@ pub struct HolderBalances {
     pub holder: String,
     pub tags: Vec<HolderTag>,
     pub balances: Vec<BalanceHistory>,
-    /// The balance the game shows the holder, by token.
+    #[doc = " The balance the game shows the holder, by token."]
     pub shown: Vec<PoliticsRun>,
 }
 
-/// One balance a holder belonged to, with its authored presentation.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -101,16 +80,16 @@ pub struct BalanceHistory {
     pub name: Option<String>,
     pub left: Option<BalanceSide>,
     pub right: Option<BalanceSide>,
-    /// The authored ranges in authored order; empty when content refuses.
+    #[doc = " The authored ranges in authored order; empty when content refuses."]
     pub ranges: Vec<BalanceRange>,
-    /// Fixed5 values while the holder belonged to it.
+    #[doc = " Fixed5 values while the holder belonged to it."]
     pub values: Vec<PoliticsRun>,
-    /// The record's stored position: holders sharing it at an hour share that record. Not an
-    /// identity across hours.
+    #[doc = " The record's stored position: holders sharing it at an hour share that record. Not an"]
+    #[doc = " identity across hours."]
     pub record: Vec<PoliticsRun>,
-    /// The authored range the record is in, by token, where it names one.
+    #[doc = " The authored range the record is in, by token, where it names one."]
     pub range: Vec<PoliticsRun>,
-    /// The side the record is moving toward, by token, where it names one.
+    #[doc = " The side the record is moving toward, by token, where it names one."]
     pub trending: Vec<PoliticsRun>,
 }
 
@@ -120,18 +99,18 @@ pub struct BalanceHistory {
 pub struct PoliticsHistoryReply {
     pub branch_id: String,
     pub mode: PoliticsHistoryMode,
-    /// The branch's last hour: the history reads through it.
+    #[doc = " The branch's last hour: the history reads through it."]
     pub last_hour: Option<i32>,
     pub tag: Option<String>,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub asked: Option<dashboard_base::products::Country>,
-    /// The hours the mode's table was read; others are unknown.
+    #[doc = " The hours the mode's table was read; others are unknown."]
     pub known: Vec<HourSpan>,
     pub elections: Vec<ElectionHistory>,
-    /// Content tokens to their in-game names, where they resolve.
+    #[doc = " Content tokens to their in-game names, where they resolve."]
     pub names: BTreeMap<String, String>,
-    /// Every holder that held the country's tag, its balances whole.
+    #[doc = " Every holder that held the country's tag, its balances whole."]
     pub holder_balances: Vec<HolderBalances>,
     pub warnings: Vec<String>,
 }
@@ -178,7 +157,6 @@ impl Product for PoliticsStateHistory {
     }
 }
 
-/// The history `params` asks of `query`'s timeline.
 pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Option<Result<Arc<Catalogue>, String>>, cancelled: &AtomicBool) -> io::Result<PoliticsHistoryReply> {
     let mut reply = PoliticsHistoryReply {
         branch_id: params.branch_id.clone(),
@@ -212,7 +190,6 @@ fn check(cancelled: &AtomicBool) -> io::Result<()> {
     crate::metadata::check_cancel(cancelled)
 }
 
-/// `spans` in order, joined where they overlap or meet.
 fn joined(mut spans: Vec<(i32, i32)>) -> Vec<HourSpan> {
     spans.sort_unstable();
     let mut out: Vec<HourSpan> = Vec::new();
@@ -280,7 +257,6 @@ fn elections(query: &Query<'_>, held: &BTreeMap<u32, Vec<Holding>>, reply: &mut 
                     if let Some(months) = months {
                         parts.interval.push((from, to, i128::from(months)));
                     }
-                    // An unrecorded cache and a recorded empty one both leave the date unknown.
                     let cached = value_at(&cache, from).map(|value| Some(value as i32));
                     if let Some(next) = crate::products::country_people::next_election(last_election, months, cached) {
                         parts.next.push((from, to, i128::from(next)));
@@ -294,7 +270,6 @@ fn elections(query: &Query<'_>, held: &BTreeMap<u32, Vec<Holding>>, reply: &mut 
     }
     reply.known = joined(known);
     for (slot, mut parts) in by_slot {
-        // A holder's raw ids are read in no order: its runs are put in hour order before joining.
         for runs in [&mut parts.held, &mut parts.refused, &mut parts.interval, &mut parts.next, &mut parts.last] {
             runs.sort_unstable_by_key(|run| run.0);
         }
@@ -316,8 +291,6 @@ fn elections(query: &Query<'_>, held: &BTreeMap<u32, Vec<Holding>>, reply: &mut 
     Ok(())
 }
 
-/// One stored record's columns over a stretch, each as runs of its cell: none where its row is
-/// not shown.
 struct RecordRuns {
     value: Vec<(i32, i32, Option<Cell>)>,
     balance: Vec<(i32, i32, Option<Cell>)>,
@@ -325,9 +298,6 @@ struct RecordRuns {
     range: Vec<(i32, i32, Option<Cell>)>,
 }
 
-/// `records` of `stretch`: their balance runs and, `whole`, their value, trending and range runs,
-/// read as one history of those rows (their changes, one pass of the stretch's blocks), with the
-/// texts they name. A column not read has no runs.
 fn record_runs(query: &Query<'_>, stretch: &Stretch, records: &[u128], whole: bool) -> io::Result<(HashMap<u128, RecordRuns>, History)> {
     let table = TableId::PowerBalances;
     let columns = [
@@ -356,7 +326,6 @@ fn record_runs(query: &Query<'_>, stretch: &Stretch, records: &[u128], whole: bo
     Ok((out, history))
 }
 
-/// `runs` within `first..=last` holding a number, cut to it.
 fn numbers(runs: &[(i32, i32, Option<Cell>)], first: i32, last: i32) -> Vec<(i32, i32, i128)> {
     runs.iter()
         .filter_map(|&(from, to, cell)| {
@@ -369,7 +338,6 @@ fn numbers(runs: &[(i32, i32, Option<Cell>)], first: i32, last: i32) -> Vec<(i32
         .collect()
 }
 
-/// `runs` within `first..=last` naming a token, cut to it: an empty text names none.
 fn tokens(history: &History, runs: &[(i32, i32, Option<Cell>)], first: i32, last: i32) -> Vec<(i32, i32, String)> {
     runs.iter()
         .filter_map(|&(from, to, cell)| {
@@ -380,7 +348,6 @@ fn tokens(history: &History, runs: &[(i32, i32, Option<Cell>)], first: i32, last
         .collect()
 }
 
-/// Names and authored presentation from the recording's content stack.
 struct Presentation<'a> {
     catalogue: Option<&'a Catalogue>,
     balances: Option<&'a installed_content_core::power_balance::Database>,
@@ -412,7 +379,6 @@ impl Presentation<'_> {
         BalanceSide { name: self.name(&token, names, refused), token }
     }
 
-    /// `token`'s sides and authored ranges, named.
     fn authored(&self, token: &str, names: &mut BTreeMap<String, String>, refused: &mut u64) -> (Option<BalanceSide>, Option<BalanceSide>, Vec<BalanceRange>) {
         let Some(balances) = self.balances else { return (None, None, Vec::new()) };
         let definition = balances.definition(token.as_bytes());
@@ -429,7 +395,6 @@ impl Presentation<'_> {
     }
 }
 
-/// `runs` of text, adjacent runs of one text joined.
 fn texts(runs: impl IntoIterator<Item = (i32, i32, String)>) -> Vec<PoliticsRun> {
     let mut out: Vec<PoliticsRun> = Vec::new();
     for (first, last, value) in runs {
@@ -441,8 +406,6 @@ fn texts(runs: impl IntoIterator<Item = (i32, i32, String)>) -> Vec<PoliticsRun>
     out
 }
 
-/// What one holder's balances gathered over the stretches: per token its value, position, range
-/// and trending runs, and the balance shown.
 #[derive(Default)]
 struct Gathered {
     values: BTreeMap<String, Vec<(i32, i32, i128)>>,
@@ -452,8 +415,6 @@ struct Gathered {
     shown: Vec<(i32, i32, String)>,
 }
 
-/// For each piece of `memberships`' hours, the earliest record covering it: (first, last,
-/// record, token).
 pub(crate) fn earliest(memberships: &[(i32, i32, u32, String)]) -> Vec<(i32, i32, u32, String)> {
     let Some(first) = memberships.iter().map(|held| held.0).min() else { return Vec::new() };
     let last = memberships.iter().map(|held| held.1).max().unwrap_or(first);
@@ -467,8 +428,6 @@ pub(crate) fn earliest(memberships: &[(i32, i32, u32, String)]) -> Vec<(i32, i32
     out
 }
 
-/// The balances of the holders `only` names (ascending), `whole` with their values, ranges and
-/// leanings.
 fn balances(
     query: &Query<'_>,
     held: &BTreeMap<u32, Vec<Holding>>,
@@ -484,7 +443,6 @@ fn balances(
     for stretch in &query.timeline.stretches {
         check(cancelled)?;
         let members = stretch_runs(query, stretch, TableId::PowerBalanceMembers, "country")?;
-        // The followed holders' memberships in the stretch: (first, last, record, holder slot).
         let mut held_by: Vec<(i32, i32, u32, u32)> = Vec::new();
         for (&key, runs) in &members {
             let record = (key >> 32) as u32;
@@ -508,7 +466,6 @@ fn balances(
             continue;
         }
         let (runs, history) = record_runs(query, stretch, &records, whole)?;
-        // Each membership cut where its record's balance changes: (first, last, record, token).
         let mut local: BTreeMap<u32, Vec<(i32, i32, u32, String)>> = BTreeMap::new();
         for &(from, to, record, slot) in &held_by {
             let named = runs.get(&u128::from(record)).map(|runs| tokens(&history, &runs.balance, from, to)).unwrap_or_default();
@@ -526,7 +483,6 @@ fn balances(
                 by_token.entry(held.3.as_str()).or_default().push(held.clone());
             }
             for (token, held) in by_token {
-                // Two records listing the holder under one token: the earlier, as the game reads it.
                 for (first, last, record, _) in earliest(&held) {
                     holder.records.entry(token.to_owned()).or_default().push((first, last, i128::from(record)));
                     let Some(runs) = runs.get(&u128::from(record)) else { continue };

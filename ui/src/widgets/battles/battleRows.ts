@@ -12,8 +12,6 @@ import { placeKey } from '../../dashboard/placeNamesData.ts';
 import type { BattleRow, BattleValue, BattleWarning, BattleWindow, PlaceNamesReply } from '../../generated/dashboard';
 export type { BattleRow, BattleSide, BattleValue, BattleWindow, BattleWarning } from '../../generated/dashboard';
 
-/** `read` held for the last hour it was asked at: a frame's painter, a render and every row's tooltip at one head hour
- * replay the rows once between them, never once a row. */
 export function heldAtHour<T>(read: (hour: number) => T): (hour: number) => T {
   let held: { hour: number; value: T } | null = null;
   return hour => {
@@ -23,7 +21,6 @@ export function heldAtHour<T>(read: (hour: number) => T): (hour: number) => T {
 }
 
 const indexed = new WeakMap<readonly BattleRow[], ReadonlyMap<string, BattleRow>>();
-/** Rows by battle, made once per list of rows. */
 export function rowsById<T extends BattleRow>(rows: readonly T[]): ReadonlyMap<string, T> {
   let byId = indexed.get(rows);
   if (!byId) indexed.set(rows, byId = new Map(rows.map(row => [row.id, row])));
@@ -37,7 +34,6 @@ export interface BattleLabels {
 export type BattleCountryLabel = (tag: string, hour: number) => { name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
 export type BattleLossFormatter<T extends BattleRow = BattleRow> = (value: BattleValue, row: T, side: number, tooltip: boolean) => string;
 export interface BattleMeasure<T extends BattleRow = BattleRow> {
-  /** The caller's count/loss label is the stable key, never its array index. */
   label: string;
   title: string;
   hint?: string;
@@ -53,7 +49,6 @@ export interface BattleSideSummary {
   formatCount: (value: BattleValue, compact: boolean) => string;
 }
 
-/** Display capacity only: undisplayed flags remain in the row's full tooltip. */
 export function battleFlagCount(count: number, width: number, flagWidth: number, gap: number, moreWidth: number): number {
   if (count === 0 || flagWidth <= 0) return 0;
   if (count * flagWidth + (count - 1) * gap <= width) return count;
@@ -114,8 +109,6 @@ export function battleMeasure(row: BattleRow, label: string, unknown: string): B
   return missing.size ? { label, value: null, unknown: [...missing].join('; ') } : { label, value, atLeast };
 }
 
-/** The log's order: following, battles under way first; then newest first, then by id. A row's place depends on the row
- * alone, so the states of a block (`logStatesBy`) keep every hour's order. */
 export const battleLogOrder = (live: boolean) => <T extends BattleRow>(a: LogRow<T>, b: LogRow<T>) =>
   (live ? Number(b.item.end === null) - Number(a.item.end === null) : 0) || b.hour - a.hour || compareTags(a.item.id, b.item.id);
 
@@ -126,17 +119,12 @@ export function battleLogRows<T extends BattleRow>(rows: readonly T[], live: boo
   return rows.map(battleLogRow).sort(battleLogOrder(live));
 }
 
-/** What a battle's log row renders, beside the numbers painted between changes: a battle whose state this changes gets
- * a state of its own from the change on (`logStatesBy`). Its sides' counts and losses are rendered unless `painted`. */
 export function battleState(row: BattleRow, painted = false): string {
   const value = (part: BattleValue) => part.value === null ? [part.label, part.unknown] : [part.label, painted || part.value, painted || (part.atLeast ?? false)];
   return JSON.stringify([row.place.name, row.place.namedAt ?? row.place.hour, row.start, row.end, row.winner,
     row.sides.map(side => [side.label, side.countries.map(country => country.tag), side.countriesUnknown ?? null, side.counts.map(value), side.losses.map(value)])]);
 }
 
-/** A battle log over the block `hours` (ascending, its first hour first): each battle's states (`logStatesBy`), its
- * state as `state` says. The rows are read whole (`rowsAt`) at its first hour and where `changed` says any battle may
- * change (null); at every other hour only the battles it names are read again (`rowOf`). */
 export function battleStateRows<T extends BattleRow>(hours: readonly number[], rowsAt: (hour: number) => ReadonlyArray<T>, live: boolean,
   state: (row: T) => string = row => battleState(row), changed: (hour: number) => Iterable<string> | null = () => null,
   rowOf: (id: string, hour: number) => T | null = () => null): LogRow<T>[] {
@@ -144,11 +132,8 @@ export function battleStateRows<T extends BattleRow>(hours: readonly number[], r
     row => state(row.item), battleLogOrder(live));
 }
 
-/** When a battle log's rows change: at a `whole` hour any battle may (a window or a census span begins), at any other
- * change hour only the battles `battles` names then. */
 export interface BattleChanges { readonly whole: readonly number[]; readonly battles: ReadonlyMap<number, readonly string[]> }
 
-/** The changes of the `whole` hours and of each battle at its own hours. */
 export function battleChanges(whole: Iterable<number>, battles: Iterable<readonly [string, Iterable<number>]>): BattleChanges {
   const byHour = new Map<number, Set<string>>();
   for (const [id, hours] of battles) for (const hour of hours) {
@@ -158,12 +143,8 @@ export function battleChanges(whole: Iterable<number>, battles: Iterable<readonl
   return { whole: [...new Set(whole)], battles: new Map([...byHour].map(([hour, ids]) => [hour, [...ids]])) };
 }
 
-/** Every hour a battle log's rows may change, ascending. */
 export const battleChangeHours = (changes: BattleChanges): number[] => [...new Set([...changes.whole, ...changes.battles.keys()])].sort((a, b) => a - b);
 
-/** The hour after the last that the windows held from `at`'s window on, without a gap, cover, through the window after
- * `at`'s at most: what a list drawn ahead may draw through. The next block then begins at most two windows on, which
- * `battleWindows` asked with this one, so no window is first asked at the head. `at + 1` while `at`'s window is not held. */
 export function heldWindowsEnd(windows: readonly BattleWindow[], held: { has(index: number): boolean }, at: number): number {
   let index = battleWindowIndex(windows, at);
   if (index < 0 || !held.has(index)) return at + 1;
@@ -172,7 +153,6 @@ export function heldWindowsEnd(windows: readonly BattleWindow[], held: { has(ind
   return windows[index].lastHour + 1;
 }
 
-/** Each side may have countries dated differently; never flatten those hours. */
 export function battleCountryRequests(rows: readonly BattleRow[]): { tag: string; hour: number }[] {
   const wanted = new Map<number, Set<string>>();
   for (const row of rows) for (const side of row.sides) for (const country of side.countries) {
@@ -208,9 +188,6 @@ export function battleWindowIndex(windows: readonly BattleWindow[], at: number):
   return -1;
 }
 
-/** Hold the playhead block, drawn blocks and their earlier neighbour and, Live, the next two: a block draws through the
- * window after its own at most (`heldWindowsEnd`), so the window the next block begins in was asked with this one.
- * Scrolling requests history; campaign length never determines wanted windows. */
 export function battleWindows(data: { windows: readonly BattleWindow[] } | undefined, at: number, live: boolean, visible: readonly number[] = [], from = -Infinity): number[] {
   if (!data) return [];
   const current = battleWindowIndex(data.windows, at);
@@ -239,8 +216,6 @@ export function battlePlaceRequests(rows: readonly (BattleRow & { provinceId: nu
   for (const row of rows) places.set(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour), { provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour });
   return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
 }
-/** The place of each of `rows` in their order, then each of `rest` not among them, each once: what a list asks with the
- * rows it shows first leading. */
 export function placesLeadingWith(rows: readonly (BattleRow & { provinceId: number })[], rest: readonly { provinceId: number; hour: number }[]): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
   for (const row of rows) {
@@ -258,7 +233,6 @@ export function namedBattles<T extends BattleRow & { provinceId: number }>(rows:
   });
 }
 
-/** The last of the sorted change hours at or before `at`; `at` itself where none is. */
 export function lastChange(changes: readonly number[], at: number): number {
   let low = 0, high = changes.length;
   while (low < high) {
@@ -268,6 +242,4 @@ export function lastChange(changes: readonly number[], at: number): number {
   return low === 0 ? at : changes[low - 1];
 }
 
-/** The hour a followed ranking is asked at: the head's 256-hour step, so a ranking is asked at most once per 256
- * hours of the head's travel, never past the head. */
 export const rankingHour = (at: number, first: number, last: number) => Math.min(last, Math.max(first, Math.floor(at / 256) * 256));

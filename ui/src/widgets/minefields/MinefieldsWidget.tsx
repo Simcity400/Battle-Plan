@@ -40,10 +40,6 @@ import type { MineReport, MinefieldReportsReply } from '../../generated/dashboar
 
 const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
 
-/** Who has mined which seas at the hour shown: per sea region, each owner's mines as segments on
- * one shared scale. Following playback it is a pushed panel, rendered when its rows, owners or
- * order change; every amount, total and segment is a live cell painted each frame. A region opens
- * its owners' history and its standing reports, following playback or at a day picked on it. */
 export default function MinefieldsWidget({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -52,7 +48,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement | null>(null);
   const menu = useContextMenu('Minefields');
-  const head = useHeadProduct(runtime, widget, 'minefields', useMemo(() => tags.length ? { countries: tags.map(countryFromKey) } : {}, [JSON.stringify(tags)]), // eslint-disable-line react-hooks/exhaustive-deps
+  const head = useHeadProduct(runtime, widget, 'minefields', useMemo(() => tags.length ? { countries: tags.map(countryFromKey) } : {}, [JSON.stringify(tags)]),
     { active, validate: validateMinefields, structure: minefieldsStructure });
   const { data, error, retry } = head;
   const live = head.live;
@@ -60,13 +56,12 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const shownHour = () => head.at ?? head.hour ?? Math.floor(runtime.clock.getHour());
   useShownEachFrame(runtime.clock, () => data ? head.shownAt() : null, head.live);
   const chosen = contentSet(options.regions).map(contentKey);
-  const shown = useMemo(() => data ? regionRows(data, chosen) : null, [data, JSON.stringify(chosen)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = useMemo(() => data ? regionRows(data, chosen) : null, [data, JSON.stringify(chosen)]);
   const rows = useMemo(() => shown ? orderRegions(shown.rows, options.order === 'name' ? 'name' : 'mines') : [], [shown, options.order]);
   const owners = useMemo(() => [...new Set(rows.flatMap(row => row.owners.map(owner => owner.tag)))], [rows]);
   const lookHour = shownHour();
   const looks = useCountryLooks(runtime.client, track, owners, lookHour, active);
   const colour = useCountryColours(owners, looks.color, tokens, looks);
-  // Each frame writes the rows in view's totals and segment widths from the live cells: never a render.
   useLayoutEffect(() => {
     if (!data) return undefined;
     const paint = () => {
@@ -137,8 +132,6 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   </div>;
 }
 
-/** One region's owners' mines over the branch, and its standing reports at the hour shown, or at `at` once a day is
- * picked on the history. */
 function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, colour, at, onPick }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   region: RegionRow; hoursPerSecond: number | undefined; name: (tag: string) => string; colour: (tag: string) => string;
   at: number | null; onPick: (hour: number) => void;
@@ -150,7 +143,6 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
     params: { branchId: track.branch.id, region: Number(region.region), countries: tags, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } } : null,
   active, validateHistory, track.source);
   const reports = useHeadProduct<MinefieldReportsReply>(runtime, widget, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports, hoverHour: at });
-  // A report's countries need not own mines here: they are named at the reports' own hour.
   const namedAt = reports.at;
   const reportTags = useMemo(() => namedAt === null || !reports.data ? [] : [...new Set(reports.data.reports.flatMap(report => [report.victim, report.mineOwner])
     .flatMap(tag => tag === null ? [] : [tag]))].map(tag => ({ hour: namedAt, tag })), [reports.data, namedAt]);

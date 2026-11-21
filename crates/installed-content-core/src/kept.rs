@@ -1,5 +1,3 @@
-//! Buffers written once and read in place: a reader keeping a large structure on disk pays, when
-//! it loads it, only for the entries it reads.
 
 use std::{io, sync::Arc};
 
@@ -7,13 +5,11 @@ fn damaged() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "a kept buffer is damaged")
 }
 
-/// Appends `bytes` after their length.
 pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend((bytes.len() as u64).to_le_bytes());
     out.extend_from_slice(bytes);
 }
 
-/// Appends `texts` after their count.
 pub fn put_texts(out: &mut Vec<u8>, texts: &[String]) {
     out.extend((texts.len() as u64).to_le_bytes());
     for text in texts {
@@ -21,7 +17,6 @@ pub fn put_texts(out: &mut Vec<u8>, texts: &[String]) {
     }
 }
 
-/// What [`put_bytes`] and [`put_texts`] wrote, read from a position.
 pub struct Input<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -32,7 +27,6 @@ impl<'a> Input<'a> {
         Self { bytes, at }
     }
 
-    /// Where the next read starts.
     pub fn at(&self) -> usize {
         self.at
     }
@@ -50,7 +44,6 @@ impl<'a> Input<'a> {
         ))
     }
 
-    /// A count of items each at least `least` bytes long: one the rest cannot hold is damage.
     fn count(&mut self, least: usize) -> io::Result<usize> {
         let count = usize::try_from(self.u64()?).map_err(|_| damaged())?;
         let rest = self.bytes.len().saturating_sub(self.at);
@@ -74,13 +67,10 @@ impl<'a> Input<'a> {
     }
 }
 
-/// Distinct keys in byte order, each with a value, read in place from a kept buffer: loading one
-/// reads its count alone, and a lookup reads the keys a binary search visits.
 #[derive(Clone)]
 pub struct Table {
     bytes: Arc<Vec<u8>>,
     count: usize,
-    /// Where the `2 * count` end offsets start: each key's, then its value's, from `data`.
     ends: usize,
     data: usize,
 }
@@ -95,7 +85,6 @@ impl std::fmt::Debug for Table {
 }
 
 impl Table {
-    /// Appends `entries`, which are distinct and in byte order of their keys.
     pub fn write<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         out: &mut Vec<u8>,
         entries: impl ExactSizeIterator<Item = (K, V)>,
@@ -119,7 +108,6 @@ impl Table {
         debug_assert_eq!(written, count, "an exact-size iterator yields its length");
     }
 
-    /// The table [`Self::write`] put at `at` in `bytes`, and where it ends.
     pub fn read(bytes: &Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
         let mut input = Input::new(bytes, at);
         let count = usize::try_from(input.u64()?).map_err(|_| damaged())?;
@@ -170,7 +158,6 @@ impl Table {
             .get(self.data.checked_add(start)?..self.data.checked_add(end)?)
     }
 
-    /// Entry `index`'s key; `None` past the end or in a damaged table.
     pub fn key(&self, index: usize) -> Option<&[u8]> {
         if index < self.count {
             self.slot(2 * index)
@@ -179,7 +166,6 @@ impl Table {
         }
     }
 
-    /// Entry `index`'s value; `None` past the end or in a damaged table.
     pub fn value(&self, index: usize) -> Option<&[u8]> {
         if index < self.count {
             self.slot(2 * index + 1)
@@ -188,7 +174,6 @@ impl Table {
         }
     }
 
-    /// The entry holding `key`.
     pub fn find(&self, key: &[u8]) -> Option<usize> {
         let (mut low, mut high) = (0, self.count);
         while low < high {
@@ -207,8 +192,6 @@ impl Table {
 mod tests {
     use super::*;
 
-    /// A table reads back every entry it was written with, finds each key and no other, and one
-    /// cut short anywhere is refused rather than read.
     #[test]
     fn a_table_reads_back_in_place_and_refuses_a_cut_one() {
         let entries = [("", "empty key"), ("A", ""), ("B_KEY", "ünïcode"), ("b", "lower")];

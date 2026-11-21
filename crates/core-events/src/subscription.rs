@@ -16,7 +16,6 @@ pub struct DeclarationId(pub usize);
 #[derive(Clone)]
 pub enum WindowKeys {
     All,
-    // Canonical keys in strictly increasing numeric order.
     Keys(Arc<[Arc<[u8]>]>),
     Where(Arc<dyn Fn(Key<'_>) -> bool + Send + Sync>),
 }
@@ -53,7 +52,6 @@ impl WindowKeys {
 pub struct WindowInput {
     pub declaration: DeclarationId,
     pub keys: WindowKeys,
-    // Empty selects call facts only, never all of a declaration's fields.
     pub fields: Arc<[WindowField]>,
 }
 
@@ -73,7 +71,6 @@ pub struct WindowOutput {
 #[derive(Clone)]
 pub struct ProvisionalRule {
     pub bound: WindowBound,
-    // Keep initial state, transitions and call facts for these declarations from the segment's first hour.
     pub inputs: Arc<[WindowInput]>,
     pub outputs: Arc<[WindowOutput]>,
 }
@@ -102,7 +99,6 @@ impl ProvisionalRule {
 #[derive(Clone)]
 pub enum Filter {
     All,
-    // The reader owns the mutable set; handlers edit it only through CallContext.
     Keys,
     Where {
         field: FieldId,
@@ -457,7 +453,6 @@ impl Subscription {
         Self::union_with_observations(families, &[], storage)
     }
 
-    // Foreign never-wake predicates are evaluated locally over metadata, without co-grouping their producer.
     pub fn union_with_observations<'a>(
         families: &[Subscription],
         foreign: &[Observation],
@@ -736,7 +731,6 @@ fn share_observation(
     Ok(SharedObservationId(index))
 }
 
-// Capacities count raw insertions before deduplication, including each relation/observation binding.
 #[derive(Clone, Copy, Default)]
 pub struct UnionCapacity {
     pub tables: usize,

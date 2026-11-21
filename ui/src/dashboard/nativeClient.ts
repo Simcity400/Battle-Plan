@@ -22,8 +22,6 @@ function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
 }
 
-/** Data replies arrive as raw JSON bytes; the host never parses them. A reply landing after `dropped` was cancelled is
- * not parsed: nobody waits on it, and parsing it costs the page's main thread. */
 async function rawInvoke<T>(command: string, args: Record<string, unknown>, timing?: QueryTiming, dropped?: AbortSignal): Promise<T> {
   const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
   if (timing) timing.received = performance.now();
@@ -34,7 +32,6 @@ async function rawInvoke<T>(command: string, args: Record<string, unknown>, timi
   if (timing) { timing.parsed = performance.now(); timing.bytes = bytes; }
   if (reply && typeof reply === 'object') {
     replyLengths.set(reply, bytes);
-    // A prepared reply's data is kept without its envelope.
     const { data, digest } = reply as { data?: unknown; digest?: unknown };
     if (data && typeof data === 'object') {
       replyLengths.set(data, bytes);
@@ -46,8 +43,6 @@ async function rawInvoke<T>(command: string, args: Record<string, unknown>, timi
   return reply as T;
 }
 
-/** Requests the host is holding, and those waiting for one of them to end, in order: the host refuses a
- * request past its bound for want of room, so one is never sent until there is room. */
 let outstanding = 0;
 const waiting: (() => void)[] = [];
 async function admitted(signal: AbortSignal): Promise<() => void> {
@@ -63,7 +58,6 @@ async function admitted(signal: AbortSignal): Promise<() => void> {
   return () => {
     if (released) return;
     released = true;
-    // A slot passes straight to the next waiting request.
     const next = waiting.shift();
     if (next) next(); else outstanding--;
   };
@@ -78,12 +72,10 @@ async function request<T>(
 ): Promise<T> {
   if (!desktopAvailable) throw new Error('Open the desktop app to read recordings and display native maps.');
   if (signal.aborted) throw cancelled();
-  // In flight from the moment it is asked, through its wait for room, until its reply is parsed or it ends.
   const done = busy('requests');
   try {
     const release = await admitted(signal);
     try {
-      // Cancelled while waiting for room, after the wait's own abort listener was removed.
       if (signal.aborted) throw cancelled();
       return await sent(command, args, signal, releaseLate, asksFrom);
     } finally { release(); }
@@ -104,7 +96,6 @@ async function sent<T>(
   const perf = perfLog, started = perf ? performance.now() : 0, timing: QueryTiming | undefined = perf ? {} : undefined, head = perf?.head() ?? null;
   let outcome: 'ok' | 'cancelled' | 'error' = 'error', failure: string | undefined;
   try {
-    // A late release needs the reply itself; anything else cancelled is dropped unparsed.
     const result = await rawInvoke<T>(command, { ...body, requestId }, timing, releaseLate ? undefined : signal);
     if (signal.aborted) {
       await releaseLate?.(result).catch(() => {});
@@ -130,7 +121,6 @@ async function releaseSource(sourceId: string): Promise<void> {
 
 export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
-  // Outside the desktop app there is no host to list or pick files.
   ...(desktopAvailable ? {
     openFollow(port: MessagePort) {
       return new Promise<void>((resolve, reject) => {
@@ -154,7 +144,6 @@ export const nativeDashboardClient: DashboardClient = {
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
     setRecordingCompression: (compression: Compression) => invoke<RecorderSettings>('set_recording_compression', { compression }),
     setAutoCompress: (enabled: boolean) => invoke<RecorderSettings>('set_auto_compress', { enabled }),
-    // The host owns the content folders and sends them to its native viewer.
     contentFolders: () => invoke<ContentFolders>('content_folders'),
     chooseContentFolder: (kind: 'game' | 'user', initial: string) => invoke<string | null>('choose_content_folder', { kind, initial }),
     setContentFolders: (game: string, user: string) => invoke<ContentFolders>('set_content_folders', { game, user }),

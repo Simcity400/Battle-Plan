@@ -2,45 +2,24 @@ import { useSyncExternalStore } from 'react';
 import { normalizeColor } from '../shell/appearance/color.ts';
 import { opaqueTag } from './validation.ts';
 
-/** Faction settings, kept with the app (never in the recording). A faction colour the
- * user sets applies in every campaign (`shared`, keyed by the faction's identity,
- * `factionIdentity`) until changed again; a campaign can override it for itself
- * (`campaigns`, keyed by the recorded campaign identity and faction id, so every
- * recording of a campaign shares them), with its own display names. Saved colour sets
- * can still be applied to other campaigns, matched by faction name. */
 
 export interface FactionStyle { colour?: string; name?: string }
 export interface FactionColourSet { id: string; name: string; entries: { faction: string; colour: string; name?: string }[] }
 export interface CampaignSettings {
   version: 1;
   campaigns: Record<string, { factions: Record<string, FactionStyle>; flag?: string }>;
-  /** Colours chosen for every campaign, by faction identity (`factionIdentity`). */
   shared: Record<string, { colour: string }>;
   sets: FactionColourSet[];
 }
 
-/** Where a colour the user picks applies: every campaign (the default), or only this one. */
 export type ColourScope = 'all' | 'campaign';
 
-/** A faction's identity across campaigns, for colours set for every campaign: its
- * literal name exactly as recorded (unchanged by translation, so it holds
- * across languages and content). An invalid UTF-8 literal is refused and has an
- * empty recorded name, so its identity also falls back to the tag of the leader
- * it had when first recorded. Null when neither is known: such a faction's colour can
- * only be set for its campaign.
- *
- * This colour key has limits: two factions recorded
- * under one literal name share a colour; and a faction formed from a template has no recorded
- * name, so it is known by its first leader's tag, which is not stable across
- * campaigns (the same template led first by another country is not matched, and
- * another faction first led by that tag is). */
 export function factionIdentity(recordedName: string | null, founder: string | null): string | null {
   const key = recordedName ? JSON.stringify(['name', recordedName]) : founder ? JSON.stringify(['leader', founder]) : null;
   return key && key.length <= MAX_IDENTITY ? key : null;
 }
 
 const KEY = 'hoi4-replay.campaign-settings.v1';
-// Use the same byte budget for reads and writes so saved campaigns cannot vanish on reload.
 export const MAX_CAMPAIGN_SETTINGS_STORAGE = 2_000_000;
 const MAX_TEXT = 160;
 const MAX_IDENTITY = 400;
@@ -63,7 +42,6 @@ function style(value: unknown): FactionStyle | null {
   return result;
 }
 
-/** Allowlist parse; anything malformed is dropped rather than trusted. */
 export function parseCampaignSettings(input: unknown): CampaignSettings {
   if (!object(input) || input.version !== 1) return structuredClone(EMPTY);
   const campaigns: CampaignSettings['campaigns'] = {};
@@ -95,11 +73,6 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
   return { version: 1, campaigns, shared, sets };
 }
 
-/** Sets or clears a faction's colour. For every campaign (`all`): it is stored by the
- * faction's identity and this campaign's own colour for it is dropped, so the choice
- * shows here too; a faction with no identity falls back to this campaign alone. For
- * this campaign only: it overrides the colour for every campaign here. `null` clears
- * the colour at that scope. */
 export function setFactionColour(settings: CampaignSettings, scope: ColourScope, campaign: string, faction: string,
   identity: string | null, hex: string | null): CampaignSettings {
   if (scope === 'campaign' || identity == null) return setFactionStyle(settings, campaign, faction, { colour: hex ?? undefined });
@@ -112,12 +85,10 @@ export function setFactionColour(settings: CampaignSettings, scope: ColourScope,
   return settings.campaigns[campaign]?.factions[faction]?.colour ? setFactionStyle(next, campaign, faction, { colour: undefined }) : next;
 }
 
-/** A faction's chosen colour, if any: this campaign's own, else the one for every campaign. */
 export function chosenColour(settings: CampaignSettings, campaign: string, faction: string, identity: string | null): string | undefined {
   return settings.campaigns[campaign]?.factions[faction]?.colour ?? (identity != null ? settings.shared[identity]?.colour : undefined);
 }
 
-/** Sets or clears one faction's colour or display name. */
 export function setFactionStyle(settings: CampaignSettings, campaign: string, faction: string, patch: FactionStyle | null): CampaignSettings {
   const factions = { ...settings.campaigns[campaign]?.factions };
   const next: FactionStyle = patch === null ? {} : { ...factions[faction], ...patch };
@@ -132,7 +103,6 @@ export function setFactionStyle(settings: CampaignSettings, campaign: string, fa
   return { ...settings, campaigns: { ...settings.campaigns, [campaign]: { ...settings.campaigns[campaign], factions } } };
 }
 
-/** A recorded tag overrides the sidebar flag; null follows the shown country. */
 export function setCampaignFlag(settings: CampaignSettings, campaign: string, tag: string | null): CampaignSettings {
   if (!safeKey(campaign, /^[0-9a-f]{1,128}$/) || tag !== null && !opaqueTag(tag)) return settings;
   const entry = { ...(settings.campaigns[campaign] ?? { factions: {} }) };
@@ -140,7 +110,6 @@ export function setCampaignFlag(settings: CampaignSettings, campaign: string, ta
   return { ...settings, campaigns: { ...settings.campaigns, [campaign]: entry } };
 }
 
-/** Saves a campaign's chosen colours as a named set, keyed by faction name. */
 export function saveColourSet(settings: CampaignSettings, id: string, name: string, campaign: string,
   factions: readonly { id: string; name: string | null }[], colours: ReadonlyMap<string, string>): CampaignSettings {
   const chosen = settings.campaigns[campaign]?.factions ?? {};
@@ -153,8 +122,6 @@ export function saveColourSet(settings: CampaignSettings, id: string, name: stri
   return { ...settings, sets: [...settings.sets.filter(item => item.id !== id), set] };
 }
 
-/** Applies a saved set to a campaign: each recorded faction whose name matches an
- * entry (ignoring case) takes its colour and display name. Returns how many matched. */
 export function applyColourSet(settings: CampaignSettings, set: FactionColourSet, campaign: string,
   factions: readonly { id: string; name: string | null }[]): { settings: CampaignSettings; matched: number } {
   let next = settings;
@@ -180,7 +147,6 @@ export function loadCampaignSettings(storage?: Storage): CampaignSettings {
   }
 }
 
-/** Saves and tells every open view. Returns an error message if the device refused. */
 export function saveCampaignSettings(settings: CampaignSettings, storage?: Storage): string | null {
   const safe = parseCampaignSettings(settings);
   current = safe;
@@ -198,7 +164,6 @@ export function saveCampaignSettings(settings: CampaignSettings, storage?: Stora
 const snapshot = () => (current ??= loadCampaignSettings());
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
-/** The settings in effect: the last saved, including a save this device refused to store. */
 export function currentCampaignSettings(storage?: Storage): CampaignSettings {
   return current ??= loadCampaignSettings(storage);
 }
@@ -207,8 +172,6 @@ export function useCampaignSettings(): CampaignSettings {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
-/** The faction names and colours that apply in campaign `campaign`, as a string that changes exactly when they do: its own
- * styles and the colours set for every campaign. Empty for none, or no campaign. */
 export function factionStylesKey(settings: CampaignSettings, campaign: string | null): string {
   if (campaign === null) return '';
   const own = settings.campaigns[campaign]?.factions;
@@ -216,7 +179,6 @@ export function factionStylesKey(settings: CampaignSettings, campaign: string | 
   return own || shared ? JSON.stringify([own ?? null, shared ?? null]) : '';
 }
 
-/** `factionStylesKey` of the settings in effect, rendering again only when it changes. */
 export function useFactionStylesKey(campaign: string | null): string {
   const read = () => factionStylesKey(snapshot(), campaign);
   return useSyncExternalStore(subscribe, read, read);

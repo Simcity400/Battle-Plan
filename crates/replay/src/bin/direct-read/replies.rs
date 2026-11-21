@@ -1,9 +1,3 @@
-//! Every reply of a fixed set, each as its count and a digest of its canonical text, to compare
-//! with another reader's of the same campaign: frames of Countries and DivisionStatus at sampled
-//! hours, `at` of Countries' numeric columns there, `runs`, `next`, `log`, `lifetimes`, and the
-//! chart shapes, ranks and top-N of five tables. The digests hash the replies themselves (rows'
-//! fields, strings by their bytes, bins), never a reader's slots or ids.
-
 use super::{Options, chart_column, eight_keys, grid, invalid, sample_hours, views};
 use replay::{campaign::{Replay, SeekResult}, columnar_frames::Recording, lanes, summaries};
 use replay_columnar::summary::{self, Shape};
@@ -11,7 +5,6 @@ use replay_data::rows::TableId;
 use serde_json::{Value, json};
 use std::{fmt::Write as _, io, path::Path};
 
-/// A reply's canonical text, hashed.
 struct Reply {
     kind: &'static str,
     what: String,
@@ -25,7 +18,6 @@ impl Reply {
     }
 }
 
-/// Every key's numeric cells of `snapshot`, in key order: the reader's own accessor.
 fn numbers(snapshot: &lanes::Snapshot, columns: &[usize]) -> Vec<(u128, Vec<Option<i64>>)> {
     let view = snapshot.view();
     let mut out: Vec<(u128, Vec<Option<i64>>)> = view.rows().filter_map(|slot| Some((view.key(slot)?, columns.iter().map(|&column| view.number(column, slot)).collect()))).collect();
@@ -41,7 +33,6 @@ fn frame_reply(replay: &Replay, table: TableId, branch: u64, hour: i32) -> io::R
     Ok(Reply { kind: "frame", what: format!("{table:?} {hour}"), count: text.len(), text })
 }
 
-/// A read's reply text: its answer, or why it was refused.
 fn outcome<T>(read: io::Result<T>, text: impl FnOnce(&T) -> String) -> (usize, String) {
     match read {
         Ok(held) => {
@@ -60,7 +51,6 @@ fn chart_text(chart: &lanes::Chart) -> String {
     text
 }
 
-/// The tables both builds summarize as value series.
 const CHARTED: [TableId; 3] = [TableId::Countries, TableId::CountryStability, TableId::ArmyTotals];
 
 pub fn all(path: &str, options: &Options) -> io::Result<Value> {
@@ -86,7 +76,6 @@ pub fn all(path: &str, options: &Options) -> io::Result<Value> {
         let hour = recording.run(run)?.first_hour + ordinal as i32;
         replies.push(frame_reply(&replay, TableId::DivisionStatus, branch, hour)?);
     }
-    // Runs and next changes of the first summarized column of each charted table.
     let mid = first_hour + (ordinals / 2) as i32;
     for table in CHARTED {
         let source = chart_column(table, options)?;
@@ -124,7 +113,6 @@ pub fn all(path: &str, options: &Options) -> io::Result<Value> {
         let (count, text) = outcome(lanes::chart_at(recording, 0, table, source, None, first_hour, (end - 1) as i32, level, whole), chart_text);
         replies.push(Reply { kind: "rank", what: format!("{table:?} {source}"), count, text });
     }
-    // Every log table's counts over the whole run, in day bins.
     for (index, shape) in summaries::registry()?.iter() {
         if !matches!(shape, Shape::Log(_)) {
             continue;

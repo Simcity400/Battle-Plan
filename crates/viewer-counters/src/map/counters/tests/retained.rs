@@ -1,4 +1,3 @@
-//! Fresh-versus-retained semantic preparation over the same presented history.
 
 use super::*;
 
@@ -105,7 +104,6 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                 80.,
                 80.,
             ];
-            // Then a free eye flies and turns over provinces 1 and 2, and jumps to look at 3.
             use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
             use viewer_foundation::map::camera::{Free, Lens, Pose};
             let flown = [
@@ -261,7 +259,6 @@ fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_cha
             ]
             .into_iter()
             .collect();
-            // Division 10 weakens: only its source is a new allocation, as the counters layer publishes.
             let mut weaker = first.clone();
             let mut members = weaker[&(1, STANDSTILL)].to_vec();
             members[0].0.hp = counter_status::FIXED / 2;
@@ -315,8 +312,6 @@ fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_cha
     );
 }
 
-/// One frame of [`land_plates_against_fresh`]: the land stacks, the camera's centre and height,
-/// and a free eye's pitch when it tilts.
 struct LandFrame {
     stacks: LandStacks,
     center: [f32; 2],
@@ -324,9 +319,6 @@ struct LandFrame {
     pitch: Option<f32>,
 }
 
-/// Three provinces' stacks, province 2 with `extra` divisions beside division 12. Each call makes
-/// new allocations; a frame whose stacks did not change reuses the last frame's (`clone`), as the
-/// counters layer publishes them, which the column plans are keyed on.
 fn land_stacks(extra: &[u64]) -> LandStacks {
     let source = |units: &[u64]| -> Arc<[(Member, counter_action::Action)]> {
         units.iter().map(|&id| (land_unit(id, 1, 10, 10, true).member(), Ok(1))).collect::<Vec<_>>().into()
@@ -335,9 +327,6 @@ fn land_stacks(extra: &[u64]) -> LandStacks {
     [((1, STANDSTILL), source(&[10, 11])), ((2, STANDSTILL), source(&second)), ((3, STANDSTILL), source(&[13]))].into_iter().collect()
 }
 
-/// Each frame drawn by a retained preparation against a fresh preparation; the two must be equal
-/// (reports, and quads by bits). `overlay` is the plate's `counter_overlay` icon's placement and
-/// `extra` more of the plate's children. Returns each frame's plan and draw counts.
 fn land_plates_against_fresh(
     overlay: &str,
     extra: &str,
@@ -439,13 +428,9 @@ fn land_plates_against_fresh(
     )
 }
 
-/// With the camera still, grouping re-forming (a division joining province 2's column) lays out
-/// that column alone: its plan is made again and its plates drawn, the other columns' plates are
-/// not drawn; the same grouping again draws nothing.
 #[test]
 fn grouping_re_forming_lays_out_only_the_re_formed_columns() {
     let first = land_stacks(&[]);
-    // Province 2's stack alone is a new allocation; the same grouping again reuses it.
     let mut reformed = first.clone();
     reformed.insert((2, STANDSTILL), land_stacks(&[14])[&(2, STANDSTILL)].clone());
     let at = |stacks: &LandStacks| LandFrame { stacks: stacks.clone(), center: [2., 2.], height: 80., pitch: None };
@@ -521,14 +506,11 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
             ]
             .into_iter()
             .collect();
-            // Division 10 weakens: only its source is a new allocation, as the counters layer publishes.
             let mut weaker = first.clone();
             let mut members = weaker[&(1, STANDSTILL)].to_vec();
             members[0].0.hp = counter_status::FIXED / 2;
             weaker.insert((1, STANDSTILL), members.into());
             let products = [first, weaker.clone(), weaker];
-            // Each hour's tables are new (another epoch, countries in another allocation with the
-            // same values); the template icons are the memo's, unchanged with their table.
             let icons = Arc::clone(&tables.icons);
             let hour_tables = |inputs: &CounterInputs<'_>| {
                 let mut tables = synthetic_hour(inputs, &frame);
@@ -544,7 +526,6 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
             let mut plates = Vec::new();
             for (at, stacks) in products.into_iter().enumerate() {
                 let published = Layered { land: Some(Arc::new(stacks)), ..Layered::default() };
-                // A new hour: new tables, laid out on a memory of its own, as the tables' worker does.
                 let tables = hour_tables(&inputs);
                 let mut laid = Preparation::default();
                 laid.set_layered(published.clone(), Kinds::LAND, Kinds::default());
@@ -583,10 +564,6 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
     );
 }
 
-/// `batch` with the frame's clock set aside: each draw's `Time` constant and its time since its
-/// state's restart, which only a program that has not settled reads. A native draw's rectangle
-/// is set aside with it: it has no size and holds only how far its window was moved since it
-/// was painted, which its corners and world matrix carry.
 fn clockless(batch: &Batch) -> Batch {
     use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
     let mut batch = batch.clone();
@@ -605,8 +582,6 @@ fn clockless(batch: &Batch) -> Batch {
     batch
 }
 
-/// Structural equality plus all floating payloads by bits, including recursive native bakes.
-/// This is deliberately independent of SpritePass's retained-upload equality.
 fn assert_quad_bits(a: &Batch, b: &Batch) {
     assert_eq!(a.quads, b.quads);
     for (a, b) in a.quads.iter().zip(&b.quads) {
@@ -755,7 +730,6 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
                     _ => unreachable!(),
                 }
                 for repeat in 0..2 {
-                    // A pan by itself must not invalidate a pure semantic plan.
                     inputs.camera.center[0] += 0.125;
                     let (cached, counts) = plan_probe::collect(|| {
                         prepare_retained(&inputs, &tables, resources, &mut memo).unwrap()
@@ -765,11 +739,10 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
                         cached.fixed.report, fresh.fixed.report,
                         "change {change} repeat {repeat}"
                     );
-                    assert_eq!(counts.semantic_plans, 1); // only the base lookup: this hour has no sources
+                    assert_eq!(counts.semantic_plans, 1);
                     assert_eq!(counts.semantic_plan_hits, repeat, "change {change}");
                 }
             }
-            // Cloning keeps one immutable hour; rebuilding it gets a new held epoch.
             tables = tables.clone();
             assert_eq!(
                 plan_probe::collect(|| prepare_retained(
@@ -918,8 +891,6 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
             let empty = BTreeSet::new();
             let mut total_drawn = 0;
             let mut actual_markers = 0;
-            // Each history publishes once, before that frame's refinement.
-            // Include coverage without an answer and recording-player precedence.
             for case in 0..6 {
                 let history = History::default();
                 let mut tables = synthetic_hour_with_history(&inputs, &frame, Some(&history));
@@ -1004,7 +975,6 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                     inputs.hovered = (at == 5).then_some(Unit::Division(10));
                     inputs.visibility.unit_counters = at != 6;
                     inputs.schedule = &schedules[0];
-                    // Fixed fixture answers, not another history read or full hour rebuild.
                     let provenance = if at < 3 {
                         Provenance::Pending
                     } else {
@@ -1070,8 +1040,6 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                     assert_eq!(tables.land_combats.markers, land_combats.markers);
                     assert_eq!(tables.land_combats.gaps, land_combats.gaps);
                     assert_eq!(tables.land_combats.limits, land_combats.limits);
-                    // Project the naval fixture using those fixed answers too. This bypasses
-                    // history lookup/refinement while retaining its ordinary refusal coverage.
                     let kept = if at < 3 || case < 2 {
                         Kept::Undecided
                     } else {
@@ -1189,8 +1157,6 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
     );
 }
 
-/// Fixed base decisions over changing valid ordered hours, with independent
-/// presented GUI histories for the expected decisions and the decoded result.
 #[test]
 fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours() {
     use replay_data::rows::{
@@ -1200,8 +1166,6 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
     use replay_frame::frame::TableView;
     use viewer_foundation::map::province_map::ProvinceMap;
     engine_executable::executable_tables::initialize_for_tests().unwrap();
-    // The generic counter fixture loads only direct sheets; retained native
-    // windows need their own synthetic texture and effect through GuiResources.
     let stack = installed_content_core::test_support::Stack::new("base-icon-lookups");
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
@@ -1451,7 +1415,6 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                         })
                         .into(),
                 ));
-                // Each synthetic source observes the real format's sorted-unique law.
                 for table in [TableId::Provinces, TableId::ProvinceBuildings] {
                     let TableView::Complete(rows) = &*frame.tables[table.index()] else {
                         unreachable!()
@@ -1507,11 +1470,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                     continue;
                 }
                 let actual = actual.unwrap();
-                // Expectations spell the fixture's admission, tie and refusal laws;
-                // no map-index implementation remains as an alternate code path.
                 let mut expected = BaseIcons::default();
-                // A dictionary omission is not an ambiguous token mapping;
-                // it refuses the reached facility below, not the token roster.
                 for (province, anchor) in [(1, [2., 9.5, 2.]), (3, [3., 9.5, 2.])] {
                     if case == 15 {
                         *expected.unknown.naval_bases
@@ -1643,11 +1602,6 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
     );
 }
 
-/// The base windows' pools keep what they laid out while they stand still, and a changed offer
-/// lays out its own family's windows alone, kept again once the window it changed settles on the
-/// clock; a moved camera lays none out (a window stands at its owner's new origin); every frame equals a view whose pools lay out every frame (its `art` moves each frame,
-/// which writes every window again). Before, the clock stood still, and a window changed by its
-/// offer never settled.
 #[test]
 fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_alone() {
     use crate::map::counters::base_windows::{Family, PreparedBases, State};
@@ -1668,13 +1622,7 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
             );
             bases
         };
-        // A schedule never advanced holds every province dirty, and a dirty owner lays its pool
-        // out: the window's advance cleans an off-screen province, steadily here.
         inputs.schedule.lock().unwrap().advance([1, 3], |_| false, true);
-        // (the facility enabled, the camera moved, the pools expected to keep their windows at
-        // the first frame of these offers; none: frames of them until both families keep their
-        // windows, a window changed by its offer settling on the clock). The clock moves a
-        // sixtieth of a second a frame, as the window's does.
         let phases = [
             (true, false, Some(0)),
             (true, false, Some(2)),
@@ -1714,8 +1662,6 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
                 }
                 let [(kept_batch, kept_report), (laid_batch, laid_report)] = &out;
                 assert_eq!(kept_report, laid_report, "frame {at}");
-                // A kept window's draws carry the clock of the frame that laid them out: a
-                // settled program's output does not read it (`Effect::settles`).
                 if kept > 0 {
                     assert_quad_bits(&clockless(kept_batch), &clockless(laid_batch));
                 } else {
@@ -1732,15 +1678,11 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
     });
 }
 
-/// The base windows' fixture: a headquarter's and a facility's windows over a plate sprite, with
-/// the effect a disabled button draws.
 fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let stack = installed_content_core::test_support::Stack::new(name);
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
-    // A disabled button draws `Disable`, which the game's effect declares: without it the draw keeps
-    // the previous program, whose clock is unknown, and the window never settles.
     stack.write(
         &base,
         "gfx/FX/buttonstate.shader",

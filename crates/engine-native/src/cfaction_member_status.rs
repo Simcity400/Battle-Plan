@@ -1,7 +1,3 @@
-//! Independent faction member accounts. Account indices belong to the native
-//! faction system; they are not faction member ordinals. Reads accept the
-//! account array already obtained by the selecting faction census and visit
-//! only the accounts selected by writer notifications.
 
 use engine_sites::Rva;
 use crate::{Memory, allocation, cpdx_array::Array, read};
@@ -22,8 +18,6 @@ pub const PREVIOUS_WAR_SCORE: usize = 0xb0;
 pub const COMPLETED_GOALS: usize = 0xb8;
 pub const UPGRADE_VTABLE_RVA: Rva = Rva(0x0279_7c10);
 
-/// A selected member upgrade, keyed by the group's native identity. The save
-/// orders these identities before emitting the selected definition tokens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Upgrade {
     pub group: u32,
@@ -41,8 +35,6 @@ pub struct Snapshot {
     pub power_projection_rank: i32,
     pub contribution_raw: i64,
     pub contribution_gain: [i64; 2],
-    /// The serializer names this retained comparison baseline
-    /// `war_score_breakdown`; it is independent of the current rendered text.
     pub previous_war_score_raw: i64,
     pub upgrades: Vec<Upgrade>,
     pub completed_goals: Vec<Option<u32>>,
@@ -77,9 +69,6 @@ fn values(memory: &impl Memory, address: usize, output: &mut Vec<i64>) -> Result
     Ok(())
 }
 
-/// Selected upgrade definitions in native hash-slot order. The selecting
-/// status authenticates this embedded table; the live count and geometry bound
-/// traversal, and each reached definition is authenticated independently.
 pub fn read_upgrades(
     memory: &impl Memory,
     base: usize,
@@ -158,8 +147,6 @@ pub fn read_upgrades(
     Ok(())
 }
 
-/// Read one demanded account from a previously authenticated system array.
-/// No assumption ties the account's stored country reference to its index.
 pub fn read_accounting_into(
     memory: &impl Memory,
     base: usize,
@@ -186,7 +173,6 @@ pub fn read_accounting_into(
     read_selections_into(memory, base, accounts, index, output)
 }
 
-/// Sparse upgrade/history writers do not read balances or hourly caches.
 pub fn read_selections_into(
     memory: &impl Memory,
     base: usize,
@@ -232,8 +218,6 @@ pub fn read_selections_into(
     Ok(())
 }
 
-/// Full preparatory account reader. Capture uses the independent accounting
-/// reader above so projection refreshes cannot demand an accounting walk.
 pub fn read_into(
     memory: &impl Memory,
     base: usize,
@@ -259,8 +243,6 @@ pub fn read_into(
 #[cfg(test)]
 mod tests;
 
-/// Loaded projection coefficients are immutable for the authenticated content
-/// lifetime. They are read once on first demanded derivation, in the worker.
 pub const PROJECTION_FACTORS: [Rva; 7] = [
     Rva(0x33e4be0),
     Rva(0x33e4cf0),

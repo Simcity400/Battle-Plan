@@ -331,9 +331,6 @@ fn attrition_request_shortage_never_certifies_a_partial_identity_census() {
     assert_eq!(capture(&fixture, 0, &mut buffers), Err(REQUEST_CAPACITY));
 }
 
-/// The fixture with its reads logged in order, failing each address in
-/// `faults` once (a one-shot fault such as a guard page) and each in
-/// `persistent` every time.
 struct Logged<'a> {
     fixture: &'a Fixture,
     reads: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -356,8 +353,6 @@ impl Memory for Logged<'_> {
     }
 }
 
-/// One capture's published trees and its demand (requests, roots, nodes,
-/// text, stack).
 #[derive(Debug, PartialEq)]
 struct Trees {
     roots: Vec<Root>,
@@ -366,8 +361,6 @@ struct Trees {
     demand: [usize; 5],
 }
 
-/// One capture of `requests` with the given faults: its trees, and the
-/// reads it made in order.
 fn logged_capture(
     fixture: &Fixture,
     requests: &[Request],
@@ -420,8 +413,6 @@ fn logged_capture(
     (trees, memory.reads.into_inner())
 }
 
-/// Whether `reads` are `every` in order with only repeats of reads that
-/// succeeded earlier left out (`one_shot`: the addresses that fail once).
 fn omits_only_successful_repeats(
     reads: &[(usize, usize)],
     every: &[(usize, usize)],
@@ -445,9 +436,6 @@ fn omits_only_successful_repeats(
     next == reads.len()
 }
 
-/// `reads` with each repeat of an earlier read that succeeded removed: a
-/// failed read (`one_shot`, once per entry) stays every time it is made
-/// until it succeeds.
 fn without_repeats(reads: &[(usize, usize)], one_shot: &[usize]) -> Vec<(usize, usize)> {
     let mut faults = one_shot.to_vec();
     let mut kept: Vec<(usize, usize)> = Vec::new();
@@ -466,9 +454,6 @@ fn without_repeats(reads: &[(usize, usize)], one_shot: &[usize]) -> Vec<(usize, 
     kept
 }
 
-/// Three keys over one tree: a branch with a heap-held label, a leaf it
-/// lists twice and a leaf with a short label; and a second accumulator
-/// sharing that short leaf.
 fn repeated_tree(fixture: &mut Fixture) -> ([u32; 3], usize, usize, [usize; 2]) {
     let keys = [
         modifier_keys::ATTRITION,
@@ -491,10 +476,6 @@ fn repeated_tree(fixture: &mut Fixture) -> ([u32; 3], usize, usize, [usize; 2]) 
     (keys, root, other, [long, short])
 }
 
-/// Every key of one accumulator reads only what an earlier key did not:
-/// the cached capture's reads are the uncached capture's with each repeat
-/// of an earlier read removed, in the same order, and its trees and demand
-/// are equal.
 #[test]
 fn an_accumulators_keys_repeat_no_read_and_build_the_same_trees() {
     let mut fixture = Fixture::new();
@@ -512,8 +493,6 @@ fn an_accumulators_keys_repeat_no_read_and_build_the_same_trees() {
     assert!(reads.len() * 2 < every.len());
 }
 
-/// Enough distinct reads to grow the cache's slots several times keep
-/// every repeat served and every tree equal.
 #[test]
 fn a_wide_tree_grows_the_cache_and_repeats_no_read() {
     let mut fixture = Fixture::new();
@@ -541,8 +520,6 @@ fn a_wide_tree_grows_the_cache_and_repeats_no_read() {
     assert!(cache.allocated_bytes() > 0);
 }
 
-/// Another accumulator reads its own tree afresh, a shared node included,
-/// and a capture an hour later reads everything again.
 #[test]
 fn repeats_are_kept_only_within_one_accumulator_and_one_capture() {
     let mut fixture = Fixture::new();
@@ -561,13 +538,6 @@ fn repeats_are_kept_only_within_one_accumulator_and_one_capture() {
     }
 }
 
-/// A read that fails is not kept: the next key's walk meets the source
-/// again, as the uncached walks do, so a one-shot fault (of a child header,
-/// an accumulator's entry header or entries, or a heap label's terminator,
-/// which `msvc_string::Descriptor::from_header` reads first, or its bytes)
-/// fails only the first key's tree, and a persistent one every
-/// key's. The cached capture makes the uncached capture's reads with only
-/// the repeats of successful reads removed.
 #[test]
 fn a_failed_read_is_made_again_by_the_next_key() {
     let mut fixture = Fixture::new();
@@ -587,8 +557,6 @@ fn a_failed_read_is_made_again_by_the_next_key() {
         let mut cache = RepeatCache::default();
         let (cached, reads) = logged_capture(&fixture, &requests, &[fault], &[], Some(&mut cache));
         assert_eq!(cached, trees, "{fault:#x}");
-        // A failed lookup is made again whole, the reads that succeeded
-        // before its fault included, as the uncached lookups make it.
         assert!(
             omits_only_successful_repeats(&reads, &every, &[fault]),
             "{fault:#x}"

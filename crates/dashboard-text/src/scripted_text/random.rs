@@ -1,11 +1,8 @@
-//! Random localisation selection; no RNG state is advanced.
 
 use super::*;
 use crate::triggers::{Evaluator, Temps};
 use installed_content_scripted_localisation::scripted_localisation::RandomList;
 
-/// The seeded event scope stores this second hash lane.
-/// Promoted objects construct their scopes with 424242.
 pub fn scope_seed(seed: u32) -> u32 {
     lane(seed, 0x205a_d647, 0xb4f3_c315, 0x387a_9f3a)
 }
@@ -17,8 +14,6 @@ fn lane(seed: u32, first: u32, add: u32, last: u32) -> u32 {
     value ^ (value >> 8)
 }
 
-/// Two hash lanes, combined and mixed in u32,
-/// then the sign bit cleared. No key, date, player or global seed is read.
 pub fn scope_counter(seed: u32) -> u32 {
     lane(seed, 0x7eb8_da44, 0x10d8_365e, 0x6d22_f31b)
 }
@@ -27,12 +22,10 @@ fn draw(seed: u32) -> i32 {
     scoped_draw(scope_seed(seed), scope_counter(seed))
 }
 
-/// Scoped draw used by decision highlights.
 pub(crate) fn scoped_draw(seed: u32, counter: u32) -> i32 {
     (scoped_word(seed, counter) & 0x7fff_ffff) as i32
 }
 
-/// The full mixed word, also used by the thread-local seed update.
 pub(crate) fn scoped_word(seed: u32, counter: u32) -> u32 {
     let a = counter;
     let b = seed;
@@ -43,9 +36,6 @@ pub(crate) fn scoped_word(seed: u32, counter: u32) -> u32 {
     value ^ (value >> 8)
 }
 
-/// The one-member fast path reads no weight or seed. Otherwise all weights
-/// are evaluated first, their i32 sum wraps, and a nonpositive total returns
-/// empty localisation. Negative weights are not clamped.
 fn pick(
     count: usize,
     mut weight: impl FnMut(usize) -> Result<i32, String>,
@@ -98,7 +88,6 @@ impl<'a> ScriptedText<'a> {
         let mut seeded = None;
         let index = pick(
             list.members.len(),
-            // An evaluator exists whenever a member has modifiers.
             |i| match evaluator {
                 Some(evaluator) => evaluator
                     .localisation_weight(&list.members[i], scopes)
@@ -115,14 +104,10 @@ impl<'a> ScriptedText<'a> {
                 {
                     return bound.scope(at).require_random_seed();
                 }
-                // Create this only after a positive total needs the seed,
-                // and retain any tag-alias trigger writes for the selected text.
                 let evaluator = match evaluator {
                     Some(evaluator) => evaluator,
                     None => &*seeded.insert(bound.evaluator(self, temps)?),
                 };
-                // An explicit seed does not read the scope seed;
-                // the default is read only without that operand.
                 match evaluator
                     .localisation_seed(list, scopes)
                     .map_err(|why| why.to_string())?
@@ -148,8 +133,6 @@ mod tests {
     fn fixed_seed_draw_and_cumulative_pick() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // Seed 1 gives final draw 683596854; %60 = 54.
-        // Subtract 10 then 20 then 30 to choose the final member.
         assert_eq!(scope_seed(424242), 0xa4fb_a302);
         assert_eq!(scope_counter(424242), 0xf827_aabc);
         assert_eq!(scoped_draw(1, 0x5ea6_ba9e), 411_376_010);

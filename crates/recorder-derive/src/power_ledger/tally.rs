@@ -1,29 +1,21 @@
-//! What one payment, credit, balance row or day's gain adds to a `PowerSpendTotals` row.
 
 use replay_data::rows::{CountryPowerDailyRow, PowerSpendTotalRow as Total, Recorded};
 
-/// One recorded payment, as its item's totals count it.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Payment {
     pub recurring: bool,
-    /// Upkeep: its day counts one entry however many payments it merges.
     pub upkeep: bool,
     pub hour: i32,
     pub read: i32,
     pub sequence: u64,
     pub ordinal: u32,
-    /// None when the charge was not recorded.
     pub charge: Option<i128>,
     pub covered: bool,
-    /// The balance move it applied; none for a daily cost.
     pub realized: Option<i128>,
 }
 
-/// What one day's daily row adds to a currency's gains: its gain (none where not read), what the
-/// cap kept off it, and whether that currency's part was read.
 pub(super) type GainDay = (Option<i64>, i64, bool);
 
-/// A new item row of `holder`, `currency` and `ordinal`: its sums zero, its gains not recorded.
 pub(super) fn item(holder: u32, currency: u8, ordinal: u32) -> Total {
     Total {
         holder,
@@ -38,7 +30,6 @@ pub(super) fn item(holder: u32, currency: u8, ordinal: u32) -> Total {
     }
 }
 
-/// A new gains row of `holder` and `currency`: its gains zero, the item columns not recorded.
 pub(super) fn gains(holder: u32, currency: u8) -> Total {
     use Recorded::NotRecorded as No;
     Total {
@@ -76,7 +67,6 @@ pub(super) fn gains(holder: u32, currency: u8) -> Total {
     }
 }
 
-/// `cell` plus `amount`; not recorded once it leaves i64, and from then on.
 fn add(cell: &mut Recorded<i64>, amount: i128) {
     if let Recorded::Value(held) = *cell {
         *cell = i64::try_from(i128::from(held) + amount).map_or(Recorded::NotRecorded, Recorded::Value);
@@ -94,12 +84,10 @@ fn set<T>(cell: &mut Recorded<Option<T>>, value: T) {
     *cell = Recorded::Value(Some(value));
 }
 
-/// The native day an hour is in, as its midnight.
 pub(super) fn midnight(hour: i32) -> i32 {
     hour.div_euclid(24) * 24
 }
 
-/// Counts `payment` into its item's `total`.
 pub(super) fn pay(total: &mut Total, payment: &Payment) {
     if payment.recurring { day(total, payment) } else { once(total, payment) }
 }
@@ -120,8 +108,6 @@ fn once(total: &mut Total, payment: &Payment) {
     }
 }
 
-/// A recurring payment merged into its native day: a day after the latest starts a new one; one
-/// before it adds to the day it was paid in, a day only when before every day counted.
 fn day(total: &mut Total, payment: &Payment) {
     let day = midnight(payment.hour);
     let lag = payment.read.saturating_sub(day);
@@ -169,17 +155,14 @@ fn day(total: &mut Total, payment: &Payment) {
     }
 }
 
-/// A row of the item that is no payment: a balance line, or a negative daily cost.
 pub(super) fn count(total: &mut Total, credit: bool) {
     add(if credit { &mut total.credits } else { &mut total.balances }, 1);
 }
 
-/// A daily cost whose day's application is not recorded, on the political gains row.
 pub(super) fn unmatched(total: &mut Total) {
     add(&mut total.unmatched, 1);
 }
 
-/// One day's gain added to a gains row (`sign` 1), or a revision's earlier one taken out (-1).
 pub(super) fn gain(total: &mut Total, (gained, capped, read): GainDay, sign: i128) {
     match gained {
         Some(gained) => add(&mut total.gained, sign * i128::from(gained)),
@@ -191,9 +174,6 @@ pub(super) fn gain(total: &mut Total, (gained, capped, read): GainDay, sign: i12
     }
 }
 
-/// What a daily row adds to the gains of each currency, political then command: the gain where
-/// the part was read (command power's negative gain is a deficit payment, not a gain), and what
-/// the cap kept off a positive net gain.
 pub(super) fn day_gains(row: &CountryPowerDailyRow) -> [GainDay; 2] {
     let political = row.pp_gross_gain_raw.is_some() || row.pp_cost_raw.is_some() || row.pp_net_gain_raw.is_some() || row.pp_realized_delta_raw.is_some() || row.pp_sequence.is_some();
     let command = row.cp_gain_raw.is_some() || row.cp_realized_delta_raw.is_some() || row.cp_sequence.is_some();

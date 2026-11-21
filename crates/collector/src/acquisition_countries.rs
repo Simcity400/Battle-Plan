@@ -1,6 +1,3 @@
-//! Countries and CountryLinks acquired once within the callback's country
-//! lease, with the country naming; the division template dictionary is its
-//! own job beside them ([`TemplatesRequest`]).
 
 use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use engine_native::{Memory, ccountry, country_memory::Cache, walk::Outcome};
@@ -14,8 +11,6 @@ pub(crate) struct Request {
 struct Naming {
     appearance: crate::extended::country_appearance::Captured,
     hour: i32,
-    /// The held CountryAppearance rows (`appearance_changes`); absent reads
-    /// every country.
     store: Option<Box<crate::extended::country_appearance::AppearanceStore>>,
 }
 
@@ -98,7 +93,6 @@ impl Request {
                 naming.hour,
                 reason,
             );
-            // The read may have advanced the held rows before failing.
             if let Some(store) = naming.store.as_deref_mut() {
                 store.forget();
             }
@@ -112,8 +106,6 @@ impl Request {
             links_ticks: 0,
         }
     }
-    /// Returns the naming buffers and the held appearance store, forgotten
-    /// when the job failed.
     pub(crate) fn restore_with_naming(
         mut self,
         rows: &mut Vec<ccountry::Row>,
@@ -141,10 +133,6 @@ impl Request {
         let begin = crate::sampling::qpc();
         if let Some(naming) = &mut self.naming {
             naming.appearance.raw.begin(naming.hour);
-            // The original shared authentication seed may have failed before
-            // Countries began. Its later transparent fallback is still an
-            // original family operation, but cannot heal that first control
-            // failure for the new authority or authorize a Map source retry.
             if let engine_native::country_memory::SeedStatus::Unavailable { reason } =
                 cached.seed_status()
             {
@@ -155,8 +143,6 @@ impl Request {
                 );
             }
         }
-        // The selected transport preview's convoy pools and spotting owners
-        // retired: the walk observes no transport suffix.
         let countries = match &mut self.naming {
             Some(naming) => ccountry::walk_observed(
                 &cached,
@@ -195,7 +181,6 @@ impl Request {
             naming
                 .appearance
                 .capture_preacquired(&cached, base, game_state, naming.hour, carry);
-            // Country naming was the journal's last native borrower.
             naming.appearance.raw.finish_native();
         }
         Report {
@@ -207,14 +192,7 @@ impl Request {
     }
 }
 
-/// The division template dictionary (DivisionTemplates and
-/// DivisionTemplateIcons), walked by its own job in the first burst: it
-/// reads only the shared country cache and nothing the Countries job
-/// leaves, so it runs beside that job instead of after its naming. The
-/// game thread takes its preacquired ticks after joining it, before the
-/// tables ([`crate::extended::Captured::take_preacquired_templates`]).
 pub(crate) struct TemplatesRequest {
-    /// Splits the template walk by country ranges across the workers once armed at submission.
     pub(crate) workers: crate::acquisition_jobs::variant_workers::Dispatch,
     countries: engine_allocation::SharedBox<Cache>,
     templates: crate::extended::division_templates::Captured,
@@ -228,7 +206,6 @@ pub(crate) struct TemplatesRequest {
 pub(crate) struct TemplatesReport;
 
 impl TemplatesRequest {
-    /// Lends the template dictionary to the job, leaving a vacant one.
     pub(crate) fn take(
         countries: &engine_allocation::SharedBox<Cache>,
         base: usize,
@@ -269,8 +246,6 @@ impl TemplatesRequest {
         TemplatesReport
     }
 
-    /// A job that did not run or did not complete refuses the hour's
-    /// templates, as a failed preacquisition does.
     pub(crate) fn fail(&mut self, reason: &'static str) -> TemplatesReport {
         self.templates.fail_preacquired(
             self.base,
@@ -282,7 +257,6 @@ impl TemplatesRequest {
         TemplatesReport
     }
 
-    /// Returns the dictionary to its pack once the job joined.
     pub(crate) fn restore(
         mut self,
         templates: &mut crate::extended::division_templates::Captured,
@@ -310,8 +284,6 @@ mod tests {
     const LINKS: usize = 0x2100;
     const TAGS: usize = 0x2200;
     const STATUS: usize = 0x5000;
-    // The country census authenticates links 1, 2 and 7. Link 3 remains a fresh
-    // native read on each links walk, including after the first walk fails.
     const FRESH_LINK: usize = LINKS + 3 * 4;
 
     fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
@@ -608,7 +580,6 @@ mod tests {
             let mut links = vec![ccountry::LinkRow::default(); 8];
             let pointers = (rows.as_ptr(), links.as_ptr());
             let mut pending = Some(Request::take(&snapshot, 0, STATE, &mut rows, &mut links));
-            // SAFETY: the runner owns the synthetic memory until collection.
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
             let completed = pool.finish(ticket).unwrap();
             let report = completed.report.unwrap();
@@ -649,9 +620,6 @@ mod tests {
         request.restore_with_naming(&mut rows, &mut links, &mut appearance, None);
         assert_eq!(report.countries, expected_outcome);
         assert_eq!(rows, expected);
-        // The selected transport preview's convoy pool and reservations are
-        // no longer observed beside the country walk; the stored cache word
-        // Countries records is its only convoy read.
         let convoys = COUNTRY + ccountry::CONVOY_STATE;
         for header in [cconvoys::EQUIPMENT_POOL, cconvoys::RESERVATIONS] {
             assert!(
@@ -665,10 +633,6 @@ mod tests {
         }
     }
 
-    /// The template dictionary is its own job: its run preacquires the
-    /// hour's walk, which the table capture then takes without a read; a
-    /// job that did not complete refuses the hour's templates with its
-    /// reason instead.
     #[test]
     fn the_template_job_preacquires_or_refuses_the_hours_templates() {
         use crate::extended::division_templates;

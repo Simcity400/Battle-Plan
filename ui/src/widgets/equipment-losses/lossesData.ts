@@ -42,7 +42,6 @@ const isLeaf = (leaf: LossLeaf, designs: number) => object(leaf)
   && leaf.points.every((point, index) => object(point) && int(point.hour) && typeof point.totalRaw === 'string' && RAW.test(point.totalRaw)
     && (index === 0 || leaf.points[index - 1].hour < point.hour));
 
-/** Validate before local playback; unknown spans may overlap for different reasons. */
 export function validateLossesReply(data: unknown): LossesReply {
   const reply = data as LossesReply;
   const ok = object(reply) && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
@@ -73,8 +72,6 @@ export function validateLossesReply(data: unknown): LossesReply {
   return reply;
 }
 
-/** The sunk ships the timeline's reads listed, as leaves of the ships' cause: per signature the most one read listed,
- * each dated at its sinking (the game's date of the loss, whichever read first showed it) and summed by design. */
 export function shipLeaves(ships: readonly ShipListing[], scale: number): LossLeaf[] {
   const most = new Map<string, ShipListing>();
   for (const ship of ships) {
@@ -98,7 +95,6 @@ export function shipLeaves(ships: readonly ShipListing[], scale: number): LossLe
 }
 
 const filled = new WeakMap<LossesReply, LossesReply>();
-/** `reply` with its sunk ships' leaves filled from the listings it holds. */
 export function withShips(reply: LossesReply, _hour?: number): LossesReply {
   let made = filled.get(reply);
   if (!made) {
@@ -109,9 +105,6 @@ export function withShips(reply: LossesReply, _hour?: number): LossesReply {
   return made;
 }
 
-/** `reply` at the head `hour`: each leaf's total there the followed cell's (`total(leaf)`), its earlier points kept; a
- * leaf the head holds no row of yet (null) has none there; a cell without a value leaves the leaf's history and names
- * why its cause is not known at the hour. */
 export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLeaf) => number | string | null): LossesReply {
   return { ...reply, causes: reply.causes.map(cause => {
     if (cause.source.kind === 'sunkShips' || cause.unknown !== null) return cause;
@@ -129,7 +122,6 @@ export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLea
   }) };
 }
 
-/** Loss totals change only on their recorded points, never between them. */
 export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   let low = 0;
   let high = leaf.points.length - 1;
@@ -169,7 +161,6 @@ const spansAt = (cause: LossCause, hour: number) => [...new Map(cause.unknownSpa
   .map(span => [JSON.stringify([span.reason, span.detail]), span])).values()];
 const destructionReason = (span: UnknownSpan) => span.reason.startsWith('destruction');
 
-/** One short limitation per cause for the completeness disclosure. */
 export const unknownCauses = (reply: LossesReply, hour: number) => reply.causes.filter(cause => cause.loss).flatMap(cause => {
   if (cause.unknown !== null) return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: Unavailable` }];
   if (!spansAt(cause, hour).length) return [];
@@ -183,7 +174,6 @@ export function coverageAt(reply: LossesReply, hour: number): Coverage {
   return span && span.lastHour >= hour ? span.coverage : 'unknown';
 }
 
-/** Inclusive hourly counts; an omitted hour is unknown, never logged. */
 export function coverageHours(reply: LossesReply, first: number, last: number): Record<LandState, number> {
   const counts = { logged: 0, partial: 0, notLogged: 0, unknown: 0 };
   let covered = 0;
@@ -197,10 +187,8 @@ export function coverageHours(reply: LossesReply, first: number, last: number): 
 }
 
 export interface LossWindow { first: number; hour: number; end: number; campaign: boolean; from?: number | null;
-  /** The first hour its totals count from, after hours the recording lost; null when none came before. */
   since?: number | null }
 
-/** Follow's trailing frame window is irrelevant to cumulative totals. Ranges are inclusive. */
 export function lossWindow(window: { firstHour: number; lastHour: number } | null,
   branch: { firstHour: number; lastHour: number }, mode: string): LossWindow | null {
   if (!window || !int(window.lastHour) || window.lastHour < branch.firstHour || window.lastHour > branch.lastHour
@@ -210,7 +198,6 @@ export function lossWindow(window: { firstHour: number; lastHour: number } | nul
     from: mode === 'range' ? window.firstHour : null };
 }
 
-/** Range amounts are changes at supplying reads, including a selected first retained read. */
 export function lossAmount(leaf: LossLeaf, hour: number, from?: number | null): bigint | null {
   const point = pointAt(leaf, hour);
   return point ? BigInt(point.totalRaw) - (from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0')) : null;
@@ -224,9 +211,7 @@ export const lossDesignName = (design: LossDesign | undefined, hour: number) => 
 };
 
 export interface LossItem extends SunburstItem {
-  /** Independent ordering weight; consumed by the reviewed optional shared weight API. */
   weight?: number;
-  /** A measured subtotal remains exact, with its missing-total reason alongside it. */
   incomplete?: boolean;
 }
 export interface LossTotal extends SunburstTotal { exact: bigint | null; incomplete: boolean }
@@ -237,7 +222,6 @@ export function destructionCoverageAt(reply: LossesReply, hour: number): string 
   return span && span.lastHour >= hour ? span.reason : NO_DESTRUCTION_READ;
 }
 
-/** The legend describes the drain intervals, independently of cumulative unknown spans. */
 export function destructionCoverageHours(reply: LossesReply, first: number, last: number) {
   first = Math.max(first, reply.destructionCountedFrom ?? reply.destructionCoverage[0]?.firstHour ?? last + 1);
   let recorded = 0;
@@ -254,7 +238,6 @@ export function destructionCoverageHours(reply: LossesReply, first: number, last
   return { recorded, unknown, reasons: [...reasons] };
 }
 
-/** Compact status for the selected destruction intervals. */
 export function destructionLegend(reply: LossesReply, window: LossWindow, tokens: Pick<ChartTokens, 'positive' | 'surface' | 'text'>): LegendItem[] {
   const first = reply.destructionCountedFrom;
   if ((first === null && !reply.destructionCoverage.length) || (first !== null && window.hour < first)) return [];
@@ -272,14 +255,12 @@ export function coverageLegend(reply: LossesReply, window: LossWindow, tokens: P
     label: incomplete ? 'Incomplete' : 'Complete' }];
 }
 
-/** Unlogged land hours cannot become a complete campaign total after rejoining an army. */
 export function landNote(reply: LossesReply, first: number, hour: number): string | undefined {
   if (reply.landSource === 'destruction') return reply.landLowerBound ? 'Incomplete total.' : undefined;
   const counts = coverageHours(reply, first, hour);
   return counts.partial || counts.notLogged || counts.unknown ? 'Incomplete total.' : undefined;
 }
 
-/** Native cause, content archetype and recorded design; unknown causes invent no leaves. */
 export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
   const items: LossItem[] = [];
   const land = landNote(reply, window.first, window.hour);
@@ -323,7 +304,6 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
   return items;
 }
 
-/** Preserve every recorded fixed-point digit, including amounts beyond 2^53. */
 export function formatLosses(value: number, exact: bigint | null, scale: number): string {
   const raw = exact ?? BigInt(Math.round(value));
   const amount = formatRate(raw, Math.round(Math.log10(scale)));
@@ -335,7 +315,6 @@ export function lossesFootnote(reply: LossesReply, window: LossWindow): string {
     reply.landSource === 'combatLog' && reply.retainedMonths !== 0 ? 'Includes earlier Combat Log losses.' : undefined].filter(Boolean).join(' ');
 }
 
-/** Independently counted subtotal: missing cause amounts leave the full signed total unknown. */
 export function lossesTotal(items: readonly LossItem[]): LossTotal {
   let value = 0;
   let exact = 0n;
@@ -356,13 +335,10 @@ export function lossesTotal(items: readonly LossItem[]): LossTotal {
     note: incomplete ? 'Incomplete total.' : undefined };
 }
 
-/** Counting-start wording lives here so product wording changes need one edit. */
 export function destructionCountingNote(reply: LossesReply, hour: number): string {
   return reply.destructionCountedFrom === null || hour < reply.destructionCountedFrom ? 'Unavailable' : '';
 }
 
-/** The hour `key` steps to among `hours` (sunk ships' sinking hours, which no series holds) within `first..last`: the
- * first or last of them, or the nearest after or before `origin`. */
 export function stepHours(hours: readonly number[], key: NavigationKey, origin: number | null, first: number, last: number): number | null {
   const within = hours.filter(hour => hour >= first && hour <= last);
   const after = key === 'Home' || key === 'ArrowRight' && origin === null ? within
@@ -373,8 +349,6 @@ export function stepHours(hours: readonly number[], key: NavigationKey, origin: 
   return before.length ? Math.max(...before) : null;
 }
 
-/** A step as main's keyboard made it: the window's first hour is a stop (Home lands there, End and a step back fall
- * to it), and a step forward with nothing ahead stays where it was. */
 export function withEdges(key: NavigationKey, answer: number | null, origin: number | null, first: number): number | null {
   if (key === 'Home') return first;
   if (key === 'End') return answer ?? first;
@@ -382,7 +356,6 @@ export function withEdges(key: NavigationKey, answer: number | null, origin: num
   return answer ?? origin;
 }
 
-/** The nearer of two answers to one key: the earlier stepping forward, the later stepping back. */
 export function nearest(key: NavigationKey, a: number | null, b: number | null): number | null {
   if (a === null || b === null) return a ?? b;
   return key === 'Home' || key === 'ArrowRight' ? Math.min(a, b) : Math.max(a, b);

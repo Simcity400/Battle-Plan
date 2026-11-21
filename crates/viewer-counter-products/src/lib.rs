@@ -1,6 +1,4 @@
-//! Counter and province hover text, fresh route queries and order products.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;

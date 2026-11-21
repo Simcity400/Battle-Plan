@@ -1,5 +1,3 @@
-//! The leaf integer encodings the clock, the summaries and the units share: LEB128 varints, and
-//! signed values zigzagged into them.
 
 pub(crate) fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {

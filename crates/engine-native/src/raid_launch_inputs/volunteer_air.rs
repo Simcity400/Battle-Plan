@@ -1,5 +1,3 @@
-//! Volunteer stockpile totals folded from the raid census's owned allocation bytes.
-//! Equipment categories carry only under the caller's equipment-reload and world certificate.
 use crate::{Memory, allocation, cequipment_type as equipment, read};
 
 #[derive(Default)]

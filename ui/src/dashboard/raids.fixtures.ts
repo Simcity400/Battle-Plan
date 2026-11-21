@@ -3,8 +3,6 @@ import type { RaidEpisode, RaidLogReply, RaidPhaseRun } from '../generated/dashb
 export const phaseRun = (firstHour: number, lastHour: number, phase: number, outcome = 0): RaidPhaseRun =>
   ({ firstHour, lastHour, phase, phaseName: `Phase ${phase}`, outcome, outcomeName: outcome ? `Outcome ${outcome}` : 'No result' });
 
-/** A raid by `raider`: preparing from `firstHour`, launched at `launchedHour`, ended at `endedHour` (a success when
- * `succeeded`), read every hour of its life. */
 export function syntheticEpisode(id: string, firstHour: number, raider: string | null, launchedHour: number | null, endedHour: number | null,
   succeeded: boolean, changes: Partial<RaidEpisode> = {}): RaidEpisode {
   const lastHour = endedHour === null ? firstHour + 100 : endedHour + 10;

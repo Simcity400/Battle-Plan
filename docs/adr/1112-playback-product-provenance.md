@@ -1,0 +1,9 @@
+# Certify product reuse from recorded inputs
+
+A music pipeline owns immutable station and content inputs. Reuse a song's evaluated result, including refusal, only after the trigger observer certifies the information it read. Reread values are scoped to the current request. Unfamiliar inputs cause a miss, and a busy memo falls back to ordinary synchronous evaluation. A missing registry remains unknown while a known-empty registry can establish the absence of a target. Tests compare the memo with an independent synchronous evaluator over forward skips, rewinds, content changes and table replacement.
+
+Trade-route geometry and convoy assignment counts compare separately because assignment changes are much more frequent. An unchanged view shares its recorded column projection. A column outside either projection cannot invalidate the line or its convoy counts. Changed geometry requests a whole rebuild, while changed assignments can be reapplied to existing lines. A geometry read refusal stays a refusal.
+
+A map comparison separately identifies an hourly layer drawn with an older product, a product made on its own cadence, and a layer that has yet to publish. Comparison waits for missing products without treating them as equal. The highlight takes the frame's political picture or the mode fill it was built over. Cursors decode the content stack's replaceable images or animations and report unavailable image names. Animation step times use 60 Hz jiffies and a static image has no later transition.
+
+[Music reuse](../../crates/viewer-playback/src/document/music_inputs.rs) · [Trade-route inputs](../../crates/viewer-playback/src/document/trade_route_read.rs) · [Comparison](../../crates/viewer-playback/src/comparison.rs) · [Cursor loading](../../crates/viewer-playback/src/cursors.rs)

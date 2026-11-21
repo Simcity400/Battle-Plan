@@ -1,9 +1,5 @@
 import { datedPanel } from '../../dashboard/follow/messages.fixture.ts';
 import { FollowDecoder } from '../../dashboard/follow/decode.ts';
-/** Special projects at 1,440 game hours a second in a real browser: Current and History of one country mounted on a
- * clock the test moves 15 hours a frame, served one whole-branch reply whose progress steps every day and in which one
- * project starts while playing, and the details under Current pushed as a panel whose daily values move each day;
- * their renders, the requests made, the hours they report and the progress and details painted. */
 import { Profiler } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -32,7 +28,6 @@ measureWith(new Proxy({
 
 const HOURS = 120_000;
 const START = 30_000;
-/** The project that starts while playing. */
 export const LATE = 34_000;
 const track = { id: 'main', axisOffset: 0, selectedTag: 'GER', source: { id: 'source', revision: '1', metadata: { countries: [] } },
   branch: { id: '1', firstHour: 0, lastHour: HOURS - 1, gaps: [] } };
@@ -40,8 +35,6 @@ const identities = [{ firstHour: 0, lastHour: HOURS - 1, slot: 1, countryId: 1 }
 const GROUPS = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], identityChanges: [], warnings: [], capitulations: [],
   countryIdentities: [{ tag: 'GER', identities }], unobserved: { humans: [], factions: [], wars: [] } };
 
-/** Progress steps of a point every 50 days (`fast`, from 10 %) and every 60 days (`slow`, from 0 %, behind it): over the
- * 9,000 hours played each moves several points, so the painter has work, while their order never changes. */
 const daily = (from: number, start: number, perDay: number): SpecialProjectRun[] => {
   const runs: SpecialProjectRun[] = [];
   for (let day = 0; from + day * 24 < HOURS; day++) {
@@ -66,15 +59,12 @@ export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identiti
     { id: 'late', start: { hour: LATE, exact: false }, runs: merge(daily(LATE, 0, 0)) },
   ] };
 
-/** The details as the service pushes them for the day read at `read`: one scientist recovering and one facility's
- * specialization points, the same structure every day. */
 export const details = (read: number): SpecialProjectDetails => ({ hour: read, unavailable: [], warnings: [], projects: [],
   scientists: [{ character: 7, person: { assigned: true, id: 7, name: 'Wernher', portrait: null, missing: null }, active: 1,
     injuryDays: Math.max(0, 400 - Math.floor(read / 24) % 400), injuryHour: read, visible: true, visibilityHour: read, stateRefusals: {}, skills: [], traits: [] }],
   breakthroughs: [{ specialization: { token: 'sp_rockets', name: 'Rocketry' }, points: Math.floor(read / 24) * 100, readHour: read }],
   programs: [] });
 
-/** Whether the service follows the details panel, the panel id it gave, and who hears pushed messages. */
 const stamp = { route: 9, epoch: 1, generation: 1 };
 const panels: { id: number; port?: MessagePort } = { id: -1 };
 const decoder = new FollowDecoder();
@@ -110,7 +100,6 @@ class Clock {
 function answer(product: string): unknown {
   if (product === 'country-groups') return GROUPS;
   if (product === 'special-projects') return reply;
-  // Asked only until the service says it follows the details panel.
   if (product === 'special-project-details') return details(START - (START - 4) % 24);
   if (product === 'country-facts') return { branchId: '1', known: [[0, HOURS - 1]], names: [], reasons: [], flags: [], countries: [], warnings: [] };
   if (product === 'country-styles') return { branchId: '1', styles: [], warnings: [] };
@@ -170,14 +159,11 @@ export const fixture = {
     return { head: clock.getHour(), asked: requests.slice(before.requests), rendered };
   },
   pause() { clock.playing = false; clock.anchor(); },
-  /** The cards Current shows, in order, with the progress painted on each. */
   cards: () => [...document.querySelectorAll<HTMLElement>('#current [data-project]')].map(card => ({ id: card.dataset.project,
     progress: card.querySelector('[data-paint="progress"]')?.textContent ?? null })),
-  /** The details' painted texts under Current, by key. */
   painted: () => Object.fromEntries([...document.querySelectorAll<HTMLElement>('#current [data-paint^="s:"], #current [data-paint^="b:"]')]
     .map(element => [element.dataset.paint, element.textContent])),
   shown: () => Object.fromEntries([...shown].map(([id, hours]) => [id, hours.at(-1) ?? null])),
-  /** The progress the reply holds for `id` at `hour`. */
   progressAt: (id: string, hour: number) => {
     const run = reply.projects.find(project => project.id === id)!.runs.find(run => run.firstHour <= hour && hour <= run.lastHour);
     return run ? `${run.progress}%` : null;

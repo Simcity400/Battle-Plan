@@ -1,6 +1,3 @@
-//! Requests answered from the recording's own tables through the query layer
-//! ([`dashboard_query`]): a declared series' requests with no product code, and each moved
-//! product's own reply. The layer's index state is kept per open recording.
 
 use crate::Source;
 use dashboard_core::config::LoadContext;
@@ -10,7 +7,6 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-/// The products every declared series answers.
 pub const SERIES_PRODUCTS: &[&str] = &[
     "series-state",
     "series-summary",
@@ -31,8 +27,6 @@ pub fn forget(source: &Source) {
     crate::products::air_ledger::forget(source);
 }
 
-/// Each run's histories, read once from their tables and kept while the recording is open: what
-/// each tag shows, the groups, which slots held territory, and each army mix key's hours.
 #[derive(Default)]
 struct Runs {
     looks: std::collections::HashMap<u32, Arc<crate::products::styles::RunLooks>>,
@@ -59,31 +53,24 @@ fn held<T>(source: &Source, pick: impl Fn(&mut Runs) -> &mut std::collections::H
     Ok(made)
 }
 
-/// Run `run`'s looks history.
 pub fn looks(source: &Source, run: u32) -> io::Result<Arc<crate::products::styles::RunLooks>> {
     held(source, |runs| &mut runs.looks, run, || crate::products::styles::run_looks(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s groups history.
 pub fn groups(source: &Source, run: u32) -> io::Result<Arc<crate::products::groups::RunGroups>> {
     held(source, |runs| &mut runs.groups, run, || crate::products::groups::run_groups(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s hours each slot held land ([`crate::products::land_owners::holding`]).
 pub fn territory(source: &Source, run: u32) -> io::Result<Arc<Vec<(u128, i64, i64)>>> {
     held(source, |runs| &mut runs.territory, run, || crate::products::land_owners::holding(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s army mix lifetimes, ascending by key.
 pub fn army_mix(source: &Source, run: u32) -> io::Result<Arc<Vec<(u128, i64, i64)>>> {
     held(source, |runs| &mut runs.army_mix, run, || {
         dashboard_query::cost::lifetimes(source.replay_ref().recording(), run, replay_data::rows::TableId::ArmyMix)
     })
 }
 
-/// The tables whose keys' lifetimes a run keeps at open: each force race's parts, the aid links,
-/// the operative census, the raids, the casualty lifetimes, the unit leaders and the production
-/// type totals.
 const KEPT_LIFETIMES: [replay_data::rows::TableId; 9] = [
     replay_data::rows::TableId::AirForceParts,
     replay_data::rows::TableId::AirForceWingKinds,
@@ -96,27 +83,20 @@ const KEPT_LIFETIMES: [replay_data::rows::TableId; 9] = [
     replay_data::rows::TableId::ProductionTypeTotals,
 ];
 
-/// Run `run`'s lifetimes of `table`'s keys, ascending by key, read once and kept.
 
-/// Run `run`'s country links: each raw id's canonical slot.
 
-/// Run `run`'s subject relations and levels.
 pub fn subjects(source: &Source, run: u32) -> io::Result<Arc<crate::products::subjects::RunSubjects>> {
     held(source, |runs| &mut runs.subjects, run, || crate::products::subjects::run_subjects(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s diplomatic relations: each relation row's endpoints and dates.
 pub fn pacts(source: &Source, run: u32) -> io::Result<Arc<crate::products::diplomacy::RunPacts>> {
     held(source, |runs| &mut runs.pacts, run, || crate::products::diplomacy::run_pacts(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s production line and output lives.
 pub fn production_lines(source: &Source, run: u32) -> io::Result<Arc<crate::products::production::RunLines>> {
     held(source, |runs| &mut runs.production_lines, run, || crate::products::production::run_lines(source.replay_ref().recording(), run))
 }
 
-/// A source's runs' production line indexes, held by a product's context past the request's
-/// borrow of the source: the same runs [`production_lines`] keeps, built at open.
 #[derive(Clone)]
 pub struct ProductionIndex {
     replay: Arc<replay::campaign::Replay>,
@@ -128,7 +108,6 @@ impl ProductionIndex {
         Self { replay: source.replay(), state: source.state::<Runs>() }
     }
 
-    /// Run `run`'s index, read now if open has not.
     pub fn run(&self, run: u32) -> io::Result<Arc<crate::products::production::RunLines>> {
         if let Some(found) = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).production_lines.get(&run) {
             return Ok(Arc::clone(found));
@@ -139,9 +118,6 @@ impl ProductionIndex {
     }
 }
 
-/// Run `run`'s deals by importer and lend-lease convoy clients by receiver.
-/// A source's runs' convoy indexes, held by a product's context past the request's borrow of the
-/// source: the same runs [`convoys`] keeps, built at open.
 #[derive(Clone)]
 pub struct ConvoyIndex {
     replay: Arc<replay::campaign::Replay>,
@@ -153,7 +129,6 @@ impl ConvoyIndex {
         Self { replay: source.replay(), state: source.state::<Runs>() }
     }
 
-    /// Run `run`'s index, read now if open has not.
     pub fn run(&self, run: u32) -> io::Result<Arc<crate::products::convoys::RunConvoys>> {
         if let Some(found) = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).convoys.get(&run) {
             return Ok(Arc::clone(found));
@@ -168,28 +143,22 @@ pub fn convoys(source: &Source, run: u32) -> io::Result<Arc<crate::products::con
     held(source, |runs| &mut runs.convoys, run, || crate::products::convoys::run_convoys(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s construction lines: each line's lifetime and final row.
 pub fn construction(source: &Source, run: u32) -> io::Result<Arc<crate::products::construction::RunLines>> {
     held(source, |runs| &mut runs.construction, run, || crate::products::construction::run_lines(source, run))
 }
 
-/// Run `run`'s division templates, each from the first division log row naming it: read on first
-/// use and kept.
 pub fn division_templates(source: &Source, run: u32) -> io::Result<Arc<Vec<crate::products::division_log::SeenTemplate>>> {
     held(source, |runs| &mut runs.division_templates, run, || crate::products::division_log::run_templates(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s changes of the war overview's rows.
 pub fn wars(source: &Source, run: u32) -> io::Result<Arc<crate::products::wars::RunWars>> {
     held(source, |runs| &mut runs.wars, run, || crate::products::wars::run_wars(source.replay_ref().recording(), run))
 }
 
-/// Run `run`'s ended casualty lifetimes' last counters.
 pub fn casualty_ends(source: &Source, run: u32) -> io::Result<Arc<crate::products::casualties::EndedCounters>> {
     held(source, |runs| &mut runs.casualty_ends, run, || crate::products::casualties::run_ends(source, run))
 }
 
-/// Builds the recording's index of every timeline, as opening it does.
 pub fn open_all(source: &Source) -> io::Result<()> {
     if let Some(timelines) = source.replay_ref().timelines() {
         for timeline in &timelines.list {
@@ -199,10 +168,8 @@ pub fn open_all(source: &Source) -> io::Result<()> {
     Ok(())
 }
 
-/// One part of the index a timeline's open builds.
 type Part<'a> = Box<dyn FnOnce() -> io::Result<()> + Send + 'a>;
 
-/// Runs `parts` on as many threads as the machine has, each part once; the first failure.
 fn build_all(parts: Vec<Part<'_>>) -> io::Result<()> {
     let threads = std::thread::available_parallelism().map_or(1, |threads| threads.get()).min(parts.len());
     if threads <= 1 {
@@ -225,7 +192,6 @@ fn build_all(parts: Vec<Part<'_>>) -> io::Result<()> {
     })
 }
 
-/// The parts of run `run`'s index: each history read once from its tables.
 fn run_parts(source: &Source, run: u32) -> Vec<Part<'_>> {
     let mut parts: Vec<Part<'_>> = vec![
         Box::new(move || looks(source, run).map(drop)),
@@ -246,9 +212,6 @@ fn run_parts(source: &Source, run: u32) -> Vec<Part<'_>> {
     parts
 }
 
-/// Builds the recording's index for timeline `branch`: holders, each run's histories, then the
-/// timeline's own indexes over them. The parts are independent, so they are built side by side:
-/// the open waits for the longest, not their sum.
 pub fn open(source: &Source, branch: u64) -> io::Result<()> {
     let query = query(source, branch)?;
     let mut runs: Vec<u32> = query.timeline.stretches.iter().map(|stretch| stretch.run).collect();
@@ -262,13 +225,11 @@ pub fn open(source: &Source, branch: u64) -> io::Result<()> {
     ])
 }
 
-/// A query of `source`'s timeline `branch`.
 
 fn kind(params: &Value) -> Option<&str> {
     params.get("family")?.get("kind")?.as_str()
 }
 
-/// Whether the query layer answers `product` asked `params`.
 pub fn answers(product: &str, params: &Value) -> bool {
     if follows(product) {
         return true;
@@ -282,20 +243,15 @@ pub fn answers(product: &str, params: &Value) -> bool {
     crate::products::MOVED.contains(&product)
 }
 
-/// The panels shown at the head, by the product key their follow query gives
-/// (`{"panel": <key>, ..params}`): each rows-at-an-hour product's ([`crate::products::AT_HOUR`]).
 pub fn panel(source: &Source, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
     use crate::products::at_hour::{dated_panel_of, panel_of};
     dated_panel_of(source, context, query).or_else(|| panel_of(source, context, query))
 }
 
-/// Whether `product` is a followed query's request: answered from the recording a forwarded
-/// request names by path, not a lease ([`dashboard_follow::registry`]).
 pub fn follows(product: &str) -> bool {
     dashboard_follow::registry::PRODUCTS.contains(&product)
 }
 
-/// `product`'s reply data to `params`, read through the query layer.
 pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
     crate::metadata::check_cancel(cancelled)?;
     if follows(product) {

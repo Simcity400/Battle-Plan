@@ -1,7 +1,5 @@
 use super::*;
 
-/// A synthetic machine: a Steam library holding the game and its Workshop folder, and a user
-/// folder. Removed when dropped.
 struct Machine {
     root: PathBuf,
     options: ResolveOptions,
@@ -49,7 +47,6 @@ impl Machine {
             .replace('\\', "/")
     }
 
-    /// A user descriptor naming a folder below the machine root.
     fn local(&self, file: &str, body: &str, folder: &str) {
         fs::create_dir_all(self.root.join(folder)).unwrap();
         self.write(
@@ -99,9 +96,6 @@ fn text(layers: &ResolvedLayers, path: &str) -> String {
     std::str::from_utf8(&layers.read(path).unwrap()).unwrap().to_owned()
 }
 
-/// A gameplay overhaul that also replaces terrain artwork shows its artwork; its map, scripts,
-/// interface and shaders, which the eligibility gate refused, neither block it nor reach the
-/// recorded stack that geometry and simulation read.
 #[test]
 fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
     let machine = Machine::new("mixed");
@@ -136,7 +130,6 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
         text(layers.presentation(), "map/terrain/atlas0.dds"),
         "mod atlas"
     );
-    // The recorded stack is unchanged: geometry and recorded facts keep their recorded bytes.
     assert_eq!(text(&layers, "map/terrain/atlas0.dds"), "recorded atlas");
     assert_eq!(text(&layers, "map/provinces.bmp"), "recorded provinces");
     assert_eq!(
@@ -144,8 +137,6 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
         BTreeSet::from(["common/countries/a.txt".to_owned()])
     );
     assert_eq!(layers.layers.len(), 1);
-    // A reader handed the presentation stack still reads recorded scripts and geometry: the
-    // mod shows only under the presentation roots, its `replace_path` there too.
     let presentation = layers.presentation();
     assert_eq!(
         presentation.listed_paths("common/countries"),
@@ -177,7 +168,6 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
         presentation.read_uncovered("interface/topbar.gui").unwrap(),
         b"mod gui"
     );
-    // An uncovered file the mod supplies is its own too, never an uncovered recorded read.
     assert_eq!(
         layers
             .presentation()
@@ -185,7 +175,6 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
             .unwrap(),
         b"mod rail"
     );
-    // The mod's files are named and counted as its own, apart from recorded reads.
     let mut warnings = Vec::new();
     reads.append_to(&mut warnings);
     assert_eq!(
@@ -196,8 +185,6 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
     );
 }
 
-/// `replace_path` hides the recorded files below it from presentation lookups and listings
-/// alike, including a lower file the mod has no replacement for.
 #[test]
 fn replace_path_hides_recorded_artwork_in_lookups_and_listings() {
     let machine = Machine::new("replace");
@@ -241,9 +228,6 @@ fn replace_path_hides_recorded_artwork_in_lookups_and_listings() {
     assert_eq!(layers.listed_paths("map/terrain").len(), 2);
 }
 
-/// Each consumer sees the fallbacks it caused, nested observers each see them, a memo's replay
-/// reaches its user, and a presentation mounted on a stack with its own diagnostics reports
-/// apart from the stack it came from, in the line the map uses.
 #[test]
 fn consumers_observe_their_own_fallbacks_and_presentations_report_apart() {
     use super::super::{credit_overlay_refusals, observe_overlay_refusals, overlay_refusal_line};
@@ -292,8 +276,6 @@ fn consumers_observe_their_own_fallbacks_and_presentations_report_apart() {
     assert_eq!(recorded.read_warnings().overlay_refusals(), None);
 }
 
-/// Artwork a visual mod cannot supply (here a lower file its `replace_path` hides, or a file the
-/// loader refuses) is drawn from the recording and named; the recording still loads.
 #[test]
 fn artwork_a_mod_cannot_supply_falls_back_to_the_recording_by_name() {
     let machine = Machine::new("fallback");
@@ -308,7 +290,6 @@ replace_path=\"map/terrain\"",
     machine.write("art/map/terrain/atlas0.dds", b"unreadable");
     let mut layers = machine.recorded(&["base"]);
     let reads = layers.report_uncovered_reads();
-    // Nothing is mounted: the recorded stack's own artwork, with no notice.
     let load = |stack: &ResolvedLayers, path: &str| -> io::Result<String> {
         let bytes = stack.read(path)?;
         if bytes == b"unreadable" {
@@ -346,7 +327,6 @@ replace_path=\"map/terrain\"",
         "{refusals}"
     );
     assert!(refusals.contains("strait ("), "{refusals}");
-    // A failure of the recorded artwork itself is returned as it is without visual mods.
     assert_eq!(
         layers
             .artwork("missing", |stack| load(stack, "map/terrain/missing.dds"))
@@ -356,8 +336,6 @@ replace_path=\"map/terrain\"",
     );
 }
 
-/// An item a loader reads apart from the rest falls back to the recording alone, named; one
-/// neither stack gives is refused by its stable name for the map's fallback.
 #[test]
 fn an_artwork_item_a_mod_breaks_is_read_from_the_recording_by_name() {
     let layers = ResolvedLayers::default();
@@ -376,7 +354,6 @@ fn an_artwork_item_a_mod_breaks_is_read_from_the_recording_by_name() {
     let refusals = reads.overlay_refusals().unwrap();
     assert!(refusals.contains("tree kind 3 (not a mesh)"), "{refusals}");
     assert!(reads.refused().is_empty());
-    // Without recorded layers below, or when they refuse it too: refused by name.
     let item = layers.artwork_item("tree kind 4", false, |_| Err::<&str, _>("not a mesh"));
     assert_eq!(item, Err("not a mesh"));
     let item = layers.artwork_item("tree kind 5", true, |_| Err::<&str, _>("not a mesh"));
@@ -387,8 +364,6 @@ fn an_artwork_item_a_mod_breaks_is_read_from_the_recording_by_name() {
     );
 }
 
-/// The world normal map is artwork: a mod's shows over the recording's in each form the game
-/// reads, and updating it moves the selection's revision; the map's other bitmaps stay recorded.
 #[test]
 fn a_mods_world_normal_map_shows_and_moves_the_revision() {
     let machine = Machine::new("world-normal");
@@ -420,8 +395,6 @@ fn a_mods_world_normal_map_shows_and_moves_the_revision() {
     }
 }
 
-/// A visual mod's descriptor file that does not parse is read as the recording's file of that
-/// path, named; a name only the mod's file holds stays undecided.
 #[test]
 fn a_mods_descriptor_that_does_not_parse_reads_the_recordings_file() {
     let machine = Machine::new("descriptor-fallback");
@@ -430,7 +403,6 @@ fn a_mods_descriptor_that_does_not_parse_reads_the_recordings_file() {
         br#"entity = { name = "plane" pdxmesh = "plane_mesh" }"#,
     );
     machine.local("art.mod", "name=\"Art\"", "art");
-    // Does not parse even when its blocks are closed.
     machine.write(
         "art/gfx/entities/a.asset",
         br#"entity = { name = "plane" zeppelin } }{ = ="#,
@@ -457,8 +429,6 @@ fn a_mods_descriptor_that_does_not_parse_reads_the_recordings_file() {
     );
 }
 
-/// A visual mod's interface file whose declarations are refused is read as the recording's file
-/// of that path, named; the mod's other files are its own.
 #[test]
 fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -469,7 +439,6 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
         br#"spriteTypes = { spriteType = { name = "GFX_a" texturefile = "gfx/a.dds" } }"#,
     );
     machine.local("art.mod", "name=\"Art\"", "art");
-    // Past the texture id the anchor reaches the animation records: refused.
     let zeros = ["0"; 12].join(" ");
     machine.write(
         "art/interface/a.gfx",
@@ -511,9 +480,6 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     );
 }
 
-/// Workshop items are found in the game's own Steam library without a user descriptor; a user
-/// descriptor of an item and an alias of one source are that one mod; a descriptor that cannot
-/// be mounted is still listed, by name, with its problem.
 #[test]
 fn discovery_lists_local_and_workshop_mods_once_each() {
     let machine = Machine::new("discovery");
@@ -522,7 +488,6 @@ fn discovery_lists_local_and_workshop_mods_once_each() {
         "200",
         "name=\"Dependent Art\"\ndependencies={\n\"Base Art\"\n}\nremote_file_id=\"200\"",
     );
-    // A stale `path` in a Workshop descriptor is not where the launcher mounts the item from.
     machine.item("300", "name=\"Three\"\npath=\"mod/elsewhere\"");
     machine.write(
         "user/mod/ugc_100.mod",
@@ -569,9 +534,6 @@ fn discovery_lists_local_and_workshop_mods_once_each() {
     );
 }
 
-/// Overlays mount in the engine's order whatever order they were chosen in: dependencies
-/// first, then descriptor path bytes. A selection that is not installed or cannot be mounted
-/// is named, and the rest still mount.
 #[test]
 fn selections_mount_in_the_engines_order_and_name_what_cannot_mount() {
     let machine = Machine::new("order");
@@ -592,7 +554,6 @@ fn selections_mount_in_the_engines_order_and_name_what_cannot_mount() {
         pick("workshop/100", "Zulu"),
     ];
     let planned = plan(&machine.options, &selected, &[], &never()).unwrap();
-    // Alpha depends on Zulu, so Zulu mounts below it; Mike sorts after both by its path.
     assert_eq!(
         planned.order,
         [
@@ -630,7 +591,6 @@ fn selections_mount_in_the_engines_order_and_name_what_cannot_mount() {
             "visual:workshop/300"
         ]
     );
-    // A dependency cycle the engine cannot finish shows none of the cycle's selection.
     machine.item("400", "name=\"Ping\"\ndependencies={\n\"Pong\"\n}");
     machine.item("500", "name=\"Pong\"\ndependencies={\n\"Ping\"\n}");
     let cycle = apply(
@@ -650,7 +610,6 @@ fn selections_mount_in_the_engines_order_and_name_what_cannot_mount() {
     assert!(std::ptr::eq(layers.presentation(), &layers));
 }
 
-/// An empty selection mounts nothing: presentation reads are the recorded reads.
 #[test]
 fn an_empty_selection_shows_the_recorded_artwork() {
     let machine = Machine::new("empty");
@@ -675,8 +634,6 @@ fn an_empty_selection_shows_the_recorded_artwork() {
     assert!(std::ptr::eq(layers.presentation(), &layers));
 }
 
-/// A recorded mod selected again mounts above the visual mods it sorts below, and its covered
-/// bytes still verify against the recording.
 #[test]
 fn a_recorded_mod_selected_again_keeps_its_verification() {
     let machine = Machine::new("recorded");
@@ -694,7 +651,6 @@ fn a_recorded_mod_selected_again_keeps_its_verification() {
         &never(),
     )
     .unwrap();
-    // `mod/played.mod` sorts after `mod/art.mod`, so the recorded mod is on top.
     assert_eq!(
         text(layers.presentation(), "map/terrain/atlas0.dds"),
         "played atlas"
@@ -710,8 +666,6 @@ fn a_recorded_mod_selected_again_keeps_its_verification() {
     );
 }
 
-/// Visual mods mount below the built-in layers the engine mounts above every mod, as an
-/// enabled mod would, and the recorded layers keep their order.
 #[test]
 fn visual_mods_mount_below_the_layers_the_engine_mounts_above_mods() {
     let machine = Machine::new("above");
@@ -747,7 +701,6 @@ fn visual_mods_mount_below_the_layers_the_engine_mounts_above_mods() {
     );
 }
 
-/// An archive mod mounts through the one archive reader, like a recorded archive layer.
 #[test]
 fn an_archive_mod_mounts_its_records() {
     use super::super::tests::{Record, zip_records};
@@ -790,8 +743,6 @@ fn an_archive_mod_mounts_its_records() {
     );
 }
 
-/// The game enters a folder mod's junction and opens files through it, out of the mod's folder
-/// too; a junction to nothing lists nothing.
 #[cfg(windows)]
 #[test]
 fn a_folder_mods_junctions_are_entered_and_read_through() {
@@ -855,8 +806,6 @@ fn a_folder_mods_junctions_are_entered_and_read_through() {
     );
 }
 
-/// A folder mod's junction back to a folder it is in loops; the game lists the loop only as
-/// deep as its own limits allow, which the port does not reproduce, so the mod is refused by name.
 #[cfg(windows)]
 #[test]
 fn a_folder_mod_whose_junction_loops_is_refused_by_name() {
@@ -892,9 +841,6 @@ fn a_folder_mod_whose_junction_loops_is_refused_by_name() {
     );
 }
 
-/// The game opens the member an archive's link record names; the port does not follow it, so a
-/// read of the link is refused by name, never answered with the link's text or a lower layer.
-/// The link is listed, and the member it names reads as usual.
 #[test]
 fn an_archive_link_record_is_listed_and_its_read_refused_by_name() {
     use super::super::tests::{Record, zip_records};
@@ -914,7 +860,6 @@ fn an_archive_link_record_is_listed_and_its_read_refused_by_name() {
             record(b"map/terrain/atlas0.dds", 3, b"map/terrain/target.dds"),
         ],
     );
-    // The link's central record: a Unix mode 0o120777 in its external attributes' high half.
     let central = (0..zip.len() - 46)
         .find(|&at| {
             zip[at..at + 4] == 0x0201_4B50_u32.to_le_bytes()
@@ -959,9 +904,6 @@ fn an_archive_link_record_is_listed_and_its_read_refused_by_name() {
     );
 }
 
-/// A Workshop item mounted from an archive keeps its id when the launcher writes a user
-/// descriptor naming that archive, as an item mounted from its folder does, so a choice saved
-/// before still applies.
 #[test]
 fn a_workshop_archive_keeps_its_id_beside_a_launcher_descriptor() {
     use super::super::tests::{Record, zip_records};
@@ -1009,7 +951,6 @@ fn a_workshop_archive_keeps_its_id_beside_a_launcher_descriptor() {
     assert_eq!(shown(), "packed atlas");
 }
 
-/// The game lists a descriptor in `mod` only when its name ends in `.mod` byte for byte.
 #[test]
 fn only_an_exact_mod_suffix_lists_a_local_descriptor() {
     let machine = Machine::new("suffix");
@@ -1023,7 +964,6 @@ fn only_an_exact_mod_suffix_lists_a_local_descriptor() {
     assert_eq!(ids, ["mod/lower.mod"]);
 }
 
-/// No count of installed or selected mods is refused.
 #[test]
 fn catalogues_and_selections_are_not_capped() {
     let machine = Machine::new("uncapped");
@@ -1043,9 +983,6 @@ fn catalogues_and_selections_are_not_capped() {
     assert!(planned.warnings.is_empty());
 }
 
-/// Opt-in and read-only: each Workshop item of the installed game's Steam library that ships
-/// terrain artwork mounts alone over the installed game, the presentation stack decodes the
-/// item's own texture as the map loads it, and the recorded stack keeps the game's.
 #[test]
 #[ignore = "reads the installed game and its Steam library's Workshop items; requires BATTLE_PLAN_GAME_DIR"]
 fn installed_workshop_artwork_mounts_over_the_installed_game() {
@@ -1130,7 +1067,6 @@ fn installed_workshop_artwork_mounts_over_the_installed_game() {
     assert!(shown > 0, "no Workshop item ships terrain artwork");
 }
 
-/// A folder discovery cannot list is one named problem; the Workshop items still list.
 #[test]
 fn an_unreadable_mod_folder_is_named_and_the_rest_still_list() {
     let machine = Machine::new("unreadable");
@@ -1157,9 +1093,6 @@ fn an_unreadable_mod_folder_is_named_and_the_rest_still_list() {
     );
 }
 
-/// A mod mounts as the game mounts it: an archive record whose name differs in case from a
-/// recorded folder file stays its own file (the archive's lookup is exact), and an archive's
-/// case variants are both kept. Neither drops the mod or the rest of the selection.
 #[test]
 fn case_variants_mount_as_the_game_mounts_them() {
     use super::super::tests::{Record, zip_records};
@@ -1215,7 +1148,6 @@ fn case_variants_mount_as_the_game_mounts_them() {
     assert_eq!(text(presentation, "map/terrain/atlas0.dds"), "lower atlas");
     assert_eq!(text(presentation, "map/terrain/ATLAS0.dds"), "upper atlas");
     assert_eq!(text(presentation, "map/terrain/strait.dds"), "other strait");
-    // Byte-exact enumeration separates case variants; each opens through ordinary lookup.
     let listed = presentation
         .descriptor_paths("map/terrain", &[".dds"])
         .unwrap();
@@ -1238,8 +1170,6 @@ fn case_variants_mount_as_the_game_mounts_them() {
     assert_eq!(read("map/terrain/Colormap_water_0.dds"), b"mod water");
 }
 
-/// The game mounts one mod of a display name: a selected mod named as a recorded mod it is not
-/// is not shown, and of two selected mods sharing a name only the first in mount order is.
 #[test]
 fn one_mod_of_a_display_name_is_shown() {
     let machine = Machine::new("names");
@@ -1272,8 +1202,6 @@ fn one_mod_of_a_display_name_is_shown() {
     assert!(planned.warnings[1].contains("(mod/b.mod)"));
 }
 
-/// Graphics consumers read defines merged natively with the mods' scripts; the recorded and the
-/// presentation stacks themselves keep the recorded defines for every other consumer.
 #[test]
 fn presentation_defines_merge_the_mods_scripts_natively() {
     let machine = Machine::new("defines");
@@ -1310,7 +1238,6 @@ fn presentation_defines_merge_the_mods_scripts_natively() {
     assert_eq!(recorded.number("NMilitary", "WIDTH").unwrap(), 2.0);
 }
 
-/// The recorded stack below a presentation stack's mods is the recorded roster again.
 #[test]
 fn the_stack_without_overlays_is_the_recorded_roster() {
     let machine = Machine::new("without");
@@ -1332,8 +1259,6 @@ fn the_stack_without_overlays_is_the_recorded_roster() {
     assert_eq!(recorded.layers.len(), 1);
 }
 
-/// A selection's revision changes when a mod it shows is updated or a missing one is installed,
-/// and not for a file the mod does not show.
 #[test]
 fn revisions_follow_what_the_mods_show() {
     let machine = Machine::new("revision");
@@ -1354,14 +1279,11 @@ fn revisions_follow_what_the_mods_show() {
     assert_ne!(first, updated);
     machine.local("later.mod", "name=\"Later\"", "later");
     assert_ne!(updated, revision());
-    // Mounting records the revision it mounted.
     let mut layers = machine.recorded(&["base"]);
     let plan = apply(&mut layers, &machine.options, &selected, &[], &never()).unwrap();
     assert_eq!(plan.revision, revision());
 }
 
-/// Renaming a shown file only in case changes the revision, since the defines loader admits
-/// `custom.lua` but not `custom.LUA`; neither its size nor its modification time moves.
 #[test]
 fn a_case_only_rename_moves_the_revision() {
     let machine = Machine::new("revision-case");
@@ -1381,8 +1303,6 @@ fn a_case_only_rename_moves_the_revision() {
     assert_eq!(first, revision());
 }
 
-/// A mod that changes while it mounts is mounted again, so the plan's revision and the mounted
-/// files are the updated ones, never a revision taken before the update over older files.
 #[test]
 fn a_mod_updated_while_it_mounts_is_mounted_again() {
     let machine = Machine::new("revision-race");
@@ -1399,7 +1319,6 @@ fn a_mod_updated_while_it_mounts_is_mounted_again() {
         &never(),
         || {
             taken += 1;
-            // The update lands during the first mount, before its second revision is taken.
             if taken == 2 {
                 machine.write("art/map/terrain/atlas1.dds", b"added by the update");
             }
@@ -1418,8 +1337,6 @@ fn a_mod_updated_while_it_mounts_is_mounted_again() {
     );
 }
 
-/// A selection none of whose mods can be shown records the same revision a later check takes,
-/// so its map is not reloaded again and again.
 #[test]
 fn a_selection_that_shows_nothing_records_its_revision() {
     let machine = Machine::new("revision-missing");

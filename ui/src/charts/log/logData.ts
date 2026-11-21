@@ -1,45 +1,26 @@
 import { type Failure } from '../../dashboard/queryError.ts';
-/** Logs: HTML rows, newest
- * first, optional month dividers, a comfortable or compact density, virtualised so
- * a campaign's thousands of rows stay cheap. Pure: the list component (`LogList`)
- * draws what these compute, and a widget keeps only what its rows mean. */
 import { gameDate, monthIndex, monthNames } from '../../dashboard/calendar.ts';
 import type { MovingRow } from '../rowMotion';
 
-/** The moving rows to draw: those at a slot in [start, end), and any `keep` says
- * must stay (the keyboard's row). Rows may fade out while motion is on. Cards
- * leave immediately, so a backward seek never retains a future conference. */
 export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end: number, animate: boolean,
   keep: (row: MovingRow<T>) => boolean = () => false, layout: 'row' | 'card' = 'row'): MovingRow<T>[] {
   return rows.filter(row => (animate && layout === 'row' || row.phase !== 'leaving') && ((row.slot >= start && row.slot < end) || keep(row)));
 }
 
-/** Cards enter only when their key is new to the committed log. Keeping every
- * committed key stops a card replaying its entry after scrolling or seeking. */
 export function newCardKeys<T>(rows: readonly MovingRow<T>[], known: ReadonlySet<string>, enabled = true): string[] {
   return enabled ? rows.filter(row => row.phase === 'entering' && !known.has(row.key)).map(row => row.key) : [];
 }
 
-/** One dated row of a log. `hour` places it (newest first) and is the date it
- * shows; `by` marks that date as an upper bound (first seen then, happened
- * earlier). `key` identifies it across updates: a new key flashes in. `id` is what
- * the row is about when that outlives its key (a project whose row re-enters as it
- * changes): the keyboard's row and a tooltip follow it; the key when absent. */
 export interface LogRow<T> {
   readonly key: string;
   readonly id?: string;
   readonly hour: number;
-  /** The read that first revealed this row, when its displayed date predates
-   * that read. Live entry motion uses this hour; defaults to `hour`. */
   readonly revealedHour?: number;
-  /** Held ahead of a list's reveal clock: the hour its successor replaces it (it fades out then). */
   readonly leftHour?: number;
   readonly by?: boolean;
   readonly item: T;
 }
 
-/** A stable server window. Absent rows occupy `count` virtual rows until wanted;
- * a caller can retain a filtered count after releasing the window's payload. */
 export interface LogPage<T> {
   readonly key: string;
   readonly start: number;
@@ -49,12 +30,9 @@ export interface LogPage<T> {
   readonly error?: Failure;
 }
 
-/** Tracks after the date, shared by every row or chosen from that row's content. */
 export type LogColumns<T> = string | ((row: LogRow<T>) => string);
 export const logRowColumns = <T>(columns: LogColumns<T>, row: LogRow<T>): string => typeof columns === 'string' ? columns : columns(row);
 
-/** Only countries on drawn rows, at each row's own observation hour. Opaque
- * tags never share a delimiter key, and later names cannot label older rows. */
 export function logCountryRequests<T>(rows: readonly LogRow<T>[], countries: (row: LogRow<T>) => { hour: number; tags: readonly (string | null)[] }): { hour: number; tag: string }[] {
   const wanted = new Map<number, Set<string>>();
   for (const row of rows) {
@@ -66,31 +44,22 @@ export function logCountryRequests<T>(rows: readonly LogRow<T>[], countries: (ro
   return [...wanted].flatMap(([hour, tags]) => [...tags].map(tag => ({ hour, tag })));
 }
 
-/** What a row is about, for following it across keys. */
 export const rowId = (row: LogRow<unknown>) => row.id ?? row.key;
 
-/** Who shows a log's tooltip: the pointer over a row, or the keyboard's row. The one
- * that acted last owns it, as a chart's hover passes between them (`reduceHover`). */
 export interface LogTip { id: string; by: 'pointer' | 'keyboard'; x: number; y: number }
 
-/** The row a tooltip is about now, in rows that may have changed since it was shown
- * (a project that re-entered under a new key): found by what it is about, or null
- * once it is gone, so the tooltip is refreshed or hidden, never left stale. */
 export function tipRow<T>(tip: Pick<LogTip, 'id'> | null, rows: ReadonlyMap<string, LogRow<T>>): LogRow<T> | null {
   return tip ? rows.get(tip.id) ?? null : null;
 }
 
 export type LogDensity = 'comfortable' | 'compact';
 
-/** Intrinsic card heights apply only to the layout width and density measured. */
 export interface CardMeasurements { width: number; density: LogDensity; font?: string; heights: ReadonlyMap<string, number> }
 const NO_HEIGHTS: ReadonlyMap<string, number> = new Map();
 
 export const cardHeightsAt = (measured: CardMeasurements, width: number, density: LogDensity, font = ''): ReadonlyMap<string, number> =>
   measured.width === width && measured.density === density && (measured.font ?? '') === font ? measured.heights : NO_HEIGHTS;
 
-/** Merge one observed batch, discarding stale wrapping after layout changes and
- * released page keys when supplied. Unchanged measurements keep their identity. */
 export function updateCardHeights(measured: CardMeasurements, width: number, density: LogDensity,
   sizes: readonly { key: string; height: number }[], font = '', held?: ReadonlySet<string>): CardMeasurements {
   const sameLayout = measured.width === width && measured.density === density && (measured.font ?? '') === font;
@@ -111,7 +80,6 @@ export function updateCardHeights(measured: CardMeasurements, width: number, den
 
 interface TipElement { getAttribute(name: string): string | null; parentElement: TipElement | null }
 
-/** A chip or other row part with its own tooltip takes hover from the row. */
 export function hasLogPartTip(target: TipElement | null, row: TipElement): boolean {
   for (let at = target; at && at !== row; at = at.parentElement) {
     const text = at.getAttribute('data-tooltip');
@@ -120,29 +88,23 @@ export function hasLogPartTip(target: TipElement | null, row: TipElement): boole
   return false;
 }
 
-/** Row and divider heights in layout pixels (log.css draws them at these). */
 export const ROW_HEIGHT: Readonly<Record<LogDensity, number>> = { comfortable: 38, compact: 28 };
 export const MONTH_HEIGHT = 24;
 
-/** Rows newest first: by hour, then by the order given (stable). */
 export function newestFirst<T>(rows: readonly LogRow<T>[]): ReadonlyArray<LogRow<T>> {
   return rows.map((row, index) => ({ row, index })).sort((a, b) => b.row.hour - a.row.hour || a.index - b.index).map(entry => entry.row);
 }
 
-/** A month divider's label, such as "Jun 1941", from the recording's own calendar. */
 export function monthLabel(hour: number): string {
   const date = gameDate(Math.floor(hour));
   return date ? `${monthNames[date.month - 1].slice(0, 3)} ${date.year}` : 'Undated';
 }
 
-/** The month an hour falls in, as a comparable index; null before the calendar. */
 export function monthOf(hour: number): number | null {
   const date = gameDate(Math.floor(hour));
   return date ? monthIndex(date) : null;
 }
 
-/** What a log draws in order: its rows, with a divider before each month's first
- * row when `months` is on. Dividers are keyed by their month, so they hold still. */
 export type LogItem<T> = Readonly<{ kind: 'month'; key: string; label: string; pageKey?: string; part?: LogSectionPart; section?: string }>
   | Readonly<{ kind: 'row'; key: string; row: LogRow<T>; pageKey?: string; pageOffset?: number }>
   | Readonly<{ kind: 'page'; key: string; page: LogPage<T> }>;
@@ -153,21 +115,16 @@ export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): Readon
   return logEntryItems(rows.map(row => ({ kind: 'row', row })), months);
 }
 
-/** A section's heading, or the note under it shown while none of its rows is (its empty, loading or refused state). */
 export type LogSectionPart = 'heading' | 'note';
 
-/** One headed group of a log of several: its rows (in the order drawn) or its server pages. */
 export interface LogSection<T> {
   readonly key: string;
   readonly label: string;
   readonly rows?: readonly LogRow<T>[];
   readonly pages?: readonly LogPage<T>[];
-  /** Month dividers in this section, when it differs from the list's. */
   readonly months?: boolean;
 }
 
-/** `next`, or `previous` when every section holds the same rows or pages under the same heading: a widget building its
- * sections each render keeps the list's items, and so its layout and motion, unless one changed. */
 export function stableLogSections<S extends LogSection<unknown>>(previous: readonly S[] | undefined, next: readonly S[]): readonly S[] {
   return previous && previous.length === next.length && previous.every((section, index) => {
     const other = next[index];
@@ -175,8 +132,6 @@ export function stableLogSections<S extends LogSection<unknown>>(previous: reado
   }) ? previous : next;
 }
 
-/** Sections one after another in one list, each under its heading. Its note follows the heading while the section
- * holds nothing to draw, and, `held` ahead of a clock, always: it then shows until the section's first row does. */
 export function logSectionItems<T>(sections: readonly LogSection<T>[], months: boolean, held: boolean,
   pageEntries: (pages: readonly LogPage<T>[]) => LogEntry<T>[]): ReadonlyArray<LogItem<T>> {
   const items: LogItem<T>[] = [];
@@ -190,8 +145,6 @@ export function logSectionItems<T>(sections: readonly LogSection<T>[], months: b
   return items;
 }
 
-/** Ordinary and paged logs share month sections. An unloaded window interrupts
- * a section: no month is assigned to rows whose dates have not been loaded. */
 export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
   const items: LogItem<T>[] = [];
   const sections = new Map<number | null, number>();
@@ -209,7 +162,6 @@ export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolea
       const next = monthOf(row.hour);
       if (next !== month) {
         month = next;
-        // Pinned running rows can precede a newer finished section of the same month.
         const section = sections.get(next) ?? 0;
         sections.set(next, section + 1);
         items.push({ kind: 'month', key: `month:${next ?? 'undated'}${section ? `:${section}` : ''}`, label: monthLabel(row.hour), ...(pageKey == null ? {} : { pageKey }) });
@@ -220,8 +172,6 @@ export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolea
   return items;
 }
 
-/** Where each item starts, and the whole height: `offsets[i]` is item i's top and
- * `offsets[items.length]` the list's height. */
 export function logOffsets<T>(items: readonly LogItem<T>[], density: LogDensity, rowHeight?: (row: LogRow<T>) => number): number[] {
   const offsets = [0];
   for (const item of items) {
@@ -233,12 +183,9 @@ export function logOffsets<T>(items: readonly LogItem<T>[], density: LogDensity,
   return offsets;
 }
 
-/** The items to draw for a viewport: [start, end) covering `top`..`top + height`,
- * widened by `overscan` items each way. */
 export function visibleRange(offsets: readonly number[], top: number, height: number, overscan = 6): [number, number] {
   const count = offsets.length - 1;
   if (count <= 0) return [0, 0];
-  // The last item starting at or above `top`.
   let low = 0;
   let high = count - 1;
   while (low < high) {
@@ -250,19 +197,15 @@ export function visibleRange(offsets: readonly number[], top: number, height: nu
   return [Math.max(0, low - overscan), Math.min(count, end + overscan)];
 }
 
-/** The scroll position that shows item `index` whole, moving as little as possible. */
 export function scrollToShow(offsets: readonly number[], index: number, top: number, height: number, stickyTop = 0): number {
   const start = offsets[index];
   const end = offsets[index + 1];
-  // A card taller than the viewport stays at its heading on successive keys.
   if (end - start > height - stickyTop) return Math.max(0, start - stickyTop);
   if (start - stickyTop < top) return Math.max(0, start - stickyTop);
   if (end > top + height) return end - height;
   return top;
 }
 
-/** Page through variable-height cards by a viewport of layout pixels, with at
- * least one row of progress. `slots` maps keyboard rows to their log items. */
 export function cardPageTarget(offsets: readonly number[], slots: readonly number[], index: number, height: number, direction: 1 | -1): number {
   if (!slots.length) return 0;
   const at = Math.max(0, Math.min(slots.length - 1, index));
@@ -278,19 +221,14 @@ export function cardPageTarget(offsets: readonly number[], slots: readonly numbe
   return direction === 1 ? Math.min(slots.length - 1, Math.max(at + 1, low)) : Math.max(0, Math.min(at - 1, low));
 }
 
-/** Where a key moves the keyboard's row among `count` rows (null: the key is not
- * the list's). `page` is how many rows a page holds. */
 export { keyTarget } from '../rowNavigation.ts';
 
-/** The date column of a row: day and month, and the year under it. */
 export function logDate(hour: number): { day: string; year: string } {
   const date = gameDate(Math.floor(hour));
   if (!date) return { day: `Hour ${Math.floor(hour)}`, year: '' };
   return { day: `${date.day} ${monthNames[date.month - 1].slice(0, 3)}`, year: String(date.year) };
 }
 
-/** Retained-window logs keep the first visible row in place as off-screen rows
- * arrive or are released. At the top, new entries remain immediately visible. */
 export function anchoredScrollTop<T>(previous: readonly LogItem<T>[], before: readonly number[],
   next: readonly LogItem<T>[], after: readonly number[], top: number): number {
   if (top <= 0) return 0;
@@ -303,8 +241,6 @@ export function anchoredScrollTop<T>(previous: readonly LogItem<T>[], before: re
   const index = next.findIndex(candidate => candidate.key === item.key
     && (item.kind !== 'month' || candidate.kind === 'month' && candidate.pageKey === item.pageKey));
   if (index >= 0) return Math.max(0, after[index] + clampWithin(index, top - before[at]));
-  // Page load/release changes item keys. Keep its logical row offset, including
-  // loaded month headings, without retaining an offset beyond a shrinking card.
   const pageKey = item.kind === 'page' ? item.page.key : item.pageKey;
   if (pageKey == null) return top;
   const delta = top - before[at];

@@ -1,7 +1,5 @@
 .event-feed-load { padding: var(--space-3) var(--space-4); color: var(--muted); font-size: var(--type-sm); }
 
-/* Only the feed needs the approved date/art/sentence/category grid and the
-   playback entry slide. Existing logs and tables retain their presentation. */
 .event-feed-widget .log-row { grid-template-columns: calc(var(--space-6) * 2 + var(--space-4) + var(--space-1)) var(--log-columns, 1fr);
   gap: calc(var(--space-3) + var(--space-1)); height: calc(var(--space-6) + var(--space-4) + var(--space-1)); }
 .event-feed-widget .log.is-compact .log-row { height: calc(var(--space-6) + var(--space-2)); gap: var(--space-3); }
@@ -34,11 +32,9 @@
 .event-feed-widget .log.no-motion .moving-row.is-entering::after,
 :root[data-motion='reduced'] .event-feed-widget .moving-row.is-entering::after { content: none; }
 @keyframes event-feed-row-in { from { translate: 0 calc(var(--space-3) * -1); opacity: 0; } to { translate: 0 0; } }
-/* Kinds without game artwork show their icon on a tile in the category's colour. */
 .event-feed-icon { display: grid; place-items: center; width: 100%; height: 100%; border-radius: var(--r-xs);
   background: color-mix(in srgb, var(--event-colour) 16%, transparent); color: var(--event-colour); }
 .event-feed-icon svg { width: 15px; height: 15px; }
 .log.is-compact .event-feed-icon svg { width: 13px; height: 13px; }
 
-/* Scripted text the recording could not fill: a token, its reason in the tooltip. */
 .scripted-gap { color: var(--muted); font-style: italic; text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }

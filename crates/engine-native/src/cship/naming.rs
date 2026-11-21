@@ -1,4 +1,3 @@
-//! Raw saved ship naming state, acquired without generation or refresh.
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -11,8 +10,6 @@ pub struct NamingOperands {
     pub equipment: Option<u64>,
 }
 
-/// Authenticate the ship before following its member, then retain all saved
-/// operands, even an override hidden by programmatic group selection.
 pub fn naming(
     memory: &impl Memory,
     base: usize,

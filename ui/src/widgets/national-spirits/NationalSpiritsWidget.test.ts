@@ -10,7 +10,6 @@ import type { MenuItem } from '../../components/ContextMenu';
 import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 
 type HookSlot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
-// Retain the actual component's state/effects between server renders without a browser.
 function hooks() {
   const slots: HookSlot[] = [], pending: (() => void)[] = [];
   let cursor = 0;
@@ -137,7 +136,6 @@ test('spirit fades and tooltips belong to their recorded context; dated tiles us
         assert.equal(timers.size, 1, "an old callback cannot remove a new owner's same-token timer");
         const [handle, timer] = [...timers][0]; timers.delete(handle); timer.callback();
         assert.doesNotMatch(render(), /New alpha/); state.flush();
-        // Returning to identical A must not reactivate the expired A callback.
         host.__spiritHistory = { track: oldTrack, tag: oldData.tag, data: oldData }; runtime.tracks = [oldTrack];
         hour = 150; render(); state.flush();
         hour = 170; render(); state.flush();

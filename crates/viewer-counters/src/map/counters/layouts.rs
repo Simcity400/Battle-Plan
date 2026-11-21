@@ -1,4 +1,3 @@
-//! Content-resolved counter templates and supported child draw forms.
 
 use super::*;
 use viewer_foundation::map::native_gui;
@@ -29,7 +28,6 @@ pub(super) fn window_size(element: &native::Element, owner: &str) -> io::Result<
         .map_err(|why| invalid(format!("{owner}: {why}")))
 }
 
-/// A locally bound child's attach order and its parent's content origin.
 fn placement(
     root: &native::Element,
     target: &native::Element,
@@ -82,8 +80,6 @@ pub(super) fn child(
             icon.rotation,
         ),
         native::Fields::Button(button) => {
-            // sprite/quadTextureSprite, anchor, scale and
-            // positive frame; an absent/nonpositive frame keeps Up's strip index 0.
             for (unsupported, field) in [
                 (button.center_position, "centerPosition"),
                 (button.rotation != 0.0, "rotation"),
@@ -162,7 +158,6 @@ pub(super) fn text_child(
             base[0] + text.position[0].wrapping_add(anchor[0]) as f32,
             base[1] + text.position[1].wrapping_add(anchor[1]) as f32,
         ],
-        // The game makes absent/zero a signed 200.
         max_width: if text.max_width == 0 {
             200.0
         } else {
@@ -259,7 +254,6 @@ pub(super) fn ability_grid(
         icon_at: icon.position,
         scale: icon.scale,
         from_centre,
-        // Store this flag; origo is not an icon key.
         centred: icon.center_position,
     }))
 }
@@ -271,7 +265,6 @@ pub(super) fn land_counter(
     use native::Kind::{Button, Icon};
     let land = window(guis, LAND_WINDOW)?;
     let hq_offset = match land
-        // exact position-name check.
         .find_instance("unit_counter_hq_x_offset")
         .and_then(native::Element::position_type)
     {
@@ -422,7 +415,6 @@ mod tests {
         assert_eq!(layouts.land.as_ref().unwrap().size, [82.0, 28.0]);
         assert_eq!(layouts.land.as_ref().unwrap().plate.sprite, "GFX_mod");
         assert_eq!(layouts.land.as_ref().unwrap().plate.at, [4.0, 7.0]);
-        // The absent/zero width takes the game's 200; other values keep signed bits.
         assert_eq!(layouts.land.as_ref().unwrap().count.max_width, 200.0);
         let land = window(&windows.guis, LAND_WINDOW).unwrap();
         let width = |name| {
@@ -516,7 +508,6 @@ mod tests {
                 .to_string()
                 .contains("units_box")
         );
-        // A local grid still cannot bind an icon nested in the item window.
         let mut root = root.clone();
         let mut grid = root.children[1].children[1].clone();
         grid.path = "unit_counter.active_abilities".into();

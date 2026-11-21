@@ -16,17 +16,12 @@ import type { TypeRow } from './producedView';
 import { useProducedArtwork } from './producedArtwork';
 import { useProducedAt } from './useProduced';
 
-/** Two lines a row: the type, and its models. */
 const ROW_HEIGHT = 40;
 const IC_DECIMALS = 5;
 
-/** Every type a country made in the window shown, with its models: units delivered and IC put in. Only IC is one
- * currency, so only it has bars, shares and a total; units of different types are never added up. A row picks the
- * type the chart below stacks by model. One `equipment-produced-at` read of the hour picked. */
 export default function ProducedDrillTable({ runtime, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart, narrow }: {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; hour: number; tagAt: (hour: number) => string | null; narrow: NarrowTable;
   measure: Measure; refits: boolean; count: Count; chartType: string | null; onChart: (type: string) => void;
-  /** The chart below: what it stacks, and its parts with their colours and exact values. */
   chartTitle: string; chartKey: readonly { id: string; label: string; color?: string; value: number | null }[];
 }) {
   const alias = tagAt(hour);
@@ -58,7 +53,6 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
       value: part.value == null ? 'Not known' : formatRaw(part.value, chartDecimals) }))} />
   </>;
   const window = producedWindow(measure, dayLabel(hour), since == null ? null : dayLabel(since));
-  // The chart's key stays while the table's own reply loads or refreshes.
   const table = !alias ? <p className="drill-empty">Country unavailable at this time.</p>
     : at.error ? <p className="drill-empty" data-detail={at.error.message}>{failureText(at.error, 'Couldn’t load what this country made.')}</p>
       : !reply ? <p className="drill-empty">Loading what this country made…</p>

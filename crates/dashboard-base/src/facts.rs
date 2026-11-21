@@ -1,11 +1,9 @@
-//! The game facts a recording carries, read from the recording itself.
 
 use std::{io, sync::Arc};
 
 use installed_content_core::content::facts::{Pack, PackSource};
 use replay::campaign::Replay;
 
-/// A recording's fact pack bytes, read where it holds them: its newest pack's.
 struct RecordingFacts(Arc<Replay>, usize);
 
 impl PackSource for RecordingFacts {
@@ -14,7 +12,6 @@ impl PackSource for RecordingFacts {
     }
 }
 
-/// The game facts `replay` carries, or why it carries none.
 pub fn recorded(replay: &Arc<Replay>) -> Result<Arc<Pack>, String> {
     let Some(at) = replay.fact_packs.len().checked_sub(1) else {
         return Err(

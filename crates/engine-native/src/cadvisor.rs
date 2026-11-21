@@ -1,29 +1,13 @@
-//! CAdvisor role object. A role's existence does not assert appointment: the appointed advisors are
-//! the CCountryCharacters appointed list (`ccountry_characters::APPOINTED_ADVISORS`)
-//! (`ccountry_characters.rs`).
 
 use engine_sites::Rva;
-/// Advisor-role vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a2_31d0);
-/// Parent CCharacter pointer requiring authentication.
 pub const CHARACTER: usize = 0x10;
-/// Idea-token string.
 pub const IDEA_TOKEN: usize = 0x30;
-/// Slot string.
 pub const SLOT: usize = 0x80;
-/// Trait-pointer array with signed count. Trait queries search it; loading
-/// fills it and serialization writes names in occurrence order.
 pub const TRAITS: usize = 0xc8;
-/// Cached modifier-accumulator array. Rebuilds clear it and add trait blocks;
-/// factories, trait changes, upgrades and loading rebuild it. Independent own
-/// blocks are added separately. Tooltip keys use a separate acquisition.
 pub const MODIFIER_ENTRIES: usize = 0x1b0;
 pub const MODIFIER_CAPACITY_REASON: &str = "advisor modifier cache exceeds admitted capacity";
 
-/// Header of the stored modifier entries. The collector reads them, and the
-/// tooltip keys below, independently of the advisor-map certified
-/// definitions; a role is carried between hours only under its character's
-/// role-writer certificate (`character_role_mutations`).
 pub fn modifier_entries(
     memory: &impl crate::Memory,
     pointer: usize,
@@ -48,8 +32,6 @@ pub struct DefinitionDemand {
     pub bytes: usize,
 }
 
-/// Serialization visits every advisor-map occurrence. Role key, idea and
-/// slot descriptors size storage without copying their payloads.
 pub fn definitions_demand(
     memory: &impl crate::Memory,
     base: usize,
@@ -96,7 +78,6 @@ pub fn definitions_demand(
     Ok(demand)
 }
 
-/// Live role and accumulator headers only. The role rebuild writes the `MODIFIER_ENTRIES` array.
 pub fn modifier_demand(
     memory: &impl crate::Memory,
     base: usize,
@@ -153,9 +134,6 @@ pub fn modifier_demand(
     Ok(demand)
 }
 
-/// Advisor cached tooltip string set: the `MODIFIER_ENTRIES` accumulator's string set. The rebuild
-/// finds or inserts entries with a header after the table pointer, stride 0x28, an occupied byte
-/// and then the MSVC string. Keys are exact bytes in occupied-slot order, not tokens.
 pub const TOOLTIP_KEYS: usize = 0x218;
 pub const TOOLTIP_CAPACITY_REASON: &str = "advisor tooltip keys exceed admitted capacity";
 
@@ -166,7 +144,6 @@ pub struct TooltipRead {
     pub recorded: bool,
 }
 
-/// Visits occupied slot headers in source order; no payload is read here.
 pub fn visit_tooltip_keys(
     memory: &impl crate::Memory,
     pointer: usize,
@@ -278,7 +255,6 @@ pub fn copy_tooltip_keys_buffer(
     Ok(read)
 }
 
-/// Copies the whole ordered accumulator into a caller-owned byte slice.
 pub fn copy_modifier_entries(
     memory: &impl crate::Memory,
     array: crate::cpdx_array::Array,
@@ -306,9 +282,6 @@ pub fn copy_modifier_entries(
     Ok(len)
 }
 
-/// Current map controls, owned for exactly one character observation. Reuse
-/// still reads and validates the map header and sentinel; a miss walks through
-/// these same observations rather than retrying either native read.
 pub struct MapView<'a, M> {
     memory: &'a M,
     address: usize,
@@ -323,9 +296,6 @@ impl<'a, M: crate::Memory> MapView<'a, M> {
         })
     }
 
-    /// `read` with the sentinel acquisition supplied by the caller, which may
-    /// have gathered it in a batch. It is consulted only after the header
-    /// checks pass, so failure order and reasons are unchanged.
     pub fn with_sentinel(
         memory: &'a M,
         character: usize,
@@ -338,7 +308,6 @@ impl<'a, M: crate::Memory> MapView<'a, M> {
             .ok()
             .filter(|&p| p != 0)
             .ok_or("character role map head invalid")?;
-        // Preserve the ordinary reader's count-before-sentinel failure order.
         u32::try_from(u64::from_le_bytes(header[8..].try_into().unwrap()))
             .map_err(|_| "character role map count overflow")?;
         let sentinel = sentinel(head).ok_or("character role map sentinel unreadable")?;
@@ -403,11 +372,9 @@ impl<M: crate::Memory> crate::Memory for MapView<'_, M> {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Authenticated current CAdvisor; used only within the stopped callback.
     pub pointer: usize,
     pub character: u32,
     pub country: u32,
-    /// Position in this character's native string-keyed role map.
     pub ordinal: u32,
     pub key_start: usize,
     pub key_len: usize,
@@ -425,10 +392,6 @@ pub struct Row {
     pub tooltip_failure: Option<&'static str>,
 }
 
-/// Copies one authenticated character's role fields and numeric caches before
-/// the caller appends tooltip keys with `append_tooltips`. Native keys use
-/// unsigned hash order, with a locale-sensitive comparator only on hash
-/// collisions.
 pub fn walk_prefix_entry(
     memory: &impl crate::Memory,
     base: usize,
@@ -439,7 +402,6 @@ pub fn walk_prefix_entry(
     walk_entry_inner_buffer(memory, base, entry, output, bytes, true)
 }
 
-/// Worker-only storage from each acquired role-map and string header.
 pub fn walk_definitions_entry_buffer(
     memory: &impl crate::Memory,
     base: usize,
@@ -641,7 +603,6 @@ fn walk_entry_inner_buffer(
     })
 }
 
-/// Append keys only after the complete pre-existing role/cache prefix fits.
 pub fn append_tooltips(
     memory: &impl crate::Memory,
     rows: &mut [Row],
@@ -689,7 +650,6 @@ mod tests {
         bytes[0x48..0x4b].copy_from_slice(&first);
         bytes[0x58..0x60].copy_from_slice(&3_u64.to_le_bytes());
         bytes[0x60..0x68].copy_from_slice(&15_u64.to_le_bytes());
-        // An empty slot retains bytes that must never become a key.
         bytes[0x70..0x90].fill(0xff);
         let slot = 0x40 + 3 * 0x28;
         bytes[slot + 4] = 1;
@@ -734,7 +694,6 @@ mod tests {
         );
     }
 
-    // regression: 9d57424121 Preserve advisor roles when appended cache bytes do not fit
     #[test]
     fn modifier_demand_sums_live_headers_and_propagates_faults() {
         use crate::{ccharacter, ccharacter_manager, cgame_state};

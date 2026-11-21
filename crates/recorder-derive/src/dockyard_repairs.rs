@@ -1,19 +1,3 @@
-//! `DockyardRepairRates`: each country's dockyard repair output rate, the dockyards it uses for
-//! repairs times the daily output one of its dockyards applies, and its split by design from its
-//! naval bases' current repair selections.
-//!
-//! - A country's dockyards in use and its production modifiers are the rows of exactly one of
-//!   its slot's raw ids (two give neither). The rate is zero with no dockyard in use, and not
-//!   recorded while the count, or with dockyards in use one dockyard's output, is not known.
-//! - Each naval base selects, in queue order up to its allocated dockyards, the queued ships the
-//!   game repairs there ([`replay_derive::naval_repairs::selected`]). A country's split is known
-//!   while every one of its bases could be read, their allocations sum to its dockyards in use and
-//!   their selections do not exceed it: then each selected design's rate is its ships times one
-//!   dockyard's output, and the rest is unattributed.
-//!
-//! State is what the selection looks up and the tables hold: each base's holder and selection,
-//! each queue, each queued ship's task force, and the relations, rebuilt from the current tables
-//! at a fresh hour or a resume. An hour moves only the bases and countries its changes reach.
 
 use crate::{
     framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer},
@@ -54,7 +38,6 @@ const READS: &[Read] = &[
     Read { table: TableId::RelationLinks, columns: Columns::These(&LINKS), watch: Watch::Changed, required: false },
 ];
 
-/// The tables a base's selection looks up.
 const SELECTION: [TableId; 7] = [TableId::NavalBases, TableId::NavalRepairBases, TableId::NavalRepairQueue, TableId::Ships, TableId::ShipModels, TableId::TaskForces, TableId::Provinces];
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -69,38 +52,32 @@ fn rate_parts(key: u128) -> (u32, u8, u64) {
     ((key >> 72) as u32, (key >> 64) as u8, key as u64)
 }
 
-/// What one base selects, or one country's bases together.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Selection {
     readable: bool,
     allocated: i64,
     occurrences: i64,
-    /// Selected ships by design.
     designs: BTreeMap<u64, i64>,
 }
 
-/// A naval base: the slot its holder links to, and what it selects.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Base {
     holder: Option<u32>,
     selection: Selection,
 }
 
-/// A queued ship: the bases queuing it and its task force.
 #[derive(Clone, Debug, Default)]
 struct Queued {
     bases: Vec<u32>,
     force: Option<u64>,
 }
 
-/// What a slot's rows hold: their producer and the designs it has rows of.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Written {
     country: u32,
     designs: Vec<u64>,
 }
 
-/// The selection's lookups into the hour's tables.
 struct Lookups<'a, 'h> {
     hour: &'a Hour<'h>,
     queues: &'a HashMap<u32, Vec<(u32, u64)>>,
@@ -164,8 +141,6 @@ impl Operands for Lookups<'_, '_> {
     }
 }
 
-/// What the base at `province` selects. A lookup the selection could not make leaves it not
-/// readable.
 fn selection_at(lookups: &Lookups<'_, '_>, province: u32) -> io::Result<Selection> {
     let hour = lookups.hour;
     let readable = hour.complete(TableId::NavalBases) && hour.complete(TableId::NavalRepairBases);
@@ -193,16 +168,12 @@ fn selection_at(lookups: &Lookups<'_, '_>, province: u32) -> io::Result<Selectio
 
 #[derive(Default)]
 pub struct DockyardRepairs {
-    /// A resume: everything is read again before the next hour.
     rebuild: bool,
     producers: Producers,
     bases: HashMap<u32, Base>,
-    /// Each slot's bases.
     holders: HashMap<u32, HashSet<u32>>,
-    /// Each province's repair queue in queue order, (ordinal, ship).
     queues: HashMap<u32, Vec<(u32, u64)>>,
     queued: HashMap<u64, Queued>,
-    /// The queued ships of each task force.
     forces: HashMap<u64, Vec<u64>>,
     relations: Option<Result<(Relations, AccessLinks), &'static str>>,
     written: HashMap<u32, Written>,
@@ -249,7 +220,6 @@ impl DockyardRepairs {
         }
     }
 
-    /// Province `province`'s queue holds `queue`, in queue order.
     fn set_queue(&mut self, hour: &Hour<'_>, province: u32, mut queue: Vec<(u32, u64)>) {
         queue.sort_unstable_by_key(|&(ordinal, _)| ordinal);
         for (_, ship) in self.queues.remove(&province).unwrap_or_default() {
@@ -263,7 +233,6 @@ impl DockyardRepairs {
         }
     }
 
-    /// The base at `province` is linked to `holder` (none: it is gone), its slot's bases moved.
     fn set_holder(&mut self, province: u32, holder: Option<Option<u32>>, dirty: &mut HashSet<u32>) {
         let old = self.bases.get(&province).map(|base| base.holder);
         if old == holder {
@@ -292,7 +261,6 @@ impl DockyardRepairs {
         }
     }
 
-    /// Reads every input whole: the bases they hold all to select again, every slot to write.
     fn read_whole(&mut self, hour: &Hour<'_>, out: &mut Rows) {
         self.producers.read(hour);
         self.relations = Some(relations(hour, &self.producers.links()));
@@ -341,8 +309,6 @@ impl DockyardRepairs {
         }
     }
 
-    /// Applies the hour's changes to what the selection looks up; the bases they reach, and the
-    /// slots whose rows they move; none for every slot.
     fn apply(&mut self, hour: &Hour<'_>, bases: &mut HashSet<u32>, slots: &mut HashSet<u32>) -> io::Result<bool> {
         let mut all_bases = SELECTION.iter().any(|&table| hour.changes(table).status_changed);
         let mut all_slots = [TableId::NavalRepairCountries, TableId::CountryProductionModifiers].iter().any(|&table| hour.changes(table).status_changed);
@@ -438,7 +404,6 @@ impl DockyardRepairs {
         Ok(all_slots)
     }
 
-    /// Selects again at each of `bases`; the slots whose bases' selections moved join `slots`.
     fn select(&mut self, hour: &Hour<'_>, bases: HashSet<u32>, slots: &mut HashSet<u32>) -> io::Result<()> {
         let mut moved = Vec::new();
         {
@@ -460,7 +425,6 @@ impl DockyardRepairs {
         Ok(())
     }
 
-    /// The row of `slot`'s aliases in `has`: none without one, or with two.
     fn unique(&self, slot: u32, has: impl Fn(u32) -> bool) -> Option<u32> {
         let mut found = None;
         for &raw in self.producers.aliases(slot) {
@@ -474,8 +438,6 @@ impl DockyardRepairs {
         found
     }
 
-    /// Writes `slot`'s rows: its total, its unattributed part and its designs, deleting what it
-    /// no longer holds.
     fn write(&mut self, hour: &Hour<'_>, out: &mut Rows, slot: u32) -> io::Result<()> {
         let table = TableId::DockyardRepairRates;
         let country = self.producers.of_slot(slot);
@@ -600,7 +562,6 @@ impl Writer for DockyardRepairs {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads every input again.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

@@ -1,4 +1,3 @@
-//! River submission with resolved effects and retained render state.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
@@ -36,7 +35,6 @@ pub struct Inputs<'a> {
     pub frames: &'a [&'a [u8]],
     pub shadow_matrix: &'a [[f32; 4]; 4],
     pub time: f32,
-    /// Actual retained PS b2 allocation, including its initialized-byte ranges.
     pub retained_pixel_b2: super::shader_constants::WorldPixelConstants,
     pub textures: [&'a wgpu::TextureView; 16],
 }
@@ -47,13 +45,11 @@ pub struct Geometry<'a> {
     pub runs: &'a [Run],
 }
 
-/// The pixel slot the engine binds the shadow screen buffer to for rivers.
 pub const SHADOW_SLOT: u32 = 15;
 
 pub struct River {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
-    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub texel_reads: Option<String>,
 }
 
@@ -66,7 +62,6 @@ impl River {
         depth: wgpu::TextureFormat,
         high: bool,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, samples, format, depth, high)
         })
@@ -80,7 +75,6 @@ impl River {
         depth: wgpu::TextureFormat,
         high: bool,
     ) -> io::Result<Self> {
-        // Select river quality from map-rendering options.
         let technique = if high { "river" } else { "river_low_gfx" };
         let selection = effect
             .select(technique)
@@ -121,7 +115,6 @@ impl River {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // Restore raster state immediately before rivers and force the river depth state.
         let raster = RasterizerState {
             front_ccw: true,
             ..Default::default()
@@ -173,8 +166,6 @@ impl River {
         let mut bound = Vec::new();
         for frame in inputs.frames {
             for run in geometry.runs {
-                // The 80-byte constant allocation carries the shadow matrix, time, direction and zero season.
-                // Bytes 76 through 79 remain unknown.
                 let mut constants = bytemuck::bytes_of(inputs.shadow_matrix).to_vec();
                 constants.extend_from_slice(bytemuck::cast_slice(&[
                     inputs.time,

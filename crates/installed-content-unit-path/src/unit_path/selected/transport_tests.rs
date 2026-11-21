@@ -2,8 +2,6 @@ use super::*;
 
 #[test]
 fn extreme_cached_weight_preserves_i64_rounding_wrap_before_narrowing() {
-    // Rounded fixed5 multiplication wraps at positive MAX. A plain
-    // ceil(raw/ONE) as i32 would incorrectly return -702313052 here.
     assert_eq!(unit_convoys(i64::MAX), 702_313_053);
     assert_eq!(unit_convoys(i64::MIN), 702_313_053);
     assert_eq!(unit_convoys(i64::MAX - 1), 702_313_053);

@@ -1,19 +1,6 @@
-//! Wire tombstones of the reserved singleton's transport packet tables.
-//!
-//! The selected transport preview's packet briefly moved from the singleton
-//! into keyed hourly tables ([`RESERVED_SPLIT_TABLES`]) in provisional format
-//! 102 and retired in the same format: no published build wrote them and every
-//! recording refuses them by name. The singleton's field is a
-//! [`Retired`] tombstone, so a format-101 inline packet is discarded through
-//! its framing. The retired nearest-base caches' row types also remain here.
-//! These row types keep the tables' ids and framing; nothing reads or writes
-//! their rows.
 use super::*;
 
 
-/// ReservedNearestNavies: key physical navy slot (32 bits), 2 payload mask bits.
-///
-/// Retired wire tombstone (`RETIRED_INPUTS_FORMAT`): no recording holds it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReservedNearestNavyRow {
@@ -24,9 +11,6 @@ pub struct ReservedNearestNavyRow {
 typed_codec!(ReservedNearestNavyRow, 32, |row| row.slot as u128, |key| Self { slot: key as u32, ..Default::default() },
  { 0 => (present): Bool, 1 => (provinces): OptionalU32 }, |_row| Ok(()));
 
-/// ReservedNearestBases: key navy slot:province (64 bits), 1 payload mask bit.
-///
-/// Retired wire tombstone (`RETIRED_INPUTS_FORMAT`): no recording holds it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReservedNearestBaseRow {
@@ -37,11 +21,6 @@ pub struct ReservedNearestBaseRow {
 typed_codec!(ReservedNearestBaseRow, 64, |row| (row.slot as u128) << 32 | row.province as u128, |key| Self { slot: (key >> 32) as u32, province: key as u32, base: 0 },
  { 0 => (base): U32 }, |_row| Ok(()));
 
-/// TransportNavies: key physical manager ordinal (32 bits), 5 payload mask bits.
-///
-/// [`TransportNavy`] without its ledgers. `ledgers` false refuses this navy's
-/// ledger domain; true admits its TransportLedgers rows, each a nonempty
-/// region (an omitted region is empty within the original outer domain).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportNavyRow {
@@ -55,8 +34,6 @@ pub struct TransportNavyRow {
 typed_codec!(TransportNavyRow, 32, |row| row.ordinal as u128, |key| Self { ordinal: key as u32, ..Default::default() },
  { 0 => (slot): U32, 1 => (present): Bool, 2 => (region_slots): OptionalU32, 3 => (ledgers): Bool, 4 => (access_modes): Opaque }, |_row| Ok(()));
 
-/// TransportLedgers: key navy ordinal:region (64 bits), 1 payload mask bit.
-/// One [`TransportLedger`], in the navy's increasing native region order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportLedgerRow {
@@ -67,8 +44,6 @@ pub struct TransportLedgerRow {
 typed_codec!(TransportLedgerRow, 64, |row| (row.navy as u128) << 32 | row.region as u128, |key| Self { navy: (key >> 32) as u32, region: key as u32, occurrences: None },
  { 0 => (occurrences): Opaque }, |_row| Ok(()));
 
-/// TransportReceivers: key full task-force handle (64 bits), 8 payload mask bits.
-/// One entry of the unique increasing receiver dictionary.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportReceiverRow {
@@ -77,8 +52,6 @@ pub struct TransportReceiverRow {
 typed_codec!(TransportReceiverRow, 64, |row| row.receiver.task_force as u128, |key| Self { receiver: TransportMissionReceiver { task_force: key as u64, ..Default::default() } },
  { 0 => (receiver.mission_owner): OptionalU32, 1 => (receiver.logical_owner): OptionalU32, 2 => (receiver.in_regions): Opaque, 3 => (receiver.combat_references): OptionalI32, 4 => (receiver.combined_detection): OptionalI64, 5 => (receiver.detection_cache): Opaque, 6 => (receiver.received_supply_ratio): OptionalI64, 7 => (receiver.risk): Opaque }, |_row| Ok(()));
 
-/// TransportSearchRegions: key physical region ordinal (32 bits), 1 payload mask bit.
-/// None is an authenticated null region slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportSearchRegionRow {
@@ -88,17 +61,10 @@ pub struct TransportSearchRegionRow {
 typed_codec!(TransportSearchRegionRow, 32, |row| row.ordinal as u128, |key| Self { ordinal: key as u32, region: None },
  { 0 => (region): Opaque }, |_row| Ok(()));
 
-/// Where an owner's positional raw NAVY lanes are stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum SpottingLanes {
-    /// Copied with this hour's read.
     Copied(Vec<i64>),
-    /// This hour's read equalled, lane for lane and in length, the navy lanes
-    /// of this owner's rows in the frame's complete CountryIntel sample of
-    /// [`SpottingCoverage::navy_intel_sample`]: CountryIntel `owner_country`
-    /// is the owner's raw root ID, an index below the count without a row is
-    /// zero, and a nonpositive count has no rows.
     CountryIntel,
 }
 
@@ -149,7 +115,6 @@ impl Value for SpottingLanes {
     }
 }
 
-/// [`TransportNavyIntel`] with its lanes stored or certified.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SpottingNavyIntel {
@@ -165,9 +130,6 @@ value_struct!(SpottingNavyIntel {
     lanes: Option<SpottingLanes>,
 });
 
-/// TransportSpottingOwners: key canonical owner slot:occurrence (64 bits), 4 payload mask bits.
-/// One [`TransportSpottingOwner`] in the context's slot order; `occurrence`
-/// counts earlier owners with the same slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportSpottingOwnerRow {
@@ -181,10 +143,6 @@ pub struct TransportSpottingOwnerRow {
 typed_codec!(TransportSpottingOwnerRow, 64, |row| (row.owner_slot as u128) << 32 | row.occurrence as u128, |key| Self { owner_slot: (key >> 32) as u32, occurrence: key as u32, ..Default::default() },
  { 0 => (owner_raw_id): U32, 1 => (target_owned_states): OptionalI32, 2 => (radar): Opaque, 3 => (navy_intel): Opaque }, |_row| Ok(()));
 
-/// TransportSpottingRegions: key original region ordinal (32 bits), 5 payload mask bits.
-/// The sampled province, which changes every hour by native definition, is derived and
-/// not stored ([`SpottingSample::Derived`]); only the changed fields of a region are
-/// stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportSpottingRegionRow {
@@ -195,9 +153,6 @@ typed_codec!(TransportSpottingRegionRow, 32, |row| row.ordinal as u128, |key| Se
  { 0 => (region.region_id): U32, 1 => (region.runtime_slot): OptionalI32, 2 => (region.signed_province_count): OptionalI32, 3 => (region.weather_detection): Opaque, 4 => (region.air_environment): Opaque },
  |row| if row.region.sample == SpottingSample::Derived { Ok(()) } else { Err(invalid("split spotting regions derive their sample")) });
 
-/// TransportAirRoots: key physical strategic air manager ordinal (32 bits), 5 payload mask bits.
-/// [`TransportAirCountry`] without its headers: `regions` is the length of its Enemy-vector header
-/// domain, None its refusal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirRootRow {
@@ -211,11 +166,6 @@ pub struct TransportAirRootRow {
 typed_codec!(TransportAirRootRow, 32, |row| row.ordinal as u128, |key| Self { ordinal: key as u32, ..Default::default() },
  { 0 => (country): OptionalU32, 1 => (slot): U32, 2 => (present): Bool, 3 => (regions): OptionalU32, 4 => (factors): Opaque }, |_row| Ok(()));
 
-/// TransportAirRegions: key root ordinal:header ordinal (64 bits), 3 payload mask bits.
-///
-/// A region header that differs from the empty header at its ordinal (its
-/// own region ID, an authentic zero count and an empty mission list). Below a
-/// root's `regions`, a header without a row is that empty header.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirRegionRow {
@@ -227,7 +177,6 @@ typed_codec!(TransportAirRegionRow, 64, |row| (row.root as u128) << 32 | row.ord
  { 0 => (region.region): U32, 1 => (region.count): OptionalI32, 2 => (region.missions): Opaque }, |_row| Ok(()));
 
 impl TransportAirRegionRow {
-    /// The header an idle root holds at `ordinal`; it is never stored.
     pub fn empty(ordinal: u32) -> TransportAirRegion {
         TransportAirRegion {
             region: ordinal,
@@ -237,8 +186,6 @@ impl TransportAirRegionRow {
     }
 }
 
-/// TransportRiskShips: key full task-force handle (64 bits), 2 payload mask bits.
-/// One SHIPS receiver, in the packet's unique increasing handle order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportRiskShipsRow {

@@ -7,11 +7,8 @@ import FactionTotalsView from './FactionTotalsView';
 import type { FactionTotalsViewProps } from './FactionTotalsView';
 import { groupTotal } from './factionTotalsData.ts';
 
-/** Whether a widget's countries are a group shown as one total (`aggregate`). */
 export const aggregated = (countries: FactionTotalsViewProps['widget']['countries']) => countries.kind === 'group' && countries.aggregate;
 
-/** A group's members summed as one total: a faction's own total, or any other group's members (players, a war's
- * side, a continent's countries) summed at each hour they are members, a race bar and a line of one. */
 export default function AggregateTotalsView(props: FactionTotalsViewProps) {
   const { widget, runtime, active } = props;
   const selection = widget.countries;

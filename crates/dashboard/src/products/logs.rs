@@ -1,8 +1,3 @@
-//! Every declared log's pages and counts with no product of its own ([`dashboard_query::log`]):
-//! `log-page` (a page of rows, typed cells by column, with ordinals and the total in range) and
-//! `log-counts` (rows per bin, by tag where a facet is filtered by tags: marks and totals). A
-//! product with its own row shape calls the same reads and maps each [`log::Row`] itself. At the
-//! head a log page is followed as the rows appended since the last push (`dashboard_follow`).
 
 pub use dashboard_base::products::log_page::{LogCell, LogPageParams, LogPageReply, LogPageRow, missing, page};
 
@@ -31,11 +26,11 @@ pub struct LogCountsParams {
     pub facets: Vec<FacetFilter>,
     pub from: f64,
     pub to: f64,
-    /// 1 to 5, or whole six-hour buckets.
+    #[doc = " 1 to 5, or whole six-hour buckets."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub bin_hours: i64,
-    /// The countries a row must name, each tag over the hours it counts, for a log whose rows a
-    /// scope reads (the feed's); every row when none.
+    #[doc = " The countries a row must name, each tag over the hours it counts, for a log whose rows a"]
+    #[doc = " scope reads (the feed's); every row when none."]
     #[serde(default)]
     pub scope: Option<Vec<super::groups::MembershipRun>>,
 }
@@ -47,10 +42,10 @@ pub struct LogCountLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub country: Option<dashboard_base::products::Country>,
-    /// Its rows on the timeline before the range: a mark's ordinals count from it.
+    #[doc = " Its rows on the timeline before the range: a mark's ordinals count from it."]
     pub before: String,
     pub total: String,
-    /// Per bin with rows: its index from `firstHour` and its count.
+    #[doc = " Per bin with rows: its index from `firstHour` and its count."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number]>"))]
     pub bins: Vec<(u32, u64)>,
 }
@@ -61,7 +56,7 @@ pub struct LogCountLine {
 pub struct LogCountsReply {
     pub branch_id: String,
     pub log: String,
-    /// The first hour of bin 0.
+    #[doc = " The first hour of bin 0."]
     pub first_hour: i32,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub bin_hours: i64,

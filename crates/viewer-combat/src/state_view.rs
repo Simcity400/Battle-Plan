@@ -1,6 +1,3 @@
-//! The state view (`countrystateview`) a ground click opens, bound read-only to the hour's rows.
-//! A control whose recorded source or native presentation is not established is withheld by
-//! name, never left at its authored placeholder.
 use super::{binding::Bindings, content::Content};
 
 mod buildings;
@@ -13,12 +10,10 @@ mod rule;
 mod stakeholders;
 pub(crate) use owner::OWNER_INFO_MODIFIERS;
 
-/// The static modifier names the window's custom province icons stand for (`<name>_icon`).
 pub(crate) fn icon_modifier_names(windows: &viewer_foundation::map::native_windows::NativeWindows) -> Vec<String> {
     windows.gui_type(WINDOW).map(province::icon_modifier_names).unwrap_or_default()
 }
 
-/// The temperature the province's weather record holds at the frame's hour.
 pub(super) fn hour_temperature(content: &Content, frame: &DecodedFrame, rows: &[replay_data::rows::WeatherProvinceRow], province: u32) -> Result<i64, String> {
     content
         .air_context
@@ -38,7 +33,6 @@ use viewer_foundation::{
 
 pub(super) const WINDOW: &[u8] = b"countrystateview";
 
-/// The templates the window's grids list their rows in.
 pub(super) mod entry {
     pub const STATE_BUILDING: &str = "state_building_entry";
     pub const SHARED_SLOT: &str = "state_shared_slot_building_entry";
@@ -52,7 +46,6 @@ pub(super) mod entry {
     pub const COMPLIANCE: &str = "state_compliance_status_container";
 }
 
-/// The window and every entry template it lists rows in, whose resources load with the content.
 pub(super) const TEMPLATES: &[&[u8]] = &[
     WINDOW,
     entry::STATE_BUILDING.as_bytes(),
@@ -66,12 +59,9 @@ pub(super) const TEMPLATES: &[&[u8]] = &[
     entry::RESISTANCE.as_bytes(),
     entry::COMPLIANCE.as_bytes(),
 ];
-/// The DLC feature that adds the scorched earth button ("No Step Back"), bit 7 of the recorded mask.
 const SCORCHED_FEATURE: u32 = 1 << 7;
 
 
-/// The controls the province part and the stakeholders bind, withheld together when their rows
-/// are not there.
 const PROVINCE_PART: [&str; 17] = [
     "victory_points",
     "province",
@@ -92,7 +82,6 @@ const PROVINCE_PART: [&str; 17] = [
     "victory_points_bg",
 ];
 
-/// The controls the state's own rows bind, withheld together when its rows are not there.
 const STATE_PART: [&str; 7] = [
     "state_resources_entries",
     "resistance_container",
@@ -111,7 +100,6 @@ pub(super) fn loc(content: &Content, key: &str, arguments: &[(&str, Argument<'_>
         .and_then(|text| displayable(content.assets.as_ref(), text))
 }
 
-/// Every element path whose own name is `name`, wherever a mod nests it.
 pub(super) fn paths_named(root: &native::Element, name: &str) -> Vec<String> {
     super::gui::elements(root)
         .into_iter()
@@ -120,7 +108,6 @@ pub(super) fn paths_named(root: &native::Element, name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Authored text keys through the recorded localisation, as the window's construction sets them.
 pub(super) fn seed(content: &Content, root: &native::Element, out: &mut Bindings) {
     for (path, element) in super::gui::elements(root) {
         let authored = element
@@ -313,7 +300,6 @@ mod tests {
         assert!(out.values["moved/state_shared_slot_building_entries"].hidden);
         assert!(!out.values.contains_key("province_info_window/province_building_entries"));
         assert!(!out.values.contains_key("state_name"));
-        // One refusal per withheld group the window holds, none for groups it lacks.
         assert_eq!(out.refused().len(), 1, "{:?}", out.refused());
     }
 }

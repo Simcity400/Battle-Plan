@@ -1,4 +1,3 @@
-//! Exact native air save fields, including ordered retained history.
 use std::io;
 
 use super::{
@@ -7,22 +6,18 @@ use super::{
 };
 use installed_content_core::{parser::Item, parser::Value};
 
-/// Air-history metric indices; these are unrelated to region indices.
 pub const STATISTIC_CHANNELS: [usize; 24] = [
     0, 1, 2, 3, 10, 17, 24, 36, 37, 38, 39, 40, 41, 42, 43, 44, 51, 58, 65, 77, 78, 79, 80, 81,
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Vectors retain repeated parents; the comparator refuses ambiguous joins.
     pub bases: Vec<AirBase>,
     pub aces: Vec<Ace>,
     pub wings: Vec<Wing>,
     pub regions: Vec<Region>,
     pub statistics: Vec<Statistics>,
-    /// Absent daily queues remain absent, including in older synthetic saves.
     pub daily_statistics: Vec<DailyStatistics>,
-    /// Daily-reader faults belong only to the air-event oracle group.
     pub daily_errors: Vec<String>,
     pub ground_crews: Vec<GroundCrews>,
 }
@@ -38,11 +33,9 @@ pub struct GroundCrews {
 pub struct AirBase {
     pub id: u64,
     pub state: Option<u32>,
-    /// The writer includes the host only for stateless bases.
     pub host: Option<u64>,
     pub capacity: i32,
     pub kind: i32,
-    /// Native dense occurrence order, including repeated country containers.
     pub containers: Vec<AirBaseCountry>,
 }
 
@@ -59,20 +52,15 @@ pub struct Ace {
     pub country: Vec<u8>,
     pub ordinal: u32,
     pub modifier: Option<Vec<u8>>,
-    /// The writer emits is_female only for a nonzero raw byte.
     pub female: bool,
-    /// The writer always writes the signed portrait word.
     pub portrait: i32,
     pub alive: bool,
     pub handled: bool,
     pub kill_type: u32,
     pub killer_ace: u64,
-    /// Omission proves a nonpositive country word, not its exact null bits.
     pub killer_country: Option<Vec<u8>>,
     pub name: Vec<u8>,
     pub surname: Vec<u8>,
-    /// The callsign is emitted only for a nonzero stored length;
-    /// an emitted empty first-NUL prefix differs from omission.
     pub callsign: Option<Vec<u8>>,
 }
 
@@ -91,22 +79,12 @@ pub struct EquipmentPool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wing {
     pub id: u64,
-    /// The containing pool definition's token is always written as
-    /// `definition`, not `type`; every wing retains it for the recorded-content
-    /// index join. Even an empty token is emitted.
     pub pool_type: Vec<u8>,
-    /// The writer saves `name` outside checksum mode.
-    /// It escapes quotes/backslashes; the parser decodes them.
-    /// Missing text remains distinct from a successfully saved empty name.
     pub name: Option<Vec<u8>>,
-    /// The writer emits accidents only when signed-positive.
     pub accidents: Option<i32>,
     pub experience: Decimal,
     pub equipment: EquipmentPool,
-    /// The wing writer emits this only when its full reference resolves.
     pub ace: Option<u64>,
-    /// The writer saves `raid_instance` only when that full reference resolves.
-    /// Omission does not reveal the exact null or stale bits.
     pub raid: Option<u64>,
 }
 
@@ -115,7 +93,6 @@ pub struct Region {
     pub country: Vec<u8>,
     pub region: u32,
     pub owner: Vec<u8>,
-    /// First native vector followed by second; order within each is retained.
     pub entries: Vec<CombatRecord>,
 }
 
@@ -129,9 +106,7 @@ pub struct CombatRecord {
     pub mission_mask: u32,
     pub selection: bool,
     pub attributed_country: Vec<u8>,
-    /// The copied equipment pool retains its allow-zero byte.
     pub equipment: EquipmentPool,
-    /// Preserve both physical damage channels and their order, including duplicates.
     pub damage: [Vec<Damage>; 2],
 }
 
@@ -147,7 +122,6 @@ pub struct Statistics {
     pub region: u32,
     pub year_slot: u32,
     pub year_window_wrapped: bool,
-    /// Only the current native 360-day annual-ring bucket's selected 24 fields.
     pub channels: [i64; 24],
 }
 
@@ -157,8 +131,6 @@ pub struct DailyStatistics {
     pub region: u32,
     pub current_slot: u32,
     pub wrapped: bool,
-    /// All native fields in the physical slot preceding `current_slot`.
-    /// The queue saves no dates or proof that this slot covered a whole day.
     pub previous_fields: [i64; 89],
     pub current_fields: [i64; 89],
 }
@@ -187,7 +159,6 @@ fn exact_bytes(items: &[Item], name: &[u8]) -> io::Result<Vec<u8>> {
     })
 }
 
-/// Several native u32 bit fields use the signed integer text writer.
 fn word(items: &[Item], name: &[u8]) -> io::Result<u32> {
     let value: i64 = number(items, name)?;
     if !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&value) {
@@ -253,8 +224,6 @@ fn parse_base(fields: &[Item]) -> io::Result<AirBase> {
 }
 
 fn parse_ace(country: &[u8], ordinal: u32, fields: &[Item]) -> io::Result<Ace> {
-    // The ace writer omits alive=true, handled=false, kill_type=0, the null killer
-    // reference, and an empty callsign. Name and surname are always emitted.
     Ok(Ace {
         id: object_id(fields)?,
         country: country.to_vec(),
@@ -375,9 +344,6 @@ fn parse_statistics(country: &[u8], region: u32, fields: &[Item]) -> io::Result<
     }
     let year_window_wrapped = flag(annual, b"is_full")?;
     let mut channels = [0; 24];
-    // The annual history writer serializes all five 89-field rows in physical slot order if any
-    // field is nonzero. Omitted data therefore proves zero, including at the
-    // current slot. Lists use the same fixed5 formatter as scalar values.
     if let Some(data) = field(annual, b"data")? {
         let data = block(data)?;
         if data.len() != 5 * 89 {
@@ -413,8 +379,6 @@ fn parse_daily_statistics(
     region: u32,
     fields: &[Item],
 ) -> io::Result<Option<DailyStatistics>> {
-    // The history writer saves its three queue windows as keys 0/1/2:
-    // daily is key 0.
     let queue = required_block(fields, b"history_queue")?;
     let Some(daily) = field(queue, b"0")? else {
         return Ok(None);
@@ -422,8 +386,6 @@ fn parse_daily_statistics(
     let daily = block(daily)?;
     let capacity: u32 = number(daily, b"max_elements")?;
     let current_slot: u32 = number(daily, b"offset")?;
-    // Region history has 89 fields per record and initializes
-    // 30 daily records.
     if capacity != 30 || current_slot >= capacity {
         return Err(invalid(
             "air daily history has invalid native capacity or cursor",
@@ -433,8 +395,6 @@ fn parse_daily_statistics(
     let previous_slot = (current_slot + capacity - 1) % capacity;
     let mut previous_fields = [0; 89];
     let mut current_fields = [0; 89];
-    // The container writer saves all records in physical slot order;
-    // it omits data only when every field in every record is zero.
     if let Some(data) = field(daily, b"data")? {
         let data = block(data)?;
         if data.len() != 30 * 89 {
@@ -885,7 +845,6 @@ mod tests {
         }
         for bad_value in ["x=0", "{}", "bad", "92233720368547.75808"] {
             let mut values = vec!["0"; 30 * 89];
-            // Even a field outside the selected record must remain valid.
             values[89 + 88] = bad_value;
             let text = format!(
                 "history_queue={{0={{max_elements=30 offset=1 is_full=no data={{ {} }} }} }}",

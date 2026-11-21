@@ -6,7 +6,6 @@ use replay_data::rows::{
 use replay_frame::frame::TableView;
 use viewer_foundation::map::test_support::{assert_reads_recorded, map_scoped};
 
-/// Baked German designer models, plain and snow, on provinces 1 to 4.
 fn figure_assets(name: &str) -> (std::path::PathBuf, UnitModelAssets) {
     use crate::map::models::tests::{MESHES_GFX, triangle_mesh, visual_stack};
     let (root, layers) = visual_stack(
@@ -28,7 +27,6 @@ fn figure_assets(name: &str) -> (std::path::PathBuf, UnitModelAssets) {
     (root, assets)
 }
 
-/// Each placed figure's division, entity and animation, and the refusals.
 fn figures(
     assets: &UnitModelAssets,
     frame: &DecodedFrame,
@@ -75,9 +73,6 @@ fn divisions() -> Vec<replay_data::rows::DivisionRow> {
     (1..=4).map(|id| division(id, id as u32, 50)).collect()
 }
 
-/// A Map recording, which leaves DivisionStatus out, draws its land figures from the
-/// DivisionModelInputs witness, reading no table it leaves out, as Full draws them from
-/// DivisionStatus; only a figure whose witnessed value is missing is withheld.
 #[test]
 fn map_figures_read_the_model_witness_as_full_reads_division_status() {
     let (root, assets) = figure_assets("model_witness_figures");
@@ -115,13 +110,9 @@ fn map_figures_read_the_model_witness_as_full_reads_division_status() {
             witness(3, None, Some(0)),
             witness(4, shown, None),
         ]));
-    // A maker keeps its last hour's frame and answers; a recording is one capture mode, so the
-    // Map frames have a maker of their own, never one that held a Full hour.
     let (map_root, map_assets) = figure_assets("model_witness_figures_map");
     let (map_figures, map_errors) =
         assert_reads_recorded(&map, &[], || figures(&map_assets, &map));
-    // Prepared playback projects the tables it does not select, keeping DivisionStatus's
-    // marker: a frame that no longer names one capture mode draws the same figures.
     let mut projected = map.clone();
     for table in TableId::ALL {
         if table != TableId::DivisionStatus

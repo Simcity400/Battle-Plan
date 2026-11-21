@@ -18,12 +18,10 @@ test('completed focus rows open and close by revealing their own clipped height,
   assert.match(closed, /opacity:\s*0;/);
   assert.match(closed, /transition:[^;]*\bblock-size var\(--t-slow\) var\(--ease\)/);
   assert.match(closed, /transition:[^;]*\bopacity var\(--t-slow\) var\(--ease\)/);
-  // Hidden content stays painted until the closing reveal ends.
   assert.match(closed, /transition:[^;]*\bcontent-visibility var\(--t-slow\) allow-discrete/);
   const open = rule('.national-focus .focus-details[open]::details-content');
   assert.match(open, /block-size:\s*auto/);
   assert.match(open, /opacity:\s*1/);
-  // The shared entrance starts below its box, so inside a row it would overlap the row beneath.
   assert.match(rule('.national-focus .focus-description'), /animation:\s*none/);
 });
 

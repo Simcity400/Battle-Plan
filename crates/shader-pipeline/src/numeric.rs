@@ -454,7 +454,6 @@ impl Patch {
         }
         let finite = self.id();
         instruction(out, 12, &[ty, finite, set, operation, left, right]);
-        // Integer predicates survive WGSL's finite-math assumptions; x != x need not.
         let selected = if right_known {
             finite
         } else {

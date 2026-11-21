@@ -1,6 +1,3 @@
-//! The air roster history's samples read by lanes of its own: for the block that holds an asked
-//! hour, AirDailyRoster and CountryLinks stepped an hour at a time from the block's first hour,
-//! the roster kept at each sample around a daily pass's tick. Apart from the head and its seeks.
 
 use super::{Kept, Table};
 use crate::playhead_host::Entry;
@@ -20,25 +17,20 @@ use viewer_counter_products::map::province_tooltips::air_region::{Roster, SUPERS
 
 const READER: &str = "The air roster history";
 
-/// The playhead's units read as lanes of the roster history's own, for the branch whose timeline
-/// they play.
 pub struct Lanes {
     pages: Arc<dyn Pages>,
     timeline: Timeline,
     branch: BranchId,
-    /// Each span read: its hours and nanoseconds.
     reads: Mutex<Vec<(u32, u64)>>,
 }
 
 impl Lanes {
-    /// The lanes of `entry`'s units; none when no branch of the recording plays their timeline.
     pub fn of(entry: &Entry, replay: &Replay) -> Option<Self> {
         let timeline = entry.playhead().timeline().clone();
         let branch = crate::playhead_host::units::branch_playing(replay, &**entry.pages(), &timeline)?;
         Some(Self { pages: Arc::clone(entry.pages()), timeline, branch, reads: Mutex::default() })
     }
 
-    /// Each span read so far: its hours and nanoseconds.
     pub fn reads(&self) -> Vec<(u32, u64)> {
         self.reads.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
@@ -84,7 +76,6 @@ impl SampleSource for Lanes {
     }
 }
 
-/// The roster at the lanes' hour, or why a table cannot give it whole.
 fn sample(rosters: &Table<tables::AirDailyRoster>, links: &Table<tables::CountryLinks>) -> Result<Roster, String> {
     let whole = |status: Status, reason: &str, name: &str| match status {
         Status::Complete => Ok(()),

@@ -11,13 +11,10 @@ import { noValues } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { busyWait } from '../../shell/busy.ts';
 
-/** The hour's records, and their values (the reply's live cells at that hour). */
 export interface BalanceDetails { hour: number | null; data?: PoliticsStateAt; values: LiveValues<number>; error?: Failure; retry: () => void }
 
 const NOT_READ = noValues('Not read yet');
 
-/** Every stored balance record at one hour (members, contributions and drift sources):
- * one uncached request per hour asked, only while one is asked. */
 export function useBalanceDetails(runtime: WidgetRuntime, track: BoundTrack | undefined, hour: number | null, active: boolean): BalanceDetails {
   const revision = useContentRevision(runtime.client);
   const [attempt, setAttempt] = useState(0);
@@ -35,15 +32,11 @@ export function useBalanceDetails(runtime: WidgetRuntime, track: BoundTrack | un
       if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) });
     });
     return () => controller.abort();
-    // Identity includes the hour, branch, source revision, content binding and retry.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key]);
   const current = state?.client === runtime.client && state.key === key ? state : undefined;
   return { hour, data: current?.data, values: current?.values ?? NOT_READ, error: current?.error, retry: () => setAttempt(value => value + 1) };
 }
 
-/** `hour` once it has rested for `delay` ms (at once when `now`), so playback asks
- * for an hour's details only where it pauses. */
 export function useSettledHour(hour: number | null, delay: number, now: boolean): number | null {
   const [settled, setSettled] = useState(hour);
   useEffect(() => {

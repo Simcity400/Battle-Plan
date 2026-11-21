@@ -21,7 +21,6 @@ fn evaluations_record_queries_and_whole_tables_read_outside_them() {
     let frame = crate::test_fixtures::source(1, 10, Some(7));
     let countries = |frame: &DecodedFrame| frame.complete::<tables::Countries>().unwrap().len();
     let (inner, mut outer) = capture(&frame, || {
-        // Read inside a query: only the query's result is an input.
         let rows = query(|| Key::Table(TableId::States), || countries(&frame));
         assert_eq!(rows, 1);
         let ((), inner) = capture(&frame, || {
@@ -42,7 +41,6 @@ fn evaluations_record_queries_and_whole_tables_read_outside_them() {
     *changed.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::empty(TableId::Countries));
     assert!(!outer.confirm(&changed, unchanged));
-    // Shared builds and reads outside an evaluation record nothing.
     let ((), shared) = capture(&frame, || unrecorded(|| assert_eq!(countries(&frame), 1)));
     assert_eq!(shared.reads.len(), 0);
 }
@@ -67,31 +65,20 @@ fn a_helper_thread_credits_its_reads_to_the_recording_caller() {
     });
     assert!(inputs.keys().any(|key| *key == Key::ClockSeed));
     assert_eq!(inputs.tables().collect::<Vec<_>>(), [TableId::Countries]);
-    // A caller outside any evaluation carries nothing to its helper.
     let ((), carried) = handoff().run(|| read(Key::ClockSeed, &7_u64));
     assert!(carried.inputs.is_none() && carried.views.is_empty());
 }
 
-/// The recorded values of one hour.
 #[derive(Clone, Copy)]
 struct State {
-    /// Country 101's political power: a field no trigger here reads.
     power: i64,
-    /// Its ruling party's popularity: read by none either.
     popularity: i64,
-    /// Country 101's flag `x`, which the evaluation reads.
     flag: i16,
-    /// Country 102's flag `y`, which it does not.
     other_flag: i16,
-    /// When the war between 101 and 102 ends.
     war_end: i32,
-    /// Whether country 102 has completed focus `g`.
     other_focus: bool,
-    /// Whether country 101 has completed focus `g`.
     own_focus: bool,
-    /// Whether country 103, which no link resolves, has completed focus `g`.
     unlinked_focus: bool,
-    /// Whether country 102's link resolves to slot 1, as 101's does.
     relinked: bool,
 }
 
@@ -111,8 +98,6 @@ fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(TableRows::from_rows::<T>(rows));
 }
 
-/// Countries 101 (slot 1) and 102 (slot 2) at war, each with a flag, a
-/// ruling party and completed focuses.
 fn frame(hour: Hour, state: State) -> DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, None);
     set::<tables::Countries>(
@@ -189,7 +174,6 @@ fn frame(hour: Hour, state: State) -> DecodedFrame {
         ordinal,
         token: token.as_bytes().to_vec(),
     };
-    // In key order: by country, then ordinal.
     set::<tables::CompletedFocuses>(
         &mut frame,
         std::iter::once(focus(101, 0, "f"))
@@ -340,7 +324,6 @@ fn has_war_records_clock_only_when_scanning_relations() {
     }
 }
 
-/// What an evaluation of country 1's visibility-style triggers reads.
 fn read_all(world: &World<'_>) -> String {
     format!(
         "{:?}",
@@ -358,7 +341,6 @@ fn evaluate(frame: &DecodedFrame) -> (String, Inputs) {
     with_world(frame, |world| capture(frame, || read_all(world)))
 }
 
-/// Confirm `inputs` at `frame`, and how many inputs it read again.
 fn confirm(inputs: &mut Inputs, frame: &DecodedFrame, since: Option<&Since<'_>>) -> (bool, usize) {
     let mut rereads = 0;
     let confirmed = with_world(frame, |world| {
@@ -373,7 +355,6 @@ fn confirm(inputs: &mut Inputs, frame: &DecodedFrame, since: Option<&Since<'_>>)
     (confirmed, rereads)
 }
 
-/// Recorded hours, encoded and decoded as a recording stores and reads them.
 struct Recording {
     encoder: FrameEncoder,
     decoder: FrameDecoder,
@@ -398,7 +379,6 @@ impl Recording {
     }
 }
 
-/// An hour's recorded updates as the tables' changes since the hour before.
 struct Updates<'a>(&'a Frame);
 
 impl TableChanges for Updates<'_> {
@@ -471,8 +451,6 @@ fn an_hour_changing_only_unread_fields_reuses_without_reading_again() {
     let mut recording = Recording::new();
     let (_, first) = recording.hour(100, BASE);
     let (value, inputs) = evaluate(&first);
-    // Political power, party popularity and another country's flag change:
-    // rows of tables the evaluation reads, in fields or rows it does not.
     let (wire, second) = recording.hour(
         101,
         State {
@@ -495,11 +473,9 @@ fn an_hour_changing_only_unread_fields_reuses_without_reading_again() {
     let updates = Updates(&wire);
     let since = Since::hour_before(&second, &updates).unwrap();
     assert!(inputs.unchanged(&since));
-    // Without the hour's changes, every input is read again.
     let (whole, rereads) = confirm(&mut inputs.clone(), &second, None);
     assert!(whole);
     assert!(rereads >= 5, "{rereads} rereads");
-    // Check mode reads every skipped input again, and none changed.
     let (confirmed, missed) =
         expecting_missed(|| confirm(&mut inputs.clone(), &second, Some(&since)).0);
     assert!(confirmed);
@@ -510,7 +486,6 @@ fn an_hour_changing_only_unread_fields_reuses_without_reading_again() {
         (true, 0)
     );
     assert_eq!(evaluate(&second).0, value);
-    // The next hour follows on from this one.
     let (wire, third) = recording.hour(102, BASE);
     let updates = Updates(&wire);
     assert!(reused.unchanged(&Since::hour_before(&third, &updates).unwrap()));
@@ -521,9 +496,6 @@ fn an_hour_changing_a_read_field_or_row_reads_again() {
     let mut recording = Recording::new();
     let (_, first) = recording.hour(100, BASE);
     let (value, inputs) = evaluate(&first);
-    // Another country completes a focus: a row of a country that resolves
-    // to another slot, which `has_completed_focus` neither reads nor
-    // refuses on, so nothing is read again.
     let (wire, second) = recording.hour(
         101,
         State {
@@ -538,14 +510,12 @@ fn an_hour_changing_a_read_field_or_row_reads_again() {
     let updates = Updates(&wire);
     let since = Since::hour_before(&second, &updates).unwrap();
     assert!(inputs.unchanged(&since));
-    // Check mode reads it anyway and finds it the same.
     assert!(confirm(&mut inputs.clone(), &second, Some(&since)).0);
     let mut confirmed = inputs.clone();
     assert_eq!(
         reusing(|| confirm(&mut confirmed, &second, Some(&since))),
         (true, 0)
     );
-    // The flag the evaluation reads changes value.
     let flagged = State {
         flag: 2,
         other_focus: true,
@@ -579,7 +549,6 @@ fn a_relation_ending_at_an_unchanged_hour_reads_again() {
         assert!(confirm(&mut inputs, &frame, Some(&since)).0);
         assert_eq!(evaluate(&frame).0, value);
     }
-    // At 103 the war ends with no table changing.
     let (wire, ended) = recording.hour(103, BASE);
     let updates = Updates(&wire);
     let since = Since::hour_before(&ended, &updates).unwrap();
@@ -588,7 +557,6 @@ fn a_relation_ending_at_an_unchanged_hour_reads_again() {
     assert_ne!(evaluate(&ended).0, value);
 }
 
-/// What an evaluation of whether country 1 completed focus `g` reads.
 fn evaluate_focus(frame: &DecodedFrame) -> (String, Inputs) {
     with_world(frame, |world| {
         capture(frame, || format!("{:?}", world.has_focus(1, b"g")))
@@ -605,12 +573,8 @@ fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_link
         other_focus: true,
         ..BASE
     };
-    // Each hour's state, whether the read may have changed since the hour
-    // before, and its value.
     let hours = [
-        // Another slot's country completes `g`.
         (other, false, "Ok(false)"),
-        // A country no link resolves completes it: refused.
         (
             State {
                 unlinked_focus: true,
@@ -620,7 +584,6 @@ fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_link
             "Err",
         ),
         (other, true, "Ok(false)"),
-        // Only the links change: 102, which holds `g`, now resolves to slot 1.
         (
             State {
                 relinked: true,
@@ -629,7 +592,6 @@ fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_link
             true,
             "Ok(true)",
         ),
-        // A row of 102, now slot 1's, goes away.
         (
             State {
                 relinked: true,
@@ -638,7 +600,6 @@ fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_link
             true,
             "Ok(false)",
         ),
-        // The country itself completes it.
         (
             State {
                 relinked: true,
@@ -656,7 +617,6 @@ fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_link
         assert_eq!(!inputs.unchanged(&since), changed, "hour {hour}");
         let (now, next) = evaluate_focus(&frame);
         assert!(now.starts_with(read), "hour {hour}: {now}");
-        // Check mode reads a skipped input anyway, and finds it the same.
         assert_eq!(
             confirm(&mut inputs.clone(), &frame, Some(&since)).0,
             now == value,
@@ -672,8 +632,6 @@ fn expected_miss_accounting_is_thread_local_and_nested() {
     let (_, frame) = recording.hour(100, BASE);
     let key = Key::World(Query::Flag(1, 1, b"synthetic".to_vec()));
     let (_, outer) = expecting_missed(|| {
-        // This completes inside the outer accounting window, but its miss
-        // belongs to the worker. A global before/after delta reports it here.
         std::thread::scope(|threads| {
             threads
                 .spawn(|| {
@@ -694,7 +652,6 @@ fn expected_miss_accounting_is_thread_local_and_nested() {
 fn check_mode_reports_an_owned_read_declared_for_the_wrong_country() {
     let mut recording = Recording::new();
     let (_, first) = recording.hour(100, BASE);
-    // Declare, wrongly, that country 1's focus reads slot 2's rows.
     let wrong = |key: &Key| {
         matches!(key, Key::World(Query::HasFocus(..))).then(|| {
             Some(vec![
@@ -726,27 +683,22 @@ fn check_mode_reports_an_owned_read_declared_for_the_wrong_country() {
 fn check_mode_reports_a_dependence_that_misses_a_read() {
     let mut recording = Recording::new();
     let (_, first) = recording.hour(100, BASE);
-    // Declare, wrongly, that a flag's value reads no flag row.
     let wrong = |key: &Key| matches!(key, Key::World(Query::Flag(..))).then(|| Some(Vec::new()));
     let (_, inputs) = declaring(wrong, || evaluate(&first));
     let (_, right) = evaluate(&first);
     let (wire, second) = recording.hour(101, State { flag: 2, ..BASE });
     let updates = Updates(&wire);
     let since = Since::hour_before(&second, &updates).unwrap();
-    // The true declaration reads the flag again and finds it changed.
     assert!(!reusing(|| confirm(&mut right.clone(), &second, Some(&since))).0);
-    // The wrong one lets the evaluation through unread...
     assert!(inputs.unchanged(&since));
     assert_eq!(
         reusing(|| confirm(&mut inputs.clone(), &second, Some(&since))),
         (true, 0)
     );
-    // ...which check mode reads anyway and reports.
     let ((confirmed, _), missed) =
         expecting_missed(|| confirm(&mut inputs.clone(), &second, Some(&since)));
     assert!(confirmed);
     assert_eq!(missed, 1);
-    // Outside an expecting test, a missed dependence fails it.
     let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         confirm(&mut inputs.clone(), &second, Some(&since))
     }));
@@ -756,7 +708,6 @@ fn check_mode_reports_a_dependence_that_misses_a_read() {
 #[test]
 fn a_block_read_by_its_changes_confirms_through_changed_and_quiet_hours() {
     use replay::campaign::BlockChange;
-    // Political power changes every hour; the flag at 10.
     let state = |hour: Hour| State {
         power: i64::from(hour),
         flag: if hour < 10 { 1 } else { 2 },
@@ -849,7 +800,6 @@ fn a_block_read_by_its_changes_confirms_through_changed_and_quiet_hours() {
             (visited, evaluated, rereads)
         };
         let (visited, evaluated, rereads) = if checking { run() } else { reusing(run) };
-        // Countries change every hour, in a field nothing watches.
         assert_eq!(visited, [1, 10]);
         assert_eq!(evaluated, 2, "the first hour, and the flag's change");
         if !checking {
@@ -869,18 +819,13 @@ fn block_changes_name_what_may_have_changed() {
         let block = BlockTables::new(&watched, changed, rebuilt);
         Since::hour_before(&frame, &block).unwrap().changed(read)
     };
-    // Rebuilt for an unwatched field only.
     assert!(!changed(&[], &[TableId::Countries], &tag));
     assert!(changed(&[], &[TableId::Countries], &power));
-    // A watched field, key or availability changed.
     assert!(changed(&[TableId::Countries], &[TableId::Countries], &tag));
-    // An unwatched table rebuilt may differ anywhere; one carried in none.
     assert!(changed(&[], &[TableId::ScriptFlags], &flags));
     assert!(!changed(&[], &[], &flags));
 }
 
-/// A frame where every declared query below reads rows: the scenario's
-/// countries with party leaders, characters, factions, a subject and ideas.
 fn rich_frame() -> DecodedFrame {
     let mut frame = frame(100, BASE);
     set::<tables::PartyLeaders>(
@@ -958,7 +903,6 @@ fn rich_frame() -> DecodedFrame {
     frame
 }
 
-/// A query of every declared world kind, on the rich frame's countries.
 fn declared_world_queries() -> Vec<Query> {
     vec![
         Query::TableStatus(TableId::Countries),
@@ -1017,7 +961,6 @@ fn declared_world_queries() -> Vec<Query> {
     ]
 }
 
-/// The tables `key` declares, with the world's.
 fn declared_tables(key: &Key) -> Vec<TableId> {
     key.dependence()
         .expect("declared")
@@ -1026,12 +969,8 @@ fn declared_tables(key: &Key) -> Vec<TableId> {
         .collect()
 }
 
-/// Each key's digest at a frame, None when it cannot be read there.
 pub(crate) type Digests<'a> = dyn Fn(&DecodedFrame, &[Key]) -> Vec<Option<u64>> + 'a;
 
-/// Reads `keys` on `frame` with each table in turn made unavailable: a key
-/// whose declaration lacks that table reads the same. For each key that a
-/// table it declares changed, the first such table.
 pub(crate) fn tables_each_key_reads(
     frame: &DecodedFrame,
     keys: &[Key],
@@ -1059,7 +998,6 @@ pub(crate) fn tables_each_key_reads(
     differed
 }
 
-/// An edit of some fields of one row (or of every row) of one table.
 pub(crate) struct Change {
     pub table: TableId,
     pub fields: &'static [&'static str],
@@ -1083,9 +1021,6 @@ impl Change {
     }
 }
 
-/// Applies each change to `frame`: a key none of whose declared reads of
-/// that table reads a changed field of a changed row reads the same. How
-/// many reads changed.
 pub(crate) fn changes_each_key_reads(
     frame: &DecodedFrame,
     keys: &[Key],
@@ -1126,11 +1061,6 @@ pub(crate) fn changes_each_key_reads(
     differed
 }
 
-/// Check mode reads every input a declaration lets through: each key,
-/// declared to read nothing, is let through unread by the hour after
-/// `frame` that makes the table `tables` names for it unavailable, and
-/// check mode counts its changed value as a missed dependence; its own
-/// declaration reads it again.
 pub(crate) fn check_mode_reports_each_wrong_declaration(
     frame: &DecodedFrame,
     keys: &[Key],
@@ -1174,7 +1104,6 @@ pub(crate) fn check_mode_reports_each_wrong_declaration(
     }
 }
 
-/// Each world query's digest, read in the content-free world.
 fn world_digests(frame: &DecodedFrame, keys: &[Key]) -> Vec<Option<u64>> {
     with_world(frame, |world| {
         keys.iter()
@@ -1194,15 +1123,12 @@ fn world_keys(queries: Vec<Query>) -> Vec<Key> {
 fn a_declared_query_reads_no_table_it_does_not_declare() {
     let keys = world_keys(declared_world_queries());
     let differed = tables_each_key_reads(&rich_frame(), &keys, &world_digests);
-    // Most queries read rows here, so a table they declare matters.
     assert!(differed.len() * 4 >= keys.len() * 3, "{differed:?}");
 }
 
 #[test]
 fn a_declared_query_reads_no_field_or_row_it_does_not_declare() {
     let keys = world_keys(declared_world_queries());
-    // Each change edits rows or fields of one table; a query whose
-    // declaration of that table holds none of them reads the same.
     let changes = vec![
         Change::new(
             TableId::Countries,
@@ -1248,7 +1174,6 @@ fn a_declared_query_reads_no_field_or_row_it_does_not_declare() {
                 }
             },
         ),
-        // Country 102's flag row only.
         Change::new(
             TableId::ScriptFlags,
             &["value"],
@@ -1283,9 +1208,6 @@ fn check_mode_reports_a_wrong_declaration_of_each_declared_query() {
     check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &world_digests);
 }
 
-/// [`rich_frame`] with a state, a province, rows of every table the other
-/// world queries read, and country 102's rows in each table read by
-/// country.
 fn richer_frame() -> DecodedFrame {
     use replay_data::{
         rows::ActiveIdeaRow, rows::AdvisorTokenRow, rows::ArmyOrderPlanRow, rows::ArmyOrderRow,
@@ -1602,7 +1524,6 @@ fn richer_frame() -> DecodedFrame {
             ..Default::default()
         }],
     );
-    // State 2's building only: state 1's amount reads none.
     set::<tables::StateBuildings>(
         &mut frame,
         vec![BuildingRow {
@@ -1655,8 +1576,6 @@ fn richer_frame() -> DecodedFrame {
     frame
 }
 
-/// A query of every kind not in [`declared_world_queries`], and of each
-/// kind read from one country's rows, on the richer frame's countries.
 fn other_world_queries() -> Vec<Query> {
     use crate::triggers::Scope;
     vec![
@@ -1702,8 +1621,6 @@ fn other_world_queries() -> Vec<Query> {
     ]
 }
 
-/// Edits of the richer frame: fields no query reads, and country 102's
-/// rows of the tables read by country.
 fn other_changes() -> Vec<Change> {
     use TableId as T;
     vec![
@@ -1900,10 +1817,6 @@ fn other_changes() -> Vec<Change> {
     ]
 }
 
-/// The queries content alone decides in the content-free world, which the
-/// content world below reads.
-// StateResource resolves its controller before the unavailable content arm;
-// a missing CountryLinks join is now an observable part of that query.
 const CONTENT_DECIDED: [&str; 5] = [
     "StateResourceAmount(1, 900, Some(1))",
     "StateOrder(1)",
@@ -1980,7 +1893,6 @@ fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare(
     let tables = tables_each_key_reads(&frame, &keys, &digests);
     assert_eq!(tables.len(), keys.len(), "{tables:?}");
     let differed = changes_each_key_reads(&frame, &keys, &digests, &other_changes());
-    // The amounts read the controller's overrides and state 1's pool.
     let read = vec![
         Change::new(TableId::StateResources, &["pool"], None, |rows| {
             if let TableRows::StateResources(rows) = rows {
@@ -2224,8 +2136,6 @@ fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
         )
     };
     assert_eq!(overlord(Target::Country(1)), Ok(Target::Country(2)));
-    // A subject, a country without an overlord, one without an appearance
-    // row, and a state.
     let (_, inputs) = capture(&frame, || {
         for this in [
             Target::Country(1),
@@ -2295,8 +2205,6 @@ fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
     check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &digests);
 }
 
-/// The scenario's countries with character 5, whose unit leader needs
-/// `required` experience for its next level and has `skill`.
 fn character_frame(hour: Hour, required: i32, skill: i32) -> DecodedFrame {
     use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let mut frame = frame(hour, BASE);
@@ -2334,7 +2242,6 @@ fn character_frame(hour: Hour, required: i32, skill: i32) -> DecodedFrame {
     frame
 }
 
-/// What a character scope's `tag`, `skill` and retirement read, through the world's queries.
 fn character_reads(world: &World<'_>) -> String {
     format!(
         "{:?}",
@@ -2376,7 +2283,6 @@ fn character_tables_read_only_their_declared_fields() {
         row.gender = 1;
     }
     assert_eq!(read(&unread), before);
-    // Fields they read change what they answer.
     assert_ne!(read(&character_frame(100, 10, 4)), before);
 }
 
@@ -2385,7 +2291,6 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
     let mut recording = Recording::new();
     let (_, first) = recording.record(character_frame(100, 10, 3));
     let (value, inputs) = with_world(&first, |world| capture(&first, || character_reads(world)));
-    // The queries read the leaders' skill, never the experience it needs.
     let leaders: Vec<TableRead> = inputs
         .keys()
         .filter_map(Key::dependence)

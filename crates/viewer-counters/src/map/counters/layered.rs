@@ -1,22 +1,15 @@
-//! The counter kinds the map's playhead layers draw, and their products. This is the one
-//! description the view ([`Preparation::set_layered`]), the hour's tables ([`hour_tables_profiled`]
-//! leaves a kind out) and the layout (which takes the layer's product in its place) read.
 
 use super::*;
 
-/// A set of counter kinds a layer may draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Kinds(u8);
 
 impl Kinds {
-    /// The land stacks' division sources and actions.
     pub const LAND: Self = Self(1);
     pub const LAND_MARKERS: Self = Self(1 << 1);
     pub const NAVAL_MARKERS: Self = Self(1 << 2);
-    /// The air base, rocket site and gun emplacement icons' site parts and the radar states.
     pub const BASES: Self = Self(1 << 3);
     pub const GUNS: Self = Self(1 << 4);
-    /// The strategic air map mode's regional mission counts.
     pub const AIR_MISSIONS: Self = Self(1 << 5);
     pub const ALL: [Self; 6] = [Self::LAND, Self::LAND_MARKERS, Self::NAVAL_MARKERS, Self::BASES, Self::GUNS, Self::AIR_MISSIONS];
 
@@ -34,15 +27,12 @@ impl Kinds {
     }
 }
 
-/// One railway gun a layer made a member of a land source, with the route its position on the
-/// map is laid out from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GunPlaced {
     pub member: GunMember,
     pub route: GunRoute,
 }
 
-/// A gun's route operands, owned: [`GunFields::route`] without the row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GunRoute {
     pub combat_role: u8,
@@ -83,22 +73,15 @@ impl GunRoute {
     }
 }
 
-/// The railway guns a layer decided, as the class-13 pass reads them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LayeredGuns {
-    /// `false` while the gun census is incomplete: no gun is decided.
     pub complete: bool,
-    /// Guns the hour holds rows for, drawn or not.
     pub recorded: usize,
-    /// Members, in slot order.
     pub members: Vec<GunPlaced>,
-    /// Guns offered whose sub-unit cannot be named.
     pub unnamed: usize,
-    /// Gun sub-unit tokens that cannot be named, by reason.
     pub refused: BTreeSet<String>,
 }
 
-/// The products of the kinds the layers draw; a kind without one is today's.
 #[derive(Clone, Default)]
 pub struct Layered {
     pub land: Option<Arc<LandStacks>>,
@@ -128,7 +111,6 @@ fn address<T>(held: &Option<Arc<T>>) -> usize {
 }
 
 impl Layered {
-    /// The kinds it holds a product of.
     pub fn kinds(&self) -> Kinds {
         let mut kinds = Kinds::default();
         for (kind, held) in [
@@ -146,16 +128,13 @@ impl Layered {
         kinds
     }
 
-    /// Each product's address, zero for none: what a layout was made with.
     pub fn identity(&self) -> [usize; 6] {
         [address(&self.land), address(&self.land_markers), address(&self.naval_markers), address(&self.bases), address(&self.guns), address(&self.air)]
     }
 
-    /// The kinds of [`Self::identity`], in its own order.
     const IDENTIFIED: [&'static str; 6] =
         ["land stacks", "land combat markers", "naval combat markers", "bases", "railway guns", "air missions"];
 
-    /// Which products two layouts were made with differ, named ([`Self::identity`]).
     pub fn moved(was: [usize; 6], now: [usize; 6]) -> Vec<&'static str> {
         Self::IDENTIFIED
             .iter()
@@ -165,7 +144,6 @@ impl Layered {
             .collect()
     }
 
-    /// The kinds whose product differs from `other`'s (by allocation).
     pub fn changed(&self, other: &Self) -> Kinds {
         let mut kinds = Kinds::default();
         for (kind, same) in [
@@ -183,8 +161,6 @@ impl Layered {
         kinds
     }
 
-    /// `published` where it has a product; otherwise this one's for a kind in `keep`, none for
-    /// the rest.
     #[must_use]
     pub fn merged(&self, published: Self, keep: Kinds) -> Self {
         fn pick<T>(new: Option<Arc<T>>, held: &Option<Arc<T>>, keep: bool) -> Option<Arc<T>> {

@@ -1,17 +1,3 @@
-//! A product today's builder makes whole from a frame of rows, made on a worker the layer owns
-//! from the rows the map side makes of its own mirrors inside its step. The ships' names and the aircraft's models are chosen by the content's scripts
-//! over any table, so their builders read rows ([`crate::playhead_host::views`]), learning the tables
-//! they read; the frame thread only hands the worker the hour the map applied and takes the newest
-//! product. A newer hour supersedes one not started, and the frame never waits for the worker;
-//! an exact layer's publication waits for it on the side's thread ([`Whole::exact`]).
-//! The worker takes each newer frame of rows once its product before is made, and builds only when
-//! a table it reads changed since its product's rows; otherwise it asks the builder whether the
-//! product stands at the newer rows ([`Build::stands`]), and if so its product is current there too
-//! ([`Built::current`]) with nothing built.
-//! A table the recording holds nothing of is never declared: the product is refused by name.
-//! Builds run under the recording's executable tables; a build that panics is refused by name.
-//! In the window the layer takes the view's perspective, its builder makes the vision from the same
-//! rows, and the layer hands each product it takes to the scene ([`Build::install`]).
 
 use super::Published;
 use crate::playhead_host::{
@@ -41,63 +27,42 @@ use viewer_foundation::map::{
     presentation::Continuity,
 };
 
-/// How often the worker looks for new rows when nothing wakes it: a frame at 60 Hz.
 const TICK: Duration = Duration::from_micros(16_667);
 
-/// How long the window's whole settle waits for the product of its hour.
 const WHOLE: Duration = Duration::from_secs(30);
 
-/// What a product is built for besides the rows: the viewer's perspective and what it sees; none
-/// when the builder makes the vision from the rows themselves.
 pub type Seen = (Choice, Option<Arc<Vision>>);
 
-/// Today's builder of a product over a frame of rows.
 pub trait Build: Send + Sync + 'static {
     type Product: Send + Sync + 'static;
-    /// The recording's executable tables, in scope for every build: the triggers it evaluates read them.
     fn tables(&self) -> Option<Tables>;
     fn build(&self, frame: &DecodedFrame, seen: &Seen) -> io::Result<Self::Product>;
-    /// [`Self::build`] keeping nothing from a build before: what a compose from `frame` gives.
     fn anew(&self, frame: &DecodedFrame, seen: &Seen) -> io::Result<Self::Product> {
         self.build(frame, seen)
     }
-    /// Whether `product`, built from rows whose every table `frame` holds unchanged, is the product
-    /// of `frame` too: what it read beyond the rows (the hour itself) reads the same. Never, unless
-    /// the builder can tell.
     fn stands(&self, product: &Self::Product, frame: &DecodedFrame, seen: &Seen) -> bool {
         let _ = (product, frame, seen);
         false
     }
-    /// Its product reads the hour itself (the content's triggers compare dates): its reader
-    /// declares the Clock, so it is made rows at every step, and rows whose other tables are the
-    /// same are judged by [`Self::stands`] at the new hour rather than built again.
     fn hourly(&self) -> bool {
         false
     }
-    /// Takes what of `view` it builds for besides the perspective; true when that changed, so the
-    /// product held is let go and only one built after the change is taken.
     fn viewed(&self, view: &super::View) -> bool {
         let _ = view;
         false
     }
-    /// Each named part of the build that made `product`, in nanoseconds, for the worker's sums.
     fn parts(&self, product: &Self::Product, each: &mut dyn FnMut(&'static str, u64)) {
         let _ = (product, each);
     }
-    /// Each named count of the build that made `product`, for the worker's sums.
     fn counts(&self, product: &Self::Product, each: &mut dyn FnMut(&'static str, u64)) {
         let _ = (product, each);
     }
-    /// Hands `product` (none: draw nothing) to the scene, giving back the product it replaced.
     fn install(&self, gpu: &mut super::Gpu<'_>, product: Option<&Self::Product>, continuity: Continuity) -> io::Result<Option<Self::Product>> {
         let _ = (gpu, product, continuity);
         Ok(None)
     }
 }
 
-/// One product and what it was built from: the rows and their hour, the vision and its generation,
-/// and the build's nanoseconds; an error is the builder's refusal by name. The worker may find
-/// it current at a later hour's rows too ([`Self::current`]).
 pub struct Built<P> {
     pub hour: Hour,
     pub generation: u64,
@@ -106,7 +71,6 @@ pub struct Built<P> {
     pub frame: Option<Arc<DecodedFrame>>,
     pub seen: Option<Seen>,
     current: AtomicI32,
-    /// The hour the rows it is current at stand at: no step since changed a table it reads.
     stands: AtomicI32,
 }
 
@@ -115,32 +79,19 @@ impl<P> Built<P> {
         Self { hour, generation, product, ns, frame, seen, current: AtomicI32::new(hour), stands: AtomicI32::new(hour) }
     }
 
-    /// The hour of the newest rows it is the product of: its own, or later rows that changed
-    /// nothing it read.
     pub fn current(&self) -> Hour {
         self.current.load(Ordering::Acquire)
     }
 
-    /// The newest hour its rows stand at: [`Self::current`], or a later hour no step reached a
-    /// table it reads by. What its lag is measured from; a builder that reads the hour itself is
-    /// built again only for rows the reader makes.
     pub fn stands(&self) -> Hour {
         self.stands.load(Ordering::Acquire).max(self.current())
     }
 
-    /// Whether it is the product of the rows of `hour`.
     fn of(&self, hour: Hour) -> bool {
         self.hour == hour || self.current() == hour
     }
 }
 
-/// What the worker measured: builds, their nanoseconds (each one while timed), the frames of rows
-/// published to it that it never took, builds discarded for a table they read undeclared, and rows
-/// found to change nothing its product read ([`Build::stands`]) with the nanoseconds every such
-/// check took, found or not; the builds' named parts and counts
-/// summed ([`Build::parts`], [`Build::counts`]); how far behind the map's head the rows of each
-/// build were when it began, by [`BEHIND`] bucket, with their sum and most; and when the first
-/// build began and the last ended.
 #[derive(Clone, Debug, Default)]
 pub struct Builds {
     pub count: u64,
@@ -159,7 +110,6 @@ pub struct Builds {
     pub span: Option<(Instant, Instant)>,
 }
 
-/// The upper bounds, in game hours, of the buckets of how far behind the head a build's rows were.
 pub const BEHIND: [u64; 7] = [0, 24, 96, 384, 1_536, 6_144, u64::MAX];
 
 impl Builds {
@@ -193,35 +143,22 @@ fn add(sums: &mut Vec<(&'static str, u64)>, name: &'static str, value: u64) {
 }
 
 struct State<P> {
-    /// The worker's name, for the store's reader it opens.
     name: &'static str,
     source: Option<(Arc<Entry>, Recording)>,
     seen: Option<Seen>,
     generation: u64,
-    /// Whether the view draws the product: closed, the worker holds no reader and no product.
     open: bool,
     stop: bool,
-    /// The hour the map applied last.
     head: Option<Hour>,
-    /// The map side's view store, given once as the side is made: the worker reads the rows it
-    /// makes of the side's mirrors inside the step.
     views: Option<views::Views>,
-    /// A reader of the store declared as the side gave it, for the worker to take.
     reader: Option<views::Reader>,
     built: Option<Arc<Built<P>>>,
     tables: Vec<TableId>,
     builds: Builds,
-    /// The hour of the newest rows the worker took, and the tables declared whose rows have not
-    /// arrived yet.
     seen_hour: Option<Hour>,
     awaiting: Vec<TableId>,
-    /// Why every product of this recording is refused: a table it reads that the recording holds
-    /// nothing of, or rows at the head refused.
     refused: Option<String>,
-    /// Why the worker stopped, if it did: it builds nothing more.
     stopped: Option<String>,
-    /// What the layer let go (products, the scene's replaced plans), dropped here: a plan and its
-    /// frame of rows are not freed on the frame thread.
     retired: Vec<Box<dyn Send>>,
 }
 
@@ -237,19 +174,15 @@ impl<P> Shared<P> {
     }
 }
 
-/// The worker and what it shares with the layer.
 pub struct Rebuilt<P> {
     shared: Arc<Shared<P>>,
     worker: Option<JoinHandle<()>>,
-    /// Its name, and whether it reports what it measured when it stops.
     name: &'static str,
     maker: timeline::Maker,
     timed: bool,
 }
 
 impl<P: Send + Sync + 'static> Rebuilt<P> {
-    /// A worker named `name` building with `build` over `tables` and those it learns it reads,
-    /// from the rows the map side makes in its step.
     pub fn new<B: Build<Product = P>>(name: &'static str, build: Arc<B>, tables: &[TableId], timed: bool) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -283,7 +216,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         let working = Arc::clone(&shared);
         let maker = timeline::maker(name);
         let worker = std::thread::Builder::new().name(name.into()).spawn(move || {
-            // The step's settle joins its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             let worked = std::panic::catch_unwind(AssertUnwindSafe(|| work(&working, &*build, &Rules { name, timed, maker })));
             if let Err(panic) = worked {
@@ -294,17 +226,12 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         Ok(Self { shared, worker: Some(worker), name, maker, timed })
     }
 
-    /// The playhead whose rows it reads, and the vision it builds for: a new vision builds again.
-    /// Its reader is declared here, and the call returns once the rows' worker has declared it, so
-    /// a seek after it brings the tables (a table declared later joins the playhead past its head).
     pub fn set_source(&self, entry: Arc<Entry>, recording: Recording, seen: Seen) -> io::Result<()> {
         self.attach(entry, recording)?;
         self.set_seen(seen);
         Ok(())
     }
 
-    /// The playhead whose rows it reads; it builds nothing until it is given what it builds for
-    /// and the side's view store. A table the recording holds nothing of is refused here by name.
     pub fn attach(&self, entry: Arc<Entry>, recording: Recording) -> io::Result<()> {
         let mut state = self.shared.lock();
         if state.source.as_ref().is_some_and(|(held, _)| Arc::ptr_eq(held, &entry)) {
@@ -316,9 +243,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         Ok(())
     }
 
-    /// The map side's view store: the worker reads the rows it makes of the side's mirrors inside
-    /// the step. Given once, as the side is made, and before the side's first declaration, so the
-    /// tables this reader declares are in it.
     pub fn set_views(&self, store: &views::Store) {
         let mut state = self.shared.lock();
         let needs: Vec<Need> = state.tables.iter().copied().map(Need::every).collect();
@@ -331,7 +255,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.wake.notify_all();
     }
 
-    /// What it builds for: the next build is for it. The generation a build for it carries.
     pub fn set_seen(&self, seen: Seen) -> u64 {
         let mut state = self.shared.lock();
         state.seen = Some(seen);
@@ -342,8 +265,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         generation
     }
 
-    /// What it builds for changed: the next build is for it. The generation a build after the
-    /// change carries.
     pub fn renew(&self) -> u64 {
         let mut state = self.shared.lock();
         state.generation += 1;
@@ -353,12 +274,10 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         generation
     }
 
-    /// The perspective of the vision it builds for.
     pub fn perspective(&self) -> Option<Choice> {
         self.shared.lock().seen.as_ref().map(|(choice, _)| choice.clone())
     }
 
-    /// Opens or closes it: closed, the worker lets its reader and product go.
     pub fn set_open(&self, open: bool) {
         let mut state = self.shared.lock();
         let declared = !open && state.reader.take().is_some();
@@ -372,7 +291,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         }
     }
 
-    /// The map applied `hour`: what its next build is for.
     pub fn applied(&self, hour: Hour) {
         let mut state = self.shared.lock();
         if state.head == Some(hour) {
@@ -384,7 +302,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.wake.notify_all();
     }
 
-    /// The newest product the worker built, if newer than `held`.
     pub fn newer(&self, held: Option<&Arc<Built<P>>>) -> Option<Arc<Built<P>>> {
         timeline::mark(self.maker, Mark::Joined);
         let state = self.shared.lock();
@@ -393,15 +310,11 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         newer.then(|| Arc::clone(built))
     }
 
-    /// Hands what the layer let go back to the worker, which drops it.
     pub fn retire(&self, gone: impl Send + 'static) {
         self.shared.lock().retired.push(Box::new(gone));
         self.shared.wake.notify_all();
     }
 
-    /// Waits until the worker has the product of `hour`'s rows with the newest vision; for a caller
-    /// that holds the head (the proof tool, tests), never the window. A refused worker answers its
-    /// refusal at once; a stopped one is an error at once.
     pub fn wait(&self, hour: Hour, limit: Duration) -> io::Result<Arc<Built<P>>> {
         let until = Instant::now() + limit;
         let mut state = self.shared.lock();
@@ -432,7 +345,6 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         }
     }
 
-    /// Waits until the worker took the rows of `hour`; false at `until`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn looked(&self, hour: Hour, until: Instant) -> bool {
         let mut state = self.shared.lock();
@@ -452,17 +364,14 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.lock().builds.clone()
     }
 
-    /// The tables it reads, given and learned.
     pub fn tables(&self) -> Vec<TableId> {
         self.shared.lock().tables.clone()
     }
 
-    /// The tables it declared whose rows have not arrived yet.
     pub fn awaiting(&self) -> Vec<TableId> {
         self.shared.lock().awaiting.clone()
     }
 
-    /// Why the worker stopped, if it did.
     pub fn stopped(&self) -> Option<String> {
         self.shared.lock().stopped.clone()
     }
@@ -483,24 +392,19 @@ impl<P> Drop for Rebuilt<P> {
     }
 }
 
-/// The tables of `tables` the recording holds nothing of: declared, the playhead could not seek
-/// them, so they are refused by name instead.
 pub fn absent(entry: &Entry, tables: &[TableId]) -> Vec<TableId> {
     tables.iter().copied().filter(|&table| !crate::playhead_host::details::held_at_all(entry, table)).collect()
 }
 
-/// Why `what` is refused when the recording holds nothing of `absent`.
 pub fn refusal(what: &str, absent: &[TableId]) -> String {
     let names: Vec<String> = absent.iter().map(|table| format!("{table:?}")).collect();
     format!("The recording holds no {}, which {what} reads", names.join(", "))
 }
 
-/// The message a panic carried.
 pub fn panicked(payload: &(dyn std::any::Any + Send)) -> String {
     payload.downcast_ref::<&str>().map(|text| (*text).to_owned()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_else(|| "a panic with no message".to_owned())
 }
 
-/// `run` under the recording's executable tables of `build`; a panic is its refusal by name.
 fn attempt<B: Build, T>(build: &B, run: impl FnOnce() -> io::Result<T>) -> Result<T, String> {
     let ran = std::panic::catch_unwind(AssertUnwindSafe(|| engine_executable::executable_tables::scope(build.tables(), run)));
     match ran {
@@ -509,9 +413,6 @@ fn attempt<B: Build, T>(build: &B, run: impl FnOnce() -> io::Result<T>) -> Resul
     }
 }
 
-/// `build` over `frame`, and every table it read undeclared. A build usually stops at the first
-/// table it misses, so it goes on over the frame with each missed table given empty until it
-/// misses no new one: one round learns every table the build reaches.
 fn learning<B: Build>(build: &B, frame: &DecodedFrame, seen: &Seen) -> (Result<B::Product, String>, Vec<TableId>) {
     let (product, mut missed) = discovering(|| attempt(build, || build.build(frame, seen)));
     let mut trial: Option<DecodedFrame> = None;
@@ -529,12 +430,8 @@ fn learning<B: Build>(build: &B, frame: &DecodedFrame, seen: &Seen) -> (Result<B
     (product, missed)
 }
 
-/// Whether `product` of `built`'s rows is the product of `frame` too: `frame` holds every one of
-/// `tables` as the same rows, and the builder finds what it read beyond them reads the same, under
-/// the recording's tables, reading no table undeclared.
 fn stands<B: Build>(build: &B, built: &Built<B::Product>, frame: &DecodedFrame, tables: &[TableId], seen: &Seen) -> bool {
     let (Some(then), Ok(product)) = (&built.frame, &built.product) else { return false };
-    // The Clock an hourly builder declares is the hour, which its own check judges.
     let same = then.branch == frame.branch && tables.iter().filter(|&&table| !(build.hourly() && table == TableId::Clock)).all(|table| SharedView::ptr_eq(&then.tables[table.index()], &frame.tables[table.index()]));
     if !same {
         return false;
@@ -543,14 +440,10 @@ fn stands<B: Build>(build: &B, built: &Built<B::Product>, frame: &DecodedFrame, 
     missed.is_empty() && stands == Ok(true)
 }
 
-/// Whether `frame` holds every one of `tables`: a frame made before a table was declared does not,
-/// and a build over it would learn that table again.
 pub fn holds(frame: &DecodedFrame, tables: &[TableId]) -> bool {
     tables.iter().all(|table| !frame.tables[table.index()].is_not_declared())
 }
 
-/// What a timed worker measured, one line on stderr: its builds' milliseconds, frames passed over,
-/// the tables it read and what the rows at the head hold for them.
 fn report<P>(name: &str, state: &State<P>) {
     let builds = &state.builds;
     let mut ms: Vec<f64> = builds.ns.iter().map(|&ns| ns as f64 / 1e6).collect();
@@ -564,14 +457,12 @@ fn report<P>(name: &str, state: &State<P>) {
     eprintln!("{line}");
 }
 
-/// The worker's name and rules, as the layer gave them.
 struct Rules {
     name: &'static str,
     timed: bool,
     maker: timeline::Maker,
 }
 
-/// Publishes `why` as the product at the map's hour and the newest vision, once for each.
 fn refuse<P>(shared: &Shared<P>, state: &mut State<P>, why: String) {
     let Some(hour) = state.head else { return };
     if state.built.as_ref().is_some_and(|built| built.hour == hour && built.generation == state.generation) {
@@ -581,14 +472,11 @@ fn refuse<P>(shared: &Shared<P>, state: &mut State<P>, why: String) {
     shared.built.notify_all();
 }
 
-/// What the worker found to build from: the newest frame of the side's rows and its count of
-/// frames made for it, or nothing yet.
 enum Found<'a, P> {
     Frame(MutexGuard<'a, State<P>>, Arc<DecodedFrame>, u64),
     Wait(MutexGuard<'a, State<P>>),
 }
 
-/// The newest frame of the side's rows for `held`, its reader of the store.
 fn from_rows<'a, P>(mut state: MutexGuard<'a, State<P>>, held: &mut Option<views::Reader>) -> Found<'a, P> {
     if held.is_none() {
         *held = state.reader.take();
@@ -607,7 +495,6 @@ fn from_rows<'a, P>(mut state: MutexGuard<'a, State<P>>, held: &mut Option<views
 
 fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
     let mut reader: Option<views::Reader> = None;
-    // The rows last taken, their publish count and the generation they were taken for.
     let mut last: Option<(Arc<DecodedFrame>, u64, u64)> = None;
     loop {
         let mut state = shared.lock();
@@ -621,9 +508,6 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             continue;
         }
         if !state.open || state.seen.is_none() {
-            // Closed, it holds no reader: its tables leave the side's mirrors and come back as
-            // a reset. A reader declared for it before the view first opens it
-            // ([`Rebuilt::set_views`]) is kept for then; closing drops it ([`Rebuilt::set_open`]).
             (reader, last) = (None, None);
             state.awaiting.clear();
             let _ = shared.wake.wait_timeout(state, TICK);
@@ -657,7 +541,6 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
                 continue;
             }
             drop(state);
-            // Its product of these rows made: it waits for the rows of the step after.
             if let Some(reader) = &reader {
                 reader.wait_newer(published, TICK);
             }
@@ -723,88 +606,56 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
     }
 }
 
-/// A layer drawing a product rebuilt whole on its worker: of the map's mirrors it reads only the
-/// Clock's rows, for the hour the map holds (a seek reaches it as a compose, not a step); it hands the
-/// worker that hour and takes the newest product in `settle`. It carries nothing: the worker's
-/// work is not the frame thread's, and the hour of the product it shows is its [`Published`].
 pub struct Whole<B: Build> {
     name: &'static str,
     build: Arc<B>,
-    /// Whether a view draws the product.
     drawn: fn(&B, &super::View) -> bool,
-    /// The bytes a product holds.
     bytes: fn(&B::Product) -> usize,
     rebuilt: Rebuilt<B::Product>,
     held: Option<Arc<Built<B::Product>>>,
     open: bool,
-    /// The generation of the first build for what the view last asked ([`Build::viewed`]): one
-    /// older was built for something else and is never taken.
     since: u64,
-    /// Hours handed to the worker, and products taken.
     marked: [usize; 2],
     window: Option<Window>,
-    /// Every publication waits for the product of its own hour, and one standing behind it is
-    /// counted in the hour the picture shows ([`Self::exact`]).
     exact: bool,
-    /// The hour the map applied at the last join.
     applied: Option<Hour>,
-    /// An exact layer's wait for the hour's product ran out: it waits no more until a product of
-    /// the hour applied comes, and stands behind by its own hour meanwhile.
     behind: bool,
 }
 
-/// How a plan the scene is given is taken, with `owed` composes unanswered.
 fn installing(owed: usize) -> Continuity {
     if owed > 0 { Continuity::Reset } else { Continuity::Continue }
 }
 
-/// What the window's layer keeps: the perspective it builds for, whether the scene is to be given
-/// what the layer holds (or nothing while closed), and the composes no install has answered yet.
-/// A compose makes the layer whole at a new point in history and is owed one plan taken anew: the
-/// install pays it, so which product a frame happens to carry there decides nothing.
 #[derive(Default)]
 struct Window {
     perspective: Option<Choice>,
     install: bool,
     owed: usize,
-    /// The scene holds no plan: closed, nothing need be installed again.
     empty: bool,
 }
 
 impl<B: Build> Whole<B> {
-    /// A layer whose worker builds from the rows the map side makes in its step, and builds only
-    /// when a table it reads changed since its product's rows or the builder finds the product
-    /// does not stand ([`Build::stands`]). `timed`: every build's time is kept.
     pub fn new(name: &'static str, build: B, drawn: fn(&B, &super::View) -> bool, bytes: fn(&B::Product) -> usize, tables: &[TableId], timed: bool) -> io::Result<Self> {
         let build = Arc::new(build);
         let rebuilt = Rebuilt::new(name, Arc::clone(&build), tables, timed)?;
         Ok(Self { name, build, drawn, bytes, rebuilt, held: None, open: false, since: 0, marked: [0; 2], window: None, exact: false, applied: None, behind: false })
     }
 
-    /// A layer whose product is part of the hour's picture, as a map mode's colours are in the
-    /// game, which repaints them with the hour: once it has a picture, each publication waits for
-    /// the product of its hour, on the side's thread, and a product it could not have stands in
-    /// the picture's hour by its own.
     pub fn exact(mut self) -> Self {
         self.exact = true;
         self
     }
 
-    /// The layer the window draws: its rows from `entry`, built for the view's perspective, each
-    /// product it takes handed to the scene.
     pub fn in_window(mut self, entry: Arc<Entry>, recording: Recording) -> io::Result<Self> {
         self.rebuilt.attach(entry, recording)?;
         self.window = Some(Window::default());
         Ok(self)
     }
 
-    /// Whether the window draws its product rather than today's: closed (it draws nothing, as
-    /// today's draws nothing there) or holding a product. Until its first product, today's.
     pub fn shows(&self) -> bool {
         !self.open || self.held.is_some()
     }
 
-    /// Why the product it shows is refused, by name.
     pub fn refusal(&self) -> Option<&str> {
         self.held.as_ref().filter(|_| self.open).and_then(|built| built.product.as_ref().err()).map(String::as_str)
     }
@@ -817,7 +668,6 @@ impl<B: Build> Whole<B> {
         &self.build
     }
 
-    /// The product the layer draws, and the hour its rows are at.
     pub fn product(&self) -> Option<&Arc<Built<B::Product>>> {
         self.held.as_ref()
     }
@@ -830,15 +680,12 @@ impl<B: Build> Whole<B> {
         self.marked
     }
 
-    /// How the scene is to take the product due to it, none while it is given nothing new.
     #[cfg(any(test, feature = "test-support"))]
     pub fn installing(&self) -> Option<Continuity> {
         let window = self.window.as_ref().filter(|window| window.install)?;
         Some(installing(window.owed))
     }
 
-    /// The product built anew from the rows and vision `built` was built from: what a compose
-    /// from the same state gives.
     pub fn again(&self, built: &Built<B::Product>) -> Option<io::Result<B::Product>> {
         let (frame, seen) = (built.frame.as_ref()?, built.seen.as_ref()?);
         Some(discovering(|| attempt(&*self.build, || self.build.anew(frame, seen))).0.map_err(io::Error::other))
@@ -846,7 +693,6 @@ impl<B: Build> Whole<B> {
 }
 
 impl<B: Build> super::Layer for Whole<B> {
-    /// The side's view store: its worker reads the rows the step makes of the side's mirrors.
     fn views(&mut self, store: &views::Store) -> io::Result<()> {
         self.rebuilt.set_views(store);
         Ok(())
@@ -869,7 +715,6 @@ impl<B: Build> super::Layer for Whole<B> {
         {
             let changed = window.perspective.replace(view.perspective.clone()).is_some();
             let generation = self.rebuilt.set_seen((view.perspective.clone(), None));
-            // Another viewing country: what was made for the one before is never shown for it.
             renewed = changed.then_some(generation);
         }
         if self.build.viewed(view) {
@@ -880,7 +725,6 @@ impl<B: Build> super::Layer for Whole<B> {
             if let Some(old) = self.held.take() {
                 self.rebuilt.retire(old);
             }
-            // What the scene shows was made for the view before: open, it is taken down now.
             if let Some(window) = self.window.as_mut().filter(|_| self.open) {
                 (window.install, window.owed) = (true, window.owed + 1);
             }
@@ -897,15 +741,10 @@ impl<B: Build> super::Layer for Whole<B> {
         inputs.table(TableId::Clock, false)
     }
 
-    /// A compose is a new point in history (a seek, another branch at the same hour): a product
-    /// built before it is another history's, never this one's, so it is let go and a new one is
-    /// built.
     fn compose(&mut self, _mirrors: &crate::playhead_host::mirror::Mirrors) -> io::Result<()> {
         self.since = self.rebuilt.renew();
         self.behind = false;
         let dropped = self.held.take().map(|old| self.rebuilt.retire(old)).is_some();
-        // The scene is given nothing in place of what it holds; with no product the window draws
-        // today's plan until the next one ([`Self::shows`]).
         if let Some(window) = &mut self.window {
             window.owed += 1;
             window.install |= dropped;
@@ -920,8 +759,6 @@ impl<B: Build> super::Layer for Whole<B> {
         }
     }
 
-    /// The hour the map applied, handed to the worker: it drives its rows there and builds while
-    /// the layers that join no maker settle.
     fn ask(&mut self, mirrors: &crate::playhead_host::mirror::Mirrors, _upstream: &super::Upstream<'_>) -> io::Result<bool> {
         if !self.open {
             return Ok(false);
@@ -936,18 +773,11 @@ impl<B: Build> super::Layer for Whole<B> {
         if !self.open {
             return Ok(());
         }
-        // A step takes the product the worker has published and joins a newer one at the step
-        // after; a settle that waits (a saved frame, a settled plan, the proof, or this product
-        // at the bound) waits for the product of the hour itself.
         let hour = mirrors.get(TableId::Clock).and_then(|clock| clock.head());
         self.applied = hour;
         if let Some(hour) = hour
             && self.window.is_some()
         {
-            // An exact layer with a picture waits for the hour's; before its first it is loading,
-            // by name, and the side does not wait for a build that may take long.
-            // One whose wait ran out waits for nothing, a settle that waits included, until the
-            // hour's product comes.
             let waiting = match () {
                 () if self.behind => Duration::ZERO,
                 () if self.exact && self.held.is_some() => WHOLE,
@@ -959,8 +789,6 @@ impl<B: Build> super::Layer for Whole<B> {
                 let _ = self.rebuilt.wait(hour, waiting);
             }
         }
-        // A stopped worker builds nothing more: what it built before is not this hour's picture,
-        // and the layer is refused by name at each hour instead, never taking that product again.
         if let Some(why) = self.rebuilt.stopped() {
             let refused = self.held.as_ref().is_some_and(|built| built.product.as_ref().err() == Some(&why));
             if let Some(hour) = hour
@@ -996,8 +824,6 @@ impl<B: Build> super::Layer for Whole<B> {
         self.join(mirrors, &upstream, settling)
     }
 
-    /// The product taken into the scene, which carries what it shows into it as today's install
-    /// does (anew after a compose); closed or refused, nothing.
     fn upload(&mut self, gpu: &mut super::Gpu<'_>) -> io::Result<()> {
         let Some(window) = &mut self.window else { return Ok(()) };
         if !window.install {
@@ -1021,9 +847,6 @@ impl<B: Build> super::Layer for Whole<B> {
         super::Carried::default()
     }
 
-    /// Nothing before its first product; then the hour its rows stand at ([`Built::stands`]): it
-    /// counts in the lag and does not hold the window clock's drawn hour, unless it is
-    /// [`Self::exact`], whose product is the hour's or holds the drawn hour back.
     fn published(&self) -> Published {
         if !self.open {
             return Published::Current;

@@ -32,11 +32,6 @@ import './airSuperiorityTimeline.css';
 const NO_SIDES: AirSide[] = [];
 const RANKING_MOVES = ['lastHour'] as const;
 
-/** Each day's air scores of the most active regions (or the chosen ones), in each side's colour or split into
- * shares. The regions are one reply over the view (`air-superiority-ranking`), their days one reply a tile of 256 days
- * (a tile once whole is asked once however the view grows); following, the view ends at the end of the head's step of 256
- * days while playing and at the head at a pause, and the head's own day is painted from the moment's followed
- * values each frame, with no render. */
 export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -44,7 +39,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const campaign = track?.source.metadata.campaignKey ?? '';
   const currentCountry = selectedCountryKeys(widget.countries, track)[0] ?? defaultCountryKey(track);
   const mode = useMemo(() => airMode(options, campaign, currentCountry),
-    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]); // eslint-disable-line react-hooks/exhaustive-deps
+    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]);
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
   const following = widget.time.mode === 'follow';
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -55,14 +50,11 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const beforeBranch = !!track && lastHour < firstHour;
   const params = useMemo(() => track && window && !beforeBranch && !needsViewpoint ? { branchId: track.branch.id, firstHour, lastHour, ...airParams(mode),
     ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, beforeBranch, needsViewpoint, firstHour, lastHour, mode, options.regionCount]);
-  // Held while a moved view's ranking loads, so the chart and its follow never drop at a tile's end.
   const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'air-superiority-ranking', params } : null, RANKING_MOVES, active, validateAirRanking, track?.source);
   const regionsKey = ranking.data ? JSON.stringify(ranking.data.rows.map(row => [row.region, regionLabel({ id: row.region, name: row.name })])) : null;
   const regions = useMemo(() => regionsKey === null ? [] : (JSON.parse(regionsKey) as [number, string][]).map(([id, name]) => ({ id, name })), [regionsKey]);
   const regionNames = useMemo(() => regions.map(region => String(region.id)), [regions]);
-  // The tiles hold every region the ranking has named since the view was set (`stickyMembers`): a ranking naming other
-  // regions at a tile's end asks the tiles again only for a region never named before, and the rows show its own.
   const tileScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, mode, firstHour]);
   const tileRegions = useStickyMembers(tileScope, regionNames, stickyLimit(Math.max(1, Number(options.regionCount) || regionNames.length)));
   const regionIds = useMemo(() => tileRegions.map(Number).sort((a, b) => a - b), [tileRegions]);
@@ -79,9 +71,6 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const replies = useMemo(() => order.map(tile => tile === tiling.cut ? cut.data : tiles.data.get(tile)), [order, tiling.cut, cut.data, tiles.data]);
   const spans = useMemo(() => order.map(tile => ({ firstHour: Math.max(firstHour, tile * STEP), lastHour: Math.min(lastHour, tile * STEP + STEP - 1) })), [order, firstHour, lastHour]);
   const data = ranking.data && regions.length ? [...replies].reverse().find((reply): reply is AirTimelineReply => reply !== undefined) : undefined;
-  // The head's day: the moment of every region the settings show (the region widget's own follow), the rows' regions
-  // picked from it where painted, so a ranking naming other regions at a tile's end follows nothing again. It renders
-  // only when its regions or sides change; each region's cells are read from the newest push.
   const hasData = data !== undefined;
   const heading = following && hasData && !needsViewpoint && regions.length > 0;
   const momentParams = useMemo(() => heading ? airParams(mode) : null, [heading, mode]);
@@ -111,7 +100,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
       return at === null ? null : headTail(newest() ?? moment, live.read(), looks, regions, at, data.dayHours).tail;
     },
     subscribe: live.subscribe,
-  } : undefined, [moment, data, live, looks, regions, head.shownAt, newest]); // eslint-disable-line react-hooks/exhaustive-deps
+  } : undefined, [moment, data, live, looks, regions, head.shownAt, newest]);
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo<LiveHead | undefined>(() => track && widget.time.mode !== 'pin'
     ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, [track, widget.time.mode, runtime.clock, axisOffset]);
@@ -123,7 +112,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const menu = useContextMenu('Air superiority timeline');
   const onMenu = useCallback((hour: number, x: number, y: number) => {
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, hour)]);
-  }, [track, menu.open, runtime]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [track, menu.open, runtime]);
   const viewport = useViewportHeight();
   const tooltip = useCallback((row: HeatRow, period: HeatPeriod | null, hour: number) => {
     if (!data) return null;
@@ -143,7 +132,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
     if (!view) return null;
     const full = airTooltip(region, view, mode.mode === 'viewpoint', air.country, !!mode.sides.length, air.faction);
     return fitTooltip([airSummaryTooltip(full, view)], viewport, { keep: 1, full });
-  }, [data, replies, moment, head.shownAt, live, looks, regions, mode.mode, mode.sides.length, air.country, air.faction, viewport]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, replies, moment, head.shownAt, live, looks, regions, mode.mode, mode.sides.length, air.country, air.faction, viewport]);
   const legend = useMemo(() => [...air.legend,
     ...(options.look === 'split' ? [] : [{ id: 'contested', label: 'Contested (small lead)', color: mix(tokens.surface, tokens.text, 0.2) }]),
     ...(mode.theatres.length ? [{ id: 'filtered', label: 'Outlined = outside selected theatres' }] : [])],

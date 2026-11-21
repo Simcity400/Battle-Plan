@@ -71,7 +71,6 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
     '/dashboard/nativeClient.ts': 'export const nativeDashboardClient = {};',
     '/dashboard/browserClient.ts': 'export const browserDashboardClient = {};',
     '/dashboard/replayLibrary.ts': 'export const useReplayLibrary = () => ({});',
-    // Layout storage stays real: Settings checks the default layouts before the dashboard has loaded.
     '/dashboard/contentRevision.ts': 'export const contentRevision = () => ({ observe() {} });',
     '/shell/diagnosticsSetting.ts': 'export const useDiagnosticsShortcut = () => {};',
   };
@@ -118,7 +117,6 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       const settle = () => new Promise(resolve => setImmediate(resolve));
       const retry = () => nodes.find(node => node.type === 'button' && [node.props.children].flat().includes('Retry map'));
       const shown = () => nodes.find(node => node.props.className === 'error-copy')?.props.children;
-      // The host refuses with its message, as a native command does.
       fixture.openReplay = () => Promise.reject('Synthetic open refusal');
       dashboard().props.onPrimaryPath('elsewhere'); await settle(); render();
       assert.equal(shown(), 'Synthetic open refusal');
@@ -182,7 +180,6 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       find(node => node.props.id === 'tab-settings').props.onClick();
       await new Promise(resolve => setImmediate(resolve)); render();
       assert.equal(find(node => node.props.className === 'app-shell').props['data-tab'], 'settings');
-      // The dashboard has not loaded its widgets: Settings neither offers a reset nor claims defaults yet.
       assert.equal(find(node => 'onResetPages' in node.props).props.onResetPages, null);
       await vite.ssrLoadModule('/ui/src/widgets/definitions.ts'); render();
       assert.equal(typeof find(node => 'onResetPages' in node.props).props.onResetPages, 'function', 'an added page differs from the defaults');

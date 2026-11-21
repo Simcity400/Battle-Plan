@@ -1,5 +1,3 @@
-//! Province supply data in the supply system's province vector (`csupply_system::PROVINCE_DATA`).
-//! Stored field widths and flag bits are retained independently.
 
 use crate::{
     Memory, cgame_state,
@@ -8,20 +6,13 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Province supply-data stride.
 pub const STRIDE: usize = 0x20;
-/// Controller index, two bytes.
 pub const CONTROLLER_INDEX: usize = 0x10;
-/// Capital-country index, two bytes.
 pub const CAPITAL_COUNTRY_INDEX: usize = 0x12;
-/// Supply-node level, one byte.
 pub const SUPPLY_NODE_LEVEL: usize = 0x14;
-/// Naval-base level, one byte.
 pub const NAVAL_BASE_LEVEL: usize = 0x15;
-/// Flag byte with independently checksummed bits 0..3.
 pub const FLAGS: usize = 0x18;
 
-/// Only operands consumed by the map are projected from each native slot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub province: u32,
@@ -55,8 +46,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Worker-owned rows grow from the acquired vector's count before reading non-sentinel slots. No
-/// live read is repeated.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -95,8 +84,6 @@ fn walk_buffer(
             let address = supply
                 .element((start + 1) as u32, STRIDE)
                 .ok_or("province supply address overflow")?;
-            // The final seven bytes are padding; they are never required. Padding
-            // between known allocated records is copied but is never emitted.
             let used = (count - 1) * STRIDE + FLAGS + 1;
             if !read_slice(memory, address, &mut bytes[..used]) {
                 return Err("province supply rows unreadable");

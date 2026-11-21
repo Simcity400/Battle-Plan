@@ -2,11 +2,7 @@ use super::*;
 use engine_allocation as allocation;
 
 pub(crate) const WING_PACK_N: usize = 2;
-/// Most parts the AirWing census is walked in: the pool runs no more jobs at
-/// once.
 pub(crate) const WING_PARTS: usize = crate::acquisition::MAX_WORKERS;
-/// Wings, plus one per owner with a strategic-air entry, that one census
-/// part is sized for.
 const PART_COST: u64 = 384;
 
 #[derive(Debug)]
@@ -20,9 +16,6 @@ pub(crate) struct AirWingJob {
     pub(crate) transport: cair_wing::transport_operands::Scratch,
     pub(crate) transport_ticks: u64,
     pub(crate) optional_raw_bytes: u64,
-    /// This pass's own sources and memberships. A split census joins only
-    /// what each part built from them on its worker: its identities and
-    /// naval memberships.
     pub(super) sources: Vec<cair_wing::Source>,
     pub(super) identities: Vec<WingIdentity>,
     pub(super) identity_outcome: Outcome,
@@ -49,35 +42,20 @@ pub(crate) struct AirWingJob {
     pub(crate) game_score_ticks: [u64; 2],
     pub(super) raw_bytes: [u64; WING_PACK_N],
     pub(super) capacity_charge: crate::raw_memory::Charge,
-    /// Held WingEquipment rows ([`super::WingStore`]), lent by the game
-    /// thread for one pass and taken back at the join; absent reads every
-    /// wing's equipment afresh. A later part of a split census keeps its own.
     pub(crate) wing_store: Option<Box<super::WingStore>>,
-    /// What certifies the store's carry: the hooks' domain.
     pub(crate) carry_changes: CarryChanges,
-    /// The owner slots this pass walks: every slot, or one part of a census
-    /// split by owner range. Set by the callback before each loan.
     pub(crate) slots: std::ops::Range<u32>,
-    /// Whether this pass is one part of a split census, which the callback
-    /// joins and finishes ([`Self::join_parts`]).
     pub(crate) split: bool,
-    /// The census walk as it ended, before the finish.
     pub(crate) census: cair_wing::GameScoreWalk,
     pub(crate) equipment_required: usize,
     pub(crate) cumulative_required: usize,
     pub(crate) membership_len: usize,
     pub(crate) name_failure_reasons: [usize; cair_wing::NameFailure::REASONS.len()],
-    /// The WingEquipment carry counts and planned wings of this pass.
     pub(crate) carry: (crate::wing_changes::Counts, usize),
-    /// Each owner with a strategic-air entry and the cost (wings and such
-    /// owners) walked before it in this pass, and the pass's whole cost:
-    /// what the next hour's parts are sized by ([`part_starts`]).
     pub(crate) owner_costs: Vec<(u32, u32)>,
     pub(crate) cost: u32,
 }
 
-/// The domain whose certificates carry WingEquipment rows
-/// ([`crate::wing_changes`]): the hooks' own, or a test's.
 #[derive(Clone, Copy)]
 pub(crate) struct CarryChanges(pub(crate) &'static dyn crate::wing_changes::Changes);
 
@@ -183,9 +161,6 @@ impl AirWingJob {
         job.update_capacity_charge();
         job
     }
-    /// A later part of a split census: its worker grows its storage, and its
-    /// WingEquipment store stays with it.
-    /// A refused store allocation is the collector's allocation failure and leaves no store.
     pub(crate) fn part() -> Self {
         Self {
             wing_store: cfg!(feature = "wing_changes")
@@ -321,7 +296,6 @@ impl AirWingJob {
     }
 }
 
-/// Successful native byte counts for the shared wing census and its extensions.
 struct WingMemory<'a, M> {
     inner: &'a M,
     bytes: std::cell::Cell<[u64; 2]>,
@@ -417,7 +391,6 @@ pub(crate) struct AirWingCopyReport {
 }
 
 impl AirWingCopyReport {
-    /// Adds a later census part's worker costs.
     pub(crate) fn add(&mut self, part: &AirWingCopyReport) {
         self.raw_ok &= part.raw_ok;
         for (ours, theirs) in self.copy_ticks.iter_mut().zip(part.copy_ticks) {
@@ -438,7 +411,6 @@ pub(crate) struct AirWingCopyContext {
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
-    /// Initial map grant and independent equipment/cumulative destination limits.
     pub limits: [usize; 3],
     pub game_score: bool,
 }
@@ -448,14 +420,11 @@ impl Captured {
         [self.equipment.rows.len(), self.cumulative.rows.len()]
     }
 
-    /// Complete a failed owned wing job after the typed visitors were gated.
-    /// Other air tables retain their independently acquired results and costs.
     pub(crate) fn fail_air_wing_capture(&mut self, reason: &'static str) {
         self.equipment.outcome = Outcome::Unavailable { reason };
         self.cumulative.outcome = failed(self.active[2], reason);
     }
 
-    /// Complete a failed statistics job after its typed walk was gated.
     pub(crate) fn fail_air_stats_capture(&mut self, reason: &'static str) {
         self.statistics.outcome = failed(self.active[4], reason);
         self.stats_raw_mode = false;
@@ -473,9 +442,6 @@ fn copy_air_pass(
     }
 }
 
-/// Walks this job's owner slots of the shared census. A part of a split
-/// census grows every projection, so it admits each of its wings as the
-/// serial walk would until a projection fails ([`AirWingJob::absorb`]).
 fn walk_air_part(
     job: &mut AirWingJob,
     memory: &impl Memory,
@@ -496,9 +462,6 @@ fn walk_air_part(
     job.required = job.limits;
     job.game_score_enabled = ctx.game_score;
     job.game_score.begin(ctx.game_score);
-    // The score projection rides this census: a worker pass grows its wing,
-    // country and first-site storage from the acquired headers, so ordinary
-    // growth never truncates it, whichever frame last lent the storage.
     job.required_memberships = if job.theatres_active { ctx.limits[0] } else { 0 };
     let source = WingMemory {
         inner: memory,
@@ -678,7 +641,6 @@ fn walk_air_part(
         },
         |slot, entry| {
             if entry.is_some() {
-                // Advisory: a missed owner only sizes the next hour's parts.
                 if allocation::advisory(|| allocation::reserve(&mut job.owner_costs, 1)).is_ok() {
                     job.owner_costs.push((slot, cost.get()));
                 }
@@ -725,22 +687,15 @@ fn walk_air_part(
 }
 
 impl AirWingJob {
-    /// The callback's join of a split census: `parts`, the census parts of
-    /// the owner slots after this one's in slot order, then the finish.
-    /// Copies without allocating once this job holds the storage of the
-    /// last joined census (its frame grants and grown vectors).
     pub(crate) fn join_parts(&mut self, parts: &mut [AirWingJob]) -> Result<(), &'static str> {
         let joined = parts.iter().try_for_each(|part| self.absorb(part));
         if joined.is_ok() {
             self.finish_census(parts);
         }
-        // The join's growth, or a failed join's, is this job's storage.
         self.update_capacity_charge();
         joined
     }
 
-    /// This part's own mission identities and naval memberships, built from
-    /// its sources and memberships on its worker; a split census joins them.
     fn project(&mut self) {
         let sources = self.census.shared.sources;
         let len = sources.len();
@@ -789,16 +744,6 @@ impl AirWingJob {
             };
     }
 
-    /// Joins `part` as one walk of both would have left the census. The
-    /// serial walk stops where a part ended, so nothing after it joins. In a
-    /// growing pass the map, source and naval projections admit every wing
-    /// until they fail together, after which the serial walk reads only
-    /// game-score leaves and owners: a later part's census rows, names,
-    /// identities, equipment, cumulative rows, naval memberships and carry
-    /// counts then join no outcome and stay out, as do those of a dependent
-    /// table that failed. Each part's own first identity or membership
-    /// refusal leads its projection, so the first in slot order is the
-    /// census's.
     fn absorb(&mut self, part: &AirWingJob) -> Result<(), &'static str> {
         if self.census.ended {
             return Ok(());
@@ -892,16 +837,12 @@ impl AirWingJob {
             self.cumulative_outcome = append(self.cumulative_outcome, part.cumulative_outcome);
         }
         if self.theatres_active {
-            // Each part's memberships stay with it; their demand is the
-            // census's.
             self.membership_len += part.membership_len;
         }
         if self.theatres_active
             && !matches!(self.naval_membership_outcome, Outcome::Unavailable { .. })
         {
             let len = self.naval_membership_outcome.len();
-            // Shorter than its outcome only after a membership storage
-            // refusal, which the consumer truncates to the outcome too.
             let joined = part
                 .naval_membership_outcome
                 .len()
@@ -918,8 +859,6 @@ impl AirWingJob {
         Ok(())
     }
 
-    /// Completes the census from its walk: the game-score, AirWings, source,
-    /// naval and dependent outcomes and every part's WingEquipment store.
     fn finish_census(&mut self, parts: &mut [AirWingJob]) {
         let walked = self.census;
         self.game_score.finish(walked.score);
@@ -953,8 +892,6 @@ impl AirWingJob {
         self.required[2] = self.required[2].max(self.cumulative_required);
         self.required[0] = self.required[0].max(self.map_outcome.len());
         self.required_memberships = self.required_memberships.max(self.membership_len);
-        // Identities exist only for a complete source census: a later
-        // part's census refusal is the joined identities' outcome.
         if !matches!(self.source_outcome, Outcome::Rows { .. })
             && self.identity_outcome != IDENTITIES_UNALLOCATED
         {
@@ -964,9 +901,6 @@ impl AirWingJob {
     }
 }
 
-/// The callback's account of the WingEquipment stores after the join: the
-/// first job's and every part's, idle ones included, each forgotten when the
-/// acquisition `failed`. Returns the bytes they retain.
 pub(crate) fn retained_store_bytes(
     census: Option<&mut super::WingStore>,
     parts: &mut [AirWingJob],
@@ -989,12 +923,9 @@ pub(crate) fn retained_store_bytes(
 
 #[cfg(test)]
 std::thread_local! {
-    /// Test seam: how many more of the join's growths succeed before one is
-    /// refused, as a refused allocation is.
     static JOIN_GROWTHS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
-/// Copies `rows`, converted, after the first `len` of `destination`.
 fn join<T: Default, U>(
     destination: &mut Vec<T>,
     len: usize,
@@ -1021,10 +952,6 @@ fn join<T: Default, U>(
     Ok(())
 }
 
-/// Where the next hour's census parts start, after the first: one part per
-/// [`PART_COST`] of the wings and owners this hour's joined `census` and its
-/// `parts` walked, each from the owner holding its share's first unit. None
-/// when the census did not visit every wing.
 pub(crate) fn part_starts(
     census: &AirWingJob,
     parts: &[AirWingJob],
@@ -1046,7 +973,6 @@ pub(crate) fn part_starts(
     let (mut part, mut offset, mut holder) = (1, 0, None);
     for job in jobs() {
         for &(slot, before) in &job.owner_costs {
-            // The owner before this one holds every unit up to here.
             while part < count && offset + u64::from(before) > total * part / count {
                 if let Some(slot) = holder {
                     start(slot);
@@ -1142,7 +1068,6 @@ pub(crate) fn decode_air_payload(
     } else {
         let equipment = job.equipment_outcome.len();
         let cumulative = job.cumulative_outcome.len();
-        // WingEquipmentRow owns only integer scalars; cloning does not allocate.
         captured.equipment.rows[..equipment].clone_from_slice(&job.equipment[..equipment]);
         if job.cumulative_active {
             captured.cumulative.rows[..cumulative].copy_from_slice(&job.cumulative[..cumulative]);

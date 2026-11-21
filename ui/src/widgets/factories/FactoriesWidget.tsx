@@ -16,7 +16,6 @@ const NO_WARNINGS: string[] = [];
 const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
 const formatValue = (value: number) => Math.round(value).toLocaleString('en-US');
 
-/** One country's recorded parts of each group at an hour the breakdown is paused at (`factory-parts`). */
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: number; types: readonly string[]; mode: ReturnType<typeof countMode> }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -27,9 +26,6 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
     error={parts.error} onRetry={parts.retry} />;
 }
 
-/** Every country's factories, counted as the game counts them: a race (bars split by group if chosen) and lines of the
- * declared count, one country's groups over time (the mix), and a picked country's breakdown: its groups painted at
- * the head, and paused at an hour its recorded parts. Groups are named by the recorded content's building types. */
 export default function FactoriesWidget({ widget, runtime, active, onDiagnostics, countrySlot }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const view = (['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race') as RaceView;

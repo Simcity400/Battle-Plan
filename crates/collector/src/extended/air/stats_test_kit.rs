@@ -141,8 +141,6 @@ pub(crate) fn fixture() -> Vec<u8> {
     bytes
 }
 
-/// The owner's country moves to slot three, behind slot one holding the reserved country object
-/// (id zero, also at slot zero) and a null slot two, as the game's country table may.
 pub(crate) fn add_reserved_alias_and_null_slot(bytes: &mut [u8]) {
     use engine_native::{ccountry, cgame_state, cstrategic_air_manager};
     const RESERVED: usize = 0x20100;
@@ -262,8 +260,6 @@ pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
     assert_eq!(split.rows, direct.rows, "statistics rows");
 }
 
-/// Decode-worker assertion against pooled buffers (same module, so
-/// private rows are visible).
 pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
     assert_eq!(
         captured.statistics.outcome, direct.outcome,

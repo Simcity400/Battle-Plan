@@ -113,7 +113,6 @@ fn collision(outcome: Outcome) {
                 build(outcome)
             })
         });
-        // The notification follows a real WouldBlock, not a scheduling assumption.
         waited.recv().unwrap();
         assert!(gate.ready.get().is_none());
         release.send(()).unwrap();
@@ -248,7 +247,6 @@ fn a_ticket_keeps_its_success_and_the_public_cache_its_held_hour() {
             .get_or_insert_with((1, hour), || Ok::<_, io::Error>(Etas::default()))
             .unwrap();
     }
-    // The ticket holds hour 0, so the cache still answers it with the same derivation.
     assert!(Arc::ptr_eq(&worker, &cache.get((1, 0)).unwrap()));
     let joined = gate
         .get_or_try_init(|| -> io::Result<_> { panic!("same ticket already published") })

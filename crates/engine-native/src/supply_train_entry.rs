@@ -1,10 +1,6 @@
-//! The 0x18-byte allocated-train entry consumed by the railway renderer.
 use crate::{Memory, cequipment_variant, creference_registry, read};
-/// Allocated-train stride in the country supply system (`ccountry_supply_system::ALLOCATED_TRAINS`).
 pub const STRIDE: usize = 0x18;
-/// Full reference handle, resolved through the reference registry.
 pub const VARIANT: usize = 0;
-/// Signed integer count (not fixed point), summed or subtracted in place (`COUNT`).
 pub const COUNT: usize = 8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -25,8 +21,6 @@ pub(crate) fn decode(memory: &impl Memory, base: usize, bytes: &[u8]) -> Result<
         if cequipment_variant::identity(memory, base, pointer)? != variant {
             return Err("allocated train variant identity mismatch");
         }
-        // Definition join uses existing VariantDefinitions; do not invent an
-        // equipment-type identity from the count or native allocation ordinal.
         if read::<u64>(memory, pointer + cequipment_variant::DEFINITION).is_none_or(|p| p == 0) {
             return Err("allocated train variant definition unreadable or null");
         }

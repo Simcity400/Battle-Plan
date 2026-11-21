@@ -1,15 +1,10 @@
 use super::{ATTACKER, DEFENDER, INDICATOR_FRAME_HIGH, Reader, Source};
 use crate::{Memory, cland_combatant};
 
-/// The four native ordered country-tag sets of one combat, as spans of the caller's tag arena:
-/// attacker primary and secondary, then defender primary and secondary. They are simulation state,
-/// unlike the side's engaged display byte.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountrySetsRow {
     pub combat: u64,
-    /// CLandCombat `INDICATOR_FRAME_HIGH`, the marker's frame and the window's indicator icon.
     pub indicator: u8,
-    /// Attacker then defender CLandCombatant flag words (`cland_combatant::FLAGS`).
     pub flags: [u32; 2],
     pub start: usize,
     pub lens: [usize; 4],
@@ -18,7 +13,6 @@ pub struct CountrySetsRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CountrySetError {
     Unavailable(&'static str),
-    /// The arena is too small; `required` tags are needed from its start.
     Truncated {
         required: usize,
     },
@@ -30,7 +24,6 @@ impl From<&'static str> for CountrySetError {
     }
 }
 
-/// The four original list counts reserve the complete worker arena before nodes.
 pub fn read_country_sets_buffer(
     memory: &impl Memory,
     base: usize,
@@ -71,7 +64,6 @@ pub fn read_country_sets_buffer(
             cland_combatant::SECONDARY_COUNTRIES,
         ][index % 2]
             - cland_combatant::FLAGS;
-        // Head and tail node pointers, then the signed i32 count.
         let bytes = &spans[index / 2][offset..offset + 20];
         let head = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
         let tail = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
@@ -93,7 +85,6 @@ pub fn read_country_sets_buffer(
     for (index, (mut node, tail, count)) in headers.into_iter().enumerate() {
         let mut previous = 0;
         for ordinal in 0..count {
-            // Node: tag u32, then previous and next node pointers.
             let bytes = reader.field::<[u8; 24]>(node, 0)?;
             let tag = u32::from_le_bytes(bytes[..4].try_into().unwrap());
             let prev = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
@@ -102,8 +93,6 @@ pub fn read_country_sets_buffer(
             if prev != previous || (last && (node != tail || next != 0)) || (!last && next == 0) {
                 return Err("land country-set node links inconsistent".into());
             }
-            // Insertion keeps sets distinct and secondary tags positive. Reading
-            // checks linked-list integrity without adding stricter value constraints.
             tags[used] = tag;
             used += 1;
             previous = node;

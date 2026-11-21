@@ -29,7 +29,6 @@ fn real_status_capture_builds_sorted_full_handle_border_index() {
         ..carmy::StatusCapacities::new(2)
     };
     let mut packet = carmy::StatusPacket::with_capacities(capacities).unwrap();
-    // The capture's growth floors modifier nodes at the unit count.
     let floored = crate::modifier_accumulator::SnapshotCapacity {
         nodes: 2,
         entries: 1,

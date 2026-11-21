@@ -1,5 +1,3 @@
-//! Carried CountryAppearance rows over the synthetic country census
-//! ([`super::super::bench::World`]).
 use super::super::bench::{ARRAYS, World, rows as published};
 use super::*;
 use crate::country_input_changes::Domain;
@@ -11,7 +9,6 @@ use std::cell::RefCell;
 
 const COUNTRIES: usize = 48;
 
-/// Records every guarded read's address.
 struct Traced<'a> {
     memory: SliceMemory<'a>,
     reads: RefCell<Vec<usize>>,
@@ -34,13 +31,10 @@ fn word(world: &World, address: usize) -> usize {
     u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap()) as usize
 }
 
-/// Country `id`'s object; the fixture's canonical slot is its id.
 fn country(world: &World, id: u32) -> usize {
     word(world, world.origin + ARRAYS + id as usize * 8)
 }
 
-/// Countries 2, 10 and 30 name link 3's tag `XYZ` as their original tag, so
-/// carried rows place original tag bytes between fresh ones.
 fn world() -> World {
     let mut world = World::new(COUNTRIES, true);
     let tags = word(&world, world.state() + cgame_state::COUNTRY_TAGS);
@@ -54,8 +48,6 @@ fn world() -> World {
     world
 }
 
-/// The arenas a table is published from: each row's original tag span, the
-/// naming bytes, the subject payloads and each row's payload start.
 type Layout = (Vec<Option<Name>>, Vec<u8>, Vec<u32>, Vec<usize>);
 
 fn layout(captured: &Captured) -> Layout {
@@ -71,15 +63,12 @@ fn layout(captured: &Captured) -> Layout {
     )
 }
 
-/// Today's full read of the same memory.
 fn full(world: &World) -> (Vec<CountryAppearanceRow>, Layout) {
     let mut captured = Captured::with_capacities(&world.capacities());
     let rows = world.read(&mut captured);
     (rows, layout(&captured))
 }
 
-/// One hour's read with the store: the captured pack and the countries whose
-/// appearance was read (their colour, the reader's first appearance field).
 fn hour(
     world: &World,
     captured: &mut Captured,
@@ -114,15 +103,12 @@ fn every() -> Vec<u32> {
     (1..=COUNTRIES as u32).collect()
 }
 
-/// A quiet hour reads no country's appearance, and publishes the rows,
-/// arenas and payloads a full read of the same memory does.
 #[test]
 fn a_quiet_hour_reads_no_country_and_publishes_a_full_read() {
     let world = world();
     let domain = Domain::enabled(64);
     let mut store = AppearanceStore::default();
     let mut captured = Captured::with_capacities(&world.capacities());
-    // Nothing held yet: every country is read.
     assert_eq!(
         hour(&world, &mut captured, &mut store, &domain),
         every()
@@ -132,13 +118,11 @@ fn a_quiet_hour_reads_no_country_and_publishes_a_full_read() {
         assert!(hour(&world, &mut captured, &mut store, &domain).is_empty());
         let rows = published(&captured);
         assert_eq!((rows.clone(), layout(&captured)), full(&world));
-        // Carried rows keep their payload and original tag bytes.
         assert_eq!(rows[1].subjects, Recorded::Value(vec![2, -1, 2]));
         assert_eq!(rows[1].original_tag, Recorded::Value(Some(b"XYZ".to_vec())));
     }
 }
 
-/// A marked country is read within the hour, then carried again.
 #[test]
 fn a_marked_country_is_read_within_the_hour() {
     let mut world = world();
@@ -159,8 +143,6 @@ fn a_marked_country_is_read_within_the_hour() {
     assert_eq!((rows, layout(&captured)), full(&world));
 }
 
-/// A failed read holds nothing, and a take whose epoch moved certifies
-/// nothing: the next hour reads every country, and holds again.
 #[test]
 fn a_failed_read_or_an_uncertified_take_reads_every_country() {
     let mut world = world();
@@ -168,7 +150,6 @@ fn a_failed_read_or_an_uncertified_take_reads_every_country() {
     let mut store = AppearanceStore::default();
     let mut captured = Captured::with_capacities(&world.capacities());
     hour(&world, &mut captured, &mut store, &domain);
-    // Country 7's diplomacy status fails its read: the hour is refused.
     let diplomacy = word(&world, country(&world, 7) + ccountry::DIPLOMACY_STATUS);
     let vtable = world.bytes[diplomacy - world.origin..][..8].to_vec();
     put(&mut world, diplomacy, &0_u64.to_le_bytes());
@@ -179,10 +160,8 @@ fn a_failed_read_or_an_uncertified_take_reads_every_country() {
         Outcome::Unavailable { .. }
     ));
     put(&mut world, diplomacy, &vtable);
-    // The take is certified, but nothing is held.
     assert_eq!(hour(&world, &mut captured, &mut store, &domain), every());
     assert!(hour(&world, &mut captured, &mut store, &domain).is_empty());
-    // A writer that names no country moves the epoch.
     domain.write_every(Table::Appearance);
     assert_eq!(hour(&world, &mut captured, &mut store, &domain), every());
     assert_eq!((published(&captured), layout(&captured)), full(&world));

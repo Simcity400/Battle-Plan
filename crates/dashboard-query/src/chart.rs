@@ -1,5 +1,3 @@
-//! A chart reply: one bucket per bin, with its first, last, least and greatest value and hours, on
-//! the wire as columns; hourly views carry their original runs. Exact integers stay in value runs.
 use serde::{Deserialize, Serialize};
 use std::io;
 use ts_rs::TS;
@@ -7,7 +5,7 @@ use ts_rs::TS;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ChartBucket {
-    /// Sum of absolute raw value times covered hours, at the series decimal scale.
+    #[doc = " Sum of absolute raw value times covered hours, at the series decimal scale."]
     #[serde(with = "absolute_decimal")]
     #[ts(type = "string")]
     pub absolute_total: u128,
@@ -44,7 +42,6 @@ impl ChartBucket {
     }
 }
 
-/// Ordered merge; missing children stay missing and cannot establish zero.
 pub fn merge(first: Option<ChartBucket>, second: Option<ChartBucket>) -> Option<ChartBucket> {
     match (first, second) {
         (None, None) => None,
@@ -58,7 +55,6 @@ pub fn merge(first: Option<ChartBucket>, second: Option<ChartBucket>) -> Option<
             last_hour: b.last_hour,
             first_value: a.first_value,
             last_value: b.last_value,
-            // A break after `b`'s one stretch is a coverage gap: the value still began in `a`.
             last_value_hour: if b.last_value_hour == b.first_hour
                 && !b.first_break
                 && i64::from(a.last_hour) + 1 == i64::from(b.first_hour)
@@ -108,33 +104,31 @@ pub struct ChartSummary {
     #[serde(with = "columns")]
     #[ts(type = "ChartColumns")]
     pub buckets: Vec<Option<ChartBucket>>,
-    /// Original supplying runs for hourly bins, including their unclipped bounds.
+    #[doc = " Original supplying runs for hourly bins, including their unclipped bounds."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runs: Option<Vec<ChartRun>>,
 }
 
-/// A summary's buckets on the wire: per present bucket in slot order, a quarter of their named bytes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ChartColumns {
-    /// Every slot, present or not.
+    #[doc = " Every slot, present or not."]
     pub slots: u32,
-    /// Absent slots before each present bucket.
+    #[doc = " Absent slots before each present bucket."]
     pub skip: Vec<u32>,
-    /// First hour less the previous bucket's last (the first's whole); last, last-value, min, max less first.
+    #[doc = " First hour less the previous bucket's last (the first's whole); last, last-value, min, max less first."]
     #[ts(type = "Array<number>")]
     pub hours: Vec<i64>,
-    /// First, last, minimum and maximum values.
+    #[doc = " First, last, minimum and maximum values."]
     pub values: Vec<f64>,
-    /// 1 when the bucket starts with a break, 2 when it holds one.
+    #[doc = " 1 when the bucket starts with a break, 2 when it holds one."]
     pub flags: Vec<u8>,
-    /// Absolute totals as decimals.
+    #[doc = " Absolute totals as decimals."]
     pub totals: Vec<String>,
 }
 
 impl ChartColumns {
-    /// The buckets these columns hold, refused when the columns disagree.
     pub fn buckets(&self) -> io::Result<Vec<Option<ChartBucket>>> {
         let present = self.skip.len();
         if self.hours.len() != 5 * present
@@ -191,19 +185,16 @@ impl ChartColumns {
     }
 }
 
-/// [`ChartColumns`] written straight from the buckets, and read back into them.
 mod columns {
     use super::{ChartBucket, ChartColumns};
     use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 
-    /// A sequence serialized as its iterator yields it, never collected.
     struct Each<F>(F);
     impl<F: Fn() -> I, I: Iterator<Item = T>, T: Serialize> Serialize for Each<F> {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             serializer.collect_seq((self.0)())
         }
     }
-    /// A decimal string, written without allocating one.
     struct Decimal(u128);
     impl Serialize for Decimal {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

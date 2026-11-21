@@ -13,9 +13,6 @@ use replay_data::rows::{CountryLinkRow, CountryResourceRow, CountryRow, TableRow
 use replay_frame::frame::TableView;
 use serde_json::json;
 
-/// A country's links and political power at an hour: its links read whole first, then its own
-/// row alone. Its structure is the slot and the countries linked; each linked country's power and
-/// the holder's coal surplus are live cells.
 struct Power;
 
 #[derive(Deserialize, Serialize)]
@@ -31,7 +28,6 @@ struct PowerParams {
 #[serde(rename_all = "camelCase")]
 struct PowerReply {
     slot: u32,
-    /// The raw ids linked at the hour, each a row of live cells.
     rows: Vec<String>,
     warnings: Vec<String>,
 }
@@ -96,13 +92,9 @@ impl AtHour for Power {
 
 const FIRST: i32 = 100;
 const LAST: i32 = 130;
-/// ITA's country row leaves at this hour; its link stays.
 const ITA_LEAVES: i32 = 115;
-/// Country resources are not available at these hours.
 const RESOURCES_GONE: std::ops::RangeInclusive<i32> = 120..=122;
 
-/// GER's power moves every ten hours and has no value at hour 125; ITA's moves every hour until
-/// its row leaves; GER's coal moves every hour and is unavailable for three.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, (hour != 125).then_some(i64::from(hour / 10) * 1_000));
     if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()]
@@ -120,7 +112,6 @@ fn frame(hour: i32) -> DecodedFrame {
     frame
 }
 
-/// The synthetic recording, and its pages as the playhead reads them.
 fn recording() -> (Source, Arc<dyn Pages>) {
     let frames = (FIRST..=LAST).map(frame).collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
@@ -133,7 +124,6 @@ fn load() -> LoadContext {
     LoadContext { content: None }
 }
 
-/// The request path's reply data to `request`, or its error.
 fn asked(source: &Source, request: Value) -> Result<Value, dashboard_core::QueryError> {
     let text = (entry::<Power>().registered.load)(source, "lease", request, &load(), &AtomicBool::new(false))?;
     let mut reply: Value = serde_json::from_str(&text).unwrap();
@@ -151,14 +141,12 @@ fn refused(error: dashboard_core::QueryError) -> String {
     }
 }
 
-/// The panel's data over the whole tables at `hour`, as rows at the head hold them.
 fn followed(source: &Source, panel: &mut dyn Panel, hour: i32) -> PanelData {
     let tables = panel.tables().to_vec();
     let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&tables)).unwrap() else { panic!("hour {hour} is recorded") };
     panel.data(&frame)
 }
 
-/// Each group of `live` as the follow layer answers it at `hour`, from a lane of its own sought there.
 fn answered_cells(pages: &Arc<dyn Pages>, live: &Live, hour: i32) -> Vec<Vec<CellValue>> {
     live.groups
         .iter()
@@ -182,7 +170,6 @@ fn answered_cells(pages: &Arc<dyn Pages>, live: &Live, hour: i32) -> Vec<Vec<Cel
         .collect()
 }
 
-/// A request's cell as JSON: its number, or why it has none.
 fn cell_json(value: &CellValue) -> Value {
     match value {
         CellValue::Number(number) => json!(number),
@@ -203,7 +190,6 @@ fn a_rows_at_an_hour_product_answers_a_request_and_its_panel_with_one_reply() {
         assert_eq!(asked["slot"], 7);
         assert_eq!(asked["rows"], json!(["11", "9001", "9002"]));
         let named = panel.live().expect("the panel names its live cells").clone();
-        // What the panel's host pushes names the same cells, each group followed instead of valued.
         let pushed = named.json(&vec![dashboard_follow::live::GroupState::Follow(1); named.groups.len()]);
         for field in ["rows", "kinds", "cells"] {
             assert_eq!(pushed[field], live[field], "{field} at hour {hour}");
@@ -226,14 +212,12 @@ fn a_rows_at_an_hour_product_answers_a_request_and_its_panel_with_one_reply() {
             }
         }
     }
-    // Link 11 has no country row at any hour; ITA's row leaves.
     assert_eq!(rowless, (ITA_LEAVES - FIRST) as usize + 2 * (LAST - ITA_LEAVES + 1) as usize, "a cell whose row left is missing by name");
     assert_eq!(unavailable, 2 * RESOURCES_GONE.count(), "a cell whose table is unavailable is missing, never the value before");
     assert_eq!(valueless, 1, "a value not recorded is missing, never zero");
     let at = |hour| requested(&source, "GER", hour).unwrap()["live"]["groups"].clone();
     assert_eq!(at(125).as_array().unwrap().iter().flat_map(|group| group["values"].as_array().unwrap().clone()).filter(|value| *value == NO_VALUE).count(), 1);
     assert_eq!(requested(&source, 7, 110).unwrap(), requested(&source, "GER", 110).unwrap(), "a slot asks the country holding its tag");
-    // The host pushes a panel only when its data differs: the structure holds while the numbers move.
     assert_eq!(followed(&source, &mut *panel, 101), followed(&source, &mut *panel, 128));
 }
 
@@ -254,7 +238,6 @@ fn a_refused_reply_is_the_same_named_refusal_on_both_paths() {
 
 
 
-/// Whether executable tables are in scope where its reply is made.
 struct Scoped;
 
 #[derive(Deserialize, Serialize)]
@@ -311,7 +294,6 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
         product: PhantomData,
     };
     let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, FIRST, Some(&[TableId::Countries])).unwrap() else { panic!("hour {FIRST} is recorded") };
-    // The host's panels thread is a plain thread: no recording's tables are in scope there.
     let data = std::thread::scope(|threads| threads.spawn(|| panel.data(&frame)).join().unwrap());
     assert_eq!(data.unwrap()["scoped"], true, "a panel reading recorded keywords or registries would find them withheld");
 }

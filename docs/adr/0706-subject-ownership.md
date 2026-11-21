@@ -1,0 +1,11 @@
+# 0706. Preserve subject relation order and installed membership
+
+The owned subject walk authenticates the native endpoint matrices and ownership vectors. It emits each installed subject once from its overlord and preserves raw ratio precision, full name bytes and original visit order. Name storage counts every native length even when row or byte capacity omits an entry. An empty name is a known empty string. The relation's autonomy definition is reached through authenticated pointers. The reader applies neither a guessed definition vtable nor a separate length whitelist.
+
+A native subject link remains installed while the subject's status points to the relation of the right type. A retired entry contributes while it remains installed. A retired entry left only in the owned vector is skipped. The independent matrix walk can check membership without the owned vector. Its order and arena offsets can differ, so comparison uses ordered country keys and names outside the game thread.
+
+A caller-owned snapshot prevents repeated full scans of one overlord's owned vector for each of its subjects. It reuses country and diplomacy authentication in the same walk. Storage shortages preserve the visible rows, order and outcome of the original path. The batch path copies entry pointers, the type words before a null entry and then relevant heads. Every acquired field is consumed only at its original admission point. Unavailable or incomplete batch records fall back to ordered scalar reads. Matrix validation still inspects empty, inactive and sentinel cells, and no acquired pointer remains after the walk.
+
+The serial test oracle reads each original field directly. Comparison fixtures sweep row and byte capacity, batch boundaries and persistent and one-shot faults. They include active and retired relations, unrelated types, empty or invalid roster slots and failing scalar payloads. This checks table outcomes, names, order and first failure.
+
+[Subject relation reader](../../crates/engine-native/src/csubject_relation.rs) · [Serial oracle](../../crates/engine-native/src/csubject_relation_cost_baseline.rs) · [Comparison fixtures](../../crates/engine-native/src/csubject_relation/tests.rs)

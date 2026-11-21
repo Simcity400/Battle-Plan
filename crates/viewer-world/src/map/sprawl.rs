@@ -1,12 +1,3 @@
-//! City placement and damage-driven particle states.
-//!
-//! The authored stride is in full map pixels. Each eligible urban sample selects a mesh by its
-//! Chebyshev edge ring and a mixer seeded by province*x*z. The mixer also selects one of four
-//! quarter turns. `density` displaces samples along the normalized, ring-weighted sum of eight
-//! neighbours divided by the sample's own ring. Rivers reject samples with water in their
-//! [-step, step) rectangle; displaced positions are checked again. Heights use half-pixel bilinear
-//! sampling. Infrastructure and civilian-factory health select particle state separately from
-//! placement.
 
 #[cfg(test)]
 use super::entity_animation::Clock;
@@ -47,22 +38,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Side of the sprawl cull grid, in world units. The engine buckets its trees
-/// on 256-unit tiles; nothing ties the sprawl to a size, and a
-/// city blob is tens of pixels across, so 64 keeps a group inside one city.
 pub const SPRAWL_TILE: f32 = 64.0;
 
-/// The distance ring a pixel sits in, capped at the native search limit.
 pub type DistanceField = Vec<u16>;
 
-/// Chebyshev distance from every urban pixel to the nearest non-urban one, in
-/// map pixels; 0 outside the urban mask.
-///
-/// The walk is a breadth-first sweep seeded at the pixels that touch a
-/// non-urban neighbour, which is where distance 1 is defined. Off-map
-/// neighbours count as non-urban, so a blob running off the north edge is
-/// bounded there. `cap` stops the sweep at the native search limit; rings also
-/// supply the displacement weights, independently of mesh thresholds.
 pub fn distance_to_edge(urban: &[bool], width: usize, height: usize, cap: u16) -> DistanceField {
     let mut distance = vec![0u16; urban.len()];
     let mut frontier = Vec::new();
@@ -118,7 +97,6 @@ pub fn distance_to_edge(urban: &[bool], width: usize, height: usize, cap: u16) -
         }
         frontier = next;
     }
-    // Anything still unvisited is deeper than the cap, which is the last ring.
     for (index, value) in distance.iter_mut().enumerate() {
         if urban[index] && *value == 0 {
             *value = cap;
@@ -127,12 +105,10 @@ pub fn distance_to_edge(urban: &[bool], width: usize, height: usize, cap: u16) -
     distance
 }
 
-/// Full-map-pixel stride.
 pub fn sample_stride(pixel_step: u32) -> usize {
     pixel_step.max(1) as usize
 }
 
-/// Province/x/z integer mixer, with native wrapping at every multiplication.
 fn city_roll(province: u32, x: u32, z: u32) -> u32 {
     fn mix(seed: u32, a: u32, b: u32, c: u32) -> u32 {
         let value = seed.wrapping_mul(a);
@@ -150,7 +126,6 @@ fn city_roll(province: u32, x: u32, z: u32) -> u32 {
     value ^ (value >> 8)
 }
 
-/// texel centres at half units, clamped at shore.
 fn city_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     let x = x - 0.5;
     let z = z - 0.5;
@@ -166,34 +141,24 @@ fn city_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     ((low + (high - low) * tz) * 0.1).max(9.5)
 }
 
-/// One placed house, before the mesh library resolves its entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SprawlBuilding {
-    /// The entity name `map/cities.txt` named.
     pub entity: String,
     pub position: [f32; 3],
     pub rotation: f32,
-    /// The city object's lattice province, before displacement.
     pub province: u32,
-    /// The displaced bitmap province owns the resulting city instance.
     pub owner: u32,
 }
 
-/// What the generator produced, with the counts the viewer reports.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SprawlPlan {
     pub buildings: Vec<SprawlBuilding>,
-    /// Urban pixels of `map/terrain.bmp`.
     pub urban_pixels: usize,
-    /// Samples the `pixel_step` grid took inside the mask.
     pub samples: usize,
-    /// Entity names used, in first-use order.
     pub entities: Vec<String>,
     pub bounds: BTreeMap<u32, [f32; 4]>,
 }
 
-/// Native two-stage placement: build the eligible lattice, then displace it.
-/// Inputs share the bitmap's top-down row order; the native lattice walks +Z.
 pub fn generate(
     cities: &Cities,
     style: &IndexedImage,
@@ -219,8 +184,6 @@ pub fn generate(
             "city style, terrain, rivers, provinces and heights must share a grid",
         ));
     }
-    // The generator scans out to ring 100 even if the last mesh starts earlier:
-    // the uncapped ring also determines displacement and neighbour weights.
     let distance = distance_to_edge(urban, width, height, 100);
     let step_x = sample_stride(cities.pixel_step_x);
     let step_z = sample_stride(cities.pixel_step_y);
@@ -229,7 +192,6 @@ pub fn generate(
         if !urban[index(x, z)] {
             return false;
         }
-        // Skip river rectangles at the map margins.
         if step_x < x
             && step_z < z
             && x < width.saturating_sub(step_x)
@@ -254,7 +216,6 @@ pub fn generate(
         }),
         ..SprawlPlan::default()
     };
-    // Only actual mesh candidates contribute to the eight-neighbour sum.
     let mut candidates = BTreeMap::new();
     for z in (0..height).step_by(step_z) {
         for x in (0..width).step_by(step_x) {
@@ -334,7 +295,6 @@ pub fn generate(
     Ok(plan)
 }
 
-/// The sprawl's mesh library and placed instances.
 pub struct Sprawl {
     pub library: ModelLibrary,
     pub field: ModelField,
@@ -342,11 +302,8 @@ pub struct Sprawl {
     presentation: Presentation,
 }
 
-/// City damage uses the lower average health of infrastructure and `industrial_complex` buildings.
-/// Other factory types and bombing damage do not enter this value.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Damage {
-    /// None marks a known null province-state link rather than a missing recorded row.
     health: map_display_data::value_index::ValueIndex<u32, Option<i64>>,
     pub refused: Option<String>,
 }
@@ -359,8 +316,6 @@ impl Damage {
         Self { health, refused }
     }
 
-    /// Whether `other` holds other damage: the indexes compared only where they do not share a
-    /// subtree, so a damage patched from this one costs its changes.
     fn differs(&self, other: &Self) -> bool {
         if self.refused != other.refused || self.health.len() != other.health.len() {
             return true;
@@ -397,7 +352,6 @@ impl Damage {
         )
     }
 
-    /// The same damage read with explicit hour-builder child scopes.
     #[cfg(test)]
     pub fn read_profiled(
         frame: &DecodedFrame,
@@ -407,7 +361,6 @@ impl Damage {
     ) -> Self {
         let read = (|| -> io::Result<Self> {
             let provinces = spans.measure("buildings.damage_validate", |_| {
-                // An absent row means no building only in a complete table.
                 let states = frame.complete::<tables::StateBuildings>()?;
                 let provinces = frame.complete::<tables::ProvinceBuildings>()?;
                 frame.complete::<tables::LexicalTokens>()?;
@@ -471,12 +424,9 @@ impl Damage {
         let selected: Vec<_> = infrastructure.into_iter().chain(civilian).collect();
         let mut health = BTreeMap::new();
         for province in provinces {
-            // The province must resolve to a state even for provincial building types.
             let mut minimum = 100_000;
             if province.state != 0 {
                 for &index in &selected {
-                    // Provincial templates use the province's buildings; other templates use its state's buildings.
-                    // Templates start enabled. The content ordinal identifies the corresponding recorded building.
                     let provincial = types[index].provincial();
                     let location = if provincial {
                         province.id
@@ -503,8 +453,6 @@ impl Damage {
     }
 }
 
-/// Average building health from recorded level, healthy level and partial health, preserving
-/// exceptional fixed5 values and wrapping multiplications.
 pub fn average_health(level: i16, healthy_level: i16, partial_health: i64) -> i64 {
     let exceptional =
         |value: i64| (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd;
@@ -533,8 +481,6 @@ struct City {
     bounds: [f32; 4],
     mesh: usize,
     instance: ModelInstance,
-    /// Whether its root, once idle, plays idle until requested away, so that a repeated
-    /// idle request is one the game's state setter skips.
     idle_holds: bool,
 }
 
@@ -545,7 +491,6 @@ pub struct Presentation {
     destroyed: i64,
     damage: Arc<Damage>,
     view: Option<(Camera, [u32; 2], bool)>,
-    /// Houses share their owner province's admission box, but keep placement order.
     groups: Arc<[CityGroup]>,
     admitted: Vec<bool>,
     active: Vec<usize>,
@@ -605,8 +550,6 @@ impl Presentation {
         }
     }
 
-    /// Adopts a built hour's damage without copying its province map. Equal contents
-    /// preserve the same change flags even when a different allocation supplies them.
     pub fn set_shared_damage(&mut self, damage: &Arc<Damage>) {
         if !Arc::ptr_eq(&self.damage, damage) {
             if self.damage.differs(damage) {
@@ -618,7 +561,6 @@ impl Presentation {
         self.view = None;
     }
 
-    /// Advances the same skipped-hour history from a builder-owned damage map.
     pub fn advance_shared(&mut self, damage: &Arc<Damage>) {
         self.advance_with(|scene| scene.set_shared_damage(damage));
     }
@@ -626,33 +568,26 @@ impl Presentation {
     fn advance_with(&mut self, install: impl FnOnce(&mut Self)) {
         if let (Some((camera, size, enabled)), Some(time)) = (self.view, self.last_time) {
             install(self);
-            // Crossed hours advance actor requests, not the renderer's retained stream.
             let placed = self.placed.take();
             self.update(camera, size, enabled, time);
-            // If an ignored crossed-hour stream differs, the next changed view must
-            // still submit it. An unchanged view keeps the original early return.
             self.damage_changed = self.placed != placed;
             self.placed = placed;
         }
     }
 
     fn state(&self, province: u32) -> Option<&'static str> {
-        // Leave target zero when the province has no state,
-        // bypassing both thresholds (which a mod may set above full health).
         let Some(&health) = self.damage.health.get(&province)?.as_ref() else {
             return Some("idle");
         };
-        // both thresholds are strict; damaged is tested first.
         if health >= self.damaged {
             Some("idle")
         } else if health < self.destroyed {
-            Some("burning") // damaged is .
+            Some("burning")
         } else {
             Some("damaged")
         }
     }
 
-    /// The health below which a city is damaged, and below which it burns.
     pub fn thresholds(&self) -> (i64, i64) {
         (self.damaged, self.destroyed)
     }
@@ -689,8 +624,6 @@ impl Presentation {
                     1,
                 );
                 if !shown {
-                    // Retain the precreated actor's idle request across re-entry, even
-                    // when its authored default differs or damage is unavailable.
                     for &index in &group.cities {
                         if let Some(actor) = &mut self.actors[index] {
                             let skipped = self.cities[index].idle_holds
@@ -717,7 +650,6 @@ impl Presentation {
             return None;
         }
         self.damage_changed = false;
-        // Clock membership/requests can change even when the placement stream stays identical.
         self.clocks_changed = true;
         if membership_changed {
             self.active.clear();
@@ -737,7 +669,6 @@ impl Presentation {
                     start: time,
                     state,
                     visible: true,
-                    // A first healthy show preserves the entity default.
                     requests: Arc::new(if state == "idle" {
                         Vec::new()
                     } else {
@@ -777,7 +708,6 @@ impl Presentation {
         Some(placed)
     }
 
-    /// Source-ordered clocks, rebuilt only when admission, damage or actor requests change.
     pub fn clock_records(&mut self) -> &Arc<[ClockRecord]> {
         if std::mem::take(&mut self.clocks_changed) {
             let _span = viewer_foundation::profiling::span("city_clock_records");
@@ -820,7 +750,6 @@ impl Presentation {
     }
 }
 
-/// Counts the viewer reports for the layer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SprawlSummary {
     pub urban_pixels: usize,
@@ -831,9 +760,6 @@ pub struct SprawlSummary {
 }
 
 impl Sprawl {
-    /// Resolves the plan's entities and groups its buildings for drawing.
-    /// `defines` give the city damage thresholds: the graphics defines while the visual mods
-    /// show.
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -841,9 +767,6 @@ impl Sprawl {
         defines: &installed_content_core::defines::Defines,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
-        // The entities and meshes of every descriptor the engine registers
-        // ( enumerates `.gfx` recursively, registers
-        // them), as the shared roster holds them.
         let roster = layers.descriptor_roster()?;
         warnings.extend(
             roster
@@ -874,9 +797,6 @@ impl Sprawl {
             &entities,
             &mut model_warnings,
         )?;
-        // An entity only a visual mod's unreadable descriptor may declare is drawn from the
-        // recording, whose own descriptors declare it readably; every other is recorded by name
-        // for the map's fallback.
         let recorded = layers.recorded_descriptor_roster()?;
         let (from_recording, refused): (Vec<String>, Vec<String>) =
             refused.into_iter().cloned().partition(|entity| {
@@ -925,8 +845,6 @@ impl Sprawl {
             let instance = ModelInstance {
                 position: building.position,
                 rotation: building.rotation,
-                // The entity and pdxmesh scales are baked into the library's
-                // vertices, so an instance carries no further scale.
                 scale: 1.0,
                 pitch: 0.0,
                 train_clip: [0.0; 4],
@@ -996,8 +914,6 @@ mod tests {
         presentation
     }
 
-    /// A damage patched from the one held differs exactly where its contents do, whether it
-    /// shares the held index's nodes or was built anew.
     #[test]
     fn city_damage_differs_where_a_patched_or_rebuilt_index_holds_other_values() {
         let health: map_display_data::value_index::ValueIndex<u32, Option<i64>> =
@@ -1312,8 +1228,6 @@ mod tests {
             "an unchanged city does not request again"
         );
         events.clear();
-        // Ignore an absent authored state. In particular it must
-        // not replace a mod's live smoke state with the entity default.
         let clock = Clock {
             time: 2.2,
             phase: None,
@@ -1491,7 +1405,6 @@ mod tests {
                         scale: 1.0,
                         ..Default::default()
                     },
-                    // Every synthetic state loops.
                     idle_holds: true,
                 }
             })
@@ -1535,8 +1448,6 @@ mod tests {
                     let damage = damage(frame / 19 + offset);
                     grouped.advance_shared(&damage);
                 }
-                // Cover crossed hours both with and without a final install. An
-                // ignored stream must reach the renderer on the next changed view.
                 if frame % 62 == 0 {
                     let damage = damage(frame / 19 + 4);
                     grouped.set_shared_damage(&damage);
@@ -1573,8 +1484,6 @@ mod tests {
                 retained_pass.update_placed(placed.clone(), SPRAWL_TILE);
                 grouped_placed = placed;
             }
-            // Geometry and health rows provide direct expected source-order outputs;
-            // no alternate presentation implementation is retained for this test.
             let admission = Admission::new(camera, size);
             let expected_active: Vec<_> = grouped
                 .cities
@@ -1614,8 +1523,6 @@ mod tests {
                     )
                 })
                 .collect();
-            // A skipped hour can deliberately retain the old renderer stream at an
-            // unchanged view. Every submitted stream, however, must match the inputs.
             if submitted {
                 assert_eq!(grouped_placed.len(), expected_placed.len());
                 for ((mesh, instance), (expected_mesh, expected)) in
@@ -1738,7 +1645,6 @@ mod tests {
                 refused: None,
             });
             scene.set_shared_damage(&damage);
-            // A healthy city panned out and back three times.
             for step in 0..3 {
                 let time = 10.0 + step as f32;
                 scene.update(camera, [1024, 768], true, time);
@@ -1809,8 +1715,6 @@ mod tests {
         );
         Arc::make_mut(&mut damage).health = damage.health.inserted(7, Some(60_000)).unwrap();
         scene.advance_shared(&damage);
-        // advance did not hand the new stream to the renderer. Like the original
-        // path, the same view does nothing, but a changed view submits that stream.
         assert!(scene.update(camera, [1024, 768], true, 10.4).is_none());
         camera.center[0] += 0.01;
         assert_eq!(
@@ -1919,16 +1823,12 @@ mod tests {
                 records.iter().map(|r| r.key.1).collect::<Vec<_>>(),
                 (0..48u32).filter(|id| id % 7 != 5).collect::<Vec<_>>()
             );
-            // A distinct but content-equal hour adopts its allocation without
-            // setting change flags, but still invalidates the selector latch.
             let equal = Arc::new((*damage).clone());
             scene.set_shared_damage(&equal);
             assert!(Arc::ptr_eq(&scene.damage, &equal));
             assert!(!scene.damage_changed && !scene.clocks_changed);
             assert!(scene.view.is_none());
             assert!(scene.update(camera, [1024, 768], true, time).is_none());
-            // Three crossed hours must append requests in oldest-first order
-            // at the last presented time, without submitting their streams.
             for health in [100_000, 20_000, 60_000] {
                 scene.advance_shared(&Arc::new(Damage {
                     health: BTreeMap::from([(1, Some(health))]).try_into().unwrap(),
@@ -1984,7 +1884,6 @@ mod tests {
         assert_eq!(at(1, 1), 1, "the corner touches the outside");
         assert_eq!(at(2, 2), 2, "one ring in");
         assert_eq!(at(3, 2), 2);
-        // The 5x4 block is only two rings deep, so nothing reaches 3.
         assert!(distance.iter().all(|value| *value <= 2));
     }
 
@@ -2070,7 +1969,6 @@ city_group = {
         )
         .unwrap();
         assert_eq!(plan.urban_pixels, 16);
-        // Full-pixel stride 2 samples one of every four urban pixels.
         assert_eq!(plan.samples, 4);
         assert_eq!(
             plan.buildings.len(),
@@ -2082,7 +1980,6 @@ city_group = {
             assert_eq!(building.position[1], 10.0, "heightmap byte 100 is y 10.0");
             assert!(building.rotation >= 0.0);
         }
-        // The blob is four pixels across, so every pixel is in ring 1 or 2.
         assert!(
             plan.entities
                 .iter()
@@ -2102,7 +1999,6 @@ city_group = {
     fn a_style_index_with_no_group_places_nothing() {
         let rows = ["....", ".##.", ".##.", "...."];
         let (urban, _, _) = mask(&rows);
-        // Style index 7 is declared by no `city_group`.
         let style = indexed(&rows, 7);
         let cities = cities::parse(CITIES).unwrap();
         let values = vec![100u8; urban.len()];

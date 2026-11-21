@@ -10,7 +10,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-/// A read fault at one address: every touch, or only its nth, from 1.
 #[derive(Clone, Copy)]
 enum Fault {
     Sticky(usize),
@@ -24,7 +23,6 @@ impl Fault {
     }
 }
 
-/// A pass-owned accumulator snapshot answering one key.
 type Hook = (u32, Result<Value, &'static str>);
 
 #[derive(Default)]
@@ -55,7 +53,6 @@ impl Fixture {
             ..Default::default()
         }
     }
-    /// How many reads covered `at`.
     fn touches(&self, at: usize) -> usize {
         self.reads
             .borrow()
@@ -175,7 +172,6 @@ fn compare(actual: &NativeReads, expected: &NativeReads) {
     }
 }
 
-/// Every observation, and each state's but its attrition values.
 fn compare_but_attrition(actual: &NativeReads, expected: &NativeReads) {
     assert_eq!(actual.complete, expected.complete);
     assert_eq!(
@@ -366,7 +362,6 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
         }
         (current, old.into_current(), memory, old_memory)
     };
-    // Same observations, and the compact path demands no byte the original did not.
     let exact =
         |current: &NativeReads, old: &NativeReads, memory: &Fixture, old_memory: &Fixture| {
             compare(current, old);
@@ -382,10 +377,8 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
     };
     let (expected, old, memory, old_memory) = run(clean);
     exact(&expected, &old, &memory, &old_memory);
-    // The settled warm hour reaches every owned read: membership, variant and state.
     assert!(expected.complete);
     assert!(!expected.memberships.is_empty() && !expected.variants.is_empty());
-    // Certificates carry each run's epoch; only attrition values compare across runs.
     let attrition_of = |reads: &NativeReads| -> BTreeMap<_, _> {
         (reads.states.iter())
             .filter_map(|(&key, state)| Some((key, state.read.as_ref()?.values)))
@@ -406,8 +399,6 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
                 exact(&current, &old, &faulted, &faulted_old);
                 continue;
             };
-            // Only the original repeats an attrition read, so a later touch can
-            // refuse a term there alone. Neither path ever reports other data.
             compare_but_attrition(&current, &old);
             for observed in [&current, &old] {
                 for (key, values) in attrition_of(observed) {
@@ -445,7 +436,6 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
         assert!(memory.hooked.get() > 0);
         assert_eq!(memory.hooked.get(), old_memory.hooked.get());
     }
-    // An unobserved country tree: both paths keep its unread observation.
     let (current, old, memory, old_memory) = run(Case {
         country: true,
         ..clean
@@ -465,8 +455,6 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
         let (current, old, memory, old_memory) = run(case);
         exact(&current, &old, &memory, &old_memory);
     }
-    // Cold receivers: the ranges register the pool the passive original leaves
-    // unobserved; with staging denied neither hour completes.
     let (current, old, _, _) = run(Case {
         warm: false,
         denied: true,

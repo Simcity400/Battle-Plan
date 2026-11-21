@@ -44,9 +44,6 @@ const NO_WARNINGS: readonly string[] = [];
 const rowKey = (row: AgreementRow) => row.key;
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
 
-/** What each country sends or receives through lend-lease: schedule, delivered and lost per agreement, the agreements at
- * the hour followed at the head as a pushed panel (fuel painted from live cells), ended agreements from the branch's
- * history, muted. A row opens the market drill on its agreement. */
 export default function LendLeaseAgreementsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const [drillShown, setDrillShown] = useState<number | undefined>();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -63,7 +60,6 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: 'agreements' } : null, [track, tags]);
   const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, params, { active, validate: validateMarketReply });
   const showEnded = options.ended !== 'hidden';
-  // Every agreement the branch saw end, asked once a branch: which of them are ended moves with the hour shown.
   const history = useProduct<LendLeaseHistoryReply>(runtime.client, track && showEnded ? { sourceId: track.source.id, revision: track.source.revision,
     product: LEASE_HISTORY, params: { branchId: track.branch.id } } : null, active, validateLeaseHistory, track?.source);
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
@@ -71,8 +67,6 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const unrecorded = useCallback((at: number) => membershipUnrecordedAt(widget.countries, groups.data, at), [widget.countries, groups.data]);
-  // A held panel's rows are chosen again where the chosen group changes, at the hour its values are current through;
-  // an ended agreement is still chosen at its own last hour.
   const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
   const listed = useMemo(() => data && match.ready && !match.reason ? agreementRows({ ...data, hour: choiceAt }, history.data, direction, match.matches, showEnded, unrecorded)
     : NO_AGREEMENTS, [data, history.data, match, direction, showEnded, unrecorded, choiceAt]);
@@ -119,7 +113,6 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
           detail={row.items.length > 1 ? `+${row.items.length - 1}` : null} /> },
       { key: 'schedule', header: 'Schedule', label: 'Schedule', width: 'minmax(120px, 1fr)', priority: 1, value: row => row.items[0]?.schedule || null,
         renderMissing: true, render: row => row.items[0]?.schedule || '—' },
-      // Painted: an active agreement's fuel from its live cells, every other row's first item as read.
       { key: 'delivered', header: 'Delivered', label: 'Delivered', numeric: true, width: 'max-content', value: () => null, paint: amount },
       { key: 'lost', header: 'Lost', label: 'Lost', numeric: true, width: 'max-content', priority: 2, value: () => null, paint: amount },
       { key: 'last', header: 'Last delivery', label: 'Last delivery', numeric: true, width: 'max-content', priority: 3,

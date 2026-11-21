@@ -1,4 +1,3 @@
-//! Name projections of the track, grand-doctrine, and sub-doctrine databases.
 use super::*;
 use crate::{modifiers, parser::Item};
 use std::collections::BTreeSet;
@@ -46,8 +45,6 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
     };
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
-    // Tracks, grand doctrines, and sub-doctrines share base fields while
-    // name fields retain their distinct consumption rules.
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
@@ -80,27 +77,22 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
             (Node::Definition, Some(b"ai_will_do")) if kind != 2 => Shape::Object(Node::Mtth),
             (Node::Mtth, _) => native::mean_time_to_happen(field),
             (Node::Definition, Some(b"mastery")) if kind != 0 => Shape::Object(Node::Mastery),
-            // Copy each raw track token into the reader's value slot.
             (Node::Definition, Some(b"track")) if kind == 1 && field.opens() => Shape::ValueList,
             (Node::Definition, Some(b"track")) if kind == 1 => Shape::One,
             (Node::Definition, Some(b"enable_tactic")) if kind != 2 => Shape::One,
             (Node::Reward | Node::Milestone, Some(b"enable_tactic")) => Shape::One,
-            // Dynamic-token lists retain the enclosing value slot.
             (Node::Definition, Some(b"xor")) if kind == 1 => Shape::RawList,
             (Node::Definition, Some(b"rewards")) if kind == 1 => Shape::Object(Node::Rewards),
             (Node::Rewards, _) => Shape::Object(Node::Reward),
-            // Reward and milestone have one scalar each.
             (Node::Reward, Some(b"mastery")) => Shape::One,
             (Node::Definition, Some(b"milestones")) if kind == 0 => {
                 Shape::ObjectList(Node::Milestone)
             }
             (Node::Milestone, Some(b"required_progress")) => Shape::One,
-            // Entries use statement reads rather than a raw token list.
             (Node::Definition, Some(b"tracks")) if kind == 0 => Shape::Statements(Node::TrackNames),
             (Node::TrackNames, _) if field.fresh || field.opens() => Shape::Skip,
             (Node::TrackNames, _) => Shape::One,
             (Node::Mastery, Some(b"multiplier")) => Shape::One,
-            // Each entry updates the current value slot.
             (Node::Mastery, Some(b"categories" | b"equipment" | b"sub_units")) => Shape::ValueList,
             (Node::Definition, Some(b"effect")) if kind != 2 => Shape::Object(Node::Effect),
             (Node::Reward | Node::Milestone, Some(b"effect")) => Shape::Object(Node::Effect),
@@ -193,8 +185,6 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
         _ => &mut database.tracks,
     };
     for item in &read.items {
-        // Repeated tokens reuse their objects. Omitted fields retain previous
-        // values; constructor names are empty.
         let name = destination
             .entry(Token::c_str(item.key.as_deref().unwrap_or_default()))
             .or_default();
@@ -238,9 +228,6 @@ pub(super) fn read(
     names: &KeyNames,
     database: &mut Database,
 ) -> io::Result<()> {
-    // Load tracks before grand and sub-doctrines so track lookup sees the
-    // completed registry. Tracks and grand doctrines use direct files;
-    // sub-doctrines load immediate subdirectories before root files.
     for (directory, kind) in [
         ("common/doctrines/tracks", 2),
         ("common/doctrines/grand_doctrines", 0),
@@ -250,7 +237,6 @@ pub(super) fn read(
         }
     }
     let root = "common/doctrines/subdoctrines";
-    // Archive subdirectory names need not be UTF-8.
     let children: BTreeSet<Vec<u8>> = layers
         .descriptor_paths(root, &[".txt"])?
         .into_iter()
@@ -391,7 +377,7 @@ mod tests {
             [token(b"a"), token(b"a"), token(b"b"), token(b"a")]
         );
         assert_eq!(grand.tactics, [b"Exact".to_vec(), b"Late".to_vec()]);
-        assert_eq!(grand.available.len(), 1); // Visible is not the source gate.
+        assert_eq!(grand.available.len(), 1);
         assert_eq!(grand.milestones.len(), 4);
         assert_eq!(grand.milestones[0], [b"Exact".to_vec(), b"Exact".to_vec()]);
         let sub = &sources.sub[&token(b"s")];

@@ -1,10 +1,8 @@
-//! Shared strategic-action reader for glyphs and ETA rail inputs.
 
 use super::*;
 
 pub use game_model::strategic_action::{StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs};
 
-/// Action-code selection reaches this reader only for class zero.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     memory: &impl Memory,
@@ -69,8 +67,6 @@ pub(super) fn capture(
     }
 }
 
-/// Read country, roster state, then friendly roster state. Closures preserve
-/// the caller's acquired roots and skipped reads.
 #[allow(clippy::too_many_arguments)]
 pub fn read_inputs(
     memory: &impl Memory,

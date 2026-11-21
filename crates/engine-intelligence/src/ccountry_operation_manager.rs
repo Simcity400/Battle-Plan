@@ -1,24 +1,12 @@
-//! Country-owned operation manager. Its vtable is unavailable; the root walk
-//! authenticates the owner backlink and each operation instance instead.
-//! Daily completion can delete an AI-owned finished instance in the same call.
-//! Other owners retain it until deletion, invalidation or target loss. No minimum
-//! wall-clock or game-hour lifetime follows.
-//!
-//! Daily or hourly sampling cannot see every completion. This walker adds no
-//! country gate; operation_outcome_sites observes successful completion before
-//! returning to the manager. Event rows are authoritative; these reads date state.
 
 use crate::{
     Memory, ccharacter::Literal, ccountry, coperation_instance, cpdx_array::Array,
     csubject_relation::Name, operation_assigned_operative, read, walk::Outcome,
 };
 
-/// Owning country pointer.
 pub const OWNER_COUNTRY: usize = 0x08;
-/// Operation-instance pointer-array data.
 #[cfg(test)]
 pub const OPERATION_DATA: usize = 0x10;
-/// Operation count, i32.
 #[cfg(test)]
 pub const OPERATION_COUNT: usize = 0x1c;
 
@@ -27,11 +15,8 @@ pub struct Walk {
     pub outcome: Outcome,
     pub assignments: Outcome,
     pub bytes_len: usize,
-    /// All validated native description lengths, including omitted rows.
     pub required_bytes: usize,
     pub parts_len: usize,
-    /// Every operation's parts ([`coperation_instance::Part`]), including
-    /// omitted rows.
     pub required_parts: usize,
 }
 
@@ -43,8 +28,6 @@ pub struct Demand {
     pub parts: usize,
 }
 
-/// Sizes from the same authenticated occurrence walk without copying payloads.
-/// This is an off-thread capacity estimate; acquisition validates fresh values.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -70,12 +53,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Reads operation scalars, retained description bytes, parts (selected
-/// phases, requirements and the equipment pool) and assigned slots in one
-/// country pass. Description and part shortages omit whole primary rows;
-/// every omitted row's parts are still read and authenticated. Assignment
-/// storage and payload failures remain independently reported. Storage is
-/// supplied by the caller; no game calls, retries or allocation occur.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -309,7 +286,6 @@ mod tests {
     const ID: u64 = 0xfedc_ba98_7654_3210;
     const VARIANT_HANDLE: u64 = (77 << 32) | cequipment_variant::REFERENCE_TYPE as u64;
 
-    /// A part arena larger than any fixture's demand.
     fn parts() -> Vec<Part> {
         vec![Part::default(); 1 << 14]
     }
@@ -433,7 +409,6 @@ mod tests {
             (BASE + coperation::VTABLE_RVA.0) as u64,
         );
         u32_at(&mut bytes, DEFINITION + coperation::TOKEN_ID, 0xfabc_1234);
-        // The native timing object is deliberately not a string header.
         bytes[DEFINITION + coperation::PREPARATION_TIME..DEFINITION + 0x48].fill(0xaa);
         bytes
     }
@@ -808,8 +783,6 @@ mod tests {
         );
     }
 
-    /// The fixture with a civilian-factory and an equipment requirement, and
-    /// a pool holding two variant entries and one archetype total.
     fn prepared() -> Vec<u8> {
         let mut bytes = fixture();
         let type_vtable = (BASE + cequipment_type::VTABLE_RVA.0) as u64;
@@ -1006,7 +979,6 @@ mod tests {
             &|bytes| u64_at(bytes, VARIANT + cequipment_variant::DEFINITION, 0),
             "operation equipment variant definition unreadable or null",
         );
-        // A null equipment-type placeholder shares the type layout.
         let mut bytes = prepared();
         u64_at(
             &mut bytes,

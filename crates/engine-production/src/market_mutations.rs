@@ -1,4 +1,3 @@
-//! Dedicated market and lend-lease writers. No shared equipment primitive is patched.
 use engine_sites::Rva;
 #[derive(Clone, Copy, Debug)]
 pub struct Site {
@@ -9,8 +8,6 @@ pub struct Site {
 pub const FUEL_SENT_SITE: usize = 4;
 pub const FUEL_LOST_SITE: usize = 29;
 pub const CONTRACT_REMOVAL_SITE: usize = 30;
-/// Unregistration moves the former ID into the type word and puts this marker
-/// in the ID word. Retired holders can remain in the deferred cleanup vector.
 pub const RETIRED_REFERENCE_ID: u32 = 0xfffe;
 pub const SITES: [Site; 31] = [
     Site {

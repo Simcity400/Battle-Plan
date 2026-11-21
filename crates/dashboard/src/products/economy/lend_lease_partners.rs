@@ -1,8 +1,3 @@
-//! One country's lend-lease partners over the hours asked, in one measure: each partner's cumulative
-//! histories (`WarLendLeaseHistories`, keyed by raw country above raw partner) summed per partner slot over
-//! every raw id of the holder's slot, and the holder's totals over its partners, as runs. A
-//! partner is shown from its first row on; once its row leaves it is held at zero, as the game
-//! drops the history. Hours the histories were not read, or the tag had no holder, are not known.
 
 use dashboard_base::products::validate_country;
 use dashboard_base::products::Country;
@@ -25,7 +20,6 @@ use ts_rs::TS;
 
 pub struct LendLeasePartners;
 
-/// Which of the game's two lend-lease measures a reply reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +29,6 @@ pub enum LendLeaseMeasure {
 }
 
 impl LendLeaseMeasure {
-    /// Its two histories in reply order: sent, received.
     fn columns(self) -> [&'static str; 2] {
         match self {
             Self::Industry => ["industry_sent", "industry_received"],
@@ -51,7 +44,7 @@ pub struct LendLeasePartnersParams {
     pub branch_id: String,
     pub holder: Country,
     pub measure: LendLeaseMeasure,
-    /// The hours read; the whole timeline when absent.
+    #[doc = " The hours read; the whole timeline when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub from: Option<i32>,
@@ -60,7 +53,6 @@ pub struct LendLeasePartnersParams {
     pub to: Option<i32>,
 }
 
-/// A partner slot's tag over consecutive hours; none where no tag holds it then.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -70,8 +62,6 @@ pub struct LendLeaseTag {
     pub tag: Option<String>,
 }
 
-/// One partner's two histories of the measure (sent, received) as runs of exact fixed-point sums:
-/// first hour, last hour, value.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -90,9 +80,9 @@ pub struct LendLeasePartnersReply {
     pub scale: u32,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Hours the histories were read while the tag had a holder: outside them nothing is known.
+    #[doc = " Hours the histories were read while the tag had a holder: outside them nothing is known."]
     pub known: Vec<HourSpan>,
-    /// The holder's own two totals of the measure over its partners, from its first partner on.
+    #[doc = " The holder's own two totals of the measure over its partners, from its first partner on."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, string]>>"))]
     pub totals: Vec<Vec<(i32, i32, String)>>,
     pub partners: Vec<LendLeasePartner>,
@@ -101,14 +91,9 @@ pub struct LendLeasePartnersReply {
 
 dashboard_base::reply_warnings!(LendLeasePartnersReply);
 
-/// Pieces of one measure: hours, and the value one history row adds over them.
 type Pieces = Vec<(i32, i32, i64)>;
 
-/// The step function `pieces` add up to over `domain` (sorted, not overlapping): zero where no
-/// piece covers an hour of it, nothing outside it.
 pub(crate) fn summed(pieces: &[(i32, i32, i64)], domain: &[(i32, i32)]) -> Vec<(i32, i32, i128)> {
-    // One sweep over the pieces' starts and ends: each adds its value from its first hour and takes
-    // it away after its last; the domain's edges are steps of no value.
     let mut steps: Vec<(i64, i128)> = Vec::with_capacity(2 * (pieces.len() + domain.len()));
     for &(a, b, value) in pieces {
         steps.push((i64::from(a), i128::from(value)));
@@ -143,12 +128,10 @@ pub(crate) fn summed(pieces: &[(i32, i32, i64)], domain: &[(i32, i32)]) -> Vec<(
     out
 }
 
-/// `spans` (sorted, not overlapping) from `from` on.
 fn from_on(spans: &[(i32, i32)], from: i32) -> Vec<(i32, i32)> {
     spans.iter().filter(|&&(_, b)| b >= from).map(|&(a, b)| (a.max(from), b)).collect()
 }
 
-/// The hours of `a` also in `b`, sorted.
 fn both(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     for &(first, last) in a {
@@ -167,7 +150,6 @@ fn texts(runs: Vec<(i32, i32, i128)>) -> Vec<(i32, i32, String)> {
     runs.into_iter().map(|(a, b, value)| (a, b, value.to_string())).collect()
 }
 
-/// Per partner slot: each measure's pieces, the first hour it has a row, and none else.
 type Gathered = BTreeMap<u32, ([Pieces; 2], i32)>;
 
 impl Product for LendLeasePartners {
@@ -211,7 +193,6 @@ impl Product for LendLeasePartners {
         for stretch in query.timeline.within(from, to) {
             crate::metadata::check_cancel(cancelled)?;
             let run = stretch.run;
-            // The histories carry their rows between samples: an hour is known where the table was available.
             let read: Vec<(i32, i32)> = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::WarLendLeaseHistories, stretch.first, stretch.last))?
                 .into_iter()
                 .filter(|held| replay::columnar_frames::available(held.status))
@@ -225,7 +206,6 @@ impl Product for LendLeasePartners {
                     continue;
                 }
                 known.extend(&held);
-                // Every raw id linked to the holder's slot while it holds, with those hours.
                 let mut ids: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
                 for (&raw, runs) in &links.slots {
                     for &(a, b, linked) in runs {

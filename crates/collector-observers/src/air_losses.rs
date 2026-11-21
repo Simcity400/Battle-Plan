@@ -1,4 +1,3 @@
-//! Aircraft-loss writer context, outside native execution and Rust unwind frames.
 use crate::{
     event_ledger::{Event, EventLedger},
     hook::Hook,
@@ -41,11 +40,7 @@ static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
 #[cfg(any(test, feature = "test-support"))]
 static TAPPED_TAGS: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static WINGS: AtomicUsize = AtomicUsize::new(0);
-/// Calls [`air_loss_dispatch`] passed straight to the native writer: those
-/// the writer makes no write for, with nothing observed or counted in Rust.
 static FAST_ZERO_WRITES: AtomicU64 = AtomicU64::new(0);
-/// Calls whose gathered operands were withheld ([`native::gather`]), so the
-/// serial reads ran once: a fault, a refusal, or a history the call creates.
 static SERIAL_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(any(test, feature = "test-support"))]
 static FORCE_SERIAL: AtomicBool = AtomicBool::new(false);
@@ -162,8 +157,6 @@ struct CallContext {
     tags: [usize; 2],
     observation: Option<Observation>,
 }
-// Original arguments/returns retain their reviewed offsets. Context starts A0;
-// RSI/RDI are copied before Rust, never modified. .seh_stackalloc covers it all.
 const CONTEXT_OFFSET: usize = 0xa0;
 const FRAME_BYTES: usize =
     CONTEXT_OFFSET + std::mem::size_of::<CallContext>().div_ceil(16) * 16 + 8;
@@ -196,15 +189,6 @@ core::arch::global_asm!(
     arg5 = const FRAME_BYTES + 0x28, arg6 = const FRAME_BYTES + 0x30,
     arg7 = const FRAME_BYTES + 0x38, pre = sym pre, post = sym post,
 );
-// The hooked CALLs' target: a leaf that changes no register the writer reads
-// and no stack slot, so it needs no unwind metadata. Air loss bookkeeping
-// Writes nothing when its region  (fifth argument) is null, or for a credited
-// Loss  (fourth argument's low byte 1) of cause 3 (seventh). Both gates skip
-// the regional block and history write, through the epilogue. `pre` records
-// nothing for exactly those calls
-// Either  (a zero write), so they go straight to the writer: it returns to
-// the native caller, and no collector frame is on the stack while it runs.
-// Every other call enters `air_loss_entry` with the same registers and stack.
 core::arch::global_asm!(
     ".text", ".globl air_loss_dispatch", "air_loss_dispatch:",
     "cmp qword ptr [rsp + 0x28], 0", "je 2f",
@@ -259,9 +243,6 @@ unsafe extern "system" fn pre(
                 if crate::world_lifetime::invalidating() {
                     return Err("air loss native world awaits hourly boundary");
                 }
-                // The same operands in six gathered copies and the country
-                // resolution; withheld, the serial reads below run once and
-                // refuse exactly where they always did.
                 let gathered = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                     .filter(|_| gather_admitted())
                     .and_then(|singleton| {
@@ -407,13 +388,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// Only the two supported loss CALLs are patched. Their native
-    /// continuation frames and unwind metadata remain untouched.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " Only the two supported loss CALLs are patched. Their native"]
+    #[doc = " continuation frames and unwind metadata remain untouched."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let install = || -> Result<Vec<Hook>, &'static str> {
@@ -459,10 +440,6 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "air loss hook state change failed")?
         {

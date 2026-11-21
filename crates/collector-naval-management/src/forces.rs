@@ -1,5 +1,3 @@
-//! Object-specific holds for core naval census operands. This pass never enumerates objects:
-//! the existing census supplies them once, and native writer marks supply later changes.
 use crate::{Snapshot, changes};
 use engine_native::{Memory, ccountry, naval_management as native, read};
 use engine_sites::Rva;
@@ -54,7 +52,6 @@ struct Store {
     composition_lengths: HashMap<(u64, u8), usize>,
     ships: HashMap<u64, NavalRefitShipRow>,
     lines: HashMap<u64, NavalRefitProgressRow>,
-    // Raw-link users survive line retirement; a zero pointer means no live receiver.
     line_receivers: HashMap<u64, (usize, usize)>,
     composition_scratch: Vec<native::CompositionEntry>,
     children: HashMap<u128, NavalRepairChildRow>,
@@ -68,7 +65,6 @@ struct Store {
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::default()));
 static RETURNED: Condvar = Condvar::new();
 
-/// Owned publication only: no reader or native-memory capability crosses the cut.
 pub struct Owned {
     store: Option<Store>,
     complete: bool,
@@ -84,7 +80,6 @@ impl Drop for Owned {
     fn drop(&mut self) {
         let mut held = self.store.take().unwrap();
         if !self.complete {
-            // A lost or unwound publication must reseed before it carries again.
             held.epoch = None;
         }
         let mut store = STORE
@@ -152,8 +147,6 @@ pub struct Session<'a, M: Memory> {
     navies: Option<Result<engine_native::cpdx_array::Array, &'static str>>,
 }
 impl<'a, M: Memory> Session<'a, M> {
-    /// Worker only, before the selecting core census. No fallback scan when a writer domain
-    /// cannot prove carry: that hour's tables stay refused by name.
     pub fn begin(memory: &'a M, base: usize, state: usize) -> Self {
         Self::begin_inner(memory, base, state, None)
     }
@@ -206,12 +199,10 @@ impl<'a, M: Memory> Session<'a, M> {
                 composition_scratch: scratch,
                 ..Store::default()
             };
-            // These marks preceded the reset and select no held observation in this epoch.
             dirty.clear();
         }
         store.dirty = dirty;
         if !observed {
-            // A refused/short take cannot certify marks it may already have consumed.
             store.epoch = None;
         }
         let mut session = Self {
@@ -223,7 +214,6 @@ impl<'a, M: Memory> Session<'a, M> {
             navies: None,
         };
         if observed {
-            // Lifetime marks take precedence over every value mark from this interval.
             for index in 0..session.store.dirty.len() {
                 let pointer = session.store.dirty[index];
                 if pointer & 1 != 0 {
@@ -267,7 +257,6 @@ impl<'a, M: Memory> Session<'a, M> {
         true
     }
 
-    /// The existing core census authenticated this selecting object before calling us.
     pub fn visit(&mut self, visit: native::CensusVisit) {
         if !self.observed {
             return;
@@ -318,8 +307,6 @@ impl<'a, M: Memory> Session<'a, M> {
                     Err(reason) => {
                         changes::read_refused(0);
                         self.store.failures[0] = Some(reason);
-                        // A failed selecting root is unavailable until a fresh epoch; do not
-                        // turn a refusal into an hourly retry of this country's fields.
                         self.retain(
                             country.pointer,
                             Entry::Country {
@@ -531,8 +518,6 @@ impl<'a, M: Memory> Session<'a, M> {
                     handle,
                     authenticated,
                 )?;
-                // Hold source identity independently of destination lifetime. Native
-                // resolution below only selects progress demand, never the recorded link.
                 let line = native::ship_refit_line(self.memory, self.base, pointer)?;
                 if line == 0 {
                     if let Some(old) = self.store.ships.remove(&handle) {
@@ -735,8 +720,6 @@ impl<'a, M: Memory> Session<'a, M> {
         self.store.publish()
     }
 
-    /// Receiver registration, admission and parent verdict are already final.
-    /// The next acquisition waits for this owned store, not for native writers.
     pub fn finish_owned(
         mut self,
         parent: engine_native::cfleet::Capture,
@@ -983,7 +966,6 @@ mod tests {
         let initial = initial.finish(complete());
         let initial_tasks = initial.tables[2].as_ref().unwrap();
 
-        // Fleet transfer removes the repair-parent relationship, but keeps rejoin.
         memory.put(
             DETACHMENT + engine_native::ctask_force::FLEET,
             &2_u64.to_le_bytes(),
@@ -1004,7 +986,6 @@ mod tests {
         ));
         assert_eq!(transferred.tables[6].as_ref().unwrap().len(), 0);
 
-        // Record another hour after disbanding only the original destination.
         memory
             .bytes
             .retain(|address, _| *address < DESTINATION || *address >= DETACHMENT);
@@ -1055,7 +1036,6 @@ mod tests {
             for (pointer, id) in [(0x10000, 1), (0x20000, 2)] {
                 memory.ship(pointer, id, line);
             }
-            // The selecting census supplies both already authenticated ships.
             let mut initial = Session::begin(&memory, 0, 0);
             for (pointer, id) in [(0x10000, 1), (0x20000, 2)] {
                 initial.ship(
@@ -1070,8 +1050,6 @@ mod tests {
             assert_eq!(initial.tables[4].as_ref().unwrap().len(), 2);
             assert_eq!(initial.tables[5].as_ref().unwrap().len(), 1);
 
-            // Cancellation clears the native source at an unobserved store. Hourly
-            // pruning can instead leave it untouched. Both retire only the work order.
             if cancel_clears_ship {
                 memory.put(0x10000 + native::SHIP_REFIT_LINE, &0_u64.to_le_bytes());
             }
@@ -1097,7 +1075,6 @@ mod tests {
             ));
             assert_eq!(memory.reads.get(), 0);
 
-            // An initially unresolved link is still captured and counted as raw demand.
             memory.ship(0x50000, 3, line);
             let mut admitted = Session::begin(&memory, 0, 0);
             admitted.ship(
@@ -1132,7 +1109,6 @@ mod tests {
         let line =
             u64::from(engine_native::cship_refit_production_line::REFERENCE_TYPE) | (7_u64 << 32);
         memory.ship(0x10000, 1, line);
-        // The source is readable; the work-order registry root is not.
         let mut session = Session::begin(&memory, 0, 0);
         session.ship(
             0x10000,
@@ -1209,7 +1185,6 @@ mod tests {
         assert_eq!(first.tables[1].as_ref().unwrap().len(), 5_000);
         memory.reads.set(0);
         let mut quiet = Session::begin(&memory, 0, 0);
-        // Held country credentials prove that 5,000 quiet country visits have no native demand.
         for index in 0..5_000 {
             let country = ccountry::Country {
                 pointer: 0x2000000 + index * 0x10000,
@@ -1268,7 +1243,6 @@ mod tests {
             quiet.tables[1].as_ref().unwrap(),
             changed.tables[1].as_ref().unwrap()
         ));
-        // Both bits occur, but the object no longer exists. No guarded read is attempted.
         memory.bytes.retain(|address, _| *address >= 0x10200);
         memory.reads.set(0);
         changes::fixture::mark(0x10000, false, false);
@@ -1292,7 +1266,6 @@ mod tests {
         memory.reads.set(0);
         let _ = Session::begin(&memory, 0, 0).finish(complete());
         assert_eq!(memory.reads.get(), 0);
-        // Fresh epoch drops the refusal and demands a fresh observation, including at reused addresses.
         changes::boundary(true);
         memory.fleet(0x10000, 90_000, 9);
         let mut reset = Session::begin(&memory, 0, 0);

@@ -1,7 +1,6 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-// Readers pin before loading; only publishers destroy retired snapshots, after all pins leave.
 pub(crate) struct Published<T> {
     current: AtomicPtr<T>,
     readers: AtomicUsize,
@@ -99,7 +98,6 @@ impl<T> Drop for Published<T> {
     }
 }
 
-// A successful claim owns the cell until its release; the frame makes one attempt and never waits.
 pub(crate) struct ErrorMailbox {
     state: std::sync::atomic::AtomicU8,
     error: std::cell::UnsafeCell<Option<std::io::Error>>,

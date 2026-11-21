@@ -33,7 +33,6 @@ impl Province {
 pub struct Fold {
     source: Option<ViewIdentity>,
     value: Option<Arc<SnowMud>>,
-    /// Whether the installed hour's table was whole, which observes the provinces it omits.
     complete: bool,
     provinces: map_display_data::Paged<Option<Province>>,
     present: map_display_data::copy_index::CopyIndex<u32, ()>,
@@ -150,7 +149,6 @@ impl Fold {
             return Ok(value);
         }
         let previous = self.value.as_ref().unwrap();
-        // A table that turns whole or partial changes which omitted provinces are observed.
         let complete_changed = complete != self.complete;
         if !complete_changed && changes.is_some_and(|changes| !changes.touches(fields)) {
             self.source = Some(view.identity());
@@ -248,7 +246,6 @@ impl Fold {
                     dirty.insert(cell);
                 }
             }
-            // Under an unchanged completeness only a partial table's rows change what is known.
             if !complete && !complete_changed && old.is_some() != value.is_some() {
                 for &cell in cells.province_cells.get(&id).into_iter().flatten() {
                     dirty_known.insert(cell);
@@ -439,7 +436,6 @@ mod tests {
     #[test]
     fn unknown_cells_stay_unknown_until_a_later_hour_observes_them() {
         use replay_data::rows::TableRows;
-        // Twelve pixels square: provinces 10, 20 and 30 fill the grid's rows south to north.
         let ids = (0..144u32).map(|at| [30, 20, 10][(at / 48) as usize]).collect();
         let map = installed_content_core::map::MapData {
             width: 12,
@@ -504,16 +500,13 @@ mod tests {
         let mut fold = Fold::default();
         for (hour, (view, expected)) in [
             (whole(), Vec::new()),
-            // Province 20's interior cells; the boundary keeps its retained edges.
             (partial(), vec![3, 4]),
             (
                 TableView::Unavailable {
                     reason: "synthetic read failure".into(),
                 },
-                // The boundary draws bare and unhatched even then.
                 vec![0, 1, 3, 4],
             ),
-            // A later partial hour observes what it holds, and nothing else.
             (partial(), vec![3, 4]),
             (whole(), Vec::new()),
         ]

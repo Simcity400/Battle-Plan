@@ -1,6 +1,3 @@
-// Font choices are family names. The default is the system UI font, as in T3 Code
-// (Segoe UI on Windows); every named preset is bundled and any installed font can be named. A
-// chosen font always sits in front of the default stack so missing characters render.
 export const BUNDLED_FONT = 'Inter Variable';
 const FALLBACK_STACK = `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`;
 export const MONOSPACE_STACK = `'SF Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace`;
@@ -17,7 +14,6 @@ export const FONT_PRESETS: readonly FontPreset[] = [
 ];
 const bundledFamilies = new Set(FONT_PRESETS.map(preset => preset.family));
 
-/** The CSS stack for a family name ('' → system default). */
 function familyNames(family: string): string[] {
   return family.replace(/["'`;{}<>\\]/g, '').split(',').map(name => name.trim()).filter(Boolean);
 }
@@ -29,7 +25,6 @@ export function fontStack(family: string, fallback = FALLBACK_STACK): string {
   return list ? `${list}, ${fallback}` : fallback;
 }
 
-/** True when the browser renders `family` with its own glyphs rather than a fallback. */
 export function fontAvailable(family: string): boolean {
   const names = familyNames(family);
   if (!names.length || names.some(name => bundledFamilies.has(name) || /^(serif|sans-serif|monospace|system-ui|ui-monospace)$/i.test(name))) return true;
@@ -44,13 +39,11 @@ export function fontAvailable(family: string): boolean {
   });
 }
 
-/** Empty restores the default; custom names must resolve before being committed. */
 export function canUseFontFamily(family: string, installed: readonly string[] | null = null): boolean {
   const name = family.trim();
   return !name || familyNames(name).some(name => installed?.includes(name)) || fontAvailable(name);
 }
 
-/** Fixed-width roles accept matching glyph advances at regular, bold, and italic weights. */
 export function isMonospaceFamily(family: string): boolean {
   const names = familyNames(family);
   if (!names.length) return true;
@@ -66,7 +59,6 @@ export function isMonospaceFamily(family: string): boolean {
   });
 }
 
-/** Concrete family used by the default stack, when the browser can name it. */
 export function defaultFontLabel(monospace = false): string {
   const stack = monospace ? MONOSPACE_STACK : FALLBACK_STACK;
   for (const name of familyNames(stack)) {
@@ -79,7 +71,6 @@ export function defaultFontLabel(monospace = false): string {
 interface LocalFontData { family: string }
 declare global { interface Window { queryLocalFonts?: () => Promise<LocalFontData[]> } }
 
-/** Installed families where the Local Font Access API is permitted; otherwise null. */
 export async function installedFonts(): Promise<string[] | null> {
   if (!window.queryLocalFonts) return null;
   try {

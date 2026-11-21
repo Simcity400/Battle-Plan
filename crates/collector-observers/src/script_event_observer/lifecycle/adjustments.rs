@@ -1,4 +1,3 @@
-//! Sparse scalar duration writers reuse the native selected instance and owner.
 use super::*;
 
 fn values(
@@ -23,14 +22,11 @@ fn values(
     ))
 }
 fn duration_script(days: i32) -> EventFeedScript {
-    // These writers store only duration, never a lifecycle result.
     EventFeedScript {
         days: Some(days),
         ..Default::default()
     }
 }
-/// Publish an instance's stored duration, after the native writer that
-/// stored it returned. Nothing is predicted.
 fn emit(instance: usize, tag: usize, cooldown: bool) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let stored = values(
@@ -83,9 +79,6 @@ fn emit(instance: usize, tag: usize, cooldown: bool) {
         }))
     });
 }
-/// A duration extension's scalar add returned, under its CALL detour's
-/// writer flight: publish the stored days of the timed mission, or of the
-/// removal timer when `cooldown`. `scope` is the native caller's scope.
 pub(crate) fn extended(instance: usize, scope: usize, cooldown: bool) {
     match scope.checked_add(engine_events::cevent_scope::COUNTRY_TAG) {
         Some(tag) => emit(instance, tag, cooldown),
@@ -98,8 +91,6 @@ pub(super) unsafe extern "system-unwind" fn display_duration(instance: usize, ta
     type Original = unsafe extern "system-unwind" fn(usize, usize) -> usize;
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[3].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(instance, tag) });
-    // The helper has completed every authored/default branch. Read its result,
-    // including the default branch after effects changed its lifecycle.
     emit(instance, tag, false);
     flight.returned();
     result

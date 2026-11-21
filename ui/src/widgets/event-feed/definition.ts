@@ -4,8 +4,6 @@ import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 import type { EventFeedKind } from '../../generated/dashboard';
 
-/** What a row shows when the game has no picture for it: most kinds never do (wars, peace, factions);
- * laws, advisors, focuses, projects, stockpiles and strikes fall back to these only when their artwork is missing. */
 export const EVENT_ICONS: Record<EventFeedKind, IconName> = {
   warStarted: 'swords', warDeclared: 'swords', warJoined: 'swords', civilWarWarTransferred: 'flag-torn',
   annexed: 'flag-plus', warEnded: 'olive-branch', released: 'flag-plus', stateTransferred: 'map',

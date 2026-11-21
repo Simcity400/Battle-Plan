@@ -1,8 +1,3 @@
-//! Construction spending: where one country's civilian-factory output went over a branch, by new
-//! levels or repairs, building type and state (a railway: from one state to another). Each leaf's
-//! running total is read from `ConstructionSpend` for every identity the tag's holder runs name,
-//! counted only while the tag holds it ([`spent_by_leaf`]); the lines worked on each leaf, and the
-//! stretches whose output a total lacks, come from each run's lines ([`super::RunLines`]).
 
 use dashboard_base::products::{Country, validate_country};
 use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Line, ProjectKind, SpendingGap, gap_of, missing};
@@ -32,17 +27,15 @@ pub struct ConstructionSpendingParams {
     pub country: Country,
 }
 
-/// A leaf's running total from `known_at` on.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpentStep {
     pub known_at: i32,
-    /// Fixed5; null where the total is not recorded (past what the recording holds).
+    #[doc = " Fixed5; null where the total is not recorded (past what the recording holds)."]
     pub total_raw: Option<String>,
 }
 
-/// A line's output the totals lack, from `known_at` until `until` (null: to the branch's end).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -53,8 +46,6 @@ pub struct SpendingUnknown {
     pub until: Option<i32>,
 }
 
-/// A line worked on a leaf, from its first read until the hour after its row ended (null: still
-/// in the branch at its end).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -70,14 +61,14 @@ pub struct LeafProject {
 pub struct SpendingLeaf {
     pub repair: bool,
     pub kind: ProjectKind,
-    /// The building type's lexer id ([`ConstructionType::id`]).
+    #[doc = " The building type's lexer id ([`ConstructionType::id`])."]
     pub building: Option<u32>,
     pub state: Option<u32>,
     pub to_state: Option<u32>,
-    /// In hour order.
+    #[doc = " In hour order."]
     pub spent: Vec<SpentStep>,
     pub unknown: Vec<SpendingUnknown>,
-    /// By first read.
+    #[doc = " By first read."]
     pub projects: Vec<LeafProject>,
 }
 
@@ -87,35 +78,31 @@ pub struct SpendingLeaf {
 pub struct ConstructionSpendingReply {
     pub branch_id: String,
     pub tag: String,
-    /// Units per factory output point of a total.
+    #[doc = " Units per factory output point of a total."]
     pub cost_scale: u32,
-    /// Either construction queue was read in the branch.
+    #[doc = " Either construction queue was read in the branch."]
     pub recorded: bool,
     pub types: Vec<ConstructionType>,
     pub repair_icon: Option<String>,
     pub states: Vec<ConstructionStateName>,
-    /// The tag's lines whose output before observation began is not counted.
+    #[doc = " The tag's lines whose output before observation began is not counted."]
     pub before_first_read: u32,
     pub leaves: Vec<SpendingLeaf>,
-    /// Output no country can be given: lines named by output alone with no recorded owner.
+    #[doc = " Output no country can be given: lines named by output alone with no recorded owner."]
     pub unattributed: Vec<SpendingUnknown>,
-    /// Hours of the branch the recording does not hold: output then is not counted.
+    #[doc = " Hours of the branch the recording does not hold: output then is not counted."]
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(ConstructionSpendingReply);
 
-/// A leaf: repair, railway, building type, state and to-state, as `ConstructionSpend` keys them
-/// ([`TagHolderRow::NONE`] where the line names none).
 pub(crate) type LeafKey = (bool, bool, u32, u32, u32);
 
 fn named(value: u32) -> Option<u32> {
     (value != TagHolderRow::NONE).then_some(value)
 }
 
-/// A leaf's key in a `ConstructionSpend` key: its low 32 bits are a building line's type or a
-/// railway's last state, as the railway bit says.
 pub(crate) fn leaf_of(key: u128) -> LeafKey {
     let railway = (key >> 64) & 1 == 1;
     let shared = key as u32;
@@ -123,19 +110,13 @@ pub(crate) fn leaf_of(key: u128) -> LeafKey {
     ((key >> 65) & 1 == 1, railway, building_type, (key >> 32) as u32, to_state)
 }
 
-/// Every `ConstructionSpend` key of identity (`slot`, `id`).
 pub(crate) fn identity_keys(slot: u32, id: u32) -> (u128, u128) {
     let low = key_field(slot) << 90 | key_field(id) << 66;
     (low, low | ((1u128 << 66) - 1))
 }
 
-/// A change of one identity's total in a leaf: from `hour`, the leaf's total moves by `by`; none
-/// when the total stops being recorded there.
 pub(crate) type Delta = (i32, Option<i128>);
 
-/// One identity's steps of a leaf's total over a holding from `from`: each change after the value
-/// holding at `from`'s hour before, which belongs to whoever held it before (none before a run's
-/// first hour).
 pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
@@ -164,7 +145,6 @@ pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
     out
 }
 
-/// Each leaf's running total from its deltas, in hour order: equal hours one step.
 pub(crate) fn totals(mut deltas: Vec<Delta>) -> Vec<SpentStep> {
     deltas.sort_by_key(|delta| delta.0);
     let mut out: Vec<SpentStep> = Vec::new();
@@ -183,10 +163,6 @@ pub(crate) fn totals(mut deltas: Vec<Delta>) -> Vec<SpentStep> {
     out
 }
 
-/// `tag`'s spending by leaf over `query`'s timeline: the one read of `ConstructionSpend`. For each
-/// identity the tag's holder runs name and each stretch it holds it, the identity's rows' totals
-/// from the hour before the holding (when the run holds it), so output before the holding is not
-/// the tag's.
 pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<LeafKey, Vec<SpentStep>>> {
     let recording = query.replay.recording();
     let total = dashboard_declare::field(TableId::ConstructionSpend, "total")?;
@@ -309,7 +285,6 @@ impl Product for ConstructionSpending {
     }
 }
 
-/// Leaf `key` of `leaves`, made empty when first named.
 fn leaf_mut(leaves: &mut BTreeMap<LeafKey, SpendingLeaf>, key: LeafKey) -> &mut SpendingLeaf {
     leaves.entry(key).or_insert_with(|| SpendingLeaf {
         repair: key.0,
@@ -323,8 +298,6 @@ fn leaf_mut(leaves: &mut BTreeMap<LeafKey, SpendingLeaf>, key: LeafKey) -> &mut 
     })
 }
 
-/// The leaves a line worked on: new levels, repairs, or both. A railway's leaf is keyed by its
-/// states alone, as its spending is ([`leaf_of`]); the leaf names its type from the line.
 pub(crate) fn leaf_keys(line: &Line) -> Vec<LeafKey> {
     let none = TagHolderRow::NONE;
     let place = (if line.railway { none } else { line.building.unwrap_or(none) }, line.state.unwrap_or(none), if line.railway { line.to_state.unwrap_or(none) } else { none });
@@ -338,9 +311,6 @@ pub(crate) fn leaf_keys(line: &Line) -> Vec<LeafKey> {
     out
 }
 
-/// The stretch of a line's output the totals lack, as its last row tells it: a final output
-/// missing from the read that settled it, any other unknown output over its whole life. A line the
-/// output table never listed lacks nothing.
 pub(crate) fn line_gap(line: &Line, until: Option<i32>) -> Option<SpendingUnknown> {
     let reason = gap_of(line.output_reason)?;
     if reason == SpendingGap::NotRecorded && !line.had_output {

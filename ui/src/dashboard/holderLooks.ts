@@ -11,15 +11,10 @@ import { useCountryFactsByKey } from './countryNamesAt.ts';
 import { STYLES } from './useCountriesAt.ts';
 import type { BoundTrack } from './model';
 
-/** A dated read as `useCountryFactsRead` returns it: absent while it is still going. */
 type Read<V> = V | null | typeof FAILED_FACT | undefined;
 
-/** One native country holder a widget draws: a key of its own, the tag it held, and an
- * hour it is known to have held that tag. Two holders of one tag are two keys. */
 export interface HolderAt { key: string; tag: string; hour: number }
 
-/** The reads `holders` need: each tag at its own holder's hour, each once. Every hour
- * wanted stays held, however many holders there are. */
 export function holderReads(holders: readonly HolderAt[]): { wanted: NameAt[]; maxHours: number } {
   const wanted = new Map<string, NameAt>();
   for (const holder of holders) {
@@ -31,20 +26,13 @@ export function holderReads(holders: readonly HolderAt[]): { wanted: NameAt[]; m
 }
 
 export interface HolderLooks {
-  /** The holder's recorded name, else the loading or unavailable wording. */
   name: (key: string) => string;
-  /** The holder's recorded map colour, else its palette colour, as the country charts colour. */
   nameFailure?: (key: string) => Failure | undefined;
   colour: (key: string) => string;
-  /** The holder's recorded map colour as sRGB bytes, or null when not known (yet). */
   color: (key: string) => CountryStyle['color'];
-  /** Changes as reads arrive, for a chart to redraw. */
   revision: string;
 }
 
-/** Names and colours of holders from their dated style reads. Each holder is read
- * exactly at its own hour, never sampled or held from another hour, so a tag a later
- * country takes never lends its name or colour to an earlier holder. */
 export function holderLooks(holders: readonly HolderAt[], styles: ReadonlyMap<string, Read<CountryStyle>>,
   tokens: Pick<ChartTokens, 'surface' | 'muted' | 'countryColours'>): HolderLooks {
   const reads = new Map(holders.map(holder => [holder.key, styles.get(nameKey(Math.floor(holder.hour), holder.tag))]));
@@ -65,12 +53,11 @@ export function holderLooks(holders: readonly HolderAt[], styles: ReadonlyMap<st
   };
 }
 
-/** `holderLooks` for the holders a widget draws, read from the recording. */
 export function useHolderLooks(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, holders: readonly HolderAt[], active: boolean,
   tokens: Pick<ChartTokens, 'surface' | 'muted' | 'countryColours'>): HolderLooks {
   const plan = useMemo(() => holderReads(holders), [holders]);
   const styles = useCountryFactsByKey(client, track, plan.wanted, active, STYLES, plan.maxHours);
   return useMemo(() => holderLooks(holders, active && track ? styles
     : new Map(plan.wanted.map(item => { const key = nameKey(item.hour, item.tag); return [key, styles.get(key) ?? null]; })), tokens),
-  [holders, styles, active, track, plan, tokens.surface, tokens.muted, tokens.countryColours]); // eslint-disable-line react-hooks/exhaustive-deps
+  [holders, styles, active, track, plan, tokens.surface, tokens.muted, tokens.countryColours]);
 }

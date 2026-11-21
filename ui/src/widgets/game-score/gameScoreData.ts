@@ -1,6 +1,3 @@
-/** The Game score widget's data: every country's six end-screen scores at an hour (`game-score`): the rows and why a
- * score is not recorded are the reply, each recorded score a live cell (row the tag, column the part) in score points;
- * the multipliers and the hints; a faction by the shared groups. */
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { TableGroup } from '../../charts/table/logic';
@@ -9,7 +6,6 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import type { CountryGroupReply, GameScoreCell, GameScoreReply as Generated, GameScoreRow } from '../../generated/dashboard';
 
-/** The reply holds no hour: a panel is pushed only when it differs, and its push (or the request) gives the hour. */
 export type GameScoreReply = Omit<Generated, 'hour'>;
 import { resolveCountries } from '../../dashboard/groups.ts';
 import type { ResolvedCountries } from '../../dashboard/groups.ts';
@@ -41,20 +37,14 @@ export function validateGameScore(value: unknown): GameScoreReply {
 }
 
 export const scorePart = (value: unknown): ScorePart => SCORE_PARTS.find(part => part === value) ?? 'total';
-/** A score in points as the end screen shows it: truncated to whole points (or `digits` places). */
 export const formatScore = (value: number, digits = 0) => (Math.trunc(value * 10 ** digits) / 10 ** digits).toLocaleString('en-US', { maximumFractionDigits: digits });
-/** A row's score as the live cells hold it now: undefined while it is not known. */
 export type ScoreOf = (tag: string, part: ScorePart) => number | undefined;
 
-/** The rows shown: every country, the chosen ones, a group's members at the hour, or the top `top` by `by` (a
- * country whose score is not known is not ranked). */
-/** The countries a choice names: all countries are the reply's rows, so choosing all names no tag and is no missing choice. */
 export function scoreCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number): ResolvedCountries {
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
   return selection.kind === 'all' ? { ...resolved, reason: null } : resolved;
 }
 
-/** `choice.hour`: the hour the rows are shown at, which a group's membership is read at. */
 export function scoreRows(reply: GameScoreReply, choice: { all: boolean; tags: readonly string[]; top: number | null; hour: number },
   member: ((tag: string, hour: number) => boolean) | null, by: ScorePart, score: ScoreOf): GameScoreRow[] {
   if (choice.top != null) {
@@ -67,7 +57,6 @@ export function scoreRows(reply: GameScoreReply, choice: { all: boolean; tags: r
   return reply.rows.filter(row => (member ? member(row.tag, choice.hour) : chosen.has(row.tag)));
 }
 
-/** The faction `tag` belonged to at `hour`, by the groups' recorded memberships. */
 export function factionGroup(groups: CountryGroupReply | undefined, tag: string, hour: number): TableGroup {
   if (!groups) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2 };
   const index = countryIdentityIndex(groups.countryIdentities);
@@ -83,8 +72,6 @@ export function factionGroup(groups: CountryGroupReply | undefined, tag: string,
 const missingRow = (label: string, missing: string | null | undefined, strong = false): TooltipRow =>
   ({ label, value: 'Not recorded', detail: missing ?? undefined, tone: 'muted', strong });
 
-/** One country's scores (each missing one with its reason, a recorded one not yet read as such), then the
- * multipliers the game read. */
 export function scoreTooltip(reply: GameScoreReply, row: GameScoreRow, name: string, date: string, faction: string, score: ScoreOf): TooltipContent {
   return { title: name, subtitle: date, rows: [
     { label: 'Faction', value: faction },
@@ -98,12 +85,9 @@ export function scoreTooltip(reply: GameScoreReply, row: GameScoreRow, name: str
   ] };
 }
 
-/** A column's hint: the end screen's own sort control in the recording's language where the content words it, else
- * ours. */
 export function scoreHint(reply: Pick<GameScoreReply, 'hints'> | undefined, column: ScorePart | 'country'): string | undefined {
   return reply?.hints[column] ?? (column === 'country' ? undefined : SCORE_HINTS[column]);
 }
 
-/** The parts Total score is split into on a race bar: army, navy and air, in proportion to their scores. */
 export const scoreParts = (): MeasureParts => ({ kind: 'measures', label: 'Score parts', decimals: 5, proportional: true,
   items: (['army', 'navy', 'air'] as const).map(part => ({ id: part, label: SCORE_LABELS[part], measure: { kind: 'country-game-scores', measure: part } })) });

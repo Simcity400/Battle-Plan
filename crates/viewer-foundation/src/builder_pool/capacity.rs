@@ -1,4 +1,3 @@
-//! Dequeue notifications for nonblocking producers; no job ownership or cancellation.
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -15,9 +14,6 @@ struct Signal {
     wake: Box<dyn Fn() + Send + Sync>,
 }
 
-/// Register before trying admission. `acknowledge` clears the coalesced wake
-/// before the next try; compare generation if admission reports Full.
-/// A notification already in flight may run after this listener is dropped.
 pub struct CapacityListener {
     capacity: Arc<Capacity>,
     signal: Arc<Signal>,
@@ -65,7 +61,6 @@ impl Capacity {
     }
 
     pub(super) fn dequeued(&self) {
-        // No registry lock, callback fanout, allocation or clock without subscribers.
         if self.listener_count.load(Ordering::Acquire) == 0 {
             return;
         }
@@ -77,10 +72,7 @@ impl Capacity {
             .iter()
             .filter_map(Weak::upgrade)
             .collect();
-        // Neither the receiver nor the listener registry is locked during callbacks.
         for listener in listeners {
-            // A bad diagnostic/notification callback must never lose the
-            // already accepted job that this worker is about to execute.
             if !listener.pending.swap(true, Ordering::AcqRel)
                 && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (listener.wake)()))
                     .is_err()

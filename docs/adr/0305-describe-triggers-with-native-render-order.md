@@ -1,0 +1,9 @@
+# Describe triggers with native render order
+
+Combat tactics describe their embedded conjunction with no inversion, indent zero and display mode one. The caller supplies the outer heading and indentation. A conjunction adds its own heading only when at least two loaded children make up a nested group. Description uses the shared trigger evaluator. Read a child's own text before checking. Empty own text skips the check prefix. Descendants run under their required mode, conditional branches render only the first passing branch, and a scripted trigger passes the operand's inversion to its template. An `OR` gets its own check. A custom tooltip supplies its own text, hiding descendants from display while retaining them for checking.
+
+An unknown operand or conditional can make a later temporary-variable read uncertain. Preserve later pure siblings and refuse dependent reads with the earlier reason. A conditional limit can execute a supported variable setter even when its own description is empty. A bare combat event has no country, and promoting it to a country clears combat membership while retaining its linked scopes.
+
+The tactic caller supplies the tactic database and native phase order because its loader already converted phase operands to IDs. Resolve trait names through unit traits first and use the GUI's local country for country localisation. Comparison wording uses strict greater normally and strict less under inversion, with equality using the other wording. Localise stored IDs and keys at each operation's required stage before expanding its scope. Refuse a native description by name when it cannot be reproduced.
+
+[Trigger description](../../crates/dashboard-text/src/triggers/description.rs) · [Description regression cases](../../crates/dashboard-text/src/triggers/description/tests.rs)

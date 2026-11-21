@@ -1,4 +1,3 @@
-//! CStrategicNavy cached regional operands, consumed by transport movement.
 use crate::{
     Memory, ccountry,
     cpdx_array::Array,
@@ -8,41 +7,19 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Strategic-navy primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_f950);
-/// Secondary vtable (`SECONDARY`).
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029e_f980);
-/// Secondary subobject displacement.
 pub const SECONDARY: usize = 8;
-/// Owner raw country reference resolved through country links.
 pub const OWNER: usize = 0x10;
-/// Regional mission ledger: one 0x18-byte array header per region, indexed
-/// by region ID. It appends caller-supplied lists, which can include fleet
-/// regions outside the mission's narrower accessible list.
 pub const REGION_MISSIONS: usize = 0x68;
 pub const REGION_MISSIONS_STRIDE: usize = 0x18;
-/// Strategic navy mission pointer array holding, once each, every mission filed in any region
-/// ledger ([`REGION_MISSIONS`]). Construction builds it empty (with its count). Registration,
-/// reached from mission refresh and the mission's registration virtual, appends a mission to its
-/// region's ledger and then to this set when absent. Unregistration, reached from refresh, mission
-/// destruction and teardown, removes it from every region ledger and then from this set. Reset,
-/// reached from dynamic reuse and game reset, zeroes every ledger count and this count together. An
-/// empty set therefore leaves every region ledger empty.
 pub const REGISTERED_MISSIONS: usize = 0x110;
-/// Strategic navy i64 array, constructed in place and indexed by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
-/// Regional convoy records, indexed by the strategic region's stored id: each region's
-/// delivery efficiency for this country's convoys (`REGIONAL_CONVOY_EFFICIENCY`, i64 fixed5),
-/// which a trade-route line compares with the regional bad-efficiency threshold. The daily
-/// update regains it, a convoy sinking lowers it, and growth, load, dynamic reuse and reset
-/// set it.
 pub const REGIONAL_CONVOYS: usize = 0x98;
 pub const REGIONAL_CONVOYS_STRIDE: usize = 0x30;
 pub const REGIONAL_CONVOY_EFFICIENCY: usize = 0x10;
-/// The efficiency the game takes for a region outside the records: full.
 pub const FULL_REGIONAL_CONVOY_EFFICIENCY: i64 = 100_000;
 
-/// The country's regional convoy records, after its navy's identity authenticates.
 pub fn regional_convoys(
     memory: &impl Memory,
     base: usize,
@@ -56,7 +33,6 @@ pub fn regional_convoys(
     })
 }
 
-/// One region's delivery efficiency from [`regional_convoys`]: full outside the records.
 pub fn regional_convoy_efficiency(
     memory: &impl Memory,
     records: Array,
@@ -71,8 +47,6 @@ pub fn regional_convoy_efficiency(
         .ok_or("navy regional convoy efficiency unreadable")
 }
 
-/// The number of missions `navy` has registered in any region ledger
-/// ([`REGISTERED_MISSIONS`]).
 pub fn registered_missions(memory: &impl Memory, navy: usize) -> Result<u32, &'static str> {
     navy.checked_add(REGISTERED_MISSIONS)
         .and_then(|at| Array::read(memory, at, 8))
@@ -80,8 +54,6 @@ pub fn registered_missions(memory: &impl Memory, navy: usize) -> Result<u32, &'s
         .ok_or("navy registered missions unreadable or invalid")
 }
 
-// A navy is its slot's country's: the game finds a country's navy by the
-// country's slot and never compares the navy's stored owner with it.
 fn with_identity<T>(
     memory: &impl Memory,
     base: usize,
@@ -103,7 +75,6 @@ fn with_identity<T>(
     consume()
 }
 
-/// The navy's identity, without reaching regional operands.
 pub fn authenticate(memory: &impl Memory, base: usize, navy: usize) -> Result<(), &'static str> {
     with_identity(memory, base, navy, || Ok(()))
 }
@@ -121,8 +92,6 @@ pub(crate) fn regional_operand(
     read::<i64>(memory, at).ok_or("navy regional operand unreadable")
 }
 
-/// Current authenticated array geometry; callers may share it only inside the
-/// same frozen acquisition, and must still read each requested region's value.
 pub(crate) fn regional_inputs(
     memory: &impl Memory,
     base: usize,
@@ -131,8 +100,6 @@ pub(crate) fn regional_inputs(
     with_identity(memory, base, navy, || regional_array(memory, navy))
 }
 
-/// Region-indexed array borrowed only after this navy's identity
-/// authenticates in the same frozen acquisition, without retry.
 pub fn regional_array(memory: &impl Memory, navy: usize) -> Result<Array, &'static str> {
     let root = navy
         .checked_add(REGIONAL_OPERANDS)
@@ -140,20 +107,12 @@ pub fn regional_array(memory: &impl Memory, navy: usize) -> Result<Array, &'stat
     Array::read(memory, root, 8).ok_or("navy regional array invalid")
 }
 
-/// Region-ID-indexed access modes: 0 allowed, 1 avoid, 2 block. UI and daily AI
-/// commands assign modes; dynamic-country reuse resets them and setup sizes
-/// the array. Writer coverage is incomplete. Serialization stores region/mode
-/// pairs as `per_region_access` and loading restores them.
 pub const ACCESS_MODES: usize = 0xb0;
 
-/// One nonzero region access mode of one country's strategic navy.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AccessRow {
-    /// Raw id of the country the navy belongs to.
     pub country: u32,
-    /// Strategic region id: the index into [`ACCESS_MODES`].
     pub region: u32,
-    /// The native mode byte.
     pub mode: u8,
 }
 
@@ -179,10 +138,8 @@ const NAVY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&NAVY_FIELDS, NAVY_BYTES).expect("valid navy access layout");
 const BATCH: usize = 64;
 const MODE_CHUNK: usize = 512;
-/// Mode-array spans (of at most [`MODE_CHUNK`] bytes) copied per guarded call.
 const MODE_SPANS: usize = 16;
 
-/// One pending span of a navy's mode array.
 #[derive(Clone, Copy, Default)]
 struct ModeSpan {
     address: usize,
@@ -191,15 +148,12 @@ struct ModeSpan {
     region: u32,
 }
 
-/// Mode spans of consecutive navies, copied together and emitted in order.
 struct ModeSpans {
     spans: [ModeSpan; MODE_SPANS],
     len: usize,
 }
 
 impl ModeSpans {
-    /// Copies every pending span in one guarded scattered copy, then emits
-    /// their nonzero modes in native order. A short copy fails the table.
     fn flush(
         &mut self,
         memory: &impl Memory,
@@ -232,7 +186,6 @@ impl ModeSpans {
         }
         let (mut rows, mut missing) = (*len, *unread);
         for (span, bytes) in spans[..pending].iter().zip(modes.chunks_exact(MODE_CHUNK)) {
-            // Most modes are zero: skip whole zero words before looking at bytes.
             for (word_index, word) in bytes[..span.len].chunks(8).enumerate() {
                 if word.iter().all(|&mode| mode == 0) {
                     continue;
@@ -265,7 +218,6 @@ pub fn count_access_modes(memory: &impl Memory, base: usize, game_state: usize) 
     access_modes_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Worker-owned storage grows from the original native headers.
 #[cfg(any(test, feature = "test-support"))]
 pub fn access_modes(
     memory: &impl Memory,
@@ -317,7 +269,6 @@ pub fn access_modes_buffer(
         };
         let (mut len, mut unread) = (0, 0_u32);
         let mut required_rows = 0_usize;
-        // Slot zero is the reserved sentinel country.
         let mut first = 1;
         while first < slots {
             let count = (slots - first).min(BATCH as u32) as usize;
@@ -359,7 +310,6 @@ pub fn access_modes_buffer(
                 };
                 let array = Array::from_header(record[16..32].try_into().unwrap(), 1)
                     .ok_or("navy access modes invalid")?;
-                // Region-access lookup indexes the complete stored array.
                 required_rows = required_rows
                     .checked_add(array.count as usize)
                     .ok_or("navy access row demand overflow")?;
@@ -420,7 +370,6 @@ mod access_tests {
         p32(bytes, at + 12, count);
     }
 
-    /// Two countries in slots 1 and 2; slot 3 is vacant and has no navy.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0_u8; 0x10000];
         header(&mut bytes, GS + cgame_state::COUNTRIES, 0x3000, 4);
@@ -495,8 +444,6 @@ mod access_tests {
         }
     }
 
-    /// The game finds a country's navy by the country's slot, never by the
-    /// navy's stored owner, so a navy storing another owner is its slot's.
     #[test]
     fn foreign_navy_is_recorded_as_its_slots_country() {
         let mut bytes = fixture();
@@ -517,7 +464,6 @@ mod bench {
         cstrategic_navy_manager as manager,
     };
 
-    /// Three nonzero modes in each navy's region array.
     #[test]
     #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
     fn bench_naval_region_access() {
@@ -549,7 +495,6 @@ mod bench {
                 }
             }
             let mut rows = vec![AccessRow::default(); 3 * n];
-            // The Slow job the pack runs in receives the authenticated census.
             for (label, memory) in [
                 ("NavalRegionAccess", Counting::new()),
                 (

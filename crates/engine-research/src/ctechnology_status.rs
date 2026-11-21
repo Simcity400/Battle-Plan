@@ -1,48 +1,27 @@
-//! Technology status, inventories, research slots and stored doctrine cache.
-//! Layout authentication alone does not establish hourly consistency.
 
 use engine_sites::Rva;
-/// CTechnologyStatus vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_1860);
-/// CTechnologyStatus researched CTechnology* vector.
 pub const RESEARCHED_DATA: usize = 0x40;
-/// CTechnologyStatus all-technology pointer vector.
 pub const TECHNOLOGIES_DATA: usize = 0x88;
-/// CTechnologyStatus research-slot pointer vector.
 pub const RESEARCH_SLOTS_DATA: usize = 0xa0;
-/// Research-slot vector u32 capacity; must cover the stored count.
 pub const RESEARCH_SLOTS_CAPACITY: usize = 0xa8;
-/// CTechnologyStatus research-slot u32 count.
 pub const RESEARCH_SLOTS_COUNT: usize = 0xac;
-/// Limited-use speed-bonus pointer array.
 pub const LIMITED_BONUSES: usize = 0xe8;
-/// Limited-use cost-reduction pointer array.
 pub const COST_REDUCTIONS: usize = 0x100;
-/// Shared signed grant ID counter, serialized independently of the rosters.
 pub const NEXT_BONUS_ID: usize = 0x13c;
-/// Owning-country backlink; must match the authenticated country.
 pub const COUNTRY: usize = 0x130;
-/// Stored doctrine-level cache used by triggers and border-war power.
-/// Reset can leave it stale; never derive it from saved research.
 pub const LAND_DOCTRINE_LEVEL: usize = 0x140;
-/// CTechnologyStatus pointer-vector element stride; read_country_technology_witness copies count*8.
 pub const POINTER_STRIDE: usize = 8;
 
-/// CTechnologyStatus fresh initialization.
 pub const FRESH_INIT_RVA: Rva = Rva(0x00f6_0650);
-/// Fresh-initialization entry bytes.
 pub const FRESH_INIT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
 ];
-/// CTechnologyStatus completion handler.
 pub const RESEARCH_COMPLETED_RVA: Rva = Rva(0x00f6_0950);
-/// Completion-handler entry bytes.
 pub const RESEARCH_COMPLETED_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
 ];
-/// CTechnologyStatus rebuild/transfer path A.
 pub const REBUILD_OR_TRANSFER_A_RVA: Rva = Rva(0x00f5_ede0);
-/// CTechnologyStatus rebuild/transfer path B.
 pub const REBUILD_OR_TRANSFER_B_RVA: Rva = Rva(0x00f5_ca80);
 
 use crate::{
@@ -50,14 +29,11 @@ use crate::{
     read_slice, walk::Outcome,
 };
 
-/// The caller supplies an authenticated canonical CCountry pointer and its raw id.
 fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'static str> {
     let raw = copy_status(memory, country)?;
     decode_status(base, country, &raw)
 }
 
-/// Game-thread raw copy of the status pointer plus identity spans.
-/// No vtable or backlink equality is decided here; decode validates.
 pub struct StatusRaw {
     pub pointer: usize,
     pub vtable: [u8; 8],
@@ -92,7 +68,6 @@ pub fn copy_status(memory: &impl Memory, country: usize) -> Result<StatusRaw, &'
     })
 }
 
-/// Decode-side validation of already-copied status bytes with identical faults.
 pub fn decode_status(base: usize, country: usize, raw: &StatusRaw) -> Result<usize, &'static str> {
     if raw.scattered != 2 {
         return Err("technology status identity unreadable");
@@ -107,7 +82,6 @@ pub fn decode_status(base: usize, country: usize, raw: &StatusRaw) -> Result<usi
     Ok(raw.pointer)
 }
 
-/// Guarded stored scalar for a demanded province controller only.
 pub fn land_doctrine_level(
     memory: &impl Memory,
     base: usize,
@@ -123,14 +97,6 @@ pub fn land_doctrine_level(
     .ok_or("land doctrine level unreadable")
 }
 
-/// Reads every current technology instance, including unresearched technologies.
-/// Null roster slots are native holes. Pointer pages are copied in bounded chunks;
-/// owned row storage grows only after a bounded instance batch was acquired.
-/// Call only on a worker allowed to allocate.
-/// Each page's instances share one guarded read. The separate researched census
-/// reuses rows by their owned native pointers, including after dictionary growth.
-/// Pointer scratch must match the output capacity; only its current admitted prefix
-/// is read. Genuinely unadmitted pointers require identity acquisition and exact pointer membership.
 pub fn walk_technologies(
     memory: &impl Memory,
     base: usize,
@@ -203,9 +169,6 @@ pub fn walk_technologies(
                 {
                     return Err("technology fields unreadable");
                 }
-                // A native header does not prove that its declared instances
-                // are readable. Grow only for this successfully copied page,
-                // not the whole count, before decoding it in source order.
                 let required = start + len + selected_len;
                 if required > output.len() {
                     let additional = required - output.len();
@@ -289,8 +252,6 @@ pub fn walk_technologies(
                     selected_len += 1;
                 }
             }
-            // Keep batch-fault precedence: acquire every previously unadmitted
-            // pointer before publishing any researched membership from this page.
             if selected_len != 0
                 && ctechnology::copy_identities(
                     memory,
@@ -316,8 +277,6 @@ pub fn walk_technologies(
                     )?;
                     identity.handle
                 };
-                // Researched handles use signed ordering. Payloads retain all u32 bits;
-                // inventory keys use the template index.
                 if previous.is_some_and(|previous: u32| previous as i32 >= handle as i32) {
                     return Err("researched technology roster is not strictly ordered");
                 }
@@ -351,7 +310,6 @@ pub fn count_slots(memory: &impl Memory, base: usize, country_pointer: usize, co
     walk_slots_buffer(memory, base, country_pointer, country, crate::walk::Buffer::Count)
 }
 
-/// Retains active and idle slots, including native saved-day and speed operands.
 pub fn walk_slots(
     memory: &impl Memory,
     base: usize,

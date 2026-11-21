@@ -1,4 +1,3 @@
-//! Bounded faction-pin preparation on the app's worker threads.
 
 use std::sync::{Arc, mpsc};
 use viewer_foundation::retirement::Dropper;
@@ -14,18 +13,13 @@ pub(super) struct Key {
     pub borders: u64,
     pub regions: Arc<[u32]>,
     pub adjacency: bool,
-    /// The ground selection outlined beside it.
     pub selection: Option<super::ground_click::Outline>,
 }
 
-/// Whether the frame wants the picture a highlight is built over: for a hovered pin's regions or
-/// adjacency area, a ground selection's outline, or a highlight on screen to take off.
 pub(super) fn wanted(hovered: &[u32], selection: Option<&super::ground_click::Outline>, shown: bool) -> bool {
     !hovered.is_empty() || selection.is_some() || shown
 }
 
-/// A highlight and, when it was built over the political layer's picture, the plain plans that
-/// put that picture's borders back when it clears.
 pub(super) struct Prepared {
     pub plan: FactionHighlight,
     pub restore: Option<FactionHighlight>,
@@ -35,8 +29,6 @@ pub(super) struct Lane<T = FactionHighlight> {
     requested: Option<Key>,
     installed: bool,
     pending: Option<mpsc::Receiver<(Key, T)>>,
-    /// The plain plans of the picture the installed highlight was built over, which put its
-    /// borders back when the highlight clears.
     restore: Option<FactionHighlight>,
 }
 
@@ -63,8 +55,6 @@ impl<T: Send + 'static> Lane<T> {
         self.restore.take()
     }
 
-    /// Coalesce hover changes behind at most one submitted job. A refused
-    /// admission retries on the next frame; stale results retire off frames.
     #[cfg(test)]
     pub fn update(
         &mut self,
@@ -76,8 +66,6 @@ impl<T: Send + 'static> Lane<T> {
         self.update_with(key, submit, || build, dropper)
     }
 
-    /// [`Self::update`] with the job's inputs gathered by `prepare` on the frame only when a job
-    /// is submitted.
     pub fn update_with<B: FnOnce() -> T + Send + 'static>(
         &mut self,
         key: Key,

@@ -1,4 +1,3 @@
-//! Cipher arithmetic shared by the dashboard and raid tooltips.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Defines {
@@ -8,7 +7,6 @@ pub struct Defines {
 
 impl Defines {
     pub fn read(defines: &installed_content_core::defines::Defines) -> Result<Self, String> {
-        // Cipher-level defines read by the threshold below.
         let read = |name| {
             defines
                 .fixed5("NOperatives", name)
@@ -21,7 +19,6 @@ impl Defines {
     }
 }
 
-/// Cipher threshold also used by the game's progress display.
 pub fn threshold(strength: i64, defines: Defines) -> i64 {
     (i64::from(crate::triggers::fixed_round(strength) as i32)
         .wrapping_mul(100_000)
@@ -30,7 +27,6 @@ pub fn threshold(strength: i64, defines: Defines) -> i64 {
         .wrapping_add(defines.base)
 }
 
-/// The active bonus short-circuits a missing threshold.
 pub fn fully_decrypted(amount: i64, active: u8, threshold: Option<i64>) -> Option<bool> {
     if active != 0 {
         Some(true)
@@ -39,8 +35,6 @@ pub fn fully_decrypted(amount: i64, active: u8, threshold: Option<i64>) -> Optio
     }
 }
 
-/// Fixed5 divide (including its invalid sentinel),
-/// bonus override, round to percent, then clamp to the meter's 1..=100 frames.
 pub fn progress_percent(amount: i64, active: u8, threshold: i64) -> Option<u8> {
     let ratio = if threshold == 0
         || (amount as u64).wrapping_add(0x7fff_ffff_ffff_fffe) > 0xffff_ffff_ffff_fffc
@@ -84,8 +78,6 @@ mod tests {
 
     #[test]
     fn decryption_meter_has_a_minimum_frame_and_uses_wrapping_fixed5() {
-        // Synthetic arithmetic edge cases shared with the frontend. Decimal
-        // strings preserve i64 precision; overflow remains a named unknown.
         let values: Vec<(String, u8, String, Option<u8>)> =
             serde_json::from_str(include_str!("cryptology/test-values.json")).unwrap();
         for (amount, active, threshold, expected) in values {

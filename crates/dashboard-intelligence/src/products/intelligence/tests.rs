@@ -14,7 +14,6 @@ const fn at(hour: i32, upper_bound: bool) -> Option<Observation> {
 
 #[test]
 fn a_cipher_attempt_starts_when_work_starts_and_breaks_when_the_cipher_is_broken() {
-    // Idle, then work starts, then progress, then the threshold is reached.
     let states = [
         (10, 19, state(0, false, false, Some(false))),
         (20, 29, state(0, true, false, Some(false))),
@@ -22,9 +21,7 @@ fn a_cipher_attempt_starts_when_work_starts_and_breaks_when_the_cipher_is_broken
         (40, 49, state(900, true, false, Some(true))),
     ];
     assert_eq!(attempt(&states), (at(20, true), at(40, false)));
-    // Already at work at the first hour known: started and broken by then at the latest.
     assert_eq!(attempt(&[(5, 9, state(900, true, true, Some(true)))]), (at(5, true), at(5, true)));
-    // Never at work: no attempt.
     assert_eq!(attempt(&[(5, 9, state(0, false, false, Some(false)))]), (None, None));
 }
 
@@ -33,7 +30,6 @@ fn a_bonus_ending_or_progress_dropping_to_nothing_ends_an_attempt_and_the_next_s
     let states = [
         (0, 9, state(100, true, false, Some(false))),
         (10, 19, state(1000, false, true, Some(true))),
-        // The bonus runs out: the attempt is over, idleness is known.
         (20, 29, state(0, false, false, Some(false))),
         (30, 39, state(0, true, false, Some(false))),
     ];
@@ -48,11 +44,9 @@ fn hours_not_known_end_continuity_so_the_attempt_after_them_is_dated_by_its_firs
         (0, 9, state(0, true, false, Some(false))),
         (10, 19, None),
         (20, 29, state(400, true, false, None)),
-        // The threshold becomes known with the cipher already broken: dated by that hour.
         (30, 39, state(900, true, false, Some(true))),
     ];
     assert_eq!(attempt(&states), (at(20, true), at(30, true)));
-    // A missing stretch between runs (not contiguous) ends continuity too.
     let apart = [(0, 9, state(0, true, false, Some(false))), (15, 19, state(100, true, false, Some(false)))];
     assert_eq!(attempt(&apart), (at(15, true), None));
 }
@@ -75,13 +69,11 @@ fn member(assignment: u32, kind: u8, variant: Option<u32>, operation: Option<u64
 fn an_operative_is_placed_only_while_free_on_the_active_list_at_a_mission_or_operation_with_a_target_its_own_country_included() {
     assert_eq!(target(&member(MISSION, 0, Some(2), None, Recorded::Value(Some(9)))), Some(9));
     assert_eq!(target(&member(OPERATION, 0, None, Some(55), Recorded::Value(Some(9)))), Some(9));
-    // No mission variant, no operation, captured, a recruitment pool, no target.
     assert_eq!(target(&member(MISSION, 0, Some(0), None, Recorded::Value(Some(9)))), None);
     assert_eq!(target(&member(OPERATION, 0, None, Some(0), Recorded::Value(Some(9)))), None);
     assert_eq!(target(&member(CAPTURED, 0, Some(2), None, Recorded::Value(Some(9)))), None);
     assert_eq!(target(&member(MISSION, 2, Some(2), None, Recorded::Value(Some(9)))), None);
     assert_eq!(target(&member(MISSION, 0, Some(2), None, Recorded::NotRecorded)), None);
-    // A mission in its own country is placed there, as the game lists it.
     assert_eq!(target(&member(MISSION, 0, Some(2), None, Recorded::Value(Some(1)))), Some(1));
 }
 
@@ -93,13 +85,9 @@ fn an_operative_leaves_at_its_first_disbanded_or_killed_read_or_the_hour_after_i
     use std::collections::HashMap;
     let lives = [(1, 100, 400), (2, 100, 250), (3, 100, 400), (4, 120, 300)];
     let steps: HashMap<u128, Vec<(i32, Option<u32>)>> = [
-        // Killed at 300 while the census still lists it.
         (1, vec![(100, Some(MISSION)), (300, Some(KILLED))]),
-        // Gone from the list after 250, last on a mission.
         (2, vec![(100, Some(MISSION)), (251, None)]),
-        // Serving through the hour asked.
         (3, vec![(100, Some(OPERATION))]),
-        // Disbanded at 200.
         (4, vec![(120, Some(CAPTURED)), (200, Some(DISBANDED))]),
     ]
     .into_iter()
@@ -111,7 +99,6 @@ fn an_operative_leaves_at_its_first_disbanded_or_killed_read_or_the_hour_after_i
         Leaving { key: 4, first: 120, last: 199, departed: 200, assignment: Some(DISBANDED) },
     ]);
     assert_eq!(left.iter().map(|leaving| departure(leaving.assignment)).collect::<Vec<_>>(), ["Killed", "Left (reason not recorded)", "Disbanded"]);
-    // Asked before the killing, the first is still serving.
     assert!(leavings(&lives, &steps, 299).iter().all(|leaving| leaving.key != 1));
 }
 
@@ -146,12 +133,10 @@ mod espionage {
 
     #[test]
     fn an_operation_ends_at_the_first_read_that_no_longer_holds_it_and_one_carried_to_the_stretch_end_has_not_ended() {
-        // Reads every 24 hours from 0; the stretch runs 0..=200.
         let reads: Vec<(i32, i32)> = (0..=8).map(|day| (day * 24, day * 24)).collect();
         let lives = [(1u128, 0i64, 47i64), (2, 24, 200), (3, 48, 71), (4, 120, 191)];
         let ended = endings(&lives, (0, 200), &reads, 0, 200);
         assert_eq!(ended, vec![Ending { key: 1, first: 0, last: 47, by: 48 }, Ending { key: 3, first: 48, last: 71, by: 72 }, Ending { key: 4, first: 120, last: 191, by: 192 }]);
-        // A span ending before the next read leaves the operation open; one starting after it leaves it out.
         assert_eq!(endings(&lives, (0, 200), &reads, 0, 60).iter().map(|ending| ending.key).collect::<Vec<_>>(), vec![1]);
         assert_eq!(endings(&lives, (0, 200), &reads, 49, 200).iter().map(|ending| ending.key).collect::<Vec<_>>(), vec![3, 4]);
     }
@@ -168,15 +153,12 @@ mod espionage {
         assert_eq!(preparation_ratio(&row), Some(0), "clamped at zero");
         row.preparation_required = 0;
         assert_eq!(preparation_ratio(&row), Some(0), "nothing required is an empty meter");
-        // Not launched: no start, no elapsed days, no phase.
         let state = OperationState::of(&row, HOUR_EPOCH + 240);
         assert_eq!((state.start_hour, state.elapsed_days, state.current_phase), (None, None, None));
-        // Launched at day 10 for 30 days in 3 phases: day 25 is 15 days in, phase 1.
         let start = HOUR_EPOCH + 240;
         let row = operation(30, start, 3, 0);
         assert_eq!(elapsed_days(&row, start + 15 * 24 + 5), Some(15));
         assert_eq!(current_phase(&row, start + 15 * 24), Some(1));
-        // The full duration and -1 are the view's none; so is a terminal operation.
         assert_eq!(elapsed_days(&row, start + 30 * 24), None);
         assert_eq!(elapsed_days(&row, start - 24), None);
         assert_eq!(elapsed_days(&operation(30, start, 3, 1), start + 24), None);
@@ -188,16 +170,13 @@ mod espionage {
         let slot = |ordinal: u32, operative: u64| OperationAssignmentRow { operation: 7, ordinal, operative, selection: 0 };
         let member = |id: u64, roster_country: u32, name: &[u8]| OperativeMembershipRow { id, roster_country, name: Recorded::Value(name.to_vec()), ..OperativeMembershipRow::default() };
         let members = [member(11, 1, b"Ada\0"), member(12, 1, b"Bo"), member(12, 2, b"Other")];
-        // Slot 1 is empty; the census holds operative 12 twice under two names.
         let named = operatives(&row, Some(&[slot(1, 0), slot(0, 11)]), Some(&members)).unwrap();
         assert_eq!(named.iter().map(|name| name.name.as_deref()).collect::<Vec<_>>(), vec![Some("Ada")]);
         let named = operatives(&row, Some(&[slot(0, 12), slot(1, 11)]), Some(&members)).unwrap();
         assert_eq!(named[0].name, None);
         assert!(named[0].unavailable.is_some());
-        // A slot not read: the operatives are unknown, never none.
         assert_eq!(operatives(&row, Some(&[slot(0, 11)]), Some(&members)), None);
         assert_eq!(operatives(&row, None, Some(&members)), None);
-        // The census not read: each operative is named as not read.
         assert!(operatives(&row, Some(&[slot(0, 11), slot(1, 0)]), None).unwrap()[0].unavailable.is_some());
     }
 
@@ -233,9 +212,7 @@ mod agencies {
         assert_eq!(read.items.iter().map(|item| item.ordinal).collect::<Vec<_>>(), vec![0, 1, 2], "in stored order");
         assert_eq!(read.nonnegative_level_sum.as_deref(), Some("4"), "a negative level adds nothing");
         assert!(read.items.iter().all(|item| item.name.is_none() && item.missing.as_deref() == Some("Acquired upgrade content unavailable")));
-        // No upgrades at all is a recorded zero.
         assert_eq!(upgrades(&[], &tokens, None).nonnegative_level_sum.as_deref(), Some("0"));
-        // An entry not authenticated, or an ordinal missing, leaves the sum unknown, never partial.
         let refused = [level(0, 3, 0), level(1, 1, 4)];
         let read = upgrades(&refused.iter().collect::<Vec<_>>(), &tokens, None);
         assert_eq!(read.nonnegative_level_sum, None);
@@ -243,7 +220,6 @@ mod agencies {
         assert!(read.items[1].missing.as_deref().is_some_and(|why| why.starts_with("Acquired upgrade identity refused")));
         let gap = [level(0, 3, 0), level(2, 1, 0)];
         assert_eq!(upgrades(&gap.iter().collect::<Vec<_>>(), &tokens, None).nonnegative_level_sum, None);
-        // A token with no recorded text names no upgrade.
         let read = upgrades(&[&level(0, 1, 0)], &HashMap::new(), None);
         assert_eq!(read.items[0].branch, None);
     }

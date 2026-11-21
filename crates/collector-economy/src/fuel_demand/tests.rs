@@ -476,8 +476,6 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
                 &vec![b'x'; name_len]
             );
         }
-        // Attached, each row keeps its pack's header and the parts hold its
-        // lists, which assemble back exactly.
         let mut input = TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(
             owned
                 .iter()
@@ -521,9 +519,6 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
         for (row, (_, pack)) in assembled.iter().zip(&owned) {
             assert_eq!(row.demand, Recorded::Value(pack.clone()));
         }
-        // A truncated read's unread countries' parts are unknown: its packs
-        // stay whole and its parts are refused, by name, for an empty prefix
-        // too; an unavailable read's parts carry its reason.
         for prefix in [0, 3] {
             let mut input = TableInput::Sampled(TableView::Truncated {
                 rows: TableRows::CountryFuel(

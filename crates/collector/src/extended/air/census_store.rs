@@ -1,28 +1,12 @@
-//! The AirBases census of state bases held between hours
-//! ([`crate::air_base_carry_changes`]): the manager's three state base slot
-//! arrays and each state base's row (identity, host, state, province,
-//! capacity and kind, with the state and province identities).
-//!
-//! A slot array's words are carried while the slots' certificate
-//! ([`crate::air_base_carry_changes::MEMBERSHIP`]) is the one taken before
-//! its held read and its header, read every hour, is the held one. A base's
-//! row is carried while the base is at its held slot and its handle's
-//! certificate is the one taken before its held read. The manager, the
-//! headers and stateless bases are read every hour.
-//!
-//! Held storage follows the registration store's loan and passes; allocation
-//! is advisory, and a read that cannot be held is read again next hour.
 pub(crate) use crate::air_base_carry_changes::registration::Census as Counts;
 use crate::raw::Span;
 use engine_native::{cair_base, cpdx_array::Array};
 use std::collections::HashMap;
 
-/// State base slot arrays: ordinary, rocket and gun.
 pub(crate) const SLOT_ARRAYS: usize = 3;
 
 #[derive(Debug, Default)]
 struct Slots {
-    /// `None` holds nothing.
     certificate: Option<(u64, u64)>,
     header: (usize, u32),
     spans: Vec<Span>,
@@ -41,7 +25,6 @@ struct Row {
     pass: u64,
 }
 
-/// A held row a pass may carry.
 pub(crate) struct CarriedRow<'a> {
     pub handle: u64,
     pub certificate: (u64, u64),
@@ -50,8 +33,6 @@ pub(crate) struct CarriedRow<'a> {
     pub bytes: &'a [u8],
 }
 
-/// One fresh read as the log holds it: its spans, and the log's bytes from
-/// the first byte it logged, at log offset `start`.
 pub(crate) struct Fresh<'a> {
     pub spans: &'a [Span],
     pub bytes: &'a [u8],
@@ -79,7 +60,6 @@ impl Fresh<'_> {
 #[derive(Debug, Default)]
 pub(crate) struct CensusStore {
     slots: [Slots; SLOT_ARRAYS],
-    /// By base address.
     rows: HashMap<usize, Row>,
     pass: u64,
     counts: Counts,
@@ -100,8 +80,6 @@ impl CensusStore {
         self.counts
     }
 
-    /// The held words of slot array `array` with `header`, when the slots'
-    /// `certificate` is the held read's.
     pub(crate) fn slots(
         &mut self,
         array: usize,
@@ -121,8 +99,6 @@ impl CensusStore {
         Some((held.spans.as_slice(), held.bytes.as_slice()))
     }
 
-    /// Slot array `array` with `header` was read afresh as `fresh`, complete
-    /// when `complete`, under `certificate`.
     pub(crate) fn hold_slots(
         &mut self,
         array: usize,
@@ -147,8 +123,6 @@ impl CensusStore {
         held.pass = self.pass;
     }
 
-    /// The held row of the base at `pointer`, found at `slot` (array and
-    /// index), when `certificate` names its handle's held certificate.
     pub(crate) fn row(
         &mut self,
         pointer: usize,
@@ -171,8 +145,6 @@ impl CensusStore {
         })
     }
 
-    /// The base at `pointer`, found at `slot`, was read afresh as `fresh`
-    /// with `handle` and `row` under `certificate`.
     pub(crate) fn hold_row(
         &mut self,
         pointer: usize,
@@ -206,13 +178,10 @@ impl CensusStore {
         self.rows.insert(pointer, held);
     }
 
-    /// Census spans read outside the slot arrays and rows.
     pub(crate) fn read(&mut self, spans: usize) {
         self.counts.spans[0] += spans as u64;
     }
 
-    /// Ends the pass: a complete one keeps what it visited, any other
-    /// nothing.
     pub(crate) fn finish(&mut self, complete: bool) {
         if !complete {
             self.clear();

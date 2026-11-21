@@ -1,4 +1,3 @@
-//! The merge and sparse joins against the original per-record point lookups, over full records.
 use super::super::{
     Budget, History, Kind, NavalSources, Target, same_history,
     test_support::{GATES, target},
@@ -61,7 +60,6 @@ fn formation(candidate: &naval::Candidate, mesh: usize) -> naval::Formation {
     }
 }
 
-/// Both arms' full records, including target allocation identity and clone counts.
 fn assert_same_join(pair: &[Provinces; 2], targets: &Targets, naval: &naval::History) {
     let [merged, looked_up] = pair;
     assert_eq!(merged.indices, looked_up.indices);
@@ -86,7 +84,6 @@ fn assert_same_join(pair: &[Provinces; 2], targets: &Targets, naval: &naval::His
             _ => panic!("province {} joined different targets", a.id),
         }
     }
-    // The map's own reference plus exactly one clone per arm that has the record.
     for (id, prepared) in &targets.0.provinces {
         let holders = 1 + 2 * usize::from(merged.indices.contains_key(id));
         assert_eq!(Arc::strong_count(prepared), holders, "province {id} clones");
@@ -96,7 +93,6 @@ fn assert_same_join(pair: &[Provinces; 2], targets: &Targets, naval: &naval::His
 #[test]
 fn merge_join_matches_point_lookups_record_for_record() {
     let mut next = xorshift(0x5eed_1e57);
-    // Sparse, unsorted and extreme IDs, repeated when drawn; storage never sizes by them.
     let universe: Vec<u32> = [
         u32::MAX,
         5,
@@ -119,7 +115,6 @@ fn merge_join_matches_point_lookups_record_for_record() {
     let mut previous: Option<Targets> = None;
     let mut saw = [false; 4];
     for step in 0..96u32 {
-        // Records only grow, restored to native order by ensure; some steps add none.
         if step % 3 != 2 {
             let mut added: Vec<_> = (0..next() % 9)
                 .map(|_| universe[next() as usize % universe.len()])
@@ -131,8 +126,6 @@ fn merge_join_matches_point_lookups_record_for_record() {
                 provinces.ensure(added.iter().copied());
             }
         }
-        // Targets name ensured and unknown provinces alike, out of order, and repeated
-        // slot parts keep their last target. Some steps place nothing at all.
         let placed: Vec<_> = if step % 11 == 7 {
             Vec::new()
         } else {
@@ -155,7 +148,6 @@ fn merge_join_matches_point_lookups_record_for_record() {
                 .collect()
         };
         let targets = Targets::from(placed);
-        // Repeated occupants share provinces; empty occupant lists exist only here.
         let candidates = (0..next() % 12)
             .map(|ordinal| {
                 let province = universe[next() as usize % universe.len()];
@@ -169,7 +161,6 @@ fn merge_join_matches_point_lookups_record_for_record() {
         if step % 5 == 1 {
             naval.empty_candidates_for_test(universe[next() as usize % universe.len()]);
         }
-        // A repeated join of the same inputs replaces each clone with an identical one.
         let joins = 1 + usize::from(step % 4 == 3);
         for _ in 0..joins {
             for provinces in &mut pair {
@@ -177,7 +168,6 @@ fn merge_join_matches_point_lookups_record_for_record() {
             }
             assert_same_join(&pair, &targets, &naval);
         }
-        // Both arms released the previous hour's allocations.
         if let Some(previous) = previous.replace(targets.clone()) {
             for prepared in previous.0.provinces.values() {
                 assert_eq!(Arc::strong_count(prepared), 1);
@@ -198,8 +188,6 @@ fn merge_join_matches_point_lookups_record_for_record() {
 #[test]
 fn sparse_join_matches_the_full_walk_record_for_record() {
     let mut next = xorshift(0x51a7_e5ed);
-    // Two disjoint halves of sparse and extreme IDs: every 23 steps the inputs move to the
-    // other half, so nothing the last joined hour named remains (a seek or a branch change).
     let half = |extremes: [u32; 4], range: std::ops::Range<u32>| -> Vec<u32> {
         extremes
             .into_iter()
@@ -256,8 +244,6 @@ fn sparse_join_matches_the_full_walk_record_for_record() {
                 })
                 .collect()
         };
-        // An install ensures what its hour names first, except that every 41st step leaves a
-        // province without a record, which sends the sparse arm down the full walk.
         let named: Vec<_> = targets
             .0
             .provinces
@@ -303,7 +289,6 @@ fn sparse_join_matches_the_full_walk_record_for_record() {
     assert_eq!(saw, [true; 4]);
 }
 
-/// Two histories' full records: the same IDs, allocation-identical targets and candidate bits.
 fn assert_same_records(a: &History, b: &History) {
     assert_eq!(a.provinces.records.len(), b.provinces.records.len());
     for (a, b) in a.provinces.records.iter().zip(&b.provinces.records) {
@@ -319,7 +304,6 @@ fn assert_same_records(a: &History, b: &History) {
     }
 }
 
-/// Every record against the installed inputs' original point lookups.
 fn assert_lookups(history: &History) {
     for record in &history.provinces.records {
         match (&record.targets, history.targets.0.provinces.get(&record.id)) {
@@ -336,7 +320,6 @@ fn assert_lookups(history: &History) {
     }
 }
 
-/// Exercise moving stacks, empty hours, repeated occupants and a naval-only province.
 fn hour_inputs(ids: &[u32], hour: u32) -> (Targets, NavalSources) {
     let mut placed = Vec::new();
     for (index, &id) in ids.iter().enumerate() {
@@ -359,7 +342,6 @@ fn hour_inputs(ids: &[u32], hour: u32) -> (Targets, NavalSources) {
             };
             placed.push(stack);
             if index % 3 == 0 {
-                // A repeated slot part keeps its last target.
                 placed.push(Target {
                     mesh: stack.mesh + 7,
                     ..stack
@@ -378,7 +360,6 @@ fn hour_inputs(ids: &[u32], hour: u32) -> (Targets, NavalSources) {
                 .formations
                 .push(formation(&occupant, hour as usize % 3));
             sources.candidates.push(occupant.clone());
-            // A repeated occupant walks the same arc in a second province.
             occupant.province = ids[(index + 1) % ids.len()];
             occupant.ordinal += 1_000;
             sources.candidates.push(occupant);
@@ -406,7 +387,6 @@ fn boxes(ids: &[u32], count: usize, shift: f32) -> Arc<BTreeMap<u32, [f32; 4]>> 
     )
 }
 
-/// Each setter order must leave every record equal to independent point lookups.
 fn install(
     arms: &mut [History],
     targets: &Targets,
@@ -433,7 +413,6 @@ fn install(
         }
         assert_lookups(history);
         if hour % 5 == 2 {
-            // Naval inputs alone add a record, then the hour's own return.
             let mut only_naval = sources.clone();
             only_naval
                 .candidates
@@ -449,7 +428,6 @@ fn install(
     }
 }
 
-/// Compare frame bytes, history, records and building/budget order after every step.
 fn step_all(
     arms: &mut [History],
     number: u32,
@@ -511,7 +489,6 @@ fn step_all(
     outputs.swap_remove(0)
 }
 
-/// Formation entities prove the candidate-bit representative walk ran.
 fn has_formations(history: &History) -> bool {
     history.provinces.records.iter().any(|record| {
         record.has_candidates
@@ -530,8 +507,6 @@ fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
         .chain((0..150u32).map(|index| index * 28_657 + 3))
         .chain([4_000_000_011, u32::MAX - 1, u32::MAX])
         .collect();
-    // One view installs province boxes; the other never does, so its records are only
-    // the provinces its targets and candidates name. Each view runs both joins.
     let mut views: [[History; 2]; 2] = std::array::from_fn(|_| {
         [false, true].map(|lookup| {
             let mut history = History::default();
@@ -549,7 +524,6 @@ fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
         let hour = number / 13;
         if number.is_multiple_of(13) {
             if hour.is_multiple_of(4) {
-                // A fresh allocation replaces the boxes and adds their provinces.
                 bounds = boxes(&ids, 120 + hour as usize % 37, (hour % 3) as f32);
             }
             let (targets, sources) = hour_inputs(&ids, hour);
@@ -561,7 +535,6 @@ fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
                 };
                 install(pair, &targets, &sources, &installed, hour);
             }
-            // The map's own reference plus one clone in each of the four histories.
             for (id, prepared) in &targets.0.provinces {
                 assert_eq!(Arc::strong_count(prepared), 5, "province {id}");
             }
@@ -587,7 +560,6 @@ fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
     assert_eq!(saw, [true; 6]);
 }
 
-/// Three independent install arms cover seeks, disjoint branches, both views and clock resets.
 #[test]
 fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames() {
     let branches: [Vec<u32>; 2] = [
@@ -624,7 +596,6 @@ fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames()
             if branch_change || hour.is_multiple_of(4) {
                 bounds = boxes(ids, ids.len() - hour as usize % 23, (hour % 3) as f32);
             }
-            // A seek shows a far hour of the same branch.
             let (targets, sources) = hour_inputs(ids, if seek { hour + 97 } else { hour });
             for (view, arms) in views.iter_mut().enumerate() {
                 if branch_change || seek {
@@ -639,8 +610,6 @@ fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames()
                 };
                 install(arms, &targets, &sources, &installed, hour);
             }
-            // Every history's join is this hour's table for the province, or the equal one it
-            // already held: shared, never copied from other targets.
             for (id, prepared) in &targets.0.provinces {
                 for arms in &views {
                     for history in arms {

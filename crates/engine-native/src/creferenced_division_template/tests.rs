@@ -49,8 +49,6 @@ impl Fixture {
         self.put(at + subunit::DATABASE_INDEX, &index.to_le_bytes());
     }
 }
-/// One country, one template. Global infantry (777) is database entry 1 at
-/// 0x7000; a country-local clone of it sits at 0x7800.
 fn fixture() -> Fixture {
     let mut memory = Fixture(vec![0; 0xc000], std::cell::RefCell::default());
     memory.array(0x1000 + crate::cgame_state::COUNTRIES, 0x2000, 2);
@@ -139,8 +137,6 @@ fn template_extension_fault_preserves_existing_icon_and_model_inputs() {
 #[test]
 fn template_extension_demand_skips_prefix_tail_forbidden_payload_and_spatial_copy() {
     let mut memory = fixture();
-    // The undemanded pointer must never be followed, even though its header
-    // is already part of the ordinary icon record.
     memory.array(0x5000 + FORBIDDEN_EQUIPMENT, u64::MAX - 8, 1);
     let (mut rows, mut bytes, mut counts, mut variants, mut names) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -172,7 +168,6 @@ fn template_extension_demand_skips_prefix_tail_forbidden_payload_and_spatial_cop
         at == 0x5000 + GRID_DIMENSIONS || at == 0x5000 + UNIT_TYPE_OVERRIDE + 4));
 }
 
-/// Owned storage for [`walk_icons`]'s definition lookups.
 struct TestSlots {
     database: Vec<usize>,
     globals: Vec<GlobalSlot>,
@@ -235,10 +230,6 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     let mut rows = vec![IconRow::default(); 2];
     let (walk, bytes, counts, variants) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-    // The fixed icon fields come in two spans, with two additional demanded
-    // extension spans and the fallback grid header. Each definition is
-    // authenticated once although the fallback, priority and grouped
-    // entries all name it. The name is not read.
     let reads = memory.1.borrow();
     assert_eq!(
         reads
@@ -257,7 +248,6 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
             1
         );
     }
-    // The country names two definitions: four slots at half load.
     assert_eq!((walk.required_database, walk.required_locals), (2, 4));
     drop(reads);
     let row = rows[0];
@@ -285,7 +275,6 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
                 count: 2
             },
             SubunitCount { count: -1, ..local },
-            // The regiment grid's one occupied cell; its other is empty.
             SubunitCount {
                 width: Some(0),
                 token: 777,
@@ -313,29 +302,22 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     assert_eq!(variants, [0x0000_0009_0000_0046]);
 }
 
-/// Each grid's cells are grouped apart, by definition and clone flag in the
-/// order each first occurs, and counted once per occupied cell. A null
-/// pointer is an empty cell; a null-object cell is token zero.
 #[test]
 fn every_grid_is_read_and_counted_per_cell() {
     let mut memory = fixture();
-    // Regiments: global, clone, global, empty, null object.
     memory.array(0x5000 + REGIMENT_DATA, 0x6000, 5);
     for (cell, definition) in [0x7000, 0x7800, 0x7000, 0, 0x9000].into_iter().enumerate() {
         memory.word(0x6000 + cell * 8, definition);
     }
-    // Support: the clone twice.
     memory.array(0x5000 + SUPPORT_DATA, 0x6100, 2);
     memory.word(0x6100, 0x7800);
     memory.word(0x6108, 0x7800);
-    // Regimental support: the global once.
     memory.array(0x5000 + REGIMENTAL_SUPPORT_DATA, 0x6200, 1);
     memory.word(0x6200, 0x7000);
     let mut rows = vec![IconRow::default(); 1];
     let (walk, _, counts, _) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].model_failure, None);
-    // Budgeted at one entry a cell.
     assert_eq!(walk.required_counts, 16);
     let entry = |token, local, count| SubunitCount {
         width: Some(0),
@@ -358,7 +340,6 @@ fn every_grid_is_read_and_counted_per_cell() {
     assert_eq!(grid(1), [entry(777, true, 2)]);
     assert_eq!(grid(2), [entry(777, false, 1)]);
     assert_eq!(rows[0].counts.len, 0);
-    // An unreadable cell fails only the row's model inputs.
     memory.array(0x5000 + SUPPORT_DATA, 0xbff8, 2);
     let (walk, _, counts, _) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
@@ -391,16 +372,13 @@ fn daily_rows_keep_names_and_the_category_without_the_model_inputs() {
             .iter()
             .filter(|(at, _)| (0x5000..0x5240).contains(at))
             .count(),
-        3 + 1 // Plus the category fallback's regiment grid header.
+        3 + 1
     );
     for address in [0x8000, subunit::DATABASE_RVA.0] {
         assert!(!reads.iter().any(|(at, _)| *at == address));
     }
 }
 
-/// The icon walk reports each template's object, owner and the dictionary's
-/// unit_type as [`walk`] derives it: the stored override, else the category
-/// of the category or priority sub-unit, read with its identity.
 #[test]
 fn icon_rows_carry_the_dictionary_unit_type_owner_and_object() {
     let mut memory = fixture();
@@ -420,7 +398,6 @@ fn icon_rows_carry_the_dictionary_unit_type_owner_and_object() {
     memory.put(0x5000 + UNIT_TYPE_OVERRIDE, &123_i32.to_le_bytes());
     icons_all(&memory, &mut rows);
     assert_eq!(rows[0].unit_type, 123);
-    // An unreadable category is the row's failure, not the walk's.
     memory.put(0x5000 + UNIT_TYPE_OVERRIDE, &0_i32.to_le_bytes());
     memory.0.truncate(0x7000 + subunit::CATEGORY);
     memory.0.resize(0x7000 + subunit::CATEGORY, 0);
@@ -432,7 +409,6 @@ fn icon_rows_carry_the_dictionary_unit_type_owner_and_object() {
     );
 }
 
-/// `copy_names` copies a template's literal and key as `walk` does.
 #[test]
 fn names_copy_as_the_full_walk_copies_them() {
     let memory = fixture();
@@ -465,7 +441,6 @@ fn the_representative_falls_back_to_the_priority_unit_and_an_absent_category_sta
     );
     assert_eq!(rows[0].model_category, None);
     assert_eq!(bytes, b"infantry");
-    // Only the regiment grid's entry: no grouped entries, no variants.
     assert_eq!(
         counts,
         [
@@ -493,7 +468,6 @@ fn the_count_probe_counts_whole_rows_and_bad_identity_never_becomes_empty() {
     let mut memory = fixture();
     memory.array(0x5000 + SUBUNIT_COUNTS, 0x8000, 1);
     memory.word(0x8000, 0x7000);
-    // The count probe: no row stored, every demand counted.
     let result = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(
         result.outcome,
@@ -503,7 +477,6 @@ fn the_count_probe_counts_whole_rows_and_bad_identity_never_becomes_empty() {
         }
     );
     assert_eq!((result.bytes_len, result.counts_len), (0, 0));
-    // One grouped entry and the regiment grid's two cells.
     assert_eq!((result.required_bytes, result.required_counts), (8, 5));
     let result = count(&memory, 0, 0x1000);
     assert_eq!(
@@ -516,8 +489,6 @@ fn the_count_probe_counts_whole_rows_and_bad_identity_never_becomes_empty() {
             11
         )
     );
-    // An index naming no database entry is a fault, not a global
-    // definition: the model fields fail, and the counter keeps its icon.
     memory.put(0x7000 + subunit::DATABASE_INDEX, &2_i32.to_le_bytes());
     let mut rows = vec![IconRow::default(); 1];
     let (walk, bytes, counts, _) = icons_all(&memory, &mut rows);
@@ -547,7 +518,7 @@ fn the_count_probe_counts_whole_rows_and_bad_identity_never_becomes_empty() {
         daily_all(&memory, &mut rows).0.outcome,
         Outcome::Rows { len: 1 }
     );
-    assert_eq!(rows[0].unit_type, 123); // Never clamp a native override to strip size.
+    assert_eq!(rows[0].unit_type, 123);
 }
 
 #[test]
@@ -560,14 +531,12 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
             memory.word(0x10000 + index * 8, 0x7000);
         }
         let mut rows = vec![IconRow::default(); 1];
-        // The row's grid entries are budgeted at one a cell.
         let mut counts = vec![SubunitCount::default(); count as usize * 2];
         let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 64]), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
         let expected = if count == 65_536 { 0 } else { 777 };
         assert_eq!(rows[0].representative.token, expected);
         assert_eq!(rows[0].priority_unit, expected);
-        // The grid's count does not wrap with the fallback's.
         assert_eq!(
             counts[..rows[0].grids[0].len],
             [SubunitCount {
@@ -588,8 +557,6 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
     );
 }
 
-/// The fixture with a clone and a global in the grouped entries and one
-/// excluded variant, read with the given database slots.
 fn model_fixture() -> Fixture {
     let mut memory = fixture();
     memory.array(0x5000 + SUBUNIT_COUNTS, 0x8000, 2);
@@ -626,8 +593,6 @@ fn a_database_larger_than_its_slots_is_read_live_and_asks_for_room() {
         icons_with(&memory, 8, 8);
     assert_eq!(copied.outcome, Outcome::Rows { len: 1 });
     assert_eq!(copied_row.model_failure, None);
-    // Too small, or no per-country slots at all: the same rows, exactly,
-    // and the demand to grow.
     for (database, locals) in [(1, 8), (1, 0), (8, 0)] {
         let ((walk, bytes, counts, variants), row) = icons_with(&memory, database, locals);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
@@ -648,7 +613,6 @@ fn a_database_larger_than_its_slots_is_read_live_and_asks_for_room() {
 #[test]
 fn an_unreadable_database_keeps_every_counter_icon_and_fails_only_the_model() {
     let mut memory = model_fixture();
-    // The vector's header no longer names a database.
     memory.array(0x9800 + subunit::DATABASE_VECTOR, 0, 0);
     let ((walk, bytes, counts, variants), row) = icons_with(&memory, 8, 8);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
@@ -662,8 +626,6 @@ fn an_unreadable_database_keeps_every_counter_icon_and_fails_only_the_model() {
     assert!(counts.is_empty() && variants.is_empty());
 }
 
-/// A second template in the same roster, a copy of the first with its own
-/// handle, at 0xA000.
 fn second_template(memory: &mut Fixture) {
     let bytes = memory.0[0x5000..0x5240].to_vec();
     memory.put(0xa000, &bytes);
@@ -685,7 +647,6 @@ fn reads_of(memory: &Fixture, definition: usize) -> usize {
 fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
     let mut memory = model_fixture();
     second_template(&mut memory);
-    // The first template's exclusion names no variant.
     memory.array(0x5000 + EXCLUDED_VARIANT_DATA, 0x8300, 1);
     memory.word(0x8300, 0x7000);
     let mut rows = vec![IconRow::default(); 2];
@@ -708,7 +669,6 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
     assert_eq!(&bytes[..walk.bytes_len], b"infantryinfantry");
     assert_eq!(good.grids[0], Span { start: 2, len: 1 });
     assert_eq!((walk.counts_len, walk.variants_len), (5, 1));
-    // Every definition is read once, however many templates name it.
     assert_eq!(
         (reads_of(&memory, 0x7000), reads_of(&memory, 0x7800)),
         (1, 1)
@@ -739,9 +699,7 @@ fn a_row_without_room_still_asks_for_its_model_inputs() {
 #[test]
 fn a_live_database_with_an_unreadable_entry_fails_only_the_model() {
     let mut memory = model_fixture();
-    // Entry one lies past the end of readable memory.
     memory.array(0x9800 + subunit::DATABASE_VECTOR, 0xbff8, 2);
-    // Slots too small (live), and slots that fit but whose copy faults.
     for database in [1, 8] {
         memory.1.borrow_mut().clear();
         let ((walk, bytes, counts, variants), row) = icons_with(&memory, database, 8);
@@ -753,7 +711,6 @@ fn a_live_database_with_an_unreadable_entry_fails_only_the_model() {
             Some("subunit database index outside the database")
         );
         assert!(counts.is_empty() && variants.is_empty());
-        // The failed clone flag is kept, not read again.
         assert_eq!(reads_of(&memory, 0x7000), 1, "{database}");
     }
 }
@@ -765,9 +722,7 @@ fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
         memory.put(0x5000 + FORMATION_DIVISION_COUNT, &i32::MIN.to_le_bytes());
         memory.put(0x5000 + ORIGIN_TYPE, &2_i32.to_le_bytes());
         match fault {
-            // An excluded pointer that names no variant.
             0 => memory.word(0x8100, 0x7000),
-            // A heap model string whose bytes are not readable.
             _ => {
                 memory.word(0x5000 + MODEL_ENTITY, 0xdead_0000);
                 memory.word(0x5000 + MODEL_ENTITY + 16, 40);
@@ -780,7 +735,6 @@ fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
         assert_eq!(row.priority_unit, 777);
         assert_eq!(row.formation_division_count, Some(i32::MIN));
         assert!(row.manpower_exile);
-        // The partial model reads are rolled back.
         assert_eq!(bytes, b"infantry");
         assert!(counts.is_empty() && variants.is_empty());
     }
@@ -820,7 +774,6 @@ fn icon_rows_do_not_read_the_template_name_and_gather_every_grid_header() {
     assert_eq!(bytes, b"infantry");
     let reads = memory.1.borrow().clone();
     assert!(!reads.iter().any(|(at, _)| *at == 0x5000 + NAME));
-    // The three grid headers come with the record's one span.
     for grid in GRIDS {
         assert!(
             !reads
@@ -870,8 +823,6 @@ fn full_handle_survives_and_a_wrong_type_word_fails() {
     );
 }
 
-/// Templates sharing a priority unit read its name's header once a walk, and
-/// the named walk takes each literal's header from the gathered record.
 #[test]
 fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
     let mut memory = fixture();
@@ -906,8 +857,6 @@ fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
     let reads = memory.1.borrow();
     let at = |address: usize| reads.iter().filter(|read| read.0 == address).count();
     assert_eq!(at(0x7000 + subunit::NAME), 1);
-    // Each literal header is read once, as the gather's field after the icon
-    // span (this memory copies a gather field by field).
     for template in [0x5000, 0xa000] {
         assert_eq!(at(template + NAME), 1);
         let span = reads
@@ -1028,7 +977,6 @@ fn spatial_cells_keep_holes_dimensions_null_objects_and_native_settings() {
     assert_eq!(row.settings.parent, 0xfeed_beef_0000_0034);
     assert_eq!(row.settings.division_cap, Some(-11));
     assert_eq!(variants, [4294967294, 4294967294]);
-    // Spatial capture adds no second read of the grid payload.
     assert_eq!(
         memory
             .1

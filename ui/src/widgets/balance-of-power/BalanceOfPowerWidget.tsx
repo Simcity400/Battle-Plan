@@ -27,15 +27,11 @@ import { useBalanceDetails, useSettledHour } from './useBalanceDetails';
 import './balanceOfPower.css';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
 
-/** The lane label words, as the country view's lanes say them: a change of them is a change of what is shown. */
 const LANE_WORDS = { since: (hour: number) => `s${hour}`, before: (hour: number) => `b${hour}`, ended: (hour: number) => `e${hour}`,
   endedBy: (hour: number) => `y${hour}`, lastSeen: (hour: number) => `l${hour}` };
 
-/** Playback rests this long before the hour's details (members, sources) are asked for. */
 const SETTLE_MS = 400;
 
-/** One country shows its balance over time; All countries, a group or several
- * countries list every active balance at the playback date. */
 export default function BalanceOfPowerWidget(props: WidgetProps) {
   return singleCountry(props.widget.countries) ? <CountryBalances {...props} /> : <BalanceTable {...props} />;
 }
@@ -62,7 +58,7 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const at = Math.floor(playhead ?? extent[1]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const afterPlayhead = options.afterPlayhead === true;
-  const limitAt = useCallback((hour: number) => Math.floor(shownUntil(hour, playback, afterPlayhead) ?? extent[1]), [playback, afterPlayhead, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const limitAt = useCallback((hour: number) => Math.floor(shownUntil(hour, playback, afterPlayhead) ?? extent[1]), [playback, afterPlayhead, extent[1]]);
   const limit = playhead === null ? Math.floor(extent[1]) : limitAt(playhead);
   const saved = typeof options.balance === 'string' ? options.balance : '';
 
@@ -72,7 +68,6 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const branchFirst = track?.branch.firstHour ?? 0;
   const unknown = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null),
     [track?.branch.gaps, data, branchFirst]);
-  // The holder followed, named at each hour by the tag it held then.
   const subject = useMemo(() => data && tag ? countryHolder(data, tag, at) : null, [data, tag, at]);
   const shownTag = subject ? tagAt(subject.tags, at) ?? tag : tag;
   const choice = useMemo(() => subject ? chooseBalance(subject, saved, at, limit) : null, [subject, saved, at, limit]);
@@ -91,8 +86,6 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   };
   useShownEachFrame(clock, () => data && tag ? liveHead ? Math.floor(Math.min(liveHead.read(), track?.branch.lastHour ?? Infinity)) : at : null);
 
-  // The hour's details: at the drilled day while a breakdown is open, else at the
-  // playback date once playback rests there (for the members of a shared balance).
   const liveHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
   const drillAt = drillOpen ? drillHour(drill, liveHour) : null;
   const detailsAt = useSettledHour(drillOpen ? drillAt : at, SETTLE_MS, drillOpen ? !drill.follow : !following);
@@ -115,7 +108,6 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const pickOwner = useMemo(() => ({ client: runtime.client, source: track?.source.id, revision: track?.source.revision, branch: track?.branch.id, tag, token: balance?.token, data }),
     [runtime.client, track?.source.id, track?.source.revision, track?.branch.id, tag, balance?.token, data]);
 
-  // A new recording, branch or country closes an open breakdown.
   useEffect(() => dispatchDrill({ type: 'close' }), [track?.source.id, track?.source.revision, track?.branch.id, tag]);
 
   const warnings = useMemo(() => {
@@ -131,7 +123,6 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see the balance of power." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in the widget settings." />;
-  // Another recording's playback can run past this one: nothing is shown outside its branch.
   if (at < track.branch.firstHour || at > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the balance of power…" />;

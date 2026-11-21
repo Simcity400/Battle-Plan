@@ -1,4 +1,3 @@
-//! Native bloom draw, through the shared content compiler.
 use super::{
     BLOOM_FORMAT, Blur, MapSize,
     fullscreen::{self, Fullscreen},
@@ -22,7 +21,6 @@ pub(super) fn load(
     decode: Decode,
 ) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = fullscreen::library(layers, [map.width, map.height], decode);
-    // Register this effect and the `bloom` technique.
     library
         .load(b"gfx/FX/bloom.shader", &defines)
         .map_err(refuse)
@@ -32,7 +30,6 @@ pub(super) struct Bloom(Fullscreen);
 
 impl Bloom {
     pub(super) fn new(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| Self::build(device, effect))
     }
 
@@ -41,9 +38,6 @@ impl Bloom {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // Build the table by physical Index; binds only
-        // table[0] in PS. Other registers retain preceding draws. Until those
-        // are supplied, reading them must refuse.
         state
             .samplers
             .retain(|key, _| *key == binding(0, Stage::Pixel));
@@ -52,7 +46,6 @@ impl Bloom {
             .map_err(refuse)
     }
 
-    /// b2 in both stages and pixel-stage t0 for one axis, kept while the grading's weights stand.
     pub(super) fn kept(
         &self,
         device: &wgpu::Device,

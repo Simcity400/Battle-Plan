@@ -1,13 +1,3 @@
-//! An hour's manifest, read before any table section: which tables were read and in what
-//! state, the dictionary strings the hour adds, and each present section's length, changed
-//! columns and kinds of op. A consumer decides from it alone and skips sections it does
-//! not need.
-//!
-//! Layout: branch (varint) | hour (zigzag varint) | flags (u8) | callback total ns, pool
-//! bytes, dropped frames (varints) | appends (count, then length-prefixed bytes) | one
-//! status per schema table | read bits | with [`SAMPLES`], the samples (count, then each
-//! table (varint) and sample hour (0 for none, else zigzag + 1)) | present bits | per
-//! present section: byte length (varint), changed-column bits, op flags (u8).
 
 use crate::{
     invalid,
@@ -18,42 +8,30 @@ use std::io;
 #[cfg(test)]
 mod tests;
 
-/// The hour starts a block (a restart precedes it).
 pub const BLOCK_START: u8 = 1;
-/// The hour follows a gap in the recording.
 pub const AFTER_GAP: u8 = 2;
-/// The hour follows a load of the game.
 pub const AFTER_LOAD: u8 = 4;
-/// The manifest lists samples ([`Manifest::samples`]).
 pub const SAMPLES: u8 = 8;
-/// Every flag a manifest may carry.
 const FLAGS: u8 = BLOCK_START | AFTER_GAP | AFTER_LOAD | SAMPLES;
 
-/// Op flags of a present section.
 pub const INSERTS: u8 = 1;
 pub const DELETES: u8 = 2;
 pub const FILLS: u8 = 4;
 pub const TOUCHES: u8 = 8;
-/// Every op flag a section may carry.
 const OPS: u8 = INSERTS | DELETES | FILLS | TOUCHES;
 
-/// Whether `bits` (one per column, in words) names no column past `columns`.
 fn within_columns(bits: &[u64], columns: usize) -> bool {
     columns % 64 == 0 || bits.last().is_none_or(|&last| last >> (columns % 64) == 0)
 }
 
-/// A table's state this hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub enum Status {
-    /// Not recorded: its values this hour are unknown, never zero.
     NotRecorded,
     Complete,
-    /// Read in part: `missing` rows the walk could not enumerate.
     Truncated {
         missing: u32,
     },
-    /// Not available, for a reason in the dictionary.
     Unavailable {
         reason: u32,
     },
@@ -90,12 +68,10 @@ impl Status {
     }
 }
 
-/// One present table section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub table: usize,
     pub bytes: u64,
-    /// One bit per schema column changed this hour.
     pub columns: Vec<u64>,
     pub ops: u8,
 }
@@ -110,14 +86,8 @@ pub struct Manifest<'a> {
     pub dropped_frames: u64,
     pub appends: Vec<&'a [u8]>,
     pub statuses: Vec<Status>,
-    /// One bit per schema table read this hour.
     pub read: Vec<u64>,
-    /// Each table whose sample hour, the hour of the acquisition its view holds, is not
-    /// what the read bits make it (a table read this hour is sampled at it, any other keeps
-    /// its last), with that hour or none, in table order. [`SAMPLES`] marks a manifest
-    /// listing any.
     pub samples: Vec<(usize, Option<i32>)>,
-    /// In table order.
     pub sections: Vec<Section>,
 }
 
@@ -142,7 +112,6 @@ fn unzigzag(value: u64) -> io::Result<i32> {
 }
 
 impl Manifest<'_> {
-    /// `columns` holds each schema table's column count.
     pub fn write(&self, columns: &[usize]) -> io::Result<Vec<u8>> {
         let tables = columns.len();
         if self.statuses.len() != tables || self.read.len() != tables.div_ceil(64) {
@@ -229,8 +198,6 @@ impl<'a> Manifest<'a> {
         Ok(manifest)
     }
 
-    /// The manifest at the start of `bytes`, and how many bytes it took: a stream may
-    /// follow it with padding or the next manifest.
     pub fn read_prefix(bytes: &'a [u8], columns: &[usize]) -> io::Result<(Self, usize)> {
         let tables = columns.len();
         let mut reader = Reader::new(bytes);

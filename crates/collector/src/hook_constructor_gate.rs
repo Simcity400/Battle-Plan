@@ -1,5 +1,3 @@
-//! Test-only, fail-closed syntax boundary for runtime hook construction.
-//! Calls outside canonical audited constructors must be explicitly reviewed.
 use std::collections::BTreeSet;
 use syn::{
     Expr, ExprCall, Item, ItemFn,
@@ -54,8 +52,6 @@ impl Discovery {
 }
 impl<'ast> Visit<'ast> for Discovery {
     fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
-        // Macro definitions are opaque to syn's expression visitor. Pin the
-        // reviewed expansion syntax instead of silently trusting a helper body.
         let syntax = item.mac.tokens.to_string();
         let fingerprint = syntax.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
@@ -92,7 +88,6 @@ impl<'ast> Visit<'ast> for Discovery {
     fn visit_item_fn(&mut self, function: &'ast ItemFn) {
         let previous = self.in_run;
         self.in_run = function.sig.ident == "run";
-        // A nested helper is not part of the parent's audited closure.
         let audited = self.audited;
         self.audited = false;
         visit::visit_item_fn(self, function);
@@ -120,8 +115,6 @@ impl<'ast> Visit<'ast> for Discovery {
                     .push("runtime hook factory must be a direct audited closure".into());
                 return;
             };
-            // Exactly one direct canonical constructor must appear in the closure;
-            // helper factories and alias calls cannot establish registration.
             let before = self.types.len();
             self.audited = true;
             self.visit_expr(&closure.body);
@@ -151,16 +144,12 @@ impl<'ast> Visit<'ast> for Discovery {
         } else if self.in_run {
             self.routes.insert(format!("call:{name}"));
         }
-        // This direct callee was classified above. Visit its syntax without
-        // treating it as a function value; arguments retain the value guard.
         visit::visit_expr_path(self, callee);
         for argument in &call.args {
             self.visit_expr(argument);
         }
     }
     fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
-        // Only direct call position is admitted by visit_expr_call. Even an
-        // audited closure must not bind or pass an undiscovered constructor.
         let name = path(&expression.path);
         if name.ends_with("::Hooks::new") {
             self.errors
@@ -196,8 +185,6 @@ impl<'ast> Visit<'ast> for Discovery {
         }
     }
 }
-// The status macro's JSON keys are syntax; its values are Rust expressions.
-// Parse values recursively rather than treating an opaque macro as safe.
 struct StatusValues(Vec<Expr>);
 impl syn::parse::Parse for StatusValues {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
@@ -337,8 +324,6 @@ fn quiescence_refusal_retains_every_constructed_family_owner() {
 #[test]
 fn constructor_values_cannot_hide_behind_an_approved_read_route() {
     let canonical = "fn run() { FamilyHooks::construct(base, || unsafe { BODY crate::portrait_changes::Hooks::new(&memory, base) }); }";
-    // `read` is already approved: rejection must come from the constructor
-    // value itself, not an unclassified alias call or macro route.
     assert!(discover(&canonical.replace("BODY", "let _value = read(&memory, base);")).is_ok());
     for body in [
         "let read = crate::unregistered::Hooks::new; let _hidden = read(&memory, base);",

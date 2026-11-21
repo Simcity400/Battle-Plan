@@ -1,10 +1,7 @@
-//! Selected prepared state enters the ordinary decoder at its saved hour.
 use super::*;
 use crate::frame::endpoint_step::EndpointStep;
 
 impl FrameDecoder {
-    /// Restore a selected preparation accumulator, including acquisition provenance.
-    /// The next update still follows the ordinary branch and baseline rules.
     pub fn resume_for_tables(tables: &[TableId], mut frame: DecodedFrame) -> io::Result<Self> {
         let mut decoder = Self::for_tables(tables);
         let selected = decoder
@@ -45,7 +42,6 @@ impl FrameDecoder {
         Ok(decoder)
     }
 
-    /// A snapshot starts a new change span, even when its row allocations are shared.
     pub fn resume_for_tables_with_change_facts(
         tables: &[TableId],
         frame: DecodedFrame,
@@ -72,7 +68,6 @@ impl FrameDecoder {
         self.advance_endpoint_parallel_cancellable(step, workers, on_worker, &|| false)
     }
 
-    /// Cancellation happens before consuming the endpoint baseline.
     pub fn advance_endpoint_parallel_cancellable(
         &mut self,
         step: EndpointStep,
@@ -122,7 +117,6 @@ impl FrameDecoder {
         Ok(self.current.as_deref().unwrap())
     }
 
-    /// The saved or most recently reconstructed hour.
     pub fn current(&self) -> Option<&DecodedFrame> {
         self.current.as_deref()
     }

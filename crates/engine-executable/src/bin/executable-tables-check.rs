@@ -1,11 +1,9 @@
-//! Decodes every executable table from each named installation and reports which verify.
 
 use engine_executable::{build::ExecutableIdentity, executable_tables};
 use std::{path::PathBuf, time::Instant};
 
 fn main() -> std::io::Result<()> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    // `--pin <folder>` prints the registries' identity table for the build this release recognises.
     if arguments.first().is_some_and(|flag| flag == "--pin") && arguments.len() == 2 {
         let bytes = std::fs::read(PathBuf::from(&arguments[1]).join("hoi4.exe"))?;
         if !ExecutableIdentity::of(&bytes).recognised() {
@@ -45,7 +43,6 @@ fn main() -> std::io::Result<()> {
                 }
             }
         }
-        // Parts withheld inside a verified table show here; whole tables were named above.
         for withheld_part in tables.withheld() {
             withheld = true;
             println!("  withheld: {withheld_part}");

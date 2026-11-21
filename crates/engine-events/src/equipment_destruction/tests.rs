@@ -521,15 +521,12 @@ fn paradrop_records_actual_division_and_flooring_loss() {
 
 #[test]
 fn live_pool_signed_nets_include_rounding_gains_and_real_removals() {
-    // Scale + integral rounding is one observation; the intermediate scale
-    // result must not be published separately from the final rounded pool.
     let mut before = [row(70, 450001), row(71, 199999), row(72, 59999)];
     let mut after = [row(70, 400000), row(71, 200000), row(72, 100000)];
     let mut events = Vec::new();
     removals(&mut before, &mut after, |d, q| events.push((d, q))).unwrap();
     assert_eq!(events, [(70, 50001), (71, -1), (72, -40001)]);
 
-    // Scripted fractions and mod defines may keep or increase a live pool.
     events.clear();
     removals(&mut [row(70, 400001)], &mut [row(70, 400001)], |d, q| {
         events.push((d, q));
@@ -551,7 +548,6 @@ fn live_pool_signed_nets_include_rounding_gains_and_real_removals() {
 
 #[test]
 fn negative_damage_gain_is_signed() {
-    // Negative damage of one tenth scales ten equipment units to eleven.
     let mut events = Vec::new();
     removals(&mut [row(70, 1000000)], &mut [row(70, 1100000)], |d, q| {
         events.push((d, q));
@@ -562,7 +558,6 @@ fn negative_damage_gain_is_signed() {
 
 #[test]
 fn fractional_pool_rounding_gain_is_signed() {
-    // Stochastic ceiling can round a reduced fractional pool upward.
     let mut events = Vec::new();
     removals(&mut [row(70, 1030000)], &mut [row(70, 1100000)], |d, q| {
         events.push((d, q));
@@ -573,7 +568,6 @@ fn fractional_pool_rounding_gain_is_signed() {
 
 #[test]
 fn scripted_factor_above_one_and_sign_flip_are_signed() {
-    // Scripted equipment fractions are unclamped before stockpile and division scaling.
     let mut events = Vec::new();
     removals(&mut [row(70, 400001)], &mut [row(70, 800002)], |d, q| {
         events.push((d, q));

@@ -53,19 +53,16 @@ pub const SITES: [Site; 10] = [
 
 pub const SESSION_STATE: usize = 0x30;
 pub const SESSION_PLAYER: usize = 0x84;
-/// Session-player key named by a player-removal command.
 pub const REMOVED_PLAYER_KEY: usize = 0x2c;
 const HUMAN_COUNTRY_AUTOMATION_RVA: Rva = Rva(0x033d_daa9);
 pub const IDLER_RVA: Rva = Rva(0x033d_db08);
 pub const IN_GAME_IDLER_VTABLE_RVA: Rva = Rva(0x029e_58d8);
 pub const IDLER_PAUSED: usize = 0x6c1;
 
-/// The idler's sites resolve, or the first withheld one's reason.
 pub fn idler_sites(base: usize) -> Result<(), &'static str> {
     engine_sites::require(base, &[IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA])
 }
 
-/// The active idler when it is the in-game one; `None` at the menu or while another idler runs.
 pub fn in_game_idler(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
     let slot = engine_sites::at(base, IDLER_RVA).ok_or("command pause state unreadable")?;
     let in_game = engine_sites::at(base, IN_GAME_IDLER_VTABLE_RVA)
@@ -77,7 +74,6 @@ pub fn in_game_idler(memory: &impl Memory, base: usize) -> Result<Option<usize>,
     Ok((read::<u64>(memory, idler) == Some(in_game)).then_some(idler))
 }
 
-/// The pause byte of the in-game idler at `idler`.
 pub fn idler_paused(memory: &impl Memory, idler: usize) -> Result<bool, &'static str> {
     let at = idler
         .checked_add(IDLER_PAUSED)

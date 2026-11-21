@@ -1,12 +1,3 @@
-//! Each country's strategic operative as the Operatives map reads it: the
-//! mission and operation activity the agency's operatives raise against the
-//! country, and the control-trade influence and diplomatic pressure other
-//! countries hold over it. Both maps live on the target country's object and
-//! are keyed by the influencing country.
-//!
-//! The manager's pointer vector is indexed by country slot, as the network
-//! walk ([`crate::ccountry_intel_network`]) reads it; the save keys each
-//! object by that slot. A null entry has no object and no row.
 
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_operative as strategic,
@@ -14,53 +5,34 @@ use crate::{
     walk::Outcome,
 };
 
-/// Map entry's stored Robin Hood hash, u32.
 pub const ENTRY_HASH: usize = 0x00;
-/// Map entry's probe-distance byte: zero is empty; the end sentinel is all ones.
 pub const ENTRY_PROBE: usize = 0x04;
-/// Map entry's raw country key, u32: the influencing country.
 pub const ENTRY_COUNTRY: usize = 0x08;
-/// Control-trade entry stride.
 pub const TRADE_STRIDE: usize = 0x18;
-/// Control-trade influence, signed i64 fixed5.
 pub const TRADE_VALUE: usize = 0x10;
-/// Diplomatic-pressure entry stride.
 pub const PRESSURE_STRIDE: usize = 0x28;
-/// Diplomatic-pressure acceptance, signed i64 Q15 (saved as `opinion`).
 pub const PRESSURE_ACCEPTANCE: usize = 0x10;
-/// Diplomatic-pressure tension, signed i64 Q15.
 pub const PRESSURE_TENSION: usize = 0x18;
 pub const MISSION_ROSTERS: [(u32, usize); 5] =
     [(3, 0x28), (5, 0x58), (8, 0x70), (6, 0x88), (7, 0xa0)];
-// Both entry kinds hold their first value at the same offset.
 const _: () = assert!(TRADE_VALUE == PRESSURE_ACCEPTANCE);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub mission_counts: [usize; 5],
-    /// Acquisition identity for certified auxiliary readers; never recorded.
     pub native_pointer: usize,
-    /// The object's raw owner country reference.
     pub country: u32,
-    /// Its index in the manager's vector, the country slot the save keys by.
     pub slot: u32,
     pub mission_activity: i64,
     pub operation_activity: i64,
-    /// The row's entries in the caller's arena: `trade_len` control-trade
-    /// entries from `entries_start`, then `pressure_len` diplomatic-pressure
-    /// entries, each map in native table order.
     pub entries_start: usize,
     pub trade_len: usize,
     pub pressure_len: usize,
 }
 
-/// One map entry. A control-trade entry holds its influence in `value` and a
-/// zero `tension`; a diplomatic-pressure entry holds its acceptance in
-/// `value` and its tension.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     pub operative: u64,
-    /// The influencing country's raw reference.
     pub owner: u32,
     pub value: i64,
     pub tension: i64,
@@ -69,11 +41,8 @@ pub struct Entry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
-    /// The already-acquired manager membership for auxiliary bootstrap reads.
-    /// None when the manager is disabled or acquisition failed.
     pub objects: Option<Array>,
     pub entries_len: usize,
-    /// Entries every object needs, including omitted rows.
     pub required_entries: usize,
 }
 
@@ -81,8 +50,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Every country slot's strategic operative. A row whose entries do not fit
-/// is omitted and counted; sizing walks validate every entry.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -110,7 +77,6 @@ pub fn walk_buffer(
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let manager_pointer =
             pointer(memory, game_state, cgame_state::STRATEGIC_OPERATIVE_MANAGER)?;
-        // The constructor leaves this root null when La Resistance is disabled.
         if manager_pointer == 0 {
             return Ok(Walk {
                 outcome: Outcome::Rows { len: 0 },
@@ -272,11 +238,6 @@ pub fn walk_buffer(
     })
 }
 
-/// A Robin Hood map header with the operation-token maps' layout
-/// ([`operation_token_map`]): a table of `mask + 1 + overflow` slots
-/// followed by an end sentinel. An empty map before its first insertion has
-/// a zero mask and overflow and points at shared static storage, which is
-/// not read.
 #[derive(Debug, Clone, Copy)]
 struct Map {
     data: usize,
@@ -287,7 +248,6 @@ struct Map {
     stride: usize,
 }
 
-/// A signed i64 at `at` in one copied map slot.
 fn word(slot: &[u8], at: usize) -> i64 {
     i64::from_le_bytes(slot[at..at + 8].try_into().unwrap())
 }
@@ -351,9 +311,6 @@ impl Map {
         })
     }
 
-    /// Every occupied entry's key and copied slot in table order, after
-    /// checking its probe distance and its key, and that the census equals
-    /// the count.
     fn visit<M: Memory>(
         &self,
         memory: &M,

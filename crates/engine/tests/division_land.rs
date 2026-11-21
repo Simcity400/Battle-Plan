@@ -102,8 +102,6 @@ fn ordered_contributors_signed_amounts_and_whole_list_capacity() {
     assert_eq!(r.contributors, 20);
     assert_eq!(entries[1].amount, -7);
     assert_eq!(entries[1].country, 0x8000_0001);
-    // The supply ratio and grace are DivisionStatus's record; an unread one
-    // never withholds the land rows.
     seeds[0].counter_supply_status = None;
     seeds[1].supply_grace_maximum = None;
     seeds[2].supply_grace_remaining = None;
@@ -146,7 +144,6 @@ fn failed_headers_entries_and_identity_are_unavailable() {
             Outcome::Unavailable { .. }
         ));
     }
-    // Shared seeds remain readable; only the second contributor is short.
     let memory = SliceMemory {
         base,
         bytes: &bytes[..0x68f],

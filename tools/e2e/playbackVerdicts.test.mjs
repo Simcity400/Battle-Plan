@@ -5,7 +5,6 @@ import { FAIL, PARTIAL, PASS, UNMEASURABLE, dashboardRows, floorOf, pacedRows, p
 const T = 1e6 / 60;
 const FROM = 1000;
 
-/** A paced run of `n` frames at 60 Hz and 1,440 h/s: the layers 10 h behind, today's parts 30 h; `edit` changes frames. */
 function paced(n = 120, edit = () => {}, { seeks = null, exit = 0 } = {}) {
   const frames = Array.from({ length: n }, (_, k) => ({ frame: k, start_us: k * T, wall_us: 5000, thread_us: 3000, head_hour: FROM + 24 * k,
     drawn_hour: k ? FROM + 24 * k - 30 : null, lag_hours: k ? 30 : null, new_hour: k > 0, layers: { drawn: FROM + 24 * k - 10, lag_hours: 10 } }));
@@ -22,7 +21,6 @@ const verdictOf = (rows, bar) => rows.find(row => row.bar === bar).verdict;
 test('a paced run is whole only when it exited 0, ran its span to the end and made every seek', () => {
   const run = paced();
   assert.deepEqual(wholeHarness(run.run, run.report, run.frames), { whole: true, reasons: [], accepted: null });
-  // Exit 1 from the harness's own CPU reconciliation is partial; accepted only when asked, and then said.
   const unreconciled = { ...run.report, cpu_reconciliation: { passed: false, process_minus_scopes_ns: -8e7, process_cpu_ns: 1e9 } };
   assert.match(wholeHarness({ ...run.run, exit: 1 }, unreconciled, run.frames).reasons[0], /CPU reconciliation failed \(process CPU off its scopes by -8\.0% on 1\.0 s/);
   assert.match(wholeHarness({ ...run.run, exit: 1 }, unreconciled, run.frames, { acceptReconciliation: true }).accepted, /not a result under the rule/);
@@ -32,13 +30,10 @@ test('a paced run is whole only when it exited 0, ran its span to the end and ma
   assert.match(wholeHarness(run.run, run.report, { ...run.frames, cut: true }).reasons.join(), /cut line/);
   assert.match(wholeHarness({ ...run.run, memory: { least_free_mb: 900 } }, run.report, run.frames).reasons[0], /the machine was paging: 900 MB/);
   assert.equal(wholeHarness({ ...run.run, memory: { least_free_mb: 9000 } }, run.report, run.frames).whole, true);
-  // The head stopped half way: the harness wrote what it had.
   const short = paced(60);
   const cut = { ...short.report, game_hours: 24 * 120 };
   assert.match(wholeHarness({ ...short.run, args: short.run.args.map(value => (value === String(24 * 60) ? String(24 * 120) : value)) }, cut, short.frames).reasons.join(), /the head reached 2440, asked 3880/);
   assert.match(wholeHarness({ ...run.run, args: [...run.run.args, '--seeks', '2'] }, { ...run.report, layers: { seeks: [{ frame: 90, frames_to_shown: 2 }] } }, run.frames).reasons.join(), /1 of 2 seeks shown/);
-  // Sought back after its span (`--seek-back`): whole once a drawn frame reached the end, the seek was shown and the head
-  // ended past the hour sought; a step run draws one frame more.
   const back = paced(120, frames => { for (let k = 100; k < 120; k++) frames[k].head_hour = FROM + 240 + 24 * (k - 100); frames[99].head_hour = FROM + 24 * 120; });
   const sought = { ...back.run, args: [...back.run.args, '--seek-back', String(FROM + 240)] };
   const shown = { ...back.report, seek_back: FROM + 240, layers: { seeks: [{ hour: FROM + 240, frame: 100, frames_to_shown: 2 }] } };
@@ -55,7 +50,6 @@ test('a paced run is whole only when it exited 0, ran its span to the end and ma
 test('a run whose last frame was long reached its end inside that frame, so it is whole', () => {
   const run = paced(100, frames => { frames[99].wall_us = 650_000; });
   run.report.paced.seconds = (run.frames.frames[99].start_us + 650_000) / 1e6;
-  // The head stops 24 h short of the end in the last frame's record; it reached the end while that frame ran.
   assert.equal(wholeHarness(run.run, run.report, run.frames).whole, true);
 });
 
@@ -146,8 +140,6 @@ test('repeats give each figure\'s spread over whole runs', () => {
   assert.deepEqual(spread([...rows, { ...rows[0], repeat: 4, verdict: PARTIAL, values: { p99: 99 } }])[0].values, { p99: [2, 6] });
 });
 
-/** A perf log of a page played at 1,440 h/s on 60 Hz for three seconds after a second paused, with one late frame, one
- * React commit and one request planted, and the same kinds of work at the anchors and while paused, which are not judged. */
 function syntheticLog() {
   const records = [{ t: 'page', at: 0, loaf: true }, { t: 'widget', at: 0, id: 'w1', title: 'Political power' }, { t: 'widget', at: 0, id: 'w2', title: 'Stability' },
     { t: 'follow', at: 1, id: 1, status: 'pending', product: 'series-state' }, { t: 'follow_widget', at: 1, widget: 'w1', id: 1 }, { t: 'follow', at: 5, id: 1, status: 'followed' },
@@ -165,11 +157,9 @@ function syntheticLog() {
     const commit = (playing && index === 61) || index === 10 ? 1 : 0;
     records.push({ t: 'frame', at, dt, playing, late: 0.1, commits: commit, main: 2, ...(commit && { zones: { 'widget:w1': 1 } }) });
   }
-  // The planted commit and request, long after the anchor.
   const planted = records.find(record => record.t === 'frame' && record.at > 3000);
   Object.assign(planted, { commits: 1, zones: { 'widget:w1': 1 } });
   records.push({ t: 'q', at: planted.at + 2, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 1 });
-  // Asked at the play anchor and while paused: not judged; a cached answer and the follow protocol are no requests.
   records.push({ t: 'q', at: 1005, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 1 },
     { t: 'q', at: 500, cmd: 'dashboard_product', product: 'army-size', outcome: 'ok', ms: 1 },
     { t: 'q', at: 3500, product: 'series-state', cache: 'hit' }, { t: 'q', at: 3600, cmd: 'dashboard_product', product: 'follow-clock', outcome: 'ok', ms: 1 },
@@ -218,7 +208,6 @@ test('a list\'s request for a block wholly ahead of the head passes once per blo
   const ticks = log.records.filter(record => record.t === 'tick' && record.playing);
   const headAt = time => Math.floor(ticks.filter(tick => tick.at <= time).at(-1).hour);
   const page = (at, from, lane = 'battles') => ({ t: 'q', at, cmd: 'dashboard_product', product: 'land-battles', outcome: 'ok', ms: 1, lane, from, head: headAt(at) });
-  // Each window asked once as the head enters the one before it.
   log.records.push(page(3100, headAt(3100) + 400), page(3300, headAt(3300) + 400), page(3500, headAt(3500) + 400));
   const judged = () => dashboardRows({ ...log, records: [...log.records].sort((a, b) => a.at - b.at) }, { refreshHz: 60 }).rows;
   const ahead = judged().find(row => row.bar === 'list requests ahead of the head');

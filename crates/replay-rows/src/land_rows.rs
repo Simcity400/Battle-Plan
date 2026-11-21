@@ -1,11 +1,9 @@
-//! Land event observations and the hourly division companion columns.
 use super::*;
 use crate::value::value_struct;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandEquipmentLoss {
-    /// Full native equipment-variant handle; names resolve through recorded content.
     pub variant: u64,
     pub amount_raw: i64,
 }
@@ -24,8 +22,6 @@ pub struct LandSideLosses {
 value_struct!(LandSideLosses { manpower: i32, equipment: Vec<LandEquipmentLoss> });
 opaque_value!([LandSideLosses; 2]);
 
-/// Terminal supplemental observer operand; aggregate losses use `losses`.
-/// Kinds have the same meanings as CombatLogObserverKind.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandTerminalObserver {
@@ -57,16 +53,10 @@ opaque_value!(Vec<DivisionManpowerContributor>);
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionLandInputsRow {
     pub division: u64,
-    /// Raw contributor references and signed amounts, in native order.
     pub manpower: Vec<DivisionManpowerContributor>,
-    /// Retired copies of `DivisionStatus.supply_ratio`, `supply_grace_maximum` and
-    /// `supply_grace_remaining`: both tables took them from the same hour's DivisionSeed (the
-    /// division's supply ratio and supply grace), so a division's DivisionStatus row is their
-    /// record.
     pub received_supply: RetiredI64,
     pub maximum_grace: RetiredI64,
     pub remaining_grace: RetiredI64,
-    /// The division's naval-transfer pointer is not null: the division is in a naval transfer.
     pub naval_transfer: bool,
 }
 typed_codec!(
@@ -101,35 +91,20 @@ opaque_value!([Vec<u8>; 2]);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatResultsRow {
-    /// Hook sequence, unique within the attachment. Join on combat, not id.
     pub id: u64,
     pub combat: u64,
     pub province: u32,
-    /// Round counter incremented after each non-terminating round. It is not
-    /// elapsed days or a start date.
     pub day: i32,
     pub duration: i32,
     pub end_hour: i32,
-    /// Attacker then defender. Same reference conventions as LandCombatSides.
     pub sides: [LandResultSide; 2],
-    /// Combat finalization's winning branches: bit0 attacker, bit1 defender. Equal
-    /// progress with both outcome bits clear awards the defender.
     pub winners: u8,
     pub border_war: bool,
-    /// Border-war forced end flags and the two native participation predicates queried by its
-    /// finalizer (255 means not queried).
     pub border_end_flags: [u8; 3],
     pub border_terminating: [u8; 2],
-    /// Winner selected by round termination's leader on-actions, when dispatched.
-    /// Participants are copied before its subsequent retreat.
     pub on_action_winners: Option<u8>,
-    /// Exact post-finalizer end-history projection, distinct from pre-retreat
-    /// `sides`. Zero denotes the native null country reference.
     pub history_countries: [u32; 2],
-    /// Exact raw-tag strings used for saved history, independent of canonical
-    /// country-link aliases or later country-slot reuse.
     pub history_tags: [Vec<u8>; 2],
-    /// Attacker then defender, after combat finalization's pending-damage flush.
     pub losses: [LandSideLosses; 2],
     pub observers: Vec<LandTerminalObserver>,
 }
@@ -167,17 +142,11 @@ pub struct DestroyedDivisionsRow {
     pub division: u64,
     pub owner: u32,
     pub killer_country: u32,
-    /// Some(0) is a witnessed native null. None means the native death path
-    /// selects no killer division; unavailable reads still fail the table.
     pub killer_division: Option<u64>,
     pub province: u32,
-    /// Native destruction destination, absent when the wipe path selects none.
     pub destination: Option<u32>,
-    /// Native combat references at destruction, in order. Empty is exact.
     pub combats: Vec<u64>,
     pub hour: i32,
-    /// The wipe caller unlinks this combat before invoking participant lifecycle;
-    /// keep it separate from the remaining native reference vector.
     pub triggering_combat: Option<u64>,
     pub combat_province: Option<u32>,
 }
@@ -208,9 +177,7 @@ pub struct LandEventCoverageRow {
     pub epoch: u64,
     pub from_hour: i32,
     pub to_hour: i32,
-    /// Certifies the event interval independently of hourly casualty samples.
     pub complete: bool,
-    /// Cumulative missed observations, including hourly casualty read shortages.
     pub lost_events: u64,
 }
 typed_codec!(

@@ -58,6 +58,5 @@ fn unit_type_reads_keys_instead_of_guessing_a_keyless_list() {
         },
     );
     assert!(read.unsettled.is_none(), "{read:?}");
-    // @kept was consumed in `ship`'s operator place, never defined.
     assert_eq!(read.items[1].value.scalar(), Some(b"@kept".as_slice()));
 }

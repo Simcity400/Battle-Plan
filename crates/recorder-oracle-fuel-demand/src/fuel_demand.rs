@@ -1,4 +1,3 @@
-//! Supplying-read cached demand has its own save witness, never a burn delta.
 use super::{Report, complete, country_tag, invalid, required_country_tag};
 use super::{compare_text, equal};
 use installed_content_save::Save;
@@ -24,7 +23,6 @@ pub fn compare(
         .flat_map(|theatre| &theatre.definitions)
         .map(|group| (group.id, group))
         .collect();
-    // Join each current pack with its lists' keyed parts.
     let rows = replay_frame::rows::with_demand_parts(
         complete::<tables::CountryFuel>(frame)?,
         &frame.tables[TableId::FuelDemandParts.index()],
@@ -40,7 +38,6 @@ pub fn compare(
             continue;
         };
         let tag = required_country_tag(row.country, links)?;
-        // A host pack requires a current row; an explicit hour must match it.
         let fresh = if pack.hour == FuelDemandHour::Host {
             report.read_at_hour(TableId::CountryFuel)
         } else {
@@ -61,7 +58,6 @@ pub fn compare(
         {
             return Err(invalid("fuel demand supplying census is incomplete"));
         }
-        // Existing save packs preserve exactly these native roster orders.
         census(
             report,
             &format!("{label}.divisions"),
@@ -168,8 +164,6 @@ pub fn compare(
                 .fleets
                 .get(&fleet.reference)
                 .ok_or_else(|| invalid("fuel demand fleet absent from save"))?;
-            // The game writes even an empty ordinary fleet name. Unlike the
-            // conditional unit task-force name, omission is not empty text.
             text(
                 report,
                 &format!("{label}.fleet.{:#x}.name", fleet.reference),
@@ -248,8 +242,6 @@ fn conditional_name(
     saved: Option<&[u8]>,
 ) -> io::Result<()> {
     let actual = actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?;
-    // Unit and formation names gate on stored length;
-    // The game emits the first-NUL prefix, including an emitted empty name.
     let prefix = installed_content_core::parser::c_string(actual);
     if prefix.len() < actual.len() {
         report.limitation(
@@ -269,7 +261,6 @@ fn owners(
     label: &str,
 ) -> io::Result<()> {
     let owners = actual.ok_or_else(|| invalid("fuel demand owner words unavailable"))?;
-    // Unit country words separately retain roster, expeditionary and logical owners.
     equal(
         report,
         format!("{label}.roster"),
@@ -320,8 +311,6 @@ fn compare_wings(
             let override_country = wing
                 .country_override
                 .ok_or_else(|| invalid("fuel demand wing owner selection unavailable"))?;
-            // The signed-positive override supplies the wing's saved tag.
-            // The pool's enclosing saved country is fallback.
             let expected_owner = if override_country > 0 {
                 equal(
                     report,

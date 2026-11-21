@@ -1,6 +1,3 @@
-//! War-screen score projection over recorded directional ledgers and demanded
-//! same-side delivery histories. Callers preserve native side occurrence order
-//! and remove the selected country's aliases from the history operands.
 use crate::fixed_point::{fixed5_to_q15, q15_to_fixed5};
 pub use game_model::war_participation::{DeliveryHistory, Scores};
 
@@ -12,7 +9,6 @@ pub struct Factors {
     pub fuel_received: i64,
 }
 fn fuel_score(fuel: i64, factor: i64) -> i64 {
-    // The side's fuel is summed before the signed dword conversion.
     let units = (fuel / 100_000) as i32;
     let weighted = i64::from(units).wrapping_mul(factor).wrapping_mul(100_000) / 100_000;
     if (weighted as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
@@ -54,8 +50,6 @@ pub fn breakdown(
     result
 }
 
-/// The selected participant must be included in `scores`, exactly where the
-/// native side lists it (appended if absent). Repeated side occurrences remain.
 pub fn share(selected: i64, scores: impl IntoIterator<Item = i64>) -> i64 {
     let denominator = scores
         .into_iter()

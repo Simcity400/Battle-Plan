@@ -1,21 +1,3 @@
-//! The air force by canonical slot, each wing counted for its roster owner and for its effective
-//! country (its positive country override, else its owner). [`AirForce`] writes
-//! `AirForceTotals`: planes (the wing's recorded whole-plane word) and wings.
-//! [`AirForceComposition`] writes, from the wings' equipment, `AirForceParts` (planes by the
-//! variant they are counted under), `AirForceWingKinds` (wings by the set of variants their
-//! equipment holds) and `AirForceWingSignatures` (those sets, numbered while some live wing holds
-//! one, a number never given twice in a run). The composition is its own writer so that equipment
-//! not read in full withholds it alone, never the totals.
-//!
-//! What is not known is not recorded, never zero: while some wing of an attribution has an owner
-//! no link resolves, every country's cells of that attribution (and its parts and kinds rows are
-//! deleted); while a counted wing's plane word is negative, its country's planes and the parts its
-//! planes would split into. Every live country's slot has a totals row.
-//!
-//! State is the tables: each hour applies the wings and equipment entries the hour changed; a
-//! fresh hour, a resume or a change of links (or, for the totals, country slots) rebuilds every
-//! count from the current tables. The composition's resume blob holds the next number alone.
-//! Variants are kept as handles: names are the reply's.
 
 use crate::{
     forces::{self, Owners, exact, invalid, number, written},
@@ -35,10 +17,8 @@ use std::{
 const WING_COLUMNS: [usize; 3] = columns::<AirWingRow, 3>(["owner", "country_override", "planes"]);
 const EQUIPMENT_COLUMNS: [usize; 2] = columns::<WingEquipmentRow, 2>(["variant", "amount_raw"]);
 
-/// Fixed5 equipment amount of one plane.
 const SCALE: i64 = 100_000;
 
-/// Roster owner, then effective country.
 const SIDES: usize = 2;
 
 const WINGS: Read = Read { table: TableId::AirWings, columns: Columns::These(&WING_COLUMNS), watch: Watch::Changed, required: true };
@@ -46,12 +26,10 @@ const COUNTRIES: Read = Read { table: TableId::Countries, columns: Columns::Thes
 const LINKS: Read = Read { table: TableId::CountryLinks, columns: Columns::These(&[0]), watch: Watch::Changed, required: true };
 const EQUIPMENT: Read = Read { table: TableId::WingEquipment, columns: Columns::These(&EQUIPMENT_COLUMNS), watch: Watch::Changed, required: true };
 
-/// A wing's raw owners: its roster owner, and its effective country.
 fn owners(owner: u32, country_override: i32) -> [u32; SIDES] {
     [owner, if country_override > 0 { country_override as u32 } else { owner }]
 }
 
-/// The wing at AirWings `slot`: its id, raw owners and planes, none for a negative plane word.
 fn wing(view: &TableView<'_>, slot: u32) -> io::Result<(u64, [u32; SIDES], Option<i64>)> {
     let table = TableId::AirWings;
     let id = view.key(slot).ok_or_else(|| invalid(format!("AirWings slot {slot} holds no row")))? as u64;
@@ -61,7 +39,6 @@ fn wing(view: &TableView<'_>, slot: u32) -> io::Result<(u64, [u32; SIDES], Optio
     Ok((id, owners(owner, country_override), (planes >= 0).then_some(planes)))
 }
 
-/// Whether each attribution is known: no wing of it has an owner no link resolves.
 fn known(unresolved: [i64; SIDES]) -> [bool; SIDES] {
     unresolved.map(|count| count == 0)
 }
@@ -76,21 +53,16 @@ struct Wing {
 struct Total {
     wings: i64,
     planes: i128,
-    /// Wings whose plane word is negative.
     bad_planes: i64,
 }
 
-/// `AirForceTotals`.
 #[derive(Default)]
 pub struct AirForce {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     owners: Owners,
     wings: HashMap<u64, Wing>,
     totals: HashMap<(u32, usize), Total>,
-    /// Wings of each attribution whose owner no link resolves.
     unresolved: [i64; SIDES],
-    /// The slots whose totals the hour moved.
     dirty: HashSet<u32>,
 }
 
@@ -130,7 +102,6 @@ impl AirForce {
         Ok(())
     }
 
-    /// Applies the wings the hour changed; false when it must rebuild instead.
     fn apply(&mut self, hour: &Hour<'_>) -> io::Result<bool> {
         if forces::links_moved(hour) || forces::countries_moved(hour) {
             return Ok(false);
@@ -157,7 +128,6 @@ impl AirForce {
         Ok(true)
     }
 
-    /// The totals row of `slot`; none for a slot that is no live country's and holds no wing.
     fn row(&self, slot: u32) -> Option<Vec<Value>> {
         let held = [self.totals.get(&(slot, 0)), self.totals.get(&(slot, 1))];
         if !self.owners.countries().contains(&slot) && held.iter().all(Option::is_none) {
@@ -216,7 +186,6 @@ impl Writer for AirForce {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every count from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }
@@ -230,17 +199,10 @@ impl Writer for AirForce {
     }
 }
 
-/// What a wing's planes are counted under: a variant, or none for planes no entry identifies.
 type Part = Option<u64>;
 
-/// A composition: the variants a wing's equipment holds positive amounts of, ascending.
 type Shape = Arc<[u64]>;
 
-/// A wing's planes by part, ascending, as its equipment splits them: each entry's whole planes
-/// (its fixed5 amount over [`SCALE`]) under its variant and the rest of the plane word under none.
-/// Entries that cannot split the word exactly (a negative or fractional amount, or more than it)
-/// leave every variant unknown and the whole word under none; a negative word leaves every part
-/// unknown.
 fn split(planes: Option<i64>, entries: &[(u64, i64)]) -> Vec<(Part, Option<i64>)> {
     let mut parts: BTreeMap<Part, Option<i64>> = BTreeMap::new();
     let Some(planes) = planes else {
@@ -269,7 +231,6 @@ fn split(planes: Option<i64>, entries: &[(u64, i64)]) -> Vec<(Part, Option<i64>)
     parts.into_iter().collect()
 }
 
-/// The variants `entries` hold positive amounts of, ascending.
 fn signature(entries: &[(u64, i64)]) -> Vec<u64> {
     let mut variants: Vec<u64> = entries.iter().filter(|(_, amount)| *amount > 0).map(|&(variant, _)| variant).collect();
     variants.sort_unstable();
@@ -302,36 +263,27 @@ struct Bank {
 
 #[derive(Clone, Copy, Default)]
 struct PartSum {
-    /// Wings' entries counted under the part.
     entries: i64,
     sum: i128,
     unknown: i64,
 }
 
-/// One country's composition under one attribution.
 #[derive(Default)]
 struct Mix {
     parts: HashMap<Part, PartSum>,
     kinds: HashMap<Shape, i64>,
 }
 
-/// `AirForceParts`, `AirForceWingKinds` and `AirForceWingSignatures`.
 #[derive(Default)]
 pub struct AirForceComposition {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     owners: Owners,
     wings: HashMap<u64, Bank>,
-    /// Each wing's WingEquipment ordinals.
     entries: HashMap<u64, Vec<u32>>,
     mixes: HashMap<(u32, usize), Mix>,
     unresolved: [i64; SIDES],
-    /// Each composition a live wing holds, with the wings holding it.
     held: HashMap<Shape, u32>,
-    /// Compositions the hour took from their last wing.
     released: Vec<Shape>,
-    /// The numbers `AirForceWingSignatures` gives compositions, both ways, and the next, which
-    /// only rises in a run.
     numbers: HashMap<Shape, u32>,
     named: HashMap<u32, Shape>,
     next: u32,
@@ -395,7 +347,6 @@ impl AirForceComposition {
         }
     }
 
-    /// The wing at AirWings `slot` as counted, its entries read from WingEquipment.
     fn bank(&mut self, hour: &Hour<'_>, wings: &TableView<'_>, slot: u32) -> io::Result<(u64, Bank)> {
         let (id, raw, planes) = wing(wings, slot)?;
         let table = TableId::WingEquipment;
@@ -421,7 +372,6 @@ impl AirForceComposition {
         self.wings.insert(id, bank);
     }
 
-    /// The numbers the table gives compositions, as it stands.
     fn read_numbers(&mut self, out: &Rows<'_>) -> io::Result<()> {
         self.numbers.clear();
         self.named.clear();
@@ -461,7 +411,6 @@ impl AirForceComposition {
         Ok(())
     }
 
-    /// Applies the wings and entries the hour changed; false when it must rebuild instead.
     fn apply(&mut self, hour: &Hour<'_>) -> io::Result<bool> {
         if forces::links_moved(hour) {
             return Ok(false);
@@ -500,7 +449,6 @@ impl AirForceComposition {
         Ok(true)
     }
 
-    /// Numbers `shapes` the table does not name yet, in their order, and writes their rows.
     fn number_shapes(&mut self, shapes: Vec<Shape>, out: &mut Rows) {
         let mut fresh: Vec<Shape> = shapes.into_iter().filter(|shape| !self.numbers.contains_key(shape)).collect();
         fresh.sort_unstable();
@@ -515,8 +463,6 @@ impl AirForceComposition {
         }
     }
 
-    /// Deletes the numbers of compositions no live wing holds: those the hour released, or every
-    /// one when the hour wrote every row.
     fn forget_shapes(&mut self, out: &mut Rows<'_>, all: bool) {
         let released = std::mem::take(&mut self.released);
         let mut gone: Vec<u32> = match all {
@@ -607,7 +553,6 @@ impl Writer for AirForceComposition {
         Ok(())
     }
 
-    /// The next number alone: a resume rebuilds every count from the tables.
     fn save(&self, blob: &mut Bytes) -> io::Result<()> {
         blob.varint(u64::from(self.next))
     }

@@ -6,17 +6,13 @@ import type { AirLooks, AirView } from '../../dashboard/airSuperiority';
 import { int, object } from '../../dashboard/validation.ts';
 import type { AirCell, AirDayCell, AirRankingReply, AirSuperiorityReply, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 
-/** Hours of a tile of cells (256 game days) on the absolute grid; following, the view ends at the end of the head's
- * tile while playing: a request per 256 days of travel. */
 export const STEP = 256 * 24;
 export const tileOf = (hour: number) => Math.floor(hour / STEP);
 
-/** The hour a following view ends at: the end of the head's step while playing, the head itself at a pause. */
 export const followedEnd = (hour: number, playing: boolean) => playing ? Math.floor(hour / STEP) * STEP + STEP - 1 : Math.floor(hour);
 
 const NOT_RECORDED = valuesOf<number>(new Map(), 'Scores were not recorded at this hour.');
 
-/** A day's cell as the moment's cell and the values its scores give: the moment's rules then make its view. */
 export function asMoment(cell: AirDayCell): { cell: AirCell; values: LiveValues<number> } {
   if (cell.kind === 'reason') return { cell, values: NOT_RECORDED };
   const held = new Map<string, number>();
@@ -33,7 +29,6 @@ export function asMoment(cell: AirDayCell): { cell: AirCell; values: LiveValues<
     values: valuesOf(held, 'Not recorded') };
 }
 
-/** A day's view: none recorded is a gap; the day's sides left out are added to the cell's. */
 export function dayView(cell: AirDayCell | null, reply: AirTimelineReply, looks: AirLooks, order: ReadonlyMap<string, number>, day: number): AirView {
   if (cell === null || reply.days[day] == null) return cellView(null, reply.sides, NOT_RECORDED, looks, order, null, false);
   const { cell: moment, values } = asMoment(cell);
@@ -42,18 +37,15 @@ export function dayView(cell: AirDayCell | null, reply: AirTimelineReply, looks:
   return excluded ? { ...view, excluded: view.excluded + excluded } : view;
 }
 
-/** What the heat strip draws of a view. */
 export function heatCell(view: AirView): HeatCell {
   return { parts: view.parts, unknown: view.state === 'unknown', filtered: view.reason === 'outside-theatres' };
 }
 
-/** Each day of the reply as a heat period: its hours within the view and the hour it was read. */
 export function airPeriods(reply: AirTimelineReply): HeatPeriod[] {
   return reply.days.map((readHour, index) => ({ firstHour: reply.firstHour + index * reply.dayHours,
     lastHour: Math.min(reply.lastHour, reply.firstHour + (index + 1) * reply.dayHours - 1), readHour }));
 }
 
-/** The run of `row` holding `day`, as its cell. */
 export function cellAt(row: AirTimelineRow, day: number): AirDayCell | null | undefined {
   let start = 0;
   for (const [repeat, cell] of row.cells) {
@@ -63,7 +55,6 @@ export function cellAt(row: AirTimelineRow, day: number): AirDayCell | null | un
   return undefined;
 }
 
-/** The rows as heat strips: equal runs share one cell, so a run is projected once. */
 export function timelineRows(reply: AirTimelineReply, looks: AirLooks): HeatRow[] {
   const order = sideOrder(reply.sides);
   return reply.rows.map(row => {
@@ -80,14 +71,11 @@ export function timelineRows(reply: AirTimelineReply, looks: AirLooks): HeatRow[
   });
 }
 
-/** The day of the reply holding `hour`; none outside it. */
 export function dayOf(reply: AirTimelineReply, hour: number): number | null {
   const day = Math.floor((hour - reply.firstHour) / reply.dayHours);
   return day >= 0 && day < reply.days.length ? day : null;
 }
 
-/** The head's day drawn from the moment's live values: its hours through the hour the values are of, each
- * region's cell as the moment composes it at that hour. */
 export function headTail(moment: AirSuperiorityReply, values: LiveValues<number>, looks: AirLooks, regions: readonly { id: number; name: string }[],
   hour: number, dayHours: number): { tail: HeatTail; views: Map<number, AirView> } {
   const views = new Map(momentViews(moment, values, looks, regions).map(row => [row.region.id, row.view]));
@@ -140,8 +128,6 @@ export function validateAirTimeline(value: unknown): AirTimelineReply {
   return value as AirTimelineReply;
 }
 
-/** The tiles a view's cells are asked in: those it covers whole (each asked through its own end, the same request
- * however the view grows), and the one its last hour cuts, asked through that hour. */
 export function viewTiles(firstHour: number, lastHour: number): { whole: number[]; cut: number | null } {
   const first = tileOf(firstHour), last = tileOf(lastHour);
   const ends = (lastHour + 1) % STEP === 0;
@@ -150,8 +136,6 @@ export function viewTiles(firstHour: number, lastHour: number): { whole: number[
   return { whole, cut: ends ? null : last };
 }
 
-/** The tiles' days and rows joined in hour order: each tile's cells made with its own sides; a tile not yet read
- * leaves its hours loading. */
 export function joinTiles(tiles: readonly (AirTimelineReply | undefined)[], spans: readonly { firstHour: number; lastHour: number }[], looks: AirLooks,
   regions: readonly { id: number; name: string }[]): { rows: HeatRow[]; periods: HeatPeriod[]; loading: { firstHour: number; lastHour: number }[] } {
   const rows: HeatRow[] = regions.map(region => ({ id: String(region.id), label: region.name, cells: [] }));

@@ -1,46 +1,3 @@
-//! The window-following province and region read (`weather_changes`).
-//!
-//! With both suspension bytes and the initial-mode byte clear, the hourly weather update runs
-//! exactly one window pass; it is the pass's only caller. The pass visits two rotating windows:
-//! Province slots from their cursor , as many as `provinces_per_update` or the whole array,
-//! wrapping at the live Count ; and region slots from their cursor, as many as
-//! `regions_per_update`, wrapping at the region count ([`window`]). Both budgets are parsed from
-//! `common/weather.txt`, so mods set them; each hour sizes its windows from the live words.
-//!
-//! Every hourly writer of a recorded province or region field is reached
-//! only through those windows. Temperature staging has two callers, both
-//! over the window's pointer list; publication copies in the pass and its
-//! two jobs use that same list. The display writer runs only from the pass.
-//! Region updates run from the pass and its range job over the region
-//! window's list, and alone among hourly code rebuild region modifiers.
-//! Writers outside the windows are the reseed (used by the weather
-//! randomization effect, reload command and reset), the reset and reload
-//! Commands  (reload initializes before reseeding), snow, mud and region
-//! console commands, the console command running hourly game state, the
-//! load reader and post-load initial passes, and the province modifier
-//! addition and removal and the daily expiry's rebuild of a province whose list
-//! dropped a modifier, which rebuild a province's modifier accumulator outside
-//! the window. They and the load reader are also every writer of a province's static
-//! modifier list but one, the daily expiry's countdown of positive days, which no hook sees:
-//! the lists are carried whole and read afresh only after a counted write or a daily update
-//! ([`WeatherCarry::statics_held`]).
-//! The country input family
-//! hooks them and counts each call on entry and return
-//! ([`crate::country_input_changes::weather_writes`]). A new game allocates
-//! its new manager before freeing the old one, so their addresses differ.
-//!
-//! So an hour whose read finds the count, the manager, both arrays and both
-//! budgets as the held read left them, the gates and the initial mode clear,
-//! and both cursors exactly one pass further, reads only the windows'
-//! records (and the visited regions' modifier entries and custom sea values) and carries every
-//! other record from the held read. Anything else (the first hour, a gap, a
-//! forced full hour, a moved count, a cursor that moved by anything but one
-//! pass, a failed read) reads every record and holds it. A window read that
-//! fails is not repeated: that part is unavailable for the hour, a refused
-//! region's combat entries are absent, and the next hour reads every record.
-//! Clocks and the two display arrays are still read whole every hour: the
-//! day/night update rewrites every clock hourly.
-
 use super::*;
 use crate::country_input_changes::weather_carry::{
     CUSTOM_SEA_REFUSALS, FULL_HOURS, MODIFIER_FULL_HOURS, MODIFIER_LOOKUPS, MODIFIER_REFUSALS,
@@ -49,7 +6,6 @@ use crate::country_input_changes::weather_carry::{
 use engine_allocation::SharedBox;
 use std::sync::atomic::Ordering::Relaxed;
 
-/// One rotating array's live words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pass {
     pub data: usize,
@@ -74,8 +30,6 @@ impl Pass {
         })
     }
 
-    /// The slots one ordinary pass visited from this held pass, when `now`
-    /// is what it left: `(first, visits)`.
     fn window_to(self, now: Self) -> Option<(u32, u32)> {
         if (self.data, self.count, self.budget) != (now.data, now.count, now.budget) {
             return None;
@@ -86,24 +40,20 @@ impl Pass {
     }
 }
 
-/// The live words an hour decides on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Words {
     pub manager: usize,
     pub provinces: Pass,
     pub regions: Pass,
-    /// The initial mode and the two suspension bytes.
     pub flags: [u8; 3],
 }
 
-/// The windows an hour reads: `(first, visits)` of provinces and regions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Windows {
     pub provinces: (u32, u32),
     pub regions: (u32, u32),
 }
 
-/// What the held records were read under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Held {
     hour: i32,
@@ -111,47 +61,30 @@ struct Held {
     words: Words,
 }
 
-/// Which carried array.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
     Regions,
     Provinces,
 }
 
-/// The carried province and region records, loaned to each hour's weather
-/// job.
 #[derive(Debug)]
 pub struct WeatherCarry {
     held: Option<Held>,
-    /// Every region record of the held read, packed as the job packs them.
     regions: Vec<u8>,
-    /// Every province record of the held read, packed as the job packs them.
     provinces: Vec<u8>,
-    /// Every region's combat modifier entries of the held read.
     combat: Vec<Option<RegionModifiers>>,
     pub(super) air_efficiency: Vec<air_efficiency::Tree>,
-    /// Every province's weather modifier accumulator of the held read.
     province_modifiers: ProvinceModifiers,
-    /// Every province's static modifier list of the held read, shared with the frames that
-    /// hold it.
     province_statics: Option<SharedBox<ProvinceStatics>>,
-    /// Every region's custom sea values of the held read.
     custom_sea: super::entries::CustomSea,
-    /// This hour, set by the game thread before dispatch.
     hour: i32,
     force_full: bool,
     writes: Option<u64>,
-    /// This hour's words and windows ([`WeatherCarry::start`]).
     now: Option<Words>,
     windows: Option<Windows>,
-    /// Every part of this hour's read completed.
     complete: bool,
-    /// Parts this hour read through their window.
     followed: u8,
-    /// This hour's province records followed their window. A province's modifier is
-    /// rebuilt with its record, so the modifier entries follow theirs only then.
     provinces_followed: bool,
-    /// This hour's region records followed their window; so may their custom sea values.
     regions_followed: bool,
 }
 
@@ -179,13 +112,6 @@ impl Default for WeatherCarry {
     }
 }
 
-/// Slots an ordinary weather pass visits from `cursor`: `(first, visits)`,
-/// wrapping at `count`. A signed comparison admits a cursor below the count.
-/// The loop visits its slot, advances and wraps, then decrements the budget;
-/// it continues while the budget is positive and the cursor has not returned
-/// to its start. It visits at least one slot, at most the budget or the array
-/// count. A cursor at or past the count visits nothing; a negative cursor
-/// Would index before the array and is refused  (`None`).
 pub fn window(cursor: i32, count: i32, budget: i32) -> Option<(u32, u32)> {
     if cursor < 0 || count <= 0 {
         return None;
@@ -196,12 +122,10 @@ pub fn window(cursor: i32, count: i32, budget: i32) -> Option<(u32, u32)> {
     Some((cursor as u32, budget.max(1).min(count) as u32))
 }
 
-/// The cursor one ordinary pass leaves.
 fn advanced(first: u32, visits: u32, count: u32) -> u32 {
     ((u64::from(first) + u64::from(visits)) % u64::from(count)) as u32
 }
 
-/// Reads the words an hour decides on; `None` when any does not read.
 pub fn read_words(
     memory: &impl Memory,
     manager: usize,
@@ -232,19 +156,16 @@ pub fn read_words(
 }
 
 impl WeatherCarry {
-    /// Game thread, before the hour's job is dispatched.
     pub fn begin(&mut self, hour: i32, force_full: bool, writes: Option<u64>) {
         self.hour = hour;
         self.force_full = force_full;
         self.writes = writes;
     }
 
-    /// The job did not complete: the next hour reads every record.
     pub fn forget(&mut self) {
         self.held = None;
     }
 
-    /// Whether this hour may read only the windows, and which.
     fn windows_of(&self, now: Words) -> Option<Windows> {
         let held = self.held?;
         let writes = self.writes?;
@@ -262,7 +183,6 @@ impl WeatherCarry {
         })
     }
 
-    /// The hour's words and windows, before any record is read.
     fn start(
         &mut self,
         memory: &impl Memory,
@@ -278,7 +198,6 @@ impl WeatherCarry {
         self.regions_followed = false;
     }
 
-    /// After every part: holds what was read, or forgets it.
     fn finish(&mut self) {
         match (self.complete, self.now, self.writes) {
             (true, Some(words), Some(writes)) => {
@@ -315,10 +234,6 @@ impl WeatherCarry {
         self.window(Part::Regions)
     }
 
-    /// The held static modifier lists, when they are this hour's: held from the hour before,
-    /// with no counted writer since, the same manager and province array, and no daily update
-    /// in this hour's update. The daily update runs in the hourly update that starts a day, and
-    /// its countdown of positive days is the lists' one unhooked writer.
     fn statics_held(&self) -> Option<&SharedBox<ProvinceStatics>> {
         let (held, now, statics) = (self.held?, self.now?, self.province_statics.as_ref()?);
         (!self.force_full
@@ -333,13 +248,10 @@ impl WeatherCarry {
     }
 }
 
-/// Whether `slot` is in the window `(first, visits)` of `count` slots.
 fn in_window(slot: u32, (first, visits): (u32, u32), count: u32) -> bool {
     (u64::from(slot) + u64::from(count) - u64::from(first)) % u64::from(count) < u64::from(visits)
 }
 
-/// Gathers records `first..first + count` of `array` into `out`, packed;
-/// `Err` with the fields that read when one did not.
 fn gather(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -376,8 +288,6 @@ fn gather(
     Ok(())
 }
 
-/// The hour's words and windows (`carry` loaned to the job), before any
-/// record is read.
 pub(super) fn start(job: &mut WeatherJob, memory: &impl Memory) {
     let (manager, provinces, regions) = (job.manager, job.provinces.array, job.regions.array);
     if let Some(carry) = job.carry.as_deref_mut() {
@@ -385,14 +295,12 @@ pub(super) fn start(job: &mut WeatherJob, memory: &impl Memory) {
     }
 }
 
-/// After every part: holds what was read, or forgets it.
 pub(super) fn finish(job: &mut WeatherJob) {
     if let Some(carry) = job.carry.as_deref_mut() {
         carry.finish();
     }
 }
 
-/// The hour's region records into the job.
 pub(super) fn capture_regions(
     memory: &impl Memory,
     job: &mut WeatherJob,
@@ -408,7 +316,6 @@ pub(super) fn capture_regions(
     );
 }
 
-/// The hour's province records into the job.
 pub(super) fn capture_provinces(
     memory: &impl Memory,
     job: &mut WeatherJob,
@@ -424,8 +331,6 @@ pub(super) fn capture_provinces(
     );
 }
 
-/// One part's records into `payload`, following its window when the carry
-/// allows it.
 fn capture(
     memory: &impl Memory,
     payload: &mut DensePayload,
@@ -456,8 +361,6 @@ fn capture(
                 return;
             }
             Followed::Failed { current, read } => {
-                // A failed source is not read again: the part keeps the fields
-                // read this hour, and the next hour reads every record.
                 payload.bytes[..total].copy_from_slice(&carry.held_bytes(part)[..total]);
                 payload.copied_fields = current;
                 payload.copied_bytes = layout.completed_bytes(read);
@@ -466,7 +369,6 @@ fn capture(
             }
         }
     }
-    // Every record, held when complete.
     payload.capture(memory, stride, layout);
     let total = payload
         .array
@@ -481,20 +383,15 @@ fn capture(
     }
 }
 
-/// What following a window read.
 enum Followed {
-    /// Nothing was read: the part reads every record.
     Ineligible,
     Read,
-    /// A field did not read. `current` fields of the held records, from slot
-    /// zero, are this hour's; `read` fields were read.
     Failed {
         current: usize,
         read: usize,
     },
 }
 
-/// Reads `window` of `array` into the held records.
 fn follow(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -510,7 +407,6 @@ fn follow(
     if carry.held_bytes(part).len() < count as usize * record_bytes {
         return Followed::Ineligible;
     }
-    // The window, wrapping at the count, into the held records.
     let head = visits.min(count - first);
     let tail = visits - head;
     let held = carry.held_bytes(part);
@@ -525,7 +421,6 @@ fn follow(
         head,
         &mut back[..head as usize * record_bytes],
     ) {
-        // A wrapped window has not yet read its records from slot zero.
         let current = if tail == 0 {
             first as usize * fields + read
         } else {
@@ -550,7 +445,6 @@ fn follow(
     }
 }
 
-/// One region's combat modifier entries.
 fn region_combat(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -573,9 +467,6 @@ fn region_combat(
         })
 }
 
-/// [`WeatherJob::combat`] of every region record the dense gather located:
-/// the window's regions afresh and the rest carried when the carry allows
-/// it, otherwise every region. A refused allocation reads no region.
 pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     let Some(array) = job.regions.array else {
         return;
@@ -596,7 +487,6 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
         if complete {
             carry.followed += 1;
         } else {
-            // A refused region is read again next hour, with every other.
             carry.combat.clear();
             carry.complete = false;
         }
@@ -606,7 +496,6 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
         job.combat.push(region_combat(memory, array, slot));
     }
     if let Some(carry) = job.carry.as_deref_mut() {
-        // A refused region is read again next hour, not carried.
         if job.combat.iter().all(Option::is_some)
             && (carry.combat.capacity() >= count
                 || engine_allocation::reserve_exact(&mut carry.combat, count).is_ok())
@@ -620,8 +509,6 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     }
 }
 
-/// The window's combat entries into the carried ones, each region read
-/// once; false when one was refused.
 fn follow_combat(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -639,8 +526,6 @@ fn follow_combat(
     complete
 }
 
-/// One region's custom sea values, from the array header its gathered `record` holds, into
-/// `values`; false refuses them.
 fn read_custom_sea(
     memory: &impl Memory,
     record: &[u8],
@@ -671,10 +556,6 @@ fn read_custom_sea(
     true
 }
 
-/// [`WeatherJob::custom_sea`] of every region record: the window's regions afresh and the rest
-/// carried when this hour's region records followed their window, otherwise every region. The
-/// region writers are the record carry's, so the values follow the records. A refused region is
-/// counted and read again next hour, with every other.
 pub(super) fn capture_custom_sea(memory: &impl Memory, job: &mut WeatherJob) {
     job.custom_sea.clear();
     let Some(array) = job.regions.array else {
@@ -729,7 +610,6 @@ pub(super) fn capture_custom_sea(memory: &impl Memory, job: &mut WeatherJob) {
     }
 }
 
-/// Reads one province's accumulator into `out`, counting the lookup; false refuses it.
 fn read_province(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -740,12 +620,6 @@ fn read_province(
     super::entries::read(memory, array, slot, out)
 }
 
-/// [`WeatherJob::province_modifiers`] of every province record: the window's provinces afresh
-/// and the rest carried when the carry allows it, otherwise every province. The weather window
-/// pass rebuilds a province record's modifier with the record, so the record carry's writers are
-/// the modifier's: an hour whose province records did not follow their window reads every
-/// province's entries too. A province whose storage could not be allocated is refused, with
-/// those after it, and counted.
 pub(super) fn capture_province_modifiers(memory: &impl Memory, job: &mut WeatherJob) {
     let begin = qpc();
     capture_province_modifiers_timed(memory, job);
@@ -799,9 +673,6 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
     }
 }
 
-/// [`WeatherJob::province_statics`]: the held lists when [`WeatherCarry::statics_held`] proves
-/// them this hour's, otherwise every province's list read afresh and, when whole, held. Carried
-/// lists are shared, never copied.
 pub(super) fn capture_province_statics(memory: &impl Memory, job: &mut WeatherJob) {
     job.province_statics = None;
     if let Some(held) = job.carry.as_deref().and_then(WeatherCarry::statics_held) {
@@ -832,10 +703,6 @@ pub(super) fn capture_province_statics(memory: &impl Memory, job: &mut WeatherJo
     job.province_statics = read;
 }
 
-/// Every province's static modifier list: one gather of every list header, then each listed
-/// province's entries. A header that did not copy refuses its province and those after it; a
-/// list that does not read refuses its province. `previous` is rebuilt in place when no frame
-/// still holds it.
 fn read_province_statics(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,

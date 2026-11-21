@@ -139,41 +139,29 @@ param(
     [ValidateRange(120, 10000)][int]$RecordHours = 120,
     [ValidateRange(300, 14400)][int]$TimeoutSeconds = 3600,
     [ValidateRange(1, 254)][int]$ConsoleKey = 0xC0,
-    # Background is the default: input is posted to the game window, screenshots use
-    # PrintWindow, and Launch keeps the game behind the previously active window, so the
-    # game is never brought to the foreground. -Foreground restores the legacy behaviour
-    # (foreground SendInput and screen capture) for cases where posted input is not enough.
     [switch]$Foreground,
-    [switch]$KeepForeground,   # leave the game focused after a -Foreground action, for menu sequences
-    [switch]$Posted,   # experimental: post mouse messages instead of borrowing the foreground
-    # Directory holding inputshim.dll and inputshim-inject.exe. Launch attaches the shim in
-    # background mode, and background clicks then need no foreground borrow at all.
+    [switch]$KeepForeground,
+    [switch]$Posted,
     [string]$InputShimDir = '',
     [switch]$RequireInputShim,
-    [ValidateRange(-1, 255)][int]$Mask = -1,   # ShimMask: new hook_mask
+    [ValidateRange(-1, 255)][int]$Mask = -1,
     [string[]]$ExtraArgs = @()
 )
 
-# --- input shim (optional binaries from InputShimDir) ---
-# While the shim is attached, hoi4.exe's user32 import thunks answer from this 4096-byte
-# mapping, so a posted click lands with the cursor, button state and focus the UI expects.
 $script:ShimMapping = 'Local\hoi4_inputshim_v1'
-$script:ShimMagic = [uint32]0x4D485348   # 'HSHM'
+$script:ShimMagic = [uint32]0x4D485348
 $script:ShimHooks = @('GetCursorPos', 'GetAsyncKeyState', 'GetKeyState', 'GetKeyboardState',
     'GetForegroundWindow', 'GetActiveWindow', 'GetFocus')
-# Control-block offsets.
 $script:ShimMaskOffset = 8
 $script:ShimFlagsOffset = 12
 $script:ShimCursorOffset = 16
 $script:ShimWindowOffset = 24
 $script:ShimCallsOffset = 32
-# flags bits: cursor override, focus override, left button down.
 $script:ShimCursorFlag = 1
 $script:ShimFocusFlag = 2
 $script:ShimLeftFlag = 4
 
 function Get-GameBuild([string]$Path) {
-    # The recognised build is read from the source the binaries are built from, never repeated here.
     $source = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'crates\engine-executable\src\build.rs'))
     $pinned = [regex]::Match($source, '(?s)pub const PINNED_BUILD: Build = Build \{\s*version: "([^"]+)",\s*exe_size: ([\d_]+),\s*exe_sha256: \[([^\]]+)\]')
     if (-not $pinned.Success) { throw 'PINNED_BUILD not found in crates/engine-executable/src/build.rs.' }
@@ -181,7 +169,6 @@ function Get-GameBuild([string]$Path) {
     $wantedHash = (-join ([regex]::Matches($pinned.Groups[3].Value, '0x([0-9a-fA-F]{2})') | ForEach-Object { $_.Groups[1].Value })).ToLowerInvariant()
     $bytes = [IO.File]::ReadAllBytes($Path)
     $hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
-    # The version text is the one NUL-delimited string shaped like a version banner, as build.rs finds it.
     $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
     $banners = @([regex]::Matches($text, '(?<=\x00)[A-Z][A-Za-z ]{0,63} v\d{1,4}(?:\.\d{1,4}){2,}\.[0-9a-f]{1,8}(?=\x00)') | ForEach-Object Value | Sort-Object -Unique)
     $version = if ($banners.Count -eq 1) { $banners[0] } else { $null }
@@ -203,7 +190,6 @@ function Write-GameBuildWarning([string]$Path) {
 . (Join-Path $PSScriptRoot 'game-clock.ps1')
 
 function Open-InputShim {
-    # The open control block, or $null when the shim is not attached.
     try { $map = [IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting($script:ShimMapping) } catch { return $null }
     $view = $map.CreateViewAccessor(0, 4096)
     if ($view.ReadUInt32(0) -ne $script:ShimMagic) { $view.Dispose(); $map.Dispose(); return $null }
@@ -223,8 +209,6 @@ function Read-ShimCounters($shim) {
 }
 
 function Install-InputShim([int]$processId) {
-    # Attach once per launch. Absent binaries are not an error: the driver falls back
-    # to the foreground borrow.
     if (-not $InputShimDir) { return 'absent' }
     $injector = Join-Path $InputShimDir 'inputshim-inject.exe'
     $dll = Join-Path $InputShimDir 'inputshim.dll'
@@ -257,7 +241,6 @@ function Resolve-LaunchUserDirectory([string]$path) {
         }
     }
     if ($resolved.Contains('"')) { throw 'The user directory contains an invalid quote.' }
-    # The game splits command-line values at hyphens, including directory paths.
     if ($resolved.Contains('-')) { throw 'This game build splits command-line values at hyphens. Use a user directory whose entire path contains no hyphen.' }
     $resolved
 }
@@ -276,8 +259,6 @@ function Write-LaunchSelection([string]$userPath, [string]$saveName) {
     [IO.File]::WriteAllText((Join-Path $userPath 'continue_game.json'), $json, [Text.UTF8Encoding]::new($false))
 }
 
-# The viewer loads the pinned shader compiler, dxcompiler.dll and its dxil.dll, from beside itself,
-# so a viewer copied away from its build takes them along.
 function Copy-ShaderCompiler([string]$source, [string]$destination) {
     $names = @('dxcompiler.dll', 'dxil.dll')
     foreach ($name in $names) {
@@ -292,8 +273,6 @@ function Copy-ShaderCompiler([string]$source, [string]$destination) {
 function Set-ShimFlags($shim, [int]$flags) { $shim.View.Write($script:ShimFlagsOffset, [uint32]$flags) }
 
 function Invoke-ShimPointer($shim, $window, [int]$logicalX, [int]$logicalY, [int]$virtualX, [int]$virtualY, [scriptblock]$press) {
-    # Present the cursor and the game's own window as focused, then run the posted
-    # press. Overrides are always cleared, so a failure cannot leave the game blind.
     $view = $shim.View
     $view.Write($script:ShimWindowOffset, [uint64]$window.ToInt64())
     $view.Write($script:ShimCursorOffset, [int]$virtualX)
@@ -358,7 +337,6 @@ function Invoke-FullSmoke {
         $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true
             game_build=[ordered]@{ version=$gameBuild.Version; bytes=$gameBuild.Size; sha256=$gameBuild.Sha256; recognised=$gameBuild.Recognised; warning=$gameBuild.Warning } }
     } catch {
-        # Nothing has launched yet: release the lock this run just took.
         Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
         throw
     }
@@ -423,11 +401,9 @@ function Invoke-FullSmoke {
         }
         $binaries
     }
-    # Forced menu input keeps the game focused between clicks: refocusing loses the next click.
     function Drive([string]$action,[hashtable]$extra=@{},[bool]$foregroundInput=$Foreground) { & $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$foregroundInput -KeepForeground:($foregroundInput -and -not $Foreground) @extra }
     function Click-Point([string]$name) {
         $point=$ui.$name
-        # Menu widgets require foreground input even when map input uses the shim.
         $foregroundInput=$Foreground -or $name -in @('menu','save_menu','save_name','save_confirm','exit_game','exit_confirm')
         $null=Drive 'Click' @{X=[int]$point[0];Y=[int]$point[1]} $foregroundInput
     }
@@ -464,16 +440,12 @@ function Invoke-FullSmoke {
         }
         $path=$script:smokeStatusPath
         if (-not $path) { return $null }
-        # Share delete: the collector replaces status.json atomically every second,
-        # and a reader without delete sharing makes that replacement fail.
         try {
             $stream=[IO.FileStream]::new($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
             try { $text=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
             $text | ConvertFrom-Json
         } catch { return $null }
     }
-    # The first status written after $since, read whole: status.json is replaced periodically, so
-    # one read can predate the moment asked for. Throws without one or without its capture counters.
     function Fresh-Status([DateTime]$since,[string]$what,[int]$seconds=30) {
         $limit=[DateTime]::UtcNow.AddSeconds($seconds)
         do {
@@ -491,7 +463,6 @@ function Invoke-FullSmoke {
         } while ($true)
     }
     function Changed-Pixels([string]$first,[string]$second,[int[]]$box) {
-        # Pixels in box (x0,y0,x1,y1) whose channels differ by more than 8.
         Add-Type -AssemblyName System.Drawing
         $a=[Drawing.Bitmap]::new($first); $b=[Drawing.Bitmap]::new($second)
         try {
@@ -504,11 +475,6 @@ function Invoke-FullSmoke {
         } finally { $a.Dispose(); $b.Dispose() }
     }
     function Park-Cursor([int]$index) {
-        # A posted Move never reaches the game's cursor, so the province tooltip under
-        # the last map-centre Wheel would stay in the capture. A shim click does move it,
-        # so click capture_cursor, and only while it is inert: the paused clock, speed and
-        # camera hold and the top-bar strip around it (pixel-stable while paused) shows no
-        # hover or press through two clicks.
         $point=$ui.capture_cursor
         $box=@([Math]::Max(0,[int]$point[0]-200),0,[Math]::Min([int]$ui.width,[int]$point[0]+200),([int]$point[1]+7))
         $shots=@(0,1,2 | ForEach-Object { Join-Path $output ("park-{0}-{1}.png" -f $index,$_) })
@@ -555,7 +521,6 @@ function Invoke-FullSmoke {
             $null=Run-Tool $cargo @('fmt','--all','--','--check') 'format' 2400
             $null=Run-Tool $cargo @('nextest','run','--workspace') 'checkpoint' 2400
             $null=Run-Tool $cargo @('run','-q','-p','dashboard','--features','export-types','--bin','export-types','--','--check') 'types' 2400
-            # nextest reports its summary on stderr, which the checkpoint log keeps.
             $summary=[regex]::Match([IO.File]::ReadAllText((Join-Path $output 'checkpoint.log')),'\d+ tests run: (\d+) passed')
             $report.tests_passed=[int]$summary.Groups[1].Value
             $null=Run-Tool $cargo @('build','-p','recorder','-p','collector','-p','viewer','--release','--target-dir','.cargo-target') 'release' 600
@@ -578,11 +543,9 @@ function Invoke-FullSmoke {
         $sourceBinaries=@(Read-Binaries $binarySource $expectedBinaries)
         foreach ($file in $sourceBinaries) { Copy-Item -LiteralPath (Join-Path $binarySource $file.name) -Destination (Join-Path $bin $file.name) }
         $report.binaries=@(Read-Binaries $bin $sourceBinaries)
-        # Checked now: a shader cache miss after the long recording would otherwise refuse the viewer's layers.
         $compiler=Copy-ShaderCompiler $binarySource $bin
         $pinned=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\shader-pipeline\src\lib.rs')),'pub const DXC_VERSION: &str = "([^"]+)";').Groups[1].Value
         if (-not $pinned) { throw 'DXC_VERSION not found in crates/shader-pipeline/src/lib.rs.' }
-        # The version the DLL reports to the viewer is its product version.
         if ((Get-Item -LiteralPath $compiler).VersionInfo.ProductVersion -cne $pinned) { throw "The shader compiler is not the pinned DXC $pinned." }
         $report.shader_compiler=@{path=$compiler;sha256=(Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash}
         if ($null -ne $selection) { [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection) }
@@ -636,7 +599,6 @@ function Invoke-FullSmoke {
             $clock=Clock
             if ($clock.play_session_started_at -ne $load -or $clock.seed -ne $seed -or $clock.hour -lt $first) { throw 'Unexpected load or campaign change.' }
             if ($live.Elapsed.TotalSeconds -gt $TimeoutSeconds) { throw 'Live recording timed out.' }
-            # Top speed past the minimum hour; the step below refreshes and saves the hour after it.
             if ($clock.hour -ge $target) {
                 Pause-Game $true; $target=[int](Clock).hour
                 break
@@ -656,10 +618,6 @@ function Invoke-FullSmoke {
         }
         $live.Stop(); $report.advance_seconds=$live.Elapsed.TotalSeconds; $advanced=$target-$first
         Stage 'step-to-saved-hour'
-        # Frames sample an hour as its update left it. A refresh makes the next hour's sample wait
-        # for the following update, so that hour is saved here, paused, and sampled by the step
-        # after the save. The paused hour's own sample must be in first, or it would take the wait;
-        # from then the capture counters stand still until that step, or the saved hour was read early.
         $paused=$target; $since=[DateTime]::UtcNow; $limit=$since.AddSeconds(30)
         do { $status=Fresh-Status $since 'the pause'; if ($status.last_hour -ge $paused) { break }; if ([DateTime]::UtcNow -gt $limit) { throw 'The paused hour was not posted by the collector.' }; Start-Sleep -Milliseconds 100 } while ($true)
         $heldBefore=[long]$status.capture.held; $besideBefore=[long]$status.capture.beside
@@ -714,15 +672,11 @@ function Invoke-FullSmoke {
         if ((Clock).hour -ne $target) { throw 'Game advanced during the save.' }
         $report.save=$save; $report.save_sha256=(Get-FileHash $save -Algorithm SHA256).Hash
         $null=Drive 'Screenshot' @{Out=(Join-Path $output 'after-save-ui.png')}
-        # Saving closes the game's menu itself; another close-position click
-        # would select the province behind it and open a state panel.
         $null=Drive 'Move' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1]}
         Stage 'same-hour-reference-captures'
         $references=@(); $steps=@(0,-3,6,6,-9); $report.cursor_parks=@()
         for ($i=0; $i -lt $steps.Count; $i++) {
             if ($steps[$i] -ne 0) { $null=Drive 'Wheel' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1];Delta=$steps[$i]} }
-            # Let the zoom settle, then park the pointer over inert UI chrome, not
-            # the map, so a hover tooltip does not cover the scored land.
             Start-Sleep -Seconds 2
             Park-Cursor $i
             $camera=Clock
@@ -744,8 +698,6 @@ function Invoke-FullSmoke {
         $report.after_sampling_clock=Clock; $reached=[int]$report.after_sampling_clock.hour
         $since=[DateTime]::UtcNow; $limit=$since.AddSeconds(30)
         do { $status=Fresh-Status $since 'the sampling step'; if ($status.last_hour -ge $reached) { break }; if ([DateTime]::UtcNow -gt $limit) { throw 'Saved hour was not posted by the collector.' }; Start-Sleep -Milliseconds 100 } while ($true)
-        # The saved hour is read holding the game as the next update is entered, each later hour once
-        # the batch that ran its update has returned (straight after its update without a proven batch hook).
         $heldGrowth=[long]$status.capture.held-$heldBefore; $besideGrowth=[long]$status.capture.beside-$besideBefore
         $report.saved_hour_capture=@{held=$heldGrowth;beside=$besideGrowth;reached=$reached;placement=$status.capture.placement}
         if ($heldGrowth -lt 1 -or $heldGrowth+$besideGrowth -ne 1+$reached-$target -or ($status.capture.placement -eq 'beside the game' -and $heldGrowth -ne 1)) { throw 'The saved hour was not read once, holding the game, after the save.' }
@@ -790,8 +742,6 @@ function Invoke-FullSmoke {
             $reference.viewer_image=$image; $reference.scores=[IO.File]::ReadAllText($score) | ConvertFrom-Json
             if ($reference.index -eq 0) {
                 $windowImage=Join-Path $output 'window-parity.png'
-                # Foreground menu clicks leave the real cursor on screen; a viewer window
-                # opened under it would render a hover tooltip the headless dump lacks.
                 Add-Type -AssemblyName System.Windows.Forms
                 $screen=[Windows.Forms.SystemInformation]::VirtualScreen
                 [Windows.Forms.Cursor]::Position=New-Object Drawing.Point ($screen.Right-1),($screen.Bottom-1)
@@ -814,8 +764,6 @@ function Invoke-FullSmoke {
     } catch {
         $failure=$_; $report.passed=$false; $report.error=$_.Exception.Message
         Stage 'failed'
-        # Stop acquisition before attempting any other cleanup. A failed game
-        # remains paused for diagnosis rather than being killed with a live DLL.
         if ($game -and -not $game.HasExited -and $reader) {
             try { $null=Drive 'Key' @{Key='Escape'}; Pause-Game $true } catch { $report.pause_cleanup_error=$_.Exception.Message }
         }
@@ -891,15 +839,10 @@ if ($Action -eq 'Launch') {
         }
     }
     $previousForeground = [Hoi4ProbeInput]::GetForegroundWindow()
-    # The game is the interactive application being tested, so its window is visible.
     $started = Start-Process -FilePath $gamePath -WorkingDirectory (Split-Path -Parent $gamePath) -ArgumentList $arguments -PassThru
-    # A child inherits a below-normal caller's class (a scheduled task's default); a player's game runs at normal.
     $started.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
     if (-not $Foreground) {
-        # Keep the game behind whatever was active: it takes focus when its window appears and again when the map
-        # loads. Watch until the map is up and the window has stayed in the background for a few seconds.
         $gameBuild = Write-GameBuildWarning $gamePath
-        # Without the clock's camera the map load cannot be read: launch then returns once the window stays in the background for 30 seconds.
         $clockUnavailable = $null
         try { $clockRecorder = Resolve-ClockRecorder $BinaryDirectory } catch { $clockUnavailable = $_.Exception.Message }
         $reader = $null; $quietSince = $null; $pushes = 0; $loaded = $false; $warned = $false
@@ -933,7 +876,6 @@ if ($Action -eq 'Launch') {
             $settled = $null -ne $clockUnavailable -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 30
         } while (-not $loaded -and -not $settled -and [DateTime]::UtcNow -lt $deadline)
         if ($reader) { $reader.Dispose() }
-        # Background clicks need the shim; it is attached once, after the window exists.
         $shim = if ($started.MainWindowHandle -ne [IntPtr]::Zero) { Install-InputShim $started.Id } else { 'no window' }
         [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath; Background = $true; ForegroundPushes = $pushes; LoadedBeforeReturn = $(if ($null -eq $clockUnavailable) { $loaded } else { $null }); InputShim = $shim; GameBuildWarning = $gameBuild.Warning; ClockUnavailable = $clockUnavailable }
         return
@@ -1180,7 +1122,6 @@ if ($Action -eq 'Baseline') {
                     $delta = [int64]$clock.hour - [int64]$previous.hour
                     if ($qpc -le $previousQpc) { $invalidQpc++ }
                     if ($sameWitness -and $delta -ge 0 -and $qpc -gt $previousQpc) {
-                        # Zero-hour pairs retain their elapsed time, so pauses reduce the measured rate.
                         $hours += $delta
                         $pairTicks += $qpc - $previousQpc
                         $pairs++
@@ -1267,7 +1208,6 @@ public static class Hoi4ProbeInput {
     [DllImport("user32.dll", SetLastError=true)] static extern bool PostMessageW(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr window, IntPtr hdc, uint flags);
-    // Background-mode primitives: nothing here activates a window or moves the real cursor.
     static void Post(IntPtr window, uint message, UIntPtr w, IntPtr l) {
         if (!PostMessageW(window, message, w, l)) throw new Win32Exception(Marshal.GetLastWin32Error(), "PostMessage failed.");
     }
@@ -1289,7 +1229,6 @@ public static class Hoi4ProbeInput {
         System.Threading.Thread.Sleep(70);
         Post(window, 0x0202, UIntPtr.Zero, PackPoint(clientX, clientY));
     }
-    // One posted mouse-button message, so the caller can hold the shim's button flag across it.
     public static void PostButton(IntPtr window, uint message, uint wParam, int clientX, int clientY) {
         Post(window, message, (UIntPtr)wParam, PackPoint(clientX, clientY));
     }
@@ -1301,16 +1240,13 @@ public static class Hoi4ProbeInput {
         }
     }
     public static bool PushBehind(IntPtr gameWindow, IntPtr previous) {
-        // HWND_BOTTOM without activation, then give the previously active window its focus back.
         bool ok = SetWindowPos(gameWindow, (IntPtr)1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
         if (previous != IntPtr.Zero && previous != gameWindow && IsWindow(previous)) FocusWindow(previous);
         return ok;
     }
-    public static bool CaptureWindow(IntPtr window, IntPtr hdc) { return PrintWindow(window, hdc, 2); } // PW_RENDERFULLCONTENT
+    public static bool CaptureWindow(IntPtr window, IntPtr hdc) { return PrintWindow(window, hdc, 2); }
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetDpiForSystem();
-    // Size at which a DPI-unaware (virtualised) window renders itself; equals the physical size for aware windows.
-    // Posted mouse messages carry client coordinates in the window's own (virtualised) space.
     public static int[] LogicalPoint(IntPtr window, int clientX, int clientY) {
         uint windowDpi = GetDpiForWindow(window), systemDpi = GetDpiForSystem();
         if (windowDpi == 0 || systemDpi == 0 || windowDpi >= systemDpi) return new int[] { clientX, clientY };
@@ -1357,8 +1293,6 @@ public static class Hoi4ProbeInput {
     }
     public static void RestoreForeground(IntPtr previous, IntPtr gameWindow) {
         if (previous == IntPtr.Zero || previous == gameWindow || !IsWindow(previous)) return;
-        // Restoration is best effort: the prior application may close or
-        // deliberately retake focus while the guarded game action runs.
         FocusWindow(previous);
     }
     public static void CheckTarget(IntPtr window, uint process) {
@@ -1385,7 +1319,6 @@ public static class Hoi4ProbeInput {
         Send(window, process, down);
         try { System.Threading.Thread.Sleep(80); }
         finally {
-            // Release even if focus changes during the hold; never leave a key down.
             if (SendInput(1, up, Marshal.SizeOf(typeof(Input))) != 1)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows did not release the game key.");
         }
@@ -1430,7 +1363,6 @@ public static class Hoi4ProbeInput {
     public static void Click(IntPtr window, uint process, int x, int y) {
         CheckTarget(window, process);
         if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        // Let the game's next input update observe the new hover target before pressing.
         System.Threading.Thread.Sleep(100);
         var down = new Input[1];
         down[0].Data.Mouse.Flags = 2;
@@ -1452,7 +1384,7 @@ if ($Foreground) {
     if ([Hoi4ProbeInput]::IsIconic($window)) { [void][Hoi4ProbeInput]::ShowWindow($window, 9) }
     $previousForeground = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
 } elseif ([Hoi4ProbeInput]::IsIconic($window)) {
-    [void][Hoi4ProbeInput]::ShowWindow($window, 4)   # SW_SHOWNOACTIVATE: restore without taking focus
+    [void][Hoi4ProbeInput]::ShowWindow($window, 4)
     [void][Hoi4ProbeInput]::PushBehind($window, [Hoi4ProbeInput]::GetForegroundWindow())
 }
 try {
@@ -1490,9 +1422,6 @@ try {
                 [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id)
                 $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
             } else {
-                # PrintWindow with PW_RENDERFULLCONTENT captures the composed window even when other windows cover
-                # it, but at the window's own (DPI-virtualised) size. Capture at that size, then upscale to the
-                # physical window size so coordinates match the foreground-mode screenshots.
                 $logical = [Hoi4ProbeInput]::LogicalSize($window, $width, $height)
                 $raw = New-Object Drawing.Bitmap ([int]$logical[0]), ([int]$logical[1])
                 $rawGraphics = [Drawing.Graphics]::FromImage($raw)
@@ -1521,7 +1450,6 @@ try {
             if ($Key -eq 'CtrlA') { [Hoi4ProbeInput]::SelectAll($window, [uint32]$game.Id) }
             else { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key]) }
         } elseif ($Key -eq 'CtrlA') {
-            # Posted messages carry no modifier state; clear a text field with End + Backspaces instead.
             [Hoi4ProbeInput]::PostKey($window, 0x23)
             for ($n = 0; $n -lt 64; $n++) { [Hoi4ProbeInput]::PostKey($window, 8) }
         } else { [Hoi4ProbeInput]::PostKey($window, [uint16]$keys[$Key]) }
@@ -1546,9 +1474,6 @@ try {
             elseif ($Action -eq 'Wheel') { [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta) }
             else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
         } elseif ($Posted -or $Action -eq 'Move') {
-            # Posted mouse messages reach the game's SDL window procedure (coordinates in its DPI-virtualised
-            # space), but on their own the UI ignores button messages: it reads physical button state or the
-            # foreground window (measured 2026-09-17). Kept for the map and for experiments.
             $logical = [Hoi4ProbeInput]::LogicalPoint($window, $screenX - $origin.X, $screenY - $origin.Y)
             if ($Action -eq 'Move') { [Hoi4ProbeInput]::PostMove($window, [int]$logical[0], [int]$logical[1]) }
             elseif ($Action -eq 'Wheel') { [Hoi4ProbeInput]::PostWheel($window, $screenX, $screenY, $Delta) }
@@ -1556,28 +1481,23 @@ try {
         } else {
             $shim = Open-InputShim
             if ($shim) {
-                # With the shim attached, posted messages are enough: it supplies the cursor position,
-                # the held button and the focused window that the UI reads. The foreground never changes.
                 try {
                     $logical = [Hoi4ProbeInput]::LogicalPoint($window, $screenX - $origin.X, $screenY - $origin.Y)
-                    # The game window sits at (0,0), so the virtualised screen point is the scaled screen point.
                     $virtual = [Hoi4ProbeInput]::LogicalPoint($window, $screenX, $screenY)
                     Invoke-ShimPointer $shim $window ([int]$logical[0]) ([int]$logical[1]) ([int]$virtual[0]) ([int]$virtual[1]) {
                         if ($Action -eq 'Wheel') { [Hoi4ProbeInput]::PostWheel($window, [int]$virtual[0], [int]$virtual[1], $Delta) }
                         else {
                             Set-ShimFlags $shim ($script:ShimCursorFlag -bor $script:ShimFocusFlag -bor $script:ShimLeftFlag)
-                            [Hoi4ProbeInput]::PostButton($window, 0x0201, 1, [int]$logical[0], [int]$logical[1])   # WM_LBUTTONDOWN, MK_LBUTTON
+                            [Hoi4ProbeInput]::PostButton($window, 0x0201, 1, [int]$logical[0], [int]$logical[1])
                             Start-Sleep -Milliseconds 60
                             Set-ShimFlags $shim ($script:ShimCursorFlag -bor $script:ShimFocusFlag)
-                            [Hoi4ProbeInput]::PostButton($window, 0x0202, 0, [int]$logical[0], [int]$logical[1])   # WM_LBUTTONUP
+                            [Hoi4ProbeInput]::PostButton($window, 0x0202, 0, [int]$logical[0], [int]$logical[1])
                             Start-Sleep -Milliseconds 60
                         }
                     }
                 } finally { Close-InputShim $shim }
             } else {
                 if ($RequireInputShim) { throw 'The required background input shim disappeared; input was not sent.' }
-                # No shim: UI buttons need real input, which only reaches the foreground window. Borrow it
-                # for the click, restore the previous window and push the game behind again (~250 ms in front).
                 $flash = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
                 try {
                     Start-Sleep -Milliseconds 120
@@ -1592,7 +1512,6 @@ try {
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; X = $X; Y = $Y; Delta = $Delta }
     }
     'ShimStatus' {
-        # What the game actually polls per frame, for bisecting the click path.
         $shim = Open-InputShim
         if (-not $shim) { throw 'The input shim is not attached; no control block exists.' }
         try {
@@ -1621,8 +1540,6 @@ try {
     { $_ -eq 'Text' -or $_ -eq 'Console' } {
         if (-not $Text -or $Text -match '[\r\n\x00-\x1F]') { throw 'Text and Console require one nonempty line without control characters.' }
         if ($Foreground) {
-            # Another window can take the foreground between steps; the driver then sends
-            # nothing, so only the refused step (one key or character) is sent again once focus is back.
             $step = {
                 param([scriptblock]$send)
                 for ($attempt = 1; ; $attempt++) {

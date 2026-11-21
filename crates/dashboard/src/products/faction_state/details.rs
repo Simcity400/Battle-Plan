@@ -1,10 +1,3 @@
-//! `faction-details`: one faction at an hour, as the faction view, the goal table and the
-//! pooled-strength widget show it. Its goals (held, completed, cancelled, the manifest), each
-//! named once in `definitions`; its pooled resources, members' manpower, research sharing and
-//! shared doctrines; its logo. Structure only: every number that moves with the playhead is a
-//! live cell, by row and column (`faction` · `projection`, `manpower`, `research`;
-//! `goal:<ordinal>` · `progress`; `resource:<ordinal>` · `amount`; `manpower:<ordinal>` ·
-//! `value`), so the panel is pushed when the goals, members or pools change, not each hour.
 
 use dashboard_base::products::Country;
 use super::{
@@ -41,28 +34,25 @@ pub struct FactionDetails;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactionDetailParams {
     pub branch_id: String,
-    /// The recorded faction id, as a decimal string.
+    #[doc = " The recorded faction id, as a decimal string."]
     pub faction: String,
-    /// None follows the recording client's playing or observer country.
+    #[doc = " None follows the recording client's playing or observer country."]
     pub viewpoint: Option<Country>,
 }
 
-/// A goal the faction holds at the hour; its progress is the live cell `goal:<ordinal>` ·
-/// `progress` (the game's fixed-point cache, a thousandth of a percent).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionHeldGoal {
     pub ordinal: u32,
-    /// An index into the reply's `definitions`.
+    #[doc = " An index into the reply's `definitions`."]
     pub definition: u32,
-    /// The native state: 0 in progress, 1 completed, 2 cancelled, 3 completing, 4 cancelling.
+    #[doc = " The native state: 0 in progress, 1 completed, 2 cancelled, 3 completing, 4 cancelling."]
     pub status: i32,
-    /// The progress sections the game holds active, by index into the definition's `bands`.
+    #[doc = " The progress sections the game holds active, by index into the definition's `bands`."]
     pub active_sections: Vec<u32>,
 }
 
-/// A pooled resource; its amount is the live cell `resource:<ordinal>` · `amount`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -71,22 +61,19 @@ pub struct FactionResourceDetail {
     pub token: Option<String>,
     pub name: Option<String>,
     pub icon: Option<String>,
-    /// Why its name or icon is unavailable.
+    #[doc = " Why its name or icon is unavailable."]
     pub reason: Option<String>,
 }
 
-/// A manpower contribution, each recorded occurrence its own (a country listed twice keeps
-/// both); its amount is the live cell `manpower:<ordinal>` · `value`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionManpowerDetail {
     pub ordinal: u32,
-    /// The contributing country's tag at the hour; none when it is not known.
+    #[doc = " The contributing country's tag at the hour; none when it is not known."]
     pub tag: Option<String>,
 }
 
-/// A doctrine folder the faction shares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -97,7 +84,6 @@ pub struct FactionDoctrineDetail {
     pub reason: Option<String>,
 }
 
-/// Artwork the reply could not draw, counted by reason.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -113,26 +99,26 @@ pub struct FactionRefusalDetail {
 pub struct FactionDetailReply {
     pub branch_id: String,
     pub faction: String,
-    /// The faction's logo as the game draws it; none when it could not be drawn (a refusal says why).
+    #[doc = " The faction's logo as the game draws it; none when it could not be drawn (a refusal says why)."]
     pub logo: Option<String>,
-    /// Every goal the reply names, once each: the lists below index it.
+    #[doc = " Every goal the reply names, once each: the lists below index it."]
     pub definitions: Vec<FactionGoalDefinition>,
-    /// The manifest the faction holds, an index into `definitions`.
+    #[doc = " The manifest the faction holds, an index into `definitions`."]
     pub manifest: Option<u32>,
     pub goals: Vec<FactionHeldGoal>,
     pub completed: Vec<u32>,
     pub cancelled: Vec<u32>,
-    /// Why the goal lists are not known at the hour; they are then empty.
+    #[doc = " Why the goal lists are not known at the hour; they are then empty."]
     pub goal_reason: Option<String>,
-    /// None when the pool was not read whole at the hour.
+    #[doc = " None when the pool was not read whole at the hour."]
     pub resources: Option<Vec<FactionResourceDetail>>,
-    /// None when the contributions were not read whole at the hour; the total is the live cell
-    /// `faction` · `manpower`.
+    #[doc = " None when the contributions were not read whole at the hour; the total is the live cell"]
+    #[doc = " `faction` · `manpower`."]
     pub manpower: Option<Vec<FactionManpowerDetail>>,
     pub manpower_unlocked: Option<bool>,
     pub research_unlocked: Option<bool>,
-    /// The countries sharing research; none when not read. The scientist base is the live cell
-    /// `faction` · `research`.
+    #[doc = " The countries sharing research; none when not read. The scientist base is the live cell"]
+    #[doc = " `faction` · `research`."]
     pub research_countries: Option<Vec<String>>,
     pub doctrine_folders: Option<Vec<FactionDoctrineDetail>>,
     pub refusals: Vec<FactionRefusalDetail>,
@@ -141,26 +127,20 @@ pub struct FactionDetailReply {
 
 dashboard_base::reply_warnings!(FactionDetailReply);
 
-/// The row of the faction's own live cells.
 pub const FACTION_ROW: &str = "faction";
 
-/// What a reply names and draws with: the content's catalogue (or why it is unavailable), the
-/// resources' names, and the artwork drawn with this catalogue so far.
 pub struct DetailContent {
     catalogue: Result<Arc<Catalogue>, String>,
     naming: ResourceNaming,
     art: Arc<Art>,
 }
 
-/// The artwork drawn for faction replies, kept by the source while its catalogue stays the same.
 #[derive(Default)]
 struct HeldArt(Option<(usize, Arc<Art>)>);
 
-/// The tables every reply reads, whole: each is small or read for its keys.
 const WHOLE: [TableId; 6] =
     [TableId::Factions, TableId::ResourceDefinitions, TableId::CountryLinks, TableId::LexicalTokens, TableId::LocalPlayer, TableId::ReservedCountryNaming];
 
-/// The faction's own rows of the faction tables.
 fn faction_reads(faction: u64) -> Vec<Read> {
     let (low, high) = super::ordinals(faction);
     let goals = u128::from(faction) << 40;
@@ -217,7 +197,6 @@ impl AtHour for FactionDetails {
         }
     }
 
-    /// The tables a scripted name reads, only when a name the reply shows expands one.
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         if step != 1 {
             return Self::reads(params, owner, step, held);
@@ -252,7 +231,6 @@ impl AtHour for FactionDetails {
     }
 }
 
-/// The reply of `faction` at `frame`'s hour, its live cells named in `at.live`.
 fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
     if let Ok(rows) = frame.complete::<tables::Factions>()
         && !rows.iter().any(|row| row.id == faction)
@@ -302,7 +280,6 @@ fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &
     Ok(reply)
 }
 
-/// A reply naming nothing yet.
 pub(super) fn blank(params: &FactionDetailParams) -> FactionDetailReply {
     FactionDetailReply {
         branch_id: params.branch_id.clone(),
@@ -325,8 +302,6 @@ pub(super) fn blank(params: &FactionDetailParams) -> FactionDetailReply {
     }
 }
 
-/// Each raw country id's tag at the frame's hour: its canonical slot by the hour's links, the
-/// slot's holder by the one identity rule; the reserved country zero by its recorded naming.
 pub(super) struct Tags<'h> {
     links: HashMap<u32, u32>,
     slots: HashMap<u32, (&'h str, u32)>,
@@ -359,7 +334,6 @@ impl<'h> Tags<'h> {
     }
 }
 
-/// The faction's goal lists, each list's ordinals proven to count up from zero.
 pub(super) fn goal_lists(frame: &DecodedFrame, faction: u64, texts: Option<&Texts<'_>>, missing: Option<&str>, reply: &mut FactionDetailReply, live: &Cells) -> io::Result<()> {
     let held = (|| -> Result<(Option<u32>, &[FactionGoalEntryRow]), String> {
         let header = owned(frame.complete::<tables::FactionGoalStatus>().map_err(|why| why.to_string())?, faction, |row| row.faction)
@@ -413,7 +387,6 @@ pub(super) fn goal_lists(frame: &DecodedFrame, faction: u64, texts: Option<&Text
     Ok(())
 }
 
-/// The faction's power projection: the live cell `faction` · `projection`, whole units.
 fn projection(frame: &DecodedFrame, faction: u64, reply: &mut FactionDetailReply, live: &Cells) -> io::Result<()> {
     match frame.complete::<tables::FactionProjection>() {
         Ok(rows) if owned(rows, faction, |row| row.faction).len() == 1 => {
@@ -426,7 +399,6 @@ fn projection(frame: &DecodedFrame, faction: u64, reply: &mut FactionDetailReply
     Ok(())
 }
 
-/// The resources the faction pools, named and pictured from the recorded content.
 fn resources(frame: &DecodedFrame, faction: u64, reply: &mut FactionDetailReply, naming: &ResourceNaming, cancelled: &AtomicBool, live: &Cells) -> io::Result<()> {
     let rows = match frame.complete::<tables::FactionResources>() {
         Ok(rows) => owned(rows, faction, |row| row.faction),
@@ -450,7 +422,6 @@ fn resources(frame: &DecodedFrame, faction: u64, reply: &mut FactionDetailReply,
     let mut pooled = Vec::new();
     let mut art = BTreeMap::<String, u32>::new();
     for row in rows {
-        // The engine's empty slot is no resource; the game lists none for it.
         if row.ordinal == 0 && row.raw == 0 {
             continue;
         }
@@ -486,7 +457,6 @@ fn resources(frame: &DecodedFrame, faction: u64, reply: &mut FactionDetailReply,
     Ok(())
 }
 
-/// Each member's manpower contribution, and their total.
 pub(super) fn manpower(frame: &DecodedFrame, faction: u64, tags: &Tags<'_>, reply: &mut FactionDetailReply, live: &Cells) -> io::Result<()> {
     let rows = match frame.complete::<tables::FactionManpower>() {
         Ok(rows) => owned(rows, faction, |row| row.faction),
@@ -522,7 +492,6 @@ pub(super) fn manpower(frame: &DecodedFrame, faction: u64, tags: &Tags<'_>, repl
     Ok(())
 }
 
-/// The countries sharing research with the faction; the scientist base is a live cell.
 fn research(frame: &DecodedFrame, faction: u64, tags: &Tags<'_>, reply: &mut FactionDetailReply, live: &Cells) -> io::Result<()> {
     let rows = match frame.complete::<tables::FactionResearch>() {
         Ok(rows) => owned(rows, faction, |row| row.faction),
@@ -544,7 +513,6 @@ fn research(frame: &DecodedFrame, faction: u64, tags: &Tags<'_>, reply: &mut Fac
     Ok(())
 }
 
-/// The doctrine folders the faction shares, named from the recorded localisation.
 fn doctrines(frame: &DecodedFrame, faction: u64, texts: Option<&Texts<'_>>, reply: &mut FactionDetailReply) {
     let rows = match frame.complete::<tables::FactionDoctrine>() {
         Ok(rows) => owned(rows, faction, |row| row.faction),

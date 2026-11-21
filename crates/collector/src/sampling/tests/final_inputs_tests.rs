@@ -179,7 +179,6 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                 running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
             }
             let last = (1..CHARACTER_PARTS).rfind(|part| required & (1 << part) != 0);
-            // Deliberately publish out of slot order. No ready prefix admits a reader.
             for part in (1..CHARACTER_PARTS)
                 .rev()
                 .filter(|&part| Some(part) != last)
@@ -215,7 +214,6 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                 );
                 gates[last].release();
             }
-            // The worker starts without any callback collection or readiness service.
             finishing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
             assert_eq!(
                 pool.calibration().executor.uncollected,
@@ -254,7 +252,6 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
 
 #[test]
 fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loan() {
-    // Incomplete raw, stopped prepared plan, panic, rejection and cancellation.
     for failure in 0..5 {
         let shared = Shared::new(0, 0, 1);
         let blocker = Arc::new(Gate::default());
@@ -306,7 +303,6 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
         let countries = engine_allocation::SharedBox::clone(&request.countries);
         let bytes = request.allocated_bytes();
         dispatch.arm(request, 1 << 2);
-        // Collection joins the failed producer but performs no successor admission.
         drop(unsafe { finish_acquisition(&shared, &mut batch, pending) });
         let (pending, request) = dispatch.take();
         assert!(pending.is_none());
@@ -367,7 +363,6 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
         }
     }
 
-    // Success, a running successor panic, and an admitted but cancelled successor.
     for failure in 0..3 {
         let gate = Arc::new(Gate::default());
         let (started, running) = mpsc::channel();
@@ -393,8 +388,6 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
             let countries = engine_allocation::SharedBox::clone(&request.countries);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut batch = acquisition::Batch::new(&pool);
-                // Declared after Batch: a successor cannot leave its gate until
-                // the callback unwinds without adopting its ticket.
                 let _release = ReleaseOnDrop(Arc::clone(&gate));
                 if failure == 2 {
                     let shared = Shared::new(0, 0, 1);

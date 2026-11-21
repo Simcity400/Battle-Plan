@@ -9,20 +9,16 @@ import type { WeatherReply, WeatherShow } from './weatherData';
 import { OPTIONS } from './definition';
 import { busyWait } from '../../shell/busy.ts';
 
-/** Column budgets step by this many pixels, so a small resize asks nothing again. */
 export const WIDTH_STEP = 256;
 export const stepWidth = (pixels: number) => Math.ceil(Math.max(1, pixels) / WIDTH_STEP) * WIDTH_STEP;
-/** How long the view rests after a zoom, pan or resize before its days are asked again. */
 export const VIEW_SETTLE_MS = 150;
 
-/** What the widget shows: the view and the chosen modifier. */
 export function weatherShow(widget: WidgetSpec): { show: WeatherShow; chosen: string | null } {
   const options = resolveOptions(OPTIONS, widget.options);
   const show: WeatherShow = options.show === 'modifiers' || options.show === 'temperature' ? options.show : 'conditions';
   return { show, chosen: options.modifier ? contentKey(String(options.modifier)) : null };
 }
 
-/** The shown days, folded into at most `pixels` columns where they do not fit one a column. */
 export function weatherRequest(widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number) {
   const { show, chosen } = weatherShow(widget);
   const window = track && extent ? weatherWindow(track.branch, extent, pixels) : null;
@@ -33,7 +29,6 @@ export function weatherRequest(widget: WidgetSpec, track: BoundTrack | undefined
     ...asked === 'modifier' && chosen ? { modifier: chosen } : {} } };
 }
 
-/** The window's width in pixels, until the chart reports its plot's. */
 function useWindowWidth(): number {
   const [width, setWidth] = useState(() => stepWidth(globalThis.innerWidth ?? 1));
   useEffect(() => {
@@ -44,8 +39,6 @@ function useWindowWidth(): number {
   return width;
 }
 
-/** The shown days' weather, sampled once a day and folded into at most one column per pixel of the plot (`pixels`,
- * else the window's), for the chosen view. The last reply stays shown while the next loads. */
 export function useWeather(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, extent: readonly [number, number] | null, pixels: number | null) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -60,8 +53,6 @@ export function useWeather(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   return { track, options, show, modifier, ...product, data };
 }
 
-/** The weather of the hours the chart shows: `extent` until the chart reports its view, then the hours in view at the
- * plot's width, once the view has settled. */
 export function useWeatherInView(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, extent: readonly [number, number] | null) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const owner = JSON.stringify([track?.source.id, track?.branch.id, extent?.[0], extent?.[1]]);
@@ -81,7 +72,6 @@ export function useWeatherInView(widget: WidgetSpec, runtime: WidgetRuntime, act
   return { ...weather, onSummaryView };
 }
 
-/** Regions, theatres and modifiers as the recording and its content name them, from the last day's reply. */
 export function useWeatherChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather',

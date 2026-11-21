@@ -1,6 +1,3 @@
-//! Concrete dominance source products prepared from one replay hour.
-//! The outer result certifies complete ledger coverage: omitted regions then
-//! have zero sources. Independent region failures retain their own names.
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -1,52 +1,3 @@
-//! Supply trains from recorded supply routes and content-defined consists.
-//!
-//! One railway-manager countdown attempts a departure at an inclusive whole-
-//! millisecond interval between the timetable's ordered first and last entries.
-//! Eligible supply nodes have a clear blocked flag, an admitted kind, and positive
-//! available supply minus consumed supply, rounded up to whole fixed5 units.
-//! A weighted draw chooses a node; its parent chain removes consecutive duplicate
-//! provinces and reverses each land portion, travelling from the capital side to
-//! the chosen hub. The viewing country's inventory counts cap the fleet and
-//! weight equipment selection. Content lookup tries the variant creator's
-//! original-country table, culture table and default, each by type then archetype.
-//!
-//! One tick creates a consist per land portion and checks the fleet cap once
-//! before route construction. Distance advances by `NGraphics.TRAIN_MAP_SPEED`
-//! times frame seconds even when hidden. Invalid or access-denied routes,
-//! cooling-down provinces and travel beyond the final segment plus consist
-//! length destroy the train. Cars draw while railway fade is at least 0.001,
-//! with that fade in their TrainColor alpha.
-//!
-//! Ordered minimum/maximum wagon defines supply an inclusive random count,
-//! increased by one and floored to the number of authored fixed wagon slots.
-//! Fixed `wagon_0/1/2` entries precede random entries; `wagon_last` follows them.
-//! Authored length, scale, rotation and shift link the cars. Chord fitting takes
-//! at most ten iterations on bends. Back couplings use water-floored terrain
-//! height plus shift; the body faces the preceding car ([`car_yaw`]). Endpoint
-//! planes clip and fade the cars over 2.5 units. Consist length uses the authored
-//! car-length sum, which can differ from the game's mesh-bound-based length.
-//!
-//! # Recorded inputs and presentation phase
-//!
-//! `SupplyNodes`, `TrainInventory` and selected parent edges replace live path
-//! finding and equipment selection. Missing complete inputs suppress trains;
-//! every parent-chain vertex needs a row. Missing-route breaks derive from
-//! recorded supply nodes, countries, links and provinces ([`FallbackEndpoints`]).
-//! Route geometry uses the railway pass's curves through `RailGeometry::train_route`.
-//! Equipment tokens resolve through the hour's `LexicalTokens` and the content
-//! registry's token identity (`train_gfx::token_key`).
-//!
-//! Variant creator links choose a signed-positive original tag before the own
-//! tag. Raw creator zero uses reserved-country naming. A selected tag must be
-//! signed-positive to reach either the country or culture table. Culture lookup
-//! resolves the recorded runtime source through the content registry ([`Cultures`]);
-//! the reserved creator's unrecorded runtime culture refuses that variant.
-//!
-//! Scheduler state, pre-existing trains and original animation phase are
-//! unrecorded. Presentation continues while paused and keeps its fleet, timetable
-//! and wheel/particle history across forward skips ([`TrainPlan::carry_presentation`]).
-//! Positive window time samples visible idle-state wheels and retained move-state
-//! exhaust through `entity_animation`; time-zero dumps retain the default pose.
 
 use installed_content_core::{
     ResolvedLayers, defines::Defines, train_gfx, train_gfx::Consist, train_gfx::Wagon,
@@ -80,19 +31,12 @@ use {
 
 pub const SEED: u32 = 0x5452_4149;
 
-/// Consists longer than this are refused rather than allocated.
 const CAR_LIMIT: i32 = u16::MAX as i32;
 
-/// The content's train operands.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TrainDefines {
-    /// `NGraphics.TRAIN_MAP_SPEED`, world units per second.
     pub speed: f32,
-    /// `NGraphics.TUNNELBANA_TIMETABLE`'s first and last entries, ordered,
-    /// in whole milliseconds.
     pub timetable: [i32; 2],
-    /// `NGraphics.MIN_TRAIN_WAGON_COUNT` and `MAX_TRAIN_WAGON_COUNT`, each at
-    /// least 1 as its loader leaves it, then ordered.
     pub wagon_count: [i32; 2],
 }
 
@@ -105,9 +49,6 @@ impl TrainDefines {
                  a stationary or reversing train fleet is not supported"
             )));
         }
-        // The timetable reads the first and last entries of an integer array.
-        // Conversion of a fractional entry remains unverified
-        // (truncated here).
         let table = defines.numbers("NGraphics", "TUNNELBANA_TIMETABLE")?;
         let whole = |value: f64| {
             let value = value.trunc();
@@ -130,8 +71,6 @@ impl TrainDefines {
                  one departure per rendered frame, which is not supported"
             )));
         }
-        // Each loader raises counts below 1 to 1, including the zero stored
-        // for missing or non-number values, before ordering the pair.
         let min = defines.int32("NGraphics", "MIN_TRAIN_WAGON_COUNT")?.max(1);
         let max = defines.int32("NGraphics", "MAX_TRAIN_WAGON_COUNT")?.max(1);
         let wagon_count = [min.min(max), min.max(max)];
@@ -148,13 +87,11 @@ impl TrainDefines {
         })
     }
 
-    /// The next timetable interval, in seconds.
     fn interval(&self, random: u32) -> f64 {
         let [lo, hi] = self.timetable.map(i64::from);
         (lo + i64::from(random & 0x7fff_ffff) % (hi - lo + 1)) as f64 / 1000.0
     }
 
-    /// The drawn car count before the authored slots' floor.
     fn cars(&self, random: u32) -> i64 {
         let [lo, hi] = self.wagon_count.map(i64::from);
         lo + 1 + i64::from(random & 0x7fff_ffff) % (hi - lo + 1)
@@ -164,24 +101,18 @@ impl TrainDefines {
 #[derive(Debug, Default)]
 pub struct TrainAssets {
     pub library: ModelLibrary,
-    /// The native graphical-culture registry, for the reached runtime lookup.
     pub cultures: Cultures,
     database: train_gfx::Database,
-    /// The declared equipment types by the lexer's token identity.
     equipment: installed_content_core::equipment::Database,
     pub defines: TrainDefines,
-    /// Route curves by province path, kept while the rail network they follow is unchanged.
     routes: RouteCache,
 }
 
-/// A path's curve and cumulative distances, or `None` where no train runs it.
 pub type Curve = Option<Arc<(super::railways::TrainRoute, Vec<f32>)>>;
 
-/// Curves of the networks hours still hold: hours built at once may hold different networks.
 #[derive(Default)]
 struct RouteCache(std::sync::Mutex<Vec<(CurveKey, Arc<std::sync::Mutex<std::collections::HashMap<Vec<u32>, Curve>>>)>>);
 
-/// The rail geometry, heightmap and network a curve was sampled on.
 struct CurveKey {
     rails: u64,
     heights: (usize, usize),
@@ -224,8 +155,6 @@ impl std::fmt::Debug for RouteCache {
 }
 
 impl TrainAssets {
-    /// The train database, its entities from the whole descriptor roster, the
-    /// equipment archetypes and the train defines, all from the content stack.
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -278,10 +207,6 @@ impl TrainAssets {
         })
     }
 
-    /// The declared equipment type a variant's token spelling names. The
-    /// engine builds a type's name and token from one authored key, and the
-    /// database finds a name without case, as
-    /// the lexer's fold makes one token of names equal under it.
     fn equipment_key(&self, spelling: &str) -> Result<&str, String> {
         let at = self.equipment.get(spelling).ok_or_else(|| {
             format!(
@@ -292,9 +217,6 @@ impl TrainAssets {
         self.name(at)
     }
 
-    /// The archetype name, whose token is tried after the equipment type's.
-    /// A type without an archetype points at the null object, whose token the
-    /// content does not give: refused by name.
     fn archetype(&self, equipment: &str) -> Result<&str, String> {
         let archetype = self
             .equipment
@@ -308,7 +230,6 @@ impl TrainAssets {
         self.name(archetype)
     }
 
-    /// A type's name as the port's text, or why it is not.
     fn name(&self, at: usize) -> Result<&str, String> {
         let kind = &self.equipment.equipment[at];
         kind.name_str().map_err(|refused| {
@@ -324,27 +245,19 @@ impl TrainAssets {
     }
 }
 
-/// The country tag index, shared through `installed_content_core::country_tags`.
 pub use installed_content_core::country_tags::country_tag_index;
 
-/// The names the game registers from the recorded content stack, including
-/// null object. Resolve the recorded runtime culture source into a content entry by exact length and bytes, returning null
-/// for an unknown name. No country history is read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cultures {
     registered: BTreeSet<String>,
 }
 
 impl Cultures {
-    /// Reads the authored registry and admits the native index-zero object to
-    /// both the train database reader and runtime source resolution.
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let registered = train_gfx::cultures(layers)?;
         Ok(Self { registered })
     }
 
-    /// Exact source-name identity. Unknown names resolve to no entry
-    /// and skip the culture table; bytes this reader cannot represent refuse.
     fn resolve(&self, bytes: &[u8]) -> Result<Option<&str>, String> {
         let name = std::str::from_utf8(bytes)
             .map_err(|_| "train variant creator runtime graphical culture is not UTF-8")?;
@@ -352,9 +265,6 @@ impl Cultures {
     }
 }
 
-/// Resolve the creator reference, including the
-/// reserved zero object, and gates both non-default tables on the selected
-/// signed-positive tag. The game tries type then archetype within each table.
 struct CreatorLookup<'a> {
     frame: &'a DecodedFrame,
     links: BTreeMap<u32, u32>,
@@ -418,7 +328,6 @@ impl CreatorRows for CreatorLookup<'_> {
     }
 }
 
-/// A variant creator's CountryAppearance values the train database lookup reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CreatorAppearance {
     pub original_tag_reference: Recorded<Option<i32>>,
@@ -426,21 +335,15 @@ pub struct CreatorAppearance {
     pub graphical_culture: Vec<u8>,
 }
 
-/// Where a train variant's creator is read: a frame's rows, or a reader's own cells.
 pub trait CreatorRows {
-    /// The canonical slot of the raw link `raw`.
     fn link(&self, raw: u32) -> Option<u32>;
-    /// The last Countries row of `slot`: its native id and tag.
     fn country(&self, slot: u32) -> Option<(u32, Vec<u8>)>;
     fn appearance(&self, country: u32) -> Option<CreatorAppearance>;
     fn appearance_complete(&self) -> bool;
-    /// The slot's selected signed original-or-own reference.
     fn reference(&self, slot: u32) -> Result<i32, String>;
-    /// The reserved country zero's original-or-own tag.
     fn reserved_tag(&self) -> Result<String, String>;
 }
 
-/// The creator's consist of `variant`, or why it cannot be resolved.
 fn creator_consist(
     rows: &impl CreatorRows,
     cultures: &Cultures,
@@ -455,8 +358,6 @@ fn creator_consist(
         .map_err(|reason| format!("variant {variant} creator: {reason}; its trains are not drawn"))
 }
 
-/// Resolve the creator reference, including the reserved zero object, and gate both non-default
-/// tables on the selected signed-positive tag. The game tries type then archetype within each table.
 fn creator_lookup<'d>(
     rows: &impl CreatorRows,
     cultures: &Cultures,
@@ -480,8 +381,6 @@ fn creator_lookup<'d>(
             ),
         )
     };
-    // The game gates both tables on the selected raw word, independently
-    // of tag-string length. A positive-empty original retains this gate.
     if rows.reference(slot)? <= 0 {
         return Ok(default());
     }
@@ -510,16 +409,12 @@ fn creator_lookup<'d>(
     {
         return Ok(Some(found));
     }
-    // A country-table hit returns before culture lookup. The reserved
-    // singleton has no recorded runtime culture source, which cannot
-    // be inferred from its tag.
     let appearance =
         appearance.ok_or("reserved creator runtime graphical culture is not recorded")?;
     let culture = cultures.resolve(&appearance.graphical_culture)?;
     Ok(database.lookup(Some(&tag), culture, equipment, archetype))
 }
 
-/// the game's car list: wagon indices, front first.
 fn consist_cars(consist: &Consist, defines: &TrainDefines, random: &mut Random) -> Vec<usize> {
     let mut cars: Vec<usize> = consist.fixed().collect();
     let last = usize::from(consist.wagon_last.is_some());
@@ -539,18 +434,12 @@ fn consist_cars(consist: &Consist, defines: &TrainDefines, random: &mut Random) 
 #[derive(Clone, Default)]
 pub struct TrainPlan {
     routes: Vec<Route>,
-    /// Per eligible node, its departure weight and land-portion routes.
     weights: Vec<i64>,
     departures: Vec<Vec<usize>>,
     allocations: Vec<TrainAllocation>,
-    /// Variant to the consist its creator resolves; `None` draws nothing.
     consists: BTreeMap<u64, Option<Consist>>,
-    /// Variants whose consist could not be resolved, one line each.
     unresolved: Vec<String>,
-    /// Variants whose equipment type token this hour cannot name, with why;
-    /// reported only once a departure selects one.
     token_refusals: BTreeMap<u64, String>,
-    /// The reasons of [`Self::token_refusals`] a departure selected.
     refused: BTreeSet<String>,
     fleet_cap: i32,
     branch: replay_data::BranchId,
@@ -560,14 +449,10 @@ pub struct TrainPlan {
     next_departure: f64,
     last_time: Option<f32>,
     random: Random,
-    /// [`TrainPlan::field`]'s buffers, kept so a frame allocates nothing.
     scratch: FieldScratch,
-    /// While the flight record is kept: each running train's head position at the last frame, by
-    /// its route's path and departure, which an install carries to the next plan.
     drawn: Vec<(Vec<u32>, u64, [f32; 3])>,
     drawn_time: Option<f32>,
 }
-/// The per-frame placement buffers and the field they build.
 #[derive(Clone, Default)]
 struct FieldScratch {
     placed: Vec<(usize, ModelInstance)>,
@@ -578,17 +463,13 @@ struct FieldScratch {
 struct Service {
     route: usize,
     departed: f64,
-    /// Indices into the train database's wagons, front first.
     cars: Vec<usize>,
 }
-/// A route's rail curve and its cumulative distances, shared by every plan that runs it.
 pub type RouteGeometry = Arc<(super::railways::TrainRoute, Vec<f32>)>;
 
 #[derive(Clone)]
 struct Route {
     path: Vec<u32>,
-    /// The points, whether the next province has no segment (the train dies when its head gets
-    /// there), and the distances.
     curve: RouteGeometry,
     seed: u32,
 }
@@ -605,12 +486,10 @@ impl Route {
         self.curve.0.open_end
     }
 
-    /// The same track: the same curve, or one equal to it.
     fn same_track(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.curve, &other.curve) || (self.points() == other.points() && self.open_end() == other.open_end())
     }
 
-    /// How far the head runs before the game destroys the train.
     fn lifetime(&self, cars: &[usize], assets: &TrainAssets) -> f32 {
         let length = *self.distance().last().unwrap();
         if self.open_end() {
@@ -642,8 +521,6 @@ impl Route {
     }
 }
 
-// `Route::at` calls on this thread, so a test can bound one frame's work
-// without a wall clock.
 #[cfg(test)]
 thread_local! {
     static ROUTE_SAMPLES: Cell<usize> = const { Cell::new(0) };
@@ -654,13 +531,6 @@ impl TrainPlan {
         self.routes.len()
     }
 
-    /// The railway manager owns one presentation clock and a live fleet across
-    /// simulation ticks. Keep it when the same country is still viewed on the
-    /// same branch during continuous playback; retain each consist only if its
-    /// exact route geometry still exists. A route that changed under a train
-    /// cannot be projected onto guessed new track.
-    /// The random stream's position, the timetable and the live fleet, for comparing two plans
-    /// stepped alike.
     #[cfg(test)]
     pub(crate) fn presentation_state(&self) -> impl PartialEq + std::fmt::Debug {
         (
@@ -675,14 +545,12 @@ impl TrainPlan {
         )
     }
 
-    /// How many trains are running.
     #[cfg(test)]
     pub(crate) fn live_trains(&self) -> usize {
         self.services.len()
     }
 
     pub fn carry_presentation(&mut self, previous: &mut Self, continuity: Continuity) {
-        // The frame buffers hold no state; taking them spares the next frame's allocation.
         std::mem::swap(&mut self.scratch, &mut previous.scratch);
         if self.country == 0
             || self.country != previous.country
@@ -695,8 +563,6 @@ impl TrainPlan {
         self.next_departure = previous.next_departure;
         self.last_time = previous.last_time;
         self.random = previous.random.clone();
-        // A published refusal stays while this hour still refuses a variant
-        // for the same reason; a recovered or changed variant's goes.
         previous
             .refused
             .retain(|reason| self.token_refusals.values().any(|kept| kept == reason));
@@ -727,7 +593,6 @@ impl TrainPlan {
         viewer_foundation::view_record::add("trains", "dropped_at_install", (running - self.services.len()) as u64);
     }
 
-    /// Dump diagnostics: production inputs/derived positions, never capture data.
     pub fn diagnostics(&self, assets: &TrainAssets) -> Vec<String> {
         let time = self.last_time.unwrap_or(0.0);
         let open = self.routes.iter().filter(|r| r.open_end()).count();
@@ -745,7 +610,6 @@ impl TrainPlan {
             .collect()
     }
 
-    /// Build shared route geometry once per hour, from the simulation's own edges.
     pub fn build(
         frame: &DecodedFrame,
         ours: u32,
@@ -791,8 +655,6 @@ impl TrainPlan {
         Self::build_from(&rows, frame.branch, frame.hour, ours, assets, rows.creators.cultures, &mut curve, None)
     }
 
-    /// The plan of the viewing slot `ours` from an hour's values, wherever they are held; `curve`
-    /// gives a province path's rail curve, and `cache` keeps each node's walk for the next plan.
     pub fn build_from(
         rows: &impl TrainRows,
         branch: replay_data::BranchId,
@@ -830,9 +692,6 @@ impl TrainPlan {
                 plan.consists.insert(variant, None);
                 continue;
             };
-            // A token this hour cannot name draws no consist, like a variant
-            // without a definition row; it is reported once a departure
-            // selects the variant.
             let equipment = match rows
                 .token(equipment_token)
                 .and_then(|spelling| assets.equipment_key(&spelling))
@@ -881,7 +740,6 @@ impl TrainPlan {
                 "SupplyNodes census differs from TrainInventory.node_count",
             ));
         }
-        // Duplicate provinces across kinds have the same province-keyed parent/edge.
         let mut by_province: BTreeMap<u32, &NodeValues> = BTreeMap::new();
         for node in &rows_of_country {
             if let Some(old) = by_province.insert(node.province, node)
@@ -917,7 +775,6 @@ impl TrainPlan {
                 None => {
                     let mut read = Vec::new();
                     let mut paths = land_portions_reading(node, &by_province, &*fallback, &mut read)?;
-                    // Controller access, cooldown and adjacent railway entries.
                     paths.retain(|path| path.iter().all(|&p| rows.allowed(p, &access)) && path.windows(2).all(|p| rows.rail(p[0], p[1])));
                     let paths = Arc::new(paths);
                     if let Some(cache) = cache.as_deref_mut() {
@@ -945,14 +802,12 @@ impl TrainPlan {
                 };
                 routes.push(index);
             }
-            // Access is not part of the node draw: invalid routes consume a departure.
             plan.weights.push(weight);
             plan.departures.push(routes);
         }
         Ok(plan)
     }
 
-    /// The first difference of `self` from `other` in the plan and its presentation, by name.
     pub fn differ(&self, other: &Self) -> Option<String> {
         let bits = |values: &[f32]| values.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
         if (self.country, self.fleet_cap, &self.weights, &self.departures, &self.allocations) != (other.country, other.fleet_cap, &other.weights, &other.departures, &other.allocations) {
@@ -978,9 +833,6 @@ impl TrainPlan {
         None
     }
 
-    /// The plan's departure weights replaced by `weights`, one a weighted node in its order: what a
-    /// step that changed only nodes' supply, and no node's being weighted, changes. False when the
-    /// count differs, and nothing is replaced.
     pub fn set_weights(&mut self, weights: Vec<i64>) -> bool {
         if weights.len() != self.weights.len() {
             return false;
@@ -989,13 +841,10 @@ impl TrainPlan {
         true
     }
 
-    /// The routes, weighted nodes and variants of the plan, for reporting.
     pub fn counts(&self) -> [usize; 3] {
         [self.routes.len(), self.weights.len(), self.consists.len()]
     }
 
-    /// The curve the route over `path` runs on, shared with every plan that runs it.
-    /// Each route's province path, in the plan's order.
     pub fn route_paths(&self) -> impl Iterator<Item = &[u32]> + '_ {
         self.routes.iter().map(|route| route.path.as_slice())
     }
@@ -1004,14 +853,10 @@ impl TrainPlan {
         self.routes.iter().find(|route| route.path == path).map(|route| &route.curve)
     }
 
-    /// Where the trains running now are: per train its route's path and its departure time.
     pub fn running(&self) -> Vec<(&[u32], f64)> {
         self.services.iter().map(|service| (self.routes[service.route].path.as_slice(), service.departed)).collect()
     }
 
-    /// This frame's cars. Work is proportional to the live fleet; departures
-    /// since the last call are replayed from the timetable. The field is the
-    /// plan's own, rebuilt in place each call.
     pub fn field(&mut self, assets: &TrainAssets, time: f32) -> &mut ModelField {
         let FieldScratch {
             placed,
@@ -1029,8 +874,6 @@ impl TrainPlan {
         if self.last_time.is_none_or(|old| time < old) {
             self.services.clear();
             self.random = Random::new(self.routes.iter().fold(SEED, |s, r| s ^ r.seed));
-            // Warm from an empty fleet farther back than any train's lifetime.
-            // This is presentation history, not game state or an inventory estimate.
             let longest = self
                 .routes
                 .iter()
@@ -1047,7 +890,6 @@ impl TrainPlan {
         }
         while self.next_departure <= f64::from(time) {
             let departed = self.next_departure;
-            // The game draws the next interval before testing cap/weights.
             self.next_departure += defines.interval(self.random.next_word());
             self.services.retain(|service| {
                 service.departed
@@ -1060,7 +902,6 @@ impl TrainPlan {
             let Some(node) = weighted_node(&self.weights, self.random.next_word()) else {
                 continue;
             };
-            // One chosen node may emit several land portions; native checks the cap once.
             for &route in &self.departures[node] {
                 let variant = selected_variant(&self.allocations, self.random.next_word());
                 let Some(Some(consist)) = self.consists.get(&variant) else {
@@ -1089,8 +930,6 @@ impl TrainPlan {
         });
         if viewer_foundation::view_record::on() {
             let delta = self.drawn_time.map_or(0.0, |was| (time - was).max(0.0));
-            // A train moves `speed` a second along its route: a step past that (a tenth of a unit
-            // of slack for the chord and float error) is a jump.
             let allowed = speed as f32 * delta + 0.1;
             let mut drawn = Vec::with_capacity(self.services.len());
             let (mut largest, mut jumps) = (0.0f32, 0u64);
@@ -1122,7 +961,6 @@ impl TrainPlan {
                 offset += car.length;
                 let mut back = head - offset;
                 let (front_position, _) = route.at(front);
-                // Solve the link's straight chord, at most ten steps.
                 for _ in 0..10 {
                     let (b, _) = route.at(back);
                     let error = ((front_position[0] - b[0]).powi(2)
@@ -1188,8 +1026,6 @@ impl TrainPlan {
     }
 }
 
-/// Face from the back coupling toward the front, then apply the authored rotation.
-/// [`super::entity_animation::world_transform`] uses that yaw directly.
 fn car_yaw(dx: f32, dz: f32, rotation: f32) -> f32 {
     dz.atan2(dx) + rotation
 }
@@ -1198,36 +1034,20 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The values a train plan reads of one hour, wherever they are held: a frame's rows or a
-/// reader's own cells. Each check that refuses the hour returns its error in today's words.
 pub trait TrainRows: CreatorRows {
-    /// The native id of the first Countries row holding canonical `slot`.
     fn first_country(&self, slot: u32) -> io::Result<Option<u32>>;
-    /// Whether SupplyNodes, TrainInventory, VariantDefinitions, RailEdges, RailCooldowns,
-    /// ProvinceSupply and NavalBases are all wholly recorded.
     fn complete(&self) -> io::Result<bool>;
-    /// The node count, allocations and controller access of `country`'s TrainInventory row.
     fn inventory(&self, country: u32) -> io::Result<Option<(u32, Vec<TrainAllocation>, SparseBytes)>>;
-    /// CountryLinks wholly recorded, or why not.
     fn links_ready(&self) -> io::Result<()>;
-    /// The equipment token and creator link of a variant.
     fn variant(&self, id: u64) -> Option<(u32, u32)>;
-    /// The spelling of a lexical token, or why the hour cannot name it.
     fn token(&self, token: u32) -> Result<String, String>;
-    /// Provinces wholly recorded, or why not.
     fn provinces_ready(&self) -> io::Result<()>;
-    /// The synthetic naval breaks' endpoints, or why the node census cannot give them.
     fn fallback(&self) -> io::Result<Box<dyn Fallback + '_>>;
-    /// Every SupplyNodes row of `country`, vertices included, in key order.
     fn nodes(&self, country: u32) -> io::Result<Vec<NodeValues>>;
-    /// Whether a train may enter `province`: recorded, not cooling down, and its controller
-    /// granted in `access`.
     fn allowed(&self, province: u32, access: &SparseBytes) -> bool;
-    /// Whether RailEdges holds `from` to `to` or `to` to `from`.
     fn rail(&self, from: u32, to: u32) -> bool;
 }
 
-/// One supply node's values, as a train route reads them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NodeValues {
     pub index: u32,
@@ -1265,7 +1085,6 @@ impl NodeValues {
     }
 }
 
-/// What a route walk reads of a node.
 pub trait SupplyNode {
     fn province(&self) -> u32;
     fn kind(&self) -> u32;
@@ -1331,14 +1150,12 @@ impl SupplyNode for NodeValues {
     }
 }
 
-/// A province path's rail curve and cumulative distances, as trains follow it.
 pub fn route_curve(
     rails: &super::railways::RailGeometry,
     path: &[u32],
     network: &super::railways::RailNetwork,
     heights: &HeightField<'_>,
 ) -> Curve {
-    // The train runs on the drawn railway curves.
     rails.train_route(path, network, heights).map(|route| {
         let mut distance = vec![0.0];
         for pair in route.points.windows(2) {
@@ -1350,7 +1167,6 @@ pub fn route_curve(
     })
 }
 
-/// Today's frame's values for [`TrainPlan::build_from`].
 struct FrameRows<'a> {
     frame: &'a DecodedFrame,
     creators: CreatorLookup<'a>,
@@ -1471,15 +1287,10 @@ impl TrainRows for FrameRows<'_> {
     }
 }
 
-/// A node's departure weight, as a plan weighs it.
 pub fn node_weight(node: &NodeValues) -> i64 {
     departure_weight(node)
 }
 
-/// The game uses signed native subtraction and rounds positive fixed5 up.
-/// What a plan build keeps for the next: each weighted node's checked routes' paths, and the
-/// provinces and rail pairs that decided them, so a step builds again only the nodes whose reads it
-/// changed. The owner forgets what a step changed; a node not held is walked again.
 #[derive(Default)]
 pub struct PlanCache {
     nodes: HashMap<u32, Arc<Vec<Vec<u32>>>>,
@@ -1498,7 +1309,6 @@ impl PlanCache {
         self.nodes.insert(node, paths);
     }
 
-    /// Forgets the nodes whose walk or routes read any of `provinces`.
     pub fn forget_provinces(&mut self, provinces: impl IntoIterator<Item = u32>) {
         for province in provinces {
             for node in self.by_province.remove(&province).unwrap_or_default() {
@@ -1507,7 +1317,6 @@ impl PlanCache {
         }
     }
 
-    /// Forgets the nodes whose routes run over any of the rail pairs `pairs`, either way.
     pub fn forget_pairs(&mut self, pairs: impl IntoIterator<Item = (u32, u32)>) {
         for (a, b) in pairs {
             for node in self.by_pair.remove(&(a.min(b), a.max(b))).unwrap_or_default() {
@@ -1520,7 +1329,6 @@ impl PlanCache {
         *self = Self::default();
     }
 
-    /// Nodes held, and the bytes the cache holds.
     pub fn held(&self) -> (usize, usize) {
         let paths: usize = self.nodes.values().map(|paths| paths.iter().map(|path| path.len() * 4 + 24).sum::<usize>() + 48).sum();
         let index: usize = self.by_province.values().chain(self.by_pair.values()).map(|nodes| nodes.len() * 8 + 48).sum();
@@ -1536,7 +1344,6 @@ fn departure_weight(node: &impl SupplyNode) -> i64 {
     (spare / 100000 + i64::from(spare % 100000 != 0)).wrapping_mul(100000)
 }
 
-/// Positive signed weights, double scaling by 2^-31.
 fn weighted_node(weights: &[i64], random: u32) -> Option<usize> {
     let total = weights
         .iter()
@@ -1559,7 +1366,6 @@ fn allocation_sum(entries: &[TrainAllocation]) -> i32 {
         .fold(0i32, |sum, entry| sum.wrapping_add(entry.count))
 }
 
-/// The game preserves order and signed counts; unresolved/null winner tries first entry.
 fn selected_variant(entries: &[TrainAllocation], random: u32) -> u64 {
     let total = allocation_sum(entries);
     if total > 0 {
@@ -1577,12 +1383,6 @@ fn selected_variant(entries: &[TrainAllocation], random: u32) -> u64 {
     entries.first().map_or(0, |entry| entry.variant)
 }
 
-/// The game resolves each missing-route endpoint through its own current
-/// province controller, not through the train's country. Node creation
-/// registers every kind-2..=5 node in that supply companion's subtype-zero
-/// province map when they create it; kinds 0 and 1 never enter that map.
-/// Only map membership matters for the game's synthetic naval break, so
-/// the complete recorded node census and province controllers are sufficient.
 #[derive(Default)]
 struct FallbackEndpoints {
     controllers: BTreeMap<u32, u32>,
@@ -1641,22 +1441,18 @@ impl FallbackEndpoints {
 
 }
 
-/// Whether the game breaks a route for a missing link between two provinces.
 pub trait Fallback {
     fn emits(&self, parent: u32, province: u32) -> io::Result<bool>;
 }
 
 impl Fallback for FallbackEndpoints {
     fn emits(&self, parent: u32, province: u32) -> io::Result<bool> {
-        // Native evaluates both endpoint lookups, even if the first misses.
         let source = self.contains(parent)?;
         let destination = self.contains(province)?;
         Ok(source && destination)
     }
 }
 
-/// A 100-step parent walk followed by flushing, deduplication and reversal.
-/// A missing parent refuses the route, including any earlier closed portions.
 #[cfg(test)]
 fn land_portions<N: SupplyNode>(
     start: &N,
@@ -1666,7 +1462,6 @@ fn land_portions<N: SupplyNode>(
     land_portions_reading(start, nodes, fallback, &mut Vec::new())
 }
 
-/// [`land_portions`], adding to `read` every province whose node or fallback break the walk read.
 fn land_portions_reading<N: SupplyNode>(
     start: &N,
     nodes: &BTreeMap<u32, &N>,
@@ -1747,8 +1542,6 @@ pub(crate) mod tests {
                 country: 400,
                 original_tag,
                 original_tag_reference,
-                // A static country's name generator can have no original
-                // operand even while original-tag selection returns a stored value.
                 name_tag: Vec::new(),
                 graphical_culture: b"runtime_gfx".to_vec(),
                 cosmetic_tag: vec![0xff],
@@ -1801,7 +1594,6 @@ pub(crate) mod tests {
             )])
         };
         train_gfx::Database {
-            // Country archetype precedes another table's equipment type.
             countries: BTreeMap::from([
                 ("ORG".into(), table("archetype", 0)),
                 ("OWN".into(), table("equipment", 1)),
@@ -1829,8 +1621,6 @@ pub(crate) mod tests {
             (b"OWN".to_vec(), 1, (train_gfx::Level::Country, 1)),
             (Vec::new(), 0, (train_gfx::Level::Country, 1)),
             (Vec::new(), -7, (train_gfx::Level::Country, 1)),
-            // Positive-empty original bytes preserve the positive gate and
-            // do not become the creator's own country-table key.
             (Vec::new(), 1, (train_gfx::Level::Culture, 6)),
         ] {
             let mut frame = creator_frame(Recorded::Value(Some(original)));
@@ -1853,7 +1643,6 @@ pub(crate) mod tests {
     #[test]
     fn train_original_tag_creator_zero_uses_the_reserved_witness_and_signed_positive_gate() {
         let mut frame = creator_frame(Recorded::NotRecorded);
-        // Raw zero never joins the positive country or appearance census.
         for id in [
             TableId::Countries,
             TableId::CountryLinks,
@@ -1949,8 +1738,6 @@ pub(crate) mod tests {
         {
             rows[0].tag = vec![0xff];
         }
-        // An original-country hit does not inspect the runtime source or
-        // the creator's unrelated own-tag bytes.
         if let TableView::Complete(TableRows::CountryAppearance(rows)) =
             &mut *frame.tables[TableId::CountryAppearance.index()]
         {
@@ -2313,7 +2100,6 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_parent_refuses_both_closed_and_open_portions() {
-        // Province 1 is an ally's hub: the viewer's census has no row for it.
         let mut bridge = SupplyNodeRow {
             province: 3,
             parent: 1,
@@ -2347,7 +2133,6 @@ pub(crate) mod tests {
 
     #[test]
     fn vertex_rows_carry_the_walk_through_an_allys_hub_to_the_capital() {
-        // Province 3 is an ally's hub, recorded as a vertex row.
         let capital = SupplyNodeRow {
             province: 1,
             parent: 0,
@@ -2416,7 +2201,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The next hour of [`plan`], with fewer trains allocated and a lower fleet cap.
     pub(crate) fn next_hour_plan() -> TrainPlan {
         let mut plan = plan();
         plan.hour += 1;
@@ -2453,10 +2237,7 @@ pub(crate) mod tests {
 
     #[test]
     fn car_yaw_matches_the_back_to_front_heading() {
-        // Back (2969.10, 1564.24), the car ahead's back
-        // (2967.11, 1564.95); its world matrix sends local +x to (-0.337, -0.942).
         let yaw = car_yaw(2967.11 - 2969.10, 1564.95 - 1564.24, 90f32.to_radians());
-        // world_transform's yaw sends local +x to (cos, sin).
         assert!((yaw.cos() + 0.337).abs() < 0.005, "{yaw}");
         assert!((yaw.sin() + 0.942).abs() < 0.005, "{yaw}");
     }
@@ -2467,7 +2248,6 @@ pub(crate) mod tests {
             .map(|seed| consist_cars(&consist(), &DEFINES, &mut Random::new(seed)).len())
             .collect();
         assert_eq!(counts, BTreeSet::from([6, 7, 8, 9]));
-        // The draw is min+1..=max+1 whatever order the defines give.
         let reversed = TrainDefines {
             wagon_count: [6, 3],
             ..DEFINES
@@ -2479,7 +2259,6 @@ pub(crate) mod tests {
         };
         let draws: BTreeSet<_> = (0..200).map(|r| ordered.cars(r * 7919)).collect();
         assert_eq!(draws, BTreeSet::from([4, 5, 6, 7]));
-        // Without a random list only the authored slots are drawn.
         let bare = Consist {
             wagons: Vec::new(),
             ..consist()
@@ -2490,8 +2269,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Each wagon count is raised to 1 before the pair is ordered, whether the getter stored 0 for
-    /// a missing or non-number value or the content gave less than 1.
     #[test]
     fn wagon_counts_are_each_at_least_one_before_ordering() {
         let wagons = |counts: &str| {
@@ -2512,7 +2289,6 @@ pub(crate) mod tests {
             wagons("MIN_TRAIN_WAGON_COUNT = 3, MAX_TRAIN_WAGON_COUNT = 6").unwrap(),
             [3, 6]
         );
-        // Both missing: [1, 1], so `cars` draws 2, not the 1 of [0, 0].
         let missing = TrainDefines {
             wagon_count: wagons("").unwrap(),
             ..DEFINES
@@ -2529,7 +2305,6 @@ pub(crate) mod tests {
             [1, 1],
             "non-number counts"
         );
-        // A count below 1 is raised before ordering, so -5 never becomes the minimum.
         assert_eq!(
             wagons("MIN_TRAIN_WAGON_COUNT = 4, MAX_TRAIN_WAGON_COUNT = -5").unwrap(),
             [1, 4]
@@ -2579,7 +2354,6 @@ pub(crate) mod tests {
     #[test]
     fn a_field_rebuilt_in_place_equals_a_fresh_one() {
         let mut assets = assets();
-        // Slot 0 is enough to place a car; the field's bounds read no mesh radius.
         assets.library.index.insert("car".into(), 0);
         let mut fresh = plan();
         let expected = fresh.field(&assets, 45.0).clone();
@@ -2629,7 +2403,6 @@ pub(crate) mod tests {
             equipment,
             ..assets()
         };
-        // The recorded spelling may differ in ASCII case from the declared key.
         let key = assets.equipment_key("Train_Equipment_1").unwrap();
         assert_eq!(key, "train_equipment_1");
         assert_eq!(
@@ -2639,14 +2412,12 @@ pub(crate) mod tests {
                 installed_content_core::equipment::DIRECTORY
             ))
         );
-        // The null object's token, which the lookup would try, is unknown.
         assert!(
             assets
                 .archetype("orphan")
                 .unwrap_err()
                 .contains("null-object fallback token is unavailable")
         );
-        // The declared key finds a database entry written in another case.
         let mut database = train_gfx::Database::default();
         let (is_tag, has_entity) = (|_: &str| false, |_: &str| true);
         database
@@ -2673,7 +2444,6 @@ pub(crate) mod tests {
     fn a_token_refusal_is_reported_only_when_a_departure_selects_it() {
         let assets = assets();
         let reason = "variant 71 equipment type: token 9 is among LexicalTokens' missing rows; its trains are not drawn";
-        // Variant 71 has no allocation, so no departure selects it.
         let mut unselected = plan();
         unselected.consists.insert(71, None);
         unselected.token_refusals.insert(71, reason.to_owned());
@@ -2691,8 +2461,6 @@ pub(crate) mod tests {
                 .diagnostics(&assets)
                 .contains(&format!("Supply trains: {reason}"))
         );
-        // The next hour keeps the published reason before any departure,
-        // and drops it once the variant is named again.
         let refused_next = || {
             let mut next = plan();
             next.hour += 1;
@@ -2829,8 +2597,6 @@ pub(crate) mod tests {
         assert_eq!(new_branch.last_time, None);
     }
 
-    /// A plan that remakes one route takes the others' curves as they were: the trains on them keep
-    /// their places, and the remade route's trains go.
     #[test]
     fn a_remade_route_leaves_the_trains_on_the_others_in_place() {
         let assets = assets();
@@ -2865,9 +2631,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_frame_samples_the_route_a_bounded_number_of_times_per_live_car() {
-        // Deterministic: one frame's route samples are bounded by its live
-        // cars (front, the chord solve's at most ten steps, the two ends and a
-        // clip), whatever the route's node count.
         let assets = assets();
         for nodes in [40usize, 4000] {
             let mut plan = plan();
@@ -2876,13 +2639,11 @@ pub(crate) mod tests {
             plan.departures = vec![vec![0]; 2000];
             plan.field(&assets, 3600.0);
             for frame in 1..=10 {
-                // The frame's retain and lifetime tests do not sample the route.
                 let cars: usize = plan.services.iter().map(|s| s.cars.len()).sum();
                 ROUTE_SAMPLES.with(|count| count.set(0));
                 plan.field(&assets, 3600.0 + frame as f32 / 60.0);
                 let samples = ROUTE_SAMPLES.with(Cell::get);
                 let live: usize = plan.services.iter().map(|s| s.cars.len()).sum();
-                // Every car sampled this frame was live before it or after it.
                 let bound = 14 * (cars + live);
                 assert!(
                     samples <= bound,

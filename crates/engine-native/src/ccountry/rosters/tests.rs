@@ -317,7 +317,6 @@ fn a_short_arena_grows_and_invalid_leaders_preserve_country_scalars() {
     assert_eq!(rows[0].roster_reason, Some("unit leader vtable mismatch"));
 }
 
-// regression: 1f2fc61ba2 Preserve scalar country inputs when roster reads fail
 #[test]
 fn absent_arenas_preserve_all_scalar_rows() {
     let (world, _) = fixture(4);
@@ -491,7 +490,6 @@ fn growing_civil_wars_capture_every_native_roster_and_same_hour_expansion() {
     );
 }
 
-/// Forwards every read and records each hinted address.
 struct Hinted<'a> {
     memory: crate::memory::SliceMemory<'a>,
     hints: std::cell::RefCell<Vec<usize>>,
@@ -531,9 +529,6 @@ fn counter_walk(memory: &impl Memory, world: &World) -> (Outcome, Vec<CounterInp
     (outcome, rows)
 }
 
-/// The counter walk hints each country's independent fields before reading
-/// them, so their cache misses overlap; the rows are those of an unhinted
-/// walk.
 #[test]
 fn the_counter_walk_hints_each_countrys_fields_before_reading_them() {
     let (world, _) = fixture(40);
@@ -563,8 +558,6 @@ fn the_counter_walk_hints_each_countrys_fields_before_reading_them() {
     }
 }
 
-/// Forwards every read and counts guarded calls: one per copy and one per
-/// scattered batch.
 struct Guarded<'a> {
     memory: crate::memory::SliceMemory<'a>,
     guards: std::cell::Cell<usize>,
@@ -592,9 +585,6 @@ impl Memory for Guarded<'_> {
     }
 }
 
-/// A page of leaders costs one guarded batch of their identities, where a
-/// read per leader took one guarded call each (60 here); the handles keep
-/// their native order and nulls.
 #[test]
 fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
     let (mut world, leader_objects) = fixture(1);

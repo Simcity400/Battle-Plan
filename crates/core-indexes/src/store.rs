@@ -220,7 +220,6 @@ pub(crate) struct Store {
     clock: u64,
     garbage: u64,
     free: u64,
-    // Pages held in the single-page pool and the extent tree; they don't coalesce, so compaction counts them.
     free_pages: u64,
     extents: Tree,
     stats: StorageStats,
@@ -407,7 +406,6 @@ impl Store {
             self.free = page;
             Ok(())
         } else {
-            // Fixed-width extent records use the admitted pager, never overflow allocation.
             self.put(
                 self.extents,
                 Bytes::Borrowed(&pages.to_be_bytes()),
@@ -958,7 +956,6 @@ impl Store {
             stats.payload_bytes -= payload;
             stats.overflow_bytes -= overflow;
             stats.record_bytes -= record_bytes;
-            // Separators can still reference a removed overflow key until compaction.
             self.garbage += overflow;
             let frame = self.frame(self.active, page)?;
             frame.node.splice(at, true, &[]);
@@ -1047,7 +1044,6 @@ impl Store {
             let node = Node {
                 bytes: self.frame(self.active, page)?.node.bytes,
             };
-            // The extent tree can reuse this leaf while its overflow records are recycled.
             self.recycle(page, 1)?;
             for at in 0..count {
                 let entry = Self::entry(self.active, page, &node, at);

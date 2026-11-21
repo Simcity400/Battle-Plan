@@ -1,9 +1,3 @@
-//! Passive formatter trees requested by own-army attrition.
-//!
-//! Traversal preserves each accumulator-child occurrence and reads stored modifier
-//! display strings. Country attrition uses depth two, retaining nonzero interior
-//! labels and leaf labels. Only requested accumulator/key pairs are captured.
-//! Source depth and scale stay on army operands and do not change tree identity.
 
 use crate::{
     Memory, cpdx_array::Array, modifier_accumulator, modifier_definition, msvc_string, read,
@@ -48,10 +42,6 @@ pub struct Frame {
     next: u32,
 }
 
-/// Caller-owned storage. Capture sorts and deduplicates the supplied request
-/// prefix in place. A failed tree retains its root identity and failure, while
-/// its partial node/text storage is reused by later independent roots.
-/// Required counts include full known demand even when storage is short.
 pub struct Buffers<'a> {
     pub requests: crate::walk::Buffer<'a, Request>,
     pub request_len: usize,
@@ -67,8 +57,6 @@ pub struct Buffers<'a> {
     pub text_required: usize,
     pub stack: crate::walk::Buffer<'a, Frame>,
     pub stack_required: usize,
-    /// The reads one accumulator's walks repeat ([`RepeatCache`]); `None`
-    /// repeats every read.
     pub repeats: Option<&'a mut RepeatCache>,
 }
 
@@ -96,10 +84,6 @@ fn child(memory: &impl Memory, children: Array, ordinal: u32) -> Result<usize, &
     at(pointer, 0x10)
 }
 
-// This is the same reservation check as the existing naval count-only walker.
-// Its fallback counts beyond short pack-owned scratch without a native-depth
-// limit or heap allocation. Acquisition workers reserve 4 MiB; 64 KiB remain
-// for guarded reads, guard pages and returning a refusal.
 #[derive(Clone, Copy)]
 struct StackLimits {
     low: usize,
@@ -139,9 +123,6 @@ impl StackLimits {
     }
 }
 
-/// No allocation, game calls or rereads after a fault. An undersized root or
-/// request arena cannot publish every identity and refuses the table. All
-/// other failures belong to their root and preserve unrelated roots.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -177,8 +158,6 @@ pub fn capture(
         let first_node = buffers.node_len;
         let first_text = buffers.text_len;
         let mut failure = None;
-        // Requests are sorted by accumulator: its keys' walks are adjacent,
-        // and only they repeat each other's reads.
         let result = match repeats.as_deref_mut() {
             Some(cache) => {
                 if index == 0 || buffers.requests[index - 1].accumulator != request.accumulator {

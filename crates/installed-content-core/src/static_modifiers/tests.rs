@@ -168,7 +168,6 @@ fn full_blocks_keep_last_definition_hidden_values_and_custom_tooltips() {
     assert!(rain.hidden.contains("defence"));
     assert_eq!(rain.tooltips(), ["weather_help"]);
     assert_eq!(rain.children.len(), 1);
-    // The null object has an empty accumulator.
     assert_eq!(read.blocks[1], Ok(modifiers::Modifiers::default()));
 }
 
@@ -220,9 +219,6 @@ fn the_last_definition_and_the_last_value_win_and_absence_is_zero() {
         ),
         (
             "common/modifiers/b.txt",
-            // A later definition replaces the whole earlier one; its key
-            // is then absent. A repeated key keeps its last value. The
-            // name is compared exactly.
             "capital_screening_bonus = { sortie_efficiency = 1 }
              screening_bonus = { sortie_efficiency = 0.1 sortie_efficiency = -0.02 }
              Screening_Bonus = { sortie_efficiency = 9 }",
@@ -231,8 +227,6 @@ fn the_last_definition_and_the_last_value_win_and_absence_is_zero() {
     assert_eq!(values, [Ok(-2_000), Ok(0)]);
 }
 
-/// A reference resolves through the file's own table before fixed5
-/// conversion.
 #[test]
 fn a_variable_reads_its_definitions_value() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -241,13 +235,10 @@ fn a_variable_reads_its_definitions_value() {
         first("@bonus = 0.5 screening_bonus = { sortie_efficiency = @bonus }"),
         Ok(50_000)
     );
-    // A definition inside the block is the same file's table.
     assert_eq!(
         first("screening_bonus = { @b = 0x10 sortie_efficiency = @b }"),
         Ok(1_600_000)
     );
-    // Each file has its own reader, so another file's definition is
-    // unknown here and the reference does not convert.
     let values = resolved(&[
         ("common/modifiers/a.txt", "@bonus = 0.5"),
         (
@@ -258,8 +249,6 @@ fn a_variable_reads_its_definitions_value() {
     assert_eq!(values[0], Ok(0));
 }
 
-/// The modifier is found by the key's token: the lexer folds a bare key
-/// and looks up a quoted one without case.
 #[test]
 fn a_modifier_key_is_found_whatever_its_case() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -274,8 +263,6 @@ fn a_modifier_key_is_found_whatever_its_case() {
     );
 }
 
-/// The destination is zeroed before fixed5 conversion, so a value it
-/// cannot convert stores 0, replacing an earlier value of the key.
 #[test]
 fn a_value_that_does_not_convert_stores_zero() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -295,8 +282,6 @@ fn a_value_that_does_not_convert_stores_zero() {
     );
 }
 
-/// The description accumulator holds `hidden_modifier` entries but
-/// not an `added_modifier` child.
 #[test]
 fn hidden_values_count_and_a_child_modifier_does_not() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -315,8 +300,6 @@ fn hidden_values_count_and_a_child_modifier_does_not() {
 fn an_unfollowed_reading_or_a_rename_is_refused_by_file_modifier_and_key() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // A block under a modifier name: read as its value when the name is
-    // registered, skipped otherwise; content alone does not say.
     let values = resolved(&[(
         "common/modifiers/x.txt",
         "capital_screening_bonus = { fighter_sortie_efficiency = 0.2 }
@@ -343,7 +326,6 @@ fn an_unfollowed_reading_or_a_rename_is_refused_by_file_modifier_and_key() {
             refusal.reason
         );
     }
-    // A later file's definition supersedes a refused one.
     let values = resolved(&[
         (
             "common/modifiers/x.txt",
@@ -355,7 +337,6 @@ fn an_unfollowed_reading_or_a_rename_is_refused_by_file_modifier_and_key() {
         ),
     ]);
     assert_eq!(values[0], Ok(10_000));
-    // A rename, under either name.
     for text in [
         "screening_bonus = { key = other sortie_efficiency = 0.1 }",
         "other = { tag = screening_bonus sortie_efficiency = 0.1 }",
@@ -378,11 +359,9 @@ fn values_convert_with_the_fixed5_reader() {
         ("-1.25", -125_000),
         ("0.010", 1_000),
         ("1.", 100_000),
-        // %lli radix prefixes: a leading zero is octal, 0x hexadecimal.
         ("010", 800_000),
         ("-010.5", -850_000),
         ("0x10", 1_600_000),
-        // Fraction digits past the fifth are truncated.
         ("0.123456", 12_345),
         ("-0.000019", -1),
     ] {
@@ -467,7 +446,6 @@ fn the_stack_is_read_without_nested_files_and_honours_replacement() {
                 "screening_bonus = { sortie_efficiency = 0.1 }
                  capital_screening_bonus = { fighter_sortie_efficiency = 0.2 }",
             ),
-            // The engine does not enter subdirectories.
             (
                 "common/modifiers/nested/zz.txt",
                 "screening_bonus = { sortie_efficiency = 0.9 }",
@@ -477,7 +455,6 @@ fn the_stack_is_read_without_nested_files_and_honours_replacement() {
     write(
         &over,
         &[
-            // The same path replaces the lower layer's whole file.
             (
                 "common/modifiers/00_static_modifiers.txt",
                 "capital_screening_bonus = { fighter_sortie_efficiency = 0.25 }",
@@ -513,7 +490,6 @@ fn the_stack_is_read_without_nested_files_and_honours_replacement() {
     assert_eq!(values(&layers), [Ok(10_000), Ok(20_000)]);
     let layers = stack(&[(&base, none), (&over, none)]);
     assert_eq!(values(&layers), [Ok(30_000), Ok(25_000)]);
-    // replace_path hides every lower file of the directory.
     let layers = stack(&[(&base, none), (&over, none), (&replacing, replaced)]);
     assert_eq!(values(&layers), [Ok(0), Ok(40_000)]);
     fs::remove_dir_all(&root).unwrap();

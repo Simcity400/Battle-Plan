@@ -1,14 +1,3 @@
-//! The railway strips and their bridges, from the mirrors: per province its strip over the rail
-//! graph, per province pair its bridge. The graph (RailEdges), the supply sources (ProvinceSupply)
-//! and the harbour anchors (NavalBases) are kept as today's railway reads them from a frame of rows,
-//! and a change marks exactly the strips and bridges today's patch of the last network redoes.
-//!
-//! A table that holds no rows (unavailable, not recorded, a gap) draws none of its part, and
-//! NavalBases not wholly recorded draws no railway at all, as today.
-//!
-//! The strips stay in one vertex buffer the layer keeps: an upload writes only the strips a settle
-//! redrew, one a piece its settling can stop between, and draws them in province order as today's
-//! whole mesh does. The bridges are placed again only when one changed.
 
 use super::{Carried, Settling, Changed, Dirty, Gpu, Inputs, Layer, Num, Number, View};
 use crate::{
@@ -27,36 +16,26 @@ use std::{
 };
 use viewer_world::map::railways::{Bridge, PreparedRailGeometry, RailNetwork, RailRun};
 
-/// Bytes a strip vertex takes in the buffer.
 const VERTEX: u64 = std::mem::size_of::<[f32; 6]>() as u64;
 
-/// Where the strips and bridges go: the scene, or a test's count.
 trait Target {
-    /// The strip buffer made `vertices` long, its first `kept` vertices kept.
     fn reserve(&mut self, vertices: u32, kept: u32) -> io::Result<()>;
     fn write(&mut self, at: u32, vertices: &[[f32; 6]]);
-    /// The strips drawn from now on, in this order; none when the buffer holds none.
     fn publish(&mut self, runs: &[Range<u32>]) -> io::Result<()>;
     fn bridges(&mut self, bridges: &BTreeMap<(u32, u32), Bridge>) -> io::Result<()>;
 }
 
-/// Where each province's strip lies in the layer's vertex buffer, in province order: its range,
-/// and the room it holds there.
 #[derive(Debug, Default)]
 struct Placed {
     provinces: Vec<u32>,
     runs: Vec<Range<u32>>,
     rooms: Vec<u32>,
-    /// Rooms no strip holds, by (size, start).
     free: BTreeSet<(u32, u32)>,
-    /// The end of the rooms given out, and the buffer's length, in vertices.
     end: u32,
     capacity: u32,
 }
 
 impl Placed {
-    /// Places `province`'s strip of `len` vertices: where it is written, and the buffer's new
-    /// length when it must grow (`live` is every strip's length, for the first).
     fn place(&mut self, province: u32, len: u32, live: impl FnOnce() -> u32) -> (u32, Option<u32>) {
         let at = match self.provinces.binary_search(&province) {
             Ok(at) if self.rooms[at] >= len => {
@@ -76,7 +55,6 @@ impl Placed {
         let (start, room, grow) = match self.free.range((len, 0)..).next().copied() {
             Some((room, start)) => {
                 self.free.remove(&(room, start));
-                // A hole much larger than the strip keeps its rest free.
                 if room - len >= 64 {
                     self.free.insert((room - len, start + len));
                     (start, len, None)
@@ -87,7 +65,6 @@ impl Placed {
             None => {
                 let start = self.end;
                 self.end += len;
-                // To every strip and a quarter more, or doubled: a few growths a session.
                 let grow = (self.end > self.capacity).then(|| {
                     let want = self.end.max(live());
                     self.capacity = want.saturating_add(want / 4).max(self.capacity.saturating_mul(2));
@@ -102,7 +79,6 @@ impl Placed {
         (start, grow)
     }
 
-    /// `province`'s strip no longer drawn; whether it was.
     fn remove(&mut self, province: u32) -> bool {
         let Ok(at) = self.provinces.binary_search(&province) else { return false };
         self.free.insert((self.rooms[at], self.runs[at].start));
@@ -117,16 +93,10 @@ impl Placed {
     }
 }
 
-/// Coalesced writes before they reach the queue: at most this many vertices a write.
 const STAGED: usize = 16 * 1024;
 
-/// Index lists laid out, for the judge's rate.
 static CHECKED_STRIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The index list the strips are drawn by ([`viewer_world::map::railways::strip_indices`]), as the
-/// layer's buffer holds it: `sent` entries of `held` stand in a buffer of `capacity` entries, and
-/// a publish writes only the span where the list it draws differs from them. `placed` is the runs
-/// the entries were laid out for, so a run that stands where it stood is not read again.
 #[derive(Default)]
 struct Strips {
     buffer: Option<wgpu::Buffer>,
@@ -137,10 +107,6 @@ struct Strips {
 }
 
 impl Strips {
-    /// The index list laid out for `runs`: its length, and the span of entries the buffer does not
-    /// hold (none: it holds them all). A run the list was last laid out for, with no run before it
-    /// of another length, holds the entries it holds: it is stepped over, not read, so a publish
-    /// reads the runs rather than every index of every live strip.
     fn laid(&mut self, runs: &[Range<u32>]) -> io::Result<(usize, Option<Range<usize>>)> {
         let length = runs.iter().map(|run| run.len() + 1).sum::<usize>();
         if self.held.len() < length {
@@ -179,8 +145,6 @@ impl Strips {
         Ok((length, (first < length).then_some(first..last + 1)))
     }
 
-    /// The index buffer drawing `runs` and its length: the span that differs written, the buffer
-    /// made anew and written whole only when the list no longer fits it.
     fn of(&mut self, gpu: &Gpu<'_>, runs: &[Range<u32>]) -> io::Result<Option<(wgpu::Buffer, u32)>> {
         let (length, owed) = self.laid(runs)?;
         if length == 0 {
@@ -197,7 +161,6 @@ impl Strips {
                 buffer.clone()
             }
             None => {
-                // Room for a quarter more, so a growing network makes a buffer a few times a session.
                 self.capacity = count.saturating_add(count / 4);
                 let buffer = shader_pipeline::gpu::stats::create_buffer(gpu.device, &wgpu::BufferDescriptor {
                     label: Some("rails layer strip indices"),
@@ -219,7 +182,6 @@ impl Strips {
     }
 }
 
-/// The scene's railway pass and bridges, and the layer's strip and index buffers.
 struct OnGpu<'g, 'a> {
     gpu: &'g mut Gpu<'a>,
     buffer: &'g mut Option<wgpu::Buffer>,
@@ -293,8 +255,6 @@ struct Columns {
     flags: Num<u8>,
 }
 
-/// The four ProvinceSupply cells a supply source reads, one bit each: a province is a source when
-/// any is set. `flags` counts by its first bit alone.
 struct Source;
 
 impl Source {
@@ -303,7 +263,6 @@ impl Source {
     const CAPITAL: u8 = 4;
     const FLAG: u8 = 8;
 
-    /// The bit `column` sets for a cell of `bits`; none for a column a source does not read.
     fn bit(columns: &Columns, column: usize, bits: Option<u64>) -> Option<(u8, bool)> {
         let bits = bits.unwrap_or(0);
         if column == columns.node.column {
@@ -319,7 +278,6 @@ impl Source {
         }
     }
 
-    /// A row's bits as the mirror holds them.
     fn of(columns: &Columns, supply: &Mirror, slot: u32) -> u8 {
         [columns.node.column, columns.naval.column, columns.capital.column, columns.flags.column]
             .into_iter()
@@ -328,7 +286,6 @@ impl Source {
     }
 }
 
-/// What each table gives the railway at the head: its rows or none, and NavalBases whole or not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Held {
     edges: bool,
@@ -340,9 +297,7 @@ fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
-/// The static railway geography the strips and bridges are drawn over.
 pub trait Geography: Send + Sync {
-    /// The camera height at and above which no railway is drawn (`RAILWAY_CAMERA_CUTOFF`).
     fn cutoff(&self) -> f32;
     fn run(&self, network: &RailNetwork, province: u32) -> io::Result<Option<RailRun>>;
     fn bridge(&self, network: &RailNetwork, key: (u32, u32)) -> Option<Bridge>;
@@ -370,33 +325,22 @@ pub struct Rails {
     content: Arc<dyn Geography>,
     columns: Option<Columns>,
     held: Option<Held>,
-    /// Whether the view draws the railway; hidden, the layer declares nothing and holds nothing.
     shown: bool,
-    /// Provinces ("province") whose strip a settle redrew since the host last cleared the list: what
-    /// a train route over them follows.
     changed: Changed,
     network: RailNetwork,
-    /// Per province, the provinces with an edge to it.
     incoming: HashMap<u32, BTreeSet<u32>>,
     runs: BTreeMap<u32, RailRun>,
     bridges: BTreeMap<(u32, u32), Bridge>,
-    /// Provinces whose strip changed since the scene last took it, the bridges changed since, and
-    /// whether the scene has not taken the strips yet.
     unsent: BTreeSet<u32>,
     bridges_stale: bool,
     unpublished: bool,
-    /// The strips in the scene: where each lies in `buffer`.
     placed: Placed,
     buffer: Option<wgpu::Buffer>,
     strips_drawn: Strips,
-    /// RailEdges keys (from, to) a step touched, each once.
     edge_keys: Vec<u64>,
     edge_marked: HashSet<u64>,
-    /// ProvinceSupply slots whose source inputs a step changed or inserted, and provinces whose row
-    /// it deleted.
     supply: Dirty,
     supply_gone: Vec<u32>,
-    /// Per ProvinceSupply slot, which of the four columns a source reads are set ([`Source`]).
     inputs: Vec<u8>,
     ports: Dirty,
     strips: Dirty,
@@ -404,7 +348,6 @@ pub struct Rails {
     pairs_since: Option<u64>,
     edges_since: Option<u64>,
     frame: u64,
-    /// Edges, supply provinces and harbours the steps marked.
     marked: [usize; 3],
 }
 
@@ -441,7 +384,6 @@ impl Rails {
         }
     }
 
-    /// A layer of the same content and inputs, made from scratch.
     pub fn fresh(&self) -> Self {
         Self { columns: self.columns, shown: self.shown, ..Self::new(Arc::clone(&self.content)) }
     }
@@ -454,12 +396,10 @@ impl Rails {
         &self.network
     }
 
-    /// Each province's strip, in province order.
     pub fn runs(&self) -> &BTreeMap<u32, RailRun> {
         &self.runs
     }
 
-    /// Each bridged pair's bridge, in pair order.
     pub fn bridges(&self) -> &BTreeMap<(u32, u32), Bridge> {
         &self.bridges
     }
@@ -498,11 +438,9 @@ impl Rails {
         self.strips.mark(province, self.frame);
     }
 
-    /// Everything dropped and every row marked: the settle that follows draws what the head holds.
     fn restart(&mut self, mirrors: &Mirrors, held: Held) {
         self.network = RailNetwork::default();
         self.incoming.clear();
-        // What the scene draws is sent again where it differs from what the settle redraws.
         self.unsent.extend(self.placed.provinces.iter().copied());
         self.bridges_stale = true;
         self.runs.clear();
@@ -554,7 +492,6 @@ impl Rails {
         }
     }
 
-    /// The edge `key` as the head holds it: its level when drawn.
     fn edge_level(&self, mirrors: &Mirrors, key: u64) -> Option<i32> {
         let held = self.held?;
         if !held.naval_whole || !held.edges {
@@ -595,20 +532,16 @@ impl Rails {
                 }
             }
         }
-        // `from`'s neighbour map changed: its strip, every strip that has it as a neighbour (the
-        // triangle test reads it), and the pair.
         self.reach(from);
         self.mark_pair(pair(from, to));
     }
 
-    /// `province` and every province with an edge to it redraw their strips.
     fn reach(&mut self, province: u32) {
         self.mark_strip(province);
         let before: Vec<u32> = self.incoming.get(&province).map(|set| set.iter().copied().collect()).unwrap_or_default();
         before.into_iter().for_each(|other| self.mark_strip(other));
     }
 
-    /// The province in ProvinceSupply's `slot`, and whether it is a supply source now.
     fn supply_slot(&self, mirrors: &Mirrors, slot: u32) -> Option<(u32, bool)> {
         let supply = mirrors.get(TableId::ProvinceSupply)?;
         if !supply.live(slot) {
@@ -657,7 +590,6 @@ impl Rails {
         } else {
             ports.remove(&province);
         }
-        // Its anchor moved: its strip, the strips that cross into it, and its pairs' bridges.
         self.reach(province);
         let mut pairs: Vec<(u32, u32)> = self.network.graph.get(&province).map(|neighbours| neighbours.keys().map(|&other| pair(province, other)).collect()).unwrap_or_default();
         pairs.extend(self.incoming.get(&province).into_iter().flatten().map(|&other| pair(province, other)));
@@ -675,7 +607,6 @@ impl Rails {
                 self.runs.remove(&province);
             }
         }
-        // A strip drawn the same carries the same segments, spurs and crossings: nothing to report.
         if !held {
             self.unsent.insert(province);
             self.changed.mark("province", u64::from(province));
@@ -700,7 +631,6 @@ impl Rails {
         }
     }
 
-    /// Edges, sources and harbours first, then the strips and bridges they marked, the rest carried.
     fn settle_dirty(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         self.frame += 1;
         if !self.shown {
@@ -772,9 +702,6 @@ impl Rails {
         }
     }
 
-    /// Marks a row inserted, or one whose write turned it into a supply source or out of one: the
-    /// step's own values against the bits the layer keeps per slot; only an inserted row's are
-    /// read from the mirror.
     fn apply_supply(&mut self, changes: &Changes, mirror: &Mirror, columns: Columns) {
         self.supply_gone.extend(changes.deleted().keys().unwrap_or_default().iter().map(|&key| key as u32));
         self.marked[1] += changes.deleted().len();
@@ -802,7 +729,6 @@ impl Rails {
                 self.inputs[at] = if set { self.inputs[at] | bit } else { self.inputs[at] & !bit };
             });
         }
-        // A slot written in several columns compares its bits from before the step.
         was.sort_by_key(|&(slot, _)| slot);
         was.dedup_by_key(|&mut (slot, _)| slot);
         for &slot in changes.inserted().slots() {
@@ -830,7 +756,6 @@ impl Rails {
         }
     }
 
-    /// What the settles changed into `target`: the bridges whole, then every strip.
     fn push(&mut self, target: &mut dyn Target) -> io::Result<()> {
         if self.bridges_stale {
             target.bridges(&self.bridges)?;
@@ -863,7 +788,6 @@ impl Rails {
         Ok(())
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -956,8 +880,6 @@ impl Layer for Rails {
         self.settle_dirty(mirrors)
     }
 
-    /// The strips the settles redrew and the bridges once one changed into the scene's passes
-    /// (hidden, none).
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         if self.uploaded() {
             return Ok(());

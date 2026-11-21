@@ -1,4 +1,3 @@
-//! Bright/log seed; the same native b1 remains bound through restore.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -33,7 +32,6 @@ pub(super) struct Seed(Fullscreen);
 
 impl Seed {
     pub(super) fn new(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| Self::build(device, effect))
     }
 
@@ -42,8 +40,6 @@ impl Seed {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // Bind the program, blend and physical PS table[0]. Depth is forced off and renderer raster state
-        // is retained. Other reads still refuse.
         state
             .samplers
             .retain(|key, _| *key == binding(0, Stage::Pixel));
@@ -52,8 +48,6 @@ impl Seed {
             .map_err(refuse)
     }
 
-    /// Bind b1 to both stages with the kept 68-byte initialized payload in an 80-byte block. The
-    /// final register padding remains unknown.
     pub(super) fn kept(
         &self,
         device: &wgpu::Device,

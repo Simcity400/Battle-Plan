@@ -1,24 +1,3 @@
-//! What caused the event feed's events: the native operations running on a
-//! thread when one happens ([`engine_events::event_feed_sites::provenance`]).
-//!
-//! Each operation sets a thread-local [`Context`] for as long as its original
-//! runs and restores the enclosing one when it returns or unwinds, so the
-//! native stack itself is the operation stack and no depth is chosen. An
-//! event inside an operation takes its cause from the context ([`inside`]):
-//! the declarations and joins of the war link CALL, the `on_annex` dispatch
-//! and a conference's start. An operation that is itself an event (a war
-//! relation ending, a release, a state's owner changing) names its caller as
-//! its route and the running operation as the one it ran inside
-//! ([`performed`]).
-//!
-//! The event feed family owns the eight entry detours ([`hooks`], enabled,
-//! restored and quiesced with its CALL hooks). The politics family forwards
-//! its diplomatic dispatch, civil war start, decision, scripted diplomacy and
-//! on_action scopes ([`politics`]) and the territory family its
-//! Set owner detour  ([`state_owner_before`]). A caller outside a
-//! site's list, or a cause operand that does not read, leaves that fact
-//! `None` and is counted in the status; an event whose own operands do not
-//! read is refused by the store.
 
 use crate::{
     event_feed_observer::{self, Fact},
@@ -53,11 +32,8 @@ const ENTRIES: usize = native::ENTRIES.len();
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; ENTRIES] = [const { AtomicUsize::new(0) }; ENTRIES];
-/// Entry detours running now.
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-/// Calls from outside their site's caller list.
 static UNCLASSIFIED: AtomicU64 = AtomicU64::new(0);
-/// Cause operands that did not read, and the first reason.
 static UNREAD: AtomicU64 = AtomicU64::new(0);
 static FIRST_UNREAD: Mutex<Option<&'static str>> = Mutex::new(None);
 
@@ -68,7 +44,6 @@ fn unread(reason: &'static str) {
     }
 }
 
-/// The running operation on this thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Context {
     route: EventFeedRoute,
@@ -90,8 +65,6 @@ thread_local! {
     }) };
 }
 
-/// A running operation. Dropping it, on return or unwind, restores the
-/// enclosing context.
 #[must_use]
 pub struct Scope(Context);
 
@@ -101,14 +74,10 @@ impl Drop for Scope {
     }
 }
 
-/// Replace the running context until the scope drops.
 fn set(context: Context) -> Scope {
     Scope(CONTEXT.replace(context))
 }
 
-/// Start an operation reached by `route` with its own operands; a
-/// conference it names, or the enclosing one, stays the conference of
-/// everything inside it.
 fn enter(route: EventFeedRoute, conference: Option<u64>, flags: u8) -> Scope {
     let previous = CONTEXT.get();
     set(Context {
@@ -121,7 +90,6 @@ fn enter(route: EventFeedRoute, conference: Option<u64>, flags: u8) -> Scope {
     })
 }
 
-/// The cause of an event inside the running operation.
 pub fn inside() -> EventFeedCause {
     let context = CONTEXT.get();
     EventFeedCause {
@@ -135,7 +103,6 @@ pub fn inside() -> EventFeedCause {
     }
 }
 
-/// The cause of an event a call by `route` performs.
 fn performed(route: EventFeedRoute, state: Option<u32>, flags: u8) -> EventFeedCause {
     let context = CONTEXT.get();
     EventFeedCause {
@@ -149,8 +116,6 @@ fn performed(route: EventFeedRoute, state: Option<u32>, flags: u8) -> EventFeedC
     }
 }
 
-/// The route `callers` names for a call returning to the absolute address
-/// `caller`; `None`, counted, outside the list.
 fn route(callers: &[Caller], caller: usize) -> EventFeedRoute {
     match native::route(BASE.load(Ordering::Relaxed), callers, caller)
         .and_then(EventFeedRoute::named)
@@ -163,7 +128,6 @@ fn route(callers: &[Caller], caller: usize) -> EventFeedRoute {
     }
 }
 
-/// Bit n set when byte operand n is nonzero.
 fn flags(bytes: &[usize]) -> u8 {
     bytes.iter().enumerate().fold(0, |flags, (bit, byte)| {
         flags | (u8::from(*byte as u8 != 0) << bit)
@@ -178,12 +142,9 @@ pub fn country(identity: CountryIdentity) -> EventFeedCountry {
     }
 }
 
-/// A cause operand read from the current world, `None` (counted) when it
-/// does not read.
 fn operand<T>(
     observe: impl FnOnce(&native::World<'_, LiveMemory>) -> Result<T, &'static str>,
 ) -> Option<T> {
-    // SAFETY: guarded reads of live memory on the calling thread.
     let memory = unsafe { LiveMemory::new() };
     native::World::new(&memory, BASE.load(Ordering::Relaxed))
         .and_then(|world| observe(&world))
@@ -191,7 +152,6 @@ fn operand<T>(
         .ok()
 }
 
-/// The politics scopes that start an event feed operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoliticsScope {
     Diplomacy,
@@ -203,11 +163,6 @@ pub enum PoliticsScope {
     OnAction,
 }
 
-/// Politics forward: the politics scope `scope` is about to run for
-/// `caller`. The diplomatic dispatch and civil war start
-/// civil war start are named by their callers; decisions,
-/// scripted diplomacy and on_actions, whose callers the script decides, by
-/// themselves. Without the event feed's hooks no operation starts.
 pub fn politics(scope: PoliticsScope, caller: usize) -> Option<Scope> {
     if BASE.load(Ordering::Relaxed) == 0 {
         return None;
@@ -224,7 +179,6 @@ pub fn politics(scope: PoliticsScope, caller: usize) -> Option<Scope> {
     Some(enter(reached, None, 0))
 }
 
-/// A set owner call the territory family's detour is running.
 pub struct StateOwner {
     state: usize,
     id: u32,
@@ -232,8 +186,6 @@ pub struct StateOwner {
     cause: EventFeedCause,
 }
 
-/// Territory forward, before `state owner setter(state, owner, u8,
-/// u8)` runs for `caller`: the state's id and current owner.
 pub fn state_owner_before(
     state: usize,
     third: usize,
@@ -244,7 +196,6 @@ pub fn state_owner_before(
     if base == 0 {
         return None;
     }
-    // SAFETY: a guarded read of live memory on the calling thread.
     let memory = unsafe { LiveMemory::new() };
     match native::state_owner(&memory, base, state) {
         Ok((id, owner)) => Some(StateOwner {
@@ -264,9 +215,6 @@ pub fn state_owner_before(
     }
 }
 
-/// Territory forward, after state owner setter returned normally: a StateTransfer
-/// when the state's owner changed (state owner setter returns at once for the same
-/// country).
 pub fn state_owner_after(before: Option<StateOwner>) {
     let Some(before) = before else { return };
     event_feed_observer::record(|world, memory, base| {
@@ -286,9 +234,6 @@ pub fn state_owner_after(before: Option<StateOwner>) {
     });
 }
 
-/// Counts an entry detour in flight until it returns or unwinds. Its entry
-/// and return also move the event feed's writer epoch, so no baseline
-/// sample certifies across it.
 struct Flight;
 
 impl Flight {
@@ -317,10 +262,10 @@ type NativeFunction = unsafe extern "system-unwind" fn(
     usize,
 ) -> usize;
 
-/// Native arguments (four registers, four stack slots; entries with fewer
-/// ignore the rest), the site and the caller's return address. RAX returns
-/// unchanged from the original.
-#[allow(clippy::too_many_arguments)] // Native args plus shim-only provenance.
+#[doc = " Native arguments (four registers, four stack slots; entries with fewer"]
+#[doc = " ignore the rest), the site and the caller's return address. RAX returns"]
+#[doc = " unchanged from the original."]
+#[allow(clippy::too_many_arguments)]
 unsafe extern "system-unwind" fn body(
     a: usize,
     b: usize,
@@ -339,7 +284,6 @@ unsafe extern "system-unwind" fn body(
         unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
     let callers = native::ENTRIES[index].callers;
     let _scope = match index {
-        // (diplomacy*, ally*, enemy*, u32 reason, u8 expand)
         JOIN_WAR => {
             let previous = CONTEXT.get();
             Some(set(Context {
@@ -351,7 +295,6 @@ unsafe extern "system-unwind" fn body(
                 flags: flags(&[e]),
             }))
         }
-        // (war*, u8 truce): the endpoints before the link clears.
         END_WAR => {
             let cause = performed(route(callers, caller), None, flags(&[b]));
             event_feed_observer::record(|world, _, _| {
@@ -365,9 +308,7 @@ unsafe extern "system-unwind" fn body(
             });
             None
         }
-        // (manager*, loser*, winner*, i64 factor, u32, u32, u8, message*)
         CREATE_CONFERENCE => Some(enter(route(callers, caller), None, flags(&[g]))),
-        // (conference*): the creation's conference, before it can end wars.
         START_CONFERENCE => {
             let mut context = CONTEXT.get();
             match operand(|world| world.conference(a)) {
@@ -388,18 +329,14 @@ unsafe extern "system-unwind" fn body(
             }
             Some(set(context))
         }
-        // (conference*, u8)
         APPLY_CONFERENCE => {
-            // SAFETY: a guarded read of live memory on the calling thread.
             let memory = unsafe { LiveMemory::new() };
             let conference = native::conference_reference(&memory, BASE.load(Ordering::Relaxed), a)
                 .map_err(unread)
                 .ok();
             Some(enter(EventFeedRoute::PeaceApplication, conference, 0))
         }
-        // (taker*, u32 target, i64* out, u8 transfer troops, u8)
         ANNEX => Some(enter(route(callers, caller), None, flags(&[d, e]))),
-        // (releaser*, target*, u8, u8) and (releaser*, target*, u8)
         RELEASE | RELEASE_COMMAND => {
             let reached = route(callers, caller);
             let bytes = if index == RELEASE {
@@ -423,9 +360,6 @@ unsafe extern "system-unwind" fn body(
     timing.original(|| unsafe { original(a, b, c, d, e, f, g, h) })
 }
 
-// Eight native arguments (four copied stack slots), the site and the
-// caller's return address. The shim keeps the native return address and
-// allocates its own aligned argument area.
 macro_rules! entry {
     ($name:ident, $index:expr) => {
         core::arch::global_asm!(
@@ -469,13 +403,13 @@ const CALLBACKS: [unsafe extern "system-unwind" fn(); ENTRIES] = [
     release_command_entry,
 ];
 
-/// The verified entry detours, unpublished; the event feed observer owns
-/// them with its CALL hooks.
-///
-/// # Safety
-/// The memory source and base must identify the authenticated executable in
-/// this process. The caller owns this family exclusively and must restore
-/// its hooks and quiesce native calls before releasing code or unloading.
+#[doc = " The verified entry detours, unpublished; the event feed observer owns"]
+#[doc = " them with its CALL hooks."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " The memory source and base must identify the authenticated executable in"]
+#[doc = " this process. The caller owns this family exclusively and must restore"]
+#[doc = " its hooks and quiesce native calls before releasing code or unloading."]
 pub unsafe fn hooks(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
     let mut hooks = Vec::with_capacity(ENTRIES);
     for (index, (entry, callback)) in native::ENTRIES.iter().zip(CALLBACKS).enumerate() {
@@ -495,13 +429,11 @@ pub unsafe fn hooks(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'s
     Ok(hooks)
 }
 
-/// Test only: politics scopes are entered only once the base is known.
 #[cfg(any(test, feature = "test-support"))]
 pub fn base_for_test(base: usize) {
     BASE.store(base, Ordering::Relaxed);
 }
 
-/// Entry detours in flight.
 pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }

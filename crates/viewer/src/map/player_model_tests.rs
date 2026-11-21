@@ -1,5 +1,3 @@
-//! The flying mode's aircraft in the production scene: one player model, drawn whatever the
-//! content's map-object cutoffs and the unit layer switch, and nothing at all without it.
 use super::scene_failure_tests::Fixture;
 use crate::controls::flight::{Airframe, EXPLODE, Flight};
 use std::io;
@@ -15,7 +13,6 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
     let mut scene = fixture.scene()?;
     let document = &fixture.document;
     let (device, queue) = (&fixture.state.device, &fixture.state.queue);
-    // There is no default aircraft: fly the first registered entity that bakes, as a user may.
     let aircraft = document
         .aircraft
         .roster()
@@ -24,8 +21,6 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
         .keys()
         .find_map(|name| document.aircraft.player(name).ok())
         .ok_or_else(|| invalid("the content registers no entity that can be flown"))?;
-    // Above the content's map-object cutoff, with the unit layer switched off: the map draws no
-    // aircraft of its own here.
     scene.set_graphics(dashboard::protocol::MapGraphics {
         samples: 1,
         units: false,
@@ -80,7 +75,6 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
             }),
         )?;
         drop(library);
-        // The second frame has the first's luminance history.
         scene.render(device, queue, request)?;
         scene.render(device, queue, request)?;
         io::Result::Ok(())
@@ -98,7 +92,6 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
         .filter(|(a, b)| a != b)
         .count();
     assert!(changed > 50, "{changed} pixels changed");
-    // Removing it again draws exactly the frame without it.
     frame(&mut scene, false)?;
     assert_eq!(fixture.pixels(&scene, "removed")?, without);
     Ok(())

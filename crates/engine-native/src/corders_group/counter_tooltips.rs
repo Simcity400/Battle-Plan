@@ -1,8 +1,3 @@
-//! Current commander HQ cooldown. Tracked date and deployment cooldown
-//! combine using the leader's own formation reference. The group points to
-//! a referenced HQ division template whose manpower is independent. Reads
-//! are passive and callback-local; tooltip naming uses the stored UnitLeaders
-//! name without copying rendered text or UI cache.
 
 use engine_sites::Rva;
 use super::LEADER;
@@ -11,15 +6,11 @@ use crate::{
     creference_registry::HeaderResolver, creferenced_division_template, cunit_leader, fixed5, read,
 };
 
-// Tracked modifier kind and end date.
 const COOLDOWN_TYPE: usize = 0xe84;
 const COOLDOWN_END: usize = 0xea0;
-// Formation pending-deployment byte selecting its contribution.
 const DEPLOYMENT_PENDING: usize = 0x19a;
-// Group HQ template resolution follows its referenced-template identity.
 const HQ_TEMPLATE: usize = 0x190;
 const TEMPLATE_MANPOWER: usize = 0x190;
-// Deployment defines are signed dwords; the date pair uses qwords.
 const DEPLOY_DAYS_RVA: Rva = Rva(0x033e_1fb8);
 const DEPLOY_MIN_RVA: Rva = Rva(0x033e_2024);
 const REFERENCE_MANPOWER_RVA: Rva = Rva(0x033e_22a8);
@@ -86,8 +77,6 @@ pub(super) fn direct_leader(memory: &impl Memory, group: usize) -> Result<usize,
         .map_err(|_| "HQ cooldown leader pointer overflow")
 }
 
-/// `registry` is the counter pass's resolver: one walk shares each
-/// reference type's root and header, never a bucket.
 pub(super) fn authenticate_leader(
     memory: &impl Memory,
     base: usize,

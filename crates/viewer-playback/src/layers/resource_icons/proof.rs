@@ -1,7 +1,3 @@
-//! The resource icons layer's line of the proof tool (`playback_cost::proof`): its icons against
-//! today's hour's icons (`resource_icons::hour_icons` over today's frame) and against itself
-//! composed anew. Run it with `--map-mode resources`: in any other mode it declares nothing, and
-//! is equal while it holds nothing.
 
 use super::ResourceIcons;
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -47,7 +43,6 @@ pub fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Up
     Ok(against(&fresh.icons(), &layer.icons(), "composed", "stepped"))
 }
 
-/// States whose icon differs or is in one only, and the whole refusal.
 fn against(wanted: &HourIcons, got: &HourIcons, theirs: &str, ours: &str) -> Compared {
     let mut compared = Compared::default();
     let note = |compared: &mut Compared, what: String| {

@@ -36,7 +36,6 @@ const NO_WARNINGS: readonly string[] = [];
 const OBSOLETE_SORT = { column: 'seenObsolete', direction: 'descending' } as const;
 const UNNAMED = 'Design name unavailable';
 
-/** The country's designs over the branch, read once; the rows at an hour are worked out here. */
 function useDesigns(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
@@ -44,14 +43,11 @@ function useDesigns(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean)
   return { track, tag, ...useProduct<EquipmentDesignsReply>(runtime.client, request, active, validateDesigns, track?.source) };
 }
 
-/** The Included types setting lists the equipment types the country's designs use. */
 export function useDesignChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data } = useDesigns(widget, runtime, true);
   return { included: data ? designTypes(data).map(type => ({ value: setToken(type.value), label: type.label })) : [] };
 }
 
-/** One country's saved designs at the date shown: current ones, then the obsolete ones in a closed disclosure, each
- * with when it and its obsolete flag were first read. Following playback it renders only where a design's row changes. */
 export default function EquipmentDesignsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -63,14 +59,11 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
     if (!window) return null;
     const hour = Math.floor(window.lastHour);
-    // Rows hold still between a design's own hours, and whether designs are known only at a recorded gap's edge.
     return data ? `${designsSince(data, hour)}:${designsKnown(data, hour)}` : `${hour}`;
   });
   const hour = useMemo(() => {
     const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
     return window ? Math.floor(window.lastHour) : null;
-    // `shown` changes exactly when the rows may.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown, track, widget.time]);
   useShownEachFrame(runtime.clock, () => {
     const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
@@ -83,7 +76,6 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tag && hour !== null ? [{ hour, tag }] : [], [tag, hour]), active);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // The sheet belongs to the recording, branch and country its design was picked from.
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
   const [stored, setPicked] = useState<{ owner: object; row: DesignRow } | null>(null);
@@ -151,8 +143,6 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   </div>;
 }
 
-/** The design's stat sheet at the drill's hour: main's `equipment-design-detail` product and its sections, which come
- * back with the equipment designs detail family (not yet in this build). */
 function DesignSheet() {
   return <WidgetState kind="unavailable" message="The design sheet comes with the equipment design detail, which is not in this build yet." />;
 }

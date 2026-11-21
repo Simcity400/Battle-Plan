@@ -180,7 +180,6 @@ function frame(at: number) {
   const head = anchorHour(anchor, sampleTime);
   if (anchor.playing) {
     const step = anchor.speed / cap, through = followed.stepHour;
-    // At integral step sizes, take the first display frame after each native step becomes eligible.
     const start = through !== undefined && Number.isInteger(step) && step > 0 && head < anchor.lastHour
       ? through + Math.floor((head - through) / step) * step : undefined;
     const boundary = start === undefined ? undefined : anchor.at - performance.timeOrigin + (start - anchor.position) * 1000 / anchor.speed;
@@ -277,8 +276,6 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
         for (const s of [...panels.values(), ...races.values()]) if (s.model.fixed === undefined) dirty.add(s);
       }
       if (speedChanged) {
-        // A host hides moving canvases while this anchor crosses the worker boundary.
-        // Repaint them under the new rate before reporting them visible again.
         for (const s of [...panels.values(), ...races.values()]) if (s.model.fixed === undefined) {
           invalidate(s);
         }

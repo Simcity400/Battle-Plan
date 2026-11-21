@@ -1,7 +1,3 @@
-//! CharacterRoleTraits over the roster job's role census with held role rows
-//! ([`super::RoleStore`], [`crate::character_changes`]): every country of
-//! the populated fixture holds an active character with a country-leader,
-//! advisor and scientist role and a retired character with empty maps.
 
 use super::scale_tests::{BASE, MANAGER, Populated, STATE, TRAITS, resolved_operatives};
 use super::{Capacities, Captured, RoleStore};
@@ -19,7 +15,6 @@ use std::{cell::Cell, ops::Range};
 const COUNTRIES: usize = 40;
 const CHARACTERS: u64 = COUNTRIES as u64 * 2;
 
-/// Counts reads that touch any role map, role object or role trait array.
 struct Watched<'a> {
     memory: &'a Populated,
     roles: Vec<Range<usize>>,
@@ -42,12 +37,9 @@ impl Memory for Watched<'_> {
 
 struct World {
     memory: Populated,
-    /// Roster occurrences in order: each country's active then retired
-    /// character.
     characters: Vec<usize>,
 }
 
-/// A leader domain never observed: no operative link is carried.
 static UNOBSERVED: crate::unit_leader_changes::Watches = crate::unit_leader_changes::Watches::new();
 
 impl World {
@@ -76,7 +68,6 @@ impl World {
         Self { memory, characters }
     }
 
-    /// The roster job's census of this callback.
     fn census(&self, memory: &impl Memory) -> RoleCensus {
         let identities: Vec<_> = self
             .characters
@@ -95,8 +86,6 @@ impl World {
         census
     }
 
-    /// Every active character's role memory (maps, roles, their trait
-    /// arrays), excluding the scientist read every hour.
     fn roles(&self) -> Vec<Range<usize>> {
         self.characters
             .iter()
@@ -108,12 +97,10 @@ impl World {
             .collect()
     }
 
-    /// The country-leader role of the `country`th active character.
     fn leader(&self, country: usize) -> usize {
         self.characters[country * 2] - 0x1100 + 0x1440
     }
 
-    /// Every active character's scientist object (its trait array header).
     fn scientists(&self) -> Vec<Range<usize>> {
         self.characters
             .iter()
@@ -131,7 +118,6 @@ impl World {
             .collect()
     }
 
-    /// One hour's capture: its rows, its counts and its role-memory reads.
     fn hour(
         &self,
         store: &mut RoleStore,
@@ -140,7 +126,6 @@ impl World {
         self.hour_with(store, changes, self.roles())
     }
 
-    /// [`Self::hour`], counting the reads of `watched` instead.
     fn hour_with(
         &self,
         store: &mut RoleStore,
@@ -188,7 +173,6 @@ fn unchanged_hours_read_no_character_and_publish_the_same_rows() {
     let (first, counts, reads) = world.hour(&mut store, &watches);
     assert_eq!((counts.read, counts.reused), (CHARACTERS, 0));
     assert!(reads > 0);
-    // Leader, advisor and scientist rows of every active character.
     assert_eq!(first.len(), COUNTRIES * 3);
     for _ in 0..3 {
         watches.boundary(false);
@@ -205,8 +189,6 @@ fn a_dirty_character_alone_is_read_afresh_and_exactly() {
     let watches = Watches::enabled(world.characters.len());
     let mut store = RoleStore::new();
     let (first, ..) = world.hour(&mut store, &watches);
-    // add_country_leader_trait on the third active character: its array now
-    // holds the advisor-only trait, and its hooked writer names it.
     let leader = world.leader(2);
     let array = u64::from_le_bytes(
         world.memory.data[leader + ccountry_leader::TRAITS..][..8]
@@ -239,7 +221,6 @@ fn a_dirty_character_alone_is_read_afresh_and_exactly() {
             .collect::<Vec<_>>()
     };
     assert_eq!(others(&rows), others(&first));
-    // The next quiet hour carries the new rows.
     let (again, counts, reads) = world.hour(&mut store, &watches);
     assert_eq!((counts.read, reads), (0, 0));
     assert_eq!(again, rows);
@@ -255,11 +236,9 @@ fn world_invalidation_or_a_new_world_reads_every_character() {
     let (rows, counts, _) = world.hour(&mut store, &watches);
     assert_eq!((counts.read, counts.reused), (CHARACTERS, 0));
     assert_eq!(rows, first);
-    // A writer that cannot name its character revokes every certificate.
     drop(watches.notify(None, 0));
     let (_, counts, _) = world.hour(&mut store, &watches);
     assert_eq!((counts.read, counts.reused), (CHARACTERS, 0));
-    // A forgotten store (failed job, missing census) holds nothing.
     store.forget();
     let (_, counts, _) = world.hour(&mut store, &watches);
     assert_eq!((counts.read, counts.reused), (CHARACTERS, 0));
@@ -280,8 +259,6 @@ fn quiet_hours_look_up_no_character_and_read_only_scientists() {
     assert!(counts.quiet);
     assert_eq!((counts.read, counts.reused, reads), (0, CHARACTERS, 0));
     assert_eq!(rows, first);
-    // A scientist trait writer moves the scientist token: the quiet hour
-    // reads the scientist rows afresh and shows the change.
     let token = TRAITS + 0x20 + 8;
     domain.watches.scientist_write();
     world.memory.data[token..token + 4].copy_from_slice(&203_u32.to_le_bytes());
@@ -303,8 +280,6 @@ fn quiet_hours_look_up_no_character_and_read_only_scientists() {
     };
     assert_eq!(others(&rows), others(&first));
     let current = rows;
-    // A hooked writer: every character is looked up, and the next hour is
-    // quiet again.
     drop(domain.watches.notify(Some(world.characters[4]), 0));
     let (rows, counts, _) = world.hour(&mut store, &domain);
     assert_eq!(domain.lookups(), CHARACTERS);
@@ -312,14 +287,12 @@ fn quiet_hours_look_up_no_character_and_read_only_scientists() {
     assert_eq!(rows, current);
     world.hour(&mut store, &domain);
     assert_eq!(domain.lookups(), 0);
-    // A census that changed (a character's country) is certified afresh.
     let character = world.characters[6] + ccharacter::COUNTRY;
     world.memory.data[character..character + 4].copy_from_slice(&77_u32.to_le_bytes());
     let (rows, counts, _) = world.hour(&mut store, &domain);
     assert_eq!(domain.lookups(), CHARACTERS);
     assert_eq!((counts.read, counts.reused), (0, CHARACTERS));
     assert_eq!(rows, current);
-    // A load, gap or recovery reads every character.
     domain.watches.boundary(true);
     let (_, counts, _) = world.hour(&mut store, &domain);
     assert_eq!((counts.read, counts.reused), (CHARACTERS, 0));
@@ -327,9 +300,6 @@ fn quiet_hours_look_up_no_character_and_read_only_scientists() {
 
 #[test]
 fn the_role_traits_walk_reads_no_roster() {
-    // The Gated job walks the roster job's census: with the character
-    // manager gone after the census was taken, the rows are still the ones
-    // the roster walk reads.
     let mut world = World::new();
     let mut roster = Captured::with_capacities(&Capacities::default());
     roster.capture(&world.memory, BASE, STATE, 1, false);
@@ -351,8 +321,6 @@ fn the_role_traits_walk_reads_no_roster() {
         Outcome::Rows { len } if len == COUNTRIES * 3
     ));
     assert_eq!(captured.tables(), expected);
-    // Without a census the pack walks the roster, which is gone, and the
-    // store forgets what it held.
     let mut store = RoleStore::new();
     captured.capture_census(&world.memory, BASE, STATE, 1, false, None, Some(&mut store));
     assert!(matches!(
@@ -368,10 +336,6 @@ fn scientist_tokens(rows: &[CharacterRoleTraitRow]) -> Vec<Vec<u32>> {
         .collect()
 }
 
-/// A quiet hour carries the scientist rows too while no scientist role or
-/// trait writer ran: it reads no scientist object, which the old quiet hour
-/// read for every scientist each hour. A scientist writer re-reads them, and
-/// the next quiet hour carries what it read.
 #[test]
 fn quiet_hours_carry_scientist_rows_until_a_scientist_writer_runs() {
     let mut world = World::new();
@@ -385,12 +349,10 @@ fn quiet_hours_carry_scientist_rows_until_a_scientist_writer_runs() {
     assert!(counts.quiet);
     assert_eq!(reads, 0, "a quiet scientist hour reads no scientist");
     assert_eq!(rows, first);
-    // The family's premise: a change no hook saw is carried stale...
     let token = TRAITS + 0x20 + 8;
     world.memory.data[token..token + 4].copy_from_slice(&203_u32.to_le_bytes());
     let (stale, _, reads) = world.hour_with(&mut store, &domain, scientists.clone());
     assert_eq!((stale, reads), (first.clone(), 0));
-    // ...so every scientist writer is hooked: one re-reads every scientist.
     domain.watches.scientist_write();
     let (written, counts, reads) = world.hour_with(&mut store, &domain, scientists.clone());
     assert!(counts.quiet);
@@ -400,10 +362,6 @@ fn quiet_hours_carry_scientist_rows_until_a_scientist_writer_runs() {
     assert_eq!((again, reads), (written, 0));
 }
 
-/// Ignored bench: CharacterRoleTraits' quiet hours at 13,200 characters
-/// (6,600 countries): into a frame kept between hours, and into a fresh one.
-///
-/// `cargo test -p collector --release --lib role_traits_hour_costs -- --ignored --nocapture`
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn role_traits_hour_costs_at_late_war_scale() {
@@ -436,7 +394,6 @@ fn role_traits_hour_costs_at_late_war_scale() {
     for _ in 0..5 {
         hour(&mut store);
     }
-    // A frame kept between hours holds the published table.
     let mut frame = Captured::with_capacities(&Capacities::default());
     for _ in 0..3 {
         timed(&mut frame, &mut store);
@@ -450,10 +407,6 @@ fn role_traits_hour_costs_at_late_war_scale() {
     eprintln!("role traits quiet, fresh frame: {:?}", runs[HOURS / 2]);
 }
 
-/// A frame whose buffers hold the role store's CharacterRoleTraits table
-/// publishes it again on a quiet hour without rewriting it (a planted marker
-/// survives) while the hour carries every scientist row; a hooked writer
-/// makes the next hour walk and rewrite the table.
 #[test]
 fn a_frame_publishes_its_held_role_traits_without_rewriting_them() {
     let world = World::new();
@@ -463,7 +416,6 @@ fn a_frame_publishes_its_held_role_traits_without_rewriting_them() {
     let mut store = RoleStore::new();
     let mut frame = Captured::with_capacities(&Capacities::default());
     let hour = |frame: &mut Captured, store: &mut RoleStore| {
-        // The pipeline grows every frame between hours.
         frame.grow(&mut Capacities::default());
         frame.reset();
         frame.capture_census_with(
@@ -499,9 +451,6 @@ fn a_frame_publishes_its_held_role_traits_without_rewriting_them() {
     assert_eq!(hour(&mut frame, &mut store), first);
 }
 
-/// Operative links are carried while their leaders' certificates hold: an
-/// unchanged hour reads no operative leader and publishes the walk's rows; a
-/// notified leader is read again; a write no hook observed is carried.
 #[test]
 fn operative_links_are_carried_while_their_leaders_certificates_hold() {
     use crate::unit_leader_changes::Watches as LeaderWatches;
@@ -556,7 +505,6 @@ fn operative_links_are_carried_while_their_leaders_certificates_hold() {
     assert_eq!(rows, first);
     assert!(reads > 0);
     assert_eq!((counts.carried, counts.read), (OPERATIVES as u64 - 1, 1));
-    // A missed owner write on the fourth country's operative.
     let mut world = world;
     let owner = leaders[3] + cunit_leader::OWNER;
     world.memory.data[owner..owner + 4].copy_from_slice(&99_u32.to_le_bytes());
@@ -564,17 +512,12 @@ fn operative_links_are_carried_while_their_leaders_certificates_hold() {
     assert_eq!(stale, first, "a write no hook saw is carried");
 }
 
-/// A link whose read refused a name is not held: once the name reads again,
-/// with no leader write or notification, the next walk reads it afresh and
-/// publishes it, as an uncarried walk would. Carried links keep their
-/// assigned trait definitions.
 #[test]
 fn an_operative_link_whose_name_was_refused_is_read_again() {
     use crate::unit_leader_changes::Watches as LeaderWatches;
     use engine_native::cunit_leader_trait;
     const OPERATIVES: usize = 4;
     let (mut memory, leaders) = resolved_operatives(OPERATIVES);
-    // Every operative holds one assigned trait of ordinal 7.
     let pointers = memory.data.len();
     let object = pointers + 0x10;
     memory.data.resize(object + cunit_leader_trait::SIZE, 0);
@@ -624,7 +567,6 @@ fn an_operative_link_whose_name_was_refused_is_read_again() {
     let (clean, ..) = hour(&mut RoleStore::new(), &world);
     assert_eq!(clean.len(), OPERATIVES);
     assert!(clean.iter().all(|row| row.trait_definitions == [7]));
-    // The second country's operative name header is unreadable for an hour.
     let length = leaders[1] + cunit_leader::NAME + 16;
     let readable: [u8; 8] = world.memory.data[length..length + 8].try_into().unwrap();
     world.memory.data[length..length + 8].copy_from_slice(&99_u64.to_le_bytes());

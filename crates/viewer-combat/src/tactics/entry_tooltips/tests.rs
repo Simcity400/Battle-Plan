@@ -236,10 +236,8 @@ fn possible_tactic_optional_fragment_refusal_preserves_known_effects_and_weight(
     .unwrap();
     assert!(text.starts_with("Chance:100.00%\nTotal:4.00\nWeight:4.00\n"));
     assert!(text.ends_with("4.00/4.00=100.00%"));
-    // A missing key is the native key-copy fallback, not an unavailable fragment.
     assert!(text.contains("TACTICS_BASE_WEIGHT"));
     assert!(gaps.is_empty(), "{gaps:?}");
-    // A reached text control that the viewer cannot draw is a real refusal.
     let loc = localisation()
         .iter()
         .map(|(key, text)| {
@@ -286,7 +284,7 @@ fn possible_tactic_optional_fragment_refusal_preserves_known_effects_and_weight(
     )
     .unwrap();
     assert_eq!(text, "Weight:4.00\nBase:1.00\n");
-    assert_eq!(gaps.len(), 3); // chance, total, calculation depend on the unknown other tactic.
+    assert_eq!(gaps.len(), 3);
     gaps.clear();
     let large = 1_i64 << 58;
     let text = status(

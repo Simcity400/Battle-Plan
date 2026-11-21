@@ -1,5 +1,3 @@
-//! Compiled content pdxmap passes with native vertex streams and constant bindings. The uniform
-//! terrain LOD is an approved fidelity limit.
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
@@ -20,18 +18,13 @@ use viewer_foundation::map::gpu_contract::REFRACTION_FORMAT;
 use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
 use viewer_foundation::parallel::Workers;
 
-/// What one frame's terrain draws.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cover {
-    /// The blocks the camera's distance chose, each on its own map copy, with the edges that meet
-    /// a coarser neighbour snapped to it ([`super::terrain::blocks`]).
     Blocks(Vec<Block>),
-    /// A map the shader's blocks cannot tile, refused by name.
     Refused(&'static str),
 }
 
 impl Cover {
-    /// Blocks the cover draws.
     pub fn blocks(&self) -> usize {
         match self {
             Self::Blocks(blocks) => blocks.len(),
@@ -39,7 +32,6 @@ impl Cover {
         }
     }
 
-    /// Quads the cover draws, before clipping to the map.
     pub fn quads(&self) -> u64 {
         match self {
             Self::Blocks(blocks) => blocks.len() as u64 * u64::from(SIDE * SIDE),
@@ -48,10 +40,6 @@ impl Cover {
     }
 }
 
-/// One terrain block a free eye draws: 64 by 64 cells at `step` from `origin` in map pixels (cut
-/// at the map's edges), drawn `offset` world units from the map's first copy. `snap` lists its
-/// south, north, west and east edges in the order of the content shader's snap switches; a set
-/// edge meets a neighbour of twice the step, and its odd vertices move onto that neighbour's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Block {
     pub origin: [u32; 2],
@@ -60,8 +48,6 @@ pub struct Block {
     pub snap: [bool; 4],
 }
 
-/// One block the terrain draws, as an overlay stands on it: its patch, its snapped edges in
-/// [`Block::snap`]'s order, and its first vertex in the height stream it draws from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stand {
     pub origin: [u32; 2],
@@ -70,7 +56,6 @@ pub struct Stand {
     pub base: u32,
 }
 
-/// Cells along a block's side: 65*65 vertices and 64*64*6 indices per block.
 pub const SIDE: u32 = 64;
 fn refuse(reason: impl Into<String>) -> io::Error {
     io::Error::other(format!(
@@ -85,7 +70,6 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
         .map_err(refuse)
 }
 
-/// Position stream has signed shorts, including the edge and snap direction.
 pub(super) fn positions() -> Vec<[i16; 4]> {
     (0..=SIDE)
         .flat_map(|z| {
@@ -145,8 +129,6 @@ pub(super) fn heights_into(
     let sample = |x: u32, z: u32| {
         let x = x % map[0];
         let z = z.min(map[1] - 1);
-        // Multiply 0.1 by 100 before truncating to signed 16-bit. Decoded bitmap rows are top-down;
-        // height samples for the terrain vertex stream are bottom-up.
         i16::from(bytes[((map[1] - 1 - z) * map[0] + x) as usize]) * 10
     };
     out.clear();
@@ -168,8 +150,6 @@ pub(super) fn heights_into(
     }));
 }
 
-/// A block must start on its own step's block grid inside the map, with a step that divides the
-/// map.
 fn validate_block(patch: Patch, map: [u32; 2]) -> io::Result<()> {
     let step = patch.step;
     if step == 0
@@ -189,8 +169,6 @@ fn validate_block(patch: Patch, map: [u32; 2]) -> io::Result<()> {
     Ok(())
 }
 
-/// The blocks the terrain draws for one wrap view of a `map`-sized map: those standing on that
-/// copy.
 fn drawn_blocks(cover: &Cover, map: [u32; 2], offset: f32) -> io::Result<Vec<Block>> {
     match cover {
         Cover::Blocks(blocks) => blocks
@@ -209,10 +187,7 @@ fn drawn_blocks(cover: &Cover, map: [u32; 2], offset: f32) -> io::Result<Vec<Blo
     }
 }
 
-/// A block's constants ([`BLOCK_BYTES`]) written in place.
 fn constants_into(data: &mut [u8], patch: Patch, matrix: [[f32; 4]; 4], snap: [bool; 4]) {
-    // All 112 bytes are initialized to zero. Uniform LOD has no snaps; a free eye's blocks set
-    // the snap switch of each edge that meets a coarser block.
     data[..BLOCK_BYTES].fill(0);
     data[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
     for (offset, value) in [
@@ -238,11 +213,8 @@ fn constants(patch: Patch, matrix: [[f32; 4]; 4], snap: [bool; 4]) -> Vec<u8> {
     data
 }
 
-/// A block's own constant buffer: the shadow texture matrix every block of a view carries, then
-/// the block's origin, step and edge snaps.
 const BLOCK_BYTES: usize = 112;
 
-/// The byte offset of the four edge snap switches in the block constants.
 const SNAP_SWITCHES: usize = 80;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
@@ -260,32 +232,22 @@ impl Mode {
         }
     }
 }
-/// One patch's height stream: a sample pair for each of the patch's vertex positions.
 const PATCH_BYTES: usize = ((SIDE + 1) * (SIDE + 1)) as usize * size_of::<[i16; 2]>();
 struct Geometry {
-    /// The slab holding this patch's heights, and where in it.
     slab: usize,
     offset: u64,
-    /// The slab and offset of the capped heights a coastal block draws instead, for a coarse
-    /// patch along a coast ([`super::terrain_coast`]).
     coast: Option<(usize, u64)>,
     indices: wgpu::Buffer,
     count: u32,
 }
 
-/// Which heights a block draws ([`super::terrain_coast`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Heights {
-    /// The heightmap's, as sampled.
     Sampled,
-    /// The patch's own coast heights, made at load.
     Coast,
-    /// Its own coast heights with its rim matched to the blocks around it, made for the cover:
-    /// the rim in this slot of the rim stream.
     Rim(usize),
 }
 
-/// One block a view draws: its patch, its snapped edges, and its heights.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Drawn {
     patch: Patch,
@@ -293,35 +255,21 @@ struct Drawn {
     heights: Heights,
 }
 
-/// One block's rim-matched heights: the rules of its rim's vertices, which with its patch decide
-/// them, and the heights.
 #[derive(Clone)]
 struct Rim {
     rules: Arc<[u8]>,
     heights: Arc<[u8]>,
 }
 
-/// What one block's rim drew in a cut: none where its rim takes its own step, else its rules and
-/// its rim-matched heights, `None` where they are its own.
 type BlockRim = Option<(Arc<[u8]>, Option<Arc<[u8]>>)>;
 
-/// One cover cut into its wrap views, with the rim-matched heights its blocks draw.
 struct Cut {
     cover: Cover,
-    /// Each wrap view's blocks, by the view's offset bits. A view that draws the same blocks
-    /// from the same rim slots, each holding the same rim, as in the cut before keeps that cut's
-    /// list, so a draw bound for the list reads the same heights ([`ViewKey`]).
     views: Vec<(u32, Arc<[Drawn]>)>,
-    /// The rim stream's slots, each the rim it holds; the blocks draw some of them.
     rims: Vec<Rim>,
-    /// The rim stream, one patch's heights a slot, bound as one more slab; none when no block
-    /// of the cut draws a rim.
     stream: Option<wgpu::Buffer>,
 }
 
-/// The cut before's list of the view at `offset` when the view draws the same blocks again, each
-/// rim from the same slot of the same stream, which still holds the same rim: a draw bound for
-/// that list reads the same heights.
 fn kept_view(before: &Cut, offset: u32, drawn: &[Drawn], slots: &[Rim], stream: &Option<wgpu::Buffer>) -> Option<Arc<[Drawn]>> {
     let (_, was) = before.views.iter().find(|(view, _)| *view == offset)?;
     let same_rims = drawn.iter().all(|block| match block.heights {
@@ -334,12 +282,10 @@ fn kept_view(before: &Cut, offset: u32, drawn: &[Drawn], slots: &[Rim], stream: 
     (**was == *drawn && same_rims).then(|| Arc::clone(was))
 }
 
-/// The cells a patch draws across and up: 64, or fewer where the map's edge cuts it.
 fn cells(map: [u32; 2], patch: Patch) -> [u32; 2] {
     std::array::from_fn(|axis| ((map[axis] - patch.origin[axis]) / patch.step).min(SIDE))
 }
 
-/// The slab and offset of the heights `drawn` draws; a rim's are in the slab after the load's.
 fn stream(geometry: &BTreeMap<Patch, Geometry>, rim_slab: usize, drawn: &Drawn) -> (usize, u64) {
     let made = &geometry[&drawn.patch];
     match drawn.heights {
@@ -349,8 +295,6 @@ fn stream(geometry: &BTreeMap<Patch, Geometry>, rim_slab: usize, drawn: &Drawn) 
     }
 }
 
-/// Every patch a uniform grid or a free eye's blocks can draw: each power-of-two step up to the
-/// coarsest either reaches, at every origin on that step's lattice within the map.
 fn every_patch(map: [u32; 2]) -> impl Iterator<Item = Patch> {
     let widest = widest_step(map);
     std::iter::successors(Some(1u32), move |step| (*step < widest).then_some(step * 2)).flat_map(
@@ -365,14 +309,10 @@ fn every_patch(map: [u32; 2]) -> impl Iterator<Item = Patch> {
         },
     )
 }
-/// The coarsest step any patch has: at least 256, and a root block spanning the map.
 fn widest_step(map: [u32; 2]) -> u32 {
     map[0].max(map[1]).div_ceil(SIDE).next_power_of_two().max(256)
 }
-/// Patches per fill task: enough to amortise a turn, few enough to share among the builders.
 const FILL_GROUP: usize = 64;
-/// Writes every patch's heights into its slab's mapped memory, on the calling thread and the
-/// builders `workers` lends while they are free.
 fn fill_slabs(
     slabs: &[wgpu::Buffer],
     patches: &[Patch],
@@ -385,7 +325,6 @@ fn fill_slabs(
         .map(|slab| slab.slice(..).get_mapped_range_mut())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| refuse(format!("terrain heights could not be written: {error}")))?;
-    // Slabs hold the patches in order, so the slabs' chunks line up with `patches`.
     let mut pairs = patches.iter().copied().zip(
         views
             .iter_mut()
@@ -411,12 +350,9 @@ fn fill_slabs(
     });
     Ok(())
 }
-/// The coarse coasts' caps for the effect whose water they lie under ([`super::terrain_coast`]).
 struct Coasts {
-    /// The effect whose water height they follow: the one drawn.
     from: Arc<Effect>,
     coast: Result<super::terrain_coast::Coast, String>,
-    /// The capped heights of every coarse patch the coast changes.
     heights: Vec<(Patch, Vec<[i16; 2]>)>,
 }
 
@@ -453,14 +389,11 @@ impl Coasts {
         }
     }
 
-    /// Whether these caps lie under `effect`'s water.
     fn follows(&self, effect: &Arc<Effect>) -> bool {
         Arc::ptr_eq(&self.from, effect)
     }
 }
 
-/// The capped heights of every coarse patch the coast changes, by index into `patches`, on the
-/// calling thread and the builders `workers` lends.
 fn coastal_heights(
     coast: &super::terrain_coast::Coast,
     patches: &[Patch],
@@ -493,8 +426,6 @@ fn coastal_heights(
         .collect()
 }
 
-/// Packs `coasts`' heights into slabs of `per_slab` patches pushed onto `slabs`; returns where
-/// each capped patch's heights stand.
 fn coast_slabs(
     device: &wgpu::Device,
     coasts: &Coasts,
@@ -518,7 +449,6 @@ fn coast_slabs(
     at
 }
 
-/// The water plane's height the terrain effect declares, or why it cannot be read.
 fn water_height(effect: &Effect) -> Result<f32, String> {
     effect
         .source
@@ -531,81 +461,48 @@ fn water_height(effect: &Effect) -> Result<f32, String> {
         })
 }
 
-/// The pixel slot the lit and underwater modes bind the shadow screen buffer to.
 pub const SHADOW_SLOT: u32 = 12;
 
 pub struct Terrain {
     pub effect: Arc<Effect>,
     pipelines: BTreeMap<Mode, Result<Arc<gpu::Pipeline>, String>>,
     programs: BTreeMap<Mode, super::shader_scene::Program>,
-    /// How each built mode that binds the shadow screen buffer reads it by texel
-    /// ([`super::shadow::texel_reads`]).
     texel_reads: BTreeMap<Mode, String>,
     positions: wgpu::Buffer,
     bytes: Vec<u8>,
     map: [u32; 2],
-    /// Every patch's heights, packed into as few buffers as the device allows, then the coarse
-    /// coastal patches' capped heights packed the same way.
     slabs: Vec<wgpu::Buffer>,
-    /// How many of `slabs` hold the sampled heights, and the patches one slab holds.
     sampled_slabs: usize,
     per_slab: usize,
-    /// What caps the coarse coasts for the drawn effect, or why every block keeps its sampled
-    /// heights.
     coasts: Coasts,
     workers: Workers,
-    /// Made at load for [`every_patch`], so no frame builds one.
     geometry: BTreeMap<Patch, Geometry>,
-    /// Each wrap view's last patch and its height stream, which that view's next draws inherit,
-    /// by the view's offset bits, and whether they are its coast heights.
     retained_heights: Vec<(u32, Patch, bool, Arc<[u8]>)>,
-    /// The camera's cover cut into its views, so a frame that neither moves the camera nor
-    /// resizes the view cuts no blocks at all, and the three stages of one frame cut it once.
     cut: Option<Cut>,
-    /// The last cut's rim-matched heights by patch and rim rules, `None` where they are the
-    /// patch's own, so a moving camera makes only the rims it had not drawn.
     rim_cache: BTreeMap<(Patch, Arc<[u8]>), Option<Arc<[u8]>>>,
-    /// The last cut's steps and each of its blocks' rim by patch and map copy: a block whose
-    /// surrounding cells hold the same steps again draws the same rim.
     last_rims: Option<(super::terrain_coast::Steps, BTreeMap<(Patch, i64), BlockRim>)>,
-    /// The rim stream kept across cuts, and the rim each of its slots holds: a cut writes only
-    /// the rims its slots do not hold yet, into the slots the cut before let go of.
     rim_stream: Option<wgpu::Buffer>,
     rim_slots: Vec<Rim>,
-    /// The block list of a view no block of the cut stands in.
     no_blocks: Arc<[Drawn]>,
     samples: u32,
-    /// Each mode's retained draws, one entry per set of views a frame prepares it for.
     retained: Vec<Retained>,
-    /// Each mode whose pass is drawn only while something it reads changes: the key its target
-    /// holds ([`Terrain::prepare_kept`]).
     kept: BTreeMap<Mode, Keyed>,
 }
 
-/// Each view's blocks and the matrix every block of that view carries.
 type Views = Vec<(Arc<[Drawn]>, [[f32; 4]; 4])>;
 
-/// Frames a mode's draw list must stand unchanged before it is recorded into a render bundle: a
-/// camera that moves cuts new blocks nearly every frame, and recording again would cost more
-/// than the commands it saves.
 const STILL: u32 = 8;
 
-/// Everything a mode's retained draws were bound from. Any of it differing binds them again;
-/// the constant blocks' bytes are written every frame instead.
 #[derive(PartialEq)]
 struct Built {
     mode: Mode,
     samples: u32,
-    /// Each view's scene block in bytes, whose place is reserved for it.
     scene: usize,
     offsets: Vec<u32>,
-    /// Each view's blocks, which the draws were bound for with their rim slots.
     views: Vec<ViewKey>,
     textures: Vec<wgpu::TextureView>,
 }
 
-/// A view's block list by identity: a cut keeps the list of a view whose blocks and rim slots
-/// stand as they stood ([`Cut::views`]), so the same list draws the same heights.
 struct ViewKey(Arc<[Drawn]>);
 
 impl PartialEq for ViewKey {
@@ -614,34 +511,22 @@ impl PartialEq for ViewKey {
     }
 }
 
-/// One mode's retained draws over the views it was prepared for: a persistent constants buffer
-/// with a place for every block, the bindings each draw was bound through once, and the render
-/// bundle the draws were recorded into once they stood still.
 struct Retained {
     built: Built,
     pipeline: Arc<gpu::Pipeline>,
     buffer: wgpu::Buffer,
-    /// The buffer's bytes as the GPU holds them.
     bytes: Vec<u8>,
-    /// Each view's scene block, and the light grid once when the mode reads one.
     frames: Vec<usize>,
     grid: Option<usize>,
     draws: Vec<Keep>,
-    /// Every patch's own block, once for each binding read per instance: its view, what it
-    /// carries and where it stands.
     places: Vec<Placed>,
-    /// Each view's blocks as one byte range, written together when that view's matrix moves.
     view_blocks: Vec<std::ops::Range<usize>>,
-    /// The matrix every block of each view carries.
     matrices: Vec<[[f32; 4]; 4]>,
-    /// The draws, pipeline, bind group and state sets the bundle holds, counted where it runs.
     bundle: Option<(wgpu::RenderBundle, [u64; 4])>,
     still: u32,
     used: u64,
 }
 
-/// One instanced draw: the patches of one view that share an index buffer and a slab of heights,
-/// drawn as one, with the bindings they were bound through once.
 struct Keep {
     indices: wgpu::Buffer,
     count: u32,
@@ -649,18 +534,14 @@ struct Keep {
     bindings: gpu::Bindings,
 }
 
-/// One patch's own block in one of the arrays a draw reads per instance.
 struct Placed {
     view: usize,
     patch: Patch,
     snap: [bool; 4],
     at: usize,
-    /// What the program reads of the block; the rest of the row is never read.
     length: usize,
 }
 
-/// Which place in a retained buffer a constant read binds: the view's scene block, the draw's
-/// own block, or the light grid.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
     Frame,
@@ -683,8 +564,6 @@ impl Place {
     }
 }
 
-/// The colour and depth formats and sample count a mode's pipelines are built for, which its
-/// render bundle is recorded for.
 fn attachments(mode: Mode, samples: u32) -> (wgpu::TextureFormat, wgpu::TextureFormat, u32) {
     match mode {
         Mode::Receiver => (
@@ -710,7 +589,6 @@ pub struct Inputs<'a> {
     pub light_grid: [f32; 4],
     pub textures: [&'a wgpu::TextureView; 16],
 }
-/// The retained entry this frame's prepared draws stand in.
 pub struct Prepared {
     at: usize,
 }
@@ -723,7 +601,6 @@ impl Terrain {
         samples: u32,
         workers: &Workers,
     ) -> io::Result<Self> {
-        // Native loader explicitly errors on dimensions not divisible by64.
         if map.contains(&0)
             || map.iter().any(|n| !n.is_multiple_of(SIDE))
             || u64::from(map[0]) * u64::from(map[1]) != bytes.len() as u64
@@ -738,8 +615,6 @@ impl Terrain {
             usage: wgpu::BufferUsages::VERTEX,
         });
         let patches: Vec<Patch> = every_patch(map).collect();
-        // A draw reads its instances' heights from its whole slab, so a slab is bound as one
-        // storage buffer as well as one vertex buffer.
         let largest = device
             .limits()
             .max_buffer_size
@@ -768,7 +643,6 @@ impl Terrain {
         let sampled_slabs = slabs.len();
         let coasts = Coasts::new(effect, &patches, bytes, map, workers);
         let coast_at = coast_slabs(device, &coasts, per_slab, &mut slabs);
-        // One index buffer per shape: interior patches share one, the map's edges a few more.
         let mut shapes = BTreeMap::<[u32; 2], (wgpu::Buffer, u32)>::new();
         let mut geometry = BTreeMap::new();
         for (index, &patch) in patches.iter().enumerate() {
@@ -822,13 +696,11 @@ impl Terrain {
             kept: BTreeMap::new(),
         })
     }
-    /// Builds the pipelines of `modes` now, keeping each result for the frames that draw them.
     pub fn warm(&mut self, device: &wgpu::Device, modes: &[Mode]) {
         let effect = Arc::clone(&self.effect);
         for &mode in modes {
             drop(self.pipeline(device, mode));
         }
-        // A mode that fell back to the recorded effect cleared the others: they warm again.
         if !Arc::ptr_eq(&effect, &self.effect) {
             for &mode in modes {
                 drop(self.pipeline(device, mode));
@@ -839,8 +711,6 @@ impl Terrain {
     fn pipeline(&mut self, device: &wgpu::Device, mode: Mode) -> io::Result<Arc<gpu::Pipeline>> {
         if !self.pipelines.contains_key(&mode) {
             let mut built = self.build_pipeline(device, mode);
-            // A visual mod's replacement that compiles but cannot be drawn here falls back to
-            // the recorded effect for every mode, the replacement refused by name.
             if let Err(error) = &built
                 && let Some(recorded) = self.effect.fall_back(&error.to_string())
             {
@@ -848,7 +718,6 @@ impl Terrain {
                 self.pipelines.clear();
                 self.programs.clear();
                 self.texel_reads.clear();
-                // Another program draws another picture from the same inputs.
                 self.kept.clear();
                 built = self.build_pipeline(device, mode);
             }
@@ -872,7 +741,6 @@ impl Terrain {
             .map_err(refuse)?
             .ok_or_else(|| refuse(format!("{technique} absent; retained program unavailable")))?;
         let compiled = self.effect.compiled(selection.index).map_err(refuse)?;
-        // The receivers draw into the screen buffer; the other modes sample it.
         if mode != Mode::Receiver
             && let Some(reads) = super::shadow::texel_reads(&compiled, SHADOW_SLOT, technique)
         {
@@ -897,7 +765,6 @@ impl Terrain {
         };
         let mut pass = gpu::Pass::packed(&compiled, &state, format, samples);
         let mut attributes: [Vec<wgpu::VertexAttribute>; 2] = Default::default();
-        // Declaration: signed16x4 POSITION stream0, signed16x2 TEXCOORD0 stream1.
         for input in &compiled.vertex.inputs {
             let (slot, format, width) = match input.semantic.as_str() {
                 "POSITION" | "POSITION0" => (0, wgpu::VertexFormat::Sint16x4, 4),
@@ -928,14 +795,10 @@ impl Terrain {
                 attributes,
             })
             .collect();
-        // Terrain uses counterclockwise fronts. Underwater and ordinary renderer depth states both
-        // enable writes with LESS_EQUAL.
         let raster = RasterizerState {
             front_ccw: true,
             ..Default::default()
         };
-        // A view's patches differ only in their own block and in their slab of heights, so one
-        // draw stands for all of them that share an index buffer and a slab.
         pass.instanced = (1 << binding(1, Stage::Vertex)) | (1 << binding(1, Stage::Pixel));
         pass.stream = Some(1);
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
@@ -962,7 +825,6 @@ impl Terrain {
         );
         Ok(pipeline)
     }
-    /// How `mode`'s built program reads the shadow screen buffer by texel.
     pub fn texel_reads(&self, mode: Mode) -> Option<&str> {
         self.pipelines
             .get(&mode)
@@ -972,18 +834,14 @@ impl Terrain {
             .map(String::as_str)
     }
 
-    /// The map's width and height in pixels, which the terrain's blocks tile.
     pub fn map(&self) -> [u32; 2] {
         self.map
     }
 
-    /// Why the coarse coasts keep their sampled heights, when they do.
     pub fn coast_refusal(&self) -> Option<&str> {
         self.coasts.coast.as_ref().err().map(String::as_str)
     }
 
-    /// Makes the coast caps again when the drawn effect is no longer the one they follow, as
-    /// after a visual mod's replacement fell back to the recorded effect.
     fn follow_effect(&mut self, device: &wgpu::Device) {
         if self.coasts.follows(&self.effect) {
             return;
@@ -1003,7 +861,6 @@ impl Terrain {
         self.retained_heights.clear();
     }
 
-    /// The cover cut into its wrap views, made again only when the cover or the coast changes.
     fn cut(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, cover: &Cover) -> io::Result<&Cut> {
         self.follow_effect(device);
         if self.cut.as_ref().is_none_or(|cut| cut.cover != *cover) {
@@ -1014,8 +871,6 @@ impl Terrain {
         Ok(self.cut.as_ref().expect("the cover was cut above"))
     }
 
-    /// Cuts `cover` into its wrap views, each block drawing its coast heights, matched at its rim
-    /// to the blocks of other steps around it ([`super::terrain_coast`]).
     fn cut_cover(
         &mut self,
         device: &wgpu::Device,
@@ -1163,9 +1018,6 @@ impl Terrain {
         })
     }
 
-    /// Puts each of `rims` in a slot of the rim stream, its slot by index: a rim a slot holds
-    /// already stays there, the others take the slots no rim of this cut holds, and only those
-    /// are written. The stream is made again, whole, when the rims outgrow it or no arena writes.
     fn place_rims(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, rims: &[Rim]) -> Vec<usize> {
         let key = |rim: &Rim| Arc::as_ptr(&rim.heights).cast::<u8>();
         let mut held: std::collections::HashMap<*const u8, usize> =
@@ -1183,7 +1035,6 @@ impl Terrain {
             if slots[at] != usize::MAX {
                 continue;
             }
-            // Two blocks drawing one rim share its slot.
             if let Some(&slot) = held.get(&key(rim)).filter(|&&slot| used[slot]) {
                 slots[at] = slot;
                 continue;
@@ -1249,8 +1100,6 @@ impl Terrain {
         Ok(views)
     }
 
-    /// The blocks the terrain draws for `cover` in the wrap view at `offset`, by the height
-    /// stream each draws from, so an overlay stands on the heights the terrain draws.
     pub fn standing(
         &mut self,
         device: &wgpu::Device,
@@ -1298,20 +1147,11 @@ impl Terrain {
         inputs: Inputs<'_>,
     ) -> io::Result<Prepared> {
         let pipeline = self.pipeline(arena.device(), mode)?;
-        // An entry no frame of the last two prepared lets go of its buffer, bindings and bundle.
         self.retained.retain(|kept| kept.used + 2 > arena.frame());
         let views = self.views(arena, &inputs)?;
         self.prepare_views(arena, mode, inputs, &pipeline, views)
     }
 
-    /// Prepares `mode`'s draws only when something its compiled programs read has changed since
-    /// the pass last drew: `Ok(None)` means the target still holds that very picture, so the
-    /// pass is not drawn at all. `contents` gives what each texture of [`Inputs::textures`]
-    /// holds, slot by slot, and `into` what the pass draws into; an input no writer describes
-    /// leaves the key unformed and the pass is drawn every frame ([`Self::not_kept`]).
-    ///
-    /// The caller draws what this returns and then tells [`Self::submitted`] that the frame
-    /// reached the queue, or [`Self::lost`] that nothing was drawn.
     pub fn prepare_kept(
         &mut self,
         arena: &gpu::Arena,
@@ -1322,8 +1162,6 @@ impl Terrain {
     ) -> io::Result<Option<Prepared>> {
         let frame = arena.frame();
         let pipeline = self.pipeline(arena.device(), mode)?;
-        // A kept pass still uses its entry: without this its buffer, bindings and bundle would
-        // be let go of after two kept frames and built again the moment an input changed.
         for kept in &mut self.retained {
             if kept.built.mode == mode {
                 kept.used = frame;
@@ -1334,7 +1172,6 @@ impl Terrain {
         let samples = attachments(mode, self.samples).2;
         let reads = pipeline.constant_reads();
         let sampled = pipeline.sampled_slots().map(|physical| {
-            // The terrain binds pixel textures only: a vertex one is bound by nothing here.
             let content = (!physical.is_multiple_of(2))
                 .then(|| contents.get((physical / 2) as usize).copied().flatten())
                 .flatten();
@@ -1370,24 +1207,18 @@ impl Terrain {
             .map(Some)
     }
 
-    /// The frame reached the queue, so each target a kept pass drew into holds the picture its
-    /// key describes.
     pub fn submitted(&mut self) {
         for keyed in self.kept.values_mut() {
             keyed.submitted();
         }
     }
 
-    /// `mode`'s pass drew nothing this frame, so its target still holds whatever it held and
-    /// the next frame draws it again.
     pub fn lost(&mut self, mode: Mode) {
         if let Some(keyed) = self.kept.get_mut(&mode) {
             keyed.lost();
         }
     }
 
-    /// Every kept mode whose key cannot be formed, so its pass is drawn every frame: the
-    /// technique and the reason.
     pub fn not_kept(&self) -> impl Iterator<Item = (&'static str, &str)> {
         self.kept
             .iter()
@@ -1444,8 +1275,6 @@ impl Terrain {
                 self.retained.len() - 1
             }
         };
-        // The state the last block of each view leaves behind, which the next layers of that
-        // wrap inherit; the frame draws the same blocks, so the state they leave is the same.
         if let Some(retained) = inputs.retained {
             let mut buffers = BTreeMap::new();
             if mode != Mode::Receiver {
@@ -1498,8 +1327,6 @@ impl Terrain {
                 tracked.bind_vertex(1, 4, heights);
             }
         }
-        // This frame's bytes: every view's scene block, the light grid when it changed, and the
-        // blocks of each view whose matrix moved.
         let kept = &mut self.retained[at];
         kept.used = frame;
         let mut dirty: Vec<std::ops::Range<usize>> = Vec::new();
@@ -1546,7 +1373,6 @@ impl Terrain {
             arena.write(&kept.buffer, range.start as u64, &kept.bytes[range]);
         }
         if kept.bundle.is_none() {
-            // Drawn directly until its draws have stood still.
             kept.still += 1;
             if kept.still >= STILL {
                 kept.bundle = Some(record_bundle(
@@ -1559,7 +1385,6 @@ impl Terrain {
         }
         Ok(Prepared { at })
     }
-    /// Forgets the retained heights of wrap views not among `offsets`, this frame's.
     pub fn keep_views(&mut self, offsets: &[f32]) {
         self.retained_heights
             .retain(|(view, ..)| offsets.iter().any(|offset| offset.to_bits() == *view));
@@ -1615,14 +1440,6 @@ impl Terrain {
     }
 }
 
-/// Everything one mode's pass reads, as its key: what its compiled programs read of each
-/// constant block bound to them, what each texture they sample holds, what the pass draws into
-/// and with, and the blocks it draws. Nothing else, and no byte of a block the programs do not
-/// read, so a frame that changed only unread bytes repeats the key and is not drawn again.
-///
-/// `sampled` gives each texture binding the programs sample and what the texture bound there
-/// holds; `reads` each constant binding they read. The sea-bed scene is the only pass kept, so
-/// the names the key reports its parts by are its.
 #[allow(
     clippy::too_many_arguments,
     reason = "every input of the pass, which is what the key is"
@@ -1653,7 +1470,6 @@ fn read_key(
     key.part("sea_bed_scene");
     for spec in reads {
         match Place::of(spec.binding) {
-            // Every view's camera and lighting block, which is where the camera moves.
             Some(Place::Frame) => {
                 for frame in frames {
                     key.read(spec, frame);
@@ -1662,7 +1478,6 @@ fn read_key(
             Some(Place::Grid) => {
                 key.read(spec, bytemuck::bytes_of(light_grid));
             }
-            // A block's own bytes go in with that block, below.
             Some(Place::Own) => {}
             None => {
                 key.unknown(format!(
@@ -1687,8 +1502,6 @@ fn read_key(
             heights,
         } in blocks.iter()
         {
-            // The patch and its heights alone choose the block's vertices and its index buffer,
-            // which no constant carries; a rim's heights follow from its rules.
             key.number(u64::from(patch.origin[0]))
                 .number(u64::from(patch.origin[1]))
                 .number(u64::from(patch.step));
@@ -1717,8 +1530,6 @@ fn read_key(
     }
 }
 
-/// Lays out a persistent buffer with a place for every block a mode's views draw, binds each
-/// draw there once and writes every byte. A frame then writes only the blocks that changed.
 #[allow(clippy::too_many_arguments, reason = "the draws, their blocks and the buffers they sit in")]
 fn bind_retained(
     arena: &gpu::Arena,
@@ -1763,7 +1574,6 @@ fn bind_retained(
     if views.iter().all(|(blocks, _)| blocks.is_empty()) {
         return Ok(empty(built, spare()));
     }
-    // The patches of one view that share an index buffer and a slab of heights draw as one.
     let mut groups: Vec<(usize, usize, wgpu::Buffer, u32, Vec<Drawn>)> = Vec::new();
     let mut bases: Vec<u32> = Vec::new();
     for (view, (blocks, _)) in views.iter().enumerate() {
@@ -1796,7 +1606,6 @@ fn bind_retained(
         mapped_at_creation: false,
     });
     arena.write(&bases_buffer, 0, bytemuck::cast_slice(&bases));
-    // One program a slab: the slab is bound with the draw's other resources.
     let mut programs: Vec<(usize, gpu::BindingProgram)> = Vec::new();
     for &(_, slab, ..) in &groups {
         if programs.iter().any(|(held, _)| *held == slab) {
@@ -1812,8 +1621,6 @@ fn bind_retained(
         programs.push((slab, made));
     }
     let program = &programs.first().expect("a group was made above").1;
-    // Every shared read's place is reserved for the largest read of it, as the arena reserves
-    // one; a read taken per instance keeps a row of its own stride instead.
     let mut reserved = [0usize; 3];
     let mut rows: Vec<(u32, usize)> = Vec::new();
     for spec in program.constant_reads() {
@@ -1864,8 +1671,6 @@ fn bind_retained(
         top = at + reserved[Place::Grid as usize];
         at
     });
-    // Each draw's rows block, then each of its per-instance arrays, every row of one stride so
-    // the instance index reaches it from the base the rows block gives.
     let mut laid = Vec::with_capacity(groups.len());
     let mut places = Vec::new();
     let mut view_blocks: Vec<std::ops::Range<usize>> = views.iter().map(|_| 0..0).collect();
@@ -1980,17 +1785,12 @@ fn bind_retained(
     })
 }
 
-/// A patch's own block written where a draw reads it, cut to what its program reads.
 fn write_block(data: &mut [u8], place: &Placed, matrix: [[f32; 4]; 4]) {
     let mut block = [0u8; BLOCK_BYTES];
     constants_into(&mut block, place.patch, matrix, place.snap);
     data.copy_from_slice(&block[..data.len()]);
 }
 
-/// A mode's retained draws recorded into a render bundle for a pass of `color` and `depth` at
-/// `samples`, as [`Terrain::draw`] records them into a pass, with the draws, pipeline, bind
-/// group and state sets it holds, counted where it is executed. A bundle sets no blend
-/// constant: the pass sets it before executing the bundle.
 fn record_bundle(
     device: &wgpu::Device,
     (color, depth, samples): (wgpu::TextureFormat, wgpu::TextureFormat, u32),
@@ -2069,8 +1869,6 @@ mod tests {
         assert_eq!(h[129], [1860, 1830]);
         assert_eq!(h[4224], [0, 0]);
     }
-    /// The blocks of one wrap view are those standing on that copy, and a block's own constants
-    /// carry its origin and step.
     #[test]
     fn wrap_selection_and_native_buffer_bytes() {
         let block = |origin: [u32; 2], step, offset| Block {
@@ -2106,8 +1904,6 @@ mod tests {
         );
     }
 
-    /// A free eye's block writes each snapped edge's switch, in the shader's edge order, and
-    /// nothing else differs from the uniform grid's constants.
     #[test]
     fn snapped_edges_set_their_switches() {
         let p = Patch {
@@ -2122,11 +1918,8 @@ mod tests {
         );
     }
 
-    /// One sea-bed pass's inputs, as a key over them answers "must this be drawn again?".
     struct Pass {
         keyed: Keyed,
-        /// The program reads the camera matrix of the scene block and nothing past byte 64, and
-        /// the whole of each block's own constants.
         reads: Vec<shader_pipeline::Buffer>,
         sampled: Vec<(u32, Option<Content>)>,
         into: Option<Content>,
@@ -2170,8 +1963,6 @@ mod tests {
             }
         }
 
-        /// Whether this frame must be drawn, as the pass's own call site asks it, taking a
-        /// drawn frame as submitted.
         fn draws(&mut self) -> bool {
             let mut key = self.keyed.start();
             read_key(
@@ -2194,24 +1985,17 @@ mod tests {
         }
     }
 
-    /// The sea-bed pass is drawn again for a byte its programs read and not for a byte they do
-    /// not, whatever that byte is: the key is the read bytes themselves.
     #[test]
     fn a_changed_read_byte_redraws_the_sea_bed_and_an_unread_byte_does_not() {
         let mut pass = Pass::new();
         assert!(pass.draws(), "the target holds nothing yet");
         assert!(!pass.draws(), "nothing changed");
-        // The animation clock and the hour's own fields sit past byte 64, which this program
-        // does not read: the water moves every frame and the sea bed does not.
         pass.scene[236] = 9;
         pass.scene[351] = 9;
         assert!(!pass.draws(), "the clock moved, and no program reads it");
-        // The camera matrix is read.
         pass.scene[4] = 9;
         assert!(pass.draws(), "the camera moved");
         assert!(!pass.draws());
-        // A block carries its origin at byte 64 and its step at 72; the switches at 80 are past
-        // what this program reads.
         let matrix = pass.views[0].1;
         let mut moved: Vec<_> = pass.views[0].0.to_vec();
         moved[1].snap = [true, false, false, false];
@@ -2219,8 +2003,6 @@ mod tests {
         assert!(!pass.draws(), "a snap switch no program reads");
     }
 
-    /// Every block drawn is in the key, so a cover that cut one more or moved one is drawn
-    /// again even where the blocks it kept are unchanged.
     #[test]
     fn a_changed_block_list_redraws_the_sea_bed() {
         let mut pass = Pass::new();
@@ -2266,8 +2048,6 @@ mod tests {
         assert!(pass.draws(), "and its sampled heights again");
     }
 
-    /// A texture the pass samples, written by the hour or by the frame before it, redraws it;
-    /// a target made afresh redraws it however little else changed.
     #[test]
     fn a_rewritten_texture_or_a_remade_target_redraws_the_sea_bed() {
         let mut pass = Pass::new();
@@ -2280,8 +2060,6 @@ mod tests {
         assert!(!pass.draws());
     }
 
-    /// A texture whose writer publishes no content leaves no key to repeat, so the pass is
-    /// drawn every frame and says which slot it was.
     #[test]
     fn a_texture_that_publishes_no_content_draws_the_sea_bed_every_frame() {
         let mut pass = Pass::new();
@@ -2295,9 +2073,6 @@ mod tests {
         }
     }
 
-    /// A new cut keeps the list of a view that draws the same blocks from the same rim slots,
-    /// each still holding the same rim, so its draws stay bound; a changed block, or a slot that
-    /// now holds another rim (however alike its bytes), gives the view a new list.
     #[test]
     fn a_view_that_draws_the_same_blocks_from_the_same_rims_keeps_its_list_across_cuts() {
         let rim = |byte: u8| Rim { rules: Arc::from([0u8]), heights: Arc::from([byte; 4]) };
@@ -2333,8 +2108,6 @@ mod tests {
         assert!(validate_block(block([0, 0], 256), map).is_err());
     }
 
-    /// The coast caps follow the effect drawn: a visual mod's water height while it draws, the
-    /// recorded effect's once the replacement falls back.
     #[test]
     fn coast_caps_lie_under_the_water_of_the_effect_drawn() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2354,7 +2127,6 @@ mod tests {
         };
         let recorded = Effect::from_compiled(program("9.5f"), Vec::new(), Vec::new());
         let modded = Effect::replacing(program("2.0f"), Vec::new(), recorded);
-        // A sea of byte 10 with a coast of byte 200 crossing a step-2 patch.
         let map = [128, 64];
         let mut bytes = vec![10u8; 128 * 64];
         for row in bytes.chunks_mut(128) {

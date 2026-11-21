@@ -1,4 +1,3 @@
-//! The panel's recordings, listed only while it asks, from directory listings and file metadata.
 use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
 use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
@@ -19,19 +18,15 @@ pub enum Status {
     Saving,
 }
 
-/// A campaign's recorded hours not saved yet.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Unsaved {
     pub session: String,
     pub campaign: String,
-    /// The saved recording these hours continue, when there is one.
     pub recording: Option<String>,
-    /// The name Save gives its file; `None` until known.
     pub name: Option<String>,
     pub first_hour: Option<i32>,
     pub last_hour: Option<i32>,
-    /// Spool bytes on disk; `None` when its folder could not be read.
     pub spool_bytes: Option<u64>,
     pub status: Status,
     pub flag: Option<FlagImage>,
@@ -43,10 +38,8 @@ pub struct Saved {
     pub path: String,
     pub first_hour: Option<i32>,
     pub last_hour: Option<i32>,
-    /// The file's size from its metadata.
     pub bytes: u64,
     pub flag: Option<FlagImage>,
-    /// The compression level its file records it was written at; `None` when it records none.
     pub level: Option<i32>,
     pub job: Option<crate::compress::Job>,
 }
@@ -58,38 +51,28 @@ pub struct Recordings {
     pub saved: Vec<Saved>,
 }
 
-/// The running session, as the worker knows it.
 pub struct Live<'a> {
     pub session: Option<&'a Path>,
-    /// The folder it saves into.
     pub target: Option<&'a Path>,
-    /// The campaign recording now.
     pub campaign: Option<&'a str>,
-    /// The date it has reached.
     pub hour: Option<i32>,
     pub set_aside: &'a [Waiting],
-    /// The file name a save through it would give each recording in `target` now, by campaign.
     pub names: &'a BTreeMap<String, String>,
 }
 
 type Span = Option<(i32, i32)>;
 
-/// The file name Save gives the recording each ended session left waiting of a campaign.
 pub type Namer = dyn Fn(&[(PathBuf, String)]) -> Vec<WaitingName> + Send + Sync;
 
-/// Saved files' spans and ended sessions' waiting campaigns, read once per file version, and the
-/// names waiting recordings get, worked out off the listing's thread.
 pub struct Library {
     cache: Mutex<Cache>,
     names: Arc<Mutex<Names>>,
     namer: Option<Arc<Namer>>,
     installation: Arc<dyn Fn() -> Result<(PathBuf, PathBuf), String> + Send + Sync>,
-    /// The recorder settings it forgets earlier save folders in.
     settings: PathBuf,
 }
 
 impl Default for Library {
-    /// Names through each recording's own content stack in the game installation.
     fn default() -> Self {
         Self {
             cache: Mutex::default(),
@@ -103,10 +86,8 @@ impl Default for Library {
 
 #[derive(Default)]
 struct Cache {
-    /// Each saved file's span and recorded level, read once per version of it.
     spans: HashMap<PathBuf, (u64, Option<SystemTime>, Span, Option<i32>)>,
     sessions: HashMap<PathBuf, (Option<(SystemTime, u64)>, Vec<WaitingCampaign>)>,
-    /// Each folder's recordings by campaign, read again once its listing changes.
     folders: HashMap<PathBuf, (Listing, recording_files::Found)>,
 }
 
@@ -114,7 +95,6 @@ type Listing = Vec<(PathBuf, u64, SystemTime)>;
 
 type Version = Option<(SystemTime, u64)>;
 
-/// What of an ended session a waiting recording's name is read from, as it stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WaitingRevision {
     session: PathBuf,
@@ -213,7 +193,6 @@ struct Names {
     request: u64,
     scope: Option<NameScope>,
     generation: u64,
-    // Mod changes while the view stays open appear when it reopens or on Save.
     content: Arc<Mutex<Option<WaitingNames>>>,
     known: HashMap<(PathBuf, String), KnownName>,
     waiting: Vec<(PathBuf, String)>,
@@ -233,8 +212,6 @@ impl Names {
 }
 
 impl Cache {
-    /// A folder's listing and its recordings by the campaign their header names; one that cannot
-    /// be read names none.
     fn recordings(&mut self, folder: &Path) -> &(Listing, recording_files::Found) {
         let listing = recording_files::listing(folder).unwrap_or_default();
         let known = self.folders.entry(folder.to_path_buf()).or_default();
@@ -247,7 +224,6 @@ impl Cache {
         known
     }
 
-    /// The recording a campaign's unsaved hours continue in `folder`: its one recording there.
     fn continued(&mut self, folder: &Path, campaign: &str) -> Option<PathBuf> {
         match self
             .recordings(folder)
@@ -261,9 +237,6 @@ impl Cache {
     }
 }
 
-/// Whether no hour of `root`'s sessions can wait to be saved, as read now: it is there, and each
-/// of its session folders has a completion record listing none waiting. One it cannot read, or
-/// a session without a readable completion record, may still hold some.
 fn settled(root: &Path) -> bool {
     if !root.is_dir() {
         return false;
@@ -299,10 +272,6 @@ fn settled(root: &Path) -> bool {
     true
 }
 
-/// Forgets each of `folders`, earlier save folders, that is [`settled`] when the recorder
-/// settings at `path` are changed: read again under their lock, as a session registers its folder
-/// under it once the session exists ([`RecorderSettings::keep_session_root`]), so none started
-/// since the folders were found settled is forgotten.
 fn forget_settled(path: &Path, folders: &[PathBuf]) -> std::io::Result<()> {
     RecorderSettings::update_at(path, |settings| {
         for folder in folders {
@@ -339,7 +308,6 @@ impl Library {
         }
     }
 
-    /// The library forgetting earlier save folders in the recorder settings at `path`.
     #[cfg(test)]
     pub fn with_settings(mut self, path: PathBuf) -> Self {
         self.settings = path;
@@ -354,7 +322,6 @@ impl Library {
     pub fn view(&self, panel: &str, visit: u64, open: bool) -> Option<ViewToken> {
         let mut names = self.names.lock().unwrap_or_else(|error| error.into_inner());
         let previous = names.panels.get_mut(panel)?;
-        // IPC futures can start out of order; closing a visit always wins over its open requests.
         if visit < previous.visit || (visit == previous.visit && !previous.open) {
             return None;
         }
@@ -375,7 +342,6 @@ impl Library {
         }
     }
 
-    /// `changed` is called once names worked out off this thread are ready to be listed.
     pub fn list(
         &self,
         settings: &RecorderSettings,
@@ -393,7 +359,6 @@ impl Library {
                 .map(|(_, flag)| flag.clone())
         };
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-        // One row per recording: what the running session and every ended one hold of it.
         let mut unsaved: Vec<(PathBuf, Vec<PathBuf>, Unsaved)> = Vec::new();
         let mut add = |target: &Path, session: &Path, row: Unsaved| match unsaved
             .iter_mut()
@@ -405,7 +370,6 @@ impl Library {
                     (known, first) => known.or(first),
                 };
                 known.last_hour = known.last_hour.max(row.last_hour);
-                // One session's spool is counted once.
                 if known.session != row.session {
                     known.spool_bytes = known.spool_bytes.zip(row.spool_bytes).map(|(a, b)| a + b);
                     sessions.push(session.to_owned());
@@ -413,9 +377,7 @@ impl Library {
             }
             None => unsaved.push((target.to_owned(), vec![session.to_owned()], row)),
         };
-        // The running session saves into the folder it started with, whatever the settings say now.
         if let (Some(session), Some(target)) = (live.session, live.target) {
-            // Left for another campaign that has not written an hour yet, it waits rather than records.
             if let Some(campaign) = live.campaign
                 && !live
                     .set_aside
@@ -460,8 +422,6 @@ impl Library {
                 );
             }
         }
-        // Sessions of the save folder and of each folder saved into before it whose hours may
-        // still wait: changing the save folder leaves them to save or discard.
         let roots: Vec<(PathBuf, PathBuf)> = settings
             .session_roots()
             .into_iter()
@@ -471,7 +431,6 @@ impl Library {
             .iter()
             .flat_map(|(root, _)| controller::session_folders(root))
             .collect();
-        // Newest first: session folders are named by game start and time.
         sessions.sort_by(|left, right| {
             right
                 .file_name()
@@ -515,7 +474,6 @@ impl Library {
                 );
             }
         }
-        // An earlier save folder is forgotten once nothing there runs, may yet end, or waits.
         let forgotten: Vec<PathBuf> = roots
             .iter()
             .skip(1)
@@ -546,7 +504,6 @@ impl Library {
             row.recording = cache
                 .continued(target, &row.campaign)
                 .map(|path| path.display().to_string());
-            // Saved through the running session, they are named as it names them.
             if live.target == Some(target.as_path()) {
                 row.name = live.names.get(&row.campaign).cloned();
                 continue;
@@ -677,7 +634,6 @@ impl Library {
             .collect();
         cache.spans.retain(|path, _| listed.contains(path));
         cache.folders.retain(|folder, _| folders.contains(folder));
-        // Most recently saved first.
         saved.sort_by(|left, right| right.0.cmp(&left.0));
         Recordings {
             unsaved,
@@ -686,7 +642,6 @@ impl Library {
     }
 }
 
-/// Recordings in the save folder and the campaign folders beside them.
 pub(crate) fn saved_files(root: &Path) -> Vec<PathBuf> {
     let recordings = |folder: &Path| -> Vec<PathBuf> {
         fs::read_dir(folder)
@@ -747,7 +702,6 @@ mod tests {
         );
     }
 
-    /// A file of `bytes` whose header names `campaign`, cut short after it.
     fn recording(path: &Path, campaign: &str, bytes: u64) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         crate::targets::tests::recording_file(path, campaign);
@@ -759,7 +713,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Names each waiting recording by its campaign from `names`, noting what it is asked.
     fn namer(
         names: BTreeMap<String, String>,
         asked: Arc<Mutex<Vec<(PathBuf, String)>>>,
@@ -778,13 +731,10 @@ mod tests {
         library
     }
 
-    /// Hours left waiting in a folder saved into before the save folder changed stay listed,
-    /// and that folder is forgotten once nothing there runs or waits.
     #[test]
     fn hours_waiting_in_an_earlier_save_folder_stay_listed_until_none_waits() {
         let root = scratch();
         let (earlier, current) = (root.join("earlier"), root.join("current"));
-        // A folder that cannot be read now, as on a drive not connected, is kept.
         let gone = root.join("gone");
         fs::create_dir_all(&current).unwrap();
         let path = root.join("settings.json");
@@ -836,7 +786,6 @@ mod tests {
                 .earlier_save_folders,
             [earlier.clone(), gone.clone()]
         );
-        // A session still running there keeps the folder, whatever waits.
         waiting(serde_json::json!([]));
         let running = earlier.join("sessions").join("2-2");
         fs::create_dir_all(&running).unwrap();
@@ -858,7 +807,6 @@ mod tests {
                 .earlier_save_folders,
             [earlier.clone(), gone.clone()]
         );
-        // Ended, its completion record unreadable: it may hold hours, so the folder is kept.
         let live = Live {
             session: None,
             ..live
@@ -879,7 +827,6 @@ mod tests {
                 [earlier.clone(), gone.clone()]
             );
         }
-        // Ended with nothing waiting: the folder is forgotten, the unreadable one kept.
         fs::write(running.join("completed.json"), b"{}").unwrap();
         library.list(
             &settings,
@@ -897,8 +844,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// A folder found settled is not forgotten when a session began there before the settings
-    /// change: the change reads it again under the settings' lock.
     #[test]
     fn a_session_begun_after_its_folder_was_found_settled_keeps_it() {
         let root = scratch();
@@ -938,7 +883,6 @@ mod tests {
             save_folder: Some(root.clone()),
             ..RecorderSettings::default()
         };
-        // Saved: in the save folder and in a campaign's own folder, found by header.
         let germany = root.join("Germany 1936–1941.battleplan");
         recording(&germany, CAMPAIGN, 3000);
         recording(
@@ -949,7 +893,6 @@ mod tests {
             2000,
         );
         write(&root.join("notes.txt"), 10);
-        // An ended session that left the other campaign waiting.
         let ended = root.join("sessions").join("1-1");
         journal(&ended.join(OTHER), 0, 1000);
         journal(&ended.join(OTHER), 1, 500);
@@ -962,7 +905,6 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        // An older ended session left the same recording waiting: one row for both.
         let older = root.join("sessions").join("1-0");
         journal(&older.join(OTHER), 0, 200);
         fs::write(
@@ -974,7 +916,6 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        // The running session records the first campaign.
         let running = root.join("sessions").join("2-2");
         journal(&running.join(CAMPAIGN), 0, 4000);
         let library = namer(BTreeMap::new(), Arc::default());
@@ -984,7 +925,6 @@ mod tests {
             pixels: vec![1, 2, 3, 255],
         };
         let flags = BTreeMap::from([(CAMPAIGN.to_owned(), flag.clone())]);
-        // The name its save gives the file it continues, as the running session works it out.
         let names = BTreeMap::from([(CAMPAIGN.to_owned(), "Germany 1936–1943".to_owned())]);
         let live = Live {
             session: Some(&running),
@@ -1013,8 +953,6 @@ mod tests {
                 Unsaved {
                     session: ended.display().to_string(),
                     campaign: OTHER.into(),
-                    // It saves into the save folder, where it has no recording yet, through the
-                    // running session, which has not named it.
                     recording: None,
                     name: None,
                     first_hour: Some(3),
@@ -1028,7 +966,6 @@ mod tests {
         let mut sizes: Vec<_> = listed.saved.iter().map(|saved| saved.bytes).collect();
         sizes.sort();
         assert_eq!(sizes, [2000, 3000]);
-        // Cut short, so no span is known: it stays unknown, never zero.
         assert!(listed.saved.iter().all(|saved| saved.first_hour.is_none()));
         assert_eq!(
             listed
@@ -1039,7 +976,6 @@ mod tests {
                 .flag,
             Some(flag)
         );
-        // A save the ended sessions' records no longer list leaves the list.
         for session in [&ended, &older] {
             fs::write(
                 session.join("completed.json"),
@@ -1056,7 +992,6 @@ mod tests {
     #[test]
     fn the_running_sessions_recordings_stay_in_its_folder_after_the_save_folder_changes() {
         let root = scratch();
-        // The running session started saving into `root`; the save folder changed since.
         let settings = RecorderSettings {
             save_folder: Some(root.join("moved")),
             ..RecorderSettings::default()
@@ -1100,7 +1035,6 @@ mod tests {
             save_folder: Some(root.clone()),
             ..RecorderSettings::default()
         };
-        // A Map capture of the campaign moved to a folder of its own.
         let map = format!("{CAMPAIGN} (2)");
         settings.campaigns.insert(
             CAMPAIGN.into(),
@@ -1109,7 +1043,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        // A Full capture of 1936 waits in the save folder, its hours staged there.
         let ended = root.join("sessions").join("1-1");
         journal(&ended.join(CAMPAIGN), 0, 1000);
         fs::write(
@@ -1123,7 +1056,6 @@ mod tests {
         .unwrap();
         let staged = replay::publication::unsaved_path(&root, CAMPAIGN);
         recording(&staged, CAMPAIGN, 100);
-        // The running Map capture records into its folder, adding to unsaved hours there.
         let running = root.join("sessions").join("2-2");
         journal(&running.join(CAMPAIGN), 0, 4000);
         let target = root.join(&map);
@@ -1163,11 +1095,9 @@ mod tests {
             });
             (listed, ready)
         };
-        // The running capture's, its unsaved hours and all, is the one it works out.
         let (listed, ready) = list();
         assert_eq!(listed.unsaved.len(), 2);
         assert_eq!(name(&listed, &running), Some("Germany 1936–1942".into()));
-        // The waiting Full recording's is not known until worked out: never the Map capture's.
         assert_eq!(name(&listed, &ended), None);
         ready.recv().unwrap();
         let (listed, _) = list();
@@ -1176,7 +1106,6 @@ mod tests {
             *asked.lock().unwrap(),
             [(ended.clone(), CAMPAIGN.to_owned())]
         );
-        // Worked out again only once what it depends on changes: here its unsaved hours.
         recording(&staged, CAMPAIGN, 200);
         let (listed, ready) = list();
         assert_eq!(name(&listed, &ended), None);
@@ -1195,7 +1124,6 @@ mod tests {
         };
         let session = root.join("sessions/1-1");
         fs::create_dir_all(&session).unwrap();
-        // Its end wrote its hours into the recording, where its name is read from.
         let waiting = replay::publication::unsaved_path(&root, CAMPAIGN);
         recording(&waiting, CAMPAIGN, 100);
         fs::write(
@@ -1271,7 +1199,6 @@ mod tests {
         *response.lock().unwrap() = Some("Z01".into());
         write(&session.join("admitted.json"), 20);
         refresh(&settings, Some("Z01"));
-        // A repaired content installation is retried without waiting on a timer in this test.
         *response.lock().unwrap() = Some("Repaired country".into());
         for known in library.names.lock().unwrap().known.values_mut() {
             known.checked = Instant::now() - NAME_RETRY;
@@ -1558,7 +1485,6 @@ mod tests {
             let names = library.names.lock().unwrap();
             (names.generation, Arc::downgrade(&names.content))
         };
-        // This open was dispatched before the close, but its async body has not run until now.
         let delayed = library.view("panel", 1, true);
         assert!(delayed.is_none());
         let listed = library.list(&settings, delayed, &live, &BTreeMap::new(), || {
@@ -1732,7 +1658,6 @@ mod tests {
 
         let refresh_a = || library.view("panel", 1, true);
         let refresh_b = || library.view("panel", 1, true);
-        // A was dispatched first, but B's async body runs before A's.
         let view_b = refresh_b();
         let view_a = refresh_a();
         for view in [view_b, view_a] {

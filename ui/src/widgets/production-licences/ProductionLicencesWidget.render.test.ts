@@ -31,14 +31,11 @@ test('licences load until the groups come; with no licence, a group with no memb
         client: {}, clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0, playing: false, position: BRANCH.lastHour }), subscribeFrame: () => () => {} } },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(module.default, props));
-    // No groups reply yet: loading, never a group with no members or no licences.
     const loading = render();
     assert.match(loading, /aria-label="Loading licences…"/);
     assert.doesNotMatch(loading, /no members|No production licences/);
-    // GER plays only through 160: no human player at the hour shown (200).
     state.groups = pendingGroups({ final: true });
     assert.match(render(), /This group has no members at this date\./);
-    // GER a human player then: no licence is no licences, not an empty group.
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour }] });
     const none = render();
     assert.match(none, /No production licences at this date\./);

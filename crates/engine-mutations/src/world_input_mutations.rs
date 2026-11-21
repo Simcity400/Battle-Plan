@@ -1,78 +1,24 @@
-//! The runtime writers of tables carried between hours by
-//! `world_input_changes`. Observing them tells the collector which whole
-//! table or country's rows may differ from the held read; recording never
-//! calls them. Whole-table sites name no receiver. Dynamic modifier sites
-//! name the container they write, whose
-//! `cdynamic_modifier_container::COUNTRY` points to its owning country.
-//!
-//! Writer coverage:
-//! - ProvinceNames: the rename effect assigns the province override string
-//!   (`cprovince::NAME_OVERRIDE`) and the reset effect clears it. Both are
-//!   interpreter-only effects at virtual slot 13. Province loading and both
-//!   constructors run only during save load or map building, invalidating
-//!   the hour.
-//! - NavalRegionAccess: the strategic-navy mode setter writes each access
-//!   byte in `cstrategic_navy::ACCESS_MODES`. Only the naval region access
-//!   command calls it, posted by player UI or the AI interior minister's
-//!   daily step. Navy reset zeroes modes during dynamic country reuse and
-//!   another reset path. Construction, sizing and save reading occur only
-//!   at setup or load.
-//! - WorldTension, ThreatSources and ThreatCountryAggregates: total update
-//!   drops exhausted sources, rebuilds aggregate cache through its sole
-//!   helper and stores the clamped total (`cworld_threat`). Only
-//!   source creation, source update and daily decay call it, each ending
-//!   there after writes. Daily decay ramps every source. Both save readers
-//!   are load-only.
-//! - DynamicModifiers: a country's container
-//!   (`ccountry::DYNAMIC_MODIFIERS`, `cdynamic_modifier_container`) inserts
-//!   entries only through add from the add effect and its insertion helper,
-//!   or save loading. Renewal sets days on the add effect's existing-entry
-//!   branch. Remove effects and daily update erase through a shared helper;
-//!   daily update also decrements every timed entry's days and runs for
-//!   every country. Each site takes the container in RCX. Only dynamic
-//!   value recalculation rewrites enabled bytes and values, reached for
-//!   countries only by country modifier recalculation. Only appearance
-//!   reset clears entries through the clear helper. The naval tree family
-//!   forwards both country sites; the collector joins their certificate to
-//!   this domain.
-//!
-//! Every site takes at most four integer or pointer arguments and returns
-//! RAX unchanged from its original.
 
 use engine_sites::Rva;
-// MIO configuration, trait ownership and queue writers certify rare state.
-// Construction and load are observed through the full census and world epoch.
-// Policy reload is forwarded by country inputs; the policy score callback also
-// invalidates that domain. Both observations are required before carrying it.
-// Design author/bonus setters, copy, consuming move and load certify frozen
-// payloads; receiver pointers and full references guard their lifetimes.
 pub use crate::advisor_mutations::MutationSite;
 
-/// Which held table a site's call may change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Domain {
     ProvinceNames,
     RegionAccess,
     Tension,
-    /// Names its receiver: the container's owning country.
     DynamicModifiers,
-    /// Rare MIO trait, queue and allowed-policy rosters, keyed by full object lifetime.
     IndustrialOrganisationRosters,
-    /// The country input family forwards the policy database reload writer.
     IndustrialOrganisationPolicies,
-    /// Frozen MIO author, source marker and bonuses of a design.
     DesignIndustrialOrganisation,
-    /// The process-wide game fog switch, with nudge entry forwarded by buildings.
     GameFog,
 }
 
 pub const DOMAINS: usize = 8;
 
-/// Offset of a dynamic modifier container's owning country, null for a state's.
 pub const CONTAINER_COUNTRY: usize = crate::cdynamic_modifier_container::COUNTRY;
 
 pub const MUTATIONS: [(MutationSite, Domain); 27] = [
-    // Province rename effect (effect): save RDI and reserve 0x30 stack bytes.
     (
         MutationSite {
             name: "rename_province",
@@ -80,7 +26,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::ProvinceNames,
     ),
-    // Province name reset effect (effect, scope): spill RBX to RDX's home slot.
     (
         MutationSite {
             name: "reset_province_name",
@@ -88,8 +33,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::ProvinceNames,
     ),
-    // Naval access-mode assignment (navy, changes): save RBX and reserve 0x20
-    // stack bytes.
     (
         MutationSite {
             name: "set_region_access_modes",
@@ -97,7 +40,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::RegionAccess,
     ),
-    // Navy reset (navy): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "reset_navy",
@@ -105,7 +47,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::RegionAccess,
     ),
-    // Threat-total update (manager): save RDI and R15 and reserve 0x28 stack bytes.
     (
         MutationSite {
             name: "update_threat_total",
@@ -113,7 +54,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::Tension,
     ),
-    // Dynamic modifier addition (container, definition, scope, days).
     (
         MutationSite {
             name: "add_dynamic_modifier",
@@ -121,8 +61,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::DynamicModifiers,
     ),
-    // Dynamic modifier renewal (container, definition, scope, days) sets
-    // existing entry days.
     (
         MutationSite {
             name: "renew_dynamic_modifier",
@@ -130,7 +68,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::DynamicModifiers,
     ),
-    // Dynamic modifier removal (container, definition, scope) serves the remove effect.
     (
         MutationSite {
             name: "remove_dynamic_modifier",
@@ -138,7 +75,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         },
         Domain::DynamicModifiers,
     ),
-    // Daily dynamic modifier update (container).
     (
         MutationSite {
             name: "dynamic_modifier_daily_update",

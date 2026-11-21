@@ -3,12 +3,10 @@ import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { battleOptions, battleVariants } from '../battles/battleOptions.ts';
 export { DEFAULT_SORT, DEFAULT_TOP_N } from '../battles/battleOptions.ts';
 
-/** Both views share one row, so the table's own controls (cell bars, rank markers, column sort) do not apply. */
 const TABLE_ONLY = new Set(['cellBars', 'rankMarkers', 'tableSort']);
 export const OPTIONS = [...battleOptions([
   { value: 'Casualties', label: 'Casualties' }, { value: 'Peak size', label: 'Most divisions at once' }, { value: 'Length', label: 'Length' },
 ]).filter(field => !TABLE_ONLY.has(field.key)), DRILL_OPTION];
-/** The header's view switch. */
 export const VIEWS = [{ value: 'log', label: 'Log' }, { value: 'biggest', label: 'Biggest' }] as const;
 export const definition = {
   kind: 'land-battles', version: 1, title: 'Land battles', icon: 'shield',

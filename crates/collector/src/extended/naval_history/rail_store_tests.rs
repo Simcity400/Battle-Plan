@@ -1,11 +1,3 @@
-//! Rail outputs carried between hours per batch of rail slots
-//! ([`super::RailStore`], [`crate::rail_changes`]): a quiet hour reads no
-//! slot, province, info or building and publishes the rows a fresh walk
-//! publishes; a hooked write reads only its batch; the daily countdown
-//! reads the batches of every province on the held and current cooldown
-//! lists; a write naming no info, an invalidation or a lost forwarder reads
-//! every batch; a batch whose last read held some info only partly is read
-//! again; an unmarked difference reads the rest of the hour afresh.
 use super::*;
 use crate::rail_changes::{Changes, Counts, Target, Watches};
 use engine_mutations::railway_mutations;
@@ -24,12 +16,9 @@ const PROVINCE_TABLE: usize = 0x3000;
 const LIST: usize = 0x3800;
 const LIST_CAPACITY: u32 = 64;
 const SLOTS: u32 = 200;
-/// Provinces with a rail info: five in batch 0, one in each of batches 1,
-/// 2 and 3. Province 5's building is null.
 const RAILS: [u32; 8] = [1, 2, 3, 5, 7, 70, 130, 199];
 const BATCHES: u64 = 4;
 const SIZE: usize = 0x8_0000;
-/// Provinces, definitions, infos and buildings all lie at or above this.
 const OBJECTS: usize = 0x1_0000;
 
 fn province(id: u32) -> usize {
@@ -94,7 +83,6 @@ fn set_cooldown(bytes: &mut [u8], id: u32, ticks: i32) {
     );
 }
 
-/// The manager's cooldown list, in list order.
 fn list(bytes: &[u8]) -> Vec<u32> {
     let at = MANAGER + manager::COOLDOWN_PROVINCES + 12;
     let count = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
@@ -119,8 +107,6 @@ fn set_list(bytes: &mut [u8], ids: &[u32]) {
     }
 }
 
-/// Set province on cooldown on the fixture: push the province when
-/// its old value is below 1, then store `ticks` unclamped.
 fn set_on_cooldown(bytes: &mut [u8], id: u32, ticks: i32) {
     if cooldown(bytes, id) < 1 {
         let mut ids = list(bytes);
@@ -130,8 +116,6 @@ fn set_on_cooldown(bytes: &mut [u8], id: u32, ticks: i32) {
     set_cooldown(bytes, id, ticks);
 }
 
-/// Update cooldowns on the fixture: backwards over the list,
-/// each occurrence decrements its info and is swap-removed once below 1.
 fn countdown(bytes: &mut [u8]) {
     let mut ids = list(bytes);
     for index in (0..ids.len()).rev() {
@@ -159,8 +143,6 @@ fn set_health(bytes: &mut [u8], id: u32, level: i16, healthy: i16, partial: i64)
     );
 }
 
-/// An info at `id`'s slot with three indexed levels and an edge to each
-/// neighbouring province id.
 fn add_info(bytes: &mut [u8], id: u32) {
     word(bytes, RAIL_TABLE + id as usize * 8, info(id));
     word(bytes, info(id), cprovince_railway_info::VTABLE_RVA.0);
@@ -202,8 +184,6 @@ fn add_info(bytes: &mut [u8], id: u32) {
     set_pairs(bytes, id, &pairs);
 }
 
-/// Province 2 on cooldown (its building is outside both demands), province
-/// 3's building partially damaged and province 5's building null.
 fn world() -> Vec<u8> {
     let mut bytes = vec![0; SIZE];
     word(
@@ -255,7 +235,6 @@ fn world() -> Vec<u8> {
     bytes
 }
 
-/// Every guarded call's first address.
 struct Calls<'a> {
     bytes: &'a [u8],
     calls: RefCell<Vec<usize>>,
@@ -279,8 +258,6 @@ impl Memory for Calls<'_> {
     }
 }
 
-/// Guarded calls into a slot, province, definition, info or building: what
-/// only reading a batch needs.
 fn slot_reads(reads: &[usize]) -> usize {
     let slots = SLOTS as usize * 8;
     reads
@@ -293,7 +270,6 @@ fn slot_reads(reads: &[usize]) -> usize {
         .count()
 }
 
-/// The batches whose slots were read.
 fn batches_read(reads: &[usize]) -> Vec<u64> {
     let mut batches: Vec<u64> = reads
         .iter()
@@ -305,7 +281,6 @@ fn batches_read(reads: &[usize]) -> Vec<u64> {
     batches
 }
 
-/// The published rows: each table's outcome prefix.
 #[derive(Debug, PartialEq)]
 struct Rows {
     cooldowns: Vec<cprovince_railway_info::Row>,
@@ -361,12 +336,10 @@ fn run(memory: &Calls<'_>, carry: &mut impl RailCarry) -> Rows {
     }
 }
 
-/// A walk with no held outputs, as before the store.
 fn fresh(bytes: &[u8]) -> Rows {
     run(&Calls::new(bytes), &mut manager::Fresh)
 }
 
-/// One walk as the Late job makes it.
 fn walk(bytes: &[u8], store: &mut RailStore, changes: &dyn Changes) -> Hour {
     let memory = Calls::new(bytes);
     let mut reuse = RailReuse::begin(store, changes, |list| {
@@ -403,11 +376,6 @@ fn domain() -> Watches {
     Watches::enabled(256)
 }
 
-/// The test that fails on the old behaviour, which gathered every slot's
-/// identity, cooldown and pair header each hour: a quiet hour reads no
-/// slot, province, definition, info or building at all, and publishes
-/// exactly the rows, levels and outcomes a fresh walk of the same memory
-/// publishes.
 #[test]
 fn a_quiet_hour_reads_no_slot_and_publishes_a_fresh_walks_rows() {
     let bytes = world();
@@ -451,8 +419,6 @@ fn a_quiet_hour_reads_no_slot_and_publishes_a_fresh_walks_rows() {
     assert!(store.allocated_bytes() > 0);
 }
 
-/// Each hooked receiver reads exactly its province's batch; the published
-/// rows always equal a fresh walk's.
 #[test]
 fn a_hooked_write_reads_only_its_batch() {
     let mut bytes = world();
@@ -466,7 +432,6 @@ fn a_hooked_write_reads_only_its_batch() {
         hour
     };
 
-    // SetProvinceOnCooldown names province 70 in EDX; it also lists 70.
     drop(rails.notify(site("set_province_on_cooldown"), Target::Province(Some(70))));
     set_on_cooldown(&mut bytes, 70, 72);
     let after = hour(&bytes, &mut store);
@@ -474,7 +439,6 @@ fn a_hooked_write_reads_only_its_batch() {
     assert_eq!(split(after.counts), (7, 1));
     assert_eq!(after.rows.cooldown(70), 72);
 
-    // Railway setter on province 130 raises a pair and an indexed level.
     drop(rails.notify(site("set_railway"), Target::Province(Some(130))));
     set_pairs(&mut bytes, 130, &[(129, 2), (131, 6)]);
     put(&mut bytes, level_data(130) + 4, &6_i32.to_le_bytes());
@@ -486,15 +450,12 @@ fn a_hooked_write_reads_only_its_batch() {
         level: 6,
     }));
 
-    // A building write of province 3's status, forwarded by the building
-    // family: the rest of batch 0 is carried per info.
     drop(rails.mark_building(engine_native::cbuilding_status::PROVINCE_FLAG, 3));
     set_health(&mut bytes, 3, 3, 2, 7_000_000);
     let after = hour(&bytes, &mut store);
     assert_eq!(batches_read(&after.reads), vec![0]);
     assert_eq!(split(after.counts), (7, 1));
 
-    // A new info at province 100, whose constructor names it in EDX.
     drop(rails.notify(site("construct_info"), Target::Province(Some(100))));
     add_info(&mut bytes, 100);
     let after = hour(&bytes, &mut store);
@@ -502,24 +463,18 @@ fn a_hooked_write_reads_only_its_batch() {
     assert_eq!(split(after.counts), (8, 1));
     assert_eq!(after.rows.outcomes.buildings, Outcome::Rows { len: 9 });
 
-    // Its info destroyed and its slot cleared.
     drop(rails.notify(site("destroy_info"), Target::Province(Some(100))));
     put(&mut bytes, RAIL_TABLE + 100 * 8, &0_u64.to_le_bytes());
     let after = hour(&bytes, &mut store);
     assert_eq!(batches_read(&after.reads), vec![1]);
     assert_eq!(split(after.counts), (8, 0));
 
-    // Every hooked change is held again: the next hour is quiet.
     let quiet = hour(&bytes, &mut store);
     assert_eq!(slot_reads(&quiet.reads), 0);
     assert_eq!(quiet.counts.carried_batches, BATCHES);
     assert!(!rails.poisoned());
 }
 
-/// A mod's non-positive cooldown lists province 7 twice with a value of 0.
-/// The daily countdown decrements each occurrence and drops both; its mark
-/// reads the batch of every province on the held list and on this hour's
-/// list, so the published cooldowns are the native ones.
 #[test]
 fn the_daily_countdown_reads_every_listed_province_including_duplicates() {
     let mut bytes = world();
@@ -550,7 +505,6 @@ fn the_daily_countdown_reads_every_listed_province_including_duplicates() {
         [4, -2, 2]
     );
 
-    // Province 7 left the list: the next countdown reads 2's and 130's.
     drop(rails.notify(site("update_cooldowns"), Target::Countdown));
     countdown(&mut bytes);
     let day = walk(&bytes, &mut store, &rails);
@@ -565,10 +519,6 @@ fn the_daily_countdown_reads_every_listed_province_including_duplicates() {
     assert!(!rails.poisoned());
 }
 
-/// A duplicate cooldown entry no hook saw (a mod-style non-positive
-/// cooldown pushed unobserved) changes the list read every hour: it is an
-/// unmarked change and the hour reads every batch, which the next hour
-/// carries.
 #[test]
 fn an_unobserved_cooldown_list_entry_reads_every_batch() {
     let mut bytes = world();
@@ -584,11 +534,6 @@ fn an_unobserved_cooldown_list_entry_reads_every_batch() {
     assert_eq!(after.counts.carried_batches, BATCHES);
 }
 
-/// The save readers and the manager's lifetime sites name no info, and an
-/// invalidating hour (a load, gap or recovery, and the first hour of an
-/// attach mid-session) starts an epoch: each reads every batch, after
-/// which the next hour is quiet. So does the building family's forwarder
-/// going away and coming back.
 #[test]
 fn a_write_naming_no_info_an_invalidation_or_a_lost_forwarder_reads_every_batch() {
     let bytes = world();
@@ -625,8 +570,6 @@ fn a_write_naming_no_info_an_invalidation_or_a_lost_forwarder_reads_every_batch(
     assert!(!rails.poisoned());
 }
 
-/// In a batch read for a marked province, an unmarked info that changed or
-/// vanished is a write no hook saw: the rest of the hour reads afresh.
 #[test]
 fn an_unmarked_change_in_a_read_batch_is_caught() {
     let mut bytes = world();
@@ -639,8 +582,6 @@ fn an_unmarked_change_in_a_read_batch_is_caught() {
     assert_eq!(hour.rows, fresh(&bytes));
     assert_eq!(hour.counts.read_batches, BATCHES);
 
-    // Province 199's slot cleared without its destructor: found when a
-    // mark on province 198 reads batch 3.
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
@@ -654,12 +595,8 @@ fn an_unmarked_change_in_a_read_batch_is_caught() {
     assert_eq!(hour.rows, fresh(&bytes));
 }
 
-/// A batch is published from held outputs only when its last read held
-/// every info it found; a walk that does not complete holds nothing.
 #[test]
 fn a_quiet_batch_needs_its_held_read_whole_and_an_incomplete_walk_holds_nothing() {
-    // Province 3's building health faults: its row fails and is not held,
-    // so batch 0 is read every hour while the other batches are carried.
     let mut bytes = world();
     word(
         &mut bytes,
@@ -678,8 +615,6 @@ fn a_quiet_batch_needs_its_held_read_whole_and_an_incomplete_walk_holds_nothing(
     }
     assert!(!rails.poisoned());
 
-    // Province 2's pair data faults: RailEdges is unavailable, so nothing
-    // is held and the next hour reads every batch.
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
@@ -703,8 +638,6 @@ fn a_quiet_batch_needs_its_held_read_whole_and_an_incomplete_walk_holds_nothing(
     assert_eq!(after.rows, fresh(&restored));
 }
 
-/// A forgotten store (a failed Late job, whose take consumed the marks)
-/// holds nothing for the next walk.
 #[test]
 fn a_forgotten_store_reads_every_batch() {
     let bytes = world();

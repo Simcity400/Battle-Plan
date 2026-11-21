@@ -1,14 +1,11 @@
-//! Native allocations and initialized bytes, independent of authored member names.
 use installed_content_core::pdxshader::program::Stage;
 use shader_pipeline::{binding, gpu};
 use std::ops::Range;
 
-/// Scene constants leave AmbientPosZ.w and the final zw components unwritten.
 pub fn scene(pipeline: &gpu::Pipeline) -> Result<(), String> {
     both(pipeline, 0, 416, &[0..348, 352..408])
 }
 
-/// Validate the initialized constant ranges retained by a tree caster's light-matrix update.
 pub fn tree_caster(pipeline: &gpu::Pipeline) -> Result<(), String> {
     both(
         pipeline,
@@ -43,9 +40,6 @@ pub fn both(
     Ok(())
 }
 
-/// PS b2 is replaced by the light grid at each world-wrap entry,
-/// then by the border selection/time/alpha block. The unknown
-/// border tail is inside its allocation, not a native out-of-bounds zero read.
 #[derive(Clone, Copy)]
 pub enum WorldPixelConstants {
     LightGrid([f32; 4]),
@@ -114,10 +108,10 @@ mod tests {
         let check = |block: WorldPixelConstants, offset| {
             read(offset).check_initialized(block.bytes().len() as u32, &[block.known()])
         };
-        assert!(check(grid, 24).is_ok()); // Outside the native light-grid allocation.
-        assert!(check(border, 20).is_ok()); // Border transparency is initialized.
+        assert!(check(grid, 24).is_ok());
+        assert!(check(border, 20).is_ok());
         assert!(check(border, 24).unwrap_err().contains("24..28"));
-        assert!(check(border, 32).is_ok()); // Past the whole border allocation.
+        assert!(check(border, 32).is_ok());
         assert_eq!(&border.bytes()[16..20], &11_f32.to_le_bytes());
         assert_eq!(&border.bytes()[20..24], &1_f32.to_le_bytes());
     }

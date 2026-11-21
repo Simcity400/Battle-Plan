@@ -35,7 +35,6 @@ const partRow = (part: FuelDemandPart, color?: string): DrillPart => ({ id: part
   detail: part.reason ?? part.nameReason ?? undefined,
   text: part.amountRaw === null ? 'Consumption unavailable' : `${formatFuelPart(BigInt(part.amountRaw), GAIN)} per day` });
 
-/** Each family's demand a day at the moment: the game's own sum, or why it is not known. */
 function familyRows(reply: CountryFuelReply | undefined, digits: number): DrillPart[] {
   const consumption = reply?.consumption;
   return [0, 1, 2].map(kind => {
@@ -47,9 +46,6 @@ function familyRows(reply: CountryFuelReply | undefined, digits: number): DrillP
 
 const familyStructure = (reply: CountryFuelReply) => JSON.stringify([reply.consumptionMissing, reply.consumption?.reasons ?? null, reply.consumerNames]);
 
-/** Current consumption: each family's demand at the moment, then every division, task force and air wing of the read's
- * demand pack with its own daily projection, by army, fleet or air base; their projections over time, and one
- * consumer's alone. Family totals are written to `digits`; a consumer's own rate stays exact. */
 export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, digits, campaign,
   aliases, detailHours, ...chart }: {
   runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
@@ -63,7 +59,6 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
   const reply = at.data;
   useEffect(() => { shown(at.shownAt()); });
   const families = useMemo<LiveDrillParts>(() => mapLive(at.live, value => { shown(at.shownAt()); return { parts: familyRows(value, digits) }; }), [at, digits, shown]);
-  // While the clock plays at a followed moment nothing is asked: the consumers are listed for the read the moment holds once it stops.
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const demandHour = follows ? (playing ? null : at.live.read()?.read?.readHour ?? null) : hour;
   const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
@@ -84,7 +79,6 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
   const chosen = fuelRecipientFor(selection, campaign, track.branch.id, tag, aliases);
   const part = chosen && data && data.country === chosen.basis.country && data.countryInstance === chosen.basis.countryInstance
     ? data.parts.find(row => row.key === chosen.key) : null;
-  // Each family's demand over time, from the totals series' tiles.
   const byBranch = usePartSeries(runtime, track, FUEL_DEMAND_TOTALS, FAMILY_MEASURES, tag, undefined, chart.active);
   const branchSeries = useMemo(() => FAMILY_MEASURES.map((_, kind) => {
     const summary = scaledSummary(byBranch.summaries[kind], 1);
@@ -146,7 +140,6 @@ function ConsumptionTopology({ data, active, onLevel }: { data: FuelDemandReply;
   </details>;
 }
 
-/** Consumers' projections at each read, a window of `detailHours` at a time around the moment, stacked. */
 function DemandHistory({ runtime, track, basis, keys, names, colors, hour, detailHours, within, chart, label }: {
   runtime: WidgetRuntime; track: BoundTrack; basis: FuelBasis; keys: readonly string[]; names: ReadonlyMap<string, string | null>;
   colors: ReadonlyMap<string, string>; hour: number | null; detailHours: number; within: readonly Span[] | null | undefined; chart: HistoryChart; label: string;

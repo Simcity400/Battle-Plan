@@ -150,7 +150,6 @@ fn fixture() -> Image {
 fn cooldown_follows_leaders_formation_template_and_current_date() {
     let mut image = fixture();
     assert_eq!(leader_enroute_days(&image, BASE, STATE, GROUP), Ok(14));
-    // The group owning the counter is not the leader's pending formation.
     image.u64(GROUP + HQ_TEMPLATE, 0);
     assert_eq!(leader_enroute_days(&image, BASE, STATE, GROUP), Ok(14));
     image.i32(TEMPLATE + TEMPLATE_MANPOWER, 100);
@@ -245,7 +244,6 @@ fn suffix_faults_preserve_every_group_prefix_and_independent_fields() {
             .iter()
             .position(|row| *row == (FORMATION + corders_group::WITHDRAWING, 1))
             .unwrap();
-        // The first read reaching a suffix field, gathered or single.
         let suffix_start = reads
             .iter()
             .position(|&(at, len)| {
@@ -255,9 +253,6 @@ fn suffix_faults_preserve_every_group_prefix_and_independent_fields() {
             .unwrap();
         assert!(prefix_end < suffix_start);
         if hole.is_none() {
-            // Each group's own fields come from its two gathered records,
-            // never from single reads: the withdrawing byte and the leader
-            // pointer are record fields of their own width, read once there.
             for field in [
                 (GROUP + corders_group::COUNTRY, 4),
                 (GROUP + corders_group::WITHDRAWING, 1),
@@ -293,9 +288,6 @@ fn pending_deployment_uses_native_zero_and_minimum_branches() {
     assert_eq!(deployment_days(&image, BASE, 500), Ok(0));
 }
 
-/// One counter pass shares each reference type's registry root and header:
-/// two groups under the same commander read each root once, and both keep
-/// the cooldown a lone group reads.
 #[test]
 fn a_counter_pass_reads_each_registry_header_once() {
     let mut image = fixture();

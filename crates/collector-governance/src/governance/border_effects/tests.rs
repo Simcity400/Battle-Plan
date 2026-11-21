@@ -20,7 +20,6 @@ const EVENT: usize = 0x18000;
 const COUNTRY_BASE: usize = 0x20000;
 const COUNTRY_STRIDE: usize = 0x2000;
 
-/// Synthetic native objects; all descriptions and names are invented.
 struct Fixture {
     bytes: Vec<u8>,
     globals: BTreeMap<usize, u8>,
@@ -134,7 +133,6 @@ impl Fixture {
             (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
         });
         self.integer(0x15500 + event_namespace::NAME_HASH, hash as i32);
-        // The event reference resolves test.7 in the synthetic namespace.
         let handle = (1_000_007_u64 << 32) | 0x32;
         self.word(IMAGE + registry::LOW_ROOTS_RVA.0 + 0x32 * 8, 0x19000);
         self.word(0x19000 + registry::ENTRIES, 0x19100);
@@ -149,14 +147,12 @@ impl Fixture {
         self.put(cell + bucket::DISTANCE, &[1]);
         self.word(cell + bucket::TYPE, handle as usize);
         self.word(cell + bucket::OBJECT, EVENT);
-        // Event and option identities, followed by the immediate effect.
         self.word(EVENT, IMAGE + 0x02a1_6008);
         self.word(EVENT + 8, handle as usize);
         self.word(EVENT + 0x118, IMAGE + 0x02a1_5f68);
         self.word(EVENT + 0x238, IMAGE + 0x0285_26e0);
         self.array(EVENT + 0x240, 0x18900, 1);
         self.word(0x18900, 0x18a00);
-        // Targeted-decision removal effect with the requested name.
         self.word(0x18a00, IMAGE + 0x027f_1ff0);
         self.text(0x18a00 + 0x58, b"needed");
     }
@@ -324,7 +320,6 @@ fn demand_and_matching_seed_faults_withhold_only_decisions() {
     }
 }
 
-/// Informational debug bench: real governance acquisition and portable codec.
 #[test]
 #[ignore = "synthetic demanded-decision capture and encoded delta costs"]
 fn border_effect_decision_seed_scale_bench() {

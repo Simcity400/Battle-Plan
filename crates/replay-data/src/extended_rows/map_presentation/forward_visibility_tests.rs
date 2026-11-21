@@ -70,7 +70,6 @@ fn delta_round_trip(before: &CountryCounterInputRow, after: &CountryCounterInput
     assert_eq!(delta.mask, 1 << 16);
     assert_eq!(table.mask_width(), 5);
     let mut bytes = Vec::new();
-    // An equal previous key gives a single zero key-difference byte.
     encode_delta(table, &delta, delta.key, &mut bytes).unwrap();
     assert_eq!(&bytes[..6], &[0, 0, 0, 1, 0, 0]);
     let mut expected = Vec::new();
@@ -120,7 +119,6 @@ fn forward_visibility_snapshot_preserves_independent_skips_and_raw_native_bits()
             ..before.clone()
         };
         snapshot(&row);
-        // The literal-zero predecessor fields are independent, not aliases.
         assert_eq!(row.zero_war, before.zero_war);
         assert_eq!(row.zero_subject, before.zero_subject);
     }

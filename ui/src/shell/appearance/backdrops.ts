@@ -1,6 +1,3 @@
-// Imported background images. They are re-encoded on import so a large
-// wallpaper cannot bloat storage or rendering, and kept in IndexedDB because
-// localStorage is too small for images. The app's CSP permits data: images.
 import { newId } from '../ids.ts';
 
 export interface BackdropImage { id: string; name: string; image: string; thumbnail: string; width: number; height: number; added: number }
@@ -27,7 +24,6 @@ async function run<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) 
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(STORE, mode);
     const request = action(transaction.objectStore(STORE));
-    // A write is stored only once its transaction commits, which comes after the request succeeds.
     transaction.oncomplete = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Background storage failed.'));
     transaction.onabort = () => reject(transaction.error ?? new Error('Background storage failed.'));
@@ -54,7 +50,6 @@ function encode(bitmap: ImageBitmap, edge: number, quality: number): { url: stri
   return { url: webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/jpeg', quality), width, height };
 }
 
-/** Decodes, downscales and stores an image file; returns the saved entry. */
 export async function importBackdrop(file: File): Promise<BackdropImage> {
   if (!file.type.startsWith('image/')) throw new Error('Choose an image file (PNG, JPEG, WebP, GIF or BMP).');
   if (file.size > MAX_INPUT_BYTES) throw new Error('Choose an image smaller than 40 MB.');

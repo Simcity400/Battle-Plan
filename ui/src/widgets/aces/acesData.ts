@@ -22,7 +22,6 @@ function validAce(v: unknown): boolean {
     && (d.killerAce === null || handle(d.killerAce)) && text(d.killerName) && text(d.killerTag);
 }
 
-/** The roster at an hour: each ace once, a roster not recorded saying why and holding none. */
 export function validateAces(v: unknown): AirAcesReply {
   if (!object(v) || !nullableHour(v.readHour) || !text(v.missing) || !Array.isArray(v.aces) || !warnings(v.warnings)
     || (v.missing !== null && v.aces.length > 0)) return invalid();
@@ -39,10 +38,8 @@ export function validatePortraits(v: unknown): AirAcePortraitReply {
   return v as unknown as AirAcePortraitReply;
 }
 
-/** An ace shown, dated by the read its roster holds. */
 export interface AceRow { key: string; ace: AirAce; hour: number }
 
-/** The aces `matches` keeps at the read `hour`: an ace whose country is not recorded only when every country is shown. */
 export function aceRows(reply: AirAcesReply, hour: number, matches: (tag: string | null, read: number) => boolean = () => true): AceRow[] {
   return reply.aces.flatMap(ace => matches(ace.tag, hour) ? [{ key: ace.id, ace, hour }] : []);
 }
@@ -58,7 +55,6 @@ export const aceStatus = (row: AceRow) => row.ace.alive
   ? row.ace.firstSeen === null ? 'Alive; first sighting not recorded' : `Ace by ${date(row.ace.firstSeen)}`
   : row.ace.death?.byHour != null ? `Killed by ${date(row.ace.death.byHour)}` : 'Killed, date not recorded';
 export const aceJump = (row: AceRow) => row.ace.death?.byHour ?? row.ace.firstSeen ?? row.hour;
-/** The sort value of the Status column: newest first by when it became an ace, unrecorded last. */
 export const aceDate = (row: AceRow) => row.ace.firstSeen;
 
 export function aceTooltip(row: AceRow, name: (tag: string) => string): TooltipContent {

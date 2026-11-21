@@ -1,7 +1,3 @@
-//! The verification build's check of ScriptVariables' conversion: every hour
-//! is converted both ways, today's way and from what the capture saw change,
-//! and the rows each input leaves the encoder holding are compared cell for
-//! cell.
 
 use replay_data::{Hour, rows::ScriptVariablesRow, rows::tables};
 use replay_frame::frame::{BaselineToken, TableInput, TableView};
@@ -11,7 +7,6 @@ const NAMED: usize = 8;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Difference {
     pub hour: Option<Hour>,
-    /// `(scope_kind, scope_id)`; `None` when the inputs differ in outcome.
     pub scope: Option<(u8, u32)>,
     pub column: &'static str,
 }
@@ -73,7 +68,6 @@ impl Check {
                     }
                 }
                 (expected, actual) => {
-                    // The rows no longer align by scope: name the first.
                     self.differ(hour, expected.or(actual).map(key), "scope");
                     return;
                 }
@@ -97,16 +91,11 @@ fn key(row: &ScriptVariablesRow) -> (u8, u32) {
     (row.scope_kind, row.scope_id)
 }
 
-/// The rows an input leaves the encoder holding, in key order: the
-/// baseline with the input's replacements or keyed edits, or its complete
-/// rows. Walked without allocating.
 struct Held<'a> {
     rows: &'a [ScriptVariablesRow],
     next: usize,
-    /// Replacements at ascending row positions.
     indices: &'a [usize],
     replacements: &'a [ScriptVariablesRow],
-    /// Keys whose rows are replaced by `fresh`'s, ascending.
     keys: &'a [u128],
     fresh: &'a [ScriptVariablesRow],
     next_fresh: usize,
@@ -199,7 +188,6 @@ pub fn record(
         .record(baseline, reference, input);
 }
 
-/// `conversion_check` in status.json.
 #[cfg(feature = "conversion_check")]
 pub fn status() -> impl serde::Serialize {
     let check = *CHECK

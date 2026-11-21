@@ -6,7 +6,6 @@ use crate::unit_path::{Cost, Edge, NONE};
 
 const NOT_RECORDED: &str = "not recorded";
 
-/// Land 1 (the unit), land 2 (the target), lake 3, sea 4 beside 2, land 5 and 6.
 fn map() -> MoveGraph {
     let mut graph = MoveGraph {
         index: vec![NONE, 0, 1, 2, 3, 4, 5],

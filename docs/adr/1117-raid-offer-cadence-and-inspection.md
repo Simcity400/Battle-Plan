@@ -1,0 +1,9 @@
+# Replay raid offers in target order and keep click context
+
+One offer-cache row belongs to one target for the session. Beginning a new observed hour marks each row pending; extra renders of the same paused hour continue the pending batch without resetting it. A frame evaluates up to the authored batch size and advances a wrapping cursor. Rows not evaluated since reset remain unknown, and other rows can keep their previous shown and launchable bits until reached. The native cursor depends on a client’s unrecorded frame history, so reset starts from row zero. A lost or changed target identity also resets. A parallel batch has the same row-ordered result, with only affected province summaries rebuilt. Shared chunks let unchanged rows survive a cycle copy. An unknown row withholds its province’s affected result rather than contributing a zero.
+
+A clicked offer keeps the captured target and type even if the live offer changes. Its details window uses the authored panel at the bubble’s anchor, with width taken from the first row and height from the row sum plus list placement. Type grids follow the template within each row. The transparent panel does not interrupt unrelated pointer hits. The authored type buttons retain their own dispatch and hover shapes.
+
+Execution triggers use owner as ROOT, target country as FROM, and target state, province and leader as variables until `launchable_from`, which uses the source country. Check type visibility and category admission, one-time usage and show-target first. Cooldown and available follow, then the two launch gates. Cooldowns compare matching typed target arms. Retaining this order preserves which missing operand first refuses a result.
+
+[Offer cycle](../../crates/viewer-raids/src/map/raids/cycle.rs) · [Click details](../../crates/viewer-raids/src/map/raids/details.rs) · [Execution gates](../../crates/viewer-raids/src/map/raids/eligibility.rs)

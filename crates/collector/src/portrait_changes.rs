@@ -1,11 +1,3 @@
-//! Bounded, allocation-free portrait mutation notifications. Only authenticated
-//! reader addresses are registered; notifications never infer an object owner.
-//!
-//! These writers run outside the command batch, on the game thread and possibly others, and
-//! need not wait for any capture: the first to change a holder during one logs the holder's
-//! array as it was, and every portrait reader takes that image
-//! ([`engine_native::portrait_cache::settled`]). A writer the store cannot hold waits for the
-//! capture instead.
 use crate::hook::Hook;
 use engine_characters::ccharacter_portraits::MUTATIONS;
 use engine_native::{
@@ -23,17 +15,7 @@ use windows_sys::Win32::System::Threading::{WaitOnAddress, WakeByAddressAll};
 const WATCHES: usize = 65536;
 static REVISIONS: Revisions<WATCHES> = Revisions::new();
 static EPOCH: AtomicU64 = AtomicU64::new(1);
-/// Moved by every writer: guards a walk's fresh reads of unwatched holders.
 static REVISION: AtomicU64 = AtomicU64::new(0);
-/// Moved only by writers of a watched holder. The holder constructor and
-/// two destructors also run every hour for holders no
-/// Capture watches  (division construction,
-/// ship construction, leader UI items such as
-/// leader UI item construction). A quiet certificate covers only
-/// holders watched when it was taken, and a watch is never removed during an
-/// attachment, so no other writer can change what it certifies. A writer
-/// that looked its holder up before the capture registered it is still
-/// active when the capture checks `ACTIVE`, which then certifies nothing.
 static WATCHED_REVISION: AtomicU64 = AtomicU64::new(0);
 static PLANNED_PARTS: AtomicU64 = AtomicU64::new(0);
 static QUIET_PARTS: AtomicU64 = AtomicU64::new(0);
@@ -50,9 +32,6 @@ struct Slot {
     sequence: AtomicU64,
 }
 
-/// Slots are never removed or reused during an attachment. Bounded probing
-/// can refuse a new watch; that address then uses ordinary fresh reads. A
-/// collision cannot dirty another address or certify an unobserved writer.
 struct Revisions<const N: usize> {
     slots: [Slot; N],
 }
@@ -111,18 +90,14 @@ pub fn invalidate() {
 
 struct Mutation {
     sequence: Option<&'static AtomicU64>,
-    /// In flight in the pre-image store until the original returns.
     writing: bool,
 }
 impl Mutation {
-    /// A writer of the existing holder whose array is at `array`.
     fn change(array: usize, site: usize) -> Self {
-        // SAFETY: the game's memory, only read.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         PRE_IMAGES.before_change(array, &memory);
         Self::enter(array, site, true)
     }
-    /// A writer that brings the holder at `array` into being: no capture began reading it.
     fn create(array: usize, site: usize) -> Self {
         Self::enter(array, site, false)
     }
@@ -144,10 +119,7 @@ impl Drop for Mutation {
     }
 }
 
-/// How long a capture's begin waits for writers already in flight; writers in flight take
-/// microseconds.
 static PRE_IMAGES: PreImages = PreImages::new(Duration::from_millis(5));
-/// Captures whose portrait reads were withheld for a writer still in flight at their begin.
 static WITHHELD: AtomicU64 = AtomicU64::new(0);
 
 const OPEN: u32 = 0;
@@ -155,30 +127,16 @@ const CLOSING: u32 = 1;
 const READING: u32 = 2;
 
 thread_local! {
-    /// Writers of an existing holder this thread is inside.
     static WRITING: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Holders' arrays as they were at the running capture's instant, each logged by the first writer
-/// to change it during that capture. The storage grows between captures to what earlier ones
-/// needed; a writer it cannot hold waits for the capture to end instead.
-///
-/// A writer counts itself in flight, then reads the state; a begin sets `CLOSING`, waits until
-/// none is in flight, then sets `READING`. That instant splits the writes of every thread: one
-/// done before it is read live, and one after it logs first; a writer seeing `CLOSING` waits.
 struct PreImages {
     state: AtomicU32,
-    /// Writers of an existing holder from their look at `state` to their original's return.
     in_flight: AtomicUsize,
-    /// How long a begin waits for writers in flight, and a writer for a begin.
     bound: Duration,
-    /// The running capture could not wait out the writers: its portrait reads are withheld.
     withheld: AtomicBool,
-    /// Writers inside a log: the storage is replaced only while none is.
     logging: AtomicUsize,
-    /// Records, entries and text bytes reserved in the running capture.
     reserved: [AtomicUsize; 3],
-    /// The most of each any capture since attach asked for.
     demand: [AtomicUsize; 3],
     storage: UnsafeCell<Storage>,
 }
@@ -218,9 +176,6 @@ enum Log {
     Full,
 }
 
-// SAFETY: a slot is written only by the writer that reserved it, before its record is
-// published; published slots are only read until the next capture begins, after every reader
-// of this one returned; the storage is replaced only while no writer logs and no capture reads.
 unsafe impl Sync for PreImages {}
 
 impl PreImages {
@@ -241,12 +196,7 @@ impl PreImages {
         }
     }
 
-    /// On the thread that reads, before the capture's first read: the capture's instant. False,
-    /// withholding its portrait reads, when a writer is still in flight after the bound or is
-    /// this thread's own, which cannot finish while it reads.
     fn begin(&self) -> bool {
-        // SAFETY: open with no writer logging since the last end, and the capture gate admits
-        // one capture at a time.
         let storage = unsafe { &*self.storage.get() };
         let used = self.reserved[RECORDS].load(Ordering::SeqCst);
         for record in &storage.records[..used.min(storage.records.len())] {
@@ -273,8 +223,6 @@ impl PreImages {
         settled
     }
 
-    /// After the capture's last read: no writer logs any more and a writer waiting for the
-    /// capture goes on; with `grow`, the storage then grows to what the writers asked for.
     fn end(&self, grow: bool) {
         self.state.store(OPEN, Ordering::SeqCst);
         self.wake();
@@ -282,21 +230,17 @@ impl PreImages {
             std::thread::yield_now();
         }
         if grow {
-            // SAFETY: open with no writer logging, and the capture's readers returned.
             unsafe { self.grow() };
         }
     }
 
     fn wake(&self) {
-        // SAFETY: an aligned u32 that lives as long as the store.
         unsafe { WakeByAddressAll(self.state.as_ptr().cast()) };
     }
 
-    /// Waits while the state is `state`, until `deadline` if any.
     fn wait_while(&self, state: u32, deadline: Option<Instant>) {
         while self.state.load(Ordering::SeqCst) == state {
             let timeout = match deadline {
-                // Bounds a missed wake.
                 None => 100,
                 Some(deadline) => {
                     let left = deadline.saturating_duration_since(Instant::now());
@@ -306,8 +250,6 @@ impl PreImages {
                     u32::try_from(left.as_millis()).map_or(100, |ms| ms.clamp(1, 100))
                 }
             };
-            // SAFETY: an aligned u32 that lives as long as the store, compared with a local of
-            // its size.
             unsafe {
                 WaitOnAddress(
                     self.state.as_ptr().cast(),
@@ -319,10 +261,9 @@ impl PreImages {
         }
     }
 
-    /// # Safety
-    /// Open, with no writer logging and no capture reading.
+    #[doc = " # Safety"]
+    #[doc = " Open, with no writer logging and no capture reading."]
     unsafe fn grow(&self) {
-        // SAFETY: the caller's.
         let storage = unsafe { &mut *self.storage.get() };
         let [records, entries, text] = self.demand.each_ref().map(|d| d.load(Ordering::SeqCst));
         if records <= storage.records.len()
@@ -331,7 +272,6 @@ impl PreImages {
         {
             return;
         }
-        // Refused, the store stays as it is and writers it cannot hold keep waiting.
         if let (Some(records), Some(entries), Some(text)) = (
             boxed(records.max(storage.records.len())),
             boxed(entries.max(storage.entries.len())),
@@ -345,18 +285,13 @@ impl PreImages {
         }
     }
 
-    /// Before a writer changes the existing holder at `array`, in flight until
-    /// [`Self::after_change`]: waits out a begin, then logs the holder for the running capture,
-    /// or waits for that capture to end when the store cannot hold it.
     fn before_change(&self, array: usize, memory: &impl Memory) {
         let depth = WRITING.get();
         WRITING.set(depth + 1);
-        // A writer inside another on its thread would wait for a begin that waits for it.
         let mut waited = depth != 0;
         loop {
             self.in_flight.fetch_add(1, Ordering::SeqCst);
             match self.state.load(Ordering::SeqCst) {
-                // The begin waits for this writer, or withholds its capture's portraits.
                 CLOSING if waited => return,
                 CLOSING => {
                     self.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -378,7 +313,6 @@ impl PreImages {
         }
     }
 
-    /// The writer's original returned.
     fn after_change(&self) {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         WRITING.set(WRITING.get() - 1);
@@ -397,30 +331,23 @@ impl PreImages {
         log
     }
 
-    /// The published record of the array at `array`, if any.
     fn find(&self, array: usize) -> Option<&Record> {
-        // SAFETY: replaced only while no writer logs and no capture reads.
         let storage = unsafe { &*self.storage.get() };
         let len = self.reserved[RECORDS].load(Ordering::SeqCst);
         storage.records[..len.min(storage.records.len())]
             .iter()
             .find(|record| {
-                // SAFETY: a ready record's fields were written before it was published.
                 record.ready.load(Ordering::Acquire) && unsafe { *record.array.get() } == array
             })
     }
 
-    /// Copies the array at `array` into room it reserves and publishes its record. Full when a
-    /// part did not fit; every part is reserved all the same, so its demand is known.
     fn record(&self, array: usize, memory: &impl Memory) -> Log {
-        // SAFETY: as in `find`.
         let storage = unsafe { &*self.storage.get() };
         let slot = self.reserve(RECORDS, 1);
         let image = self.copy(array, memory, storage);
         let (Some(record), Some(image)) = (storage.records.get(slot), image) else {
             return Log::Full;
         };
-        // SAFETY: this writer reserved the slot; nothing reads it before it is published.
         unsafe {
             *record.array.get() = array;
             *record.image.get() = image;
@@ -429,14 +356,12 @@ impl PreImages {
         Log::Logged
     }
 
-    /// The first of `count` reserved in `part`.
     fn reserve(&self, part: usize, count: usize) -> usize {
         let first = self.reserved[part].fetch_add(count, Ordering::SeqCst);
         self.demand[part].fetch_max(first.saturating_add(count), Ordering::SeqCst);
         first
     }
 
-    /// The array at `array` in reserved room; `None` when a part did not fit.
     fn copy(&self, array: usize, memory: &impl Memory, storage: &Storage) -> Option<Logged> {
         use engine_native::{character_portrait_entry as entry, msvc_string, read};
         let unreadable = Some(Logged::Unreadable);
@@ -486,7 +411,6 @@ impl PreImages {
             if !fits {
                 continue;
             }
-            // SAFETY: cells this writer reserved, contiguous in one allocation.
             let text = unsafe {
                 std::slice::from_raw_parts_mut(
                     UnsafeCell::raw_get(storage.text.as_ptr().add(start)),
@@ -496,7 +420,6 @@ impl PreImages {
             if len != 0 && !memory.copy(source, text) {
                 return unreadable;
             }
-            // SAFETY: an entry slot this writer reserved.
             unsafe {
                 *storage.entries[first + index as usize].get() = EntryImage {
                     head,
@@ -523,8 +446,6 @@ impl engine_native::portrait_cache::PreImages for PreImages {
             ));
         }
         let record = self.find(array)?;
-        // SAFETY: a published record and the slots it names are not written again until the
-        // next capture begins, after every reader of this one has returned.
         Some(match unsafe { *record.image.get() } {
             Logged::Unreadable => Err("character portrait pre-image unreadable"),
             Logged::Holder {
@@ -532,12 +453,10 @@ impl engine_native::portrait_cache::PreImages for PreImages {
                 first,
                 count,
             } => {
-                // SAFETY: as above.
                 let storage = unsafe { &*self.storage.get() };
                 let entries: *const [UnsafeCell<EntryImage>] =
                     &storage.entries[first..first + count];
                 let text: *const [UnsafeCell<u8>] = &storage.text[..];
-                // SAFETY: as above; an UnsafeCell has the layout of what it holds.
                 let (entries, text) =
                     unsafe { (&*(entries as *const [EntryImage]), &*(text as *const [u8])) };
                 Ok(HolderImage {
@@ -557,9 +476,6 @@ fn boxed<T: Default>(len: usize) -> Option<Vec<T>> {
     Some(items)
 }
 
-/// A capture's portrait instant, held or beside the game: begun on the thread that reads before
-/// the capture's first read, ended after its last, an unwind included. When a writer outlasts
-/// the begin, every portrait read of the capture is withheld by name.
 pub(crate) struct PreImagesCapture;
 impl PreImagesCapture {
     pub(crate) fn begin() -> Self {
@@ -575,7 +491,6 @@ impl Drop for PreImagesCapture {
     }
 }
 
-/// Captures whose portrait reads were withheld for a writer still in flight at their begin.
 pub(crate) fn withheld_captures() -> u64 {
     WITHHELD.load(Ordering::Relaxed)
 }
@@ -585,8 +500,6 @@ pub(crate) fn pre_images_active() -> bool {
     PRE_IMAGES.state.load(Ordering::SeqCst) == READING
 }
 
-/// One writer boundary of a holder: `sequence` is its watch, `None` for a
-/// holder no capture watches.
 fn note(sequence: Option<&AtomicU64>) {
     increment(&REVISION);
     if let Some(sequence) = sequence {
@@ -611,8 +524,6 @@ pub fn record_planned_part() {
     PLANNED_PARTS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// A share carried whole from a quiet domain and an unchanged census,
-/// without its prepared program's reads.
 pub fn record_quiet_part() {
     QUIET_PARTS.fetch_add(1, Ordering::Relaxed);
 }
@@ -657,7 +568,6 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "portrait_changes") {
@@ -684,18 +594,12 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
             return Ok(false);
         }
         ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
-        // Every portrait reader takes what these writers change as it was when the capture
-        // began, so they need not wait for it; that needs no revision, so poison changes nothing.
         collector_timing::capture_gate::exempt(
             crate::hook_timing::Family::PortraitChanges as usize,
             enabled && !self.hooks.is_empty(),
@@ -754,9 +658,6 @@ unsafe extern "system" fn insert(array: usize, at: i32, source: usize, count: i3
 mod revision_tests {
     use super::*;
 
-    /// Army, ship and UI holders, which no capture watches, move only the
-    /// revision a walk guards its fresh reads with; a watched holder's writer
-    /// moves the quiet revision and its own sequence too.
     #[test]
     fn unwatched_holder_writers_leave_the_quiet_revision_still() {
         let (watched, unwatched) = (0x7ff0_1234_5680, 0x7ff0_6543_2180);
@@ -770,9 +671,6 @@ mod revision_tests {
         assert_eq!(revisions(), [any + 2, quiet + 1, own + 1]);
     }
 
-    /// A holder changed during a capture is logged by its first writer as it was; a writer
-    /// the store has no room for waits, and the store grows for the next capture; a capture's
-    /// begin waits out writers in flight, or withholds its portraits by name.
     #[test]
     fn the_first_change_in_a_capture_logs_the_holder_as_it_was() {
         use engine_native::{memory::SliceMemory, portrait_cache::PreImages as _};
@@ -802,14 +700,12 @@ mod revision_tests {
         };
         let store = PreImages::new(Duration::ZERO);
         assert_eq!(store.log(ARRAY, &before), Log::Inactive);
-        // No room yet: the writer must wait, and the store then grows to what it asked for.
         assert!(store.begin());
         assert_eq!(store.log(ARRAY, &before), Log::Full);
         assert!(store.image(ARRAY).is_none());
         store.end(true);
         assert!(store.begin());
         assert_eq!(store.log(ARRAY, &before), Log::Logged);
-        // A later change in the same capture keeps the first image.
         assert_eq!(store.log(ARRAY, &after), Log::Logged);
         let image = store.image(ARRAY).unwrap().unwrap();
         assert_eq!(image.header[..], bytes[..16]);
@@ -819,15 +715,11 @@ mod revision_tests {
         assert!(store.image(ARRAY + 8).is_none());
         store.end(true);
         assert!(store.image(ARRAY).is_none());
-        // A holder that cannot be read is logged as such, never as empty.
         assert!(store.begin());
         assert_eq!(store.log(ARRAY + 0x1000, &before), Log::Logged);
         assert!(store.image(ARRAY + 0x1000).unwrap().is_err());
         assert!(store.image(ARRAY).is_none());
         store.end(false);
-        // A writer that saw no capture is still in flight when one begins: the begin waits until
-        // its change is done, so the capture reads that change live. A writer arriving meanwhile
-        // waits for the begin, then logs its holder as it was.
         let patient = PreImages::new(Duration::from_secs(600));
         assert!(patient.begin());
         assert_eq!(patient.log(ARRAY, &before), Log::Full);
@@ -844,7 +736,6 @@ mod revision_tests {
             let late = threads.spawn(|| patient.before_change(ARRAY, &before));
             assert!(!begin.is_finished());
             assert!(!late.is_finished());
-            // The first writer's original returns.
             patient.in_flight.fetch_sub(1, Ordering::SeqCst);
             assert!(begin.join().unwrap());
             late.join().unwrap();
@@ -856,8 +747,6 @@ mod revision_tests {
         );
         patient.in_flight.fetch_sub(1, Ordering::SeqCst);
         patient.end(false);
-        // One still in flight when the bound runs out withholds the capture's portraits by name,
-        // and the next capture's while it stays in flight; so does one on the capturing thread.
         store.in_flight.fetch_add(1, Ordering::SeqCst);
         assert!(!store.begin());
         assert!(store.image(ARRAY).unwrap().is_err());

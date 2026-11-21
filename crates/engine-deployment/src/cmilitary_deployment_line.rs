@@ -1,93 +1,52 @@
-//! Military deployment line: identity, repetition count and owned deployment.
-//!
-//! The 0x40-byte line owns a name and an amount. A null deployment causes removal, so live lines
-//! own a deployment. The walker authenticates its parent backlink.
 
 use crate::{Memory, cmilitary_deployment, cname_group_member, cpdx_array::Array, read};
 use engine_sites::Rva;
 
-/// CMilitaryDeploymentLine primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29da9b0);
-/// CMilitaryDeploymentLine reference kind.
 pub const REFERENCE_TYPE: u32 = 63;
-/// CMilitaryDeploymentLine reference type word, u32; the shared CReferenceObject qword.
 pub const TYPE: usize = 0x08;
-/// CMilitaryDeploymentLine reference id, u32; the high half of the same qword.
 pub const ID: usize = 0x0c;
-/// CMilitaryDeploymentLine division-name object pointer.
 pub const NAME: usize = 0x20;
-/// CMilitaryDeploymentLine amount, i32.
 pub const AMOUNT: usize = 0x28;
-/// Owned deployment pointer; null causes line removal.
 pub const DEPLOYMENT: usize = 0x30;
-/// CMilitaryDeploymentLine parent conveyor pointer.
 pub const PARENT: usize = 0x38;
-/// CMilitaryDeploymentLine allocation size.
 pub const SIZE: usize = 0x40;
 
-/// One line and the fields of the CMilitaryDeployment it owns.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native handle: reference type in the low word, id in the high word.
     pub handle: u64,
-    /// Owning conveyor's full native handle.
     pub conveyor: u64,
-    /// Raw country reference of the owning CDeploymentStatus.
     pub country: u32,
-    /// Stored position inside the conveyor's line vector.
     pub ordinal: u32,
-    /// Native signed order word of the division-name object; zero is a value.
     pub name_order: i32,
     pub amount: i32,
-    /// Native i64 fixed5; zero is trained-from-scratch, not an absent value.
     pub training_raw: i64,
     pub max_training_raw: i64,
     pub max_manpower: i32,
-    /// Raw pool byte of the deployment's in-transit equipment pool.
     pub allow_zero_entries: u8,
-    /// Native count of the pool's allocation array; zero proves the engine
-    /// cannot write the saved equipment wrapper.
     pub equipment_allocations: i32,
-    /// CEquipmentDistributable priority; the save omits the default of one.
     pub distributable_priority: i32,
-    /// Raw `_bIsSet` byte of the deployment's optional halting reason.
     pub halting_reason_present: u8,
-    /// Raw halting-reason word; meaningful only when the flag byte is set.
     pub halting_reason: i32,
-    /// Arena start of the literal custom division-name bytes from `cname_group_member::OVERRIDE_NAME`; empty names are valid.
     pub custom_name_start: usize,
-    /// Custom-name byte length; zero omits the saved name.
     pub custom_name_len: usize,
-    /// Raw flag byte (`cname_group_member::FLAG_A`); its save field is emitted only when clear.
     pub custom_flag_a: u8,
-    /// Raw flag byte (`cname_group_member::FLAG_B`); its save field is emitted only when set.
     pub custom_flag_b: u8,
 }
 
-/// The child arrays a caller must visit after the row itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Children {
     pub equipment: Array,
     pub manpower: [Array; 2],
 }
 
-/// One line read. `children` is available even when the row itself is omitted,
-/// so a caller that cannot store this line can still count exactly what it
-/// left out.
 pub(crate) struct Read {
-    /// `None` when the literal custom name does not fit the caller's arena; the
-    /// row is never published with a shortened name.
     pub row: Option<Row>,
     pub children: Children,
-    /// Arena bytes used after this line, unchanged when the row is omitted.
     pub used: usize,
-    /// The custom name's full length, reported whether or not it was copied.
     pub wanted: usize,
 }
 
-/// Authenticates the line, its parent backlink, its name object and its
-/// deployment, including the deployment's own back pointer to this line, then
-/// returns the merged row and the deployment's child arrays.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_row_buffer(
     memory: &impl Memory,

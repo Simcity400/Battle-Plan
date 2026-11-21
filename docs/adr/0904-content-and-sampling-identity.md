@@ -1,0 +1,9 @@
+# 0904. Identify content and acquisition independently of the recording format
+
+Keep identity types and validation below the recording-format crates so gamefile content can identify its inputs without depending on playback codecs. The mod stack is ordered and carries installed-byte hashes. A Workshop entry takes its remote identifier, and a local entry takes its descriptor file name. A missing declared version uses an empty value. A DLC descriptor's declared checksum is distinct from verification of the actual bytes. Require a known coverage policy before treating content as byte-equal. Recorder and collector builds and verification reports belong to individual sessions and do not change the content identity that lets them render together.
+
+Identify a recorded session's acquisition boundary explicitly. `AfterHourlyUpdate` captures after the tick and the observed command batch attached to it. `EndOfHour` captures before the next tick increments the date and includes the commands of the previous hour. The timestamp witnesses use the process creation FILETIME and the session's performance-counter frequency. The recording's capture mode is shared by its sessions and controls which tables are expected. Collector validation errors must use an allocation-free representation inside an acquisition.
+
+Playback derives a country's look from its recorded holder, colour and naming chain, with naming operands in the order of the holder and reached overlords. A flag can depend on the recorded cosmetic tag, original tag and the link selecting it, as well as the ruling party and ideology group. Missing rows and fields stay distinguishable from recorded empty values.
+
+[Identity and sample boundaries](../../crates/replay-identity/src/lib.rs) · [Appearance operands](../../crates/replay-looks/src/lib.rs)

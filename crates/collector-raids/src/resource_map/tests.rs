@@ -79,7 +79,6 @@ fn owned_resource_sorting_keeps_independent_duplicate_refusals_and_ordinals() {
     assert_eq!(captured.rights, expected);
 }
 
-/// One hour's selection over `census`: whether every owner is read, and which are.
 fn select(
     captured: &mut Captured,
     store: &mut SliceFingerprints,
@@ -110,8 +109,6 @@ fn select(
     )
 }
 
-/// Client removal is observed by the hourly census, without a route-object
-/// writer: the changed census reads its owner.
 #[test]
 fn removing_a_supply_client_marks_the_changed_census() {
     let watches = Watches::enabled(64, 64);
@@ -128,8 +125,6 @@ fn removing_a_supply_client_marks_the_changed_census() {
     assert!(!watches.poisoned(crate::raid_changes::Family::Routes));
 }
 
-/// Supply repathing keeps the client and route addresses. Its writer must
-/// select the owner even though the census is unchanged.
 #[test]
 fn supply_repath_with_unchanged_membership_reads_the_owner_immediately() {
     let watches = Watches::enabled(64, 64);
@@ -156,10 +151,6 @@ fn supply_repath_with_unchanged_membership_reads_the_owner_immediately() {
     assert!(!watches.poisoned(crate::raid_changes::Family::Routes));
 }
 
-/// A route owner a hooked route writer marked is read within the hour, and so is one whose
-/// referenced routes changed; an unmarked, unchanged owner is never read, so a quiet day
-/// reads no route. An hour whose take does not return the previous hour's epoch reads every
-/// owner.
 #[test]
 fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_all() {
     let watches = Watches::enabled(64, 64);
@@ -170,12 +161,10 @@ fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_a
         (key(5, 0, 101), 0x200),
         (key(7, 2, 9), 0x300),
     ];
-    // The first take certifies no earlier read.
     assert_eq!(
         select(&mut captured, &mut store, &watches, 0, &census),
         (true, OWNERS.to_vec())
     );
-    // A quiet day reads nothing.
     let hour = 1;
     for at in hour..hour + 24 {
         assert_eq!(
@@ -185,18 +174,15 @@ fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_a
         assert_eq!(captured.selection.carried(), 3);
     }
     let hour = hour + 24;
-    // A route of country 5 was repathed: it alone is read.
     drop(watches.notify(FIRST_ROUTE_SITE, Target::Route(Some(5))));
     let next = select(&mut captured, &mut store, &watches, hour + 1, &census);
     assert_eq!(next, (false, vec![5]));
-    // Country 7's route now lives elsewhere: its changed print reads it.
     let mut moved = census.clone();
     moved[2].1 = 0x400;
     assert_eq!(
         select(&mut captured, &mut store, &watches, hour + 2, &moved),
         (false, vec![7])
     );
-    // A route writer whose country does not read moves the epoch: every owner.
     drop(watches.notify(FIRST_ROUTE_SITE, Target::Route(None)));
     assert_eq!(
         select(&mut captured, &mut store, &watches, hour + 3, &moved),
@@ -204,9 +190,6 @@ fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_a
     );
 }
 
-/// The census holds every referenced route once, in TradeRoutes' key order: own and
-/// rights-holder origins' routes and every client's; two clients of one delivery route share
-/// its row, and a key naming two routes refuses the census.
 #[test]
 fn the_route_census_is_in_key_order_with_one_row_per_route() {
     let mut captured = Captured::with_capacities(&Capacities);
@@ -219,7 +202,6 @@ fn the_route_census_is_in_key_order_with_one_row_per_route() {
             route_address: 0x200,
             ..Default::default()
         },
-        // Country 2 holds state 101 by rights: its origin's route is its own.
         native::OriginRow {
             state: 101,
             country: 2,

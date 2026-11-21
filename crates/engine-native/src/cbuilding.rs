@@ -1,4 +1,3 @@
-//! CBuilding layout; the damage accumulator is signed engine fixed-point.
 
 use crate::{
     Memory, cbuilding_template,
@@ -7,49 +6,34 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Building vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_65c8);
-/// Lexer type id, u32.
 pub const TYPE_ID: usize = 0x08;
-/// Total level, i16.
 pub const LEVEL: usize = 0x40;
-/// Healthy level, i16, compared with signed level requests.
 pub const HEALTHY_LEVEL: usize = 0x42;
-/// Partial health, signed i64 in fixed5.
 pub const PARTIAL_HEALTH: usize = 0x48;
-/// Repair completion threshold; reaching it clears partial health and raises the healthy level.
 pub const PARTIAL_HEALTH_PER_LEVEL: i64 = 10_000_000;
-/// CBuildingStatus pointer supplying location flags and id.
 pub const BUILDING_STATUS: usize = 0x1d8;
-/// Template pointer selecting localized names.
 pub const TEMPLATE: usize = 0x1e0;
-/// Signed-short level setter following status and template pointers.
 pub const SET_LEVEL_RVA: Rva = Rva(0x0116_3f20);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Native province or state id, disambiguated by the table and status flags.
     pub location: u32,
     pub building_type: u32,
-    /// Position in the owning CBuildingStatus vector.
     pub ordinal: u32,
     pub status_flags: u32,
     pub country: u32,
     pub level: i16,
     pub healthy_level: i16,
     pub partial_health: i64,
-    /// Listed in the owning status's active vector (`cbuilding_status::ACTIVE_BUILDINGS`).
     pub active: bool,
 }
 
-/// One authenticated location's building vector and the destination span it
-/// owns in the caller's shared output. Ordinals are native vector positions.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LocationBuildings {
     pub buildings: Array,
     pub status: usize,
     pub indices: Array,
-    /// The status's active vector, an ordered subset of `buildings`.
     pub active: Array,
     pub seed: Row,
     pub start: usize,
@@ -57,7 +41,6 @@ pub(crate) struct LocationBuildings {
 }
 
 impl LocationBuildings {
-    /// An unstaged slot. It owns no output span and reads no native vector.
     pub(crate) const EMPTY: Self = Self {
         buildings: Array { data: 0, count: 0 },
         status: 0,
@@ -81,7 +64,6 @@ impl LocationBuildings {
 
 const UNLISTED: &str = "active building vector is not an ordered subset of the building vector";
 
-/// Pointers gathered per guarded round.
 const BATCH: usize = 64;
 const POINTER: [RecordField; 1] = [RecordField {
     source_offset: 0,
@@ -91,8 +73,6 @@ const POINTER: [RecordField; 1] = [RecordField {
 const POINTER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POINTER, 8).expect("valid record layout");
 
-/// The staged locations' active vectors in location and native order, read
-/// one guarded batch at a time as the building walk reaches them.
 struct ActiveBuildings<'a> {
     locations: &'a [LocationBuildings],
     location: usize,
@@ -116,7 +96,6 @@ impl<'a> ActiveBuildings<'a> {
         }
     }
 
-    /// The next unmatched entry as its location's position and pointer.
     fn head(&mut self, memory: &impl Memory) -> Result<Option<(usize, usize)>, &'static str> {
         if self.next == self.len {
             self.fill(memory)?;
@@ -124,8 +103,6 @@ impl<'a> ActiveBuildings<'a> {
         Ok((self.next < self.len).then(|| (self.owners[self.next], self.pointers[self.next])))
     }
 
-    /// Whether the building at `pointer` of location `owner` is the next
-    /// entry; an earlier location's unmatched entry is not in its vector.
     fn take(
         &mut self,
         memory: &impl Memory,
@@ -184,21 +161,6 @@ impl<'a> ActiveBuildings<'a> {
     }
 }
 
-/// Each dependent stage gathers a bounded batch using one fixed field layout.
-/// Earlier rows finish validation before a later stage's failure is reported.
-/// No pointers or template values survive this call, including a second walk.
-///
-/// A batch spans as many locations as it needs to fill, because most locations
-/// hold only a handful of buildings and a per-location batch would pay four
-/// guarded crossings for them. Every check still runs in location order and
-/// then in native ordinal order, against that location's own status backlink,
-/// index vector and already-written rows, so each reason and its position are
-/// the ones a per-location read produced.
-/// Destination storage grows only after acquiring a building's fixed fields;
-/// a native vector count alone never causes a count-sized allocation.
-///
-/// The active vector is matched by pointer, in order, against the buildings
-/// as they are read, so it must be an ordered subset of the building vector.
 pub(crate) fn read_rows(
     memory: &impl Memory,
     base: usize,

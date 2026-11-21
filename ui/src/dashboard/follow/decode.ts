@@ -5,7 +5,6 @@ const NO_TEXT = 0xffff_ffff;
 const encoder = new TextEncoder();
 const aligned = (at: number) => (at + 7) & ~7;
 
-/** Rows laid out as an answer's body of kind 1 (`answer.rs`): keys, cells, states, each row's reason and name. */
 function rowsBody(rows: number, columns: number, keys: BigUint64Array, values: BigInt64Array, states: Uint8Array,
   reasons: readonly (string | null)[], names: readonly (string | null)[]): Uint8Array {
   const texts: Uint8Array[] = [], index = new Map<string, number>();
@@ -35,7 +34,6 @@ function rowsBody(rows: number, columns: number, keys: BigUint64Array, values: B
 
 interface HeldRows { body: Uint8Array; rows?: FollowedRows; byKey?: Map<bigint, number> }
 
-/** Only the decoder owns the held body. An outgoing snapshot can be transferred while the next delta updates it. */
 function overlay(held: HeldRows, changed: FollowedRows): FollowedRows {
   const whole = held.rows ??= parseAnswer(held.body) as FollowedRows;
   if (changed.columns !== whole.columns) throw new Error(`Changed rows of ${changed.columns} columns for an answer of ${whole.columns}`);
@@ -100,7 +98,6 @@ export class FollowDecoder {
       const { id, answer, span } = entry;
       if (answer.kind === 'changed') {
         const held = whole.get(id);
-        // Not yet read whole: nothing to lay them over (the next whole answer brings them).
         if (!held) return [];
         return [{ id, hour: entry.hour, answer: overlay(held, answer) }];
       }

@@ -171,8 +171,6 @@ fn demanded_prefix_never_reads_unreachable_tail_but_keeps_prefix_faults() {
         let mut image = fixture(3, 17);
         image.u32(GROUP + carmy_group::MEMBER_COUNT, group_count);
         image.entry(0, 0, 0);
-        // All later entries are unreadable. G1 needs only entry0, while G2
-        // must preserve the entry1 refusal rather than invent a shorter prefix.
         let (walk, plan, sections) = capture(&image, 1);
         let inputs = plan.child_fronts.unwrap();
         assert_eq!(inputs.count, Some(17));
@@ -423,8 +421,6 @@ fn owned_group_source_faults_never_retry_healthy_live_operands() {
                 owned.bytes.remove(&(GROUP + corders_group::IS_ARMY_GROUP));
             }
             2 => {
-                // The full logged header fault survives even when its count
-                // bytes alone are readable. No new 4B count read is allowed.
                 owned.bytes.remove(&(GROUP + carmy_group::MEMBER_DATA));
             }
             _ => {}
@@ -454,8 +450,6 @@ fn owned_group_source_faults_never_retry_healthy_live_operands() {
     }
 }
 
-/// Three type-2 orders of one army group: two stored entries, an empty array
-/// and one entry. The single walk places the empty span between them.
 fn three_orders() -> (Image, [Visit; 3], [Row; 3], [PlanRow; 3]) {
     let mut image = fixture(3, 2);
     image.entry(0, 0, 1);
@@ -531,7 +525,6 @@ fn the_area_phase_reads_no_owner_operand_and_the_group_phase_completes_the_singl
         &[],
         &mut scratch,
     );
-    // The area phase leaves every owner operand and stored entry unread.
     assert_eq!(areas.sections, 0);
     assert!(scratch.needs_group_source());
     assert!(source.reads.borrow().is_empty());
@@ -557,7 +550,6 @@ fn the_area_phase_reads_no_owner_operand_and_the_group_phase_completes_the_singl
     assert_eq!(groups, single);
     assert_eq!(plans, single_plans);
     assert_eq!(sections, single_sections);
-    // The owner's operands came from the source, once.
     assert!(!live.reads.borrow().iter().any(|&(at, _)| {
         at == GROUP + corders_group::IS_ARMY_GROUP || at == GROUP + carmy_group::MEMBER_DATA
     }));
@@ -570,7 +562,6 @@ fn the_area_phase_reads_no_owner_operand_and_the_group_phase_completes_the_singl
             .count(),
         1
     );
-    // A consumed group phase leaves nothing for another.
     assert!(!scratch.needs_group_source());
     let again = walk_groups(
         &live,
@@ -585,9 +576,6 @@ fn the_area_phase_reads_no_owner_operand_and_the_group_phase_completes_the_singl
     assert_eq!(again, Walk::default());
 }
 
-/// Each census order's plan and census row come from the plan walk's
-/// placement when they hold its key: a correct, stale, short or absent
-/// placement gives the same plans, failures and sections.
 #[test]
 fn any_placement_gives_the_searched_walk() {
     let roots = [corders_group::Root {
@@ -596,7 +584,6 @@ fn any_placement_gives_the_searched_walk() {
         country: 1,
     }];
     let (image, mut visits, orders, _) = three_orders();
-    // Census order is pointer-hashed: here the reverse of key order.
     visits.reverse();
     let run = |placement: &[u32]| {
         let (_, _, _, mut plans) = three_orders();
@@ -636,10 +623,6 @@ fn any_placement_gives_the_searched_walk() {
     }
 }
 
-/// Two orders share a controller area whose identity faults on its first
-/// touch only. The first order in census order meets the fault and keeps no
-/// child-front operands; the next records them: the census table, which
-/// holds the second order first, decides nothing.
 #[test]
 fn a_shared_one_shot_area_fault_is_met_by_the_first_order_in_census_order() {
     struct OneShot<'a> {
@@ -664,8 +647,6 @@ fn a_shared_one_shot_area_fault_is_met_by_the_first_order_in_census_order() {
         image: &image,
         spent: Default::default(),
     };
-    // The table holds the second order first; the census entered the first
-    // order first.
     let table = [visits[1], visits[0]];
     let mut plans = [plans[0], plans[1]];
     let areas = walk_areas(
@@ -748,10 +729,6 @@ fn a_refused_area_phase_leaves_no_earlier_pass_for_the_group_phase() {
     assert!(plans.iter().all(|plan| plan.child_fronts.is_none()));
 }
 
-/// Without a nonempty child array the group phase demands no army-group
-/// operand: it reads no OOB source, builds no group index and grows no
-/// section arena, so its job may run on the joining thread. A nonempty one
-/// demands the source.
 #[test]
 fn an_empty_child_array_demands_no_group_source_and_grows_nothing() {
     for (count, demanded) in [(0, false), (17, true)] {

@@ -81,10 +81,8 @@ pub fn snapshot(
                 tree.first()
                     .is_some_and(|node| node.value == row.country_defense)
             })
-            // Only what the breakdown prints: unrelated zero sources never change the row.
             .and_then(|tree| replay_data::rows::printed_tree(&tree).ok())
             .filter(|_| crate::naval_tree_changes::sequence(country.pointer) == certificate);
-        // An equal re-print keeps the held tree, so the row compares by pointer.
         let tree = match (slot.as_ref().and_then(|held| held.tree.as_ref()), tree) {
             (Some(held), Some(tree)) if **held == tree => Some(Arc::clone(held)),
             (_, tree) => tree.map(Arc::new),

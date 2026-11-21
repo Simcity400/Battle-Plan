@@ -1,19 +1,13 @@
-//! Which lit queues each mesh draws in, kept from frame to frame. A node's queue flags are
-//! written once and never change, so a mesh's summary is made once, when the last of its nodes'
-//! flags is known, and is never made again.
 use super::Queue;
 
 #[derive(Default)]
 pub(super) struct Admission {
     meshes: Vec<Option<[bool; 2]>>,
-    /// Summaries made: a test counts that a mesh is summed once.
     #[cfg(test)]
     made: usize,
 }
 
 impl Admission {
-    /// The mesh's `[regular, alternate]` admission, the union of its nodes' flags; `None` while
-    /// any node's flags are unknown (its builds not yet landed).
     pub(super) fn of(
         &mut self,
         mesh: usize,
@@ -46,9 +40,6 @@ impl Admission {
     }
 }
 
-/// Whether the walk of `queue` passes over a mesh admitted as `admits`. Only a lit walk does,
-/// and only for a mesh it draws nothing of while the other lit walk draws it: both walk the same
-/// view, frame and order, so that walk makes every refusal and pose this one would have made.
 pub(super) fn passes_over(queue: Queue, forced: bool, admits: [bool; 2]) -> bool {
     let regular = admits[0] && !forced;
     let alternate = admits[1] || forced;

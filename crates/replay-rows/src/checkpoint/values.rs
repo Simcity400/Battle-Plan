@@ -1,4 +1,3 @@
-//! Prepared values retain interpreted numbers and explicit field absence.
 use crate::{
     codec::{Decoder, invalid_static as invalid},
     rows::*,
@@ -23,7 +22,6 @@ impl<T: CheckpointValue> CheckpointValue for std::sync::Arc<T> {
     }
 }
 
-/// Reuse strict codecs whose values have no display conversion or field gaps.
 macro_rules! wire_value {
     ($($ty:ty),+ $(,)?) => {
         $(impl $crate::checkpoint::values::CheckpointValue for $ty {

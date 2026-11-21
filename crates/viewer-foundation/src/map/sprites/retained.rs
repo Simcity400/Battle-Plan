@@ -1,26 +1,18 @@
-//! Exact upload inputs. Float equality alone would merge signed zero in native shader inputs.
 use super::{Batch, Exact, Quad};
 use crate::map::native_shader::draw;
 use std::sync::Arc;
 
 
 pub(super) struct Upload {
-    /// How many quads the batch held.
     quads: usize,
-    /// The windows it held, in push order. A window's quads are a function of its key and its
-    /// stamp ([`super::WindowStamp`]), so two equal records draw the same quads and an unchanged
-    /// window is never compared quad for quad.
     windows: Vec<super::BatchWindow>,
-    /// The quads belonging to no window, which are compared quad for quad, by index.
     loose: Vec<(usize, Quad)>,
-    /// The quads in the order the upload draws them ([`super::sort_order`]).
     order: Vec<usize>,
     size: [u32; 2],
     scale: u32,
     artwork: Option<u64>,
 }
 
-/// Where a quad stands: in a window, at an offset inside it, or on its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stands {
     Window(super::WindowKey, super::WindowStamp, [i32; 2], u32),
@@ -48,9 +40,6 @@ impl Upload {
         upload
     }
 
-    /// Keep the snapshot's storage on a miss: a moving camera can change every quad.
-    /// `order` is the batch's drawn order; one that is not the batch's is kept as none, which no
-    /// later batch matches in order.
     pub(super) fn update(
         &mut self,
         batch: &Batch,
@@ -77,7 +66,6 @@ impl Upload {
         self.artwork = artwork;
     }
 
-    /// Where the snapshot's quad `index` stood.
     fn stood(&self, index: usize) -> Stands {
         stands(&self.windows, index)
     }
@@ -100,10 +88,6 @@ impl Upload {
                 .all(|(index, quad)| same_quad(quad, &batch.quads[*index]))
     }
 
-    /// Which of the snapshot's windows `batch` stands somewhere else, when that is the only way
-    /// the two differ: the same windows in the same places holding the same quads, and every
-    /// quad outside them drawing what it drew. `None` when anything else changed, which the
-    /// caller answers by emitting the batch whole.
     pub(super) fn moved_windows(
         &self,
         batch: &Batch,
@@ -140,13 +124,10 @@ impl Upload {
             .then_some(moved)
     }
 
-    /// The quads of the snapshot's window `at`.
     pub(super) fn window(&self, at: usize) -> super::BatchWindow {
         self.windows[at]
     }
 
-    /// Whether `batch`, drawn in `order`, draws what the snapshot drew: the same quads in the same
-    /// drawn order, whatever their layers, which only sort them.
     pub(super) fn matches_in_order(
         &self,
         batch: &Batch,
@@ -169,7 +150,6 @@ impl Upload {
             let stands = stands(&windows, now);
             match (stands, self.stood(then)) {
                 (Stands::Window(..), _) | (_, Stands::Window(..)) => stands == self.stood(then),
-                // A quad outside every window is compared with the one that stood where it does.
                 (Stands::Loose, Stands::Loose) => self
                     .loose
                     .binary_search_by_key(&then, |(index, _)| *index)
@@ -179,7 +159,6 @@ impl Upload {
     }
 }
 
-/// Where quad `index` stands among `windows`, which are in push order and so ascending.
 fn stands(windows: &[super::BatchWindow], index: usize) -> Stands {
     let at = windows.partition_point(|window| (window.first as usize) <= index);
     match at.checked_sub(1).map(|at| windows[at]) {
@@ -200,7 +179,6 @@ fn same_quad(a: &Quad, b: &Quad) -> bool {
     a.layer == b.layer && same_drawn(a, b)
 }
 
-/// The same quad but for its layer.
 fn same_drawn(a: &Quad, b: &Quad) -> bool {
     a.texture == b.texture
         && floats(&a.rect, &b.rect)
@@ -301,7 +279,6 @@ mod tests {
                 value
             })
         }
-        // Distinct NaN payloads ensure neither float equality nor an omitted field can pass.
         let mut next = 0x7fc0_0001;
         let quad = Quad {
             texture: 0,
@@ -455,7 +432,6 @@ mod tests {
         }
     }
 
-    /// One window of `quads` quads, drawn at `stamp`.
     fn windowed(owner: u64, stamp: super::super::WindowStamp, quads: usize) -> Batch {
         use super::super::{WindowKey, WindowPool};
         let mut batch = Batch::default();
@@ -475,18 +451,14 @@ mod tests {
         let batch = windowed(3, stamp, 4);
         let kept = Upload::new(&batch, &[], [16, 16], 1., Some(3));
         assert!(kept.matches(&batch, [16, 16], 1., Some(3)));
-        // The window's quads are not compared: its stamp says what it draws, and a batch that
-        // hands the same window at the same stamp hands the quads it drew.
         let mut moved = batch.clone();
         for quad in &mut moved.quads[..4] {
             quad.rect[0] = f32::from_bits(0x7fc0_0001);
         }
         assert!(kept.matches(&moved, [16, 16], 1., Some(3)));
-        // A quad outside every window is compared quad for quad.
         let mut loose = batch.clone();
         loose.quads[4].rect[0] = -0.;
         assert!(!kept.matches(&loose, [16, 16], 1., Some(3)));
-        // A new painting, a new sort key, a new count of quads and a new owner each miss.
         for changed in [
             windowed(3, WindowStamp { painting: 8, taken: 11 }, 4),
             windowed(3, WindowStamp { painting: 7, taken: 12 }, 4),
@@ -497,8 +469,6 @@ mod tests {
         }
     }
 
-    /// Two windows of two quads each, with a loose quad after each: quads 0-1 and 3-4 stand in
-    /// windows 0 and 1, quads 2 and 5 in none.
     fn two_windows() -> Batch {
         use super::super::WindowStamp;
         let mut batch = Batch::default();
@@ -523,14 +493,10 @@ mod tests {
         );
         let mut moved = batch.clone();
         moved.standing_windows()[1].shift = [3, -2];
-        // A window's quads are not compared: where it stands is what changed, and its own offset
-        // says so, so what a move wrote into them is already there.
         for quad in &mut moved.quads[3..5] {
             quad.rect[0] += 3.0;
         }
         assert_eq!(kept.moved_windows(&moved, [16, 16], 1., Some(3)), Some(vec![1]));
-        // Anything else: a window painted again, a quad outside every window, the viewport, the
-        // interface scale, the artwork, and a window the batch did not hold before.
         let mut painted = batch.clone();
         painted.standing_windows()[0].stamp.painting += 1;
         assert_eq!(kept.moved_windows(&painted, [16, 16], 1., Some(3)), None);
@@ -560,11 +526,8 @@ mod tests {
         let mut order: Vec<usize> = (0..batch.quads.len()).collect();
         let kept = Upload::new(&batch, &order, [16, 16], 1., Some(3));
         assert!(kept.matches_in_order(&batch, &order, [16, 16], 1., Some(3)));
-        // The second window drawn first draws the same quads in another order, so it does not.
         order.swap(0, 3);
         assert!(!kept.matches_in_order(&batch, &order, [16, 16], 1., Some(3)));
-        // The same windows at the same places in the drawn order draw the same, whatever the
-        // batch holds in the quads themselves.
         let mut again = Batch::default();
         for owner in [1_u64, 2] {
             again.append(&windowed(owner, stamp(owner), 2));

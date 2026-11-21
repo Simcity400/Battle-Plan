@@ -1,11 +1,3 @@
-//! Strategic regions from `map/strategicregions/*.txt`: identity, membership,
-//! naval terrain and the weather periods' dates and temperature ranges, which
-//! playback's temperature pass reads ([`weather_period`]). The other
-//! weather chances drive simulation the replay records, so they are not read.
-//!
-//! The database lists the directory's own `.txt` files without recursion
-//! and reads every top-level `strategic_region` as a new template. An id
-//! below 1 is discarded; any other replaces the earlier template in its slot.
 
 use std::{collections::BTreeMap, io};
 
@@ -16,39 +8,24 @@ use crate::{
     parser::native::{self, Shape},
 };
 
-/// One strategic region and the provinces it owns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StrategicRegion {
     pub id: u32,
-    /// Localisation key, normally `STRATEGICREGION_<id>`.
     pub name_key: String,
     pub provinces: Vec<u32>,
-    /// Present when the region declares a naval terrain category.
     pub naval_terrain: Option<String>,
-    /// Whether the effective template declares a `static_modifiers` block;
-    /// its naval grid needs additional live operands when present.
     pub static_modifiers: bool,
-    /// Ordered `static_modifiers` names. Each key/value pair appends, and
-    /// the naval grid uses this order.
     pub static_modifier_names: Vec<String>,
-    /// The template's weather periods in authored order: append one weather period per `period`,
-    /// across repeated `weather` blocks.
     pub periods: Vec<weather_period::Period>,
-    /// Why a period's bounds cannot be ported; the periods are then unknown.
     pub periods_refused: Option<String>,
 }
 
-/// The database as the game keeps it, by id, and what it deleted or
-/// replaced on the way, named by file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StrategicRegions {
     pub regions: BTreeMap<u32, StrategicRegion>,
     pub notes: Vec<String>,
 }
 
-/// Every region in one file, in source order, with its id scanned as a
-/// signed integer. A file declaring no strategic region adds none, so
-/// a mod can blank a lower layer's file to remove its regions.
 pub fn parse_file(input: &[u8]) -> io::Result<Vec<(i32, StrategicRegion)>> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -68,17 +45,13 @@ pub fn parse_file(input: &[u8]) -> io::Result<Vec<(i32, StrategicRegion)>> {
             match (node, field.keyword().as_deref()) {
                 (File, Some(b"strategic_region")) => Shape::Object(Region),
                 (Region, Some(b"id" | b"name" | b"naval_terrain")) => Shape::One,
-                (Region, Some(b"provinces")) => Shape::List, // Appends.
+                (Region, Some(b"provinces")) => Shape::List,
                 (Region, Some(b"weather")) => Shape::Object(Weather),
                 (Region, Some(b"static_modifiers")) => Shape::Object(Modifiers),
                 (Modifiers, _) => Shape::One,
                 (Weather, Some(b"period")) => Shape::Object(Period),
                 (Weather, Some(b"position")) => Shape::SkipIfOpen,
                 (Weather, _) => Shape::SkipBreak,
-                // Weather ranges consume raw fixed5 lists; chance consumes
-                // just the value token. `between` reads a string list, while
-                // the temperature range reads lexer tokens and leaves the
-                // value slot unchanged.
                 (Period, Some(b"between")) => Shape::List,
                 (Period, Some(b"temperature")) => Shape::RawList,
                 (Period, Some(b"temperature_day_night")) => Shape::SkipIfOpen,
@@ -106,7 +79,6 @@ fn parse_region(root: &crate::parser::Item) -> io::Result<(i32, StrategicRegion)
     let mut id = -1;
     for item in block(&root.value, "strategic_region")? {
         if item.keyword_is("id") {
-            // The reader scans into a fresh -1, even on repeated fields.
             id = match scan_i32(item.value.scalar().unwrap_or_default()) {
                 Scanned::Stored(value) => value,
                 _ => -1,
@@ -159,8 +131,6 @@ fn parse_region(root: &crate::parser::Item) -> io::Result<(i32, StrategicRegion)
             }
         }
     }
-    // A region without `name` keeps empty constructor text, which its
-    // name lookup returns without an emptiness gate.
     if out.name_key == "{" {
         return Err(invalid(
             "strategic region has no name supported for localisation",
@@ -170,15 +140,6 @@ fn parse_region(root: &crate::parser::Item) -> io::Result<(i32, StrategicRegion)
     Ok((id, out))
 }
 
-/// Read one `period` into its defaults: both bounds start at the shared
-/// default date and the temperature range at -10 to 35 degrees. Each
-/// `between` of exactly two strings splits each on `.`, keeping empty parts.
-/// A bound of exactly two parts is normalized to year one, then takes the
-/// second part as its zero-based month and the first as its zero-based day,
-/// using decimal integer conversion. Any other bound is reported and left.
-/// Each `temperature` stores its first two fixed5 values, each starting at
-/// zero when its conversion fails. The inner result names a bound the date
-/// setters cannot take.
 fn parse_period(
     period: &crate::parser::Item,
 ) -> io::Result<Result<weather_period::Period, String>> {
@@ -244,10 +205,6 @@ fn parse_period(
 }
 
 impl StrategicRegion {
-    /// The region's province vector (pointer and count), built from its template during province
-    /// initialization, which visits every region. Keep authored province order; skip an id the
-    /// province database does not return and one already in this region. A province another
-    /// region's template also lists stays in both vectors.
     pub fn native_provinces(&self, exists: impl Fn(u32) -> bool) -> Vec<u32> {
         let mut seen = std::collections::BTreeSet::new();
         self.provinces
@@ -258,7 +215,6 @@ impl StrategicRegion {
     }
 }
 
-/// Reads every region of the stack's `map/strategicregions` files.
 pub fn read(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
     layers.recorded_product("strategic regions", 1, &[], read_regions).map(|regions| regions.as_ref().clone())
 }
@@ -291,7 +247,6 @@ fn read_regions(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
 mod tests {
     use super::*;
 
-    /// The file's one region.
     fn parse_region(input: &[u8]) -> io::Result<StrategicRegion> {
         let mut regions = parse_file(input)?;
         assert_eq!(regions.len(), 1);
@@ -318,12 +273,7 @@ mod tests {
         .unwrap();
         assert_eq!(region.id, 8);
         assert_eq!(region.provinces, [1, 2]);
-        // Unknown weather key skips its block, then the closing read eats
-        // `name`; the enclosing region reader recovers from that token.
         assert_ne!(region.name_key, "outside");
-        // A temperature range leaves the value slot at its `{`, which an
-        // operator-less `name` then reads; the `between` list leaves its
-        // last token there.
         let name = |range: &str| {
             parse_region(
                 format!(
@@ -333,7 +283,6 @@ mod tests {
             )
             .map(|region| region.name_key)
         };
-        // A name of `{` is no localisation key: refused by name.
         assert!(
             name("temperature")
                 .unwrap_err()
@@ -383,7 +332,6 @@ mod tests {
         assert_eq!(
             region.periods,
             [
-                // 1.12 is month twelve: the next year's 2 January.
                 Period {
                     start: day(0),
                     end: day(366),
@@ -396,15 +344,12 @@ mod tests {
                     minimum: -1_000_000,
                     maximum: 3_500_000
                 },
-                // Days are not clamped: 30 February is 3 March.
                 Period {
                     start: day(61),
                     end: day(89),
                     minimum: 0,
                     maximum: 425_000
                 },
-                // One string, or a bound of other than two parts, is left; `0.4.`
-                // has three parts and `9.3` is 10 April.
                 Period {
                     start: day(99),
                     end: day(0),
@@ -446,7 +391,6 @@ mod tests {
 
     #[test]
     fn a_blanked_file_declares_no_region() {
-        // A mod can blank a lower-layer region file.
         for input in [
             &b""[..],
             b"
@@ -471,8 +415,6 @@ mod tests {
         }
     }
 
-    /// Every region in a file is read, with its id scanned as a signed
-    /// integer into a fresh -1 when absent.
     #[test]
     fn a_file_may_hold_several_regions_and_ids_are_kept_as_stored() {
         let regions =
@@ -482,9 +424,6 @@ mod tests {
         assert_eq!(ids, [3, -1]);
     }
 
-    /// The database stores each region in its id's slot: a later file
-    /// replaces an earlier one's, an id below 1 is deleted, and both are
-    /// named. Subdirectories are not listed.
     #[cfg(feature = "test-support")]
     #[test]
     fn the_database_replaces_by_id_and_deletes_ids_below_one() {

@@ -2,8 +2,6 @@ import type { OptionField } from '../../dashboard/options';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { Sort, SortDirection } from './logic';
 
-/** A narrow table hides its less important columns (their values move into the row
- * tooltip) or keeps every column and scrolls sideways. */
 export const NARROW_TABLE_OPTION: OptionField = { key: 'narrowTable', section: 'options', label: 'When narrow', kind: 'choice', default: 'hide',
   choices: [{ value: 'hide', label: 'Hide less important columns' }, { value: 'scroll', label: 'Scroll sideways' }] };
 export type NarrowTable = 'hide' | 'scroll';
@@ -17,7 +15,6 @@ export const TABLE_OPTIONS: readonly OptionField[] = [
   NARROW_TABLE_OPTION,
 ];
 
-/** Persist both parts through the widget's normal option contract. */
 export const sortKey = (sort: Sort): string => JSON.stringify([sort.column, sort.direction]);
 export function tableSortOf(value: unknown, fallback: Sort): Sort {
   if (typeof value !== 'string') return fallback;
@@ -29,7 +26,6 @@ export function tableSortOf(value: unknown, fallback: Sort): Sort {
   } catch { return fallback; }
 }
 type SortColumn = { key: string; label: string; sortable?: boolean; direction?: SortDirection };
-/** Recording-dependent columns use a content choice; header clicks store this token. */
 export const tableSortToken = (sort: Sort): string => setToken(sortKey(sort));
 function sortChoices(columns: readonly SortColumn[], token: (sort: Sort) => string): { value: string; label: string }[] {
   return columns.filter(column => column.sortable !== false).flatMap(column => (column.direction ? [column.direction] : ['descending', 'ascending'] as const).map(direction => ({

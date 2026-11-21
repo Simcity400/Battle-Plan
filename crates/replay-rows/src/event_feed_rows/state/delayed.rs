@@ -1,7 +1,3 @@
-//! Replay the native delayed-event vector and its traversal cursor. Visits
-//! derive signed decrements; queue edges preserve in-pass scheduling and swaps.
-//! Writer deltas extend only an open baseline or a certified queue; outside
-//! them the occurrence stays in the feed but carries no retained state.
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -28,9 +24,6 @@ impl Owner {
     pub fn rows(&self) -> Result<&[DelayedEvent], &'static str> {
         (self.ready && self.cursor.is_none()).then_some(self.timers.as_slice()).ok_or("country delayed-event timers lack a complete baseline, visit prefix or writer coverage")
     }
-    /// A writer loss retires the queue and any open baseline, so their stale
-    /// timers never take part in identity or removal checks. Only a new
-    /// baseline or empty certificate restores the owner.
     pub fn gap(&mut self) {
         let mut version = self.version;
         if !self.timers.is_empty() {
@@ -64,7 +57,6 @@ impl Owner {
     ) -> io::Result<()> {
         self.apply(row.read_hour, Change::of(row, event), script, change)
     }
-    /// [`Self::observe`] of `occurrence`, a change of the read at `read_hour`.
     pub fn apply(
         &mut self,
         read_hour: i32,
@@ -116,7 +108,6 @@ impl Owner {
                     return Ok(());
                 }
                 let scopes = occurrence.scopes(script);
-                // One queue never holds a label twice: removal finds by label.
                 if self.timers.iter().any(|timer| timer.instance == instance) {
                     return Err(invalid("duplicate delayed-event compact identity"));
                 }
@@ -184,8 +175,6 @@ impl Owner {
                     self.refuse();
                 }
             }
-            // The capture refused this owner alone; like a loss, only a new
-            // baseline or empty certificate restores it.
             DelayedRefused => self.gap(),
             _ => return Err(invalid("non-country change reached delayed-event reducer")),
         }

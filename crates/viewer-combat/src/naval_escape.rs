@@ -1,8 +1,3 @@
-//! State-8 member escape speed. The getter computes
-//! this on demand; the replay stores the mutable speed base and the source
-//! operands, while the content stack supplies NNavy defines. A member
-//! without a live ship takes its side's source sum through modifier formatting
-//! ([`super::naval_trees::Sources::side`]).
 use engine_executable::modifier_keys;
 use installed_content_core::{ResolvedLayers, static_modifiers, static_modifiers::Request};
 use replay_data::{
@@ -26,7 +21,6 @@ pub(super) struct Screening {
 }
 
 impl Screening {
-    /// Test seam: both screening statics without any escape key.
     #[cfg(test)]
     pub(super) fn zero() -> Self {
         Self {
@@ -115,12 +109,6 @@ fn pool_flags(row: &NavalCombatShipRow) -> u64 {
         .fold(0_u64, |flags, source| flags | source.weights[1] as u64)
 }
 
-/// Add a source modifier, then screening by display box. Static modifier
-/// names come from the executable's slots; their values
-/// come from matching authored content and the recorded definition metadata.
-/// A live ship's source modifier is summed over its recorded sources; a
-/// member without one (a convoy, or a ship whose reference no longer
-/// resolves) takes `side_total`, its side's modifier root sum.
 pub(super) fn modifier_value(
     row: &NavalCombatShipRow,
     side: &NavalCombatSideDetails,
@@ -214,8 +202,6 @@ pub(super) struct Parts {
 }
 
 fn guard(value: i64) -> bool {
-    // Apply the unsigned overflow sentinel before fixed division; multiplication
-    // wraps rather than failing on overflow.
     (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
@@ -227,7 +213,6 @@ fn terrain_speed(context: &NavalShipWeaponContext) -> i64 {
             .filter(|source| source.scope == 20)
             .fold(0_i64, |sum, source| sum.wrapping_add(source.movement))
     } else {
-        // Average the escape-speed adjusters of all task-force roster ships.
         let (sum, count) = context
             .sources
             .iter()
@@ -246,7 +231,6 @@ fn terrain_speed(context: &NavalShipWeaponContext) -> i64 {
 }
 
 fn fuel_fraction([current, capacity]: [i64; 2]) -> i64 {
-    // no capacity means full fuel; otherwise clamp the ratio.
     if capacity < 1 || !guard(current) {
         return ONE;
     }
@@ -267,7 +251,6 @@ pub(super) fn ship_speed(row: &NavalCombatShipRow, speed_modifier: i64, defines:
         modifier =
             modifier.wrapping_add(ONE.wrapping_sub(fuel).wrapping_mul(defines.out_of_fuel) / ONE);
     }
-    // Clamp the multiplier before multiplying the recorded escape-speed base.
     ONE.wrapping_add(modifier)
         .max(10_000)
         .wrapping_mul(row.escape_speed_base)
@@ -366,7 +349,6 @@ mod tests {
         .unwrap();
         assert_eq!((modifier, screen), (10_000, 0));
         assert_eq!(chance(&row, 0, modifier, 0, &defines()).total, 20_000);
-        // Without the side's trees the convoy's modifier refuses.
         assert!(
             modifier_value(
                 &row,

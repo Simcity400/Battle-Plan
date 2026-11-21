@@ -59,10 +59,6 @@ fn membership_exclusions_are_counted_separately_from_failed_groups() {
     }
 }
 
-/// At a non-full hour, a daily group not read at that hour is carried,
-/// not compared: its comparison does not run, it is listed with its last
-/// read hour, and the oracle can pass. Groups read at the hour, hourly
-/// groups, groups naming no table and a full hour are compared as before.
 #[test]
 fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     let (slot, hour) = match replay_data::cadence::cadence(TableId::CountryFuel) {
@@ -84,7 +80,6 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
         report.difference("field", 1, 2);
         Ok(())
     };
-    // Carried: not run, listed, and the report passes.
     assert!(report.attempt("economy CountryFuel", differ));
     assert!(report.differences.is_empty());
     assert_eq!(
@@ -101,15 +96,11 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
         line.contains("1 comparison groups or sliced scopes carried, not compared"),
         "{line}"
     );
-    // Multi-table daily groups are carried as one.
     assert!(report.attempt("Deployment", differ));
     assert_eq!(report.carried.get("Deployment"), Some(&None));
-    // A group naming no table, or an hourly table, is compared.
     report.attempt("provinces", differ);
     report.attempt_table(TableId::Countries, differ);
     assert_eq!(report.differences.len(), 2);
-    // A daily table read at this hour (its slot's walk was measured) is
-    // compared; so is every table on a full hour.
     report
         .observed_refresh
         .push(replay_data::cadence::cadence(TableId::CountryFuel));
@@ -119,9 +110,6 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     report.forced_full = true;
     report.attempt("economy CountryFuel", differ);
     assert_eq!(report.differences.len(), 4);
-    // CountryIntel counts as read only when its walk was measured: a
-    // deferral on its slot hour is carried, a retry off its slot is
-    // compared.
     report.forced_full = false;
     let intel_slot = match replay_data::cadence::cadence(TableId::CountryIntel) {
         replay_data::cadence::Cadence::Daily(slot) => slot as Hour,
@@ -141,8 +129,6 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     report.attempt("CountryIntel", differ);
     assert_eq!(report.differences.len(), before + 1, "retried off its slot");
     assert!(report.carried.is_empty());
-    // Without read hours (tests and callers that do not scan the branch)
-    // nothing is carried.
     let mut unscoped = Report {
         hour,
         ..Report::default()
@@ -152,10 +138,6 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     assert!(unscoped.carried.is_empty());
 }
 
-/// LogisticsEquipment shares CountryIntel's slot. A deferred CountryIntel
-/// walk leaves CountryIntel carried on the slot hour although LogisticsEquipment
-/// was walked, and its retry at the next hour does not make the carried
-/// logistics rows current; the scan of read hours agrees.
 #[test]
 fn country_intel_and_the_rest_of_its_slot_are_no_evidence_for_each_other() {
     let slot = match replay_data::cadence::cadence(TableId::CountryIntel) {
@@ -222,7 +204,6 @@ fn every_difference_prints_under_its_own_comparison_group() {
     assert_eq!(report.differences.len(), 160);
     assert_eq!(report.difference_owners.len(), 160);
     let lines = report.difference_lines();
-    // One header, one count line per group, and every single difference.
     assert_eq!(lines.len(), 1 + 2 + 160);
     assert!(lines[0].contains("All 160 differences"));
     assert!(lines.contains(&"  alpha: 80 differences".to_owned()));
@@ -247,8 +228,6 @@ fn a_report_without_differences_prints_no_difference_section() {
     assert!(Report::default().difference_lines().is_empty());
 }
 
-// Reporting fixtures contain only the gaps under test, independent of the
-// shared save fixture's unavailable fields.
 fn field_gap_frame() -> DecodedFrame {
     DecodedFrame {
         branch: 1,
@@ -303,7 +282,6 @@ fn field_limitations_aggregate_counts_without_duplicate_subjects() {
             );
             report.recorded(&row.raw_mud, "WeatherProvinces.raw_mud", row.id.to_string());
         }
-        // Only the first row holds all the anchored temperature words; gaps take codec names.
         assert_eq!(report.limitations.len(), 5);
         for (field, count) in [
             ("temperature.temperature", 13_412),
@@ -479,7 +457,6 @@ fn every_limitation_subject_prints_in_existing_reason_and_subject_order() {
     for index in (0..5_000).rev() {
         report.limitation("alpha", format!("MOD_COUNTRY_{index}"));
     }
-    // Repeated subjects remain evidence of separate limitation occurrences.
     report.limitation("alpha", "MOD_COUNTRY_0");
     let mut lines = report.limitation_lines();
     assert_eq!(lines.next(), Some("Limitations:".to_owned()));

@@ -1,5 +1,3 @@
-//! Hours written as the collector writes its journal, a table at a time, for tests: each hour's
-//! manifest and sections, which the recorder's writer takes ([`super::fixtures`]).
 
 use super::schema;
 use crate::{
@@ -18,8 +16,6 @@ use std::{
 pub use crate::native_columns::TableInput as Input;
 pub use replay_columnar::writer::Sample;
 
-/// Synthetic hours: write each table's input with [`Self::table`], then end the hour with
-/// [`Self::end_encoded`].
 pub struct Synthetic {
     writers: HashMap<TableId, TableWriter>,
     strings: Strings,
@@ -35,13 +31,10 @@ pub struct Synthetic {
 }
 
 impl Synthetic {
-    /// Hours of branch `branch` whose first hour is `hour`.
     pub fn new(branch: u64, hour: i32) -> io::Result<Self> {
         Self::framed(branch, hour, schema()?.iter().map(Vec::len).collect())
     }
 
-    /// [`Self::new`] as a build of an earlier format wrote them: of the schema's first
-    /// `columns.len()` tables, each its first `columns[table]` columns.
     pub fn framed(branch: u64, hour: i32, columns: Vec<usize>) -> io::Result<Self> {
         let tables = columns.len();
         Ok(Self {
@@ -59,7 +52,6 @@ impl Synthetic {
         })
     }
 
-    /// Writes `table`'s input for the hour under way, as the collector writes it.
     pub fn table<R: RowCodec>(&mut self, table: TableId, input: TableInput<'_, R>) -> io::Result<()> {
         let index = table.index();
         if self.written[index] {
@@ -92,7 +84,6 @@ impl Synthetic {
         Ok(())
     }
 
-    /// Ends the hour under way: `visit` sees its manifest's bytes and its sections, joined.
     pub(crate) fn end_encoded<T>(&mut self, visit: impl FnOnce(&[u8], &[u8]) -> T) -> io::Result<T> {
         self.sections.sort_by_key(|(section, _)| section.table);
         self.samples.sort_unstable_by_key(|&(table, _)| table);

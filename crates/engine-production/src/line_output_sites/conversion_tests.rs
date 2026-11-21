@@ -5,8 +5,6 @@ const LINE: usize = 0x100;
 const VARIANT: usize = 0x400;
 const TYPE: usize = 0x1000;
 
-/// A line converting into a design with a parent, of a type with no
-/// conversion family or convert-from list.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; TYPE + 0x600];
     bytes[LINE + LINE_CONVERSION] = 1;
@@ -27,23 +25,19 @@ fn converting_in(bytes: &[u8]) -> Result<bool, &'static str> {
 #[test]
 fn conversion_needs_the_control_and_a_conversion_target() {
     assert_eq!(converting_in(&fixture()), Ok(true));
-    // A clear control is new production, whatever the design.
     let mut bytes = fixture();
     bytes[LINE + LINE_CONVERSION] = 0;
     assert_eq!(converting_in(&bytes), Ok(false));
-    // A licensed design converts only through its type's convert-from list.
     let mut bytes = fixture();
     bytes[VARIANT + cequipment_variant::ORIGIN_LINK..][..4].copy_from_slice(&7_i32.to_le_bytes());
     assert_eq!(converting_in(&bytes), Ok(false));
     bytes[TYPE + cequipment_type::CONVERT_FROM_COUNT..][..4].copy_from_slice(&1_i32.to_le_bytes());
     assert_eq!(converting_in(&bytes), Ok(true));
-    // Without a parent design, the type's conversion family makes it a target.
     let mut bytes = fixture();
     bytes[VARIANT + cequipment_variant::PARENT..][..8].fill(0);
     assert_eq!(converting_in(&bytes), Ok(false));
     bytes[TYPE + cequipment_type::CONVERSION_FAMILY] = 1;
     assert_eq!(converting_in(&bytes), Ok(true));
-    // A line without a design has no target.
     let mut bytes = fixture();
     bytes[LINE + LINE_VARIANT..][..8].fill(0);
     assert_eq!(converting_in(&bytes), Ok(false));
@@ -53,7 +47,6 @@ fn conversion_needs_the_control_and_a_conversion_target() {
 fn unreadable_conversion_operands_are_refused_not_new() {
     let mut bytes = fixture();
     assert!(converting_in(&bytes[..LINE + LINE_CONVERSION]).is_err());
-    // Without a parent design the type decides, and it cannot be read.
     bytes[VARIANT + cequipment_variant::PARENT..][..8].fill(0);
     assert!(converting_in(&bytes[..TYPE]).is_err());
     let mut null_type = fixture();

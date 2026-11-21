@@ -35,8 +35,6 @@ impl TraceMemory {
                 dates[..4].copy_from_slice(&(-400_i32).to_le_bytes());
                 dates
             }),
-            // The ruling pointer's copy spans the fields up to the elections
-            // byte; the fields between them are readable zeros.
             (RULING_PARTY, vec![0; RULING_SPAN]),
             (ELECTION_FREQUENCY, vec![48, 0, 0, 0, 1]),
             (RULING_PARTY, ruling.to_le_bytes().to_vec()),
@@ -96,8 +94,6 @@ impl Memory for TraceMemory {
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
         self.scatters.set(self.scatters.get() + 1);
-        // Trace the original exact Memory observations, including failed
-        // partial fields. No native code or foreign address is accessed.
         for (index, (address, destination)) in addresses
             .into_iter()
             .zip(destinations.iter_mut())
@@ -218,8 +214,6 @@ fn the_idea_count_probe_still_validates_tokens_without_reading_heap_payloads() {
                     header[3] = u8::from(!terminated);
                 } else {
                     header[..8].copy_from_slice(&(HEAP as u64).to_le_bytes());
-                    // Heap text is deliberately unreadable; omitted rows only
-                    // need its authenticated header and terminator.
                     memory.put(HEAP + 3, &[u8::from(!terminated)]);
                 }
                 header[msvc_string::LENGTH..msvc_string::CAPACITY]
@@ -268,8 +262,6 @@ fn the_idea_count_probe_still_validates_tokens_without_reading_heap_payloads() {
     }
 }
 
-// Independent scalar-row baseline for pair-read equivalence. The identity
-// reader is shared; every observation it issues remains in the trace.
 fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
     let dates = read::<[u8; 4]>(reader.memory, reader.at(LAST_ELECTION)?)
         .ok_or("last election unreadable")?;
@@ -410,8 +402,6 @@ fn politics_pairs_preserve_every_fault_ordinal_and_partial_field() {
 
 #[test]
 fn politics_pairs_test_elections_as_has_elections_does() {
-    // The elections predicate: a nonzero byte, not only 1, and a positive
-    // signed frequency; a byte the old reader refused as not boolean is true.
     let reads = ordinary_reads();
     for (frequency, byte, has_elections) in [
         (48, 1, true),
@@ -494,9 +484,6 @@ fn politics_pairs_keep_null_and_identity_validation_stops() {
 
 #[test]
 fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
-    // The ruling party lies above the last election, so its address can
-    // overflow after the capital was read; the pair's scalar fallback still
-    // reads the capital once and reports its fault first.
     for (status, reason, observed) in [
         (
             usize::MAX - LAST_ELECTION + 1,
@@ -546,7 +533,6 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
             }
         }
     }
-    // Range ending at usize::MAX is valid; ending past it is not.
     let status = usize::MAX - ELECTIONS_ALLOWED - 1;
     let memory = TraceMemory::fixture(status, COUNTRY_POINTER, 0);
     compare(

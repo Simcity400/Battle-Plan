@@ -8,11 +8,8 @@ use replay_data::rows::{CountryFactoriesRow, CountryRow, GroupRow, GroupSpanRow 
 
 const FACTION: u64 = 401;
 const NUMBER: u32 = 3;
-/// A whole factory, fixed5.
 const ONE: i64 = 100_000;
 
-/// One hour of the inputs: the members (slot), the roster read whole or not, and each member's controlled states (none:
-/// not recorded) and military factories.
 struct At {
     members: &'static [u32],
     incomplete: bool,
@@ -20,7 +17,6 @@ struct At {
     military: &'static [(u32, i64)],
 }
 
-/// Raw country id of a slot.
 const fn id(slot: u32) -> u32 {
     9000 + slot
 }
@@ -31,7 +27,6 @@ fn feed(store: &mut Store, hour: i32, at: &At) {
     put(store, hour, TableId::Countries, &countries, Status::Complete);
     let mut spans = vec![Span { kind: Span::PRESENT, group: NUMBER, value: 0, epoch: 0, ordinal: 0 }];
     spans.extend(at.members.iter().enumerate().map(|(at, &slot)| Span { kind: Span::MEMBER, group: NUMBER, value: slot, epoch: 0, ordinal: at as u32 }));
-    // A human player's membership is no faction's.
     spans.push(Span { kind: Span::MEMBER, group: Span::HUMANS, value: 9, epoch: 0, ordinal: 0 });
     if at.incomplete {
         spans.push(Span { kind: Span::INCOMPLETE, group: NUMBER, value: 0, epoch: 0, ordinal: 0 });
@@ -56,7 +51,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// The faction's controlled states and built military factories, or none without a row.
 fn shown(store: &Store) -> Option<(Option<i64>, Option<i64>)> {
     let row = cells(store, TableId::FactionTotals, u128::from(FACTION))?;
     let at = |name: &str| (0..TableId::FactionTotals.field_count()).find(|&field| TableId::FactionTotals.field_name(field) == Some(name)).unwrap();
@@ -65,21 +59,13 @@ fn shown(store: &Store) -> Option<(Option<i64>, Option<i64>)> {
 
 const HOURS: &[At] = &[
     At { members: &[7, 8], incomplete: false, states: &[(7, Some(5)), (8, Some(3)), (9, Some(40))], military: &[(7, 5), (8, 3), (9, 90)] },
-    // Only a member's territory moved.
     At { members: &[7, 8], incomplete: false, states: &[(7, Some(5)), (8, Some(4)), (9, Some(40))], military: &[(7, 5), (8, 3), (9, 90)] },
-    // A member left; a country outside the faction moved.
     At { members: &[7], incomplete: false, states: &[(7, Some(5)), (8, Some(4)), (9, Some(41))], military: &[(7, 5), (8, 3), (9, 91)] },
-    // The roster was not read whole.
     At { members: &[7], incomplete: true, states: &[(7, Some(5)), (8, Some(4)), (9, Some(41))], military: &[(7, 5), (8, 3), (9, 91)] },
-    // A member's territory cell is not recorded; its factories are.
     At { members: &[7, 8], incomplete: false, states: &[(7, None), (8, Some(4)), (9, Some(41))], military: &[(7, 6), (8, 3), (9, 91)] },
-    // No member: no row.
     At { members: &[], incomplete: false, states: &[(7, Some(5)), (8, Some(4)), (9, Some(41))], military: &[(7, 6), (8, 3), (9, 91)] },
 ];
 
-/// A faction's total is its members' at each hour, as each member's own rows give them (a factory count by the game's
-/// rule), never a country outside it; a member leaving leaves the total; a roster not read whole, or a member's cell
-/// not recorded, leaves that total not recorded, never smaller; a faction with no member has no row.
 #[test]
 fn a_factions_total_adds_its_members_at_each_hour_and_is_not_recorded_where_one_is_not() {
     let mut store = store();
@@ -92,7 +78,6 @@ fn a_factions_total_adds_its_members_at_each_hour_and_is_not_recorded_where_one_
     }
 }
 
-/// A resume reads the inputs whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {

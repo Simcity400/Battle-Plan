@@ -116,7 +116,6 @@ fn quotient(a: i64, b: i64) -> i64 {
         .unwrap_or(i64::from(u32::MAX))
 }
 
-/// Border unit owners gathered per read.
 const BATCH: usize = 64;
 const UNIT_OWNER_FIELDS: [engine_native::memory::RecordField; 1] =
     engine_native::memory::packed_fields([(UNIT_OWNER, 4)]);
@@ -131,8 +130,6 @@ struct Context<'a, M: Memory> {
     base: usize,
     game: usize,
     countries: &'a ccountry::Reader<'a, M>,
-    /// Raw links resolved during this one read, and `friendly` verdicts by
-    /// (owner, other) canonical slots; the world does not move within a read.
     canonical: std::cell::RefCell<Vec<(u32, u32)>>,
     friendly: std::cell::RefCell<Vec<((u32, u32), bool)>>,
 }

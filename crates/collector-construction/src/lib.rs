@@ -1,4 +1,3 @@
-//! Construction capture: the construction rest's owned raw copy, buildings and their held building store, and the building writer observer that forwards to the territory, raid, rail and nuclear strike observers. The host owns dispatch, the World job's construction part, loans and table assembly.
 
 use collector_certificates::dirty_set;
 use collector_certificates::watch_registry;
@@ -31,7 +30,6 @@ static TEST_ALLOCATOR: collector_test_support::FailingAllocator =
 #[unsafe(link_section = ".CRT$XCU")]
 static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reserve_test_stack;
 
-/// A hook site located with the 16 bytes its hook replaces, refused the way a differing sentinel was.
 fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)
         .and_then(|code| code.sentinel::<16>().map(drop))

@@ -1,6 +1,5 @@
 .equipment-produced-note { margin: 0 var(--space-3); color: var(--muted); font-size: var(--type-sm); }
 
-/* The race or lines under a caption line: what is counted, its window and date. */
 .produced-main { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .produced-main > .country-race, .produced-main > .widget-state { flex: 1; min-height: 0; }
 .produced-caption { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: 0 var(--space-3) var(--space-2);
@@ -8,14 +7,12 @@
 .produced-caption-text { min-width: 0; }
 .produced-caption > .segmented { margin-left: auto; padding: 2px; }
 .produced-caption > .segmented > button { height: 22px; padding: 0 9px; font-size: var(--type-sm); }
-/* The equipment pill matches the header's country pill. */
 .produced-pill { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; height: 24px; padding: 0 7px 0 9px; border: 0;
   border-radius: 999px; background: var(--hover); color: var(--text); font: inherit; font-size: 0.75rem; transition: background var(--t-fast) var(--ease); }
 .produced-pill > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .produced-pill > svg { width: 12px; height: 12px; flex: none; color: var(--muted); }
 button.produced-pill:hover, button.produced-pill[aria-expanded='true'] { background: var(--press); }
 
-/* The breakdown's table of types: picture, type and its models, units and IC. */
 .produced-drill { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }
 .produced-drill .drill-empty b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .produced-table { display: flex; min-height: 0; }

@@ -1,8 +1,3 @@
-//! The game's animated map text draw: its rise-and-fade transform and its
-//! camera-facing glyph quads, as the bitmap font's transformed text draw lays
-//! them out. The caller owns event admission, province scheduling, bucket
-//! order, the viewer-local phase, the camera envelopes and the font's retained
-//! auxiliary colour.
 
 use std::{
     collections::BTreeMap,
@@ -24,7 +19,6 @@ use crate::map::shader_scene;
 use viewer_foundation::map::native_text::{self, Font, Glyphs, IconSprite, Special};
 
 const STRIDE: usize = 28;
-// The font's glyph vertex buffer and the draw's early return, not a content count.
 const MAX_GLYPHS: usize = 512;
 const ALLOCATION: u64 = (MAX_GLYPHS * 6 * STRIDE) as u64;
 
@@ -41,17 +35,11 @@ pub struct Animation {
     pub phase: f32,
     pub limit: f32,
     pub scale: f32,
-    /// How far the text rises and how large it grows for each world unit the game's transform
-    /// gives it: one for the game's camera, and a free eye's measure that keeps the text's screen
-    /// size ([`super::player::Player::draw`]).
     pub reach: f32,
-    /// The whole text's opacity over its own fade: one for the game's camera.
     pub opacity: f32,
 }
 
 impl Animation {
-    /// The native transform: strict last-quarter comparison and unfused f32 arithmetic. A reach
-    /// of one leaves it exact.
     fn transform(self) -> ([f32; 3], f32, f32) {
         let quarter = self.limit * 0.25;
         let fade = if self.phase > self.limit - quarter {
@@ -69,8 +57,6 @@ impl Animation {
     }
 }
 
-/// The native camera carrier's right/up columns and its world-view-projection matrix. These are
-/// independent: glyphs remain world geometry until the content's Text3D shader runs.
 pub struct Camera {
     pub right: [f32; 3],
     pub up: [f32; 3],
@@ -97,7 +83,6 @@ pub struct Mesh {
     bytes: Vec<u8>,
     groups: Vec<Group>,
     has_text: bool,
-    /// Native null pages still lay out and submit. The owner reports their names.
     pub null_pages: Vec<Vec<u8>>,
 }
 
@@ -107,8 +92,6 @@ impl Mesh {
     }
 }
 
-// The native colour packing truncates with CVTTSS2SI64, whose invalid result has low byte zero.
-// Rust's saturating float casts otherwise give a different byte for positive overflow.
 fn byte(component: f32) -> u8 {
     let scaled = component * 255.0;
     if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&scaled) {
@@ -136,8 +119,6 @@ fn vertex(bytes: &mut Vec<u8>, position: [f32; 3], uv: [f32; 2], color: u32, bor
     bytes.extend_from_slice(&border.to_le_bytes());
 }
 
-/// Reuse native UTF-8 preparation and wrapping; the transformed draw has its own
-/// integer baseline and colour/control walk, unlike the GUI font draw.
 pub fn geometry(
     text: &Text<'_>,
     camera: &Camera,
@@ -160,7 +141,6 @@ pub fn geometry(
                 .join("; "),
         ));
     }
-    // Native conversion failure prepares no glyphs, but the nonempty text still binds Text3D.
     let Some(decoded) = native_text::decode(text.bytes) else {
         return Ok(mesh);
     };
@@ -216,8 +196,6 @@ pub fn geometry(
                     found
                 }
                 Special::Icon(name) => {
-                    // The world draw's icon slot draws nothing; the icon's
-                    // advance still moves the pen.
                     if !name.is_empty()
                         && let Some(icon) = native_text::find_icon(&name, sprite)
                     {
@@ -226,14 +204,11 @@ pub fn geometry(
                     None
                 }
                 Special::Currency => {
-                    // The world draw skips two following codepoints here, unlike the GUI draw.
                     length = 1 + (laid.text.len() - at - 1).min(2);
                     None
                 }
                 Special::Color(None) | Special::Flag(_) | Special::Number(_) => None,
             };
-            // ApplyTextColorCode returns zero for a packed-zero colour; the world draw
-            // keeps its preceding RGB even though the colour stack has changed.
             if let Some(changed) = changed.filter(|word| *word != 0) {
                 color = changed & 0x00ff_ffff | alpha;
             }
@@ -289,7 +264,6 @@ pub fn geometry(
                         vertices: first..first + 6,
                     });
                 }
-                // The native draw submits this prefix once and returns; there is no continuation flush.
                 if mesh.vertices() as usize == MAX_GLYPHS * 6 {
                     break;
                 }
@@ -306,7 +280,6 @@ pub fn geometry(
     Ok(mesh)
 }
 
-/// An error means unknown native content/resource bytes. `Ok(None)` is a known null SRV.
 pub type Texture = Result<Option<gpu::TextureBinding>, String>;
 
 pub struct Renderer {
@@ -320,8 +293,6 @@ pub struct Prepared {
 }
 
 impl Renderer {
-    /// The `gfx/FX/text.lua` effect resolved by the owner's content library.
-    /// Only the first genuine nonempty runtime text compiles its Text3D technique.
     pub fn new(
         effect: Arc<Effect>,
         samples: u32,
@@ -355,14 +326,12 @@ impl Renderer {
         }
     }
 
-    /// Compiles the Text3D technique now, so the first frame with text compiles nothing.
     pub fn warm(&self) {
         let _ = self.selected();
     }
 
     fn selected(&self) -> &Result<Option<Selection>, String> {
         self.compiled.get_or_init(|| {
-            // A visual mod's replacement that cannot be compiled falls back to the recording.
             shader_pipeline::library::with_recorded(&self.effect, |effect| {
                 effect.select("Text3D").map_err(std::io::Error::other)
             })
@@ -370,8 +339,6 @@ impl Renderer {
         })
     }
 
-    /// Mutate the caller's scene state in native bucket order. PS b0 and the rasterizer
-    /// remain inherited; the VS allocation is exactly80 initialized physical bytes.
     pub fn prepare(
         &self,
         arena: &gpu::Arena,
@@ -412,8 +379,6 @@ impl Renderer {
             }
             return Ok(prepared);
         }
-        // The real shared font buffer has3072 records. Only this upload's prefix is known;
-        // a retained foreign declaration reading unwritten bytes must be refused.
         retained.bind_partial_vertex(
             0,
             STRIDE as u64,
@@ -424,7 +389,6 @@ impl Renderer {
             })),
             0,
         );
-        // The sampler of the effect drawn, the recording's when the replacement fell back.
         let effect = match selected {
             Ok(Some(selection)) => &selection.effect,
             _ => &self.effect,
@@ -455,7 +419,6 @@ impl Renderer {
                 continue;
             }
             let submission = if native_layout {
-                // Missing Text3D keeps the earlier native declaration and all other IA slots.
                 retained.prepare(
                     arena,
                     "animated world text",
@@ -493,8 +456,6 @@ impl Renderer {
                     prepared.groups.push((submission, group.vertices.clone()));
                 }
                 Err(error) => {
-                    // Still apply later group binds, so the next bucket inherits the actual
-                    // last page/sampler even when an earlier draw cannot be reconstructed.
                     if first_refusal.is_none() {
                         first_refusal = Some(if let Err(reason) = &view {
                             refuse(format!("{error}; font page {}: {reason}", group.texture))
@@ -531,13 +492,10 @@ fn disabled_depth() -> DepthStencilState {
     }
 }
 
-/// The native draw binds its depth state even with no buckets. This does not allocate or compile.
 pub fn bind_depth(retained: &mut shader_scene::State) {
     retained.stream.bind_depth_stencil(disabled_depth());
 }
 
-/// Draw in the caller's scene-HDR pass, inside its entity/popup/particle envelope.
-/// The caller retains the native scissor rectangle; no screen projection is substituted.
 pub fn draw(
     pass: &mut wgpu::RenderPass<'_>,
     prepared: &Prepared,
@@ -654,7 +612,6 @@ mod tests {
             .transform(),
             ([10., 35.75, 30.], 9., 0.5)
         );
-        // The test at the boundary is strict; no elapsed-seconds normalization or easing.
         assert_eq!(byte(0.5), 127);
         assert_eq!(byte(-1.), 1);
         assert_eq!(byte(f32::INFINITY), 0);
@@ -693,18 +650,15 @@ mod tests {
         assert_eq!(word_at(&built, 0, 20), 0x7f33_6699);
         assert_eq!(word_at(&built, 6, 20), 0x7fff_0000);
         assert_eq!(word_at(&built, 12, 20), 0x7f33_6699);
-        assert_eq!(word_at(&built, 18, 20), 0x7f33_6699); // packed-zero code keeps preceding RGB
-        assert_eq!(word_at(&built, 0, 24), 0x8040_2010); // COLOR1 is raw font bytes
+        assert_eq!(word_at(&built, 18, 20), 0x7f33_6699);
+        assert_eq!(word_at(&built, 0, 24), 0x8040_2010);
         let plain = mesh(&font, b"AA\nA", 0.);
-        // All lines reset to the widest line's centre, and descend by the first fnt's lineHeight.
         assert_eq!(f32_at(&plain, 0, 0), -0.25);
         assert_eq!(f32_at(&plain, 12, 0), -0.25);
         assert_eq!(f32_at(&plain, 0, 1), 0.125);
         assert_eq!(f32_at(&plain, 12, 1), -0.125);
-        // BL,TL,BR,TR,BR,TL preserves native winding and UV order.
         assert_eq!(f32_at(&plain, 0, 1), f32_at(&plain, 2, 1));
         assert_eq!(f32_at(&plain, 1, 1), f32_at(&plain, 3, 1));
-        // The pop tests full U+0021; the own-colour push tests only the code's low byte.
         font.facts.text_colors.insert(b'!', [0., 0., 1., 1.]);
         let low_byte = mesh(&font, "A\u{11}RB\u{11}\u{121}A\u{11}!B".as_bytes(), 0.875);
         assert_eq!(word_at(&low_byte, 12, 20), 0x7f33_6699);
@@ -724,7 +678,6 @@ mod tests {
             }]
         );
         assert_eq!(built.bytes.len() as u64, ALLOCATION);
-        // The native pre-layout includes the513th glyph in the centre before clipping its draw.
         assert_eq!(f32_at(&built, 0, 0), -64.125);
         assert!(!mesh(&font, b"", 0.).has_text);
         assert_eq!(mesh(&font, b"\xff", 0.).vertices(), 0);

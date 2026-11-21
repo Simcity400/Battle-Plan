@@ -1,9 +1,6 @@
-//! Attach/detach diagnostics, outside native flights and suspended publication.
 use crate::hook::Hook;
 use engine_sites::Rva;
 
-// The host's failure API retains a static reason. Allocate only on the failing
-// attach/detach path so its diagnostic survives that family's destruction.
 pub(crate) fn site(
     family: &str,
     name: &str,
@@ -13,7 +10,6 @@ pub(crate) fn site(
 ) -> &'static str {
     Box::leak(format!("{family}: {name} (site {index}) {phase}: {cause}").into_boxed_str())
 }
-/// The located site and the bytes its hook replaces, or the family's refusal naming why not.
 pub(crate) fn locate(
     base: usize,
     key: Rva,
@@ -52,8 +48,6 @@ pub(crate) fn publication<'a>(
         .map(|(index, name)| format!("{name} (site {index})"))
         .collect::<Vec<_>>()
         .join(", ");
-    // Cache flush, thread suspension and protection failures can affect a whole
-    // transaction. Name its actual member sites instead of inventing one culprit.
     let scope = if failed.is_empty() {
         "family transaction"
     } else {

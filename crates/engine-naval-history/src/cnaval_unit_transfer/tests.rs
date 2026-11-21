@@ -111,7 +111,6 @@ fn fixture() -> Fixture {
         cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
     );
     m.dword(0x18000 + cstrategic_navy::OWNER, 1);
-    // Deliberately invalid: native does not consume the OWNER's operand.
     m.array(0x18000 + cstrategic_navy::REGIONAL_OPERANDS, 0x50000, 2);
     m.word(0x12010, 0x13000);
     m.word(0x13000, cstrategic_navy::VTABLE_RVA.0 as u64);
@@ -178,7 +177,6 @@ fn transport_native_fraction_and_separate_rounding_are_preserved() {
 fn transport_speed_joins_reciprocal_intel_and_scales_raw_before_effective_metadata() {
     let mut m = fixture();
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(145_000));
-    // A zero category suppresses only the temporary composed modifier.
     let metadata = 0x20000 + SPEED_TOKEN as usize * modifier_definition::STRIDE;
     m.dword(metadata + modifier_definition::CATEGORY_MASK, 0);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(180_000));
@@ -188,15 +186,12 @@ fn transport_speed_joins_reciprocal_intel_and_scales_raw_before_effective_metada
         modifier_definition::CLAMP_MAXIMUM,
     );
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(200_000));
-    // Scale the RAW definition first: 200000 * .35 = 70000, then
-    // clamp. Clamping the definition before multiplication is wrong.
     m.word(0x17008, 200_000);
     m.word(0x10008, 0);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(340_000));
     m.word(0x17008, (-50_000_i64) as u64);
     m.word(0x10008, (-10_000_i64) as u64);
     m.dword(metadata + modifier_definition::FLAGS, 0);
-    // Disabled transport DLC must not touch otherwise-invalid penalty roots.
     m.global(modifier_definition::TRADE_FEATURE_FLAGS_RVA, 0);
     m.global(MODIFIER_SET_RVA, 0);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(180_000));
@@ -252,16 +247,13 @@ fn transport_faults_never_become_partial_enemy_aggregates() {
             "address {address:x}"
         );
     }
-    // A navy is its slot's country's, whatever owner it stores.
     let mut m = fixture();
     m.dword(0x13000 + cstrategic_navy::OWNER, 1);
     m.dword(0x18000 + cstrategic_navy::OWNER, 2);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(145_000));
     let mut m = fixture();
-    // Native out-of-range weather returns no weather modifier, not failure.
     m.array(0xe000 + cweather_manager::REGIONS, 0, 0);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(165_000));
-    // Native eligibility excludes capitulated enemies before navy access.
     m.bytes[0xb000 + cdiplomacy_status::CAPITULATED] = 1;
     m.word(0x13000, 0);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(200_000));
@@ -357,8 +349,6 @@ fn transfer_authenticated_identity_survives_independent_status_refusal() {
     );
 }
 
-/// Three regions: id 1 (the fixture's), id 2 beyond the weather and navy
-/// arrays, and id 0 whose weather row is not a weather row.
 fn three_regions(m: &mut Fixture) {
     m.array(0x1000 + cgame_state::STRATEGIC_REGIONS, 0xc200, 3);
     for (slot, region, id) in [(0, 0xd200, 0), (2, 0xd100, 2)] {
@@ -369,16 +359,12 @@ fn three_regions(m: &mut Fixture) {
     }
 }
 
-/// The three regions in id order.
 fn regions() -> Vec<TransportRegion> {
     [(0, 0xd200), (1, 0xd000), (2, 0xd100)]
         .map(|(id, pointer)| TransportRegion { id, pointer })
         .to_vec()
 }
 
-/// Every chosen region's batched answer is the single query's, speed or
-/// refusal, across the gates, enemy faults and region-local faults, with one
-/// cache shared by owners choosing different regions.
 #[test]
 fn batched_transport_speeds_equal_each_single_query() {
     let variants: [fn(&mut Fixture); 18] = [
@@ -415,7 +401,6 @@ fn batched_transport_speeds_equal_each_single_query() {
         let mut m = fixture();
         three_regions(&mut m);
         variant(&mut m);
-        // One cache serves every owner of the hour, as capture shares it.
         let mut cache = SpeedCache::default();
         let mut input_cache = SpeedCache::default();
         let mut owned = Vec::new();
@@ -451,8 +436,6 @@ fn batched_transport_speeds_equal_each_single_query() {
                 "variant {index}: transport evaluation uses only owned operands");
         }
     }
-    // The fixture's own answers: one speed, one region-local operand
-    // refusal and one region-local weather refusal.
     let mut m = fixture();
     three_regions(&mut m);
     let mut speeds = Vec::new();

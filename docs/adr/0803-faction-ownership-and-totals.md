@@ -1,0 +1,7 @@
+# Track faction membership separately from retained account ownership
+
+`FactionAccountOwners` assigns a faction account while the raw account country resolves to exactly one country holding its canonical slot. Use its explicit membership when it names a single faction. Retain the last faction for a former member only while the same holder still owns the account, the hours are continuous and the membership indexes remain reliable. Ambiguous membership or a changed holder removes the inferred owner. An unresolved member means only explicit memberships can be published. An incomplete input breaks continuity. Resume primes the account owners from the commit and the holder tags it contains.
+
+`FactionTotals` uses current membership. A faction without a member has no row. Each territory column uses the corresponding territory total by canonical slot and factory measures use the live raw country's factory row with the game's counting rule. Exclude the human-player group. A missing member's operand or incomplete roster withholds affected totals instead of giving smaller numbers. Recompute all faction sums when a roster or country identity changes. When only factory or territory rows change, reevaluate their factions. The member rosters and sums are rebuilt from table inputs after a resume.
+
+[Account ownership](../../crates/recorder-derive/src/faction_accounts.rs) · [Faction totals](../../crates/recorder-derive/src/faction_totals.rs)

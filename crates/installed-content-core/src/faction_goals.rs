@@ -1,7 +1,3 @@
-//! Faction goal definitions, including goals declared inside faction templates.
-//! Native goal consumption is shared with the template reader; identities and
-//! fields merge in the recorded stack's file order. Inline declarations are
-//! independent objects; ambiguous token-only identities are refused by name.
 use crate::content::diagnostics::Once as OnceLock;
 use crate::{
     ResolvedLayers, coverage::Coverage, faction_templates, gui::native::BoundLocalization,
@@ -18,11 +14,9 @@ pub struct Definition {
     pub name: BoundLocalization,
     pub description: BoundLocalization,
     pub category: Option<Vec<u8>>,
-    /// Authored UI category; its artwork is the group sprite, not the goal token.
     pub group: Option<Vec<u8>>,
     pub progress_inputs: Vec<Item>,
     pub progress_sections: Vec<Vec<Item>>,
-    /// Each progress section's key, in the same order: its localisation names it.
     pub progress_section_keys: Vec<Option<Vec<u8>>>,
     pub conditions: BTreeMap<String, Vec<Item>>,
     pub effects: BTreeMap<String, Vec<Item>>,
@@ -37,7 +31,6 @@ pub struct Catalog {
     pub warnings: Vec<String>,
 }
 impl Catalog {
-    /// Enumerate recorded-stack definitions; callers still use get for ambiguity and coverage.
     pub fn definitions(&self) -> impl Iterator<Item = (&Token, &Definition)> {
         self.definitions.iter()
     }
@@ -62,8 +55,6 @@ fn identity(token: &Token) -> String {
     }
 }
 fn apply(catalog: &mut Catalog, key: Option<&[u8]>, fields: &[Item], inline: bool) {
-    // The uniform loader supplies the declaration identity. The goal's own
-    // field reader skips `id`; it cannot rename a database or inline object.
     let token = Token::c_str(key.unwrap_or_default());
     if inline && catalog.definitions.contains_key(&token) {
         catalog.ambiguous.insert(token.clone());
@@ -150,7 +141,6 @@ fn apply(catalog: &mut Catalog, key: Option<&[u8]>, fields: &[Item], inline: boo
         }
     }
 }
-/// One catalogue per recorded layer roster, including an unreadable result.
 pub fn cached(layers: &ResolvedLayers) -> Result<Arc<Catalog>, String> {
     let memo = layers.derived::<OnceLock<Result<Arc<Catalog>, String>>>();
     memo.get_or_init(|| {

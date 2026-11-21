@@ -1,14 +1,3 @@
-//! The viewer-drawn hatch over snow/mud cells an hour's weather does not observe.
-//!
-//! The game's terrain, tree and model shaders keep reading the snow/mud texture as the hour
-//! recorded it; this pass only marks the cells whose snow and mud are unknown
-//! ([`super::Presentation::unknown`]). It lies on what the scene drew, depth-tested against it:
-//! on the terrain right after the terrain pass, over the terrain's own blocks, steps, triangles and
-//! snapped edges at the heights the terrain draws from (its coast caps included), so borders,
-//! rivers, railways, trees, water and everything later draw over it; and on the water surface
-//! right after the water when its technique reads the snow/mud texture, as the shipped ice does.
-//! Each fragment keeps to its own unknown cell, the ground hatch to ground the heightmap puts
-//! above the water and the water hatch to water. The pattern is the viewer's own.
 use crate::map::terrain_shader::{SIDE, Stand};
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
@@ -18,37 +7,25 @@ use viewer_foundation::map::province_map::{HEIGHT_SCALE, WATER_HEIGHT};
 
 pub(crate) const SHADER: &str = include_str!("unknown_hatch.wgsl");
 
-/// Map pixels a snow/mud cell covers on each axis.
 const CELL: u32 = crate::map::weather::SNOW_MUD_BLOCK;
-/// World units the hatch's depth is pulled toward the camera along its look, as the map's borders
-/// and rivers are, so it never fights the surface it lies on.
 const PULL: f32 = 0.05;
-/// Map pixels along each side of the squares [`Coverage`] flags: the finest terrain block's.
 const TILE: u32 = SIDE;
 
-/// Which drawn surface a hatch draw lies on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
     Ground,
     Water,
 }
 
-/// Which parts of the map hold an unknown cell, so the hatch draws only the terrain blocks over
-/// them: the unknown cells of each [`TILE`]-pixel square counted, so one cell's flag turning is
-/// one square's count and no pass over the grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Coverage {
-    /// Unknown cells per [`TILE`]-pixel square, rows counted up from the map's bottom like the
-    /// cells.
     tiles: Vec<u32>,
     columns: u32,
     grid: [u32; 2],
-    /// Squares holding one: none draws no hatch.
     covered: usize,
 }
 
 impl Coverage {
-    /// `unknown` is [`super::Presentation::unknown`] over a grid of `grid` cells.
     pub fn new(unknown: &[u8], grid: [u32; 2]) -> Self {
         let per_tile = TILE / CELL;
         let columns = grid[0].div_ceil(per_tile);
@@ -67,17 +44,14 @@ impl Coverage {
         Self { tiles, columns, grid, covered }
     }
 
-    /// Whether `grid` is the grid this coverage counts.
     pub fn counts(&self, grid: [u32; 2]) -> bool {
         self.grid == grid
     }
 
-    /// Whether any square holds an unknown cell; none skips the hatch.
     pub fn covered(&self) -> bool {
         self.covered != 0
     }
 
-    /// `cell`'s flag turned on or off, its square's count with it.
     pub fn patch(&mut self, cell: u32, unknown: bool) {
         let per_tile = TILE / CELL;
         let [x, z] = [cell % self.grid[0], cell / self.grid[0]];
@@ -96,7 +70,6 @@ impl Coverage {
         }
     }
 
-    /// The blocks of `drawn` over an unknown cell, as the shader's instances.
     pub fn instances(&self, drawn: &[Stand]) -> Vec<Instance> {
         let rows = self.tiles.len() as u32 / self.columns.max(1);
         drawn
@@ -121,11 +94,8 @@ impl Coverage {
     }
 }
 
-/// One block the shader draws: origin, step, the snapped edges as bits in the block's order
-/// (south, north, west, east), and its first vertex in the height stream it draws from.
 pub type Instance = [u32; 5];
 
-/// The pass's uniform block, laid out as the WGSL `Params`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct HatchParams {
@@ -136,8 +106,6 @@ pub struct HatchParams {
 }
 
 impl HatchParams {
-    /// `view_projection` and `look` are one wrap camera's `ViewProjectionMatrix` and look
-    /// direction; `map` is the terrain's size in pixels and `grid` the snow/mud cells'.
     pub fn new(
         view_projection: [[f32; 4]; 4],
         look: [f32; 3],
@@ -162,7 +130,6 @@ impl HatchParams {
     }
 }
 
-/// A future that is ready when polled, as the native backends' error scopes are.
 fn ready<T>(future: impl Future<Output = T>) -> T {
     let mut future = std::pin::pin!(future);
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
@@ -174,7 +141,6 @@ fn ready<T>(future: impl Future<Output = T>) -> T {
     }
 }
 
-/// A GPU object, or the validation or memory error creating it raised, named.
 fn scoped<T>(device: &wgpu::Device, what: &str, create: impl FnOnce() -> T) -> Result<T, String> {
     let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -187,18 +153,14 @@ fn scoped<T>(device: &wgpu::Device, what: &str, create: impl FnOnce() -> T) -> R
 
 pub struct UnknownHatch {
     pipeline: wgpu::RenderPipeline,
-    /// The terrain's own triangles over one block's vertices.
     indices: wgpu::Buffer,
     count: u32,
     samples: u32,
     ring: std::cell::RefCell<Ring>,
 }
 
-/// Bytes between draws' parameter blocks, the uniform offset alignment WebGPU guarantees.
 const PARAMS_STRIDE: u64 = 256;
 
-/// A frame's draws write their parameters and blocks into persistent buffers, a parameter slot
-/// and a block range each, rather than making buffers and bindings per draw.
 #[derive(Default)]
 struct Ring {
     slot: usize,
@@ -207,13 +169,10 @@ struct Ring {
     used: u64,
     groups: Vec<wgpu::BindGroup>,
     views: Option<(wgpu::TextureView, wgpu::TextureView)>,
-    /// Each terrain height stream's binding and whether this frame drew from it; the last
-    /// frame's are kept.
     streams: Vec<(wgpu::Buffer, wgpu::BindGroup, bool)>,
 }
 
 impl UnknownHatch {
-    /// The pipeline for scene targets of `samples` samples, or why the device refuses it.
     pub fn new(device: &wgpu::Device, samples: u32) -> Result<Self, String> {
         let triangles = crate::map::terrain_shader::indices([SIDE, SIDE]);
         let (pipeline, indices) = scoped(device, "unknown snow and mud hatch pipeline", || {
@@ -241,7 +200,6 @@ impl UnknownHatch {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: SCENE_FORMAT,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        // The scene's alpha is the grade's; the hatch changes colour only.
                         write_mask: wgpu::ColorWrites::COLOR,
                     })],
                 }),
@@ -249,7 +207,6 @@ impl UnknownHatch {
                     cull_mode: None,
                     ..Default::default()
                 },
-                // Tested against what the world passes drew, written by nothing after it.
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(false),
@@ -283,12 +240,10 @@ impl UnknownHatch {
         })
     }
 
-    /// The scene targets' sample count this pipeline was built for.
     pub fn samples(&self) -> u32 {
         self.samples
     }
 
-    /// Starts a frame's draws at the first parameter slot and block range.
     pub fn begin_frame(&self) {
         let mut ring = self.ring.borrow_mut();
         ring.slot = 0;
@@ -296,11 +251,6 @@ impl UnknownHatch {
         ring.streams.retain_mut(|(.., drawn)| std::mem::take(drawn));
     }
 
-    /// Hatches the unknown cells of the blocks in `streams` ([`Coverage::instances`]) on one
-    /// surface of one wrap: each terrain height stream
-    /// ([`crate::map::terrain_shader::Terrain::standing`]) with the blocks drawn from it.
-    /// `heights` is the heightmap, rows top-down, which decides ground from water, and `unknown`
-    /// one texel per cell.
     #[allow(
         clippy::too_many_arguments,
         reason = "the device, the targets, the pass's textures, its blocks and its parameters"
@@ -347,7 +297,6 @@ impl UnknownHatch {
                 .as_ref()
                 .is_none_or(|(_, size)| ring.used + length > *size)
             {
-                // Earlier draws keep the buffer their commands bound.
                 let size = (ring.used + length).next_power_of_two().max(1 << 16);
                 ring.blocks = Some((
                     device.create_buffer(&wgpu::BufferDescriptor {
@@ -470,7 +419,6 @@ mod tests {
     use crate::map::terrain_shader::{Patch, heights_into, positions};
     use viewer_foundation::map::province_map::HeightField;
 
-    /// The height stream the terrain draws `block` from, sampled from the heightmap.
     fn sampled(block: [u32; 4], map: [u32; 2], heights: &[u8]) -> Vec<[i16; 2]> {
         let mut stream = Vec::new();
         let patch = Patch {
@@ -481,8 +429,6 @@ mod tests {
         stream
     }
 
-    /// Where the shader's vertex stage places vertex `index` of `block` (an instance) on the
-    /// ground, from the height stream `heights` the terrain draws it from.
     fn placed(block: [u32; 4], index: u32, map: [u32; 2], heights: &[[i16; 2]]) -> [f32; 3] {
         let mut local = [index % (SIDE + 1), index / (SIDE + 1)];
         if (local[0] + local[1]) % 2 == 1 {
@@ -505,13 +451,10 @@ mod tests {
         ]
     }
 
-    /// The shader's fragment rule: the ground hatch shows above the water surface, the water
-    /// hatch below it.
     fn shows(surface: Surface, ground: f32) -> bool {
         (ground < WATER_HEIGHT) == (surface == Surface::Water)
     }
 
-    /// A 64-pixel-square map's heightmap, rows top-down, from a height per world `(x, z)`.
     fn heightmap(height: impl Fn(u32, u32) -> u8) -> Vec<u8> {
         (0..SIDE)
             .flat_map(|row| (0..SIDE).map(move |x| (x, SIDE - 1 - row)))
@@ -519,7 +462,6 @@ mod tests {
             .collect()
     }
 
-    /// One triangle of the terrain's index pattern, as the shader places it.
     fn triangle_at(
         triangle: &[u16],
         block: [u32; 4],
@@ -535,7 +477,6 @@ mod tests {
 
     #[test]
     fn a_cells_hatch_stands_on_the_terrain_at_its_own_vertices_not_a_neighbours_peak() {
-        // Flat ground at byte 120 (12 units); the next cell east holds a peak at byte 200.
         let heights = heightmap(|x, z| if (5..8).contains(&x) && z < 4 { 200 } else { 120 });
         let map = [SIDE, SIDE];
         let triangles = crate::map::terrain_shader::indices([SIDE, SIDE]);
@@ -544,7 +485,6 @@ mod tests {
         for triangle in triangles.chunks_exact(3) {
             let corners = triangle_at(triangle, [0, 0, 1, 0], map, &stream);
             let [x, _, z] = centre(&corners);
-            // Triangles of the unknown cell at the map's south-west corner.
             if x < CELL as f32 && z < CELL as f32 {
                 for corner in corners {
                     assert!((corner[1] - 12.0).abs() < 1e-4, "{corner:?}");
@@ -557,7 +497,6 @@ mod tests {
 
     #[test]
     fn the_hatch_follows_the_terrains_triangles_over_uneven_ground() {
-        // Uneven ground above the water everywhere, so the drawn surface is the terrain's own.
         let heights = heightmap(|x, z| 100 + ((x * 37 + z * 61 + x * z * 7) % 150) as u8);
         let field = HeightField {
             width: SIDE,
@@ -581,23 +520,18 @@ mod tests {
         let heights = heightmap(|x, z| (x + 2 * z) as u8);
         let map = [SIDE, SIDE];
         let height = |x: u32, z: u32| f32::from((x + 2 * z) as u8) * HEIGHT_SCALE;
-        // A step-2 block's vertex (3, 1) stands on pixel (6, 2).
         let coarse = [0, 0, 2, 0];
         let stream = sampled(coarse, map, &heights);
         assert_eq!(
             placed(coarse, SIDE + 1 + 3, map, &stream),
             [6.0, height(6, 2), 2.0]
         );
-        // Its odd south-edge vertex moves onto the coarser neighbour's next vertex when snapped,
-        // and its west edge, not snapped, stays.
         let snapped = [0, 0, 2, 1];
         assert_eq!(placed(snapped, 1, map, &stream), [4.0, height(4, 0), 0.0]);
-        // The vertex it moves onto holds the snapped height the terrain draws for it.
         assert_eq!(height(4, 0), f32::from(stream[1][1]) / 10.0 * HEIGHT_SCALE);
         assert_eq!(placed(coarse, 1, map, &stream), [2.0, height(2, 0), 0.0]);
         let west = SIDE + 1;
         assert_eq!(placed(snapped, west, map, &stream), [0.0, height(0, 2), 2.0]);
-        // A snapped east edge moves north.
         let east = [0, 0, 1, 8];
         assert_eq!(
             placed(east, west + SIDE, map, &sampled(east, map, &heights)),
@@ -605,14 +539,10 @@ mod tests {
         );
     }
 
-    /// On the GPU, the hatch over a coast-capped block stands at the cap the terrain draws, and
-    /// over an uncapped block at the heightmap's height; the capped land keeps its ground hatch.
     #[test]
     fn the_hatch_stands_on_the_coast_capped_heights_the_terrain_draws() {
         use eframe::wgpu::util::DeviceExt;
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
-        // Land of byte 200 (20 units); in the west half a sea pixel at every odd x and z, so each
-        // step-2 cell there holds water while each vertex, on even pixels, stands on land.
         let map = [256u32, 128];
         let bytes: Vec<u8> = (0..map[1])
             .rev()
@@ -662,7 +592,6 @@ mod tests {
         let size = [128, 64];
         let targets = Targets::new(&device, size, size, 1, viewer_foundation::map::gpu_contract::SeaBed::Half);
         let hatch = UnknownHatch::new(&device, 1).unwrap();
-        // Looking straight down, the map fills the target and depth falls as height rises.
         let view_projection = [
             [1.0 / 128.0, 0.0, 0.0, 0.0],
             [0.0, 0.0, -1.0 / 32.0, 0.0],
@@ -675,8 +604,6 @@ mod tests {
             [west[0], west[1], west[2], 0, 0],
             [east[0], east[1], east[2], 0, base],
         ];
-        // Whether the hatch shows over the west and east blocks' insides against a surface drawn
-        // at `height`: it passes the depth test only where it stands at least that high.
         let shows = |height: f32| {
             hatch.begin_frame();
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -733,7 +660,6 @@ mod tests {
     fn quads_past_the_maps_edge_collapse_onto_it() {
         let map = [96, SIDE];
         let heights = vec![120; (map[0] * map[1]) as usize];
-        // The block from x 64 holds 32 columns of the map; its later vertices stand on the edge.
         let stream = sampled([64, 0, 1, 0], map, &heights);
         assert_eq!(placed([64, 0, 1, 0], 40, map, &stream)[0], 96.0);
         assert_eq!(placed([64, 0, 1, 0], 20, map, &stream)[0], 84.0);
@@ -741,14 +667,11 @@ mod tests {
 
     #[test]
     fn each_hatch_keeps_to_its_own_surface() {
-        // A cell all under the water shows only the water hatch; a coastal cell shows the ground
-        // hatch on its land and the water hatch on its water.
         let sea = WATER_HEIGHT - HEIGHT_SCALE;
         assert!(!shows(Surface::Ground, sea));
         assert!(shows(Surface::Water, sea));
         assert!(shows(Surface::Ground, WATER_HEIGHT));
         assert!(!shows(Surface::Water, WATER_HEIGHT));
-        // Along a coastal triangle edge the hatches meet where the terrain meets the water.
         let [low, high] = [WATER_HEIGHT - 1.0, WATER_HEIGHT + 1.0];
         for step in 0..=10 {
             let ground = low + (high - low) * step as f32 / 10.0;
@@ -758,7 +681,6 @@ mod tests {
 
     #[test]
     fn only_blocks_over_an_unknown_cell_are_drawn() {
-        // 256 by 128 pixels: 64 by 32 cells, 4 by 2 tiles.
         let grid = [64, 32];
         let mut unknown = vec![0; 64 * 32];
         assert!(!Coverage::new(&unknown, grid).covered());
@@ -792,7 +714,6 @@ mod tests {
         }
         let mut coverage = Coverage::new(&unknown, grid);
         assert!(coverage.counts(grid));
-        // Both cells of one square go, then come back; the square's flag follows its last cell.
         for (cell, now) in [
             (3 * 64 + 17, false),
             (3 * 64 + 20, false),
@@ -828,7 +749,6 @@ mod tests {
         assert_eq!(ground.surface, [0.0, WATER_HEIGHT, HEIGHT_SCALE, CELL as f32]);
         let water = HatchParams::new(matrix, look, [5632, 2048], [1408, 512], Surface::Water);
         assert_eq!(water.surface[0], 1.0);
-        // The block is the WGSL struct: a matrix and four vectors.
         assert_eq!(size_of::<HatchParams>(), 112);
     }
 

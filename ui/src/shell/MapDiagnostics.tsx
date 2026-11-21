@@ -10,8 +10,6 @@ import { useMapDiagnostics } from './diagnosticsSetting';
 import { branchCoverage, historyLabels, missingTime } from './diagnosticsData';
 import { damagedRecordingText } from './recordingNotice';
 
-/** How complete the open recording is, and the map's troubleshooting tools: its technical
- * overlay and the problems it last reported. */
 export default function MapDiagnostics({ native, metadata, branch }: { native: DesktopState | null; metadata: ReplayMetadata | null; branch?: BranchChoice | null }) {
   const [error, setError] = useState<string | null>(null);
   const details = native?.mapDetails;
@@ -41,8 +39,6 @@ export default function MapDiagnostics({ native, metadata, branch }: { native: D
   </div>;
 }
 
-/** The recording's span and status, one coverage row per branch (several can be played
- * from here), and its notes folded away. */
 function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: BranchChoice | null }) {
   const branches = metadata.branches;
   const labels = historyLabels(branches);

@@ -1,4 +1,3 @@
-//! CVariables and its native CPdxRobinHoodTable of exact script key/value pairs.
 
 use crate::{
     Memory, ccharacter, ccharacter_manager, ccountry, cgame_state, cpdx_array::Array, cstate, read,
@@ -6,21 +5,13 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CVariables vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0285_3318);
-/// CVariables primary vtable pointer.
 pub const VTABLE: usize = 0;
-/// Raw u32 scoped-variable seed; initialized to one and hashed as context changes.
 pub const SEED: usize = 8;
-/// CVariables hash-storage base pointer.
 pub const STORAGE: usize = 0x18;
-/// CVariables declared entry count u32.
 pub const ENTRY_COUNT: usize = 0x20;
-/// CVariables bucket mask u32.
 pub const BUCKET_MASK: usize = 0x24;
-/// Maximum probe distance; logarithmic bucket sizing includes this many overflow slots.
 pub const PROBE_TAIL: usize = 0x28;
-/// Empty shared storage.
 pub const EMPTY_STORAGE_RVA: Rva = Rva(0x030f_d1a0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -34,18 +25,15 @@ pub struct Row {
 pub struct NameWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// Sum of all occupied keys' lengths, including whole rows omitted for capacity.
     pub required_bytes: usize,
 }
 
-/// The recorded scope identity is separate from CVariables' hashed seed words.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     #[default]
     Global,
     Country(u32),
     State(u32),
-    /// A character's embedded store, by its id (`ccharacter::ID`).
     Character(u32),
 }
 
@@ -66,12 +54,8 @@ pub struct ScopeWalk {
     pub required_bytes: usize,
 }
 
-/// Bytes of a store's hash header from [`STORAGE`]: the storage pointer, the
-/// entry count, the bucket mask and the probe tail.
 pub const HEADER: usize = 17;
 
-/// One store whose vtable and header were read, before any node is read:
-/// its scope, address, header words and seed (when its word was copied).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Store {
     pub scope: Scope,
@@ -80,21 +64,12 @@ pub struct Store {
     pub seed: Option<u32>,
 }
 
-/// A caller's held rows per store ([`walk_scopes_carried`]).
 pub trait VariableCarry {
-    /// Registers an authenticated store before any node is read: a plan
-    /// token and, when its held rows may be carried, their entry and
-    /// name-byte counts.
     fn plan(&mut self, store: &Store) -> (usize, Option<(usize, usize)>);
-    /// Writes a carryable plan's held entries, whose name starts index
-    /// `names`, and their name bytes.
     fn carry(&mut self, token: usize, entries: &mut [Row], names: &mut [u8]);
-    /// A store read afresh: its outcome and, when complete, its entries in
-    /// native slot order, whose name starts index `names`.
     fn read(&mut self, token: usize, outcome: Outcome, entries: &[Row], names: &[u8]);
 }
 
-/// No held rows: every store is read.
 pub struct Fresh;
 impl VariableCarry for Fresh {
     fn plan(&mut self, _: &Store) -> (usize, Option<(usize, usize)>) {
@@ -108,13 +83,6 @@ pub fn count_scopes(memory: &impl Memory, base: usize, game_state: usize) -> Sco
     walk_scopes_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Construction stores allocated CVariables pointers in the game state, each country and each state
-/// (`cgame_state::GLOBAL_VARIABLES`, `ccountry::VARIABLES`, `cstate::VARIABLES`); a character's is
-/// embedded (`ccharacter::VARIABLES`), walked for each authenticated roster occurrence as the
-/// ScriptFlags walk visits them. Persistent effects finish synchronously; daily politics and peace
-/// settlement finish before the hourly return, and game loading joins its load worker before
-/// return. All arenas are caller-owned; a truncated container omits its whole scope, while empty
-/// authenticated containers remain explicit complete scope rows.
 pub fn walk_scopes(
     memory: &impl Memory,
     base: usize,
@@ -144,10 +112,6 @@ pub fn walk_scopes_buffer(
     walk_scopes_carried(memory, base, game_state, output, entries, names, &mut Fresh)
 }
 
-/// [`walk_scopes_buffer`] with `carry` supplying the rows of a store whose
-/// held read it proves current: every scope's identity and every store's
-/// vtable, header and seed are still read, and a carried store's nodes and
-/// keys are not.
 pub fn walk_scopes_carried(
     memory: &impl Memory,
     base: usize,
@@ -174,8 +138,6 @@ pub fn walk_scopes_carried(
                     .ok_or("variable scope row demand overflow")?,
             )?;
             let can_emit = len < output.len();
-            // A scope the output cannot hold is only measured: no plan, and
-            // empty fixed arenas count its rows and bytes.
             let captured = if can_emit {
                 store_rows(
                     memory,
@@ -312,8 +274,6 @@ pub fn walk_scopes_carried(
         if !found_state {
             return Err("state table has no readable states");
         }
-        // Each occurrence's identity and its embedded store's words in one
-        // read of the character.
         let mut characters = ccharacter_manager::Roster::read(memory, base, game_state)?.cursor();
         while let Some(character) = characters.next_occurrence(memory)? {
             let mut head = Head::default();
@@ -366,12 +326,6 @@ fn scope_pointer(
         .ok_or("script variable scope root unreadable")
 }
 
-/// One emitted scope's rows, as [`walk_scopes_carried`] takes them: an
-/// authenticated store is planned with `carry`, its held rows written when
-/// the plan carries them and `entries`/`names` hold them, and otherwise its
-/// nodes are read and the read reported to `carry`. `entries` and `names`
-/// start at the scope's first row and byte; entry name starts are relative
-/// to `names`.
 #[allow(clippy::too_many_arguments)]
 fn store_rows(
     memory: &impl Memory,
@@ -410,12 +364,6 @@ fn store_rows(
     Ok(captured)
 }
 
-/// One store of a scope the caller already proved, read exactly as
-/// [`walk_scopes_carried`] reads a scope it emits: its vtable, header and
-/// seed, then its held rows through `carry` or its nodes. `entries` and
-/// `names` receive its rows from their start (entry name starts relative to
-/// `names`). Returns the rows' outcome and byte count with the store's seed;
-/// `Err` where the walk would fail before reading the store.
 pub fn read_store_carried(
     memory: &impl Memory,
     base: usize,
@@ -433,10 +381,6 @@ pub fn read_store_carried(
     Ok((rows, head.seed()))
 }
 
-/// Reads one authenticated scope into caller-owned rows and a literal-byte arena.
-/// The caller retains scope identity. Physical hash order is not row identity;
-/// replay assembly sorts the exact keys and checks duplicate keys off-thread.
-/// Empty slots are selected by native probe distance, never by string plausibility.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -463,28 +407,20 @@ pub fn walk_buffer(
     walk_head_buffer(memory, base, read_head(memory, container), output, names)
 }
 
-/// The CVariables words a scope consumes, in their original order: the
-/// vtable, the storage header and the seed. One scattered read copies a
-/// prefix of them, so a later failure never hides an earlier word's verdict.
 #[derive(Clone, Copy, Default)]
 struct Head {
     vtable: [u8; 8],
     header: [u8; HEADER],
     seed: [u8; 4],
-    /// Words copied, in order.
     copied: usize,
-    /// The header address overflowed; nothing after the vtable was read.
     overflow: bool,
 }
 
 impl Head {
-    /// The scoped-variable random seed's raw word, when copied.
     fn seed(&self) -> Option<u32> {
         (self.copied == 3).then(|| u32::from_le_bytes(self.seed))
     }
 
-    /// The store a carry may certify: its vtable is the CVariables vtable and
-    /// its header was copied, as [`walk_head_buffer`] first requires.
     fn store(&self, base: usize, scope: Scope, container: usize) -> Option<Store> {
         let expected = engine_sites::at(base, VTABLE_RVA)?;
         (self.copied >= 2 && !self.overflow && u64::from_le_bytes(self.vtable) == expected as u64)
@@ -499,7 +435,6 @@ impl Head {
 
 fn read_head(memory: &impl Memory, container: usize) -> Head {
     let mut head = Head::default();
-    // SEED precedes STORAGE, so only the header address can overflow.
     match container.checked_add(STORAGE) {
         Some(header) => {
             head.copied = memory.copy_scattered(
@@ -578,12 +513,9 @@ fn walk_head_buffer(
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
         let mut unread_rows = 0_u32;
-        // One guarded copy per sixteen contiguous nodes, including native empty
-        // slots. All storage and the final shortened block are allocation-bounded.
         const BLOCK_NODES: usize = 16;
         let mut block = [0_u8; BLOCK_NODES * variable_hash_node::STRIDE];
         for index in 0..slots {
-            // The allocation includes every complete slot, including empty slots.
             let pointer = index
                 .checked_mul(variable_hash_node::STRIDE)
                 .and_then(|offset| storage.checked_add(offset))
@@ -646,9 +578,6 @@ fn walk_head_buffer(
             } else {
                 0
             };
-            // A heap key's terminator and the payload of a row that fits share
-            // one scattered read. When the arena must grow first, the
-            // terminator's verdict keeps its place ahead of that growth.
             let gathered = heap && required_bytes <= names.len();
             if heap && !gathered && read::<u8>(memory, terminator) != Some(0) {
                 return Err("variable name terminator invalid or unreadable");

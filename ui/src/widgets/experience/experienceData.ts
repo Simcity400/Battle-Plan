@@ -9,33 +9,25 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 
 export type ExperienceMeasure = 'banked' | 'gain' | 'change';
-/** The engine's fixed experience branches, not content categories. */
 export const BRANCHES = ['army', 'navy', 'air'] as const;
 export type ExperienceBranch = typeof BRANCHES[number];
 export const BRANCH_LABELS: Readonly<Record<ExperienceBranch, string>> = { army: 'Army', navy: 'Navy', air: 'Air' };
 export const MEASURE_LABELS: Readonly<Record<ExperienceMeasure, string>> = { banked: 'Banked', gain: 'Daily gain', change: 'Change per day' };
-/** The game's experience units in a point. */
 export const SCALE = 32_768;
 
 
 export const experienceMeasure = (options: Readonly<Record<string, OptionValue>>): ExperienceMeasure =>
   options.measure === 'gain' || options.measure === 'change' ? options.measure : 'banked';
-/** The branches shown: each whose toggle is on. */
 export const experienceBranches = (options: Readonly<Record<string, OptionValue>>): ExperienceBranch[] => BRANCHES.filter(branch => options[branch] !== false);
 
-/** The lines drawn, a country's branches in order: one country's in the branch colours, several countries' in each
- * country's colour (its dash then names the branch). */
 export function experienceLines(tags: readonly string[], branches: readonly ExperienceBranch[], single: boolean,
   countries: ReadonlyMap<string, string>, categories: readonly string[]): { tag: string; branch: ExperienceBranch; color: string }[] {
   return tags.flatMap(tag => branches.map(branch => ({ tag, branch,
     color: single ? categories[BRANCHES.indexOf(branch) % categories.length] : countries.get(tag) ?? categories[0] })));
 }
 
-/** A tile's summary in points, its head's value included: the tiles hold the game's units. */
 export const pointsSummary = (summary: ChartSummary): ChartSummary => scaleSummary(summary, 1 / SCALE);
 
-/** Each shown branch's lines drawn to the head at its followed values, in the game's units: row `n` of a branch's
- * answer is tag `n`'s, as its query reads them. The returned function stops them. */
 export function followExperienceHeads(entries: Readonly<Record<ExperienceBranch, Pick<FollowEntry, 'answer'> | null>>, tags: readonly string[],
   headOf: (branch: ExperienceBranch, tag: string) => string): () => void {
   const stops = BRANCHES.flatMap(branch => {
@@ -45,8 +37,6 @@ export function followExperienceHeads(entries: Readonly<Record<ExperienceBranch,
   return () => stops.forEach(stop => stop());
 }
 
-/** The declared series a line of the chosen measure and branch is read from: banked from the recorded table, change
- * and gain from the recorder's daily table. */
 export function experienceFamily(measure: ExperienceMeasure, branch: ExperienceBranch): { kind: string; measure: string } {
   if (measure === 'banked') return { kind: 'country-experience', measure: branch };
   return { kind: 'country-experience-daily', measure: `${branch}${measure === 'gain' ? 'Gain' : 'Change'}` };
@@ -67,14 +57,12 @@ export function validateExperienceReply(value: unknown): ExperienceReply {
   return reply;
 }
 
-/** Experience in points from the game's units, at most two decimals, a sign where it is a change. */
 export function formatExperience(raw: string | number, signed = false): string {
   const points = Number(raw) / SCALE;
   const text = points.toLocaleString('en-US', { maximumFractionDigits: 2 });
   return signed && points > 0 ? `+${text}` : text;
 }
 
-/** The card of one country's experience at an hour: each measure of the branch, or why it is not known. */
 export function experienceCard(reply: ExperienceReply, branch: ExperienceBranch): TooltipContent {
   const key = `${branch}Raw` as keyof ExperienceValues;
   const row = (label: string, held: ExperienceValues | null, missing: string | null, signed: boolean): TooltipRow =>
@@ -84,6 +72,5 @@ export function experienceCard(reply: ExperienceReply, branch: ExperienceBranch)
       row('Change per day', reply.change, reply.changeMissing, true)] };
 }
 
-/** What renders the card: a new daily read, or a value appearing or going. */
 export const experienceStructure = (reply: ExperienceReply) => JSON.stringify([reply.readHour, reply.banked, reply.change, reply.gain,
   reply.bankedMissing, reply.changeMissing, reply.gainMissing]);

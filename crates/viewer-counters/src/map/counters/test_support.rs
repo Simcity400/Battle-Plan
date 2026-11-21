@@ -1,10 +1,7 @@
-//! Existing marker reads for host engagement orchestration tests.
 pub use super::combat_markers::LandMarkers;
 use super::*;
 use viewer_foundation::engagement_history::{LAND, Provenance, combats, kept_frames};
 
-/// Kept frames read at one hour through the engaged index, as
-/// the hour table loader reads them for the land markers.
 pub fn kept_frames_at(history: &History, frame: &DecodedFrame) -> LandMarkers {
     use viewer_foundation::map::perspective::{Choice, Country};
     let links: BTreeMap<u32, u32> = (1..=4).map(|id| (id, id)).collect();

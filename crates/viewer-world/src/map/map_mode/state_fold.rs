@@ -118,7 +118,6 @@ impl SelectedStates {
         } else {
             "resistance"
         };
-        // Preserve the original table-demand/refusal order, including unused Countries.
         let _ = core::<tables::CountryLinks>(inputs.frame)?;
         let _ = core::<tables::Countries>(inputs.frame)?;
         let source = match complete::<tables::StateResistance>(inputs.frame, mode) {

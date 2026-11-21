@@ -1,5 +1,3 @@
-//! Political port-item tooltips.
-//! The item's update retains its metadata; it has no arrival query.
 
 use super::*;
 #[cfg(test)]
@@ -23,8 +21,6 @@ fn append_flag(
     }
 }
 
-/// The callback resolves the first live reference before any arm, then its
-/// generic summary rebuilds the live vector. A complete missing row is dangling.
 fn resolved(context: &Context<'_>, members: &[u64]) -> Result<Vec<u64>, String> {
     if members.is_empty() {
         return Ok(Vec::new());
@@ -57,8 +53,6 @@ pub(super) fn build(context: &Context<'_>, input: &Hover) -> Tooltip {
         }
         Ok(members) => members,
         Err(reason) => {
-            // A missing recording is unknown callback admission, not native
-            // false. Do not invent authored fallback over this uncertainty.
             refuse(&mut out, "port task force callback admission", reason);
             return out;
         }
@@ -84,7 +78,6 @@ pub(super) fn build(context: &Context<'_>, input: &Hover) -> Tooltip {
                 "port task force engagement",
                 "SHIP_ENGAGEMENT_MAP_ICON",
             );
-            // Unlike the at-sea callback, this description is the delayed body.
             if input.metadata.hold_fire == Some(true) {
                 super::append(
                     &mut out,
@@ -144,8 +137,6 @@ pub(super) fn build(context: &Context<'_>, input: &Hover) -> Tooltip {
     out
 }
 
-/// Port pride uses the metadata country, then the registered pride ship's
-/// current task force. It does not scan only this item's member force names.
 fn pride(context: &Context<'_>, metadata: &Metadata, out: &mut Tooltip) -> bool {
     if metadata.pride == Some(false) {
         return false;
@@ -332,7 +323,6 @@ mod tests {
         assert_eq!(metadata.hold_fire, Some(false));
         assert_eq!(metadata.idle, Some(true));
         assert_eq!(metadata.no_regions, Some(true));
-        // Unknown own inputs do not invalidate a known positive flag.
         let members = [members[2], member(true, 2, None)];
         let metadata = Metadata::from_members(&members, &[], 1, 100, Ok(false));
         assert_eq!(metadata.hold_fire, None);
@@ -570,7 +560,6 @@ mod tests {
             assert_eq!(text.title, "current navy: ship eleven");
             assert!(text.refused.is_empty());
         });
-        // Full-reference mismatch is a dangling native ship and falls through.
         test_put(
             &mut frame,
             TableRows::Ships(vec![ShipRow {

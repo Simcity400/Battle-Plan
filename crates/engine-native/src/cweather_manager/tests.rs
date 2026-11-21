@@ -345,7 +345,6 @@ fn weather_immutable_view_arithmetic_declines_without_changing_old_outcomes() {
     assert!(plain.immutable_view(0x1001, 4).is_none());
 }
 
-/// Records the address of every guarded read.
 struct Traced<'a> {
     inner: SliceMemory<'a>,
     reads: std::cell::RefCell<Vec<usize>>,
@@ -401,7 +400,6 @@ fn fixture() -> Vec<u8> {
             put(&mut bytes, row + 8, &index.to_le_bytes());
         }
     }
-    // Three display bytes per array: snow at 0x4f00, mud at 0x4f10.
     for (offset, data, values) in [
         (DISPLAY_SNOW, 0x4f00_u64, [0, 128, 255]),
         (DISPLAY_MUD, 0x4f10, [255, 0, 0]),
@@ -505,7 +503,6 @@ fn movement_weather_uses_authored_region_id_and_native_absence() {
         };
         assert_eq!(movement_modifiers(&memory, 0, 0x1000, province), Ok((0, 0)));
         if id == 3 {
-            // Both ids are past their counts: neither data pointer is read.
             let traced = Traced {
                 inner: memory,
                 reads: Default::default(),
@@ -731,7 +728,6 @@ fn movement_weather_original_count_failure_survives_other_region_selectors() {
             .count(),
         1
     );
-    // A later callback has its own first attempt, even at identical addresses.
     assert_eq!(
         Reader::new(&memory, 0, 0x1000)
             .unwrap()
@@ -770,7 +766,6 @@ fn movement_weather_original_data_failure_survives_admitted_region_selectors() {
         reader.movement_record(1, true),
         Err("movement weather field unreadable")
     );
-    // Native out-of-range/null bypasses the independently failed data word.
     assert_eq!(reader.movement_record(2, true), Ok(0));
     let reads = memory.reads.borrow();
     assert_eq!(reads.iter().filter(|&&at| at == address).count(), 1);

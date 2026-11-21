@@ -1,11 +1,3 @@
-//! River polylines and ribbons from the resolved river bitmap.
-//!
-//! [`trace`] and [`build`] produce CPU geometry; [`RiverPass`] uploads it and
-//! uses the recorded content's compiled shader. Tracing inspects neighbours in
-//! left/right/up/down order, clamping at bitmap edges. Body bytes 3 through 99
-//! carry per-point widths. Traces shorter than three points are diagnosed and
-//! dropped; meeting an already-traced river diagnoses a circular path and
-//! stops the walk. Both bulk background indices are excluded.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::map::textures::load_uploadable;
@@ -24,47 +16,26 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Palette index of a river source, the only index that seeds a trace.
 pub const SOURCE_INDEX: u8 = 0;
-/// Highest palette index the engine treats as a junction marker (`b < 3`).
 pub const JUNCTION_MAX_INDEX: u8 = 2;
-/// Lowest palette index that is a river body pixel.
 pub const BODY_MIN_INDEX: u8 = 3;
-/// Highest palette index that is a river body pixel.
-///
-/// River-body palette indices range from 3 through 99 inclusive.
 pub const BODY_MAX_INDEX: u8 = 99;
-/// Points a trace must reach to be kept; below it the engine logs "Too small river found at " and
-/// drops the river.
 pub const MIN_RIVER_POINTS: usize = 3;
 
-/// `RIVER_FADE_FROM` (`00_graphics.lua`): distance from an ending at which the end fade starts.
 pub const RIVER_FADE_FROM: f32 = 20.0;
-/// RIVER_FADE_TO: distance from an ending at which it is fully faded.
 pub const RIVER_FADE_TO: f32 = 3.0;
 
-/// Ribbon width in world units at palette index 0, the intercept of [`width_for_index`].
-///
-/// River vertices pair the left and right rails, with two float4 attributes and a 32-byte stride.
-/// Palette index controls ribbon width.
-///
-/// Compute half-width in double precision from palette and float base, narrow to f32, then cap by
-/// endpoint index.
 pub const WIDTH_BASE: f32 = 0.60;
-/// World units of ribbon width per palette index; see [`WIDTH_BASE`].
 pub const WIDTH_PER_INDEX: f64 = 0.17;
 
-/// Full body width, preserving the native double multiply and float intercept.
 pub fn width_for_index(index: u8) -> f32 {
     (f64::from(index) * (WIDTH_PER_INDEX / 2.0) + f64::from(WIDTH_BASE / 2.0)) as f32 * 2.0
 }
 
-/// Whether a palette index is a river body pixel the walk may step onto.
 pub fn is_body(index: u8) -> bool {
     (BODY_MIN_INDEX..=BODY_MAX_INDEX).contains(&index)
 }
 
-/// `map/rivers.bmp` as the loaders return it: one palette index per pixel, rows top-left first.
 #[derive(Clone, Copy, Debug)]
 pub struct RiverImage<'a> {
     pub width: u32,
@@ -73,7 +44,6 @@ pub struct RiverImage<'a> {
 }
 
 impl RiverImage<'_> {
-    /// Checks the index count matches the declared dimensions.
     pub fn validate(&self) -> io::Result<()> {
         if self.width == 0 || self.height == 0 {
             return Err(invalid("the river bitmap needs a nonzero width and height"));
@@ -104,61 +74,38 @@ impl RiverImage<'_> {
     }
 }
 
-/// What seeded a walk: a source pixel, or a junction marker with its palette index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Seed {
-    /// Palette index 0.
     Source,
-    /// Palette index 1 or 2, carried as the walk's initial width parameter.
     Junction(u8),
 }
 
-/// One traced river: the pixel walk, with the palette index under each point.
-///
-/// `points` are world `(x, z)` on pixel centres and `widths[i]` is the palette index the engine
-/// carried into point `i`. The two are always the same length. A river never closes: the walk stops
-/// when it meets a pixel it has already traced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct River {
     pub points: Vec<[f32; 2]>,
     pub widths: Vec<u8>,
     pub seed: Seed,
-    /// The seeding pixel, in bitmap coordinates.
     pub seed_pixel: [u32; 2],
 }
 
-/// A river the engine would have reported, in the bitmap coordinates its message prints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reported {
     pub x: u32,
     pub y: u32,
-    /// Points the walk produced.
     pub points: u32,
 }
 
-/// Everything [`trace`] found, including what the engine logs and drops.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trace {
-    /// Rivers of at least [`MIN_RIVER_POINTS`] points, in the order the engine traces them.
     pub rivers: Vec<River>,
-    /// Walks the engine logs as "Too small river found at " and drops.
     pub too_small: Vec<Reported>,
-    /// Walks that met an already-traced river; the engine logs "Circular river found at " and stops
-    /// the walk there, keeping whatever it had.
     pub circular: Vec<Reported>,
-    /// Junction markers seen, and how many of them seeded a walk.
     pub junctions: u32,
     pub junctions_used: u32,
-    /// Source pixels seen.
     pub sources: u32,
-    /// Body pixels no walk ever reached. The engine does not report these; they are counted here
-    /// because a river the viewer never draws is a visible difference from the game.
     pub unreachable: u32,
 }
 
-/// The four neighbours the engine examines, in its own order, each clamped into the bitmap.
-///
-/// Clamp neighbour x/y to the bitmap. River paths stop at the horizontal seam instead of wrapping.
 fn neighbours(x: u32, y: u32, width: u32, height: u32) -> [(u32, u32); 4] {
     let clamp = |value: i64, limit: u32| value.clamp(0, i64::from(limit) - 1) as u32;
     let (ix, iy) = (i64::from(x), i64::from(y));
@@ -170,19 +117,6 @@ fn neighbours(x: u32, y: u32, width: u32, height: u32) -> [(u32, u32); 4] {
     ]
 }
 
-/// One ordered river walk.
-///
-/// Returns the pixel a circular river was detected at, if any.
-///
-/// The walk is greedy and never branches: at each step it takes the first of the four neighbours
-/// that is a body pixel, is not the pixel it came from, and has not been traced yet. Where a river
-/// forks, the neighbour order decides which arm is followed and the other arm is left for the
-/// junction pass. A neighbour that has been traced is skipped while the carried width parameter is
-/// still a seed value (0, 1 or 2) — that is how a junction walk steps past the stream it was
-/// stitched onto — and reported as circular once the walk is on the river proper.
-///
-/// The native bitmap is bottom-up: its -y neighbour is the next row of this top-down image.
-/// Rejected traced neighbours update the remembered previous pixel too.
 fn walk(
     image: &RiverImage<'_>,
     visited: &mut [bool],
@@ -191,11 +125,8 @@ fn walk(
     river: &mut River,
 ) -> Option<(u32, u32)> {
     let (x, y) = seed_pixel;
-    // Width parameter carried onto the next appended point.
     let mut carried = seed_index;
     if seed_index != SOURCE_INDEX {
-        // A junction walk starts on the stream it joins, so the ribbon reaches the water it flows
-        // into instead of stopping a pixel short of it.
         for (nx, ny) in neighbours(x, y, image.width, image.height) {
             if (nx, ny) == (x, y) {
                 continue;
@@ -212,8 +143,6 @@ fn walk(
     }
     river.points.push(point(image, x, y));
     river.widths.push(carried);
-    // The seed value gates circular-path reporting until the first body pixel is taken; the carried
-    // width does not.
     let mut guard = seed_index;
     let (mut previous, mut current) = ((x, y), (x, y));
     loop {
@@ -254,14 +183,6 @@ fn point(image: &RiverImage<'_>, x: u32, y: u32) -> [f32; 2] {
     [wx, wz]
 }
 
-/// Trace every river in the resolved river bitmap.
-///
-/// Two passes, as the engine has. The first walks from every source pixel in bitmap order and
-/// collects the junction markers; the second repeatedly walks from those junction markers that now
-/// touch a traced pixel, until none is left that does. The repetition is what lets a tributary of a
-/// tributary reach the sea: a junction can only be walked once the stream it joins has been.
-///
-/// Errors are named `InvalidData` for a bitmap whose index count does not match its dimensions.
 pub fn trace(image: &RiverImage<'_>) -> io::Result<Trace> {
     image.validate()?;
     let mut visited = vec![false; image.indices.len()];
@@ -282,7 +203,6 @@ pub fn trace(image: &RiverImage<'_>) -> io::Result<Trace> {
             }
         }
     }
-    // Sort junction palette values in ascending order.
     sort_junctions(&mut junctions);
     let mut done = vec![false; junctions.len()];
     loop {
@@ -320,8 +240,6 @@ pub fn trace(image: &RiverImage<'_>) -> io::Result<Trace> {
     Ok(trace)
 }
 
-/// Median partition and insertion sort preserve equal-key junction order for overlapping ribbons.
-/// Only keys one and two enter this sort; the general heapsort fallback is unreachable.
 fn sort_junctions(items: &mut [(u32, u32, u8)]) {
     let count = items.len();
     if count <= 32 {
@@ -417,7 +335,6 @@ fn median_junction(items: &mut [(u32, u32, u8)], first: usize, mid: usize, last:
     }
 }
 
-/// One walk plus the engine's two reports, before the length test.
 struct Walked {
     river: River,
     circular: Option<(u32, u32)>,
@@ -457,20 +374,6 @@ fn keep(trace: &mut Trace, walked: Walked) {
     trace.rivers.push(river);
 }
 
-/// One ribbon vertex, in `river.shader`'s `VS_INPUT` layout.
-///
-/// `position.xyz` is world position; `position.w` carries the one-ended transparency fade.
-/// `uv_tangent.zw` carries the 2D flow tangent. The texture coordinates use this order:
-///
-/// * `uv_tangent.x` runs across the ribbon from zero on one rail to one on the other. The shader
-///   maps it to its second texture axis, mirrors the lower half around the centre and folds both
-///   halves onto the bank profile.
-/// * `uv_tangent.y` is the integer trace-point index. Smoothing changes geometric spacing while
-///   preserving point count; this coordinate keeps the along-flow texture increment at one per
-///   point before the shader applies its scale.
-///
-/// The point index also selects the first point for the endpoint profile. Transparency remains
-/// independent in `position.w`; see [`ribbon`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RiverVertex {
@@ -478,27 +381,17 @@ pub struct RiverVertex {
     pub uv_tangent: [f32; 4],
 }
 
-/// The finished ribbon geometry: one vertex buffer over every river, and its index lists and flow
-/// runs at the fine level and at the coarse level ([`super::line_lod`]).
-///
-/// Each ribbon's fine vertices are followed by its coarse ones, if it has any: a ribbon whose
-/// coarse level would keep more than [`COARSE_KEEPS_AT_MOST`] of its points draws its fine quads
-/// at both levels.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RiverMesh {
     pub vertices: Vec<RiverVertex>,
     pub indices: Vec<u32>,
-    /// Ribbons the mesh holds, one per traced river.
     pub ribbons: usize,
     pub runs: Vec<super::river_shader::Run>,
     pub coarse_indices: Vec<u32>,
     pub coarse_runs: Vec<super::river_shader::Run>,
 }
 
-/// How far a coarse ribbon's fade may stand off the fine one's.
 const COARSE_ALPHA_TOLERANCE: f32 = 1.0 / 32.0;
-/// The largest share of a ribbon's points its own coarse level may keep: past it, the vertices it
-/// would add cost more than the triangles it would save.
 const COARSE_KEEPS_AT_MOST: f32 = 0.8;
 
 impl RiverMesh {
@@ -507,13 +400,6 @@ impl RiverMesh {
     }
 }
 
-/// Traces `map/rivers.bmp` and widens every river into a ribbon.
-///
-/// Heights use the native bilinear sampler, without water-plane clamping (B = 0).
-/// The strip's +0.5 offset cancels the sampler's -0.5 texel-centre adjustment.
-///
-/// Errors are named `InvalidData` for a bitmap or height field whose sample count does not match
-/// its dimensions, or for a height field of a different size than the river bitmap.
 pub fn build(image: &RiverImage<'_>, heights: &HeightField<'_>) -> io::Result<(RiverMesh, Trace)> {
     heights.validate()?;
     if heights.width != image.width || heights.height != image.height {
@@ -530,7 +416,6 @@ pub fn build(image: &RiverImage<'_>, heights: &HeightField<'_>) -> io::Result<(R
     Ok((mesh, trace))
 }
 
-/// Apply one forward in-place five-point mean, leaving two points at each end.
 fn smooth_river(points: &mut [[f32; 2]]) {
     for i in 2..points.len().saturating_sub(2) {
         points[i] = std::array::from_fn(|axis| {
@@ -544,10 +429,7 @@ fn smooth_river(points: &mut [[f32; 2]]) {
     }
 }
 
-/// Clamp the integer cell, retain fractional offsets, bilinearly interpolate height bytes and scale
-/// by .1f.
 fn river_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
-    // Preserve both operations: their float rounding survives near the map edges.
     let x = (x + 0.5) - 0.5;
     let z = (z + 0.5) - 0.5;
     let ix = (x as i32).clamp(0, heights.width.saturating_sub(2) as i32);
@@ -567,8 +449,6 @@ fn river_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     ((high - low) * fz + low) * 0.1
 }
 
-/// Appends the quads of a ribbon of `count` points from vertex `base`, and extends the last flow run
-/// when it flows the same way.
 fn quads(
     indices: &mut Vec<u32>,
     runs: &mut Vec<super::river_shader::Run>,
@@ -592,10 +472,6 @@ fn quads(
     }
 }
 
-/// Sources taper/fade at the first point; junction
-/// walks taper/fade at their far end. Fade distances accumulate the lengths of the *unnormalized
-/// centred tangents*, including the current point, in double precision. The last pair reuses
-/// the preceding offset/tangent, with alpha 1 for sources and 0 for junctions.
 fn ribbon(river: &River, heights: &HeightField<'_>, mesh: &mut RiverMesh) {
     let mut points = river.points.clone();
     smooth_river(&mut points);
@@ -627,7 +503,6 @@ fn ribbon(river: &River, heights: &HeightField<'_>, mesh: &mut RiverMesh) {
         })
         .collect();
     alphas.push(f32::from(!junction));
-    // Pack group as twice the wave index plus palette index, then select its parity.
     let direction = match river.seed {
         Seed::Junction(value) if value & 1 != 0 => 1.0,
         _ => -1.0,
@@ -649,7 +524,6 @@ fn ribbon(river: &River, heights: &HeightField<'_>, mesh: &mut RiverMesh) {
     mesh.ribbons += 1;
 }
 
-/// A ribbon point's flow tangent and the offset of its rails from it.
 #[derive(Clone, Copy, Debug)]
 struct Frame {
     tangent: [f32; 2],
@@ -665,8 +539,6 @@ fn rail(point: [f32; 2], offset: [f32; 2], sign: f32) -> [f32; 2] {
     [point[0] + offset[0] * sign, point[1] + offset[1] * sign]
 }
 
-/// The frame of each of the points `kept` (ascending) at its own half width, its tangent from the
-/// kept points either side of it; the last reuses the tangent before it.
 fn frames(points: &[[f32; 2]], halves: &[f32], kept: &[usize]) -> Vec<Frame> {
     let mut frames: Vec<Frame> = Vec::with_capacity(kept.len());
     for (at, &index) in kept.iter().enumerate() {
@@ -692,7 +564,6 @@ fn frames(points: &[[f32; 2]], halves: &[f32], kept: &[usize]) -> Vec<Frame> {
     frames
 }
 
-/// Appends the two rail vertices of each of the points `kept`, each keeping its point index.
 fn push_rails(
     points: &[[f32; 2]],
     kept: &[usize],
@@ -712,14 +583,6 @@ fn push_rails(
     }
 }
 
-/// The points of one ribbon its coarse level keeps, and their frames.
-///
-/// [`line_lod::simplify`] keeps every point whose centre and width stand off the line by more than
-/// [`line_lod::TOLERANCE`], its height by more than [`line_lod::HEIGHT_TOLERANCE`] or its fade by
-/// more than [`COARSE_ALPHA_TOLERANCE`]. A kept point's tangent comes from its coarse neighbours,
-/// so more are kept until both coarse rails stand within the tolerance of the fine ones: a kept
-/// vertex off its fine vertex keeps the point's two neighbours, which give it the fine tangent, and
-/// a fine vertex off the coarse rail beside it keeps the worst such point of the span.
 fn coarse_points(
     points: &[[f32; 2]],
     halves: &[f32],
@@ -754,7 +617,6 @@ fn coarse_points(
             let Some(&next) = kept.get(at + 1) else {
                 continue;
             };
-            // A point kept for the rails splits a span, so its dropped points are measured again.
             let mut scalar = (1.0, None);
             let mut worst = (TOLERANCE, None);
             for dropped in index + 1..next {
@@ -771,7 +633,6 @@ fn coarse_points(
                     if off > worst.0 {
                         worst = (off, Some(dropped));
                     }
-                    // The fade is drawn along each rail, so it is measured at the rail's own place too.
                     let fade = (alphas[dropped] - lerp(alphas[index], alphas[next], t)).abs() / COARSE_ALPHA_TOLERANCE;
                     if fade > scalar.0 {
                         scalar = (fade, Some(dropped));
@@ -790,23 +651,15 @@ fn coarse_points(
     }
 }
 
-// ------------------------------------------------------------------ the GPU pass
 
-/// The three `map/terrain/RiverSurface_*` textures, decoded but not uploaded.
 pub struct RiverAssets {
     pub shader: Arc<shader_pipeline::library::Effect>,
-    /// Quality-selected `RiverSurface_diffuse_*.dds`, the bank strip: `u` along the flow, `v` bank to centre.
     pub diffuse: dds::Texture,
-    /// Quality-selected `RiverSurface_normal_*.dds`, the bank strip's normal map.
     pub normal: dds::Texture,
-    /// `RiverSurface_masks.dds`, the `RiverData` sampler: blue is the bank blend and red the
-    /// opacity. It carries no quality suffix.
     pub masks: dds::Texture,
 }
 
 impl RiverAssets {
-    /// Reads the three textures through the presentation layers, so a selected visual mod's
-    /// river surface replaces them. Recorded map content is hash-verified.
     pub fn load(
         layers: &ResolvedLayers,
         map: [u32; 2],
@@ -834,13 +687,11 @@ impl RiverAssets {
     }
 }
 
-/// The GPU river pass.
 pub struct RiverPass {
     effect: Arc<shader_pipeline::library::Effect>,
     compiled: RefCell<BTreeMap<bool, Result<super::river_shader::River, String>>>,
     samples: u32,
     format: wgpu::TextureFormat,
-    /// The fine level's runs, then the coarse level's, over the one vertex and index buffer.
     runs: Vec<super::river_shader::Run>,
     coarse_runs: Vec<super::river_shader::Run>,
     diffuse: Bound,
@@ -851,8 +702,6 @@ pub struct RiverPass {
 }
 
 impl RiverPass {
-    /// How the program built for `high` reads the shadow screen buffer by texel
-    /// ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self, high: bool, visit: &mut dyn FnMut(&str)) {
         if let Some(Ok(river)) = self.compiled.borrow().get(&high)
             && let Some(reads) = &river.texel_reads
@@ -861,7 +710,6 @@ impl RiverPass {
         }
     }
 
-    /// Builds the pipeline and uploads the three river surface textures.
     pub fn new(
         device: &wgpu::Device,
         samples: u32,
@@ -902,8 +750,6 @@ impl RiverPass {
         })
     }
 
-    /// Uploads the ribbon geometry, the coarse level's indices after the fine level's. Called once
-    /// per document: the mesh depends only on content.
     pub fn upload(&mut self, device: &wgpu::Device, mesh: &RiverMesh) -> io::Result<()> {
         self.runs.clone_from(&mesh.runs);
         let index_base = mesh.indices.len() as u32;
@@ -940,7 +786,6 @@ impl RiverPass {
         [&self.diffuse.view, &self.normal.view, &self.masks.view]
     }
 
-    /// Compiles the pipeline frames at `high` draw with, so they compile nothing.
     pub fn warm(&self, device: &wgpu::Device, high: bool) {
         if let std::collections::btree_map::Entry::Vacant(entry) =
             self.compiled.borrow_mut().entry(high)

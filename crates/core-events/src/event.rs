@@ -114,7 +114,6 @@ pub enum Event<'a> {
         table: TableId,
         key: Key<'a>,
         slot: usize,
-        // Pinned at the delivered call's hour, after that hour's events.
         fields: RowView<'a>,
         source: Appearance,
     },
@@ -158,7 +157,6 @@ pub enum Event<'a> {
         observation: ObservationId,
     },
     Discontinuity(Discontinuity<'a>),
-    // Net membership from the hour's start to its settled end, including composed and status changes.
     Joined {
         cause: MembershipCause<'a>,
         relation: RelationId,
@@ -226,7 +224,6 @@ pub enum EventOrder<'a> {
 }
 
 impl<'a> Event<'a> {
-    // Equal keys denote the same hourly event identity; no external sequence is needed.
     pub fn order(&self) -> EventOrder<'a> {
         match *self {
             Self::Discontinuity(value) => EventOrder::Discontinuity(value),

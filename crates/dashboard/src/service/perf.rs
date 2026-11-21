@@ -1,4 +1,3 @@
-//! Opt-in request timings for a measurement run. Nothing is timed until a host installs a sink.
 
 use super::Lane;
 use std::{
@@ -9,29 +8,20 @@ use std::{
     time::Instant,
 };
 
-/// One request's path through the service, in milliseconds.
 pub struct Timing<'a> {
     pub id: &'a str,
-    /// The lane that last queued it.
     pub lane: Option<&'static str>,
-    /// `ok` (last fragment handed to the host), `cancelled` or `error`.
     pub outcome: &'static str,
-    /// Waiting in its lane's queue.
     pub queue_ms: Option<f64>,
-    /// Running on a loader.
     pub compute_ms: Option<f64>,
-    /// From the finished result until its last fragment was handed to the host.
     pub deliver_ms: Option<f64>,
-    /// From admission until the request ended.
     pub total_ms: f64,
-    /// The reply JSON's length.
     pub bytes: Option<u64>,
 }
 
 type Sink = Box<dyn Fn(Timing<'_>) + Send + Sync>;
 static SINK: OnceLock<Sink> = OnceLock::new();
 
-/// Times every later request and hands each to `sink` as it ends; false if one was installed.
 pub fn install(sink: Sink) -> bool {
     SINK.set(sink).is_ok()
 }
@@ -43,7 +33,6 @@ pub(super) fn enabled() -> bool {
 
 const UNSET: u64 = u64::MAX;
 
-/// Nanoseconds after admission, [`UNSET`] until stamped.
 pub(super) struct RequestTiming {
     admitted: Instant,
     lane: AtomicU8,

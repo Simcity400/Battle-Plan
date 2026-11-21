@@ -1,5 +1,3 @@
-//! Synthetic allocation denial and per-call timing shared by collector tests.
-
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -9,25 +7,18 @@ use std::{
 
 pub struct FailingAllocator;
 
-// Only the prepared-buffer child interval denies allocations. Fixed controls,
-// paths, thread creation and recovery run outside that accepted boundary.
-// Each test thread owns its interval and counts: tests run in parallel, and
-// one test's guard must neither take, end nor reset another's.
 thread_local! {
     static ORDINAL: Cell<Option<usize>> = const { Cell::new(None) };
     static ATTEMPT: Cell<usize> = const { Cell::new(0) };
     static DENIED: Cell<usize> = const { Cell::new(0) };
 }
-/// The calling thread's count from its latest [`NullGuard`].
 pub struct Count(&'static std::thread::LocalKey<Cell<usize>>);
 impl Count {
     pub fn load(&self, _: Ordering) -> usize {
         self.0.with(Cell::get)
     }
 }
-/// Allocation attempts on this thread since its latest guard began.
 pub static ATTEMPTS: Count = Count(&ATTEMPT);
-/// Of those, the attempts denied.
 pub static DENIALS: Count = Count(&DENIED);
 pub fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
     let guard = NullGuard::new(1);
@@ -92,8 +83,6 @@ impl Drop for NullGuard {
     }
 }
 
-/// Release benches: the median nanoseconds per call over seven timed rounds,
-/// after one warm-up round. Each `round` makes `calls` calls.
 pub fn per_call_ns(calls: usize, mut round: impl FnMut()) -> f64 {
     round();
     let mut times: Vec<f64> = (0..7)
@@ -106,13 +95,12 @@ pub fn per_call_ns(calls: usize, mut round: impl FnMut()) -> f64 {
     times.sort_by(f64::total_cmp);
     times[3]
 }
-/// Reserve the original test-thread stack before the harness starts.
-///
-/// # Safety
-/// Call only from a test executable CRT initializer, before other threads run.
+#[doc = " Reserve the original test-thread stack before the harness starts."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " Call only from a test executable CRT initializer, before other threads run."]
 pub unsafe extern "C" fn reserve_test_stack() {
     if std::env::var_os("RUST_MIN_STACK").is_none() {
-        // SAFETY: CRT initialisers run before main, while this is the only thread.
         unsafe { std::env::set_var("RUST_MIN_STACK", "33554432") };
     }
 }

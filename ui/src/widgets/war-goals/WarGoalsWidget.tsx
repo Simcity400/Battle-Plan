@@ -30,7 +30,6 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   const hour = window ? Math.floor(window.lastHour) : null;
   const tag = track ? selectedCountryKeys(widget.countries, track)[0] ?? null : null;
   const root = useRef<HTMLDivElement | null>(null);
-  // Each push writes the completion dates, which move with the hour, into the page: never a render.
   const paintCompletions = useCallback((reply: WargoalsReply) => {
     for (const entry of reply.justifications) {
       const node = root.current?.querySelector<HTMLElement>(`[data-completion="${entry.id}"]`);
@@ -38,8 +37,6 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
       if (node && node.textContent !== text) node.textContent = text;
     }
   }, []);
-  // Pushed at the head while following, rendering only when the goals or their terms change; the last goals stay shown,
-  // labelled with their own hour, until the next.
   const product = useHeadProduct(runtime, widget, 'wargoals', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateWargoalsReply, structure: wargoalStructure, paint: paintCompletions });
   const data = answersKey(product.data?.asked, tag) && product.data?.branchId === track?.branch.id ? product.data : null;
@@ -47,7 +44,6 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   const following = widget.time.mode === 'follow' && product.read === 'followed';
   const axisOffset = track?.axisOffset ?? 0;
   useShownEachFrame(clock, () => data ? product.shownAt() : null, product.live);
-  // Progress is the live cell: painted each frame from the followed value, with its share and bar.
   const live = product.live;
   useLayoutEffect(() => {
     const paint = () => {
@@ -70,7 +66,6 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
     paint();
     return live.subscribe(paint);
   });
-  // The days left to each goal's expiry move with the head: painted from the clock while following.
   const expiries = useMemo(() => liveTexts(clock, () => following ? Math.floor(clock.getSnapshot().position + axisOffset) : at,
     now => new Map((data?.goals ?? []).flatMap(goal => goal.expires == null ? [] : [[goal.handle, expiryText(goal.expires, now)] as const]))),
   [clock, following, axisOffset, at, data]);
@@ -102,7 +97,7 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
       <span><b>{usNumber.format(data.goals.length)}</b> {data.goals.length === 1 ? 'war goal' : 'war goals'}</span>
       {atWar > 0 && <span><b>{usNumber.format(atWar)}</b> against countries at war</span>}
       <span><b>{usNumber.format(data.justifications.length)}</b> being justified</span>
-      {/* A held snapshot says which day it shows while the newer one loads. */}
+      { }
       {product.read !== 'followed' && product.at !== null && product.at !== hour && <span className="war-goals-asof">As of {dayLabel(product.at)}; {dayLabel(hour)} still loading</span>}
     </div>
     <Section title="Owned goals" count={data.goals.length} empty="No owned war goals.">

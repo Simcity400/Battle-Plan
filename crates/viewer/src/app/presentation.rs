@@ -1,8 +1,6 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-/// CPU-side presentation point of a successfully submitted map frame, not a
-/// GPU completion or scanout timestamp. Sampling never follows the log writer.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ShownStamp {
     ns: u128,
@@ -20,8 +18,6 @@ impl std::fmt::Display for ShownStamp {
     }
 }
 
-/// PROFILE-only monotonic time and the drawn picture, never the playhead.
-/// The independent process-local origin is shared by every map in this process.
 pub(super) fn shown_stamp(
     enabled: bool,
     shown: impl FnOnce() -> (replay_data::BranchId, replay_data::Hour),

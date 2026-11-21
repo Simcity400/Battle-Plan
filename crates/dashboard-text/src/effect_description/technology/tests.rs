@@ -16,8 +16,6 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/technologies/synthetic.txt",
-            // leaves a leading limit's last value in the shared slot.
-            // Empty inline limits keep `{`; external limits supply the gate.
             concat!(
                 "technology_folders={ignored_folder={}} technology_categories={mod_category mod_other} technologies={",
                 "mod_tech={parent=mod_parent enable_equipments={mod_equipment}} mod_small={parent=mod_parent force_use_small_tech_layout=yes enable_equipments={mod_equipment}} ",
@@ -33,7 +31,6 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/units/equipment/synthetic.txt",
-            // attaches a block's limit to every module in that block.
             "equipments={mod_equipment={is_archetype=yes type=infantry}} equipment_modules={limit={always=yes} mod_module={allowed={tag=AAA}} mod_second_module={allowed={always=yes}}} equipment_modules={limit={always=no} mod_denied_module={allowed={always=yes}}}",
         ),
         (
@@ -495,7 +492,6 @@ fn render_raid(fixture: &Fixture) -> Description {
         },
         EventScope::of(EventObject::Raid(RAID)),
     ]);
-    // victim_effects enters target_state first.
     let items = installed_content_core::effect_keys::read_body(
         b"raid_reduce_project_progress_ratio=0.03",
         content.key_names.unwrap(),
@@ -522,7 +518,7 @@ fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
     if let TableView::Complete(TableRows::RaidFacilities(rows)) =
         &mut *fixture.frame.tables[TableId::RaidFacilities.index()]
     {
-        rows[0].active_project = None; // Province 2 is first in native content order.
+        rows[0].active_project = None;
     }
     let output = render_raid(&fixture);
     assert_eq!(output.text, "");
@@ -566,8 +562,6 @@ fn technology_catalogue_is_cached_once_per_stack() {
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
-// tech_effect pipes omit prose, timing and requirements.
-// Callback flags omit prose, time, prerequisites and debug-only AI detail.
 #[test]
 fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -600,7 +594,6 @@ fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
             "Modules:\u{11}HZero module\u{11}!, \u{11}HZero second\u{11}!\n",
             "Buildings:\u{11}HLab\u{11}! (Level 5)\n",
             "Subunits:\u{11}HAlpha unit\u{11}!\n",
-            // appends the effect body verbatim, then one LF.
             "Complete AAA/AAA\n",
             "Tactics:\u{11}HAlpha tactic\u{11}!\n",
             "Modifier [Root.GetTag]\n"

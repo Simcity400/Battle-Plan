@@ -1,14 +1,3 @@
-//! Live registry and content-demand capture sizing.
-//!
-//! Tables with one (or a fixed few) rows per country slot are sized from the
-//! live country registry instead of a vanilla-sized default, so the first hour
-//! of a campaign with tens of thousands of countries is not truncated. The
-//! registry is read once before the hook is installed and again by the spool
-//! thread while it idles, which sees a save load (the game rebuilds the
-//! registry during reset) before its first hourly tick. Allocation
-//! stays off the game thread. Capacities only ever rise; the ordinary
-//! worker acquisitions grow from their original observations for populations
-//! that can change between sizing polls.
 
 pub use crate::country_slots::{census_rows, note_slots, raise, reserve_census, rows};
 use crate::{extended, map_capture::MapCapacities, sampling};
@@ -21,11 +10,6 @@ pub(crate) use table_demand::presize as presize_table_inputs;
 
 pub(crate) use collector_extended_support::demand::{demand_air_game_state, demand_game_state};
 
-/// Tests that raise the registry, carrier or wing-name hints, or measure
-/// buffers they size, hold this so a parallel test cannot move them
-/// mid-measurement. The hints only rise within an attachment (each DLL load
-/// starts at zero), so every holder starts from a fresh attachment's hints:
-/// an earlier test's 5,000-country hint must not size a later test's storage.
 #[cfg(test)]
 pub(crate) fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
     let guard = crate::country_slots::hint_guard();
@@ -36,26 +20,15 @@ pub(crate) fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-/// The engine's own ceiling on canonical country slots. The supply system stores
-/// the controller and capital slots of every province as u16, and the AI
-/// volunteer code indexes the country registry with a u16, so a slot at or
-/// above 65,536 cannot work in the game.
-/// A larger registry count is treated as a torn read of the sizing hint, not
-/// as a limit on recorded data: tables still grow past it on demand.
 pub const ENGINE_SLOT_CEILING: usize = 1 << 16;
 
-/// Smallest country authentication cache; vanilla fits in it.
 pub const MIN_COUNTRY_CELLS: usize = 8192;
 
-/// Live country slots (the largest of the country, link and tag registries),
-/// or `None` when no consistent registry is readable.
 pub fn observe(memory: &impl Memory, base: usize) -> Option<usize> {
     let slots = cgame_state::read_country_registry_size(memory, base)?.slots();
     (slots <= ENGINE_SLOT_CEILING).then_some(slots)
 }
 
-/// Live saved-global row/name demand from the same bounded capture walk.
-/// Off-thread only; the empty output sizes strings without probing objects.
 pub fn observe_saved_targets(
     memory: &impl Memory,
     base: usize,
@@ -67,8 +40,6 @@ pub fn observe_saved_targets(
         .map(Some)
         .ok_or("saved target sizing demand unreadable or invalid")
 }
-/// Off-thread live fleet/first-site/wing header demand for all score buffers.
-/// These are capacity hints, never captured operands or completeness witnesses.
 pub fn observe_game_score(
     memory: &impl Memory,
     base: usize,
@@ -82,8 +53,6 @@ pub fn observe_game_score(
     }
 }
 
-/// Live dense CountryIntel record total, or `None` without a game state.
-/// Failed header hints retain their reason; nothing observed is recorded.
 pub fn observe_country_intel(
     memory: &impl Memory,
     base: usize,
@@ -93,7 +62,6 @@ pub fn observe_country_intel(
     };
     let rows = engine_native::ccountry_intel::native_rows(memory, base, state)
         .ok_or("country intel sizing census unreadable or invalid")?;
-    // The vectors retain their own counts, not the square of the registry size.
     Ok(Some(rows))
 }
 
@@ -103,8 +71,6 @@ pub(crate) struct AceNamesDemand {
     pub ace_bytes: usize,
 }
 
-/// Off-thread full ace roster/string-header demand, including the independent
-/// selected definition and retained portrait operands. Values are never reused.
 pub(crate) fn observe_ace_names(
     memory: &impl Memory,
     base: usize,
@@ -161,8 +127,6 @@ pub(crate) fn carrier_demand() -> engine_native::cair_base::CarrierDemand {
     }
 }
 
-/// Live hints only raise idle storage. Failed observations retain earlier
-/// floors; a callback must still acquire all fields from its current world.
 pub(crate) fn note_carrier_demand(demand: engine_native::cair_base::CarrierDemand) -> bool {
     let mut changed = false;
     for (hint, count) in CARRIER_HINT.iter().zip([
@@ -192,7 +156,6 @@ pub(crate) fn note_air_wing_name_bytes(bytes: usize) {
     AIR_WING_NAME_BYTES.fetch_max(bytes, Ordering::Relaxed);
 }
 
-/// The shared authenticated wing census sizes stored names without copying text.
 pub fn observe_air_wing_names(
     memory: &impl Memory,
     base: usize,
@@ -215,8 +178,6 @@ pub fn observe_railway_gun_names(
     engine_railways::railway_gun_counter_inputs::name_demand(memory, base, state).map(Some)
 }
 
-/// Independent off-thread capacity hints. Failed operands retain their reason;
-/// none of these observations admits recorded data or supplies a zero value.
 pub(crate) struct MapDemand {
     pub states: Result<usize, &'static str>,
     pub provinces: Result<usize, &'static str>,
@@ -239,8 +200,6 @@ impl MapDemand {
     }
 }
 
-/// The province census's slot count, including the reserved zero slot; the
-/// Provinces rows and the division movement geometry size from it.
 fn province_slots(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
     let root = state
         .checked_add(cgame_state::PROVINCES)
@@ -252,8 +211,6 @@ fn province_slots(memory: &impl Memory, state: usize) -> Result<usize, &'static 
     Ok(root.count as usize)
 }
 
-/// Presize the map-wide tables and the physical navy pass. The singleton is the only shared gate: a failed census cannot
-/// discard an independently readable States/province/region header floor.
 pub(crate) fn observe_map(
     memory: &impl Memory,
     base: usize,
@@ -277,9 +234,6 @@ pub(crate) fn observe_map(
     }))
 }
 
-/// Only the shared army census and its presentation headers. Off-hour
-/// observations size the pooled buffers before acquisition; they never
-/// provide captured values or suppress a later guarded failure.
 pub fn observe_presentation_census(
     memory: &impl Memory,
     base: usize,
@@ -290,8 +244,6 @@ pub fn observe_presentation_census(
     engine_native::carmy::presentation_demand(memory, base, state).map(Some)
 }
 
-/// Exact live header demand for the common output log, including the separate
-/// Rocket roster. A failed hint is counted but never poisons captured payloads.
 pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<usize> {
     let observe = || {
         let Some(state) = demand_game_state(memory, base)? else {
@@ -307,7 +259,6 @@ pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<us
         }
     }
 }
-/// Shared count-only land details with mutable-header consistency checks.
 pub fn observe_land_details(
     memory: &impl Memory,
     base: usize,
@@ -317,7 +268,6 @@ pub fn observe_land_details(
     };
     engine_native::cland_combat::detail_demand(memory, base, state).map(Some)
 }
-/// The naval combat details' live header demand.
 pub fn observe_naval_details(
     memory: &impl Memory,
     base: usize,
@@ -327,9 +277,6 @@ pub fn observe_naval_details(
     };
     engine_naval_history::naval_combat_demand::demand(memory, base, state).map(Some)
 }
-/// The raid arenas whose per-country demand content decides, not the slot
-/// count: the raid type tokens of every raid parent and of the player cache,
-/// every country's convoy reservation words, and the session's path memo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RaidArenas {
     pub type_tokens: usize,
@@ -341,9 +288,6 @@ pub struct RaidArenas {
     pub(crate) failures: [Option<&'static str>; 5],
 }
 
-/// Live raid arena demand, or `None` without a game state.
-/// Failures retain their reason. Header words and the raid parents'
-/// batched records only; nothing observed is recorded.
 pub fn observe_raid_arenas(
     memory: &impl Memory,
     base: usize,
@@ -355,7 +299,6 @@ pub fn observe_raid_arenas(
     let player = engine_visibility::cplayer_status_cache::required_tokens(memory, base, state);
     let reservation_words =
         engine_native::raid_launch_inputs::required_reservations(memory, base, state)?;
-    // Keep independently readable floors when optional hints fail.
     let facility_rows =
         match engine_raid_inputs::raid_facilities::count(memory, base, state) {
             engine_native::walk::Outcome::Rows { len } => Ok(len),
@@ -396,9 +339,6 @@ pub fn observe_raid_arenas(
         ],
     }))
 }
-/// Live character and script scope demand: the Characters rows and text
-/// bytes, the flags of every ScriptFlags scope and the ScriptVariables
-/// stores (global, countries, states and characters).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CharacterDemand {
     pub characters: engine_native::ccharacter::Demand,
@@ -407,9 +347,6 @@ pub struct CharacterDemand {
     pub variables: extended::intel::VariableDemand,
 }
 
-/// Live character roster and flag demand, or `None` without a loaded registry.
-/// Header words, character views and template headers only. Failures retain
-/// their name instead of claiming zero text demand.
 pub fn observe_characters(
     memory: &impl Memory,
     base: usize,
@@ -427,8 +364,6 @@ pub fn observe_characters(
     }))
 }
 
-/// The actual receiver0 matrix header is independent of the positive political
-/// census. Failed optional hints retain prior floors and acquire no payload.
 pub(crate) fn observe_reserved_visibility(
     memory: &impl Memory,
     base: usize,
@@ -439,9 +374,6 @@ pub(crate) fn observe_reserved_visibility(
     engine_native::crelation_status::reserved_visibility_demand(memory, base, state).map(Some)
 }
 
-/// Daily native observations for each of `frames` frames, which hold hours the spool has not
-/// drained the staging for yet: at least the steady count, more while a backlog holds more.
-/// Independent of population growth. A failed hint preserves staging and names its refusal.
 pub(crate) fn observe_politics_demand(
     memory: &impl Memory,
     base: usize,
@@ -497,7 +429,6 @@ pub(crate) fn observe_land_event_words(
     })
 }
 
-/// Current unit/site/context headers and name lengths; hints are never values.
 pub(crate) fn observe_fuel_unit_demand(
     memory: &impl Memory,
     base: usize,
@@ -509,13 +440,6 @@ pub(crate) fn observe_fuel_unit_demand(
     })
 }
 
-/// Live demand of the political and character tables whose per-country
-/// sizes content and play decide: CountryCharacters' active-character
-/// records, CountryRetiredCharacters' retired ones, PartyLeaders' party
-/// leaders, CountryCivilWars' entries, AvailableAdvisors' ideas,
-/// AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots and token
-/// bytes, the country state/leader rosters, registered pride-ship names,
-/// and the character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
     pub war_overview: engine_native::cwar_relation::overview::Demand,
@@ -544,7 +468,6 @@ pub struct PoliticsDemand {
     pub available_advisor_bytes: usize,
     pub advisor_modifiers: engine_native::cadvisor::ModifierDemand,
     pub country_rosters: engine_native::ccountry::RosterDemand,
-    /// Valid cached-name byte floor; an optional failure does not certify zero.
     pub pride_name_bytes: usize,
     pub pride_name_failure: Option<&'static str>,
     optional_failures: [Option<&'static str>; 4],
@@ -568,7 +491,6 @@ impl PoliticsDemand {
             .flatten()
     }
 
-    /// Whether any capacity floor exceeds `seen`'s.
     pub fn exceeds(&self, seen: &Self) -> bool {
         self.agency_name_bytes > seen.agency_name_bytes
             || self.agency_upgrade_rows > seen.agency_upgrade_rows
@@ -618,7 +540,6 @@ impl PoliticsDemand {
             || self.character_inputs.exceeds(&seen.character_inputs)
     }
 
-    /// Retain maximum capacity floors and the new poll's optional refusal.
     pub fn max(self, other: Self) -> Self {
         Self {
             war_overview: engine_native::cwar_relation::overview::Demand {
@@ -709,7 +630,6 @@ impl PoliticsDemand {
                     .max(other.country_rosters.leaders),
             },
             pride_name_bytes: self.pride_name_bytes.max(other.pride_name_bytes),
-            // Keep this poll's refusal separate from retained capacity floors.
             pride_name_failure: other.pride_name_failure,
             optional_failures: other.optional_failures,
             active_characters: self.active_characters.max(other.active_characters),
@@ -725,9 +645,6 @@ impl PoliticsDemand {
     }
 }
 
-/// Live political table demand, or `None` without a game state (at the main
-/// menu, say). Each count uses its table's walk without row storage. A failed
-/// observation is propagated for named accounting, never an empty demand.
 pub fn observe_politics(
     memory: &impl Memory,
     base: usize,
@@ -827,8 +744,6 @@ pub fn observe_politics(
         occupied_countries: engine_occupation::ccountry_occupation_status::occupied_demand(
             memory, base, state,
         )?,
-        // These independent optional sizing hints retain each other's known
-        // floors. Actual hourly reads still refuse missing native data.
         reserved_naming_bytes: reserved_naming_bytes.unwrap_or_default(),
         original_tag_lists: original_tag_lists.unwrap_or_default(),
         country_array: country_array.unwrap_or_default(),
@@ -866,16 +781,12 @@ fn pride_name_demand(
     engine_native::cship::cached_name_demand(memory, base, ship, handle)
 }
 
-/// Every capture capacity the frame pool is built from.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Sizing {
     pub core: [usize; 12],
     pub map: MapCapacities,
     pub extended: extended::Capacities,
     pub country_cells: usize,
-    /// DLC and mod list lengths for the once-only content roster sample.
-    /// The launcher fixes them before a campaign exists, so one observation
-    /// before hooking is enough.
     pub content: engine_dlc::cdlc_manager::Counts,
 }
 
@@ -893,7 +804,6 @@ impl Sizing {
         sizing
     }
 
-    /// Raise every country-proportional capacity for `slots` country slots.
     pub fn raise_for_slots(&mut self, slots: usize) {
         sampling::raise_for_countries(&mut self.core, slots);
         self.map.raise_for_countries(slots);
@@ -904,8 +814,6 @@ impl Sizing {
         );
     }
 
-    /// A partial hint raises its readable floors independently; province
-    /// slots size the Provinces rows, movement geometry and rail rows.
     pub(crate) fn raise_for_map(&mut self, demand: &MapDemand) {
         if let Ok(levels) = demand.rail_levels {
             raise(&mut self.extended.naval_history.rail_levels, levels);
@@ -944,8 +852,6 @@ mod tests {
         }
     }
 
-    /// Map sizing reads only the province census header: no province,
-    /// definition or terrain object is visited.
     #[test]
     fn province_slot_hint_reads_only_the_census_header() {
         let memory = ProvinceHeaderMemory {
@@ -1036,12 +942,10 @@ mod tests {
                 observe_politics_demand(&memory, 0, slots, sampling::BUFFERS),
                 Some(slots * 5 * sampling::BUFFERS)
             );
-            // Fewer frames than the steady count still stage for the steady count.
             assert_eq!(
                 observe_politics_demand(&memory, 0, slots, 1),
                 Some(slots * 5 * sampling::BUFFERS)
             );
-            // A backlog of 13 frames stages 13 frames' daily records.
             assert_eq!(
                 observe_politics_demand(&memory, 0, slots, 13),
                 Some(slots * 5 * 13)
@@ -1054,11 +958,6 @@ mod tests {
         assert_eq!(observe_politics_demand(&unreadable, 0, 5_001, 13), None);
     }
 
-    /// The #63 attach hour: 440 countries whose raid type lists need more
-    /// tokens than the default arena (it read 336 parents), and more
-    /// convoy reservation words than the default 512. The observed demand
-    /// raises the arenas, including a path memo beyond the default 1,024
-    /// rows, so the first hour's packs hold every row.
     #[test]
     fn observed_raid_demand_presizes_raid_arenas() {
         let demand = RaidArenas {
@@ -1085,14 +984,11 @@ mod tests {
                 .raid_launch_inputs
                 .holds_reservations(demand.reservation_words)
         );
-        // Raising never lowers a capacity.
         let before = sizing.extended;
         sizing.extended.raise_for_raid_arenas(RaidArenas::default());
         assert!(sizing.extended == before);
     }
 
-    /// A missing manager in a five-thousand-country registry is a named
-    /// observation failure, not an observed empty political roster.
     #[test]
     fn observed_politics_demand_reads_the_registry_and_only_raises() {
         assert_eq!(
@@ -1371,7 +1267,6 @@ mod tests {
         ccountry, ccountry_intel, cgame_state as gs, country_intel_row, msvc_string, walk::Outcome,
     };
 
-    /// One country per state of a large modded map: the owner's design target.
     const COUNTRIES: usize = 5_000;
     const BASE: usize = 0x1_0000_0000;
     const STATE: usize = 0x10_0000;
@@ -1385,7 +1280,6 @@ mod tests {
     const INTEL_TABLES: usize = 0x5000_0000;
     const INTEL_RECORDS: usize = 0x6000_0000;
     const BLOC_LINKS: usize = 0x7000_0000;
-    // Country air objects, their region history tables, windows and records.
     const AIR_MANAGER: usize = 0x80_0000;
     const AIR_ROOTS: usize = 0x90_0000;
     const AIR_OBJECTS: usize = 0x8000_0000;
@@ -1396,13 +1290,10 @@ mod tests {
     const RECORD_SLOTS: usize = 0xc000_0000;
     const RECORDS: usize = 0x20_0000_0000;
     const VALUES: usize = 0x30_0000_0000;
-    /// Strategic region slots in every country's history table.
     const REGION_SLOTS: usize = 256;
     const HISTORY: usize = 0x40;
     const RECORD: usize = 0x20;
     const VALUE_FIELDS: usize = 0x300;
-    // The tactic database and doctrine rows, past the module image
-    // (BASE) and every other region.
     const TACTIC_DATABASE: usize = 0x2_0000_0000;
     const TACTIC_ENTRIES: usize = 0x2_0000_1000;
     const TACTIC_OBJECTS: usize = 0x2_0001_0000;
@@ -1410,30 +1301,17 @@ mod tests {
     const DOCTRINE_SYSTEM: usize = 0x2_0100_0000;
     const DOCTRINE_ROWS: usize = 0x2_0200_0000;
     const UNLOCK_LISTS: usize = 0x2_0400_0000;
-    /// A vanilla-sized tactic database; every country unlocks eight tactics.
     const TACTICS: usize = 64;
     const UNLOCKS: usize = 8;
 
-    /// Computes every byte on demand, so thousands of countries need no
-    /// multi-megabyte fixture: slot `s` is object `OBJECTS + s * OBJECT` with
-    /// native id `s`, every link id resolves to itself, and all other fields
-    /// read as zero (with valid empty strings).
     struct World {
         slots: usize,
-        /// Every country owns a dense intel vector over every slot with all
-        /// four lanes nonzero: the worst case for the sparse table.
         intel: bool,
-        /// Every country's shared diplomacy lists this many enemies and
-        /// wartime allies: a world split into two warring blocs.
         bloc: Option<(u32, u32)>,
         air: Option<AirWorld>,
-        /// This slot's country lives in a second object, past the others.
         relocated: Option<usize>,
     }
 
-    /// One country slot in every `every` has a window-0 history of `ring`
-    /// entries in each of `regions`, wrapped at `current`; every third entry
-    /// is nonzero.
     struct AirWorld {
         every: usize,
         regions: Vec<u32>,
@@ -1442,9 +1320,6 @@ mod tests {
     }
 
     impl AirWorld {
-        /// The holder's offset in its block of `every` slots moves by one
-        /// per block, so holders spread over every history part rather than
-        /// following one stride.
         fn holds(&self, slot: usize) -> bool {
             slot % self.every == slot / self.every % self.every
         }
@@ -1455,7 +1330,6 @@ mod tests {
     }
 
     impl World {
-        /// The combat-tactics database and one doctrine row per slot.
         fn tactic_byte(&self, address: usize) -> Option<u8> {
             use engine_land_inputs::country_tactic_unlocks as doctrine;
             use engine_native::ccombat_tactic as tactic;
@@ -1474,7 +1348,6 @@ mod tests {
             if within(entries, 16) {
                 return Some(header(entries, TACTIC_ENTRIES, TACTICS + 1));
             }
-            // Entry 0 is the null tactic with ID 0; entry i has ID i.
             if within(TACTIC_ENTRIES, (TACTICS + 1) * 8) {
                 let index = (address - TACTIC_ENTRIES) / 8;
                 let object = TACTIC_OBJECTS + index * TACTIC_OBJECT;
@@ -1538,7 +1411,6 @@ mod tests {
             if (singleton..singleton + 8).contains(&address) {
                 return word(singleton, STATE as u64);
             }
-            // Naming operands: no dynamic countries, one shared diplomacy.
             let database = BASE + engine_native::ccountry_database::SINGLETON_RVA.0;
             if (database..database + 8).contains(&address) {
                 return word(database, DATABASE as u64);
@@ -1572,7 +1444,6 @@ mod tests {
                         };
                     }
                 }
-                // Both lists name slots 1.. in order.
                 if (BLOC_LINKS..BLOC_LINKS + self.slots * 4).contains(&address) {
                     let index = (address - BLOC_LINKS) / 4;
                     return word(BLOC_LINKS + index * 4, index as u64 + 1);
@@ -1828,12 +1699,10 @@ mod tests {
 
     impl Memory for World {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            // Record batches are the bulk of an intel walk; fill them directly.
             if self.in_records(address) && self.in_records(address + output.len() - 1) {
                 output.fill(u8::from(self.intel));
                 return true;
             }
-            // So are the bloc lists' entries in a bloc-war walk.
             if self.bloc.is_some()
                 && (BLOC_LINKS..BLOC_LINKS + self.slots * 4).contains(&address)
                 && address + output.len() <= BLOC_LINKS + self.slots * 4
@@ -1854,7 +1723,6 @@ mod tests {
     }
 
     fn world() -> World {
-        // Slot zero is the engine's reserved placeholder.
         World {
             slots: COUNTRIES + 1,
             intel: false,
@@ -1907,14 +1775,9 @@ mod tests {
         assert_eq!(rows[native - 1].target_index, RECORD_COUNT as u32 - 1);
     }
 
-    /// Notifications a test controls, lock-free like the hook registry: one
-    /// epoch, a revision the scenario bumps, and per-country sequences (the
-    /// shared diplomacy status never changes).
     struct Notified {
         revision: std::sync::atomic::AtomicU64,
         countries: Vec<std::sync::atomic::AtomicU64>,
-        /// Registrations the watch table refuses: 0 none, a slot + 1, or
-        /// [`REFUSE_ALL`] for a table held for the next full hour.
         refused: std::sync::atomic::AtomicUsize,
     }
 
@@ -1947,7 +1810,6 @@ mod tests {
             }
         }
 
-        /// A writer touched these countries.
         fn touch(&self, slots: impl IntoIterator<Item = usize>) {
             self.revision.fetch_add(1, Ordering::Relaxed);
             for slot in slots {
@@ -1956,9 +1818,6 @@ mod tests {
         }
     }
 
-    /// One relations hour: the parts' guarded calls and wall time (the
-    /// game-thread stall with a free worker per part), the countries copied,
-    /// then the decode thread's rows and time.
     struct RelationsHour {
         calls: usize,
         wall: std::time::Duration,
@@ -1968,7 +1827,6 @@ mod tests {
         decode: std::time::Duration,
     }
 
-    /// Counts guarded calls from every part's thread.
     struct Counting<'a>(&'a World, std::sync::atomic::AtomicUsize);
 
     impl Memory for Counting<'_> {
@@ -2025,9 +1883,6 @@ mod tests {
         }
     }
 
-    /// `emitted` is exactly the rows of `slots` in a bloc world: each
-    /// country's wartime allies, then its enemies, both lists naming slots
-    /// 1.. in order.
     fn assert_bloc_rows(
         emitted: &[engine_air_history::air_participant_vectors::Row],
         slots: &[u32],
@@ -2057,14 +1912,6 @@ mod tests {
         assert_eq!(emitted.len(), len);
     }
 
-    /// Two blocs forming then going to war: the first hour (every country
-    /// with its bloc's allies), the declaration touching every country (its
-    /// copies outgrow the registry-sized staging, which grows in the hour),
-    /// a quiet hour at war, and one more declaration touching two countries,
-    /// whose vectors stay the same. Each hour runs its parts on their own
-    /// threads and, on a second domain, one after another; both copy the
-    /// same countries, hold every country's rows and emit exactly the first
-    /// two hours' changed countries and the later hours' slices.
     fn bloc_war_relations(countries: usize) {
         use crate::extended::air_relations::{PARTS, hour::Hour};
         let enemies = countries as u32 / 2;
@@ -2078,7 +1925,6 @@ mod tests {
         let mut hour = Hour::new(rows, rows * 4 / PARTS);
         let mut serial = Hour::new(rows, rows * 4 / PARTS);
         let serial_changes = Notified::new(countries + 1);
-        // Spawning the part threads, which pool jobs do not pay.
         let started = std::time::Instant::now();
         std::thread::scope(|scope| {
             for _ in 0..PARTS {
@@ -2086,12 +1932,6 @@ mod tests {
             }
         });
         let spawn = started.elapsed();
-        // Every country is copied on the first hour and at the declaration;
-        // the quiet hour copies nothing and the next copies the two touched.
-        // The worst held-table case: a table held for the next full hour
-        // refuses every receiver a writer touched (its old registrations
-        // were dropped by the epoch before). Each hour then copies every
-        // country afresh, quiet or not, and the rows stay exact.
         for (at, (label, touched, copied)) in [
             ("first hour", vec![], countries),
             ("bloc declaration", (1..=countries).collect(), countries),
@@ -2124,8 +1964,6 @@ mod tests {
                 "relations, {countries} countries, {label}: {} countries copied in {} guarded calls, {:?} wall over {PARTS} parts ({spawn:?} of it spawning), {:?} on one thread; decode {:?}, {emitted} of {} rows emitted",
                 result.copied, result.calls, result.wall, one.wall, result.decode, result.held
             );
-            // The first hour is a full hour and the declaration changes every
-            // country; later hours emit their slice only.
             let slice: Vec<u32> = (1..=countries as u32)
                 .filter(|&slot| {
                     at < 2 || slot % replay_data::cadence::STAGGER_PERIOD as u32 == at as u32
@@ -2163,39 +2001,29 @@ mod tests {
         let first = relations_hour(&world, &changes, &mut hour, 0, true);
         assert_eq!(first.copied, 48);
         assert_eq!(first.outcome, Outcome::Rows { len: 48 * 47 });
-        // A quiet hour copies nothing and emits one slice: slots 1 and 25.
         let quiet = relations_hour(&world, &changes, &mut hour, 1, true);
-        // Only the slot checks read: this world has no roster cache, so each
-        // country lookup costs reads that production serves from the cache.
         assert!(quiet.calls <= 8 * 48, "{}", quiet.calls);
         assert_eq!(quiet.copied, 0);
         assert_eq!(quiet.outcome, Outcome::Rows { len: 2 * 47 });
-        // A touched country whose vectors did not change is copied, not emitted.
         changes.touch([3]);
         let unchanged = relations_hour(&world, &changes, &mut hour, 2, true);
         assert_eq!(unchanged.copied, 1);
         assert_eq!(unchanged.outcome, Outcome::Rows { len: 2 * 47 });
-        // A changed one is emitted at once, outside its slice.
         world.bloc = Some((24, 22));
         changes.touch([5]);
         let changed = relations_hour(&world, &changes, &mut hour, 3, true);
         assert_eq!(changed.copied, 1);
         assert_eq!(changed.outcome, Outcome::Rows { len: 2 * 47 + 46 });
-        // A country object replaced at its slot is copied afresh, although
-        // no writer touched it.
         world.relocated = Some(7);
         changes.touch([3]);
         let replaced = relations_hour(&world, &changes, &mut hour, 4, true);
         assert_eq!(replaced.copied, 2);
-        // A staging buffer sized for the steady state grows; the hour stands.
         world.bloc = Some((24, 23));
         let mut small = Hour::new(4096, 64);
         let grown = relations_hour(&world, &Notified::new(49), &mut small, 0, false);
         assert_eq!(grown.outcome, Outcome::Rows { len: 48 * 47 });
     }
 
-    /// A receiver the watch table refused is read afresh every hour, also
-    /// when no writer moved the domain revision; the others are reused.
     #[test]
     fn a_refused_receiver_is_copied_every_hour() {
         use crate::extended::air_relations::hour::Hour;
@@ -2224,14 +2052,6 @@ mod tests {
         );
     }
 
-    /// `forget_unpublished_families` skips this family, whose fingerprints
-    /// live in the decode step, so an hour the spool withheld is recovered
-    /// only by the full hour the spool then forces (the hours captured in
-    /// between have no complete rows to merge into and are withheld too).
-    /// The withheld hour's changes are already in the fingerprints, so a
-    /// later non-full hour does not emit them again; the full hour emits
-    /// every held country, exactly the rows a fresh read of the same world
-    /// emits.
     #[test]
     fn a_forced_full_hour_re_emits_an_unpublished_hours_changes_exactly() {
         use crate::extended::air_relations::hour::Hour;
@@ -2243,16 +2063,12 @@ mod tests {
         let changes = Notified::new(49);
         let mut hour = Hour::new(4096, 4096);
         relations_hour(&world, &changes, &mut hour, 0, true);
-        // Every country changes at hour 1, whose frame the spool withholds.
         world.bloc = Some((24, 22));
         changes.touch(1..=48);
         let withheld = relations_hour(&world, &changes, &mut hour, 1, true);
         assert_eq!(withheld.outcome, Outcome::Rows { len: 48 * 46 });
-        // Hour 2 was captured before the recovery: only its slice, slots 2
-        // and 26.
         let between = relations_hour(&world, &changes, &mut hour, 2, true);
         assert_eq!(between.outcome, Outcome::Rows { len: 2 * 46 });
-        // The recovery hour copies nothing new yet emits every held row.
         hour.force_full = true;
         let recovered = relations_hour(&world, &changes, &mut hour, 3, true);
         assert_eq!(recovered.copied, 0);
@@ -2280,14 +2096,11 @@ mod tests {
         );
     }
 
-    /// The bloc-war hours of the scale matrix, at a size the ordinary test
-    /// run affords.
     #[test]
     fn bloc_war_relations_at_200_countries() {
         bloc_war_relations(200);
     }
 
-    /// Every writer call as the hooks make it, on a watch domain of its own.
     fn touch(
         watches: &crate::history_changes::Watches,
         site: usize,
@@ -2301,7 +2114,6 @@ mod tests {
         }
     }
 
-    /// The real watch domain, less receivers its table could not hold.
     struct Blinded<'a> {
         watches: &'a crate::history_changes::Watches,
         blind: std::collections::BTreeSet<usize>,
@@ -2321,9 +2133,6 @@ mod tests {
         }
     }
 
-    /// One naval-patrol history hour: the parts' guarded calls and wall
-    /// time, the countries copied, the rows held, the table and the decode
-    /// thread's time.
     struct HistoriesHour {
         calls: usize,
         wall: std::time::Duration,
@@ -2342,7 +2151,6 @@ mod tests {
         at: i32,
         threads: bool,
     ) -> HistoriesHour {
-        // The parts read through the callback's roster, as in production.
         let mut cache = engine_allocation::shared(
             Cache::try_with_capacity(Cache::cells_for_countries(world.slots, MIN_COUNTRY_CELLS))
                 .unwrap(),
@@ -2365,18 +2173,8 @@ mod tests {
         HISTORIES + (slot * REGION_SLOTS + region as usize) * HISTORY
     }
 
-    /// Nonzero entries one history holds: ten daily records and the monthly
-    /// and yearly current records.
     const HELD: usize = 12;
 
-    /// Every country slot divisible by `every` has a 30-record window in each
-    /// of `patrolled` regions, a third of the records nonzero: the first
-    /// hour, a quiet hour, one country's combat, the daily advance of every
-    /// window, and one more region patrolled. Each hour runs its parts on
-    /// their own threads and, on a second domain, one after another. Buffers
-    /// are presized from the registry and grown on each recycle, so once the
-    /// parts' certificates took the capacities the first hour raised, the
-    /// combat and advance hours stage without growing one.
     fn naval_patrol_histories(countries: usize, every: usize, patrolled: u32) -> Vec<usize> {
         use crate::extended::air_histories::{
             PARTS,
@@ -2390,7 +2188,6 @@ mod tests {
             slots: countries + 1,
             air: Some(AirWorld {
                 every,
-                // One more region holds histories nobody patrols yet.
                 regions: (0..=patrolled).map(|region| 3 + region * 7).collect(),
                 ring: 30,
                 current: 3,
@@ -2399,7 +2196,6 @@ mod tests {
         };
         let air = world.air.as_ref().unwrap();
         let held: Vec<usize> = (1..=countries).filter(|&slot| air.holds(slot)).collect();
-        // Presized for every region of the content, as the runtime does.
         let (watches, serial_watches) = (
             Watches::enabled(countries + 1, air.regions.len()),
             Watches::enabled(countries + 1, air.regions.len()),
@@ -2409,7 +2205,6 @@ mod tests {
         let mut serial_capacity = capacity;
         let (mut frame, mut serial_frame) = (hour::frame(&capacity), hour::frame(&capacity));
         let (mut hour, mut serial) = (Hour::new(), Hour::new());
-        // Spawning the part threads, which pool jobs do not pay.
         let started = std::time::Instant::now();
         std::thread::scope(|scope| {
             for _ in 0..PARTS {
@@ -2492,13 +2287,10 @@ mod tests {
                 counts.advanced,
                 counts.refreshed,
             );
-            // The spool's recycle: grow the frames and offer the watches.
             watches.grow(Hour::grow(&mut frame, &mut capacity));
             serial_watches.grow(Hour::grow(&mut serial_frame, &mut serial_capacity));
             calls.push(result.calls);
         }
-        // No hour, not even one wanting a new region, installed a larger
-        // table and so started an epoch that copies everything again.
         for watches in [&watches, &serial_watches] {
             assert_eq!(watches.capacity(), installed);
         }
@@ -2521,8 +2313,6 @@ mod tests {
     fn naval_patrol_histories_are_read_where_written() {
         use crate::extended::air_histories::PARTS;
         let calls = naval_patrol_histories(100, 5, 2);
-        // Per part: 3 for the air objects, the authentication and table headers, one read per
-        // country's region table, and the menu copy's 4 gathers and one per 256 records.
         assert_eq!(calls[0], 200, "{calls:?}");
         assert_eq!(calls[1], 3 * PARTS);
         assert!(calls[2] < calls[0], "{calls:?}");
@@ -2530,7 +2320,6 @@ mod tests {
         assert_eq!(calls[4], 3 * PARTS);
     }
 
-    /// A history whose advance count was missed is re-read on its own.
     #[test]
     fn an_unobserved_advance_rereads_only_that_history() {
         use crate::extended::air_histories::hour::{self, Hour};
@@ -2570,10 +2359,6 @@ mod tests {
         assert!(fresh.same(&hour));
     }
 
-    /// A quiet hour, with no writer call anywhere, skips a part only when
-    /// every receiver it holds is watched: a history or country air object
-    /// whose watch was refused is read afresh every hour, and the watched
-    /// rest is reused.
     #[test]
     fn a_quiet_hour_rereads_every_unwatched_receiver() {
         use crate::extended::air_histories::{
@@ -2643,17 +2428,12 @@ mod tests {
         }
     }
 
-    /// Whichever part fails after its hour staged an advance, the hour is
-    /// published unavailable and none of its copies is applied, and every
-    /// part's certificates are withdrawn: the next hour, staged before the
-    /// failed one is decoded, copies every country afresh.
     #[test]
     fn a_failed_part_withdraws_the_hour_and_the_next_copies_afresh() {
         use crate::extended::air_histories::{
             PARTS,
             hour::{self, Hour},
         };
-        // Two countries with a history in every part.
         let slots = 2 * PARTS + 1;
         let world = |current| World {
             slots,
@@ -2672,14 +2452,12 @@ mod tests {
             let memory = world(4);
             let (mut hour, mut frame) = (Hour::new(), hour::frame(&capacity));
             histories_hour(&world(3), &[3], &watches, &mut hour, &mut frame, 0, true);
-            // Hour 1 stages the daily advance of every history; one part fails.
             touch(&watches, 1, histories.iter().copied(), 1);
             let (mut failed, mut next) = (hour::frame(&capacity), hour::frame(&capacity));
             hour.supply(&mut failed, &[3], &watches);
             hour.stage(&mut failed, &memory, BASE, STATE, &watches, true);
             hour.fail(&mut failed, part);
             hour.settle(&failed);
-            // Hour 2 is quiet but stages before hour 1 is decoded.
             hour.supply(&mut next, &[3], &watches);
             hour.stage(&mut next, &memory, BASE, STATE, &watches, true);
             hour.settle(&next);
@@ -2697,9 +2475,6 @@ mod tests {
                     len: (slots - 1) * 16
                 }
             );
-            // Each changed owner emits ten daily records, a native cursor marker and a witness.
-            // Slot zero has no air object; its unchanged witness was already
-            // published at hour zero and is outside hour two's slice.
             assert_eq!(
                 next.selection().read_owners().collect::<Vec<_>>(),
                 (1..slots as u32).collect::<Vec<_>>(),
@@ -2712,8 +2487,6 @@ mod tests {
         }
     }
 
-    /// A part the pool refused never runs: its hour is published unavailable
-    /// and the next hour, though quiet, copies every country afresh.
     #[test]
     fn a_refused_part_fails_the_hour_and_the_next_copies_afresh() {
         use crate::extended::air_histories::{
@@ -2753,17 +2526,12 @@ mod tests {
                 len: (slots - 1) * 16
             }
         );
-        // Recovery republishes the changed positive owners, including each
-        // witness. The unchanged slot-zero witness remains carried from hour zero.
         assert_eq!(
             frame.selection().read_owners().collect::<Vec<_>>(),
             (1..slots as u32).collect::<Vec<_>>()
         );
     }
 
-    /// Attaching at the main menu builds vanilla-sized frames; the spool then
-    /// grows them when a save fills the registry. That path must reach every
-    /// buffer a frame built for the registry would have.
     #[test]
     fn growing_a_menu_sized_frame_reaches_the_registry_sizing() {
         let menu = Sizing::for_slots(0);
@@ -2775,9 +2543,6 @@ mod tests {
         frame.grow(&mut core);
         frame.map.grow(&mut map);
         frame.extended.grow(&mut extended);
-        // Growth of an unused frame follows the raised capacities exactly
-        // (combat_details adjusts its own capacities on every growth, so the
-        // extended packs are compared by allocation below).
         assert_eq!(core, loaded.core);
         assert!(map == loaded.map);
         let built =
@@ -2807,14 +2572,12 @@ mod tests {
         let cells = Cache::cells_for_countries(COUNTRIES + 1, MIN_COUNTRY_CELLS);
         assert!(cells > installed);
         shared.offer_country_cache(cells);
-        // Offering the same cells again does not allocate a second cache.
         let pool = shared.pool_bytes.load(Ordering::Relaxed);
         shared.offer_country_cache(cells);
         assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), pool);
         shared.install_offered_country_cache();
         assert_eq!(shared.country_cache_cells.load(Ordering::Acquire), cells);
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_some());
-        // The spool thread frees the retired cache on its next offer.
         shared.offer_country_cache(0);
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_none());
     }

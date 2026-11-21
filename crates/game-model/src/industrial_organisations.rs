@@ -15,7 +15,6 @@ pub struct State {
     pub queue_index: i32,
     pub policy: u32,
     pub cooldown_hour: Option<i32>,
-    /// Optional native source-file index and line; inactive storage is not read.
     pub source_location: Option<[u32; 2]>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
@@ -32,8 +31,6 @@ pub struct Policy {
 pub struct CountryPolicies {
     pub country: u32,
     pub policies: Vec<Policy>,
-    /// The country's effective policy-cost modifier in signed fixed5, read in
-    /// the same visit; `None` when its accumulator could not be read.
     pub cost_modifier_raw: Option<i64>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -47,7 +44,6 @@ pub struct Technology {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct Task {
-    /// Every native task slot is retained, including empty slots.
     pub technology: Option<Technology>,
     pub line: Option<u64>,
 }

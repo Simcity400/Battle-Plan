@@ -1,34 +1,23 @@
-//! Raw detection words of authenticated regional mission-ledger members.
-//!
-//! The caller supplies one distinct member from its existing asynchronous census.
-//! Ordered regional membership remains in the existing mission ledger.
 use crate::{Memory, cfleet, cnaval_mission, ctask_force, cunit, read};
 
-/// Stored detection chance, progress and full target reference in the embedded mission.
 pub const CHANCE: usize = 0x78;
 pub const PROGRESS: usize = 0x80;
 pub const TARGET: usize = 0x88;
-/// Stored task-force detection and per-carrier-aircraft detection weights.
 pub const SURFACE_DETECTION: usize = 0x138;
 pub const CARRIER_DETECTION: usize = 0x160;
 pub const SUBMARINE_DETECTION: usize = 0x140;
 pub const CARRIER_SUBMARINE_DETECTION: usize = 0x158;
-/// Stored source visibility statistics and formation state used by convoy spotting.
 pub const SURFACE_VISIBILITY: usize = 0x148;
 pub const SUBMARINE_VISIBILITY: usize = 0x150;
 pub const FORMATION_CLASS: usize = 0x4b8;
-/// Retained mission operands, independent of current radar and Air control.
 pub const RADAR_CACHE: usize = 0x20;
 pub const AIR_CACHE: usize = 0x28;
-/// Serializer tokens of the independent retained detection words.
 pub const SAVE_TOKENS: [u32; 3] = [0x3bad, 0x3bb0, 0x3bc4];
-/// Positive-only serializer tokens for the retained radar and Air cache words.
 pub const CACHE_SAVE_TOKENS: [u32; 2] = [0x2fcd, 0x302f];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Operands {
     pub target: Option<u64>,
-    /// Zero is unresolved; one is live; absence is a failed registry observation.
     pub target_live: Option<u32>,
     pub progress: Option<i64>,
     pub chance: Option<i64>,
@@ -43,7 +32,6 @@ pub struct Operands {
     pub air_cache: Option<i64>,
 }
 
-/// Authenticate the embedded header without reaching target or owner leaves.
 pub fn read_header(
     memory: &impl Memory,
     base: usize,
@@ -71,8 +59,6 @@ fn authenticate_header(
     }
     Ok(())
 }
-/// The ledger's first registered mission owns its escort modifier tree.
-/// An original failed header is a refusal, never permission to retry it.
 pub fn read_owner(
     memory: &impl Memory,
     base: usize,
@@ -88,7 +74,6 @@ pub fn read_owner(
         .ok_or("patrol mission owner unreadable")
 }
 
-/// Carries an original failed stat selector as failure, without retrying it.
 pub fn read_member_observed_stats(
     memory: &impl Memory,
     base: usize,
@@ -186,19 +171,14 @@ fn read_with(
     row
 }
 
-/// Independent source context. Headquarters references are copied into the
-/// caller's retained arena; this object owns no per-member allocation.
 #[derive(Debug, Clone, Copy)]
 pub struct Context {
     pub leader: u64,
     pub headquarters: Result<usize, &'static str>,
     pub local_detection: Option<crate::modifier_accumulator::Value>,
-    /// Zero is a known absent location; absence is a failed location witness.
     pub region: Option<u32>,
 }
 
-/// Read only the source operands a demanded member's combined detection uses.
-/// A local fault does not suppress headquarters or the location witness.
 #[cfg(test)]
 pub fn read_context(
     memory: &impl Memory,
@@ -209,7 +189,6 @@ pub fn read_context(
     read_context_with_location(memory, base, visit, None, headquarters)
 }
 
-/// A failed original location selector remains failed in the slim context.
 pub fn read_context_with_location(
     memory: &impl Memory,
     base: usize,

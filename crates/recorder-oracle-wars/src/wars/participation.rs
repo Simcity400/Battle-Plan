@@ -1,5 +1,3 @@
-//! Exact saved directional scores and captured membership. Runtime unknown
-//! casualty scores and the computed UI projection have no save counterpart.
 use super::*;
 use replay_data::fixed_point::fixed5_to_q15;
 use replay_data::rows::WarParticipationRow;
@@ -99,8 +97,6 @@ pub(super) fn compare_participation(
             0usize,
         );
     }
-    // Capture retains native nonzero histories for war-roster owners. The
-    // screen's same-side gate belongs to playback, not the seed or this oracle.
     let mut owners = BTreeSet::new();
     for row in complete::<tables::WarOwnedRelations>(frame)? {
         for raw in [row.owner, row.first_country, row.second_country] {

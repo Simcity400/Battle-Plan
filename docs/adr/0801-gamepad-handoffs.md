@@ -1,0 +1,7 @@
+# Route controllers through the foreground window owner
+
+Windows.Gaming.Input reports controllers to the foreground window's owning process. The desktop's maps use child windows, so the desktop host reads controllers and addresses the currently ready map of the foreground window. The pop-out can own the controller only while its window is in front. The campaign map cannot own it while the dashboard obscures that map. The controller thread exits quietly when the interface is unavailable, leaving keyboard and mouse available.
+
+The last controller touched wins. A resting threshold and quantized values suppress idle jitter before routing and leave game dead zones to the maps. Per-event sampling preserves presses that have already been released by the next poll. The host converts hat axes to directional-pad bits because gilrs filters are disabled. One router numbers each handoff, includes the receiving viewer generation in all messages, and releases the previous owner even when it is hidden. A new owner receives held values without synthesized presses. Focus loss, loss of readiness, failed delivery, and a restarted viewer end a handoff. The receiving viewer's own focus does not release the device, since focus ownership lives in the host. The host reads the foreground handle with the argument-free `GetForegroundWindow` call.
+
+[Gamepad router](../../crates/desktop/src/native/gamepad.rs) · [Pending map messages](../../crates/desktop/src/native/pending.rs)

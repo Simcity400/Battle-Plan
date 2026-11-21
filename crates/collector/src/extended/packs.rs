@@ -17,8 +17,6 @@ use replay_data::rows::TableId;
 use std::mem::size_of;
 
 impl Captured {
-    /// A missing Slow job refuses its tables, and (through `slow_refusal`)
-    /// the daily production tables split from it.
     pub(super) fn fail_missing_slow(&mut self, hour: i32, force_full: bool) {
         let mut packs = self.slow_spare.take().expect("slow spare present");
         self.swap_slow(&mut packs);
@@ -38,7 +36,6 @@ impl Captured {
         self.swap_raid_state(&mut packs);
         self.raid_state_spare = Some(packs);
     }
-    /// A missing job on the slot refuses its tables as a missing Slow did.
     pub(super) fn fail_missing_production_daily(
         &mut self,
         hour: i32,
@@ -118,11 +115,6 @@ impl Captured {
             .fail_capture(hour, force_full, reason);
     }
 
-    /// The Countries worker owns the original naming buffers (the appearance
-    /// pack) until its join, with the held appearance rows
-    /// ([`country_appearance::AppearanceStore`]). The Ordinary counter part
-    /// reads the appearance pack's reserved naming only after this loan is
-    /// restored.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_countries_request(
         &mut self,
@@ -146,7 +138,6 @@ impl Captured {
         )
     }
 
-    /// Returns the held appearance rows, forgotten when the job failed.
     pub(crate) fn restore_countries_request(
         &mut self,
         request: crate::acquisition_jobs::CountriesRequest,
@@ -157,9 +148,6 @@ impl Captured {
         request.restore_with_naming(rows, links, &mut self.country_appearance, failure)
     }
 
-    /// The template dictionary's own first-burst job owns it until its join,
-    /// after which the table capture takes its preacquired ticks
-    /// ([`Captured::take_preacquired_templates`]).
     pub(crate) fn take_templates_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -185,11 +173,6 @@ impl Captured {
         request.restore(&mut self.division_templates, failure);
     }
 
-    /// Lend the Ordinary family's independent parts ([`OrdinaryPart`]) to the
-    /// pool with the first burst: none of them reads the Countries job's
-    /// naming buffers. Each swaps its packs with a spare box, so nothing
-    /// allocates on the game thread. The naval mission store travels with
-    /// the navy part.
     pub(crate) fn take_ordinary_parts(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -219,8 +202,6 @@ impl Captured {
         })
     }
 
-    /// Lend the Ordinary family's counter part once the Countries job has
-    /// restored the naming buffers its reserved visibility reads.
     pub(crate) fn take_ordinary_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -242,11 +223,6 @@ impl Captured {
         }
     }
 
-    /// Return the whole Ordinary family once every part has joined. Every
-    /// terminal job installs a completion marker, including failure, so table
-    /// assembly cannot retry an allocating walk on the callback. A failed or
-    /// refused part fails the whole family, as the single job it replaces did:
-    /// its tables are refused together.
     pub(crate) fn restore_ordinary_request(
         &mut self,
         request: crate::acquisition_jobs::OrdinaryRequest,
@@ -260,8 +236,6 @@ impl Captured {
         if let Some(reason) = failure {
             packs.fail(reason);
         }
-        // The counter part first: the navy part returns the reserved
-        // country's launch sources into its appearance pack.
         self.swap_ordinary(&mut packs);
         let mut ticks = packs.ticks;
         let mut combined = packs.failure;
@@ -307,8 +281,6 @@ impl Captured {
         naval_missions
     }
 
-    /// The whole Ordinary family inline, for direct-walk fixtures: every
-    /// part, then the counter part, as the pool runs them.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture_ordinary_inline(
@@ -350,7 +322,6 @@ impl Captured {
         std::mem::swap(&mut self.country_counters, &mut packs.country_counters);
     }
 
-    /// Fail every Ordinary pack in place, as a failed single Ordinary job did.
     fn fail_ordinary(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.combat_details.fail(reason);
         self.naval_details.reset();
@@ -362,19 +333,16 @@ impl Captured {
         self.naval_mission_inputs
             .fail_capture(hour, force_full, reason);
         self.naval_counters.reset();
-        // Wherever the counter pack was, a failed family holds no census.
         self.naval_counters.forget_censuses();
         self.railway_guns.reset();
         self.active_abilities.reset();
         self.country_counters.fail();
-        // Only the country half of the score pack belongs to Ordinary.
         self.game_score.fail(reason);
         self.group_counters.reset();
         self.saved_event_targets.reset();
         self.battle_sounds.reset();
     }
 
-    /// Loan the slow packs with their advisor and local sub-unit stores.
     pub(crate) fn take_slow_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -400,10 +368,6 @@ impl Captured {
         }
     }
 
-    /// Returns the Slow job's fingerprint stores: forgotten if the job
-    /// failed, and with this hour's selection invalidated where a family's
-    /// table was not read completely, so its countries are read again at the
-    /// next hour.
     pub(crate) fn restore_slow_request(
         &mut self,
         request: crate::acquisition_jobs::SlowRequest,
@@ -412,8 +376,6 @@ impl Captured {
         let mut packs = request.packs;
         let mut stores = request.stores;
         if !completed {
-            // The Combat Log read may have advanced its countries' last
-            // complete read before failing.
             combat_log::forget_reads();
             packs.fail(request.hour, request.force_full, "slow acquisition failed");
             self.slow_refusal = Some("slow acquisition failed");
@@ -450,10 +412,6 @@ impl Captured {
         stores
     }
 
-    /// Loan the stability inputs and tree lines, with the `stability`
-    /// family's fingerprint store, to their own pool job of the first burst,
-    /// so they run beside Slow. Absence of the store drops only the family's
-    /// early reads for this hour.
     pub(crate) fn take_stability_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -481,9 +439,6 @@ impl Captured {
         }
     }
 
-    /// Restore the stability pack and return its store: forgotten if the job
-    /// failed, and with this hour's selection invalidated where a table was
-    /// not read completely, so its countries are read again at the next hour.
     pub(crate) fn restore_stability_request(
         &mut self,
         request: crate::acquisition_jobs::StabilityRequest,
@@ -515,7 +470,6 @@ impl Captured {
         store
     }
 
-    /// Loan MIO first, before the daily pack leaves with modifier range zero.
     pub(crate) fn take_industrial_organisations_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -538,7 +492,6 @@ impl Captured {
         }
     }
 
-    /// Reunite the independent MIO capture with range zero at the late join.
     pub(crate) fn restore_industrial_organisations_request(
         &mut self,
         request: crate::acquisition_jobs::IndustrialOrganisationsRequest,
@@ -551,7 +504,6 @@ impl Captured {
         scatter(&industrial_organisations::TABLES, ticks, &mut packs.ticks);
     }
 
-    /// Loan modifier range zero and the daily group's late-join storage.
     pub(crate) fn take_production_daily_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -578,8 +530,6 @@ impl Captured {
         }
     }
 
-    /// Restore the daily production packs, refusing their tables if the job
-    /// failed.
     pub(crate) fn restore_production_daily_request(
         &mut self,
         request: crate::acquisition_jobs::ProductionDailyRequest,
@@ -600,10 +550,6 @@ impl Captured {
         self.production_daily_spare = Some(packs);
     }
 
-    /// On the game thread before a slot hour's dispatch, before the
-    /// ProductionDaily loan: splits the production modifier capture at the
-    /// previous slot hour's `starts` ([`production_modifiers::Captured`]).
-    /// Returns its parts, the first included.
     pub(crate) fn prepare_production_modifier_parts(
         &mut self,
         memory: &impl Memory,
@@ -614,7 +560,6 @@ impl Captured {
             .prepare_parts(memory, base, starts)
     }
 
-    /// Loans part `part` (1..) of the prepared split to its own job.
     pub(crate) fn take_production_modifier_part(
         &mut self,
         part: usize,
@@ -638,8 +583,6 @@ impl Captured {
         }
     }
 
-    /// Returns a part after the ProductionDaily job; its cost joins the
-    /// family's.
     pub(crate) fn restore_production_modifier_part(
         &mut self,
         request: crate::acquisition_jobs::ProductionModifierPartRequest,
@@ -658,7 +601,6 @@ impl Captured {
         }
     }
 
-    /// The next slot hour's split, from this hour's complete capture.
     pub(crate) fn production_modifier_starts(
         &self,
         previous: ([u32; production_modifiers::MAX_PARTS - 1], usize),
@@ -677,9 +619,6 @@ impl Captured {
         );
     }
 
-    /// Loan the war overview (WarOwnedRelations, WarRelationGoals,
-    /// WarOverviewCountries and WarNameRules) to its own pool job of the
-    /// first burst, so it runs beside Slow.
     pub(crate) fn take_war_overview_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -705,7 +644,6 @@ impl Captured {
         }
     }
 
-    /// Restore the war overview pack, refusing its tables if the job failed.
     pub(crate) fn restore_war_overview_request(
         &mut self,
         request: crate::acquisition_jobs::WarOverviewRequest,
@@ -724,8 +662,6 @@ impl Captured {
         self.war_overview_spare = Some(packs);
     }
 
-    /// Loan the raid target statuses to their own pool job, so they run
-    /// beside the sliced raid families rather than after them.
     pub(crate) fn take_raid_targets_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -754,7 +690,6 @@ impl Captured {
         }
     }
 
-    /// Restore the raid target statuses.
     pub(crate) fn restore_raid_targets_request(
         &mut self,
         request: crate::acquisition_jobs::RaidTargetsRequest,
@@ -777,8 +712,6 @@ impl Captured {
         self.raid_targets_spare = Some(packs);
     }
 
-    /// Loan the sliced state and building inputs, with their fingerprint
-    /// stores, to their own pool job.
     pub(crate) fn take_raid_state_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -806,10 +739,6 @@ impl Captured {
         }
     }
 
-    /// Restore the raid state packs and return their stores: forgotten if the
-    /// job was interrupted (every owner is then new and read at the next
-    /// hour), and with a family's selection invalidated if any of its tables
-    /// was not read completely, so its owners are read again at the next hour.
     pub(crate) fn restore_raid_state_request(
         &mut self,
         request: crate::acquisition_jobs::RaidStateRequest,
@@ -841,7 +770,6 @@ impl Captured {
                 .country_selection()
                 .invalidate(&mut stores.buildings);
         }
-        // TradeRoutes, the `trade_routes` family's table.
         if unpublished(&self.resource_map.outcomes()[5..6]) {
             self.resource_map
                 .route_selection()
@@ -850,7 +778,6 @@ impl Captured {
         stores
     }
 
-    /// Loan the sliced raid launch inputs and their store to their own job.
     pub(crate) fn take_raid_launch_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -878,8 +805,6 @@ impl Captured {
         }
     }
 
-    /// Restore the raid launch pack and return its store, forgotten or
-    /// invalidated as [`Self::restore_raid_state_request`] does.
     pub(crate) fn restore_raid_launch_request(
         &mut self,
         request: crate::acquisition_jobs::RaidLaunchRequest,
@@ -899,7 +824,6 @@ impl Captured {
         self.raid_launch_ticks = Some(packs.ticks);
         std::mem::swap(&mut self.raid_launch_inputs, &mut packs.raid_launch_inputs);
         self.raid_launch_spare = Some(packs);
-        // The sliced family's table, RaidAirSites.
         let launch = self.raid_launch_inputs.outcomes();
         if unpublished(&launch[2..3]) {
             self.raid_launch_inputs.selection().invalidate(&mut store);
@@ -944,8 +868,6 @@ impl Captured {
         );
     }
 
-    /// Loan the late packs and the walked order census to the job.
-    /// `naval_raw`: the Naval raw job staged the order-of-battle sources.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_late_request(
         &mut self,
@@ -974,7 +896,6 @@ impl Captured {
         }
     }
 
-    /// Restore the late packs.
     pub(crate) fn restore_late_request(
         &mut self,
         request: crate::acquisition_jobs::LateRequest,
@@ -994,8 +915,6 @@ impl Captured {
         self.install_reserved_land_certificate();
     }
 
-    /// Loan the division sources, the unit inputs and the icon pack to the
-    /// ArmyIcons job, once the division sources are installed.
     pub(crate) fn take_army_icons_request(
         &mut self,
         base: usize,
@@ -1012,8 +931,6 @@ impl Captured {
         }
     }
 
-    /// Restore the division sources and the icon rows, which the Late job
-    /// keeps; a failed job fails the rows.
     pub(crate) fn restore_army_icons_request(
         &mut self,
         request: crate::acquisition_jobs::ArmyIconsRequest,
@@ -1030,8 +947,6 @@ impl Captured {
         self.army_icon_inputs = icons;
     }
 
-    /// Loan the RaidAirScores and rail parts to their first-burst job, with
-    /// the attachment's held score table and rail store.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_scores_rails_request(
         &mut self,
@@ -1059,14 +974,7 @@ impl Captured {
         }
     }
 
-    /// Install the job's RaidAirScores and rail tables in this frame's air
-    /// and naval packs, which the Late job then keeps, and return the held
-    /// score table and rail store. A failed job fails the tables, rereads
-    /// every score pair next hour and forgets the rail store. Call after the
-    /// map sample and with the air pack back from the AirMissions job.
     #[allow(clippy::type_complexity)]
-    /// Loan the spare regional Air supply capture to the AirSupply job, which
-    /// reads only the game state; the air pack keeps the other until its join.
     pub(crate) fn take_air_supply_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -1082,8 +990,6 @@ impl Captured {
         }
     }
 
-    /// The AirSupply job's capture into the air pack, back from the
-    /// AirMissions job; the pack's previous capture becomes the spare.
     pub(crate) fn restore_air_supply_request(
         &mut self,
         request: crate::acquisition_jobs::AirSupplyRequest,
@@ -1120,15 +1026,11 @@ impl Captured {
         (air_scores, rail_store)
     }
 
-    /// Hand the Late job's order transport to the division presentation once
-    /// both have joined.
     pub(crate) fn install_order_transport(&mut self) {
         self.plans
             .install_order_transport(&mut self.division_presentation);
     }
 
-    /// Loan the raw-gated packs once every raw-copy verdict is in, with the
-    /// projects family's fingerprint store.
     pub(crate) fn take_gated_request(
         &mut self,
         base: usize,
@@ -1158,9 +1060,6 @@ impl Captured {
         }
     }
 
-    /// Returns the projects family's store, forgotten when the job failed; a
-    /// project read that did not complete has its selection invalidated, so
-    /// its owners are read at the next hour.
     pub(crate) fn restore_gated_request(
         &mut self,
         request: crate::acquisition_jobs::GatedRequest,
@@ -1194,8 +1093,6 @@ impl Captured {
         std::mem::swap(&mut self.construction, &mut packs.construction);
     }
 
-    /// Loan the character inputs once the roster joins, with its role census
-    /// and the held role rows. They read no raw-copy verdict.
     pub(crate) fn take_character_inputs_request(
         &mut self,
         base: usize,
@@ -1218,8 +1115,6 @@ impl Captured {
         }
     }
 
-    /// Returns the held role rows, forgotten when the job failed. The census
-    /// loan is released here, before the roster job can recycle it.
     pub(crate) fn restore_character_inputs_request(
         &mut self,
         request: CharacterInputsRequest,
@@ -1254,8 +1149,6 @@ impl Captured {
     }
 }
 
-/// Every table of the Ordinary family: the map counter inputs read from live
-/// memory. A failed or refused part refuses all of them together.
 pub(super) const ORDINARY_TABLES: &[&[TableId]] = &[
     &combat_details::TABLES,
     &naval_details::TABLES,
@@ -1275,11 +1168,6 @@ pub(super) const ORDINARY_TABLES: &[&[TableId]] = &[
     &battle_sounds::TABLES,
 ];
 
-/// The Ordinary family's counter part: the country counter pass with the
-/// reserved country's visibility, which reads the naming observation the
-/// Countries job leaves in the appearance pack. Its own pool job, dispatched
-/// once the Countries job joins; the family's other parts
-/// ([`OrdinaryPart`]) need no other job and leave with the first burst.
 pub(crate) struct OrdinaryPacks {
     pub(crate) country_appearance: country_appearance::Captured,
     pub(crate) country_counters: country_counters::Captured,
@@ -1294,14 +1182,10 @@ impl OrdinaryPacks {
             + self.country_counters.allocated_bytes()
     }
 
-    /// Record a terminal failure; the family's packs fail together when it
-    /// returns ([`Captured::restore_ordinary_request`]).
     pub(crate) fn fail(&mut self, reason: &'static str) {
         self.ticks = [0; TABLE_COUNT];
         self.failure.get_or_insert(reason);
     }
-    /// Placeholders the extended capture holds while the pool owns the real
-    /// packs. Only the reusable box allocates; the hourly exchange is a swap.
     pub(super) fn spare() -> Option<Box<Self>> {
         if crate::allocation::failed() {
             return None;
@@ -1315,7 +1199,6 @@ impl OrdinaryPacks {
         .ok()
     }
 
-    /// [`Self::capture_at_carried`] without held counter rows.
     #[cfg(test)]
     pub(crate) fn capture_at(
         &mut self,
@@ -1327,10 +1210,6 @@ impl OrdinaryPacks {
         self.capture_at_carried(memory, base, game_state, hour, None);
     }
 
-    /// One hour's country counter pass. The appearance pack's naming was
-    /// preacquired by the Countries job; its reserved visibility feeds the
-    /// counter pass's reverse rows. `counters` lends the held counter rows
-    /// ([`country_counters::CounterStore`]).
     pub(crate) fn capture_at_carried(
         &mut self,
         memory: &impl Memory,
@@ -1347,8 +1226,6 @@ impl OrdinaryPacks {
                 .capture_at(memory, base, game_state, hour),
             &mut ticks,
         );
-        // Take the completed scalar handoff even after a required naming
-        // refusal. It never survives Ordinary into worker conversion.
         let visibility = self.country_appearance.take_reserved_visibility();
         let prefix_ready = self.country_appearance.reserved_land_certificate_ready();
         scatter(
@@ -1374,23 +1251,13 @@ impl OrdinaryPacks {
     }
 }
 
-/// The Ordinary family's independent parts, each its own pool job of the
-/// first burst. None reads another job's output or another part's packs.
 pub(crate) const ORDINARY_PARTS: usize = 5;
 
-/// One independent part of the Ordinary family on loan to its pool job.
 pub(crate) enum OrdinaryPart {
-    /// Land combat details.
     Combat(Box<OrdinaryCombatPacks>),
-    /// Naval combat details, results and province combats.
     Naval(Box<OrdinaryNavalPacks>),
-    /// Naval bases, facilities, railway guns, abilities, the country half of
-    /// the score inputs, group counters, saved event targets and the
-    /// battle-sound list.
     Map(Box<OrdinaryMapPacks>),
-    /// Task force and fleet counter inputs.
     TaskForces(Box<OrdinaryTaskForcePacks>),
-    /// The physical navy pass and the naval mission ledgers that borrow it.
     Navies(Box<OrdinaryNavyPacks>),
 }
 
@@ -1427,10 +1294,6 @@ pub(crate) struct OrdinaryTaskForcePacks {
     failure: Option<&'static str>,
 }
 
-/// The physical navy pass on loan from CountryCounterInputs, the reserved
-/// country's launch sources it fills (installed into the appearance pack on
-/// return, after the Countries job's naming reset them) and the strict naval
-/// mission ledgers that borrow the pass, with their sliced store.
 pub(crate) struct OrdinaryNavyPacks {
     pub(crate) naval_mission_inputs: naval_mission_inputs::Captured,
     navies: Option<country_counters::Navies>,
@@ -1441,7 +1304,6 @@ pub(crate) struct OrdinaryNavyPacks {
 }
 
 impl OrdinaryPart {
-    /// Placeholder boxes, one per part in dispatch order.
     pub(super) fn spares() -> [Option<Self>; ORDINARY_PARTS] {
         if crate::allocation::failed() {
             return [const { None }; ORDINARY_PARTS];
@@ -1497,7 +1359,6 @@ impl OrdinaryPart {
         ]
     }
 
-    /// The placeholder boxes' own size: no parked pack owns storage.
     #[cfg(test)]
     pub(super) fn spare_box_bytes() -> usize {
         size_of::<OrdinaryCombatPacks>()
@@ -1544,8 +1405,6 @@ impl OrdinaryPart {
         }
     }
 
-    /// Exchange this part's packs with the frame's: the real packs go out on
-    /// loan and the placeholders come back, or the reverse.
     fn swap(&mut self, captured: &mut Captured) {
         match self {
             Self::Combat(packs) => {
@@ -1567,7 +1426,6 @@ impl OrdinaryPart {
                 std::mem::swap(&mut captured.map_facilities, &mut packs.map_facilities);
                 std::mem::swap(&mut captured.railway_guns, &mut packs.railway_guns);
                 std::mem::swap(&mut captured.active_abilities, &mut packs.active_abilities);
-                // The map's typed air fallback runs before Ordinary joins.
                 captured.game_score.swap_country(&mut packs.game_score);
                 std::mem::swap(&mut captured.group_counters, &mut packs.group_counters);
                 std::mem::swap(
@@ -1585,9 +1443,7 @@ impl OrdinaryPart {
                     &mut packs.naval_mission_inputs,
                 );
                 match packs.navies.take() {
-                    // Going out: the counter pass keeps the rest of its pack.
                     None => packs.navies = Some(captured.country_counters.take_navies()),
-                    // Coming back: the pass and the launch sources it filled.
                     Some(navies) => {
                         captured.country_counters.restore_navies(navies);
                         std::mem::swap(
@@ -1600,7 +1456,6 @@ impl OrdinaryPart {
         }
     }
 
-    /// Clear the hour's ticks and verdict; the navy part takes the store.
     fn begin(&mut self, naval_missions: &mut Option<NavalMissionLoan>) {
         let (ticks, failure) = self.state();
         *ticks = [0; TABLE_COUNT];
@@ -1610,7 +1465,6 @@ impl OrdinaryPart {
         }
     }
 
-    /// The navy part's store, returned with the part.
     fn end(&mut self) -> Option<NavalMissionLoan> {
         match self {
             Self::Navies(packs) => packs.naval_missions.take(),
@@ -1636,15 +1490,12 @@ impl OrdinaryPart {
         *self.state().1
     }
 
-    /// Record a terminal failure; the family's packs fail together when it
-    /// returns ([`Captured::restore_ordinary_request`]).
     pub(crate) fn fail(&mut self, reason: &'static str) {
         let (ticks, failure) = self.state();
         *ticks = [0; TABLE_COUNT];
         failure.get_or_insert(reason);
     }
 
-    /// One hour's reads of this part.
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1726,7 +1577,6 @@ impl OrdinaryPart {
                     .as_mut()
                     .expect("the navy part holds the physical navy pass");
                 let naval_missions = packs.naval_missions.get_or_insert_with(Default::default);
-                // The pass begins before the mission ledgers borrow its navies.
                 let mut naval_reader =
                     navies.begin(memory, base, game_state, hour, &mut packs.launch);
                 scatter(
@@ -1744,7 +1594,6 @@ impl OrdinaryPart {
                     &mut ticks,
                 );
                 crate::navy_ledger_changes::record(packs.naval_mission_inputs.ledger_counts());
-                // The mission borrowers have returned the physical navy controls.
                 naval_reader.clear();
                 navies.finish();
                 ticks[country_counters::TABLES[0].index()] += navies.ticks();
@@ -1754,32 +1603,21 @@ impl OrdinaryPart {
     }
 }
 
-// The original hourly naval mission pass and sliced-family store travel
-/// together through Ordinary. No other job may read or publish this loan.
 #[derive(Default)]
 pub(crate) struct NavalMissionLoan {
     pub(crate) force_full: bool,
     pub(crate) fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
 }
 
-/// The Slow job's sliced-family stores. Without the available-advisor store
-/// every country's pool is read.
 #[derive(Default)]
 pub(crate) struct SlowStores {
     pub(crate) doctrine_bytes: u64,
     pub(crate) doctrines: Option<Box<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
-    /// `slicing::AVAILABLE_ADVISORS`.
     pub(crate) available: Option<Box<crate::slicing::SliceFingerprints>>,
-    /// Held AvailableAdvisors and AdvisorTokens rows
-    /// ([`hired_advisors::AdvisorStore`]); absent reads both afresh.
     pub(crate) advisors: Option<Box<hired_advisors::AdvisorStore>>,
-    /// Held CountryLocalSubunits rows ([`model_inputs::LocalStore`]); absent
-    /// reads every country afresh.
     pub(crate) local_subunits: Option<Box<model_inputs::LocalStore>>,
 }
 
-/// The raid state job's owner stores (`slicing::RAID_STATE`, `RAID_BUILDINGS`,
-/// `TRADE_ROUTES`).
 pub(crate) struct RaidStateStores {
     pub(crate) states: Box<crate::slicing::SliceFingerprints>,
     pub(crate) buildings: Box<crate::slicing::SliceFingerprints>,
@@ -1797,16 +1635,6 @@ impl RaidStateStores {
     }
 }
 
-/// The live-memory packs run as a pool job of the first burst (peace bids,
-/// map names, visibility, faction theatres, model inputs, modifier
-/// definitions, hired advisors, logistics, the Combat Log, country factories,
-/// industrial organisations, production modifiers and tactic unlocks). No
-/// defines are recorded: the viewer reads the movement defines from the
-/// content's `NDefines`. Each table keeps its own
-/// [`replay_data::cadence`]. The template dictionary is not here: its own job
-/// reads it beside the Countries job ([`Captured::take_preacquired_templates`]);
-/// nor are the stability tables and the war overview, which their own jobs
-/// read beside Slow ([`StabilityPacks`], [`WarOverviewPacks`]).
 pub(crate) struct SlowPacks {
     pub(crate) peace_bids: peace_bids::Captured,
     pub(crate) map_names: map_names::Captured,
@@ -1820,14 +1648,10 @@ pub(crate) struct SlowPacks {
     pub(crate) country_factories: country_factories::Captured,
     pub(crate) state_building_inputs: state_building_inputs::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
-    /// The session's capture mode: a sub-pack it records no table of is
-    /// refused without its walk. Set with each loan.
     pub(crate) capture_mode: replay_data::scope::CaptureMode,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
-/// The stability inputs and tree lines (the sliced `stability` family): their
-/// own pool job of the first burst, so they run beside Slow.
 pub(crate) struct StabilityPacks {
     pub(crate) country_stability: country_stability::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -1855,8 +1679,6 @@ impl StabilityPacks {
         .ok()
     }
 
-    /// The family's walk with the loaned store; without one only the hour's
-    /// slice is read ([`country_stability::Captured::capture`]).
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1876,9 +1698,6 @@ impl StabilityPacks {
     }
 }
 
-/// The war overview (the owned war relations, their goals, the overview's
-/// countries and the war naming prefix): its own pool job of the first burst,
-/// so it runs beside Slow.
 pub(crate) struct WarOverviewPacks {
     pub(crate) war_overview: war_overview::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -1925,12 +1744,6 @@ impl WarOverviewPacks {
     }
 }
 
-/// The daily production slot's industrial organisations and production
-/// modifiers (`Daily(8)`): independent first-burst jobs, with MIO submitted
-/// before every modifier range. Off the slot they are not loaned and their
-/// tables are skipped without a read.
-/// They keep Slow's refusals: a failed or missing job refuses them with
-/// Slow's reasons, and Slow's own refusal refuses them too.
 pub(crate) struct ProductionDailyPacks {
     pub(crate) industrial_organisations: industrial_organisations::Captured,
     industrial_organisations_completed: Option<bool>,
@@ -1966,13 +1779,11 @@ impl ProductionDailyPacks {
         .ok()
     }
 
-    /// Whether the slot's walks run this hour: the job is queued exactly then.
     pub(crate) fn due(hour: i32, force_full: bool) -> bool {
         replay_data::cadence::should_walk(industrial_organisations::TABLES[0], hour, force_full)
             || replay_data::cadence::should_walk(production_modifiers::TABLES[0], hour, force_full)
     }
 
-    /// Whether `mode` records any of the slot's tables; its jobs run only then.
     pub(crate) fn recorded(mode: replay_data::scope::CaptureMode) -> bool {
         super::records_any(mode, &industrial_organisations::TABLES)
             || super::records_any(mode, &production_modifiers::TABLES)
@@ -1998,17 +1809,12 @@ impl ProductionDailyPacks {
     }
 }
 
-/// The sliced state and building-resource inputs, then the resources map tables and
-/// the sliced trade routes: their own pool job of the first burst, so they run beside
-/// Slow.
 pub(crate) struct RaidStatePacks {
     pub(crate) raid_state_inputs: raid_state_inputs::Captured,
     pub(crate) resource_map: resource_map::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
-/// Raid target statuses: their own pool job of the first burst, so they run
-/// beside the sliced raid families.
 pub(crate) struct RaidTargetPacks {
     pub(crate) raid_target_statuses: raid_target_statuses::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -2114,7 +1920,6 @@ impl RaidStatePacks {
     }
 }
 
-/// The sliced raid launch inputs: their own pool job of the first burst.
 pub(crate) struct RaidLaunchPacks {
     pub(crate) raid_launch_inputs: raid_launch_inputs::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -2261,8 +2066,6 @@ impl SlowPacks {
             modifier_definitions,
             logistics
         );
-        // The Combat Log walk drains its history hooks' lane, so it runs in
-        // every mode.
         scatter(
             &combat_log::TABLES,
             self.combat_log
@@ -2270,7 +2073,6 @@ impl SlowPacks {
             &mut ticks,
         );
         staggered!(country_factories, state_building_inputs);
-        // Without the doctrine store the unlock walk reads no doctrine.
         scatter(
             &country_tactic_unlocks::TABLES,
             self.country_tactic_unlocks.capture_carried(
@@ -2321,8 +2123,6 @@ impl SlowPacks {
     }
 }
 
-/// RaidAirScores and the shared rail tables, captured by their own job in the
-/// first burst: both walks read only the game state and the hour.
 pub(crate) struct ScoresRailsParts {
     pub(crate) scores: air::ScorePart,
     pub(crate) rails: naval_history::RailPart,
@@ -2345,18 +2145,13 @@ impl ScoresRailsParts {
     }
 }
 
-/// The typed walks seeded by the map sample (wings, order sources, HQ portraits) and the
-/// division census, moved off the game thread as a second pool job dispatched
-/// once the map sample has run.
 pub(crate) struct LatePacks {
     pub(crate) leader_portraits: leader_portraits::Captured,
     pub(crate) leader_paths: leader_paths::Captured,
     pub(crate) air: air::Captured,
     pub(crate) naval_history: naval_history::Captured,
     pub(crate) army_icon_inputs: army_icon_inputs::Captured,
-    /// The walked order census; the naval order sources read its roots.
     pub(crate) orders: Orders,
-    /// The Naval raw job staged the order-of-battle sources itself.
     pub(crate) naval_raw: bool,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
@@ -2435,7 +2230,6 @@ impl LatePacks {
         }
         let parent = MISSING;
         self.air.finish_wings(parent);
-        // Without the AirMissions job the history parts get no regions.
         if !self.air.missions_captured() {
             self.air.capture_missions(
                 memory,
@@ -2459,8 +2253,6 @@ impl LatePacks {
         scatter(&naval_history::TABLES, cost, &mut ticks);
         let cost = match self.army_icon_inputs.take_early() {
             Some(ticks) => [ticks],
-            // Production captures the icons in their own job; without them
-            // the inline walk reads the frame's division sources.
             None => match divisions {
                 Some(divisions) => {
                     let seeds = inputs.map(UnitInputs::seeds);
@@ -2479,29 +2271,20 @@ impl LatePacks {
     }
 }
 
-/// Raw-gated packs; Projects is loaned to an independent job until settlement.
 pub(crate) struct GatedPacks {
     pub(crate) fog: fog::Captured,
     pub(crate) projects: projects::Captured,
     pub(crate) construction: construction::Captured,
-    /// False when the capture mode records none of the projects tables:
-    /// their walks do not run.
     pub(crate) projects_recorded: bool,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
-/// The character inputs' loans: the roster job's role census (absent when
-/// none was admitted) and the held role rows
-/// ([`super::character_inputs::RoleStore`]; absent reads every role afresh).
 #[derive(Default)]
 pub(crate) struct CharacterInputRoles {
     pub(crate) census: Option<engine_allocation::SharedBox<super::characters::census::RoleCensus>>,
     pub(crate) store: Option<Box<super::character_inputs::RoleStore>>,
 }
 
-/// CharacterRoleTraits and CharacterOperatives from the roster job's role
-/// census of this callback, in their own job: the roster's consumers do not
-/// wait for the raw-copy verdicts the Gated packs read.
 pub(crate) struct CharacterInputsRequest {
     base: usize,
     game_state: usize,
@@ -2514,8 +2297,6 @@ pub(crate) struct CharacterInputsRequest {
 impl CharacterInputsRequest {
     pub(crate) fn capture(&mut self, memory: &impl Memory) -> [u64; character_inputs::N] {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
-        // The role census replaces the roster walk; the held rows carry
-        // every certified character's country-leader and advisor rows.
         let census = self
             .roles
             .census
@@ -2589,7 +2370,6 @@ impl GatedPacks {
     }
 }
 
-/// Final original borrowers, moved together after their source jobs join.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct FinalInputsReport {
     pub snapshots: [u64; 2],
@@ -2873,7 +2653,6 @@ impl Captured {
         self.divisions = request.divisions;
         self.new_divisions = request.new_divisions;
         self.experience_gains = request.experience;
-        // FinalInputs never borrows the independently acquired variant family.
         request
             .production
             .restore_variants(self.production.take_variants());

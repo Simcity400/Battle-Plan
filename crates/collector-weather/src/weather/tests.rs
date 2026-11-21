@@ -6,8 +6,6 @@ fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
     bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
 }
 
-/// Manager 0x2000, one region at 0x3000, one province at 0x4000, display
-/// snow at 0x4800, mud at 0x4810 and stored clock at 0x4900.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
     put(
@@ -109,7 +107,6 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
-/// The fixture province's temperature words.
 fn fixture_words() -> replay_data::temperature::State {
     replay_data::temperature::State {
         temperature: -9_007_199_254_740_993,
@@ -150,8 +147,6 @@ fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, WeatherJob
 #[test]
 fn air_forecast_derives_updated_direction_and_acquires_only_held_direction() {
     let mut bytes = fixture();
-    // The common fixture deliberately keeps nonboolean suspension bytes for
-    // the raw-flags test; this branch needs an ordinary completed update.
     put(
         &mut bytes,
         0x2000 + cweather_manager::SUSPEND_FLAGS,
@@ -250,7 +245,6 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
             permanent_snow: 40_000,
             display_snow: 200,
             display_mud: 255,
-            // A first hour anchors the pass at its own words.
             temperature: rows::ProvinceTemperature::anchored(fixture_words()),
             raw_mud: replay_data::rows::Recorded::Value(7),
             clock: rows::DayNightClock::held(replay_data::day_night::Clock {
@@ -267,7 +261,6 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
                     replay_data::temperature::witness([fixture_words().temperature])
                 ),
             })),
-            // The typed fixture path reads no modifier: a refusal, never zero.
             modifiers: rows::Recorded::Value(None),
             static_modifiers: rows::Recorded::Value(None),
             daylight: rows::Recorded::Value(Some(rows::WeatherDaylight {
@@ -279,8 +272,6 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
     );
 }
 
-/// The fixture with a second province (slot 1, record 0x4180, clock 0x4C30)
-/// and the given suspension gates.
 fn two_provinces(gates: [u8; 2]) -> Vec<u8> {
     let mut bytes = fixture();
     for offset in [
@@ -330,9 +321,7 @@ fn clear_gates_record_updated_clocks_from_slot_one_and_hold_the_rest() {
     };
     let slot_zero = held(-7, -9_007_199_254_740_993);
     for (gates, slot_one) in [
-        // Hourly weather update ran day/night update: slot 1 is the hour's derivation.
         ([0, 0], rows::DayNightClock::UPDATED),
-        // Either gate skips the writer; the records keep their clocks.
         ([0, 1], held(19, 61_234)),
         ([1, 0], held(19, 61_234)),
         ([3, 255], held(19, 61_234)),
@@ -362,14 +351,11 @@ fn raw_copy_matches_the_whole_typed_walk_from_any_frame_capacity_and_under_fault
     let clean = fixture();
     let mut cases = vec![clean.clone()];
     for (address, value) in [
-        // Region header invalid: provinces stay available.
         (
             0x2000 + cweather_manager::REGIONS_COUNT,
             (-1_i32).to_le_bytes(),
         ),
-        // Province identity mismatch.
         (0x4000 + sweather_per_province::ID, 7_i32.to_le_bytes()),
-        // Display array sized for another province count.
         (
             0x2000 + cweather_manager::DISPLAY_MUD + 12,
             2_i32.to_le_bytes(),
@@ -399,7 +385,6 @@ fn raw_copy_matches_the_whole_typed_walk_from_any_frame_capacity_and_under_fault
             rows: [8, 8],
             ..Default::default()
         };
-        // The decode grows a short frame to the whole census.
         for rows in [[0, 0], [1, 1], [8, 8]] {
             let capacities = Capacities {
                 rows,
@@ -411,8 +396,6 @@ fn raw_copy_matches_the_whole_typed_walk_from_any_frame_capacity_and_under_fault
     }
 }
 
-/// More provinces than one display-array read chunk: the decode worker
-/// serves chunked reads from the recorded bulk spans.
 #[test]
 fn display_arrays_longer_than_a_read_chunk_decode_from_the_bulk_copy() {
     const PROVINCES: usize = 1500;
@@ -556,12 +539,9 @@ fn a_faulted_field_or_display_array_is_unavailable_in_both_paths() {
     }
 }
 
-/// A failed snow-ceiling read refuses WeatherRegions only: the province records and
-/// their weather modifier entries, read without it, stay recorded.
 #[test]
 fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
     let mut bytes = fixture();
-    // The fixture province's one modifier entry, after the clock record.
     let entry = 0x4c00_usize;
     let header = 0x4000 + sweather_per_province::MODIFIERS;
     put(&mut bytes, header, &(entry as u64).to_le_bytes());
@@ -644,7 +624,6 @@ fn an_ordinary_province_suffix_fault_fails_the_provinces_read_once() {
         fault: second + sweather_per_province::SNOW,
         failures: Cell::new(0),
     };
-    // A frame shorter than the census grows to it, so the failed row is decoded.
     let (captured, job) = split(
         &memory,
         &Capacities {
@@ -724,9 +703,6 @@ fn a_short_clock_payload_grows_to_its_exact_demand_in_the_pass() {
     );
 }
 
-// PRIVATE UNRUN R6 append for crates/collector/src/extended/weather/tests.rs.
-// Reuses fixture(), memory(), put(), and assert_matches(). The engine registry
-// Fixture is cfg(test)/pub, so collector cannot import that helper.
 
 struct AttackWeatherMemory {
     bytes: Vec<u8>,
@@ -769,7 +745,6 @@ impl AttackWeatherMemory {
             put(&mut bytes, address + entry::KEY, &key.to_le_bytes());
             put(&mut bytes, address + entry::VALUE, &raw.to_le_bytes());
         }
-        // The province record's own weather modifier: a speed and a heat entry.
         let root = 0x4000 + sweather_per_province::MODIFIERS;
         const PROVINCE_VALUES: usize = 0x4c00;
         put(&mut bytes, root, &(PROVINCE_VALUES as u64).to_le_bytes());
@@ -788,8 +763,6 @@ impl AttackWeatherMemory {
                 &[flag],
             );
         }
-        // Use the numeric getter's real passive metadata path, not a Memory
-        // modifier-value override. Eligibility selector0 needs no callback.
         let mut metadata = std::collections::BTreeMap::new();
         const TABLE: usize = 0x10_0000;
         metadata.extend(
@@ -988,8 +961,6 @@ fn regional_map_terms_distinguish_known_empty_from_refused_accumulator() {
     );
 }
 
-/// The typed walk reads no modifier accumulator; these are the fixture's entries
-/// as the copy records them, raw (playback applies the definitions).
 fn give_fixture_accumulators(typed: &mut Captured) {
     use engine_executable::modifier_keys as key;
     typed.combat = vec![Some([
@@ -1002,7 +973,6 @@ fn give_fixture_accumulators(typed: &mut Captured) {
         Some(150_001),
         None,
     ])];
-    // Key 0x11 is absent, so the air efficiency breakdown is its empty root.
     typed.air_efficiency = vec![Some(std::sync::Arc::new(vec![
         rows::ModifierBreakdownNode {
             children: 0,
@@ -1015,13 +985,10 @@ fn give_fixture_accumulators(typed: &mut Captured) {
         (key::ARMY_SPEED_FACTOR, -40_000),
         (key::HEAT_ATTRITION, 25_000),
     ])));
-    // The fixture region's custom sea array is empty.
     typed.custom_sea.clear();
     assert!(typed.custom_sea.push(Some(&[])));
 }
 
-/// A region row carries its custom sea values in the record's own order and count; a header
-/// that is no array, or values that do not copy, refuse them alone.
 #[test]
 fn weather_regions_record_custom_sea_values_and_refuse_them_alone() {
     let mut source = AttackWeatherMemory::new(None);
@@ -1058,9 +1025,6 @@ fn weather_regions_record_custom_sea_values_and_refuse_them_alone() {
 
 #[test]
 fn weather_regions_record_raw_combat_entries_and_no_witness() {
-    // A worker reads each region's raw entries once, during the copy, and the
-    // air efficiency breakdown's own lookup reads the same 16-byte header once;
-    // the definitions stay unread, as playback applies them and key 0x11 is absent.
     let source = AttackWeatherMemory::new(None);
     let (copied, job) = split_attack_at(&source);
     assert_eq!(job.log.fault, [false; N]);
@@ -1123,8 +1087,6 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
     assert_eq!(region.naval_detection, Some(-99_999).into());
     assert_eq!(region.air_attack, Some(i64::MIN).into());
     assert_eq!(region.air_defence, Some(i64::MAX).into());
-    // The province's raw accumulator, every entry, comes from the same copy; an absent
-    // key is absent, distinct from a refused read.
     let views = copied.tables();
     let TableView::Complete(provinces) = &views[1] else {
         panic!("weather provinces must stay complete")
@@ -1191,7 +1153,6 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
             &(start..start + 9).collect::<Vec<_>>(),
         );
     }
-    // Interior cells only, as changed provinces queue them.
     put(
         &mut source.bytes,
         0x2000 + cweather_manager::DISPLAY_WORK_QUEUE,
@@ -1206,7 +1167,6 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
     source
 }
 
-/// The fixture grid's nine cells queued in order, as a whole-grid mark queues them.
 fn queue_whole_grid_mark(source: &mut AttackWeatherMemory) {
     for cell in 0..9_i32 {
         put(
@@ -1309,14 +1269,9 @@ fn weather_display_raw_and_typed_attach_dirty_and_full_rebuild_snapshots_match()
             }
         );
         assert_eq!(row.display_snow, if case == 0 { 200 } else { 210 });
-        // Ordinary weather dirties only the interior; the recorder's next
-        // boundary is read live, and never regenerated from this changed byte.
         put(&mut source.bytes, 0x4800, &[210]);
         put(&mut source.bytes, 0x4d00, &[200]);
     }
-    // Interior cells stay queued between timed graphics rebuilds, which is most
-    // of the time. Those cells are clamped off the last row and column, so the
-    // retained boundary is still the game's and the hour still records it.
     put(
         &mut source.bytes,
         0x2000 + cweather_manager::DISPLAY_WORK_COUNT,
@@ -1376,7 +1331,6 @@ fn weather_display_refusals_and_growth_preserve_independent_province_fields() {
         give_fixture_accumulators(&mut typed);
         assert_eq!(copied.tables(), typed.tables());
     }
-    // Empty display storage, the job's and the frame's, grows to the edges in the pass.
     let source = weather_display_memory(None);
     let (captured, job) = weather_display_split(&source, 0);
     assert_eq!(job.display.required, 10);
@@ -1454,13 +1408,9 @@ fn weather_display_whole_grid_rebuild_with_equal_token_refuses_only_the_boundary
                 return false;
             }
             if address == 0x2000 + cweather_manager::DISPLAY_WORK_COUNT {
-                // The fixture grid's nine cells, queued whole: a whole-grid rebuild.
                 let work = if self.completed.get() { 0_i32 } else { 9 };
                 destination.copy_from_slice(&work.to_le_bytes());
             }
-            // T was stored before capture. A cell changes (0,0) -> (255,0)
-            // -> (255,255) between the old reader's two planar reads; the
-            // completion store clears work but does not change T again.
             if (0x4d00..0x4d09).contains(&address) {
                 destination.fill(if self.completed.get() { 255 } else { 0 });
                 self.completed.set(true);
@@ -1478,8 +1428,6 @@ fn weather_display_whole_grid_rebuild_with_equal_token_refuses_only_the_boundary
             source: marked,
             completed: Cell::new(false),
         };
-        // Prove the scheduled interleaving would admit a never-existing pair
-        // without the initial completion guard, despite equal token reads.
         let mut snow = [0];
         let mut mud = [0];
         assert!(source.copy(0x4d02, &mut snow));
@@ -1520,8 +1468,6 @@ fn weather_display_whole_grid_rebuild_with_equal_token_refuses_only_the_boundary
             1,
             "no waiting or retry for an in-progress refresh"
         );
-        // A later independent acquisition can recover with the same T once
-        // the native jobs have completed, even after a mid-game attach.
         source.completed.set(true);
         let recovered = if raw {
             weather_display_split(&source, 10).0
@@ -1562,7 +1508,6 @@ fn weather_display_completion_guard_refuses_pending_or_faulted_work_after_edges(
                 if !self.source.copy(address, destination) {
                     return false;
                 }
-                // The fixture grid's nine cells, queued whole after the snow plane.
                 destination.copy_from_slice(&9_i32.to_le_bytes());
                 return true;
             }
@@ -1803,7 +1748,6 @@ fn live_weather_hints_and_original_worker_headers_cover_large_mod_maps() {
     }
 }
 
-/// One hour's acquisition and decode with the decode worker's pass tracker.
 fn tracked(
     memory: &impl Memory,
     hour: i32,
@@ -1869,8 +1813,6 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
             )),
         }
     );
-    // The next hour's pass visits the one slot and moves its words; the rows keep the
-    // anchor's words and the pass records the hour's seed and read witness.
     put(
         &mut bytes,
         0x4000 + sweather_per_province::TEMPERATURE,
@@ -1888,7 +1830,6 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
         recorded.witness,
         replay_data::rows::TemperatureWitness::new(replay_data::temperature::witness([42]))
     );
-    // An unread seed records no pass, keeps every province field, and the next hour anchors.
     let unread = FaultReads {
         memory: memory(&bytes),
         fault: 0x2000 + cweather_manager::SEED + 2,
@@ -2033,8 +1974,6 @@ fn province_projection_matches_complete_frames_across_changes_and_keyframes() {
         let mut projection = Projection::new(&projected, 1, hour, force, &scratch);
         let inputs = captured.table_inputs(Some(&mut projection));
         if hour == 1 {
-            // Slot 0, which carries the pass's daylight, display and temperature pass, always
-            // converts; no other province changed.
             assert!(matches!(&inputs[1], TableInput::SliceUpdate { update, .. }
                 if update.keys.as_slice() == [0]));
         }

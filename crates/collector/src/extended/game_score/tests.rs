@@ -14,7 +14,6 @@ fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     put32(bytes, at + 12, count);
 }
 
-// regression: 14ed7f8ceb feat: complete Aces and GameScore native input integration
 #[test]
 fn game_score_projection_keeps_countries_independent_values_and_ordered_witnesses() {
     const COUNT: usize = 3;
@@ -302,8 +301,6 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
         limits: [2, 3, 2],
         game_score: true,
     };
-    // Fresh score buffers and replacements returned by frame loans use the
-    // hints; the fixed core wing walk has its explicit fixture storage.
     for _ in 0..3 {
         let mut job = AirWingJob::fixture();
         job.game_score = AirWingJob::with_game_score(true).game_score;
@@ -591,7 +588,6 @@ fn game_score_fleet_header_grows_first_witness_and_the_air_sites_grow_with_it() 
         engine_native::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, 0x3f108, 65);
-    // No access: the native bounds test certifies false without a container.
     put32(
         &mut bytes,
         0x3f100 + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
@@ -614,7 +610,6 @@ fn game_score_fleet_header_grows_first_witness_and_the_air_sites_grow_with_it() 
         ..Default::default()
     };
     let mut capture = Captured::with_capacities(&capacity);
-    // The worker's air pass grows its empty site arena from the first hour.
     for _ in 0..2 {
         capture.reset();
         capture.capture(&memory, 0, kit::GAME_STATE);
@@ -726,7 +721,6 @@ fn worker_score_pass_grows_storage_a_frame_lent_back_instead_of_truncating() {
         limits: [1024, 8192, 4096],
         game_score: true,
     };
-    // A pool miss starts from storage with no rows at all.
     let mut job = AirWingJob::default();
     for hour in 0..3 {
         assert!(air::copy_air_refresh(&memory, context, &mut job).raw_ok);
@@ -740,8 +734,6 @@ fn worker_score_pass_grows_storage_a_frame_lent_back_instead_of_truncating() {
             job.game_score.countries[1].read.error,
             AirCountry::short_storage().read.error
         );
-        // The frame publishes this hour and lends back fixed storage sized
-        // before either wing or the owner's air slot was witnessed.
         let mut frame = Captured::with_capacities(&Capacities::default());
         frame.install_air(&mut job.game_score);
         assert_eq!(frame.air.wings.outcome, Outcome::Rows { len: 2 });

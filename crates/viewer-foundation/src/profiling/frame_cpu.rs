@@ -1,5 +1,3 @@
-//! PROFILE-only thread wall/CPU scopes and explicitly returned overlay-owner CPU.
-//! Nested scopes are inclusive; worker samples are not caller CPU.
 use super::current_thread_cpu_time;
 use std::{
     cell::RefCell,
@@ -29,7 +27,6 @@ std::thread_local! {
     static FRAME: RefCell<Frame> = RefCell::new(Frame::default());
 }
 
-/// Clear unprinted/error-frame diagnostics before the next frame starts.
 pub fn begin_thread_frame() {
     if crate::profile_writer::profiling() {
         FRAME.with(|frame| {
@@ -42,7 +39,6 @@ pub fn begin_thread_frame() {
     }
 }
 
-/// Frame/caller identity, captured before the existing overlay fork. No worker TLS is used.
 #[derive(Clone, Copy)]
 pub struct FrameOwners {
     origin: Option<(ThreadId, u64)>,
@@ -70,8 +66,6 @@ impl FrameOwners {
         }
     }
 
-    /// Runs exactly once, returning even an error result unchanged. CPU is this
-    /// executing thread only, not nested helper CPU. An unwind has no completed sample.
     pub fn measure<T>(
         self,
         name: &'static str,
@@ -100,7 +94,6 @@ impl FrameOwners {
     }
 }
 
-/// An explicitly transported completed sample, safe to return through the existing join.
 #[derive(Clone, Copy)]
 pub struct OwnerSample {
     name: &'static str,
@@ -151,7 +144,6 @@ impl OwnerRecord {
 }
 
 fn adopt_owner(frame: &mut Frame, receiver: ThreadId, sample: OwnerSample) {
-    // A stale result or another map's receiver cannot contaminate this frame.
     if receiver != sample.origin || frame.epoch != sample.epoch {
         return;
     }
@@ -168,7 +160,6 @@ fn adopt_owner(frame: &mut Frame, receiver: ThreadId, sample: OwnerSample) {
     }
 }
 
-/// Adopt on the original frame thread after joining; disabled samples do no TLS work.
 pub fn record_owner_sample(sample: Option<OwnerSample>) {
     if let Some(sample) = sample {
         let receiver = std::thread::current().id();
@@ -176,7 +167,6 @@ pub fn record_owner_sample(sample: Option<OwnerSample>) {
     }
 }
 
-/// A scope cannot move to a worker: both cycle samples must name the same thread.
 #[must_use = "a thread span records when finished or dropped"]
 pub struct ThreadSpan {
     name: &'static str,
@@ -220,7 +210,6 @@ impl Drop for ThreadSpan {
             .map(|used| used.as_secs_f64() * 1000.0);
         FRAME.with(|frame| {
             let mut frame = frame.borrow_mut();
-            // Dropping a previously aborted frame must not contaminate this one.
             if frame.epoch == epoch {
                 add(&mut frame.spans, self.name, wall_ms, cpu_ms);
             }
@@ -228,7 +217,6 @@ impl Drop for ThreadSpan {
     }
 }
 
-/// Unprinted scopes, counts and owner samples transferred to a frame owner.
 pub(super) struct FrameRecords {
     spans: Vec<Record>,
     counts: Vec<(&'static str, u64)>,
@@ -246,7 +234,6 @@ pub(super) fn take_frame_records() -> FrameRecords {
     })
 }
 
-/// Sums another thread's taken records into this thread's frame, calls included.
 pub(super) fn adopt_frame_records(records: FrameRecords) {
     FRAME.with(|frame| merge_frame_records(&mut frame.borrow_mut(), records));
 }
@@ -286,8 +273,6 @@ impl OwnerUsage {
     }
 }
 
-/// Counts are explicit, summed and never threshold-filtered. Callers gate any
-/// nontrivial operand gathering before this function, not just its output.
 pub fn record_count(name: &'static str, value: u64) {
     if crate::profile_writer::profiling() {
         FRAME.with(|frame| {
@@ -373,9 +358,6 @@ fn line(spans: &[Record], counts: &[(&'static str, u64)], owners: &[OwnerRecord]
     fields.join(" ")
 }
 
-/// Appends required top-level zero/call-zero scopes when work was not executed.
-/// Unavailable samples remain distinct from measured zero; no short CPU sample
-/// is suppressed.
 pub fn take_thread_spans() -> String {
     FRAME.with(|frame| {
         let mut frame = frame.borrow_mut();
@@ -515,7 +497,6 @@ mod tests {
         assert_eq!(frame.owners[1].helper.calls, 1);
     }
 
-    /// Transferred records preserve call counts, unavailable CPU and owner placement.
     #[test]
     fn taken_thread_records_merge_calls_counts_and_owners() {
         let mut frame = Frame::default();

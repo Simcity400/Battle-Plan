@@ -12,7 +12,6 @@ export interface ThemeDraft { id: string | null; name: string; variants: Partial
 const groups = [...new Set(Object.values(THEME_ROLES).map(role => role.group))];
 const modeLabel: Record<ThemeMode, string> = { dark: 'Dark', light: 'Light' };
 
-/** Edits a custom theme and previews it across the whole app while open. */
 export default function ThemeEditor({ draft: initial, onSave, onClose, onPreview }: {
   draft: ThemeDraft; onSave: (draft: ThemeDraft) => string | null; onClose: () => void; onPreview: (preview: ThemePreview | null) => void;
 }) {

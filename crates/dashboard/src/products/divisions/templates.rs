@@ -1,8 +1,3 @@
-//! A country's division templates at an hour: every template its roster owns, used or not, in
-//! the game's roster order, with battalions and support companies, base combat width, settings
-//! and how many divisions field it: a rows-at-an-hour product ([`AtHour`]). Fielded counts are
-//! the division equipment tables' counts by template for the attribution asked; the base width
-//! is the recorded sum of sub-unit widths before country and commander factors.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{ArmyAttribution, Content, Countries, Refusals, find, side, token_key};
@@ -41,23 +36,21 @@ pub struct DivisionTemplatesParams {
     pub count_for: ArmyAttribution,
 }
 
-/// One kind of sub-unit in a template grid, with how many cells hold it.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateUnit {
-    /// The sub-unit's content key, shown on hover only.
+    #[doc = " The sub-unit's content key, shown on hover only."]
     pub key: Option<String>,
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub count: i32,
-    /// A support company rather than a battalion.
+    #[doc = " A support company rather than a battalion."]
     pub support: bool,
-    /// A country-local copy of the definition.
+    #[doc = " A country-local copy of the definition."]
     pub local: bool,
 }
 
-/// A designer that opens a template: the ordinary one or the army headquarters'.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -70,27 +63,27 @@ pub enum DesignerKind {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateEntry {
-    /// The template's full native handle.
+    #[doc = " The template's full native handle."]
     pub template: String,
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
-    /// Position in the country's roster.
+    #[doc = " Position in the country's roster."]
     pub roster_ordinal: Option<u32>,
-    /// Divisions of the template counted for the country; none when not known.
+    #[doc = " Divisions of the template counted for the country; none when not known."]
     pub fielded: Option<u32>,
     pub units: Vec<TemplateUnit>,
     pub units_missing: Option<String>,
-    /// Signed fixed-point base combat width with five decimals.
+    #[doc = " Signed fixed-point base combat width with five decimals."]
     pub base_width_raw: Option<String>,
-    /// The template's stored priority and the game's name for it.
+    #[doc = " The template's stored priority and the game's name for it."]
     pub priority: Option<i32>,
     pub priority_name: Option<String>,
     pub priority_missing: Option<String>,
     pub locked: Option<bool>,
     pub obsolete: Option<bool>,
-    /// The hour the template was made obsolete, when recorded.
+    #[doc = " The hour the template was made obsolete, when recorded."]
     pub obsolete_hour: Option<i32>,
     pub designer: Option<DesignerKind>,
     pub force_recruiting: Option<bool>,
@@ -108,7 +101,7 @@ pub struct DivisionTemplatesReply {
     pub tag: String,
     pub count_for: ArmyAttribution,
     pub templates: Vec<TemplateEntry>,
-    /// Why fielded counts are unknown, when they all are.
+    #[doc = " Why fielded counts are unknown, when they all are."]
     pub fielded_missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -119,14 +112,11 @@ const UNLINKED_DIVISION: &str = "Fielded counts are unknown: a division of this 
 const UNLINKED_TEMPLATE: &str = "A template's country has no recorded link; it is left out";
 const MODEL_UNREADABLE: &str = "Template composition could not be read at capture";
 
-/// The key range of `slot`'s rows of `side` in a table keyed (slot, side, 64 bits).
 pub(crate) fn slot_side_range(slot: u32, side: u8) -> (u128, u128) {
     let high = u128::from(slot) << 72 | u128::from(side) << 64;
     (high, high | u128::from(u64::MAX))
 }
 
-/// The templates `slot`'s roster owns in `frame`, and whether one whose owner no link resolves
-/// may be its.
 fn owned(frame: &DecodedFrame, slot: u32) -> (Vec<u64>, usize) {
     let (Ok(countries), Ok(roster)) = (Countries::read(frame), frame.complete::<tables::DivisionTemplates>()) else { return (Vec::new(), 0) };
     let mut owned = Vec::new();
@@ -135,7 +125,6 @@ fn owned(frame: &DecodedFrame, slot: u32) -> (Vec<u64>, usize) {
         match countries.slot(row.owner) {
             Some(owner) if owner == slot => owned.push(row.template),
             Some(_) => {}
-            // Raw zero is the reserved country, never a tagged one.
             None if row.owner == 0 => {}
             None => unlinked += 1,
         }
@@ -143,7 +132,6 @@ fn owned(frame: &DecodedFrame, slot: u32) -> (Vec<u64>, usize) {
     (owned, unlinked)
 }
 
-/// Each template's fielded count for `slot` and `side`, or why all are unknown.
 fn fielded(frame: &DecodedFrame, slot: u32, side: u8) -> Result<BTreeMap<u64, Recorded<i64>>, String> {
     let counts = frame.complete::<tables::DivisionEquipmentCounts>().map_err(|why| format!("Divisions were not counted at this hour: {why}"))?;
     let rows = frame.complete::<tables::DivisionEquipmentByTemplate>().map_err(|why| format!("Divisions were not counted at this hour: {why}"))?;
@@ -182,8 +170,6 @@ impl AtHour for DivisionTemplates {
         TABLES.to_vec()
     }
 
-    /// The roster, its owners and spellings and the country's counts first; then the settings
-    /// of the templates it owns.
     fn reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let side = side(params.count_for);
@@ -217,7 +203,6 @@ impl AtHour for DivisionTemplates {
     }
 }
 
-/// The roster of the country in canonical slot `slot` in `frame`.
 fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, tag: String, slot: u32, content: &Content, refusals: &mut Refusals, cancelled: &std::sync::atomic::AtomicBool) -> io::Result<DivisionTemplatesReply> {
     frame.complete::<tables::Countries>()?;
     frame.complete::<tables::CountryLinks>()?;
@@ -235,7 +220,6 @@ fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, tag: String, sl
     let icons = frame.complete::<tables::DivisionTemplateIcons>().ok();
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
     let settings_of = |handle: u64| find(icons, handle, |row| row.template);
-    // The game's roster order; templates whose settings were not read follow in handle order.
     owned.sort_by_key(|&handle| {
         let ordinal = settings_of(handle).and_then(|icon| icon.settings.require("template settings").ok().cloned().flatten()).map(|settings| settings.roster_ordinal);
         (ordinal.is_none(), ordinal, handle)
@@ -289,7 +273,6 @@ fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, tag: String, sl
             continue;
         };
         entry.base_width_raw = composition.base_width.require("base width").ok().copied().flatten().map(|raw| raw.to_string());
-        // A failed model read keeps empty grids beside its flag.
         match composition.grids.require("template grids") {
             Ok(_) if composition.model_unreadable != 0 => {
                 refusals.note(MODEL_UNREADABLE);
@@ -343,8 +326,6 @@ fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, tag: String, sl
     Ok(reply)
 }
 
-/// The game's name for a template's stored priority: the designer's heading for each stage its
-/// defines allow; a stage outside those has no proved name and is refused by value.
 fn priority_name(content: &Content, priority: i32) -> Result<String, String> {
     let cat = content.cat.as_ref().map_err(|_| "Priority names need the recorded content stack".to_owned())?;
     let stages = cat.defines()?.int32("NCountry", "REINFORCEMENT_DIVISION_PRIORITY_COUNT").map_err(|why| format!("Template priority stages unavailable: {why}"))?;

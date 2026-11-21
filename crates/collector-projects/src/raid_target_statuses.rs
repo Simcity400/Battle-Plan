@@ -1,6 +1,3 @@
-//! The raid system's target statuses: scope, `valid` and every country's
-//! persistent detection bits. Offers and foreign `need_detection` buildings
-//! read them for any viewer; hourly, as buildings are.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -38,7 +35,6 @@ impl Capacities {
         Ok(())
     }
 
-    /// Each target holds one detection bit per country slot. Never lowers.
     pub fn raise_for_countries(&mut self, slots: usize) {
         self.detected = self
             .detected
@@ -50,7 +46,6 @@ pub struct Captured {
     rows: CaptureRows<native::Row>,
     detected: Arena<u8>,
     required_rows: usize,
-    /// Rows refused this hour for an unproven leader captor.
     refused_leaders: u32,
 }
 
@@ -59,7 +54,6 @@ impl Captured {
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: 0,
@@ -74,7 +68,6 @@ impl Captured {
             refused_leaders: 0,
         }
     }
-    /// Rows refused this hour for an unproven leader captor.
     pub fn refused_leaders(&self) -> u32 {
         self.refused_leaders
     }
@@ -155,7 +148,6 @@ impl Captured {
     }
 }
 
-/// The replay form of a native target scope.
 pub fn scope(row: &engine_native::craid_target::Row) -> RaidScope {
     RaidScope {
         province: row.province,

@@ -173,8 +173,6 @@ fn condition_means_preserve_native_rounding_and_exceptional_operands() {
     assert_eq!(values["escape_progress"].progress, Some(50));
 }
 
-/// A naval plane, wing or ship may name its country by a historical alias: it names the same
-/// `Countries` row, at the canonical slot `CountryLinks` resolves it to, as the country's own id.
 #[test]
 fn country_aliases_name_the_canonical_slots_row() {
     let countries = [
@@ -196,7 +194,6 @@ fn country_aliases_name_the_canonical_slots_row() {
     assert_eq!(by_reference[&3].tag, b"AAA");
     assert_eq!(by_reference[&7].tag, b"AAA");
     assert_eq!(by_reference[&9].tag, b"BBB");
-    // A link to a slot no row holds, or a reference no link names, names no country.
     assert!(!by_reference.contains_key(&5));
     assert!(!by_reference.contains_key(&8));
 }
@@ -281,14 +278,9 @@ fn only_a_linked_carrier_below_full_sortie_efficiency_reaches_its_member_sources
             plane, efficiency, &detail, 0, &joins, &trees, &content, &NoIcons, &loc,
         )
     };
-    // Without a linked member the game has no member section: the prefix
-    // is complete from the plane's own recorded factors.
     assert_eq!(breakdown(&plane, 40_000), Ok(String::new()));
     plane.carrier_member_present = 1;
-    // At ONE, the game appends no efficiency text at all.
     assert_eq!(breakdown(&plane, 100_000), Ok(String::new()));
-    // Below ONE it reads the linked member's sources: an unresolved host
-    // refuses by that name, never as an unrecorded breakdown.
     assert_eq!(
         breakdown(&plane, 40_000),
         Err("linked carrier member is unavailable".into())
@@ -315,7 +307,6 @@ fn air_count_uses_current_over_max_and_native_side_colour_order() {
 fn air_icon_frames_and_dynamic_hover_are_explicit() {
     let left = air_icon_widget(Some("GFX_test_air".into()), 0);
     let right = air_icon_widget(Some("GFX_test_air".into()), 1);
-    // Zero based: the renderer draws native frames 2 and 1.
     assert_eq!(left.frame, Some(1));
     assert_eq!(right.frame, Some(0));
     assert!(left.hover_owned && right.hover_owned);
