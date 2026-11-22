@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -19,10 +19,8 @@ pub struct Ask {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Batch {
-    #[serde(skip)]
-    pub token: u64,
-    pub asks: Vec<Ask>,
-    pub waiting: Vec<u64>,
+    pub seq: u64,
+    pub waiting: Vec<Ask>,
     pub holds: Vec<Ask>,
 }
 
@@ -34,6 +32,7 @@ pub enum Verdict {
     Unresponsive,
     Unheard,
     Unreached,
+    Blind,
 }
 
 impl Verdict {
@@ -47,6 +46,8 @@ impl Verdict {
         "BattlePlan’s page isn’t listening yet, so it can’t say whether its changes are saved. Try again in a moment.";
     pub const UNREACHED: &'static str =
         "BattlePlan couldn’t pass the question to its page, so it can’t say whether its changes are saved. Try again in a moment.";
+    pub const BLIND: &'static str =
+        "BattlePlan can’t follow its page’s reloads and crashes, so it can’t say whether its changes are saved. Save your work, then close BattlePlan and update.";
 
     pub fn refusal(self) -> Option<&'static str> {
         match self {
@@ -56,6 +57,7 @@ impl Verdict {
             Self::Unresponsive => Some(Self::UNRESPONSIVE),
             Self::Unheard => Some(Self::UNHEARD),
             Self::Unreached => Some(Self::UNREACHED),
+            Self::Blind => Some(Self::BLIND),
         }
     }
 }
@@ -67,6 +69,7 @@ pub enum Unanswered {
     Close,
     Unresponsive,
     Unreached,
+    Blind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,11 +95,8 @@ struct Question {
     about: About,
     asked: Option<u64>,
     verdict: Option<Verdict>,
-}
-
-struct Sent {
-    token: u64,
-    asks: Vec<(u64, u64)>,
+    carriers: usize,
+    reached: bool,
 }
 
 enum Page {
@@ -107,13 +107,14 @@ enum Page {
 
 struct State {
     page: Page,
+    blind: bool,
     document: u64,
-    navigations: Vec<u64>,
+    navigations: BTreeSet<u64>,
     next: u64,
     questions: Vec<Question>,
     holds: Vec<Ask>,
-    sent: Vec<Sent>,
-    outbox: VecDeque<(Reach, Batch)>,
+    sent: Vec<(u64, Vec<u64>)>,
+    outbox: Vec<(Reach, Batch)>,
     offering: bool,
 }
 
@@ -124,47 +125,45 @@ impl State {
         id
     }
 
-    fn deliverable(&self) -> bool {
-        matches!(self.page, Page::Watched { .. }) && self.navigations.is_empty()
-    }
-
-    fn stands(&self, id: u64) -> bool {
+    fn held(&self, id: u64) -> bool {
         self.holds.iter().any(|hold| hold.id == id)
-            || self.questions.iter().any(|question| question.asked == Some(id) && question.verdict.is_none())
     }
 
     fn exiting(&self) -> bool {
         self.holds.iter().any(|hold| hold.about == About::Close)
     }
 
-    fn send(&mut self, keys: &[u64]) {
-        if !self.deliverable() {
-            return;
-        }
+    fn askable(&self) -> bool {
+        !self.blind && matches!(self.page, Page::Watched { .. }) && self.navigations.is_empty()
+    }
+
+    fn send(&mut self) {
         let Page::Watched { reach, .. } = &self.page else {
             return;
         };
         let reach = Arc::clone(reach);
-        let mut asks = Vec::new();
-        let mut sent = Vec::new();
-        for &key in keys {
-            let id = self.fresh();
-            if let Some(question) = self.questions.iter_mut().find(|question| question.key == key && question.verdict.is_none()) {
-                question.asked = Some(id);
-                asks.push(Ask { id, about: question.about });
-                sent.push((key, id));
+        if !self.askable() && self.holds.is_empty() {
+            return;
+        }
+        if self.askable() {
+            for at in 0..self.questions.len() {
+                if self.questions[at].verdict.is_none() && self.questions[at].asked.is_none() {
+                    let id = self.fresh();
+                    let question = &mut self.questions[at];
+                    (question.asked, question.carriers, question.reached) = (Some(id), 0, false);
+                }
             }
         }
-        let waiting = self
-            .questions
-            .iter()
-            .filter(|question| question.verdict.is_none())
-            .filter_map(|question| question.asked)
-            .collect();
-        let token = self.fresh();
-        self.sent.push(Sent { token, asks: sent });
-        let batch = Batch { token, asks, waiting, holds: self.holds.clone() };
-        self.outbox.push_back((reach, batch));
+        let seq = self.fresh();
+        let mut waiting = Vec::new();
+        for question in self.questions.iter_mut().filter(|question| question.verdict.is_none()) {
+            if let Some(id) = question.asked {
+                question.carriers += 1;
+                waiting.push(Ask { id, about: question.about });
+            }
+        }
+        self.sent.push((seq, waiting.iter().map(|ask| ask.id).collect()));
+        self.outbox.push((reach, Batch { seq, waiting, holds: self.holds.clone() }));
     }
 
     fn exit(&mut self) {
@@ -173,7 +172,7 @@ impl State {
         }
         let id = self.fresh();
         self.holds.push(Ask { id, about: About::Close });
-        self.send(&[]);
+        self.send();
     }
 
     fn leave_without_page(&mut self, at: usize) {
@@ -190,18 +189,13 @@ impl State {
         if std::mem::replace(&mut self.offering, true) { Closing::Held } else { Closing::Offer(why) }
     }
 
-    fn keys(&self, waiting: impl Fn(&Question) -> bool) -> Vec<u64> {
-        self.questions
-            .iter()
-            .filter(|question| question.verdict.is_none() && waiting(question))
-            .map(|question| question.key)
-            .collect()
+    fn unasked(&self) -> bool {
+        self.questions.iter().any(|question| question.verdict.is_none() && question.asked.is_none())
     }
 }
 
 pub struct Leaving {
     state: Mutex<State>,
-    sending: Mutex<()>,
     answered: Condvar,
 }
 
@@ -210,16 +204,16 @@ impl Default for Leaving {
         Self {
             state: Mutex::new(State {
                 page: Page::Loading,
+                blind: false,
                 document: 0,
-                navigations: Vec::new(),
+                navigations: BTreeSet::new(),
                 next: 0,
                 questions: Vec::new(),
                 holds: Vec::new(),
                 sent: Vec::new(),
-                outbox: VecDeque::new(),
+                outbox: Vec::new(),
                 offering: false,
             }),
-            sending: Mutex::new(()),
             answered: Condvar::new(),
         }
     }
@@ -231,36 +225,45 @@ impl Leaving {
     }
 
     fn act<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
-        let value = change(&mut self.lock());
-        let _sending = self.sending.lock().unwrap_or_else(PoisonError::into_inner);
-        while let Some((reach, batch)) = self.lock().outbox.pop_front() {
+        let (value, outbox) = {
+            let mut state = self.lock();
+            let value = change(&mut state);
+            (value, std::mem::take(&mut state.outbox))
+        };
+        self.answered.notify_all();
+        for (reach, batch) in outbox {
             reach(batch);
         }
         value
     }
 
-    fn settle(&self, state: &mut State, verdict: Verdict) {
+    fn settle(state: &mut State, verdict: Verdict) {
         for question in &mut state.questions {
-            if question.about != About::Close && question.verdict.is_none() {
-                question.verdict = Some(verdict);
+            if question.verdict.is_none() {
+                question.asked = None;
+                if question.about != About::Close {
+                    question.verdict = Some(verdict);
+                }
             }
         }
-        self.answered.notify_all();
-    }
-
-    fn retire(&self, state: &mut State) {
-        for question in &mut state.questions {
-            question.asked = None;
-        }
-        self.settle(state, Verdict::Reloaded);
     }
 
     pub fn document(&self) -> u64 {
         self.lock().document
     }
 
+    pub fn blind(&self) {
+        self.act(|state| {
+            state.blind = true;
+            Self::settle(state, Verdict::Blind);
+        });
+    }
+
     pub fn watch(&self, document: u64, seq: u64, reach: impl FnOnce() -> Reach) -> Result<(), &'static str> {
         self.act(|state| {
+            if state.blind {
+                return Err(Verdict::BLIND);
+            }
             if document != state.document || matches!(state.page, Page::Gone) {
                 return Err(REPLACED);
             }
@@ -270,54 +273,58 @@ impl Leaving {
                 return Ok(());
             }
             state.page = Page::Watched { seq, reach: reach() };
-            let waiting = state.keys(|_| true);
-            state.send(&waiting);
+            for question in &mut state.questions {
+                if question.verdict.is_none() {
+                    question.asked = None;
+                }
+            }
+            state.sent.clear();
+            state.send();
             Ok(())
         })
     }
 
-    pub fn delivered(&self, token: u64, reached: bool) -> Option<Unanswered> {
-        let mut state = self.lock();
-        let at = state.sent.iter().position(|sent| sent.token == token)?;
-        let sent = state.sent.remove(at);
-        if reached {
-            return None;
-        }
-        let mut offer = None;
-        for (key, id) in sent.asks {
-            let Some(question) = state
-                .questions
-                .iter_mut()
-                .find(|question| question.key == key && question.asked == Some(id) && question.verdict.is_none())
-            else {
-                continue;
-            };
-            if question.about == About::Close {
-                question.asked = None;
-                if let Closing::Offer(why) = state.offer(Unanswered::Unreached) {
-                    offer = Some(why);
+    pub fn delivered(&self, seq: u64, reached: bool) -> Option<Unanswered> {
+        self.act(|state| {
+            let at = state.sent.iter().position(|(sent, _)| *sent == seq)?;
+            let (_, ids) = state.sent.remove(at);
+            let mut offer = None;
+            for id in ids {
+                let Some(at) = state.questions.iter().position(|question| question.asked == Some(id) && question.verdict.is_none()) else {
+                    continue;
+                };
+                let question = &mut state.questions[at];
+                question.carriers = question.carriers.saturating_sub(1);
+                question.reached |= reached;
+                if question.reached || question.carriers > 0 {
+                    continue;
                 }
-            } else {
-                question.verdict = Some(Verdict::Unreached);
-                self.answered.notify_all();
+                if question.about == About::Close {
+                    question.asked = None;
+                    if let Closing::Offer(why) = state.offer(Unanswered::Unreached) {
+                        offer = Some(why);
+                    }
+                } else {
+                    question.verdict = Some(Verdict::Unreached);
+                }
             }
-        }
-        offer
+            offer
+        })
     }
 
     pub fn answer(&self, id: u64, stays: bool, basis: &[u64]) -> Answered {
-        let answered = self.act(|state| {
+        self.act(|state| {
             let Some(at) = state.questions.iter().position(|question| question.asked == Some(id) && question.verdict.is_none()) else {
-                return if !stays && state.holds.iter().any(|hold| hold.id == id) { Answered::Heard } else { Answered::Unknown };
+                return if !stays && state.held(id) { Answered::Heard } else { Answered::Unknown };
             };
             let about = state.questions[at].about;
-            if !stays && about != About::Query && !basis.iter().all(|&standing| state.stands(standing)) {
-                let key = state.questions[at].key;
+            let leaves = !stays && about != About::Query;
+            if leaves && !basis.iter().all(|&standing| state.held(standing)) {
                 state.questions[at].asked = None;
-                state.send(&[key]);
+                state.send();
                 return Answered::Unknown;
             }
-            if !stays && about != About::Query {
+            if leaves {
                 state.holds.push(Ask { id, about });
             }
             if about == About::Close {
@@ -326,9 +333,7 @@ impl Leaving {
             }
             state.questions[at].verdict = Some(if stays { Verdict::Staying } else { Verdict::Leaving });
             Answered::Heard
-        });
-        self.answered.notify_all();
-        answered
+        })
     }
 
     pub fn close_requested(&self) -> Closing {
@@ -340,18 +345,20 @@ impl Leaving {
                 state.exit();
                 return Closing::Through;
             }
-            let deliverable = state.deliverable();
+            if state.blind {
+                return state.offer(Unanswered::Blind);
+            }
+            let askable = state.askable();
             if let Some(close) = state.questions.iter().find(|question| question.about == About::Close) {
-                let (key, asked) = (close.key, close.asked.is_some());
-                if asked || !deliverable {
+                if close.asked.is_some() || !askable {
                     return state.offer(Unanswered::Close);
                 }
-                state.send(&[key]);
+                state.send();
                 return Closing::Held;
             }
             let key = state.fresh();
-            state.questions.push(Question { key, about: About::Close, asked: None, verdict: None });
-            state.send(&[key]);
+            state.questions.push(Question { key, about: About::Close, asked: None, verdict: None, carriers: 0, reached: false });
+            state.send();
             Closing::Held
         })
     }
@@ -365,56 +372,63 @@ impl Leaving {
     }
 
     pub fn navigation_starting(&self, navigation: u64) -> bool {
-        let mut state = self.lock();
-        if !state.holds.is_empty() {
-            return false;
-        }
-        state.navigations.push(navigation);
-        self.retire(&mut state);
-        true
+        self.act(|state| {
+            if !state.holds.is_empty() {
+                return false;
+            }
+            state.navigations.insert(navigation);
+            Self::settle(state, Verdict::Reloaded);
+            true
+        })
     }
 
-    pub fn content_loading(&self, navigation: u64) {
-        let mut state = self.lock();
-        state.navigations.retain(|&pending| pending > navigation);
-        state.document += 1;
-        state.page = Page::Loading;
-        state.sent.clear();
-        self.retire(&mut state);
+    pub fn content_loading(&self, navigation: u64) -> bool {
+        self.act(|state| {
+            state.navigations.remove(&navigation);
+            state.document += 1;
+            state.page = Page::Loading;
+            state.sent.clear();
+            Self::settle(state, Verdict::Reloaded);
+            !state.holds.is_empty()
+        })
     }
 
     pub fn navigation_completed(&self, navigation: u64) {
         self.act(|state| {
-            state.navigations.retain(|&pending| pending != navigation);
-            let unasked = state.keys(|question| question.asked.is_none());
-            if !unasked.is_empty() || !state.holds.is_empty() {
-                state.send(&unasked);
+            state.navigations.remove(&navigation);
+            if state.unasked() || !state.holds.is_empty() {
+                state.send();
             }
         });
     }
 
     pub fn page_gone(&self) -> bool {
-        let mut state = self.lock();
-        state.page = Page::Gone;
-        state.sent.clear();
-        let closing = state.questions.iter().any(|question| question.about == About::Close);
-        state.questions.retain(|question| question.about != About::Close);
-        for at in 0..state.questions.len() {
-            if state.questions[at].verdict.is_none() {
-                state.leave_without_page(at);
+        self.act(|state| {
+            state.page = Page::Gone;
+            state.sent.clear();
+            let closing = state.questions.iter().any(|question| question.about == About::Close);
+            state.questions.retain(|question| question.about != About::Close);
+            for at in 0..state.questions.len() {
+                if state.questions[at].verdict.is_none() {
+                    state.leave_without_page(at);
+                }
             }
-        }
-        if closing {
-            state.exit();
-        }
-        self.answered.notify_all();
-        closing
+            if closing {
+                state.exit();
+            }
+            closing
+        })
     }
 
     pub fn page_unresponsive(&self) -> bool {
-        let mut state = self.lock();
-        self.settle(&mut state, Verdict::Unresponsive);
-        !std::mem::replace(&mut state.offering, true)
+        self.act(|state| {
+            for question in &mut state.questions {
+                if question.about != About::Close && question.verdict.is_none() {
+                    question.verdict = Some(Verdict::Unresponsive);
+                }
+            }
+            !std::mem::replace(&mut state.offering, true)
+        })
     }
 
     fn pose(&self, about: About) -> Result<Posed, Verdict> {
@@ -422,24 +436,29 @@ impl Leaving {
             if state.exiting() {
                 return Err(Verdict::Leaving);
             }
+            if state.blind {
+                return Err(Verdict::Blind);
+            }
             if !state.navigations.is_empty() {
                 return Err(Verdict::Reloaded);
             }
             let key = state.fresh();
+            let question = Question { key, about, asked: None, verdict: None, carriers: 0, reached: false };
             match state.page {
-                Page::Gone if about == About::Query => return Err(Verdict::Leaving),
+                Page::Gone if about == About::Query => Err(Verdict::Leaving),
                 Page::Gone => {
-                    state.questions.push(Question { key, about, asked: None, verdict: None });
+                    state.questions.push(question);
                     let at = state.questions.len() - 1;
                     state.leave_without_page(at);
-                    return Ok(Posed(key));
+                    Ok(Posed(key))
                 }
-                Page::Loading => return Err(Verdict::Unheard),
-                Page::Watched { .. } => {}
+                Page::Loading => Err(Verdict::Unheard),
+                Page::Watched { .. } => {
+                    state.questions.push(question);
+                    state.send();
+                    Ok(Posed(key))
+                }
             }
-            state.questions.push(Question { key, about, asked: None, verdict: None });
-            state.send(&[key]);
-            Ok(Posed(key))
         })
     }
 
@@ -472,7 +491,7 @@ impl Leaving {
                 return;
             };
             state.holds.remove(at);
-            state.send(&[]);
+            state.send();
         });
     }
 
@@ -547,21 +566,28 @@ mod tests {
 
         fn hears(&self, leaving: &Leaving) -> (u32, Batch) {
             let (callback, batch) = self.dispatched();
-            assert_eq!(leaving.delivered(batch.token, true), None);
+            assert_eq!(leaving.delivered(batch.seq, true), None);
             (callback, batch)
         }
 
         fn misses(&self, leaving: &Leaving) -> (Batch, Option<Unanswered>) {
             let (_, batch) = self.dispatched();
-            let offer = leaving.delivered(batch.token, false);
+            let offer = leaving.delivered(batch.seq, false);
             (batch, offer)
         }
     }
 
     fn asked(batch: &Batch) -> (u64, About) {
-        match batch.asks[..] {
+        match batch.waiting[..] {
             [Ask { id, about }] => (id, about),
-            ref other => panic!("expected one question, got {other:?}"),
+            ref other => panic!("expected one question waiting, got {other:?}"),
+        }
+    }
+
+    fn waiting(batch: &Batch, about: About) -> u64 {
+        match batch.waiting.iter().filter(|ask| ask.about == about).collect::<Vec<_>>()[..] {
+            [ask] => ask.id,
+            ref other => panic!("expected one {about:?} waiting, got {other:?}"),
         }
     }
 
@@ -574,7 +600,7 @@ mod tests {
     fn watched(leaving: &Leaving, page: &Page, callback: u32) {
         assert_eq!(leaving.watch(leaving.document(), 1, page.reach(callback)), Ok(()));
         let (_, batch) = page.hears(leaving);
-        assert!(batch.asks.is_empty() && batch.holds.is_empty(), "a new subscription hears what stands: {batch:?}");
+        assert!(batch.waiting.is_empty() && batch.holds.is_empty(), "a new subscription hears what stands: {batch:?}");
     }
 
     #[test]
@@ -594,9 +620,9 @@ mod tests {
     fn a_registration_from_the_page_a_reload_replaced_is_refused_so_the_new_page_subscribes() {
         let page = Page::default();
         let leaving = Leaving::default();
-        leaving.content_loading(1);
+        assert!(!leaving.content_loading(1));
         let outgoing = leaving.document();
-        leaving.content_loading(2);
+        assert!(!leaving.content_loading(2));
         let current = leaving.document();
         assert_ne!(outgoing, current);
         assert_eq!(
@@ -619,7 +645,7 @@ mod tests {
         let (callback, batch) = page.hears(&leaving);
         let (second, _) = asked(&batch);
         assert_eq!(callback, 8, "the question is asked again of the newer registration");
-        assert_eq!(batch.waiting, [second], "with a fresh id, and the old one no longer stands");
+        assert_ne!(second, first, "with a fresh id, and the old one no longer stands");
         assert_eq!(leaving.answer(first, false, &[]), Answered::Unknown, "the superseded page’s in-flight Saved doesn’t count");
         assert_eq!(leaving.answer(second, true, &[]), Answered::Heard);
         assert_eq!(leaving.wait(asking), (Verdict::Staying, Some(second)));
@@ -657,7 +683,7 @@ mod tests {
         std::thread::scope(|scope| {
             let setup = scope.spawn(|| leaving.close_for_update());
             let (_, batch) = page.awaited();
-            assert_eq!(leaving.delivered(batch.token, false), None, "WebView2 took the script and didn’t run it");
+            assert_eq!(leaving.delivered(batch.seq, false), None, "WebView2 took the script and didn’t run it");
             assert_eq!(setup.join().unwrap(), Err(Verdict::UNREACHED.to_owned()), "setup is refused, never left waiting");
         });
         let asking = leaving.pose(About::Query);
@@ -683,10 +709,47 @@ mod tests {
         let (_, stale) = page.dispatched();
         assert_eq!(leaving.watch(leaving.document(), 2, page.reach(8)), Ok(()));
         let (_, id, _) = heard(&leaving, &page);
-        assert_eq!(leaving.delivered(stale.token, false), None);
-        assert_eq!(leaving.delivered(stale.token, false), None, "a receipt counts once");
+        assert_eq!(leaving.delivered(stale.seq, false), None);
+        assert_eq!(leaving.delivered(stale.seq, false), None, "a receipt counts once");
         assert_eq!(leaving.answer(id, false, &[]), Answered::Heard, "the question the newer page heard still stands");
         assert_eq!(leaving.wait(asking).0, Verdict::Leaving);
+    }
+
+    #[test]
+    fn a_later_batch_carries_every_question_an_earlier_one_asked_so_the_order_they_run_in_loses_nothing() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Query);
+        let (_, earlier) = page.dispatched();
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        let (_, later) = page.dispatched();
+        assert!(later.seq > earlier.seq, "the page applies only a batch newer than the last it applied");
+        let query = waiting(&later, About::Query);
+        assert_eq!(asked(&earlier), (query, About::Query), "the later batch carries the question the earlier one asked, by the same id");
+        assert_eq!(leaving.delivered(later.seq, true), None);
+        assert_eq!(leaving.delivered(earlier.seq, false), None, "the earlier batch is superseded, not lost");
+        assert_eq!(leaving.answer(query, false, &[]), Answered::Heard);
+        assert_eq!(leaving.wait(asking).0, Verdict::Leaving);
+    }
+
+    #[test]
+    fn a_dispatch_refused_at_once_drops_its_receipt_without_the_broker_lock() {
+        let leaving = Arc::new(Leaving::default());
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let weak = Arc::downgrade(&leaving);
+        let reported = Arc::clone(&reports);
+        let refuse = move || -> Reach {
+            Arc::new(move |batch: Batch| {
+                let leaving = weak.upgrade().expect("the broker outlives its dispatches");
+                assert!(leaving.state.try_lock().is_ok(), "a dispatch ran under the broker lock, so its dropped receipt would deadlock");
+                reported.lock().unwrap().push(leaving.delivered(batch.seq, false));
+            })
+        };
+        assert_eq!(leaving.watch(leaving.document(), 1, refuse), Ok(()));
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        assert_eq!(*reports.lock().unwrap(), [None, Some(Unanswered::Unreached)], "the close the page never heard offers the choice");
+        assert_eq!(leaving.busy(), Some(Verdict::UNREACHED.to_owned()), "setup is refused by name, never left waiting");
     }
 
     #[test]
@@ -716,7 +779,7 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Held);
         let (_, batch) = page.hears(&leaving);
         let (close, _) = asked(&batch);
-        assert_eq!((batch.waiting, batch.holds), (vec![close], vec![]), "the close carries the stay that never ran");
+        assert_eq!((batch.waiting, batch.holds), (vec![Ask { id: close, about: About::Close }], vec![]), "the close carries the stay that never ran");
     }
 
     #[test]
@@ -735,11 +798,11 @@ mod tests {
 
         leaving.stay(install);
         let (_, batch) = page.hears(&leaving);
-        assert!(batch.asks.is_empty() && batch.holds.is_empty(), "the page is told the install no longer stands: {batch:?}");
+        assert_eq!((batch.waiting, batch.holds), (vec![Ask { id: committed, about: About::Close }], vec![]), "the page is told the install no longer stands");
         assert_eq!(leaving.answer(committed, false, &[install]), Answered::Unknown, "a close judged under the install doesn’t close");
         let (_, batch) = page.hears(&leaving);
         let (close, about) = asked(&batch);
-        assert_eq!((about, batch.waiting), (About::Close, vec![close]), "it is asked again, under nothing");
+        assert_eq!(about, About::Close, "it is asked again, under nothing");
         assert_ne!(close, committed);
         assert_eq!(leaving.answer(close, true, &[]), Answered::Heard, "the page judges it again after the Stay");
     }
@@ -753,16 +816,48 @@ mod tests {
         let (_, install, _) = heard(&leaving, &page);
         assert_eq!(leaving.close_requested(), Closing::Held);
         let (_, batch) = page.dispatched();
-        let (close, _) = asked(&batch);
-        assert_eq!(batch.waiting, [install, close], "the close was sent while the install still stood");
+        let close = waiting(&batch, About::Close);
+        assert_eq!(waiting(&batch, About::Install), install, "the close was sent while the install still stood");
         assert!(leaving.page_unresponsive());
         assert_eq!(leaving.wait(asking).0, Verdict::Unresponsive);
-        assert_eq!(leaving.delivered(batch.token, true), None);
+        assert_eq!(leaving.delivered(batch.seq, true), None);
         assert_eq!(leaving.answer(close, false, &[install]), Answered::Unknown, "the page judged the close under the refused install");
         let (_, batch) = page.hears(&leaving);
         let (again, about) = asked(&batch);
-        assert_eq!((about, batch.waiting), (About::Close, vec![again]), "it is asked again without the install");
+        assert_eq!(about, About::Close, "it is asked again without the install");
+        assert_ne!(again, close);
         assert_eq!(leaving.answer(again, true, &[]), Answered::Heard);
+    }
+
+    #[test]
+    fn a_leave_resting_on_a_question_the_host_only_waits_on_is_asked_again() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let restart = leaving.pose(About::Install);
+        let (_, install, _) = heard(&leaving, &page);
+        assert_eq!(leaving.answer(install, false, &[]), Answered::Heard, "Discard and restart");
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        let (_, batch) = page.hears(&leaving);
+        let close = waiting(&batch, About::Close);
+        let failed = "The installer couldn’t be started: Windows refused to open it (code 2).";
+        assert_eq!(leaving.leave_after(restart, || Err(failed.into())), Err(failed.into()));
+        let (_, batch) = page.hears(&leaving);
+        assert_eq!((batch.waiting, batch.holds), (vec![Ask { id: close, about: About::Close }], vec![]), "the close the page agreed to under the restart never arrived");
+
+        let setup = leaving.pose(About::Leave);
+        let (_, batch) = page.hears(&leaving);
+        let leave = waiting(&batch, About::Leave);
+        assert_eq!(leaving.answer(leave, false, &[close]), Answered::Unknown, "a close the host only waits on is no consent to rest on");
+        let (_, batch) = page.hears(&leaving);
+        let again = waiting(&batch, About::Leave);
+        assert_ne!(again, leave, "setup’s close is asked again");
+        assert_eq!(leaving.answer(close, false, &[install]), Answered::Unknown, "the lost close, sent again, rests on the failed restart");
+        let (_, batch) = page.hears(&leaving);
+        let close = waiting(&batch, About::Close);
+        assert_eq!(leaving.answer(again, true, &[]), Answered::Heard);
+        assert_eq!(leaving.wait(setup).0.refusal(), Some(Verdict::STAYING), "setup hears of the unsaved work");
+        assert_eq!(leaving.answer(close, true, &[]), Answered::Heard);
     }
 
     #[test]
@@ -784,7 +879,7 @@ mod tests {
     fn a_page_that_started_but_has_not_subscribed_holds_closes_and_refuses_update_questions_by_name() {
         let page = Page::default();
         let leaving = Leaving::default();
-        leaving.content_loading(1);
+        assert!(!leaving.content_loading(1));
         assert_eq!(leaving.close_for_update(), Err(Verdict::UNHEARD.to_owned()));
         assert_eq!(leaving.busy(), Some(Verdict::UNHEARD.to_owned()));
         assert_eq!(leaving.close_requested(), Closing::Held, "a page that never subscribes can’t lose work to a close");
@@ -821,14 +916,17 @@ mod tests {
         let leave = leaving.pose(About::Install);
         let query = leaving.pose(About::Query);
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let asks: Vec<u64> = (0..3).map(|_| heard(&leaving, &page).1).collect();
+        page.hears(&leaving);
+        page.hears(&leaving);
+        let (_, batch) = page.hears(&leaving);
+        let (install, close) = (waiting(&batch, About::Install), waiting(&batch, About::Close));
         assert!(leaving.page_unresponsive(), "the user is offered to close");
         assert_eq!(leaving.leave_after(leave, || unreachable!("nothing launches")), Err(Verdict::UNRESPONSIVE.to_owned()));
         assert_eq!(leaving.wait(query).0.refusal(), Some(Verdict::UNRESPONSIVE));
         assert!(!leaving.page_unresponsive(), "WebView2 reports again while the first choice is open");
         leaving.chosen();
-        assert_eq!(leaving.answer(asks[0], false, &[]), Answered::Unknown, "a refused update can’t be agreed to later");
-        assert_eq!(leaving.answer(asks[2], false, &[]), Answered::Leave, "the close stays for a page that recovers");
+        assert_eq!(leaving.answer(install, false, &[]), Answered::Unknown, "a refused update can’t be agreed to later");
+        assert_eq!(leaving.answer(close, false, &[]), Answered::Leave, "the close stays for a page that recovers");
         assert!(leaving.page_unresponsive());
     }
 
@@ -885,6 +983,23 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_already_past_its_veto_when_battleplan_leaves_is_stopped_and_the_page_it_leaves_is_locked() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        assert!(leaving.navigation_starting(1), "a slow reload starts while nothing stands");
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Close));
+        leaving.chosen();
+        leaving.exit();
+        let (_, batch) = page.hears(&leaving);
+        assert!(matches!(batch.holds[..], [Ask { about: About::Close, .. }]), "the page the reload is leaving is locked: {batch:?}");
+        assert!(leaving.content_loading(1), "the document the reload began loading is stopped");
+        leaving.navigation_completed(1);
+        assert_eq!(leaving.close_requested(), Closing::Through);
+    }
+
+    #[test]
     fn a_reload_refuses_update_questions_by_name_holds_closes_and_an_abandoned_one_keeps_the_page_it_left() {
         let page = Page::default();
         let leaving = Leaving::default();
@@ -893,7 +1008,8 @@ mod tests {
         let asking = leaving.pose(About::Install);
         let (_, late, _) = heard(&leaving, &page);
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let (_, close, _) = heard(&leaving, &page);
+        let (_, batch) = page.hears(&leaving);
+        let close = waiting(&batch, About::Close);
 
         assert!(leaving.navigation_starting(5));
         assert_eq!(leaving.wait(asking).0.refusal(), Some(Verdict::RELOADED));
@@ -907,19 +1023,56 @@ mod tests {
         let (callback, batch) = page.hears(&leaving);
         let (again, about) = asked(&batch);
         assert_eq!((callback, about), (7, About::Close), "its subscription still stands, and the close is asked again");
-        assert_eq!(batch.waiting, [again]);
         let asking = leaving.pose(About::Query);
-        let (_, query, _) = heard(&leaving, &page);
+        let (_, batch) = page.hears(&leaving);
+        let query = waiting(&batch, About::Query);
         assert_eq!(leaving.answer(query, true, &[]), Answered::Heard);
         assert_eq!(leaving.wait(asking).0, Verdict::Staying);
 
         assert!(leaving.navigation_starting(6));
-        leaving.content_loading(6);
+        assert!(!leaving.content_loading(6));
         leaving.navigation_completed(6);
         assert_ne!(leaving.document(), document, "a reload that loads replaces the page");
         assert_eq!(leaving.answer(again, false, &[]), Answered::Unknown);
         assert!(page.quiet());
         assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Close), "the close waits for the new page");
+    }
+
+    #[test]
+    fn navigations_are_followed_by_identity_so_one_loading_never_settles_another() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        assert!(leaving.navigation_starting(9));
+        assert!(leaving.navigation_starting(3), "WebView2 gives navigation ids no order");
+        assert!(!leaving.content_loading(9));
+        leaving.navigation_completed(9);
+        assert_eq!(leaving.busy(), Some(Verdict::RELOADED.to_owned()), "the other navigation is still under way");
+        leaving.navigation_completed(3);
+        assert_eq!(leaving.watch(leaving.document(), 2, page.reach(8)), Ok(()));
+        page.hears(&leaving);
+        let asking = leaving.pose(About::Query);
+        let (_, query, _) = heard(&leaving, &page);
+        assert_eq!(leaving.answer(query, true, &[]), Answered::Heard);
+        assert_eq!(leaving.wait(asking).0, Verdict::Staying);
+    }
+
+    #[test]
+    fn a_page_the_host_cant_follow_refuses_updates_by_name_and_offers_the_choice_at_each_close() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Query);
+        page.hears(&leaving);
+        leaving.blind();
+        assert_eq!(leaving.wait(asking).0.refusal(), Some(Verdict::BLIND), "a question waiting when the host goes blind is refused by name");
+        assert_eq!(leaving.watch(leaving.document(), 2, || unreachable!("a page the host can’t follow isn’t asked")), Err(Verdict::BLIND));
+        assert_eq!(leaving.busy(), Some(Verdict::BLIND.to_owned()));
+        assert_eq!(leaving.close_for_update(), Err(Verdict::BLIND.to_owned()));
+        assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Blind), "the first close offers the choice, naming why");
+        leaving.chosen();
+        assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Blind));
+        assert!(page.quiet());
     }
 
     #[test]
@@ -946,9 +1099,13 @@ mod tests {
     }
 
     mod interleavings {
-        use super::super::{About, Answered, Batch, Closing, Leaving, Posed, Reach, Verdict};
+        use super::super::{About, Answered, Ask, Batch, Closing, Leaving, Posed, Reach, Verdict};
+        use serde_json::{Value, json};
         use std::collections::{BTreeMap, BTreeSet, VecDeque};
-        use std::sync::{Arc, Mutex};
+        use std::sync::{Arc, Mutex, Weak};
+
+        const SEEDS: u64 = 4000;
+        const TRACES: &str = "../../ui/src/shell/closeGuard.traces.json";
 
         struct Rng(u64);
 
@@ -961,17 +1118,26 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
+        enum Failure {
+            Watch,
+            Answer(About, bool, Vec<u64>),
+        }
+
         #[derive(Default)]
         struct Guard {
+            trace: usize,
             seq: u64,
             ended: bool,
             watching: bool,
             watched: bool,
-            watch_failed: bool,
             by_choice: bool,
-            committed: BTreeMap<u64, bool>,
+            applied: Option<u64>,
+            committed: BTreeMap<u64, (bool, bool)>,
+            judged: BTreeSet<u64>,
+            waiting: Vec<Ask>,
             live: BTreeSet<u64>,
-            failed: BTreeMap<u64, (About, bool, Vec<u64>)>,
+            failures: BTreeMap<String, Failure>,
             shown: Option<Option<bool>>,
         }
 
@@ -991,7 +1157,7 @@ mod tests {
             Query,
         }
 
-        #[derive(Clone, Copy, Debug)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         enum Step {
             Edit,
             Save,
@@ -1050,6 +1216,22 @@ mod tests {
             (Step::Choose, 3),
         ];
 
+        const AFTER_EXIT: [Step; 13] = [
+            Step::Edit,
+            Step::CloseWindow,
+            Step::RunBatch,
+            Step::DropBatch,
+            Step::Answer,
+            Step::Reply,
+            Step::Retry,
+            Step::Remount,
+            Step::Register,
+            Step::Reload,
+            Step::ReloadLoads,
+            Step::ReloadStops,
+            Step::PageExits,
+        ];
+
         const DRAIN: [Step; 10] = [
             Step::Register,
             Step::Retry,
@@ -1063,16 +1245,21 @@ mod tests {
             Step::Choose,
         ];
 
-        type Batches = Arc<Mutex<VecDeque<(usize, usize, Batch)>>>;
+        #[derive(Default)]
+        struct Wire {
+            batches: Vec<(usize, usize, Batch)>,
+            refused: Vec<bool>,
+            last: Option<(usize, usize)>,
+        }
 
         struct World {
-            leaving: Leaving,
+            leaving: Arc<Leaving>,
             seed: u64,
             rng: Rng,
             log: Vec<String>,
             docs: Vec<Doc>,
             live: usize,
-            batches: Batches,
+            wire: Arc<Mutex<Wire>>,
             registrations: VecDeque<(usize, usize, Option<u64>)>,
             answers: VecDeque<(usize, usize, u64, bool, Vec<u64>, About)>,
             replies: VecDeque<(usize, usize, u64, Option<bool>, (About, bool, Vec<u64>))>,
@@ -1085,19 +1272,54 @@ mod tests {
             closing: bool,
             consents: BTreeSet<u64>,
             draining: bool,
-            done: bool,
+            exited: bool,
+            trace: Vec<Value>,
+            shapes: BTreeSet<String>,
+            guards: usize,
+            emitted: Vec<Value>,
+            prompted: usize,
+        }
+
+        fn about(about: About) -> &'static str {
+            match about {
+                About::Close => "close",
+                About::Install => "install",
+                About::Leave => "leave",
+                About::Query => "query",
+            }
+        }
+
+        fn shape(event: &Value) -> String {
+            let kind = event[0].as_str().expect("an event names its kind");
+            let (facts, out) = match kind {
+                "b" => (format!("{} {} {} {}", event[2], event[7], event[5].as_array().is_some_and(|asks| !asks.is_empty()), event[6].as_array().is_some_and(|asks| !asks.is_empty())), &event[8]),
+                "r" => (format!("{} {}", event[2], event[5]), &event[6]),
+                "t" => (format!("{} {}", event[2], event[4].as_str().is_some_and(|key| key.starts_with("answer:"))), &event[5]),
+                "w" => (event[2].to_string(), &event[3]),
+                "l" => (String::new(), &event[2]),
+                _ => return kind.to_owned(),
+            };
+            let answers = out[0].as_array().map_or(&[][..], Vec::as_slice);
+            let leaves = answers.iter().any(|answer| answer[1] == false);
+            let based = answers.iter().any(|answer| answer[2].as_array().is_some_and(|basis| !basis.is_empty()));
+            let failing = out[3].as_array().map(|failures| !failures.is_empty());
+            format!("{kind} {facts} | {} {leaves} {based} {} {} {failing:?}", answers.len().min(3), out[1], out[2].as_u64().is_some_and(|prompts| prompts > 0))
+        }
+
+        fn asks(asks: &[Ask]) -> Value {
+            Value::Array(asks.iter().map(|ask| json!([ask.id, about(ask.about)])).collect())
         }
 
         impl World {
             fn new(seed: u64) -> Self {
                 let mut world = Self {
-                    leaving: Leaving::default(),
+                    leaving: Arc::default(),
                     seed,
                     rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
                     log: Vec::new(),
                     docs: Vec::new(),
                     live: 0,
-                    batches: Arc::default(),
+                    wire: Arc::default(),
                     registrations: VecDeque::new(),
                     answers: VecDeque::new(),
                     replies: VecDeque::new(),
@@ -1110,10 +1332,44 @@ mod tests {
                     closing: false,
                     consents: BTreeSet::new(),
                     draining: false,
-                    done: false,
+                    exited: false,
+                    trace: Vec::new(),
+                    shapes: BTreeSet::new(),
+                    guards: 0,
+                    emitted: Vec::new(),
+                    prompted: 0,
                 };
                 world.load();
                 world
+            }
+
+            fn fail(&self, what: &str) -> String {
+                format!("seed {}: {what}\n{}", self.seed, self.log.join("\n"))
+            }
+
+            fn record(&mut self, event: Value) {
+                self.shapes.insert(shape(&event));
+                self.trace.push(event);
+            }
+
+            fn begin(&mut self) {
+                self.emitted.clear();
+                self.prompted = 0;
+            }
+
+            fn out(&mut self, doc: usize, guard: usize) -> Value {
+                let state = &self.docs[doc].guards[guard];
+                let locked = match state.shown.flatten() {
+                    None => 0,
+                    Some(false) => 1,
+                    Some(true) => 2,
+                };
+                let failures = if state.ended { Value::Null } else { json!(state.failures.keys().collect::<Vec<_>>()) };
+                json!([std::mem::take(&mut self.emitted), locked, self.prompted, failures])
+            }
+
+            fn facts(&self, doc: usize) -> (bool, bool) {
+                (self.docs[doc].dirty, self.docs[doc].confirmed)
             }
 
             fn load(&mut self) {
@@ -1123,14 +1379,19 @@ mod tests {
             }
 
             fn mount(&mut self) {
-                let doc = &mut self.docs[self.live];
-                if let Some(active) = doc.guards.last_mut() {
-                    active.ended = true;
+                let live = self.live;
+                if let Some(active) = self.docs[live].guards.len().checked_sub(1) {
+                    self.docs[live].guards[active].ended = true;
+                    let trace = self.docs[live].guards[active].trace;
+                    self.record(json!(["e", trace]));
                 }
-                let seq = doc.guards.len() as u64 + 1;
-                doc.guards.push(Guard { seq, ..Guard::default() });
-                let guard = doc.guards.len() - 1;
-                self.watch(self.live, guard);
+                let trace = self.guards;
+                self.guards += 1;
+                let seq = self.docs[live].guards.len() as u64 + 1;
+                self.docs[live].guards.push(Guard { trace, seq, ..Guard::default() });
+                self.record(json!(["m", trace]));
+                let guard = self.docs[live].guards.len() - 1;
+                self.watch(live, guard);
             }
 
             fn watch(&mut self, doc: usize, guard: usize) {
@@ -1139,13 +1400,30 @@ mod tests {
                     return;
                 }
                 state.watching = true;
-                state.watch_failed = false;
                 self.registrations.push_back((doc, guard, None));
             }
 
             fn reach(&self, doc: usize, guard: usize) -> impl FnOnce() -> Reach {
-                let batches = Arc::clone(&self.batches);
-                move || Arc::new(move |batch: Batch| batches.lock().unwrap().push_back((doc, guard, batch)))
+                let wire = Arc::clone(&self.wire);
+                let leaving: Weak<Leaving> = Arc::downgrade(&self.leaving);
+                let seed = self.seed;
+                move || {
+                    Arc::new(move |batch: Batch| {
+                        let refused = (batch.seq ^ seed).wrapping_mul(0x2545_F491_4F6C_DD1D) >> 61 == 0;
+                        wire.lock().unwrap().last = Some((doc, guard));
+                        if !refused {
+                            wire.lock().unwrap().batches.push((doc, guard, batch));
+                            return;
+                        }
+                        let leaving = leaving.upgrade().expect("the broker outlives its dispatches");
+                        assert!(
+                            leaving.state.try_lock().is_ok(),
+                            "seed {seed}: a dispatch ran under the broker lock, so a dropped receipt would deadlock"
+                        );
+                        let offer = leaving.delivered(batch.seq, false).is_some();
+                        wire.lock().unwrap().refused.push(offer);
+                    })
+                }
             }
 
             fn active(&self) -> Option<usize> {
@@ -1161,7 +1439,7 @@ mod tests {
             fn show(&mut self, doc: usize, guard: usize) {
                 let doc = &mut self.docs[doc];
                 let state = &mut doc.guards[guard];
-                let now = if state.committed.values().any(|&update| update) {
+                let now = if state.committed.values().any(|&(update, _)| update) {
                     Some(true)
                 } else if state.by_choice || !state.committed.is_empty() {
                     Some(false)
@@ -1175,70 +1453,134 @@ mod tests {
                 doc.locked = now.is_some();
             }
 
-            fn judge(&mut self, doc: usize, guard: usize, id: u64, about: About) {
-                let (dirty, confirmed) = (self.docs[doc].dirty, self.docs[doc].confirmed);
+            fn send(&mut self, doc: usize, guard: usize, id: u64, about: About, stays: bool, basis: Vec<u64>) {
                 let state = &mut self.docs[doc].guards[guard];
                 if state.ended {
                     return;
                 }
-                state.failed.remove(&id);
-                let leaving = state.by_choice || !state.committed.is_empty();
-                let mut basis = Vec::new();
-                let stays = if about == About::Query {
-                    !leaving && dirty
-                } else {
-                    let stays = !leaving && dirty && !(about == About::Install && confirmed);
-                    if !stays && dirty && !state.by_choice {
-                        basis = state.committed.keys().copied().collect();
-                    }
-                    if !stays {
-                        state.committed.insert(id, about != About::Close);
-                        self.show(doc, guard);
-                        if dirty && !leaving {
-                            self.consents.insert(id);
-                        }
-                    }
-                    stays
-                };
-                self.log.push(format!("  doc {doc} guard {guard} judges {about:?} {id}: stays {stays}, basis {basis:?}"));
+                state.failures.remove(&format!("answer:{id}"));
+                self.log.push(format!("  doc {doc} guard {guard} answers {about:?} {id}: stays {stays}, basis {basis:?}"));
+                self.emitted.push(json!([id, stays, basis]));
                 self.answers.push_back((doc, guard, id, stays, basis, about));
             }
 
+            fn judge(&mut self, doc: usize, guard: usize) {
+                let (dirty, confirmed) = self.facts(doc);
+                for ask in self.docs[doc].guards[guard].waiting.clone() {
+                    let state = &mut self.docs[doc].guards[guard];
+                    if state.ended {
+                        return;
+                    }
+                    if state.judged.contains(&ask.id) {
+                        continue;
+                    }
+                    let leaving = state.by_choice || !state.committed.is_empty();
+                    if ask.about == About::Query {
+                        state.judged.insert(ask.id);
+                        self.send(doc, guard, ask.id, ask.about, !leaving && dirty, Vec::new());
+                        continue;
+                    }
+                    let confirmed = ask.about == About::Install && confirmed;
+                    if !leaving && dirty && !confirmed {
+                        state.judged.insert(ask.id);
+                        if ask.about == About::Close {
+                            self.prompted += 1;
+                        }
+                        self.send(doc, guard, ask.id, ask.about, true, Vec::new());
+                        continue;
+                    }
+                    let leaning = dirty && !state.by_choice && !confirmed;
+                    if leaning && state.committed.values().any(|&(_, accepted)| !accepted) {
+                        continue;
+                    }
+                    let basis = if leaning { state.committed.keys().copied().collect() } else { Vec::new() };
+                    state.judged.insert(ask.id);
+                    state.committed.insert(ask.id, (ask.about != About::Close, false));
+                    if dirty && !leaving {
+                        self.consents.insert(ask.id);
+                    }
+                    self.show(doc, guard);
+                    self.send(doc, guard, ask.id, ask.about, false, basis);
+                }
+            }
+
             fn hear(&mut self, doc: usize, guard: usize, batch: &Batch) -> bool {
-                if !self.docs[doc].alive || self.docs[doc].guards[guard].ended {
+                if !self.docs[doc].alive {
                     return false;
                 }
-                self.log.push(format!("  doc {doc} guard {guard} hears {batch:?}"));
+                self.begin();
+                let returned = self.apply(doc, guard, batch);
+                let (dirty, confirmed) = self.facts(doc);
+                let trace = self.docs[doc].guards[guard].trace;
+                let out = self.out(doc, guard);
+                self.record(json!(["b", trace, dirty, confirmed, batch.seq, asks(&batch.waiting), asks(&batch.holds), returned, out]));
+                returned
+            }
+
+            fn apply(&mut self, doc: usize, guard: usize, batch: &Batch) -> bool {
                 let state = &mut self.docs[doc].guards[guard];
-                state.live = batch.waiting.iter().copied().chain(batch.holds.iter().map(|hold| hold.id)).collect();
+                if state.ended {
+                    return false;
+                }
+                if state.applied.is_some_and(|applied| applied >= batch.seq) {
+                    self.log.push(format!("  doc {doc} guard {guard} passes over {}", batch.seq));
+                    return true;
+                }
+                self.log.push(format!("  doc {doc} guard {guard} hears {batch:?}"));
+                state.applied = Some(batch.seq);
+                state.live = batch.waiting.iter().chain(&batch.holds).map(|ask| ask.id).collect();
                 let live = state.live.clone();
                 state.committed.retain(|id, _| live.contains(id));
-                state.failed.retain(|id, _| live.contains(id));
+                state.judged.retain(|id| live.contains(id));
+                state.failures.retain(|key, _| key.strip_prefix("answer:").is_none_or(|id| live.contains(&id.parse().unwrap())));
                 for hold in &batch.holds {
-                    state.committed.entry(hold.id).or_insert(hold.about != About::Close);
+                    state.committed.entry(hold.id).and_modify(|(_, accepted)| *accepted = true).or_insert((hold.about != About::Close, true));
+                }
+                state.waiting.clone_from(&batch.waiting);
+                self.show(doc, guard);
+                self.judge(doc, guard);
+                true
+            }
+
+            fn reply(&mut self, doc: usize, guard: usize, id: u64, reply: Option<bool>, sent: (About, bool, Vec<u64>)) {
+                let state = &mut self.docs[doc].guards[guard];
+                if state.ended {
+                    return;
+                }
+                let Some(heard) = reply else {
+                    if state.live.contains(&id) {
+                        state.failures.insert(format!("answer:{id}"), Failure::Answer(sent.0, sent.1, sent.2));
+                    }
+                    return;
+                };
+                state.failures.remove(&format!("answer:{id}"));
+                let Some(commitment) = state.committed.get_mut(&id) else { return };
+                if heard {
+                    commitment.1 = true;
+                } else {
+                    state.committed.remove(&id);
                 }
                 self.show(doc, guard);
-                for ask in &batch.asks {
-                    self.judge(doc, guard, ask.id, ask.about);
-                }
-                true
+                self.judge(doc, guard);
             }
 
             fn exit(&mut self, consented: bool, how: &str) {
                 self.log.push(format!("exit: {how}"));
+                if self.exited {
+                    return;
+                }
                 let doc = &self.docs[self.live];
                 let given_up = {
                     let state = self.leaving.lock();
-                    self.consents.iter().any(|&consent| state.stands(consent))
+                    self.consents.iter().any(|&consent| state.held(consent))
                 };
                 assert!(
                     !doc.alive || consented || !doc.dirty || given_up || doc.discarding,
-                    "seed {}: BattlePlan left ({how}) with edits the user never gave up\n{}",
-                    self.seed,
-                    self.log.join("\n")
+                    "{}",
+                    self.fail(&format!("BattlePlan left ({how}) with edits the user never gave up"))
                 );
-                assert!(!self.leaving.navigation_starting(u64::MAX), "seed {}: a page could reload while BattlePlan exits", self.seed);
-                self.done = true;
+                assert!(!self.leaving.navigation_starting(u64::MAX), "{}", self.fail("a page could reload while BattlePlan exits"));
+                self.exited = true;
             }
 
             fn offered(&mut self, offer: bool) {
@@ -1246,7 +1588,7 @@ mod tests {
                     self.closing = false;
                 }
                 if offer {
-                    assert!(!self.choosing, "seed {}: two native choices at once", self.seed);
+                    assert!(!self.choosing, "{}", self.fail("two native choices at once"));
                     self.choosing = true;
                 }
             }
@@ -1256,7 +1598,7 @@ mod tests {
                     Ok(posed) => self.posed.push((pending, posed)),
                     Err(verdict) => {
                         if let Pending::Install(confirmed) = pending {
-                            assert_ne!(verdict, Verdict::Leaving, "seed {}: an install went ahead without its page", self.seed);
+                            assert_ne!(verdict, Verdict::Leaving, "{}", self.fail("an install went ahead without its page"));
                             self.restarts.extend(confirmed);
                         }
                     }
@@ -1272,6 +1614,15 @@ mod tests {
             }
 
             fn run(&mut self, step: Step) -> bool {
+                let ran = self.act(step);
+                let refused = std::mem::take(&mut self.wire.lock().unwrap().refused);
+                for offer in refused {
+                    self.offered(offer);
+                }
+                ran
+            }
+
+            fn act(&mut self, step: Step) -> bool {
                 let live = self.live;
                 let alive = self.docs[live].alive;
                 match step {
@@ -1286,8 +1637,12 @@ mod tests {
                     Step::DiscardAndClose if self.editable() && self.docs[live].dirty => {
                         let guard = self.active().expect("a live page has a guard");
                         self.docs[live].discarding = true;
+                        self.begin();
                         self.docs[live].guards[guard].by_choice = true;
                         self.show(live, guard);
+                        let trace = self.docs[live].guards[guard].trace;
+                        let out = self.out(live, guard);
+                        self.record(json!(["l", trace, out]));
                         self.leaving.exit();
                         self.exit(true, "discard and close");
                     }
@@ -1299,9 +1654,14 @@ mod tests {
                     Step::SetupCloses => self.pose(Pending::Pipe, About::Leave),
                     Step::SetupAsks => self.pose(Pending::Query, About::Query),
                     Step::RunBatch | Step::DropBatch => {
-                        let Some((doc, guard, batch)) = self.batches.lock().unwrap().pop_front() else { return false };
+                        let picked = {
+                            let wire = self.wire.lock().unwrap();
+                            (!wire.batches.is_empty()).then_some(wire.batches.len())
+                        };
+                        let Some(count) = picked else { return false };
+                        let (doc, guard, batch) = self.wire.lock().unwrap().batches.remove(self.rng.below(count));
                         let ran = matches!(step, Step::RunBatch) && self.hear(doc, guard, &batch);
-                        let offer = self.leaving.delivered(batch.token, ran).is_some();
+                        let offer = self.leaving.delivered(batch.seq, ran).is_some();
                         self.offered(offer);
                     }
                     Step::Answer | Step::AnswerLost => {
@@ -1316,73 +1676,75 @@ mod tests {
                         if about == About::Close && answered != Answered::Unknown {
                             self.closing = false;
                         }
-                        let reply = match answered {
-                            Answered::Leave => {
-                                self.exit(false, "the page’s answer closed it");
-                                return true;
-                            }
-                            Answered::Heard => true,
-                            Answered::Unknown => false,
-                        };
-                        if reply {
-                            self.run(Step::Settle);
-                            if self.done {
-                                return true;
-                            }
+                        let reply = answered != Answered::Unknown;
+                        if answered == Answered::Leave {
+                            self.exit(false, "the page’s answer closed it");
+                        } else if reply {
+                            self.act(Step::Settle);
                         }
                         let lost = self.chance(4);
                         self.replies.push_back((doc, guard, id, (!lost).then_some(reply), sent));
                     }
                     Step::Reply => {
                         let Some((doc, guard, id, reply, sent)) = self.replies.pop_front() else { return false };
-                        if !self.docs[doc].alive || self.docs[doc].guards[guard].ended {
+                        if !self.docs[doc].alive {
                             return true;
                         }
-                        let state = &mut self.docs[doc].guards[guard];
-                        match reply {
-                            Some(true) => {}
-                            Some(false) => {
-                                if state.committed.remove(&id).is_some() {
-                                    self.show(doc, guard);
-                                }
-                            }
-                            None => {
-                                if state.live.contains(&id) {
-                                    state.failed.insert(id, sent);
-                                }
-                            }
-                        }
+                        self.begin();
+                        let (dirty, confirmed) = self.facts(doc);
+                        self.reply(doc, guard, id, reply, sent);
+                        let trace = self.docs[doc].guards[guard].trace;
+                        let out = self.out(doc, guard);
+                        self.record(json!(["r", trace, dirty, confirmed, id, reply, out]));
                     }
                     Step::Retry => {
                         let Some(guard) = self.active() else { return false };
-                        if self.docs[live].guards[guard].watch_failed {
-                            self.watch(live, guard);
-                            return true;
+                        let Some((key, failure)) = self.docs[live].guards[guard].failures.iter().next().map(|(key, failure)| (key.clone(), failure.clone())) else {
+                            return false;
+                        };
+                        self.begin();
+                        let (dirty, confirmed) = self.facts(live);
+                        match failure {
+                            Failure::Watch => self.watch(live, guard),
+                            Failure::Answer(about, stays, basis) => {
+                                let id = key.strip_prefix("answer:").and_then(|id| id.parse().ok()).expect("an answer failure names its id");
+                                self.send(live, guard, id, about, stays, basis);
+                            }
                         }
-                        let Some(id) = self.docs[live].guards[guard].failed.keys().next().copied() else { return false };
-                        let (about, stays, basis) = self.docs[live].guards[guard].failed.remove(&id).expect("the failure is there");
-                        self.answers.push_back((live, guard, id, stays, basis, about));
+                        let trace = self.docs[live].guards[guard].trace;
+                        let out = self.out(live, guard);
+                        self.record(json!(["t", trace, dirty, confirmed, key, out]));
                     }
                     Step::Remount if alive => self.mount(),
                     Step::Register | Step::RegistrationLost => {
                         let Some((doc, guard, document)) = self.registrations.pop_front() else { return false };
-                        let lost = matches!(step, Step::RegistrationLost) || (document.is_none() && !self.docs[doc].alive);
-                        match document {
-                            None if !lost => self.registrations.push_back((doc, guard, Some(self.leaving.document()))),
+                        if !self.docs[doc].alive {
+                            return true;
+                        }
+                        let lost = matches!(step, Step::RegistrationLost);
+                        let watched = match document {
+                            None if !lost => {
+                                self.registrations.push_back((doc, guard, Some(self.leaving.document())));
+                                return true;
+                            }
                             Some(document) if !lost => {
                                 let seq = self.docs[doc].guards[guard].seq;
-                                let watched = self.leaving.watch(document, seq, self.reach(doc, guard)).is_ok();
-                                let state = &mut self.docs[doc].guards[guard];
-                                state.watching = false;
-                                state.watched = watched;
-                                state.watch_failed = !watched;
+                                self.leaving.watch(document, seq, self.reach(doc, guard)).is_ok()
                             }
-                            _ => {
-                                let state = &mut self.docs[doc].guards[guard];
-                                state.watching = false;
-                                state.watch_failed = true;
-                            }
+                            _ => false,
+                        };
+                        self.begin();
+                        let state = &mut self.docs[doc].guards[guard];
+                        state.watching = false;
+                        if watched {
+                            state.watched = true;
+                            state.failures.remove("watch");
+                        } else if !state.ended {
+                            state.failures.insert("watch".into(), Failure::Watch);
                         }
+                        let trace = state.trace;
+                        let out = self.out(doc, guard);
+                        self.record(json!(["w", trace, watched, out]));
                     }
                     Step::Reload => {
                         let navigation = self.next_navigation;
@@ -1395,20 +1757,24 @@ mod tests {
                     }
                     Step::ReloadLoads if !self.navigations.is_empty() => {
                         let navigation = self.navigations.remove(self.rng.below(self.navigations.len()));
-                        assert!(
-                            self.leaving.lock().holds.is_empty() && self.launching.is_empty(),
-                            "seed {}: a page loaded while BattlePlan held a leave\n{}",
-                            self.seed,
-                            self.log.join("\n")
-                        );
-                        self.leaving.content_loading(navigation);
+                        let held = !self.leaving.lock().holds.is_empty();
+                        let stopped = self.leaving.content_loading(navigation);
+                        assert_eq!(stopped, held, "{}", self.fail("a document began loading while BattlePlan held a leave, and wasn’t stopped"));
+                        assert!(stopped || self.launching.is_empty(), "{}", self.fail("a page loaded while an installer starts"));
                         self.leaving.navigation_completed(navigation);
-                        self.navigations.retain(|&pending| pending > navigation);
                         self.docs[live].alive = false;
-                        self.load();
+                        if stopped {
+                            self.docs.push(Doc::default());
+                            self.live = self.docs.len() - 1;
+                        } else {
+                            self.load();
+                        }
                     }
                     Step::ReloadStops => {
-                        let Some(navigation) = self.navigations.pop() else { return false };
+                        if self.navigations.is_empty() {
+                            return false;
+                        }
+                        let navigation = self.navigations.remove(self.rng.below(self.navigations.len()));
                         self.leaving.navigation_completed(navigation);
                     }
                     Step::PageExits if alive => {
@@ -1433,7 +1799,6 @@ mod tests {
                                 Pending::Pipe if verdict == Verdict::Leaving => {
                                     self.leaving.exit();
                                     self.exit(false, "setup closed it");
-                                    return true;
                                 }
                                 Pending::Pipe | Pending::Query => {}
                             }
@@ -1469,9 +1834,9 @@ mod tests {
                 true
             }
 
-            fn step(&mut self) {
-                let mut pick = self.rng.below(STEPS.iter().map(|(_, weight)| weight).sum());
-                let step = STEPS
+            fn step(&mut self, steps: &[(Step, usize)]) {
+                let mut pick = self.rng.below(steps.iter().map(|(_, weight)| weight).sum());
+                let step = steps
                     .iter()
                     .find_map(|&(step, weight)| if pick < weight { Some(step) } else { pick -= weight; None })
                     .expect("a step is picked");
@@ -1482,28 +1847,34 @@ mod tests {
 
             fn drain(&mut self, retrying: bool) -> bool {
                 self.draining = true;
-                DRAIN.iter().any(|&step| !self.done && (retrying || !matches!(step, Step::Retry)) && self.run(step))
+                DRAIN.iter().any(|&step| !self.exited && (retrying || !matches!(step, Step::Retry)) && self.run(step))
             }
 
             fn settled(&mut self, retrying: bool) {
                 let mut drained = 0;
-                while !self.done && self.drain(retrying) {
+                while !self.exited && self.drain(retrying) {
                     self.check();
                     drained += 1;
-                    assert!(drained < 10_000, "seed {}: the host and page never settle\n{}", self.seed, self.log.join("\n"));
+                    assert!(drained < 10_000, "{}", self.fail("the host and page never settle"));
                 }
             }
 
             fn waiting_unseen(&self) -> Vec<u64> {
-                let shown: BTreeSet<u64> = match self.active() {
-                    Some(guard) => self.docs[self.live].guards[guard].failed.keys().copied().collect(),
-                    None => BTreeSet::new(),
+                let (shown, deferred): (BTreeSet<u64>, BTreeSet<u64>) = match self.active() {
+                    Some(guard) => {
+                        let state = &self.docs[self.live].guards[guard];
+                        let shown: BTreeSet<u64> = state.failures.keys().filter_map(|key| key.strip_prefix("answer:")?.parse().ok()).collect();
+                        let blocked = state.committed.iter().any(|(id, &(_, accepted))| !accepted && shown.contains(id));
+                        let deferred = if blocked { state.waiting.iter().map(|ask| ask.id).filter(|id| !state.judged.contains(id)).collect() } else { BTreeSet::new() };
+                        (shown, deferred)
+                    }
+                    None => (BTreeSet::new(), BTreeSet::new()),
                 };
                 let state = self.leaving.lock();
                 self.posed
                     .iter()
                     .filter_map(|(_, posed)| state.questions.iter().find(|question| question.key == posed.0))
-                    .filter(|question| question.verdict.is_none() && !question.asked.is_some_and(|id| shown.contains(&id)))
+                    .filter(|question| question.verdict.is_none() && !question.asked.is_some_and(|id| shown.contains(&id) || deferred.contains(&id)))
                     .map(|question| question.key)
                     .collect()
             }
@@ -1522,65 +1893,89 @@ mod tests {
                     return;
                 }
                 if let Err(verdict) = self.leaving.pose(About::Query) {
-                    panic!("seed {}: the live, subscribed page wasn’t asked ({verdict:?})\n{}", self.seed, self.log.join("\n"));
+                    panic!("{}", self.fail(&format!("the live, subscribed page wasn’t asked ({verdict:?})")));
                 }
-                let asked = self.batches.lock().unwrap().back().map(|&(doc, to, _)| (doc, to));
-                assert_eq!(asked, Some((self.live, guard)), "seed {}: the live page isn’t the one asked\n{}", self.seed, self.log.join("\n"));
+                let asked = self.wire.lock().unwrap().last;
+                assert_eq!(asked, Some((self.live, guard)), "{}", self.fail("the live page isn’t the one asked"));
             }
 
             fn check(&self) {
                 let doc = &self.docs[self.live];
-                if !self.done && doc.alive && !doc.locked {
-                    assert!(
-                        self.leaving.lock().holds.is_empty(),
-                        "seed {}: the page can be edited while BattlePlan holds a leave\n{}",
-                        self.seed,
-                        self.log.join("\n")
-                    );
+                if !self.exited && doc.alive && !doc.locked {
+                    assert!(self.leaving.lock().holds.is_empty(), "{}", self.fail("the page can be edited while BattlePlan holds a leave"));
                 }
+            }
+
+            fn after_exit(&mut self) {
+                let steps: Vec<(Step, usize)> = AFTER_EXIT.iter().map(|&step| (step, 1)).collect();
+                self.draining = false;
+                for _ in 0..40 {
+                    self.step(&steps);
+                }
+            }
+
+            fn explore(&mut self) {
+                for _ in 0..300 {
+                    if self.exited {
+                        break;
+                    }
+                    self.step(&STEPS);
+                    self.check();
+                }
+                self.settled(false);
+                if self.exited {
+                    return self.after_exit();
+                }
+                let unseen = self.waiting_unseen();
+                assert!(unseen.is_empty(), "{}", self.fail(&format!("setup waits on {unseen:?} with nothing for the user to retry")));
+                self.settled(true);
+                if self.exited {
+                    return self.after_exit();
+                }
+                assert!(self.posed.is_empty(), "{}", self.fail("a question setup waits on was never settled"));
+                assert!(!self.closing, "{}", self.fail("a close went unanswered with no choice offered"));
+                assert!(
+                    self.leaving.lock().questions.iter().all(|question| question.verdict.is_some() || question.asked.is_none()),
+                    "{}",
+                    self.fail("the host waits on an answer no page will send")
+                );
+                if self.stuck() {
+                    self.run(Step::CloseWindow);
+                    self.settled(true);
+                    if self.exited {
+                        return self.after_exit();
+                    }
+                    assert!(!self.stuck(), "{}", self.fail("the page stays locked though nothing stands, even after a close"));
+                }
+                self.probe();
             }
         }
 
         #[test]
         fn no_interleaving_loses_unsaved_work_or_leaves_a_question_unanswered() {
-            for seed in 1..=4000 {
+            let mut traces = Vec::new();
+            let mut covered = BTreeSet::new();
+            for seed in 1..=SEEDS {
                 let mut world = World::new(seed);
-                for _ in 0..300 {
-                    if world.done {
-                        break;
-                    }
-                    world.step();
-                    world.check();
+                world.explore();
+                if !world.shapes.is_subset(&covered) {
+                    covered.append(&mut world.shapes);
+                    traces.push(serde_json::to_string(&json!([seed, world.trace])).expect("a trace is JSON"));
                 }
-                world.settled(false);
-                if world.done {
-                    continue;
-                }
-                let unseen = world.waiting_unseen();
-                assert!(unseen.is_empty(), "seed {seed}: setup waits on {unseen:?} with nothing for the user to retry\n{}", world.log.join("\n"));
-                world.settled(true);
-                if world.done {
-                    continue;
-                }
-                assert!(world.posed.is_empty(), "seed {seed}: a question setup waits on was never settled\n{}", world.log.join("\n"));
-                assert!(!world.closing, "seed {seed}: a close went unanswered with no choice offered\n{}", world.log.join("\n"));
-                assert!(
-                    world.leaving.lock().questions.iter().all(|question| question.verdict.is_some() || question.asked.is_none()),
-                    "seed {seed}: the host waits on an answer no page will send\n{}",
-                    world.log.join("\n")
-                );
-                if world.stuck() {
-                    world.run(Step::CloseWindow);
-                    world.settled(true);
-                    if world.done {
-                        continue;
-                    }
-                    assert!(!world.stuck(), "seed {seed}: the page stays locked though nothing stands, even after a close
-{}", world.log.join("
-"));
-                }
-                world.probe();
             }
+            let written = format!("[\n{}\n]\n", traces.join(",\n"));
+            let folder = std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo names the crate’s folder");
+            let path = std::path::Path::new(&folder).join(TRACES);
+            if std::env::var_os("BATTLEPLAN_WRITE_TRACES").is_some() {
+                std::fs::write(&path, written).expect("the traces are written");
+                return;
+            }
+            let committed = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+            assert!(
+                committed == written,
+                "{} no longer holds what this model of the page guard does; closeGuard.test.ts replays it through the real guard. Run this test with BATTLEPLAN_WRITE_TRACES=1 and commit the file",
+                path.display()
+            );
         }
     }
 }

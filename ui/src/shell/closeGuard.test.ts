@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNKEPT } from './closeGuard.ts';
+import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuard, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNKEPT } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import { unsavedDrafts } from '../dashboard/layoutDrafts.ts';
 import { loadLayouts } from '../dashboard/storage.ts';
@@ -19,7 +20,8 @@ function desktop(judge?: () => boolean) {
     answerFails: false,
     leaveFails: false,
     subscriptions: [] as ((batch: CloseBatch) => boolean)[],
-    waiting: new Set<number>(),
+    seq: 0,
+    waiting: new Map<number, CloseAbout>(),
     holds: new Map<number, CloseAbout>(),
     watched: [] as number[],
     answers: [] as [number, boolean][],
@@ -58,17 +60,19 @@ function desktop(judge?: () => boolean) {
     leaving: leaving => { host.leaving.push(leaving); },
   }, failures => { host.reports.push(failures); });
   const batch = (...asks: CloseAsk[]): CloseBatch => {
-    for (const { id } of asks) host.waiting.add(id);
-    return { asks, waiting: [...host.waiting], holds: [...host.holds].map(([id, about]) => ({ id, about })) };
+    for (const { id, about } of asks) host.waiting.set(id, about);
+    const listed = (asked: Map<number, CloseAbout>) => [...asked].map(([id, about]) => ({ id, about }));
+    return { seq: ++host.seq, waiting: listed(host.waiting), holds: listed(host.holds) };
   };
-  const send = (...asks: CloseAsk[]) => watcher.get(0)?.(batch(...asks));
+  const deliver = (sent: CloseBatch) => watcher.get(0)?.(sent);
+  const send = (...asks: CloseAsk[]) => deliver(batch(...asks));
   const ask = (id: number, about: CloseAbout) => send({ id, about });
   const hold = (id: number, about: CloseAbout) => { host.waiting.delete(id); host.holds.set(id, about); };
   const retire = (...ids: number[]) => { for (const id of ids) { host.waiting.delete(id); host.holds.delete(id); } };
   const stay = (id: number) => { retire(id); send(); };
   const shown = () => host.reports.at(-1) ?? [];
   const locked = () => host.leaving.at(-1) ?? null;
-  return { host, start, batch, send, ask, hold, retire, stay, shown, locked };
+  return { host, start, batch, deliver, send, ask, hold, retire, stay, shown, locked };
 }
 
 test('a close is judged by the page’s work at that moment, and saved work locks editing before it leaves', async () => {
@@ -81,6 +85,7 @@ test('a close is judged by the page’s work at that moment, and saved work lock
   host.unsaved = false;
   ask(2, 'close');
   assert.deepEqual([host.prompts, host.answers.at(-1), locked()], [1, [2, false], 'close'], 'saved work leaves, locked first');
+  await flush();
   host.unsaved = true;
   ask(3, 'close');
   assert.deepEqual([host.prompts, host.answers.at(-1)], [1, [3, false]], 'a page already leaving isn’t asked to keep an edit it can’t make');
@@ -175,6 +180,44 @@ test('a close judged while an install stood is retired with it, so the close ask
     'the installer couldn’t start, so neither the restart nor the close judged under it speaks for the unsaved work');
 });
 
+test('a leave that would rest on an answer the host hasn’t taken waits for it, so a lost answer never becomes consent', async () => {
+  const { host, start, ask, hold, stay, shown, locked } = desktop();
+  start();
+  await flush();
+  host.unsaved = true;
+  host.confirmed = true;
+  ask(1, 'install');
+  await flush();
+  hold(1, 'install');
+  host.answerFails = true;
+  ask(2, 'close');
+  await flush();
+  assert.deepEqual([host.answers.at(-1), host.bases.at(-1), locked()], [[2, false], [1], 'update'], 'a close while restarting goes with the restart');
+  host.confirmed = false;
+  stay(1);
+  assert.equal(locked(), 'close', 'the close the page agreed to may have reached the host, so editing stays locked');
+  ask(3, 'leave');
+  assert.equal(host.answers.length, 2, 'setup’s close isn’t judged on a close the host may never have taken');
+  host.answerFails = false;
+  host.heard = false;
+  shown()[0]!.retry();
+  await flush();
+  assert.deepEqual([host.answers.slice(-2), locked()], [[[2, false], [3, true]], null],
+    'the host refuses the close, which rested on the failed restart, and setup’s close is judged afresh');
+});
+
+test('a batch older than one the page has applied changes nothing, so a crossing batch can’t unlock a page whose answer is in flight', async () => {
+  const { host, start, batch, deliver, locked } = desktop();
+  start();
+  await flush();
+  const older = batch({ id: 1, about: 'query' });
+  const newer = batch({ id: 2, about: 'close' });
+  assert.equal(deliver(newer), true);
+  assert.deepEqual([host.answers, locked()], [[[1, false], [2, false]], 'close'], 'the newer batch carries the query the older one asked');
+  assert.equal(deliver(older), true, 'the older batch is covered by the newer one');
+  assert.deepEqual([host.answers.length, locked()], [2, 'close']);
+});
+
 test('a page that loads while BattlePlan holds a leave is locked by the first batch it hears', async () => {
   const { host, start, send, hold, locked } = desktop();
   hold(9, 'install');
@@ -255,7 +298,7 @@ test('a registration whose reply was lost is sent again on Try again, with the s
 });
 
 test('a guard that has ended reports that it handled nothing, so the host never counts its batch as heard', async () => {
-  const { host, start, batch, hold, locked } = desktop();
+  const { host, start, batch, hold, retire, locked } = desktop();
   const first = start();
   first.end();
   start();
@@ -263,6 +306,7 @@ test('a guard that has ended reports that it handled nothing, so the host never 
   host.unsaved = true;
   assert.equal(host.subscriptions[0]!(batch({ id: 1, about: 'close' }, { id: 2, about: 'query' })), false);
   assert.deepEqual([host.prompts, host.answers.length, host.leaves, host.leaving], [0, 0, 0, []]);
+  retire(1, 2);
   hold(5, 'leave');
   assert.equal(host.subscriptions[1]!(batch({ id: 3, about: 'close' })), true);
   assert.deepEqual([host.answers, locked()], [[[3, false]], 'update'], 'the guard that replaced it takes the leave the host holds');
@@ -321,4 +365,84 @@ test('an answer that fails says which way it failed', async () => {
   ask(3, 'close');
   await flush();
   assert.deepEqual(shown().map(({ message, detail }) => [message, detail]), [[UNANSWERED_UNSAVED, lost], [UNKEPT, lost]]);
+});
+
+type Traced = [string, ...unknown[]];
+type Out = [[number, boolean, number[]][], 0 | 1 | 2, number, string[] | null];
+
+async function replay(seed: number, trace: Traced[]) {
+  const facts = { dirty: false, confirmed: false };
+  interface Entry {
+    guard?: CloseGuard; onBatch?: (batch: CloseBatch) => boolean; watches: { resolve(): void; reject(cause: unknown): void }[];
+    answers: { id: number; resolve(heard: boolean): void; reject(cause: unknown): void }[]; failures: readonly CloseGuardFailure[]; locked: LeavingFor | null; prompts: number;
+  }
+  const guards: Entry[] = [];
+  let emitted: [number, boolean, number[]][] = [];
+  const asks = (listed: [number, CloseAbout][]) => listed.map(([id, about]) => ({ id, about }));
+  for (const [at, event] of trace.entries()) {
+    const where = `seed ${seed}, event ${at}: ${JSON.stringify(event)}`;
+    const [kind, index] = event as [string, number];
+    emitted = [];
+    if (kind === 'm') {
+      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0 };
+      guards[index] = entry;
+      entry.guard = closeGuard({
+        requests: onBatch => { entry.onBatch = onBatch; return { watch: () => new Promise<void>((resolve, reject) => { entry.watches.push({ resolve, reject }); }) }; },
+        answer: (id, stays, basis) => {
+          emitted.push([id, stays, [...basis].sort((a, b) => a - b)]);
+          return new Promise<boolean>((resolve, reject) => { entry.answers.push({ id, resolve, reject }); });
+        },
+        leave: () => Promise.resolve(),
+      }, { unsaved: () => facts.dirty, confirmed: () => facts.confirmed, prompt: () => { entry.prompts++; }, leaving: leaving => { entry.locked = leaving; } },
+      failures => { entry.failures = failures; });
+      continue;
+    }
+    const entry = guards[index]!;
+    if (kind === 'e') { entry.guard!.end(); continue; }
+    const prompts = entry.prompts;
+    let out: Out;
+    if (kind === 'w') {
+      const [, , watched, expected] = event as [string, number, boolean, Out];
+      const pending = entry.watches.shift();
+      assert.ok(pending, `${where}: the guard asked to watch`);
+      if (watched) pending.resolve(); else pending.reject(lost);
+      await flush();
+      out = expected;
+    } else if (kind === 'b') {
+      const [, , dirty, confirmed, seq, waiting, holds, returned, expected] = event as [string, number, boolean, boolean, number, [number, CloseAbout][], [number, CloseAbout][], boolean, Out];
+      Object.assign(facts, { dirty, confirmed });
+      assert.equal(entry.onBatch!({ seq, waiting: asks(waiting), holds: asks(holds) }), returned, `${where}: what the callback returned`);
+      out = expected;
+    } else if (kind === 'r') {
+      const [, , dirty, confirmed, id, reply, expected] = event as [string, number, boolean, boolean, number, boolean | null, Out];
+      Object.assign(facts, { dirty, confirmed });
+      const pending = entry.answers.shift();
+      assert.equal(pending?.id, id, `${where}: the answer replied to`);
+      if (reply === null) pending!.reject(lost); else pending!.resolve(reply);
+      await flush();
+      out = expected;
+    } else if (kind === 't') {
+      const [, , dirty, confirmed, key, expected] = event as [string, number, boolean, boolean, string, Out];
+      Object.assign(facts, { dirty, confirmed });
+      const failure = entry.failures.find(shown => shown.key === key);
+      assert.ok(failure, `${where}: the failure retried is shown`);
+      failure.retry();
+      out = expected;
+    } else {
+      assert.equal(kind, 'l', where);
+      entry.guard!.leave();
+      out = (event as [string, number, Out])[2];
+    }
+    const [answers, locked, prompted, failures] = out;
+    assert.deepEqual(emitted, answers, `${where}: the answers sent`);
+    assert.equal(entry.locked, [null, 'close', 'update'][locked], `${where}: whether editing is locked`);
+    assert.equal(entry.prompts - prompts, prompted, `${where}: the prompts shown`);
+    if (failures !== null) assert.deepEqual(entry.failures.map(({ key }) => key).sort(), failures, `${where}: the failures shown`);
+  }
+}
+
+test('the real guard answers every randomized interleaving of the host’s test exactly as that test’s model of it did', async () => {
+  const traces = JSON.parse(readFileSync(new URL('./closeGuard.traces.json', import.meta.url), 'utf8')) as [number, Traced[]][];
+  assert.ok(traces.length > 0);
+  for (const [seed, trace] of traces) await replay(seed, trace);
 });

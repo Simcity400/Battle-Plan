@@ -338,6 +338,8 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
         <span className="recorder-round" aria-hidden="true" />Record</button>}
       {shown.action === 'open' && <button type="button" className="button small primary" onClick={() => actions.open(snapshot.recording)}>Open</button>}
     </div>
+    {notice}{windowLines}
+    {preparationNotice}
     <div className="recorder-body">
       {prompt && <div className="recorder-ask" role="alertdialog" aria-labelledby="recorder-ask-question">
         <p id="recorder-ask-question" className="recorder-ask-question">{askQuestion(quitting, discarding, length)}</p>
@@ -346,8 +348,6 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
       </div>}
       <div className={`recorder-under${prompt ? ' is-covered' : ''}`} inert={prompt}>
       {!prompt && promptFailureLine}
-      {notice}{windowLines}
-      {preparationNotice}
       {shown.busy && <div className="recorder-bar" role="progressbar" aria-label={shown.label ?? undefined}><i /></div>}
       {shown.campaign && campaign && settings && <section className="recorder-section">
         <div className="group-label recorder-label">This campaign</div>

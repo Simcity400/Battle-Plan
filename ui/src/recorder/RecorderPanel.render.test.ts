@@ -68,6 +68,11 @@ test('the panel draws each state, and the Stop prompt covers everything under th
     assert.match(asking, /<div class="recorder-under is-covered" inert="">[\s\S]*This campaign/,
       'the prompt covers everything under the head and out of reach, and the panel keeps its height');
     assert.doesNotMatch(recordingPanel, /inert/);
+    const unshown = { text: 'Couldn’t show the recorder panel.', detail: 'the window couldn’t be sized', retry() {} };
+    const failing = render({ asking: true, windowFailures: [unshown], snapshot: { ...recording, problem: { text: 'The game stopped answering.', detail: '', failed: true } } });
+    const [reachable] = failing.split('<div class="recorder-under is-covered" inert="">');
+    assert.match(text(reachable!), /Couldn’t show the recorder panel\. .*Try again/, 'a failure line stays in reach while the prompt covers the rest');
+    assert.match(text(reachable!), /The game stopped answering\./);
     assert.doesNotMatch(asking, /is-danger/);
     const confirming = render({ asking: true, discarding: true });
     assert.match(text(confirming), /Discard this session \(2 h 14 min\)\? The earlier recording in this file is kept\. Cancel Discard/);

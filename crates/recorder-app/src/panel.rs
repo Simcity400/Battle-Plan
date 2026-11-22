@@ -77,6 +77,7 @@ struct State {
     dialog: bool,
     focused: bool,
     shown: bool,
+    unseen: bool,
     opening: bool,
     recordings_panel: Option<String>,
 }
@@ -230,14 +231,15 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
             }
         }
         WindowEvent::Destroyed => {
-            {
+            let panel = {
                 let mut state = state(&handle);
                 state.closed_at = Some(Instant::now());
                 state.focused = false;
                 state.shown = false;
-                if let Some(panel) = state.recordings_panel.take() {
-                    handle.state::<crate::recordings::Library>().close(&panel);
-                }
+                state.recordings_panel.take()
+            };
+            if let Some(panel) = panel {
+                handle.state::<crate::recordings::Library>().close(&panel);
             }
             handle.state::<Arc<Recorder>>().panel_closed(&handle);
         }
@@ -247,18 +249,72 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn opening(app: &AppHandle, panel: &str) -> bool {
-    let mut state = state(app);
-    if state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel) {
-        let library = app.state::<crate::recordings::Library>();
-        if let Some(previous) = state.recordings_panel.replace(panel.to_owned()) {
-            library.close(&previous);
-        }
+    let (compact, registered, previous) = {
+        let mut state = state(app);
+        let registered = state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel);
+        let previous = if registered { state.recordings_panel.replace(panel.to_owned()) } else { None };
+        (state.compact, registered, previous)
+    };
+    let library = app.state::<crate::recordings::Library>();
+    if let Some(previous) = previous {
+        library.close(&previous);
+    }
+    if registered {
         library.register_panel(panel);
     }
-    state.compact
+    compact
 }
 
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
+    let shown = state(app).shown;
+    reveal(shown, || place(app, window, height), || show(app, window))
+}
+
+fn reveal<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+    let placed = place();
+    if !shown {
+        show()?;
+    }
+    placed
+}
+
+fn show(app: &AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
+    if let Err(error) = window.show() {
+        unseen(app, &error);
+        return Err(error);
+    }
+    state(app).shown = true;
+    window.set_focus()
+}
+
+fn unseen(app: &AppHandle, error: &tauri::Error) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDRETRY, MB_ICONWARNING, MB_RETRYCANCEL, MessageBoxW};
+    if std::mem::replace(&mut state(app).unseen, true) {
+        return;
+    }
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let text = wide(&format!(
+        "BattlePlan Recorder couldn’t show its panel: {error}\n\nChoose Retry to show it again, or Cancel to close it. The tray icon opens it again."
+    ));
+    let handle = app.clone();
+    let asked = std::thread::Builder::new().name("recorder-panel-unseen".into()).spawn(move || {
+        let caption = wide("BattlePlan Recorder");
+        let retry = unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_RETRYCANCEL | MB_ICONWARNING) } == IDRETRY;
+        state(&handle).unseen = false;
+        let Some(window) = handle.get_webview_window(LABEL) else { return };
+        if !retry {
+            let _ = window.destroy();
+        } else if show(&handle, &window).is_err() {
+            eprintln!("The recorder panel still couldn’t be shown.");
+        }
+    });
+    if let Err(spawned) = asked {
+        eprintln!("The recorder panel couldn’t be shown, nor could BattlePlan Recorder say so: {spawned}");
+        state(app).unseen = false;
+    }
+}
+
+fn place(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
     let (anchor, moved) = {
         let state = state(app);
         (state.anchor, state.moved.filter(|_| !state.compact))
@@ -290,11 +346,6 @@ pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Resul
             window.set_position(position)?;
         }
         None => window.set_size(tauri::LogicalSize::new(WIDTH, height))?,
-    }
-    if !state(app).shown {
-        window.show()?;
-        state(app).shown = true;
-        window.set_focus()?;
     }
     Ok(())
 }
@@ -685,6 +736,15 @@ mod tests {
         let corner = placement(&[monitor], None, None, PANEL).unwrap();
         assert_eq!((corner.x, corner.y), (804, 396));
         assert!(placement(&[], None, None, PANEL).is_none());
+    }
+
+    #[test]
+    fn a_panel_that_cant_be_sized_is_still_shown_so_its_failure_and_try_again_are_seen() {
+        let mut shown = Vec::new();
+        assert_eq!(reveal(false, || Err("no size"), || { shown.push("show"); Ok(()) }), Err("no size"));
+        assert_eq!(shown, ["show"], "the hidden window is shown though it couldn’t be sized");
+        assert_eq!(reveal(false, || Ok(()), || Err("no show")), Err("no show"));
+        assert_eq!(reveal(true, || Err("no size"), || unreachable!("a shown panel isn’t shown again")), Err("no size"));
     }
 
     #[test]

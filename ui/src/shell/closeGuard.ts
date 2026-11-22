@@ -2,7 +2,7 @@ import { errorMessage } from './errors.ts';
 
 export type CloseAbout = 'close' | 'install' | 'leave' | 'query';
 export interface CloseAsk { id: number; about: CloseAbout }
-export interface CloseBatch { asks: readonly CloseAsk[]; waiting: readonly number[]; holds: readonly CloseAsk[] }
+export interface CloseBatch { seq: number; waiting: readonly CloseAsk[]; holds: readonly CloseAsk[] }
 export type LeavingFor = 'close' | 'update';
 
 export interface CloseRequests {
@@ -40,9 +40,11 @@ const unanswered = (about: CloseAbout, stays: boolean) =>
 const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close' : 'update';
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
-  let ended = false, watching = false, watched = false, leavingByChoice = false;
+  let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1;
   let shown: LeavingFor | null | undefined;
-  const committed = new Map<number, LeavingFor>();
+  const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
+  const judged = new Set<number>();
+  let waiting: readonly CloseAsk[] = [];
   const failures = new Map<string, CloseGuardFailure>();
   let live = new Set<number>();
   const publish = () => { if (!ended) report([...failures.values()]); };
@@ -55,12 +57,11 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
 
   const leaving = () => leavingByChoice || committed.size > 0;
   const show = () => {
-    const now = [...committed.values()].includes('update') ? 'update' : leaving() ? 'close' : null;
+    const now = [...committed.values()].some(commitment => commitment.leaving === 'update') ? 'update' : leaving() ? 'close' : null;
     if (ended || now === shown) return;
     shown = now;
     page.leaving(now);
   };
-  const release = (id: number) => { if (committed.delete(id)) show(); };
 
   const send = (id: number, about: CloseAbout, stays: boolean, basis: readonly number[]) => {
     if (ended) return;
@@ -69,24 +70,41 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     host.answer(id, stays, basis).then(heard => {
       if (ended) return;
       clear(key);
-      if (!heard) release(id);
+      const commitment = committed.get(id);
+      if (!commitment) return;
+      if (heard) commitment.accepted = true;
+      else committed.delete(id);
+      show();
+      judge();
     }, cause => { if (!ended && live.has(id)) fail(key, unanswered(about, stays), cause, () => send(id, about, stays, basis)); });
   };
 
-  const answer = (id: number, about: CloseAbout) => {
-    if (ended) return;
-    const unsaved = page.unsaved();
-    let stays: boolean, basis: readonly number[] = [];
-    if (about === 'query') stays = !leaving() && unsaved;
-    else {
-      stays = !leaving() && unsaved && !(about === 'install' && page.confirmed());
-      if (!stays) {
-        if (unsaved && !leavingByChoice) basis = [...committed.keys()];
-        committed.set(id, leavingFor(about));
-        show();
-      } else if (about === 'close') page.prompt();
+  const judge = () => {
+    for (const { id, about } of waiting) {
+      if (ended) return;
+      if (judged.has(id)) continue;
+      const unsaved = page.unsaved();
+      const now = leaving();
+      if (about === 'query') {
+        judged.add(id);
+        send(id, about, !now && unsaved, []);
+        continue;
+      }
+      const confirmed = about === 'install' && page.confirmed();
+      if (!now && unsaved && !confirmed) {
+        judged.add(id);
+        if (about === 'close') page.prompt();
+        send(id, about, true, []);
+        continue;
+      }
+      const leaning = unsaved && !leavingByChoice && !confirmed;
+      if (leaning && [...committed.values()].some(commitment => !commitment.accepted)) continue;
+      const basis = leaning ? [...committed.keys()] : [];
+      judged.add(id);
+      committed.set(id, { leaving: leavingFor(about), accepted: false });
+      show();
+      send(id, about, false, basis);
     }
-    send(id, about, stays, basis);
   };
 
   const leave = () => {
@@ -99,14 +117,22 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
 
   const requests = host.requests(batch => {
     if (ended) return false;
-    live = new Set([...batch.waiting, ...batch.holds.map(hold => hold.id)]);
+    if (batch.seq <= applied) return true;
+    applied = batch.seq;
+    live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
+    for (const id of [...judged]) if (!live.has(id)) judged.delete(id);
     const retired = [...failures.keys()].filter(key => key.startsWith('answer:') && !live.has(Number(key.slice('answer:'.length))));
     for (const key of retired) failures.delete(key);
     if (retired.length) publish();
-    for (const hold of batch.holds) if (!committed.has(hold.id)) committed.set(hold.id, leavingFor(hold.about));
+    for (const hold of batch.holds) {
+      const commitment = committed.get(hold.id);
+      if (commitment) commitment.accepted = true;
+      else committed.set(hold.id, { leaving: leavingFor(hold.about), accepted: true });
+    }
+    waiting = batch.waiting;
     show();
-    for (const ask of batch.asks) answer(ask.id, ask.about);
+    judge();
     return true;
   });
   const watch = () => {

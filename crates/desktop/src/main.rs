@@ -210,7 +210,7 @@ fn main_page(webview: &tauri::Webview) -> Result<(), String> {
 
 struct Receipt {
     app: tauri::AppHandle,
-    token: u64,
+    seq: u64,
     reported: bool,
 }
 
@@ -222,7 +222,7 @@ impl Receipt {
         if !reached {
             eprintln!("BattlePlan’s page didn’t run its close questions.");
         }
-        if let Some(why) = self.app.state::<Leaving>().delivered(self.token, reached) {
+        if let Some(why) = self.app.state::<Leaving>().delivered(self.seq, reached) {
             offer_to_close(&self.app, why);
         }
     }
@@ -236,7 +236,7 @@ impl Drop for Receipt {
 
 fn reach(webview: tauri::Webview, callback: u32) -> Reach {
     Arc::new(move |batch: Batch| {
-        let receipt = std::sync::Mutex::new(Receipt { app: webview.app_handle().clone(), token: batch.token, reported: false });
+        let receipt = std::sync::Mutex::new(Some(Receipt { app: webview.app_handle().clone(), seq: batch.seq, reported: false }));
         let questions = match serde_json::to_string(&batch) {
             Ok(questions) => questions,
             Err(error) => {
@@ -245,7 +245,12 @@ fn reach(webview: tauri::Webview, callback: u32) -> Reach {
             }
         };
         let script = format!("window.__TAURI_INTERNALS__.callbacks.get({callback})?.({questions}) === true");
-        let ran = move |result: String| receipt.lock().unwrap_or_else(std::sync::PoisonError::into_inner).report(result == "true");
+        let ran = move |result: String| {
+            let taken = receipt.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            if let Some(mut receipt) = taken {
+                receipt.report(result == "true");
+            }
+        };
         if let Err(error) = webview.eval_with_callback(script, ran) {
             eprintln!("BattlePlan couldn’t pass its close questions to its page: {error}");
         }
@@ -303,6 +308,7 @@ fn close_without_answer(owner: Option<isize>, why: Unanswered) -> bool {
         Unanswered::Close => "BattlePlan’s page hasn’t answered, so it can’t say whether it has unsaved changes.",
         Unanswered::Unresponsive => "BattlePlan’s page isn’t responding, so it can’t say whether it has unsaved changes.",
         Unanswered::Unreached => "BattlePlan couldn’t ask its page whether it has unsaved changes.",
+        Unanswered::Blind => "BattlePlan can’t follow its page’s reloads and crashes, so it can’t ask whether it has unsaved changes.",
     };
     let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let text = wide(&format!("{reason}\n\nClose BattlePlan now? Anything unsaved is lost. Choose No to keep waiting."));
@@ -373,21 +379,29 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
         };
         let loading = {
             let app = app.clone();
-            ContentLoadingEventHandler::create(Box::new(move |_, args| {
+            ContentLoadingEventHandler::create(Box::new(move |page, args| {
                 let Some(args) = args else { return Ok(()) };
                 let mut navigation = 0_u64;
                 unsafe { args.NavigationId(&mut navigation)? };
-                app.state::<Leaving>().content_loading(navigation);
+                if app.state::<Leaving>().content_loading(navigation) {
+                    eprintln!("BattlePlan is leaving, so the page a reload began loading is stopped.");
+                    if let Some(page) = page {
+                        unsafe { page.Stop()? };
+                    }
+                }
                 Ok(())
             }))
         };
-        let completed = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-            let Some(args) = args else { return Ok(()) };
-            let mut navigation = 0_u64;
-            unsafe { args.NavigationId(&mut navigation)? };
-            app.state::<Leaving>().navigation_completed(navigation);
-            Ok(())
-        }));
+        let completed = {
+            let app = app.clone();
+            NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut navigation = 0_u64;
+                unsafe { args.NavigationId(&mut navigation)? };
+                app.state::<Leaving>().navigation_completed(navigation);
+                Ok(())
+            }))
+        };
         let mut token = 0_i64;
         let watched = unsafe {
             webview.controller().CoreWebView2().and_then(|page| {
@@ -398,7 +412,8 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
             })
         };
         if let Err(error) = watched {
-            eprintln!("BattlePlan can’t follow its page’s reloads and crashes, so a reload or a crashed page could keep it from closing: {error}");
+            eprintln!("BattlePlan can’t follow its page’s reloads and crashes, so it refuses updates by name and asks at each close: {error}");
+            app.state::<Leaving>().blind();
         }
     })
 }
