@@ -424,12 +424,12 @@ fn parse(args: &[OsString], var: impl Fn(&str) -> Option<OsString>) -> io::Resul
                     args.next()
                         .and_then(|v| v.to_str())
                         .and_then(|v| v.parse::<f64>().ok())
-                        .filter(|v| dashboard::protocol::MAP_FRAME_LIMIT_RANGE.contains(v))
+                        .filter(|v| dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.contains(v))
                         .ok_or_else(|| {
                             invalid(format!(
                                 "--frame-limit needs a rate of {} to {} frames a second",
-                                dashboard::protocol::MAP_FRAME_LIMIT_RANGE.start(),
-                                dashboard::protocol::MAP_FRAME_LIMIT_RANGE.end()
+                                dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.start(),
+                                dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.end()
                             ))
                         })?,
                 );
@@ -603,7 +603,7 @@ fn run(request: Request, window: Window) -> io::Result<()> {
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
-    let mut config = dashboard::Config::load()?;
+    let mut config = dashboard_core::config::Config::load()?;
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }

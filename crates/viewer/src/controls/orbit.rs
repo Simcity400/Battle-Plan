@@ -1,6 +1,6 @@
 
 use super::{Frame, approach};
-use dashboard::protocol::GamepadButton;
+use dashboard_core::protocol::GamepadButton;
 use std::f32::consts::{PI, TAU};
 use viewer_gpu::camera::{Camera, FOV_Y, Free, Lens, NEAR, Pose, WATER_HEIGHT};
 

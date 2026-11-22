@@ -188,7 +188,7 @@ fn summary(records: &[Value], playing: bool) -> Value {
     json!({"switches": of("settled").len(), "first_changed_ms": distribution(of("first_changed")), "settled_ms": distribution(of("settled")), "settled_last": last})
 }
 
-pub(crate) fn measure(config: dashboard::Config, mut options: Options, path: PathBuf, switches: &Switches) -> io::Result<Value> {
+pub(crate) fn measure(config: dashboard_core::config::Config, mut options: Options, path: PathBuf, switches: &Switches) -> io::Result<Value> {
     viewer_runtime::worker_priority::frame_priority();
     shader_pipeline::gpu::stats::mark_window_thread();
     let state = render_state()?;
@@ -197,7 +197,7 @@ pub(crate) fn measure(config: dashboard::Config, mut options: Options, path: Pat
     options.headless_dump = false;
     let service = dashboard::Service::new(Arc::new(|_| true))?;
     service.configure_content(&config, options.allow_unverified)?;
-    let revision = dashboard::protocol::replay_revision(&path)?;
+    let revision = dashboard_core::protocol::replay_revision(&path)?;
     let source = service.open_map(&path, Some(&revision)).map_err(io::Error::other)?;
     let mut viewer = toggle::viewer(&config, &options, &state, &service)?;
     let ctx = egui::Context::default();

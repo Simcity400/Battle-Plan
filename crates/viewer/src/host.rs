@@ -3,7 +3,7 @@ pub(crate) mod driver;
 mod window;
 
 use crate::{Options, app, embedded};
-use dashboard::protocol::{NativeCommand, NativeEvent};
+use dashboard_core::protocol::{NativeCommand, NativeEvent};
 use eframe::wgpu;
 use job_priority::SpawnCarried as _;
 use std::{
@@ -199,9 +199,9 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     if !options.window_dump || options.out.is_none() || options.replay.is_none() {
         return Err(io::Error::other("--window-dump needs a recording and --out"));
     }
-    let (mut config, config_error) = match dashboard::Config::load() {
+    let (mut config, config_error) = match dashboard_core::config::Config::load() {
         Ok(config) => (config, None),
-        Err(error) => (dashboard::Config::default(), Some(error.to_string())),
+        Err(error) => (dashboard_core::config::Config::default(), Some(error.to_string())),
     };
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
@@ -213,7 +213,7 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
 }
 
 pub(crate) fn dump_window(
-    config: dashboard::Config,
+    config: dashboard_core::config::Config,
     options: Options,
     config_error: Option<String>,
 ) -> io::Result<()> {
@@ -292,7 +292,7 @@ fn embedded_map(
     }
     crate::perf_log::enter(role.name());
     viewer_runtime::worker_priority::frame_priority();
-    let mut config = dashboard::Config::default();
+    let mut config = dashboard_core::config::Config::default();
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }

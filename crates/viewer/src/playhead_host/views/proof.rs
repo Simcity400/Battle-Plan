@@ -252,7 +252,7 @@ pub(crate) struct Compared {
 
 fn evaluate(document: &Document, frame: &DecodedFrame, ours: u32, countries: &[u32]) -> (Vec<String>, Vec<String>) {
     let products = &document.content.products;
-    let world = dashboard::triggers::World::read(frame, products.triggers.facts());
+    let world = dashboard_text::triggers::World::read(frame, products.triggers.facts());
     let music = match &products.audio {
         Some(audio) => countries.iter().map(|&country| format!("{country}: {:?}", map_products::music_inputs::Memo::new().chances(frame, audio, country, &world))).collect(),
         None => Vec::new(),

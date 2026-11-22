@@ -1,7 +1,7 @@
 
 use super::{Config, Options, Viewer, drop};
 use crate::controls::{Frame, flight::Flight, walker::World};
-use dashboard::protocol::CameraMode;
+use dashboard_core::protocol::CameraMode;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 use viewer_gpu::camera::{Camera, MapDefines, MapSize, Pose};
