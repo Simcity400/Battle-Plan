@@ -70,23 +70,42 @@ class Desktop:
         self.channel = None
         self.channel_reader = None
 
+    def close_channel(self):
+        reader, channel = self.channel_reader, self.channel
+        self.channel_reader = None
+        self.channel = None
+        for handle in (reader, channel):
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+
     def send(self, *lines):
         """Sends events to the viewer's suite input channel; the epoch milliseconds the first left at."""
-        if self.channel is None:
-            host, port = self.address.rsplit(":", 1)
-            self.channel = socket.create_connection((host, int(port)), timeout=10)
-            self.channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.channel_reader = self.channel.makefile("r", encoding="utf-8")
-        at = epoch_ms()
-        self.channel.sendall("".join(json.dumps(line) + "\n" for line in lines).encode())
-        return at
+        try:
+            if self.channel is None:
+                host, port = self.address.rsplit(":", 1)
+                self.channel = socket.create_connection((host, int(port)), timeout=10)
+                self.channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.channel_reader = self.channel.makefile("r", encoding="utf-8")
+            at = epoch_ms()
+            self.channel.sendall("".join(json.dumps(line) + "\n" for line in lines).encode())
+            return at
+        except Exception:
+            self.close_channel()
+            raise
 
     def send_and_receive(self, line):
         at = self.send(line)
-        raw = self.channel_reader.readline()
-        if not raw:
-            raise RuntimeError("the viewer closed the suite input channel before replying")
-        return at, json.loads(raw)
+        try:
+            raw = self.channel_reader.readline()
+            if not raw:
+                raise RuntimeError("the viewer closed the suite input channel before replying")
+            return at, json.loads(raw)
+        except Exception:
+            self.close_channel()
+            raise
 
     def windows(self):
         """Every visible window on the desktop, children included: (hwnd, pid, rect, title, class, id)."""
@@ -264,17 +283,20 @@ def main():
     parser.add_argument("--input", required=True, help="the viewer's suite input address")
     args = parser.parse_args()
     desktop = Desktop(args.desktop, args.app_pid, args.input)
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        try:
-            command = json.loads(line)
-            op = command.pop("op")
-            reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
-                     "mods": desktop.mods, "camera": desktop.camera, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
-        except Exception as error:
-            reply = {"error": f"{type(error).__name__}: {error}"}
-        print(json.dumps(reply), flush=True)
+    try:
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            try:
+                command = json.loads(line)
+                op = command.pop("op")
+                reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
+                         "mods": desktop.mods, "camera": desktop.camera, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
+            except Exception as error:
+                reply = {"error": f"{type(error).__name__}: {error}"}
+            print(json.dumps(reply), flush=True)
+    finally:
+        desktop.close_channel()
 
 
 if __name__ == "__main__":

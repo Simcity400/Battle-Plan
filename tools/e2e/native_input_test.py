@@ -1,5 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
+import socket
+import threading
 import unittest
 
 SPEC = importlib.util.spec_from_file_location("native_input", Path(__file__).with_name("native_input.py"))
@@ -20,6 +23,13 @@ class NativeInputCameraTest(unittest.TestCase):
 
         desktop.send_and_receive = fake_send_and_receive
         return desktop, sent
+
+    def make_socket_desktop(self, port):
+        desktop = MODULE.Desktop.__new__(MODULE.Desktop)
+        desktop.address = f"127.0.0.1:{port}"
+        desktop.channel = None
+        desktop.channel_reader = None
+        return desktop
 
     def test_camera_place_returns_resolved_pose_from_viewer(self):
         desktop, sent = self.make_desktop({"center": [2816.0, 1024.0], "height": 250.0})
@@ -47,6 +57,125 @@ class NativeInputCameraTest(unittest.TestCase):
         failing, _ = self.make_desktop({"error": "viewer timed out"})
         with self.assertRaisesRegex(RuntimeError, "viewer timed out"):
             failing.camera(view="overview-map", reset=True)
+
+    def test_camera_reconnects_after_channel_eof(self):
+        received = []
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        server.settimeout(5)
+        port = server.getsockname()[1]
+
+        def serve():
+            try:
+                for index in range(2):
+                    conn, _ = server.accept()
+                    with conn:
+                        conn.settimeout(5)
+                        reader = conn.makefile("r", encoding="utf-8")
+                        try:
+                            line = reader.readline()
+                            if line:
+                                received.append(json.loads(line))
+                        finally:
+                            reader.close()
+                        if index == 1:
+                            conn.sendall((json.dumps({"center": [2816.0, 1024.0], "height": 3000.0}) + "\n").encode())
+            except OSError:
+                return
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        desktop = self.make_socket_desktop(port)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "closed the suite input channel before replying"):
+                desktop.camera(view="overview-map", center=[100.0, 200.0], height=180.0)
+            self.assertIsNone(desktop.channel)
+            self.assertIsNone(desktop.channel_reader)
+            reply = desktop.camera(view="overview-map", reset=True)
+            self.assertEqual(reply["center"], [2816.0, 1024.0])
+            self.assertEqual(reply["height"], 3000.0)
+        finally:
+            if hasattr(desktop, "close_channel"):
+                desktop.close_channel()
+            server.close()
+            thread.join(timeout=5)
+        self.assertEqual(
+            received,
+            [
+                {"camera": {"view": "overview-map", "center": [100.0, 200.0], "height": 180.0}},
+                {"camera": {"view": "overview-map", "reset": True}},
+            ],
+        )
+
+    def test_camera_reconnects_after_channel_timeout(self):
+        received = []
+        release_first = threading.Event()
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        server.settimeout(5)
+        port = server.getsockname()[1]
+
+        def serve():
+            try:
+                first_conn, _ = server.accept()
+                with first_conn:
+                    first_conn.settimeout(5)
+                    reader = first_conn.makefile("r", encoding="utf-8")
+                    try:
+                        line = reader.readline()
+                        if line:
+                            received.append(json.loads(line))
+                    finally:
+                        reader.close()
+                    release_first.wait(timeout=5)
+                second_conn, _ = server.accept()
+                with second_conn:
+                    second_conn.settimeout(5)
+                    reader = second_conn.makefile("r", encoding="utf-8")
+                    try:
+                        line = reader.readline()
+                        if line:
+                            received.append(json.loads(line))
+                    finally:
+                        reader.close()
+                    second_conn.sendall((json.dumps({"center": [2816.0, 1024.0], "height": 3000.0}) + "\n").encode())
+            except OSError:
+                return
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        desktop = self.make_socket_desktop(port)
+        original_create = MODULE.socket.create_connection
+
+        def short_timeout_connect(address, timeout=10):
+            return original_create(address, timeout=0.05)
+
+        MODULE.socket.create_connection = short_timeout_connect
+        try:
+            with self.assertRaises(TimeoutError):
+                desktop.camera(view="overview-map", center=[100.0, 200.0], height=180.0)
+            self.assertIsNone(desktop.channel)
+            self.assertIsNone(desktop.channel_reader)
+            release_first.set()
+            reply = desktop.camera(view="overview-map", reset=True)
+            self.assertEqual(reply["center"], [2816.0, 1024.0])
+            self.assertEqual(reply["height"], 3000.0)
+        finally:
+            MODULE.socket.create_connection = original_create
+            release_first.set()
+            if hasattr(desktop, "close_channel"):
+                desktop.close_channel()
+            server.close()
+            thread.join(timeout=5)
+        self.assertEqual(
+            received,
+            [
+                {"camera": {"view": "overview-map", "center": [100.0, 200.0], "height": 180.0}},
+                {"camera": {"view": "overview-map", "reset": True}},
+            ],
+        )
 
 
 if __name__ == "__main__":

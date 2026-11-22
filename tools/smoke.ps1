@@ -411,16 +411,36 @@ function Resolve-UiDialogProbe {
         [string]$OverridePatch = '',
         [int[]]$OverrideOrigin = @()
     )
-    $patch = $OverridePatch
-    $origin = $OverrideOrigin
-    if (-not $patch -and $Ui.PSObject.Properties[$PatchProperty] -and $Ui.$PatchProperty) {
-        $patch = [string]$Ui.$PatchProperty
-        if ($Ui.PSObject.Properties[$OriginProperty] -and $Ui.$OriginProperty) {
-            $origin = [int[]]$Ui.$OriginProperty
-        }
+    if ($OverridePatch) {
+        $patch = $OverridePatch
+        $origin = [int[]]@($OverrideOrigin)
+    } else {
+        $patch = if ($Ui.PSObject.Properties[$PatchProperty] -and $Ui.$PatchProperty) { [string]$Ui.$PatchProperty } else { '' }
+        $origin = [int[]]@(if ($Ui.PSObject.Properties[$OriginProperty] -and $null -ne $Ui.$OriginProperty) { $Ui.$OriginProperty })
     }
-    if (-not $patch -or -not (Test-Path -LiteralPath $patch -PathType Leaf) -or $origin.Count -ne 2 -or $origin[0] -lt 0 -or $origin[1] -lt 0) {
+    if (-not $patch -or -not (Test-Path -LiteralPath $patch -PathType Leaf) -or @($origin).Count -ne 2 -or $origin[0] -lt 0 -or $origin[1] -lt 0) {
         throw "Smoke requires a calibrated $DialogLabel reference image and origin ($PatchProperty / $OriginProperty)."
+    }
+    $patch = (Resolve-Path -LiteralPath $patch).ProviderPath
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = $null
+    try {
+        try {
+            $bitmap = [Drawing.Bitmap]::FromFile($patch)
+        } catch {
+            throw "Smoke requires a readable calibrated $DialogLabel reference image ($PatchProperty): $($_.Exception.Message)"
+        }
+        $patchWidth = [int]$bitmap.Width
+        $patchHeight = [int]$bitmap.Height
+    } finally {
+        if ($null -ne $bitmap) { $bitmap.Dispose() }
+    }
+    $uiWidth = if ($Ui.PSObject.Properties['width'] -and $null -ne $Ui.width) { [int]$Ui.width } else { 0 }
+    $uiHeight = if ($Ui.PSObject.Properties['height'] -and $null -ne $Ui.height) { [int]$Ui.height } else { 0 }
+    if ($patchWidth -le 0 -or $patchHeight -le 0 -or $uiWidth -le 0 -or $uiHeight -le 0 -or
+        ($origin[0] + $patchWidth) -gt $uiWidth -or
+        ($origin[1] + $patchHeight) -gt $uiHeight) {
+        throw "Smoke calibrated $DialogLabel reference image ($PatchProperty / $OriginProperty) exceeds the calibrated window bounds (${uiWidth}x${uiHeight})."
     }
     [pscustomobject]@{ Mode = 'Patch'; Patch = $patch; Origin = $origin; Tolerance = $Tolerance; Label = [bool]$Label }
 }
@@ -646,15 +666,16 @@ function Invoke-UiExitFlow {
         }
         & $Click 'exit_confirm'
         $exitState.ConfirmationSent = $true
-        $waitMs = if ($exitTry -lt $MaxAttempts) { 20000 } else { 30000 }
-        if (& $WaitForExit $waitMs) {
-            $code = & $GetExitCode
-            if ($code -ne 0) {
-                throw "The game exited with non-zero exit code $code after exit confirmation."
+        foreach ($waitMs in @(20000, 40000)) {
+            if ((& $WaitForExit $waitMs) -or (& $HasExited)) {
+                $code = & $GetExitCode
+                if ($code -ne 0) {
+                    throw "The game exited with non-zero exit code $code after exit confirmation."
+                }
+                return [pscustomobject]@{ Done = $true; Reason = $null; ConfirmationSent = $true; ExitCode = 0 }
             }
-            return [pscustomobject]@{ Done = $true; Reason = $null; ConfirmationSent = $true; ExitCode = $code }
         }
-        [pscustomobject]@{ Done = $false; Reason = 'game did not exit after exit_confirm' }
+        throw 'The game did not exit through its confirmation dialog (game did not exit after exit_confirm).'
     }
     [pscustomobject]@{
         Name = 'exit'
@@ -857,7 +878,8 @@ function Invoke-FullSmoke {
     if ($settings -notmatch '(?m)^\s*save_as_binary\s*=\s*no\s*$') { throw 'Smoke requires save_as_binary=no; settings were not changed.' }
     $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
-    if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
+    $gameProcessName = [IO.Path]::GetFileNameWithoutExtension($gamePath)
+    if (@(Get-Process -Name @($gameProcessName, 'recorder') -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
     $gameBuild = Write-GameBuildWarning $gamePath
     $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
     foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
@@ -1414,7 +1436,8 @@ $gamePath = (Resolve-Path -LiteralPath $GameExe).ProviderPath
 if ([IO.Path]::GetFileName($gamePath) -ine 'hoi4.exe') {
     throw 'GameExe must identify hoi4.exe.'
 }
-$gameProcesses = @(Get-Process -Name the game -ErrorAction SilentlyContinue)
+$gameProcessName = [IO.Path]::GetFileNameWithoutExtension($gamePath)
+$gameProcesses = @(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue)
 if ($gameProcesses.Count -gt 1) {
     throw 'Two game processes are unsupported. Close the extra game before driving the test.'
 }
@@ -1704,7 +1727,7 @@ if ($Action -eq 'Baseline') {
                 clock = $clock; unavailable_reason = $reason } | ConvertTo-Json -Compress -Depth 4))
             if (($qpc - $lastFlush) / [double]$reader.Frequency -ge 5) { $stream.Flush($true); $lastFlush = $qpc }
             if (($qpc - $lastProcessCheck) / [double]$reader.Frequency -ge 2) {
-                if (@(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -gt 1) {
+                if (@(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue).Count -gt 1) {
                     $stopReason = 'second hoi4.exe process detected'
                     break
                 }

@@ -32,8 +32,12 @@ catch { throw "ScratchRoot prerequisite failed: supply an existing physical, hyp
 if (-not ('Hoi4ProbeInput' -as [type])) {
     Add-Type 'public static class Hoi4ProbeInput { public static System.IntPtr GetForegroundWindow() { return System.IntPtr.Zero; } }'
 }
-function Get-Process { [CmdletBinding()] param([string[]]$Name, [Parameter(ValueFromRemainingArguments)]$Extra) }
-$fixtureState = @{ Arguments=$null; SelectionPath=''; SelectionAtLaunch=$null }
+$fixtureState = @{ Arguments=$null; SelectionPath=''; SelectionAtLaunch=$null; QueriedProcesses=[Collections.Generic.List[string]]::new() }
+function Get-Process {
+    [CmdletBinding()]
+    param([string[]]$Name)
+    if ($Name) { foreach ($entry in $Name) { $fixtureState.QueriedProcesses.Add([string]$entry) } }
+}
 function Start-Process {
     param($FilePath, $WorkingDirectory, $ArgumentList, [switch]$PassThru)
     $fixtureState.Arguments = $ArgumentList
@@ -62,6 +66,7 @@ function Assert-Bytes([byte[]]$actual, [byte[]]$expectedBytes) {
 }
 function Assert-Launch([string]$name, [string]$expectedError = 'SYNTHETIC_PROCESS_BOUNDARY', [string]$userPath = $fixtureProfile, [string]$saveName = 'fixture.hoi4') {
     $fixtureState.Arguments = $null
+    $fixtureState.QueriedProcesses.Clear()
     $failure = $null
     try { $null = & $Driver -Action Launch -GameExe $exe -UserDirectory $userPath -ContinueLastSave -ExpectedSave $saveName -Foreground }
     catch { $failure = $_.Exception.Message }
@@ -69,6 +74,7 @@ function Assert-Launch([string]$name, [string]$expectedError = 'SYNTHETIC_PROCES
     if ($expectedError -eq 'SYNTHETIC_PROCESS_BOUNDARY') {
         Assert-Bytes $fixtureState.SelectionAtLaunch ($utf8.GetBytes($expected.Replace('fixture.hoi4', ($saveName -replace [char]0xE9, '\u00e9'))))
         if ($fixtureState.Arguments -notcontains '--continuelastsave' -or $fixtureState.Arguments -notcontains ('"-userdir=' + $userPath + '"')) { throw 'Launch lost the continuation flag or quoted user directory.' }
+        if ($fixtureState.QueriedProcesses -notcontains 'hoi4' -or $fixtureState.QueriedProcesses -contains 'the') { throw "Launch queried wrong process names: $($fixtureState.QueriedProcesses -join ',')" }
     } elseif ($null -ne $fixtureState.Arguments) { throw "$name reached Start-Process." }
     $script:Passed++; Write-Host "PASS $name"
 }
@@ -425,6 +431,7 @@ throw "Unexpected action received by driver: $Action"
     $badPatchReceipt = Join-Path $root 'bad-patch-receipt.json'
     [IO.File]::WriteAllText($badPatchReceipt, '{}', $utf8)
     $badPatchErr = $null
+    $fixtureState.QueriedProcesses.Clear()
     try {
         $null = & $Driver -Action Smoke -GameExe $exe -UserDirectory $fixtureProfile -ExpectedSave 'fixture.hoi4' `
             -UiConfig $badPatchUiPath -BuildReceipt $badPatchReceipt -CaptureRoot $root -Out (Join-Path $root 'badpatchout') -GameLock $badPatchLock
@@ -432,7 +439,120 @@ throw "Unexpected action received by driver: $Action"
     if (-not $badPatchErr -or $badPatchErr -notlike '*calibrated pause-menu reference image*' -or (Test-Path -LiteralPath $badPatchLock)) {
         throw "Invalid UI patch stranded shared game lock or failed unexpectedly: err=$badPatchErr lockExists=$(Test-Path -LiteralPath $badPatchLock)"
     }
-    $script:Passed++; Write-Host 'PASS missing or invalid UI patches are refused before acquiring the shared game lock'
+    if ($fixtureState.QueriedProcesses -notcontains 'hoi4' -or $fixtureState.QueriedProcesses -notcontains 'recorder' -or $fixtureState.QueriedProcesses -contains 'the') {
+        throw "Smoke preflight queried wrong process names: $($fixtureState.QueriedProcesses -join ',')"
+    }
+
+    $nonImagePatch = Join-Path $imgDir 'not-an-image.txt'
+    [IO.File]::WriteAllText($nonImagePatch, 'not a png image', $utf8)
+    $nonImageUiPath = Join-Path $root 'non-image-ui.json'
+    $nonImageUi = [ordered]@{
+        width = 320; height = 200; expected_hour = 1; expected_seed = 1
+        menu = @(10, 10); speed_up = @(20, 10); speed_down = @(30, 10); pause = @(40, 10)
+        save_menu = @(150, 100); save_name = @(150, 100); save_confirm = @(160, 120); save_back = @(120, 120)
+        menu_close = @(150, 150); exit_game = @(150, 130); exit_confirm = @(150, 100)
+        map_center = @(160, 100); capture_cursor = @(200, 20)
+        menu_patch = $nonImagePatch; menu_patch_origin = @(110, 80)
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
+    }
+    [IO.File]::WriteAllText($nonImageUiPath, ($nonImageUi | ConvertTo-Json -Depth 4), $utf8)
+    $nonImageLock = Join-Path $root 'nonimagelock'
+    $nonImageErr = $null
+    try {
+        $null = & $Driver -Action Smoke -GameExe $exe -UserDirectory $fixtureProfile -ExpectedSave 'fixture.hoi4' `
+            -UiConfig $nonImageUiPath -BuildReceipt $badPatchReceipt -CaptureRoot $root -Out (Join-Path $root 'nonimageout') -GameLock $nonImageLock
+    } catch { $nonImageErr = $_.Exception.Message }
+    if (-not $nonImageErr -or $nonImageErr -notlike '*readable calibrated pause-menu reference image*' -or (Test-Path -LiteralPath $nonImageLock)) {
+        throw "Non-image patch was not refused before lock: err=$nonImageErr lockExists=$(Test-Path -LiteralPath $nonImageLock)"
+    }
+
+    $oobUiPath = Join-Path $root 'oob-patch-ui.json'
+    $oobUi = [ordered]@{
+        width = 320; height = 200; expected_hour = 1; expected_seed = 1
+        menu = @(10, 10); speed_up = @(20, 10); speed_down = @(30, 10); pause = @(40, 10)
+        save_menu = @(150, 100); save_name = @(150, 100); save_confirm = @(160, 120); save_back = @(120, 120)
+        menu_close = @(150, 150); exit_game = @(150, 130); exit_confirm = @(150, 100)
+        map_center = @(160, 100); capture_cursor = @(200, 20)
+        menu_patch = $menuPatchImg; menu_patch_origin = @(250, 80)
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
+    }
+    [IO.File]::WriteAllText($oobUiPath, ($oobUi | ConvertTo-Json -Depth 4), $utf8)
+    $oobLock = Join-Path $root 'ooblock'
+    $oobErr = $null
+    try {
+        $null = & $Driver -Action Smoke -GameExe $exe -UserDirectory $fixtureProfile -ExpectedSave 'fixture.hoi4' `
+            -UiConfig $oobUiPath -BuildReceipt $badPatchReceipt -CaptureRoot $root -Out (Join-Path $root 'oobout') -GameLock $oobLock
+    } catch { $oobErr = $_.Exception.Message }
+    if (-not $oobErr -or $oobErr -notlike '*calibrated window bounds*' -or (Test-Path -LiteralPath $oobLock)) {
+        throw "Out-of-bounds patch was not refused before lock: err=$oobErr lockExists=$(Test-Path -LiteralPath $oobLock)"
+    }
+
+    $verticalOobUi = [pscustomobject]@{
+        width = 320; height = 200
+        menu_patch = $menuPatchImg; menu_patch_origin = @(110, 170)
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
+    }
+    $verticalOobErr = $null
+    try { $null = Resolve-SmokeUiProbes -Ui $verticalOobUi } catch { $verticalOobErr = $_.Exception.Message }
+    if (-not $verticalOobErr -or $verticalOobErr -notlike '*calibrated window bounds*') {
+        throw "Vertically out-of-bounds patch was not refused: err=$verticalOobErr"
+    }
+
+    $exactFitUi = [pscustomobject]@{
+        width = 320; height = 200
+        menu_patch = $menuPatchImg; menu_patch_origin = @(240, 160)
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
+    }
+    $exactFitProbes = Resolve-SmokeUiProbes -Ui $exactFitUi
+    if (($exactFitProbes.Menu.Origin -join ',') -cne '240,160') {
+        throw "Exact-fit patch origin mismatch: $($exactFitProbes.Menu.Origin -join ',')"
+    }
+
+    $missingOriginUiPath = Join-Path $root 'missing-origin-ui.json'
+    $missingOriginUi = [ordered]@{
+        width = 2560; height = 1440; expected_hour = 1; expected_seed = 1
+        menu = @(10, 10); speed_up = @(20, 10); speed_down = @(30, 10); pause = @(40, 10)
+        save_menu = @(150, 100); save_name = @(150, 100); save_confirm = @(160, 120); save_back = @(120, 120)
+        menu_close = @(150, 150); exit_game = @(150, 130); exit_confirm = @(150, 100)
+        map_center = @(160, 100); capture_cursor = @(200, 20)
+        menu_patch = $menuPatchImg
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
+    }
+    [IO.File]::WriteAllText($missingOriginUiPath, ($missingOriginUi | ConvertTo-Json -Depth 4), $utf8)
+    $missingOriginLock = Join-Path $root 'missingoriginlock'
+    $missingOriginErr = $null
+    try {
+        $null = & $Driver -Action Smoke -GameExe $exe -UserDirectory $fixtureProfile -ExpectedSave 'fixture.hoi4' `
+            -UiConfig $missingOriginUiPath -BuildReceipt $badPatchReceipt -CaptureRoot $root -Out (Join-Path $root 'missingoriginout') -GameLock $missingOriginLock
+    } catch { $missingOriginErr = $_.Exception.Message }
+    if (-not $missingOriginErr -or $missingOriginErr -notlike '*calibrated pause-menu reference image and origin*' -or (Test-Path -LiteralPath $missingOriginLock)) {
+        throw "JSON menu_patch without menu_patch_origin inherited default MenuPatchOrigin or acquired lock: err=$missingOriginErr lockExists=$(Test-Path -LiteralPath $missingOriginLock)"
+    }
+    $getProcessCalls = @($driverAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ieq 'Get-Process'
+    }, $true))
+    if ($getProcessCalls.Count -lt 3) { throw "Expected Get-Process calls in smoke.ps1, found $($getProcessCalls.Count)." }
+    foreach ($call in $getProcessCalls) {
+        $hasBoundTarget = $false
+        for ($i = 1; $i -lt $call.CommandElements.Count; $i++) {
+            $el = $call.CommandElements[$i]
+            if ($el -is [Management.Automation.Language.CommandParameterAst]) {
+                if ($el.ParameterName -in @('Name', 'Id')) { $hasBoundTarget = $true }
+                $i++
+            } else {
+                throw "Get-Process call has unexpected positional argument '$($el.Extent.Text)': $($call.Extent.Text)"
+            }
+        }
+        if (-not $hasBoundTarget) { throw "Get-Process call lacks -Name or -Id: $($call.Extent.Text)" }
+    }
+    $script:Passed++; Write-Host 'PASS Get-Process calls bind named targets without stray positional arguments'
+    $script:Passed++; Write-Host 'PASS missing, unreadable, out-of-bounds, and origin-less UI patches are refused before acquiring the shared game lock'
 
     $noiseClicks = [Collections.Generic.List[string]]::new()
     $noiseEscapes = 0
@@ -618,7 +738,68 @@ throw "Unexpected action received by driver: $Action"
     if ($lateCrashErr -notlike '*non-zero exit code 7 after exit confirmation*') {
         throw "Non-zero exit after wait 1 was misclassified: $lateCrashErr"
     }
-    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0, accepts clean exit after first wait, and verifies offline on failure'
+
+    $slowExitState = @{
+        Menu = $false; Confirm = $false; Exited = $false; Confirmed = $false; Waits = 0
+        PostConfirmClicks = 0; PostConfirmEscapes = 0; PostConfirmPauses = 0; PostConfirmMenuProbes = 0; PostConfirmConfirmProbes = 0
+    }
+    $slowExitReport = [ordered]@{}
+    $slowExitResult = $null
+    Invoke-ExitThenVerify -Report $slowExitReport -ExitGame {
+        $script:slowExitResult = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+            -HasExited { $slowExitState.Exited } -GetExitCode { 0 } -WaitForExit {
+                param($ms)
+                $slowExitState.Waits++
+                if ($slowExitState.Waits -eq 1) { return $false }
+                $slowExitState.Exited = $true
+                $true
+            } -PauseGame {
+                if ($slowExitState.Confirmed) { $slowExitState.PostConfirmPauses++ }
+            } -Click {
+                param($name)
+                if ($slowExitState.Confirmed) { $slowExitState.PostConfirmClicks++ }
+                if ($name -eq 'menu') { $slowExitState.Menu = $true }
+                elseif ($name -eq 'exit_game') { $slowExitState.Confirm = $true }
+                elseif ($name -eq 'exit_confirm') { $slowExitState.Confirmed = $true }
+            } -SendEscape {
+                if ($slowExitState.Confirmed) { $slowExitState.PostConfirmEscapes++ }
+            } -IsMenuOpen {
+                if ($slowExitState.Confirmed) { $slowExitState.PostConfirmMenuProbes++ }
+                $slowExitState.Menu
+            } -IsConfirmOpen {
+                if ($slowExitState.Confirmed) { $slowExitState.PostConfirmConfirmProbes++ }
+                $slowExitState.Confirm
+            }
+    } -Verify { $slowExitReport.oracle_differences = 0 }
+    if ($slowExitReport.normal_game_exit -ne $true -or -not $slowExitResult.ConfirmationSent -or $slowExitResult.ExitCode -ne 0 -or
+        $slowExitState.Waits -ne 2 -or $slowExitState.PostConfirmClicks -ne 0 -or $slowExitState.PostConfirmEscapes -ne 0 -or
+        $slowExitState.PostConfirmPauses -ne 0 -or $slowExitState.PostConfirmMenuProbes -ne 0 -or $slowExitState.PostConfirmConfirmProbes -ne 0) {
+        throw "Slow shutdown after exit_confirm re-entered UI/clock/Escape or failed: exit=$($slowExitReport.normal_game_exit) waits=$($slowExitState.Waits) postClicks=$($slowExitState.PostConfirmClicks) postEscapes=$($slowExitState.PostConfirmEscapes) postPauses=$($slowExitState.PostConfirmPauses) postMenu=$($slowExitState.PostConfirmMenuProbes) postConfirm=$($slowExitState.PostConfirmConfirmProbes)"
+    }
+
+    $hungAfterConfirmState = @{
+        Menu = $false; Confirm = $false; Confirmed = $false; Waits = 0
+        PostConfirmCalls = 0
+    }
+    $hungAfterConfirmErr = $null
+    try {
+        $null = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+            -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $hungAfterConfirmState.Waits++; $false } `
+            -PauseGame { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ } } `
+            -Click {
+                param($name)
+                if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ }
+                if ($name -eq 'menu') { $hungAfterConfirmState.Menu = $true }
+                elseif ($name -eq 'exit_game') { $hungAfterConfirmState.Confirm = $true }
+                elseif ($name -eq 'exit_confirm') { $hungAfterConfirmState.Confirmed = $true }
+            } -SendEscape { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ } } `
+            -IsMenuOpen { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ }; $hungAfterConfirmState.Menu } `
+            -IsConfirmOpen { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ }; $hungAfterConfirmState.Confirm }
+    } catch { $hungAfterConfirmErr = $_.Exception.Message }
+    if ($hungAfterConfirmState.PostConfirmCalls -ne 0 -or $hungAfterConfirmState.Waits -lt 2 -or $hungAfterConfirmErr -notlike '*did not exit after exit_confirm*') {
+        throw "Hung shutdown after exit_confirm re-entered UI/clock/Escape or gave wrong error: postCalls=$($hungAfterConfirmState.PostConfirmCalls) waits=$($hungAfterConfirmState.Waits) err=$hungAfterConfirmErr"
+    }
+    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0, waits cleanly without re-entering UI after confirmation, and verifies offline on failure'
 
     $box = Get-UiRegionBox @(10, 20) 1920 1080 120 60
     if (($box -join ',') -cne '0,0,130,80') { throw "Clamped top-left UI box mismatch: $($box -join ',')" }
