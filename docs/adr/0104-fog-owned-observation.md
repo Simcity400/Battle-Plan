@@ -12,4 +12,4 @@ A writer overlapping the full radar census revokes its carried symbols while lea
 
 A null inside the counted stationed-unit vector refuses that observation. A radar group with a moved parent cannot certify coverage for the original country.
 
-[Fog capture](../../crates/collector/src/extended/fog.rs) · [Owned radar and intel](../../crates/collector/src/extended/fog/owned.rs) · [Escort trees](../../crates/collector/src/extended/naval_escort_trees.rs)
+[Fog capture](../../crates/collector-air/src/extended/fog.rs) · [Owned radar and intel](../../crates/collector-air/src/extended/fog/owned.rs) · [Escort trees](../../crates/collector-naval-missions/src/extended/naval_escort_trees.rs)

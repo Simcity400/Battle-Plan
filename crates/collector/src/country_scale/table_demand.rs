@@ -221,9 +221,10 @@ mod tests {
         assert!(sizing.extended.economy.rows[2] < 20000);
         assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
         assert!(sizing.extended.economy.rows[2] >= 20000);
-        let mut order = extended::province_unit_order::Captured::with_capacities(
-            &sizing.extended.province_unit_order,
-        );
+        let mut order =
+            collector_divisions::extended::province_unit_order::Captured::with_capacities(
+                &sizing.extended.province_unit_order,
+            );
         order.capture(&memory, 0, 0x1000);
         assert_eq!(order.outcomes(), [Outcome::Rows { len: 20000 }]);
         memory.provinces = 70001;
