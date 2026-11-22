@@ -84,6 +84,20 @@ pub fn facts_pack(path: &Path, bytes: Vec<u8>, content: &Identity, session_only:
         .ok_or_else(|| io::Error::other(format!("{} is another content's facts", path.display())))
 }
 
+pub fn pace(rate: f64, from: u64) -> io::Result<(f64, u64)> {
+    let fits = rate.is_finite()
+        && rate > 0.0
+        && std::time::Duration::try_from_secs_f64(f64::from(u32::MAX) / rate).is_ok();
+    if fits {
+        Ok((rate, from))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--pace needs a positive rate of game hours a second that keeps every hour's due time on the clock",
+        ))
+    }
+}
+
 pub struct Everything {
     pub facts: Option<Vec<u8>>,
     pub revisions: u64,
@@ -128,7 +142,9 @@ impl Host for Everything {
             return;
         }
         let started = *self.paced.get_or_insert_with(Instant::now);
-        let due = std::time::Duration::from_secs_f64((self.hours - from) as f64 / rate);
+        let Ok(due) = std::time::Duration::try_from_secs_f64((self.hours - from) as f64 / rate) else {
+            return;
+        };
         if let Some(wait) = due.checked_sub(started.elapsed()) {
             std::thread::sleep(wait);
         }
@@ -287,5 +303,17 @@ pub fn report_phases() {
             .map(|charge| json!({ "owner": charge.owner, "kind": charge.kind.name(), "at_peak": charge.at_peak, "peak": charge.peak, "end": charge.end }))
             .collect();
         eprintln!("{}", json!({ "phase": summary, "phase_peak": phase.tracked_peak, "os_at_peak": os, "labels": held }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_pace_is_refused_when_an_hour_could_fall_past_the_clock() {
+        assert_eq!(super::pace(24.0, 5).unwrap(), (24.0, 5));
+        for rate in [1e-300, 0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let refused = super::pace(rate, 0).expect_err("refused");
+            assert!(refused.to_string().contains("--pace"), "{rate}: {refused}");
+        }
     }
 }

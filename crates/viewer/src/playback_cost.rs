@@ -68,11 +68,11 @@ pub(crate) fn refresh_rate(hz: f64) -> io::Result<f64> {
     }
 }
 
-pub(crate) fn frame_due(start: Instant, index: u64, refresh_hz: f64) -> io::Result<Instant> {
-    std::time::Duration::try_from_secs_f64(index as f64 / refresh_hz)
+pub(crate) fn frame_due(start: Instant, seconds: f64) -> io::Result<Instant> {
+    std::time::Duration::try_from_secs_f64(seconds)
         .ok()
         .and_then(|after| start.checked_add(after))
-        .ok_or_else(|| invalid(format!("frame {index} at {refresh_hz} Hz is past the clock's range")))
+        .ok_or_else(|| invalid(format!("A frame {seconds} s after the start is past the clock's range")))
 }
 
 pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {

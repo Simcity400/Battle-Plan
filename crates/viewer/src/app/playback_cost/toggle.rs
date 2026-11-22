@@ -195,7 +195,7 @@ fn until_correct(
     let mut work_after_ready = Vec::new();
     let mut layers_first = Value::Null;
     for index in 0u64.. {
-        let due = crate::playback_cost::frame_due(requested, index, run.refresh_hz)?;
+        let due = crate::playback_cost::frame_due(requested, index as f64 / run.refresh_hz)?;
         wait_until(due);
         let started = Instant::now();
         let at_ms = started.duration_since(requested).as_secs_f64() * 1e3;

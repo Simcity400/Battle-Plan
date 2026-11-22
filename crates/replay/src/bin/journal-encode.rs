@@ -40,7 +40,7 @@ fn main() -> io::Result<()> {
             settings.level = level.parse().map_err(|_| usage())?;
         } else if let Some(given) = option.strip_prefix("--pace=") {
             let (rate, from) = given.split_once(',').ok_or_else(usage)?;
-            pace = Some((rate.parse().map_err(|_| usage())?, from.parse().map_err(|_| usage())?));
+            pace = Some(encode_report::pace(rate.parse().map_err(|_| usage())?, from.parse().map_err(|_| usage())?)?);
         } else if let Some(given) = option.strip_prefix("--hours=") {
             limit = given.parse().map_err(|_| usage())?;
         } else if let Some(path) = option.strip_prefix("--times=") {

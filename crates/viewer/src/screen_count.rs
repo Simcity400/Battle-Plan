@@ -417,23 +417,19 @@ pub(crate) mod readout {
             let (read, _) = self.read.take().expect("held above");
             read.unmap();
             drop(read);
-            keep(
-                &mut self.frames,
-                Frame {
-                    at: Instant::now(),
-                    differed: screen[0] > 0,
-                    seen: screen[1] > SEEN,
-                    presented: PRESENTED.load(Ordering::Relaxed),
-                },
-                Instant::now(),
-            );
+            self.frames.push(Frame {
+                at: Instant::now(),
+                differed: screen[0] > 0,
+                seen: screen[1] > SEEN,
+                presented: PRESENTED.load(Ordering::Relaxed),
+            });
+            trim(&mut self.frames, Instant::now());
             self.waiting = false;
             self.compare.last = None;
         }
     }
 
-    fn keep<T: Moment>(frames: &mut Vec<Frame<T>>, frame: Frame<T>, now: T) {
-        frames.push(frame);
+    fn trim<T: Moment>(frames: &mut Vec<Frame<T>>, now: T) {
         if let Some(second) = now.earlier(Duration::from_secs(1)) {
             frames.retain(|kept| kept.at >= second);
         }
@@ -481,13 +477,13 @@ pub(crate) mod readout {
         fn frames_from_the_clock_origin_keep_the_last_second() {
             let mut frames = Vec::new();
             let mut kept = |at: u64, now: u64| {
-                let frame = Frame {
+                frames.push(Frame {
                     at: Duration::from_millis(at),
                     differed: false,
                     seen: false,
                     presented: at,
-                };
-                keep(&mut frames, frame, Duration::from_millis(now));
+                });
+                trim(&mut frames, Duration::from_millis(now));
                 frames.iter().map(|frame| frame.presented).collect::<Vec<_>>()
             };
             assert_eq!(kept(0, 0), [0]);
