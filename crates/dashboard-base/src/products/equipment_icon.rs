@@ -5,7 +5,9 @@ use content_reader_equipment_graphics::{
     equipment_graphics, equipment_graphics::Context, equipment_graphics::context::Prepared,
     equipment_graphics::countries::ModelCountry,
 };
-use replay_data::{rows::CountryLinkRow, rows::VariantDefinitionRow, rows::tables};
+use replay_data::{
+    rows::CountryLinkRow, rows::Recorded, rows::VariantDefinitionRow, rows::tables,
+};
 use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -524,8 +526,8 @@ impl IconContent {
 pub struct IconHour {
     links: BTreeMap<u32, u32>,
     countries: BTreeMap<u32, ModelCountry>,
-    tags: BTreeMap<u32, String>,
-    slots_by_tag: BTreeMap<String, u32>,
+    handle_tags: BTreeMap<u32, String>,
+    original_refs: Result<BTreeMap<u32, (Recorded<Option<i32>>, Recorded<Option<Vec<u8>>>)>, String>,
     culture_2d: Result<BTreeMap<u32, String>, String>,
     prepared: Result<Prepared, String>,
 }
@@ -557,8 +559,17 @@ impl IconHour {
                             .map_or(0, String::len)
                 })
                 .sum::<usize>()
-            + self.tags.values().map(text).sum::<usize>()
-            + self.slots_by_tag.keys().map(text).sum::<usize>()
+            + self.handle_tags.values().map(text).sum::<usize>()
+            + match &self.original_refs {
+                Ok(refs) => refs
+                    .values()
+                    .map(|(_, bytes)| match bytes {
+                        Recorded::Value(Some(bytes)) => bytes.len(),
+                        _ => 0,
+                    })
+                    .sum(),
+                Err(why) => why.len(),
+            }
             + match &self.culture_2d {
                 Ok(cultures) => cultures.values().map(text).sum(),
                 Err(why) => why.len(),
@@ -578,23 +589,59 @@ impl IconHour {
             .map(|row: &CountryLinkRow| (row.id, row.canonical_slot))
             .collect();
         let countries = equipment_graphics::countries::read(frame).map_err(failed)?;
-        let tags: BTreeMap<u32, String> = frame
+        let mut handle_tags: BTreeMap<u32, String> = frame
             .complete::<tables::Countries>()
             .map_err(failed)?
             .iter()
-            .filter_map(|row| {
-                Some((
-                    row.canonical_slot,
-                    std::str::from_utf8(&row.tag).ok()?.to_owned(),
-                ))
+            .filter_map(|row| Some((row.id, std::str::from_utf8(&row.tag).ok()?.to_owned())))
+            .collect();
+        let appearance = frame.complete::<tables::CountryAppearance>();
+        if let Ok(rows) = &appearance {
+            for row in *rows {
+                if let (Recorded::Value(Some(orig)), Recorded::Value(Some(bytes))) =
+                    (row.original_tag_reference, &row.original_tag)
+                    && orig > 0
+                    && let Ok(text) = std::str::from_utf8(bytes)
+                {
+                    handle_tags
+                        .entry(orig as u32)
+                        .or_insert_with(|| text.to_owned());
+                }
+            }
+        }
+        if let Ok(rows) = frame.complete::<tables::ReservedCountryNaming>() {
+            for row in rows {
+                if let (Recorded::Value(Some(orig)), Recorded::Value(Some(bytes))) =
+                    (row.original_tag_reference, &row.original_tag)
+                    && orig > 0
+                    && let Ok(text) = std::str::from_utf8(bytes)
+                {
+                    handle_tags
+                        .entry(orig as u32)
+                        .or_insert_with(|| text.to_owned());
+                }
+            }
+        }
+        let original_refs = appearance
+            .as_ref()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        Some((
+                            *links.get(&row.country)?,
+                            (row.original_tag_reference, row.original_tag.clone()),
+                        ))
+                    })
+                    .collect()
             })
-            .collect();
-        let slots_by_tag = tags
-            .iter()
-            .map(|(slot, tag)| (tag.clone(), *slot))
-            .collect();
-        let culture_2d = frame
-            .complete::<tables::CountryAppearance>()
+            .map_err(|error| {
+                format!(
+                    "the country appearance table is unavailable, so the original tag is unknown: {}",
+                    undated(frame, error)
+                )
+            });
+        let culture_2d = appearance
+            .as_ref()
             .map(|rows| {
                 rows.iter()
                     .filter_map(|row| {
@@ -615,10 +662,56 @@ impl IconHour {
             prepared: Prepared::read(frame, &content.geography).map_err(|why| undated(frame, why)),
             links,
             countries,
-            tags,
-            slots_by_tag,
+            handle_tags,
+            original_refs,
             culture_2d,
         })
+    }
+
+    fn witnessed_tag(&self, raw: u32) -> Result<&str, String> {
+        self.handle_tags
+            .get(&raw)
+            .map(String::as_str)
+            .ok_or_else(|| format!("country reference {raw} has no witnessed tag spelling"))
+    }
+
+    fn original_reference_of(&self, slot: u32) -> Result<Option<u32>, String> {
+        let refs = self.original_refs.as_ref().map_err(Clone::clone)?;
+        let (reference, _) = refs
+            .get(&slot)
+            .ok_or_else(|| format!("country slot {slot} has no recorded appearance"))?;
+        let raw = reference
+            .require("original tag reference of country appearance")?
+            .ok_or_else(|| {
+                "original tag reference of country appearance capture refused".to_owned()
+            })?;
+        Ok((raw > 0).then_some(raw as u32))
+    }
+
+    fn technology_tag_of(&self, slot: u32, own_handle: u32) -> Result<String, String> {
+        let refs = self.original_refs.as_ref().map_err(Clone::clone)?;
+        let (reference, original_tag) = refs.get(&slot).ok_or_else(|| {
+            format!(
+                "{} has no recorded appearance, so its original tag is unknown",
+                self.handle_tags
+                    .get(&own_handle)
+                    .map_or("the country", String::as_str)
+            )
+        })?;
+        let raw = reference
+            .require("original tag reference of country appearance")?
+            .ok_or_else(|| {
+                "original tag reference of country appearance capture refused".to_owned()
+            })?;
+        if raw > 0 {
+            if let Recorded::Value(Some(bytes)) = original_tag {
+                return std::str::from_utf8(bytes)
+                    .map(str::to_owned)
+                    .map_err(|_| format!("original tag of country slot {slot} is not UTF-8"));
+            }
+            return self.witnessed_tag(raw as u32).map(str::to_owned);
+        }
+        self.witnessed_tag(own_handle).map(str::to_owned)
     }
 }
 
@@ -666,12 +759,6 @@ fn rule(
         .name_str()
         .map_err(|error| error.to_string())?;
     let entry = String::from_utf8_lossy(&variant.icon);
-    if variant.icon_kind > 1 {
-        return Err(format!(
-            "variant {} has an icon entry of unknown kind {}",
-            variant.id, variant.icon_kind
-        ));
-    }
     if variant.icon_kind == 1 && entry == "." {
         let creator = variant.creator_link;
         let (country, ideology, culture) = if (creator as i32) <= 0 {
@@ -710,6 +797,12 @@ fn rule(
             return Ok(Some(icon));
         }
     } else if variant.icon_active != 0 {
+        if variant.icon_kind > 1 {
+            return Err(format!(
+                "variant {} has an icon entry of unknown kind {}",
+                variant.id, variant.icon_kind
+            ));
+        }
         let found = if variant.icon_kind == 0 {
             ask(Probe::Sprite(entry.clone().into_owned()))?
         } else {
@@ -719,41 +812,33 @@ fn rule(
             return Ok(found);
         }
     }
-    let l_slot =
-        if (variant.origin_link as i32) > 0 {
-            Some(*hour.links.get(&variant.origin_link).ok_or_else(|| {
-                format!("variant origin {} has no country link", variant.origin_link)
-            })?)
-        } else if (variant.creator_link as i32) > 0 {
-            let creator = *hour.links.get(&variant.creator_link).ok_or_else(|| {
-                format!(
-                    "variant creator {} has no country link",
-                    variant.creator_link
-                )
-            })?;
-            let model = hour
-                .countries
-                .get(&creator)
-                .ok_or("the variant's creator has no recorded appearance")?;
-            Some(match &model.original_tag {
-                Some(tag) if *tag != model.tag => *hour
-                    .slots_by_tag
-                    .get(tag)
-                    .ok_or_else(|| format!("original tag {tag} holds no country"))?,
-                Some(_) => creator,
-                None => return Err("the creator's original tag is not recorded".to_owned()),
-            })
-        } else {
-            None
-        };
-    let tag = match l_slot {
-        Some(slot) => Some(
-            hour.tags
-                .get(&slot)
-                .cloned()
-                .ok_or_else(|| format!("country slot {slot} has no Countries row"))?,
-        ),
-        None => None,
+    let (l_link, l_slot) = if (variant.origin_link as i32) > 0 {
+        let slot = *hour.links.get(&variant.origin_link).ok_or_else(|| {
+            format!("variant origin {} has no country link", variant.origin_link)
+        })?;
+        (Some(variant.origin_link), Some(slot))
+    } else if (variant.creator_link as i32) > 0 {
+        let creator_slot = *hour.links.get(&variant.creator_link).ok_or_else(|| {
+            format!(
+                "variant creator {} has no country link",
+                variant.creator_link
+            )
+        })?;
+        match hour.original_reference_of(creator_slot)? {
+            Some(original) => {
+                let slot = *hour.links.get(&original).ok_or_else(|| {
+                    format!("original country reference {original} has no country link")
+                })?;
+                (Some(original), Some(slot))
+            }
+            None => (Some(variant.creator_link), Some(creator_slot)),
+        }
+    } else {
+        (None, None)
+    };
+    let tag: Result<Option<&str>, String> = match l_link {
+        Some(raw) => hour.witnessed_tag(raw).map(Some),
+        None => Ok(None),
     };
     let culture_2d: Result<Option<String>, String> = match l_slot {
         None => Ok(None),
@@ -765,51 +850,25 @@ fn rule(
                 .ok_or_else(|| {
                     format!(
                         "{} has no recorded appearance, so its 2D culture is unknown",
-                        tag.as_deref().unwrap_or("the country")
+                        tag.as_ref()
+                            .ok()
+                            .and_then(|tag| *tag)
+                            .unwrap_or("the country")
                     )
                 }),
         },
     };
-    let technology_tag: Result<Option<String>, String> = match l_slot {
-        None => Ok(None),
-        Some(slot) => hour
-            .countries
-            .get(&slot)
-            .ok_or_else(|| {
-                format!(
-                    "{} has no recorded appearance, so its original tag is unknown",
-                    tag.as_deref().unwrap_or("the country")
-                )
-            })
-            .and_then(|model| {
-                model
-                    .original_tag
-                    .clone()
-                    .map(Some)
-                    .ok_or_else(|| format!("{}'s original tag is not recorded", model.tag))
-            }),
+    let technology_tag: Result<Option<String>, String> = match (l_slot, l_link) {
+        (Some(slot), Some(raw)) => hour.technology_tag_of(slot, raw).map(Some),
+        _ => Ok(None),
     };
     let capital = variant.classifier_flags & (1 << 6) != 0;
-    let l_link = if (variant.origin_link as i32) > 0 {
-        Some(variant.origin_link)
-    } else if (variant.creator_link as i32) > 0
-        && l_slot == hour.links.get(&variant.creator_link).copied()
-    {
-        Some(variant.creator_link)
-    } else {
-        l_slot.and_then(|slot| {
-            hour.links
-                .iter()
-                .find(|(_, s)| **s == slot)
-                .map(|(raw, _)| *raw)
-        })
-    };
     fallback(
         content,
         hour,
         key,
         Names {
-            tag: tag.as_deref(),
+            tag,
             technology_tag: technology_tag
                 .as_ref()
                 .map(Option::as_deref)
@@ -828,7 +887,7 @@ fn rule(
 
 #[derive(Clone)]
 struct Names<'a> {
-    tag: Option<&'a str>,
+    tag: Result<Option<&'a str>, String>,
     technology_tag: Result<Option<&'a str>, String>,
     culture_2d: Result<Option<&'a str>, String>,
 }
@@ -850,10 +909,13 @@ fn fallback(
     let suffixes = icon_suffixes(capital);
     for suffix in suffixes {
         for name in [Some(key), model.archetype].into_iter().flatten() {
-            for candidate in sprite_names(name, suffix, names.tag).into_iter().flatten() {
-                if let Some(icon) = ask(Probe::Sprite(candidate))? {
-                    return Ok(Some(icon));
-                }
+            if let Some(tag) = names.tag.clone()?
+                && let Some(icon) = ask(Probe::Sprite(format!("GFX_{tag}_{name}{suffix}")))?
+            {
+                return Ok(Some(icon));
+            }
+            if let Some(icon) = ask(Probe::Sprite(format!("GFX_{name}{suffix}")))? {
+                return Ok(Some(icon));
             }
         }
     }
@@ -918,9 +980,25 @@ fn pool(
         .family
         .map(|name| type_model(&content.units, name).map(|family| (name, family.archetype)))
         .transpose()?;
-    let place = match country {
-        Some(raw) => hour.prepared.as_ref().map_err(Clone::clone)?.context(raw)?,
-        None => None,
+    let (place, country_tag, capital_continent) = match country {
+        Some(raw) => {
+            let place = hour.prepared.as_ref().map_err(Clone::clone)?.context(raw)?;
+            let country_tag = if place.is_some() {
+                Some(hour.witnessed_tag(raw)?)
+            } else {
+                None
+            };
+            let capital_continent = match place {
+                Some(place) => place
+                    .capital_continent
+                    .as_ref()
+                    .map(Option::as_deref)
+                    .map_err(Clone::clone)?,
+                None => None,
+            };
+            (place, country_tag, capital_continent)
+        }
+        None => (None, None, None),
     };
     let failed = std::cell::RefCell::new(None::<String>);
     let shown = std::cell::RefCell::new(None::<Icon>);
@@ -932,9 +1010,9 @@ fn pool(
             subunit: None,
             ideology,
             culture,
-            country: place.map(|place| place.country_tag.as_str()),
+            country: country_tag,
             faction_tags: place.map_or(&[], |place| place.faction_tags.as_slice()),
-            capital_continent: place.and_then(|place| place.capital_continent.as_deref()),
+            capital_continent,
         },
         |name| Some(content.dlc.contains(name)),
         |name| match ask(Probe::Existing(name.to_owned())) {

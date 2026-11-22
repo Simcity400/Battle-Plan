@@ -647,6 +647,13 @@ impl Database {
         self.module_stats
             .get(&self.module(name)?.to_ascii_lowercase())
     }
+    pub fn all_module_designs(
+        &self,
+    ) -> impl Iterator<Item = (&[u8], &ModuleDesign, Option<&StatGroup>)> {
+        self.module_designs
+            .iter()
+            .map(|(name, design)| (name.as_slice(), design, self.module_stats.get(name)))
+    }
     pub fn upgrade_stats(&self, name: impl AsRef<[u8]>) -> Option<&StatGroup> {
         let Token::Name(key) = Token::c_str(name.as_ref()) else {
             return None;
@@ -896,6 +903,9 @@ impl Database {
                 equipment.air_map_icon_frame = 0;
                 equipment.carrier_capable = false;
                 equipment.visual_tech_level_addition = 1;
+                equipment.module_add_stats_multiplier.clear();
+                equipment.module_multiply_stats_multiplier.clear();
+                equipment.scaled_by_reliability.clear();
                 at
             }
             None => self.register(key.to_vec()),
@@ -1105,7 +1115,7 @@ impl Database {
             if let Some(entry) = self.equipment[at]
                 .scaled_by_reliability
                 .iter_mut()
-                .find(|entry| entry.index == forbidden && entry.value != 0)
+                .find(|entry| entry.index == forbidden)
             {
                 let stat_name = metadata
                     .get(forbidden)

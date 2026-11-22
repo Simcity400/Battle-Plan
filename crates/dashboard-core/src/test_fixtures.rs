@@ -573,6 +573,7 @@ pub fn production_frame(
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
             country: 11,
+            original_tag_reference: Recorded::Value(Some(0)),
             ..Default::default()
         }]));
     *frame.tables[TableId::LexicalTokens.index()] =

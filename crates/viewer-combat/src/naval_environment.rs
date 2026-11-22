@@ -354,7 +354,7 @@ fn convoy_weapon_bound(layers: &content_reader_core::ResolvedLayers) -> io::Resu
 pub(super) fn convoy_weapon_bound_from_database(
     database: &content_reader_core::equipment::Database,
 ) -> ConvoyBound {
-    use content_reader_core::equipment::StatComponents;
+    use content_reader_core::equipment::{StatComponents, StatGroup};
     let misreads = database.misreads.clone();
     if let Some(lost) = &database.lost {
         return (Err(lost.clone()), misreads);
@@ -363,6 +363,14 @@ pub(super) fn convoy_weapon_bound_from_database(
         .iter()
         .filter_map(|name| content_reader_core::equipment::stat_index(name.as_bytes()))
         .collect();
+    let group_touches_weapons = |group: &StatGroup| {
+        group
+            .add
+            .iter()
+            .chain(&group.average)
+            .chain(&group.multiply)
+            .any(|term| stats.contains(&term.index))
+    };
     let mut range = [0_i64; 2];
     for equipment in database
         .equipment
@@ -372,38 +380,67 @@ pub(super) fn convoy_weapon_bound_from_database(
         let has_dynamic_terms = !equipment.module_add_stats_multiplier.is_empty()
             || !equipment.module_multiply_stats_multiplier.is_empty()
             || !equipment.scaled_by_reliability.is_empty();
-        if !equipment.module_slots.is_empty() && has_dynamic_terms {
+        let default_weapon_modules: Vec<&StatGroup> = equipment
+            .default_modules
+            .iter()
+            .filter_map(|(_, module)| database.module_stats(module))
+            .filter(|group| group_touches_weapons(group))
+            .collect();
+        let slot_allows_weapon_module = !equipment.module_slots.is_empty()
+            && database.all_module_designs().any(|(_, design, group)| {
+                group.is_some_and(group_touches_weapons)
+                    && equipment.module_slot_rules.iter().any(|slot| {
+                        slot.categories
+                            .iter()
+                            .any(|category| category == &design.category)
+                    })
+            });
+        if !equipment.module_slots.is_empty()
+            && (has_dynamic_terms || !default_weapon_modules.is_empty() || slot_allows_weapon_module)
+        {
             return (
                 Err(format!(
-                    "convoy equipment {} defines module slots with reliability-scaled or module-multiplied stats, so convoy weapon bounds cannot be determined from equipment types alone",
+                    "convoy equipment {} defines module slots whose modules or dynamic stat terms can change convoy weapon stats, so convoy weapon bounds cannot be determined from equipment types alone",
                     String::from_utf8_lossy(&equipment.name)
                 )),
                 misreads,
             );
         }
-        let mut components = StatComponents::base(&equipment.stats);
-        for (_, module) in &equipment.default_modules {
-            if let Some(group) = database.module_stats(module)
-                && let Err(reason) = components.apply_module(group, equipment)
-            {
-                return (Err(reason.to_owned()), misreads);
-            }
+        if default_weapon_modules.len() > 8 {
+            return (
+                Err(format!(
+                    "convoy equipment {} defines {} weapon-modifying default modules, so convoy weapon bounds cannot be enumerated from equipment types alone",
+                    String::from_utf8_lossy(&equipment.name),
+                    default_weapon_modules.len()
+                )),
+                misreads,
+            );
         }
-        let projected = match components.finish_for(equipment) {
-            Ok(values) => values,
-            Err(reason) => return (Err(reason.to_owned()), misreads),
-        };
-        let at_zero_rel = components.finish();
-        let mut full_rel = components.clone();
-        for term in &equipment.scaled_by_reliability {
-            if let Some(target) = full_rel.values.get_mut(term.index) {
-                target.additive = target.additive.wrapping_add(term.value);
+        for mask in 0..(1_usize << default_weapon_modules.len()) {
+            let mut components = StatComponents::base(&equipment.stats);
+            for (bit, group) in default_weapon_modules.iter().enumerate() {
+                if mask & (1_usize << bit) != 0
+                    && let Err(reason) = components.apply_module(group, equipment)
+                {
+                    return (Err(reason.to_owned()), misreads);
+                }
             }
-        }
-        let at_full_rel = full_rel.finish();
-        for &stat in &stats {
-            for value in [projected[stat], at_zero_rel[stat], at_full_rel[stat]] {
-                range = [range[0].min(value), range[1].max(value)];
+            let projected = match components.finish_for(equipment) {
+                Ok(values) => values,
+                Err(reason) => return (Err(reason.to_owned()), misreads),
+            };
+            let at_zero_rel = components.finish();
+            let mut full_rel = components.clone();
+            for term in &equipment.scaled_by_reliability {
+                if let Some(target) = full_rel.values.get_mut(term.index) {
+                    target.additive = target.additive.wrapping_add(term.value);
+                }
+            }
+            let at_full_rel = full_rel.finish();
+            for &stat in &stats {
+                for value in [projected[stat], at_zero_rel[stat], at_full_rel[stat]] {
+                    range = [range[0].min(value), range[1].max(value)];
+                }
             }
         }
     }
@@ -411,6 +448,9 @@ pub(super) fn convoy_weapon_bound_from_database(
 }
 
 fn bounded_total(ships: i64, convoys: i64, bound: Result<[i64; 2], &str>) -> Option<i64> {
+    if convoys == 0 {
+        return Some(ships / ONE);
+    }
     let [low, high] = bound.ok()?;
     let least = ships.checked_add(convoys.checked_mul(low)?)?;
     let most = ships.checked_add(convoys.checked_mul(high)?)?;

@@ -11,7 +11,7 @@ use crate::{
     states,
     terrain::DefaultMap,
 };
-use replay_data::rows::tables;
+use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 
 #[derive(Clone, Debug, Default)]
@@ -53,7 +53,7 @@ impl Content {
         let coastal: BTreeSet<u32> =
             crate::map::definition_rows(&layers.read(&default_map.file("definitions")?)?)?
                 .into_iter()
-                .filter(|row| row.coastal)
+                .filter(|row| row.coastal && row.kind() != Some(crate::map::ProvinceKind::Sea))
                 .map(|row| u32::from(row.id))
                 .collect();
         Ok(Self {
@@ -124,7 +124,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 pub struct CountryContext {
     pub country_tag: String,
     pub faction_tags: Vec<String>,
-    pub capital_continent: Option<String>,
+    pub capital_continent: Result<Option<String>, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -145,7 +145,10 @@ impl Prepared {
                     std::mem::size_of::<(u32, CountryContext)>()
                         + context.country_tag.len()
                         + context.faction_tags.iter().map(text).sum::<usize>()
-                        + context.capital_continent.as_ref().map_or(0, String::len)
+                        + match &context.capital_continent {
+                            Ok(continent) => continent.as_ref().map_or(0, String::len),
+                            Err(why) => why.len(),
+                        }
                 })
                 .sum::<usize>()
     }
@@ -158,6 +161,14 @@ impl Prepared {
         let factions = frame.complete::<tables::Factions>().map_err(error)?;
         let members = frame.complete::<tables::FactionMembers>().map_err(error)?;
         let states = frame.complete::<tables::States>().map_err(error)?;
+        let lexical: Result<BTreeMap<u32, &[u8]>, String> = frame
+            .complete::<tables::LexicalTokens>()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| (row.token, row.literal.as_slice()))
+                    .collect()
+            })
+            .map_err(|why| why.to_string());
 
         let slots: BTreeMap<u32, u32> = links
             .iter()
@@ -194,7 +205,7 @@ impl Prepared {
                 return Err(format!("duplicate Politics for country {}", row.country));
             }
         }
-        let state_ids: BTreeSet<u32> = states.iter().map(|row| row.id).collect();
+        let states_by_id: BTreeMap<u32, _> = states.iter().map(|row| (row.id, row)).collect();
         let faction_ids: BTreeSet<u64> = factions.iter().map(|row| row.id).collect();
         let mut rosters: BTreeMap<u64, Vec<(u32, u32)>> = BTreeMap::new();
         let mut membership = BTreeMap::new();
@@ -235,14 +246,39 @@ impl Prepared {
             let capital = *capital_by_slot
                 .get(&country_slot)
                 .ok_or_else(|| format!("country slot {country_slot} has no Politics row"))?;
-            let capital_continent = if capital <= 0 || !state_ids.contains(&(capital as u32)) {
-                None
+            let capital_continent = if capital <= 0 {
+                Ok(None)
+            } else if let Some(state) = states_by_id.get(&(capital as u32)) {
+                match state.continent {
+                    Recorded::Value(Some(0)) => Ok(None),
+                    Recorded::Value(Some(token)) => match &lexical {
+                        Ok(tokens) => match tokens.get(&token) {
+                            Some(literal) => std::str::from_utf8(literal)
+                                .map(|text| Some(text.to_ascii_lowercase()))
+                                .map_err(|_| {
+                                    format!(
+                                        "capital state {capital} continent token {token} is not UTF-8"
+                                    )
+                                }),
+                            None => Err(format!(
+                                "capital state {capital} continent token {token} has no recorded spelling"
+                            )),
+                        },
+                        Err(why) => Err(format!(
+                            "capital state {capital} continent spelling is unavailable: {why}"
+                        )),
+                    },
+                    Recorded::Value(None) => Err(format!(
+                        "capital state {capital} continent capture unavailable"
+                    )),
+                    Recorded::NotRecorded => content
+                        .continent_by_state
+                        .get(&(capital as u32))
+                        .cloned()
+                        .ok_or_else(|| format!("capital state {capital} is absent from content")),
+                }
             } else {
-                content
-                    .continent_by_state
-                    .get(&(capital as u32))
-                    .ok_or_else(|| format!("capital state {capital} is absent from content"))?
-                    .clone()
+                Ok(None)
             };
             contexts.insert(
                 country_slot,
@@ -301,7 +337,7 @@ mod tests {
                 CountryContext {
                     country_tag: "GER".into(),
                     faction_tags: vec![],
-                    capital_continent: Some("europe".into()),
+                    capital_continent: Ok(Some("europe".into())),
                 },
             )]
             .into(),
@@ -334,7 +370,8 @@ mod tests {
                  2;2;0;0;land;false;plains;2\n\
                  3;3;0;0;sea;true;ocean;0\n\
                  4;4;0;0;land;false;plains;2\n\
-                 5;5;0;0;sea;false;ocean;0\n",
+                 5;5;0;0;sea;false;ocean;0\n\
+                 6;6;0;0;land;true;plains;0\n",
             ),
             (
                 "common/defines/00_defines.lua",
@@ -345,12 +382,16 @@ mod tests {
                 "state = { id = 1 name = \"STATE_1\" provinces = { 1 2 } }\n",
             ),
             (
-                "history/states/2-coastal-first.txt",
+                "history/states/2-sea-coastal-first.txt",
                 "state = { id = 2 name = \"STATE_2\" provinces = { 3 4 } }\n",
             ),
             (
                 "history/states/3-inland-zero-first.txt",
                 "state = { id = 3 name = \"STATE_3\" provinces = { 5 4 } }\n",
+            ),
+            (
+                "history/states/4-land-coastal-first.txt",
+                "state = { id = 4 name = \"STATE_4\" provinces = { 6 4 } }\n",
             ),
         ] {
             let file = root.join(path);
@@ -370,10 +411,14 @@ mod tests {
             loaded.continent_by_state.get(&1),
             Some(&Some("europe".to_owned()))
         );
-        assert_eq!(loaded.continent_by_state.get(&2), Some(&None));
+        assert_eq!(
+            loaded.continent_by_state.get(&2),
+            Some(&Some("asia".to_owned()))
+        );
         assert_eq!(
             loaded.continent_by_state.get(&3),
             Some(&Some("asia".to_owned()))
         );
+        assert_eq!(loaded.continent_by_state.get(&4), Some(&None));
     }
 }

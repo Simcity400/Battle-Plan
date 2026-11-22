@@ -153,7 +153,7 @@ fn module_multipliers_and_reliability_scaling_follow_inheritance_duplication_and
                 reliability = 0.5
                 module_add_stats_multiplier = { soft_attack = 0.2 air_agility = -0.5 }
                 module_multiply_stats_multiplier = { soft_attack = 0.6 }
-                scaled_by_reliability = { max_strength = 10 soft_attack = 4 reliability = 0 }
+                scaled_by_reliability = { max_strength = 10 soft_attack = 4 }
             }
             leaf = {
                 module_add_stats_multiplier = { soft_attack = 9 }
@@ -166,6 +166,13 @@ fn module_multipliers_and_reliability_scaling_follow_inheritance_duplication_and
                     reliability_factor = 2
                     carrier_size = 3
                     build_cost_ic = 4
+                }
+            }
+            zero_forbidden = {
+                scaled_by_reliability = {
+                    reliability = 0
+                    build_cost_ic = 1
+                    build_cost_ic = -1
                 }
             }
             child = { parent = leaf soft_attack = 2 }
@@ -187,6 +194,16 @@ fn module_multipliers_and_reliability_scaling_follow_inheritance_duplication_and
                     && note.contains(&format!("'{forbidden}' is not supported in 'scaled_by_reliability'"))
             }),
             "{forbidden}: {:?}",
+            database.misreads
+        );
+    }
+    for forbidden in ["reliability", "build_cost_ic"] {
+        assert!(
+            database.misreads.iter().any(|note| {
+                note.contains("equipment zero_forbidden")
+                    && note.contains(&format!("'{forbidden}' is not supported in 'scaled_by_reliability'"))
+            }),
+            "zero_forbidden {forbidden}: {:?}",
             database.misreads
         );
     }
@@ -777,8 +794,22 @@ fn a_redefinition_is_reset_and_read_again() {
             base = { is_archetype = yes visual_tech_level_addition = -5 }
             a = { is_archetype = yes sprite = x model = m visual_level = 3 lg_attack = 2
                 visual_tech_level_addition = 4 family = base module_slots = { s = {} }
+                module_add_stats_multiplier = { lg_attack = 0.5 }
+                module_multiply_stats_multiplier = { lg_attack = 0.5 }
+                scaled_by_reliability = { lg_attack = 0.5 }
                 variant_name = named derived_variant_name = derived }
             A = { parent = base }
+            c = {
+                module_add_stats_multiplier = { lg_attack = 0.5 }
+                module_multiply_stats_multiplier = { lg_attack = 0.5 }
+                scaled_by_reliability = { lg_attack = 0.5 }
+            }
+            C = {
+                module_add_stats_multiplier = { lg_attack = 0.2 }
+                module_add_stats_multiplier = { lg_attack = 0.1 }
+                module_multiply_stats_multiplier = { lg_attack = 0.2 }
+                scaled_by_reliability = { lg_attack = 0.2 }
+            }
             b = { parent = a visual_tech_level_addition = 2 }
         }",
     );
@@ -787,6 +818,32 @@ fn a_redefinition_is_reset_and_read_again() {
     assert!(!a.is_archetype && a.archetype == database.get("base"));
     assert_eq!(a.family, database.get("a").unwrap());
     assert!(a.sprite.is_empty() && a.module_slots.is_empty());
+    assert!(a.module_add_stats_multiplier.is_empty());
+    assert!(a.module_multiply_stats_multiplier.is_empty());
+    assert!(a.scaled_by_reliability.is_empty());
+    let lg = stat("lg_attack");
+    let c = database.named("c").unwrap();
+    assert_eq!(
+        c.module_add_stats_multiplier,
+        [StatValue {
+            index: lg,
+            value: 30_000,
+        }]
+    );
+    assert_eq!(
+        c.module_multiply_stats_multiplier,
+        [StatValue {
+            index: lg,
+            value: 20_000,
+        }]
+    );
+    assert_eq!(
+        c.scaled_by_reliability,
+        [StatValue {
+            index: lg,
+            value: 20_000,
+        }]
+    );
     assert_eq!((a.model.as_slice(), a.visual_level), (b"m".as_slice(), 3));
     assert_eq!(
         (a.variant_name.as_slice(), a.derived_variant_name.as_slice()),

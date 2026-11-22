@@ -752,4 +752,24 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
         bound.is_err_and(|why| why.contains("modular_convoy")),
         "modular convoy with module stat multipliers must be refused by name"
     );
+    let (bound, _) = bound_of(
+        "equipment_modules = { neg_gun = { category = ship_gun add_stats = { lg_attack = -2 } } }
+         equipments = {
+            optional_convoy = { type = convoy lg_attack = 2
+                module_slots = { main = { required = no allowed_module_categories = { ship_gun } } }
+                default_modules = { main = neg_gun } }
+         }",
+    );
+    let refused = bound.unwrap_err();
+    assert!(refused.contains("optional_convoy"), "{refused}");
+    assert_eq!(bounded_total(8_190_000, 0, Err(&refused)), Some(81));
+    assert_eq!(bounded_total(8_190_000, 1, Err(&refused)), None);
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { neg_gun = { add_stats = { lg_attack = -2 } } }
+         equipments = {
+            hull = { type = convoy lg_attack = 2 default_modules = { main = neg_gun } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 200_000]));
 }

@@ -943,6 +943,14 @@ impl UnitModelAssets {
             };
             let geography = self.aircraft_geography(frame)?;
             let geography = geography.context(raw_country)?;
+            let capital_continent = match geography {
+                Some(country) => country
+                    .capital_continent
+                    .as_ref()
+                    .map(Option::as_deref)
+                    .map_err(Clone::clone)?,
+                None => None,
+            };
             self.graphics.aircraft_override(
                 &equipment_graphics::Context {
                     equipment: key,
@@ -953,8 +961,7 @@ impl UnitModelAssets {
                     culture: Some(culture),
                     country: geography.map(|country| country.country_tag.as_str()),
                     faction_tags: geography.map_or(&[], |country| country.faction_tags.as_slice()),
-                    capital_continent: geography
-                        .and_then(|country| country.capital_continent.as_deref()),
+                    capital_continent,
                 },
                 &limits,
                 |name| self.registered(name),
@@ -2232,6 +2239,14 @@ fn graphics_model_for_country(
                 &hour.country.countries,
             )?;
         let geography = hour.geography()?.context(raw_country)?;
+        let capital_continent = match geography {
+            Some(country) => country
+                .capital_continent
+                .as_ref()
+                .map(Option::as_deref)
+                .map_err(Clone::clone)?,
+            None => None,
+        };
         let graphical = hour.selection.measure(Stage::GraphicsRules, || {
             assets.graphics.lookup_with_limits(
                 &equipment_graphics::Context {
@@ -2243,8 +2258,7 @@ fn graphics_model_for_country(
                     culture,
                     country: geography.map(|country| country.country_tag.as_str()),
                     faction_tags: geography.map_or(&[], |country| country.faction_tags.as_slice()),
-                    capital_continent: geography
-                        .and_then(|country| country.capital_continent.as_deref()),
+                    capital_continent,
                 },
                 &hour.limits,
                 |name| assets.registered(name),

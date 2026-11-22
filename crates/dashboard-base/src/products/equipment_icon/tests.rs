@@ -103,7 +103,7 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
     let content = make_content(&[br#"
         default = { pooled_type = { pool = { icons = { GFX_pool_picture } } } }
     "#]);
-    let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
     let hour = IconHour::read(&frame, &content).unwrap();
     let row = VariantDefinitionRow::default();
     for (token, expected) in [
@@ -176,7 +176,7 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
         ["GFX_empty_pool".to_owned()].into(),
         Default::default(),
     );
-    let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
     let hour = IconHour::read(&frame, &content).unwrap();
     let row = VariantDefinitionRow::default();
     for token in ["", "empty_parent", "family_member"] {
@@ -279,12 +279,13 @@ fn equipment_icons_follow_the_production_rows_rule() {
             ["gfx/designs/my_tank.dds".to_owned()].into(),
         )
     };
-    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(
             [11, 21]
                 .map(|country| replay_data::rows::CountryAppearanceRow {
                     country,
+                    original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
                     ..Default::default()
                 })
                 .to_vec(),
@@ -458,11 +459,13 @@ fn equipment_icons_follow_the_production_rows_rule() {
         TableView::Complete(TableRows::CountryAppearance(vec![
             replay_data::rows::CountryAppearanceRow {
                 country: 11,
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
                 ..Default::default()
             },
             replay_data::rows::CountryAppearanceRow {
                 country: 21,
                 graphical_culture_2d: b"western".to_vec(),
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
                 ..Default::default()
             },
         ]));
@@ -508,15 +511,19 @@ fn equipment_icons_follow_the_production_rows_rule() {
         TableView::Complete(TableRows::CountryAppearance(vec![
             replay_data::rows::CountryAppearanceRow {
                 country: 11,
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
                 ..Default::default()
             },
             replay_data::rows::CountryAppearanceRow {
                 country: 31,
                 name_tag: b"AAA".to_vec(),
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(41)),
+                original_tag: replay_data::rows::Recorded::Value(Some(b"AAA".to_vec())),
                 ..Default::default()
             },
             replay_data::rows::CountryAppearanceRow {
                 country: 41,
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
                 ..Default::default()
             },
         ]));
@@ -613,7 +620,7 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
         Default::default(),
     );
     let _ = std::fs::remove_dir_all(&root);
-    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
     *frame.tables[TableId::PoliticalParties.index()] =
         TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
             country: 11,
@@ -695,10 +702,11 @@ fn inactive_dot_icon_and_invalid_inactive_kind_follow_native_icon_entry_rules() 
         ["GFX_fascist_tank".to_owned(), "GFX_tanks_1_medium".to_owned()].into(),
         Default::default(),
     );
-    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
             country: 11,
+            original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
             ..Default::default()
         }]));
     *frame.tables[TableId::PoliticalParties.index()] =
@@ -760,7 +768,18 @@ fn inactive_dot_icon_and_invalid_inactive_kind_follow_native_icon_entry_rules() 
         icon_kind: 7,
         ..Default::default()
     };
-    assert!(chosen(&content, &hour, &inactive_bad_kind, "tanks_1").is_err());
+    assert_eq!(
+        chosen(&content, &hour, &inactive_bad_kind, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_tanks_1_medium".into())))
+    );
+    let active_bad_kind = VariantDefinitionRow {
+        id: 72,
+        creator_link: 11,
+        icon_active: 1,
+        icon_kind: 7,
+        ..Default::default()
+    };
+    assert!(chosen(&content, &hour, &active_bad_kind, "tanks_1").is_err());
 }
 
 #[test]
@@ -769,7 +788,8 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
     use content_reader_core::ResolvedLayers;
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::{
-        CountryAppearanceRow, PoliticalPartyRow, PoliticsRow, StateRow, VariantDefinitionRow,
+        CountryAppearanceRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, Recorded, StateRow,
+        VariantDefinitionRow,
     };
 
     content_reader_core::test_game::enter();
@@ -802,7 +822,7 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
             "state = { id = 1 name = \"STATE_1\" provinces = { 1 2 } }\n",
         ),
         (
-            "history/states/2-coastal-zero.txt",
+            "history/states/2-sea-coastal-zero.txt",
             "state = { id = 2 name = \"STATE_2\" provinces = { 3 4 } }\n",
         ),
     ] {
@@ -856,12 +876,13 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
     )
     .with_geography(geography);
 
-    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(
             [11, 21]
                 .map(|country| CountryAppearanceRow {
                     country,
+                    original_tag_reference: Recorded::Value(Some(0)),
                     ..Default::default()
                 })
                 .to_vec(),
@@ -876,13 +897,26 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
     for table in [TableId::Factions, TableId::FactionMembers] {
         *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
     }
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 101,
+                literal: b"Europe".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 102,
+                literal: b"Asia".to_vec(),
+            },
+        ]));
     *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
         StateRow {
             id: 1,
+            continent: Recorded::Value(Some(101)),
             ..Default::default()
         },
         StateRow {
             id: 2,
+            continent: Recorded::Value(Some(102)),
             ..Default::default()
         },
     ]));
@@ -900,7 +934,6 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
             ..Default::default()
         },
     ]));
-    let hour = IconHour::read(&frame, &content).unwrap();
     let from_mixed = VariantDefinitionRow {
         id: 80,
         creator_link: 11,
@@ -909,11 +942,7 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
         icon: b".".to_vec(),
         ..Default::default()
     };
-    assert_eq!(
-        chosen(&content, &hour, &from_mixed, "tanks_1"),
-        Ok(Some(Icon::Sprite("GFX_europe_tank".into())))
-    );
-    let from_coastal_zero = VariantDefinitionRow {
+    let from_second = VariantDefinitionRow {
         id: 81,
         creator_link: 21,
         icon_active: 1,
@@ -921,8 +950,227 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
         icon: b".".to_vec(),
         ..Default::default()
     };
+    let hour = IconHour::read(&frame, &content).unwrap();
     assert_eq!(
-        chosen(&content, &hour, &from_coastal_zero, "tanks_1"),
+        chosen(&content, &hour, &from_mixed, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_europe_tank".into())))
+    );
+    assert_eq!(
+        chosen(&content, &hour, &from_second, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_asia_tank".into())))
+    );
+
+    let mut null_vs_failed = frame.clone();
+    *null_vs_failed.tables[TableId::States.index()] =
+        TableView::Complete(TableRows::States(vec![
+            StateRow {
+                id: 1,
+                continent: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+            StateRow {
+                id: 2,
+                continent: Recorded::Value(None),
+                ..Default::default()
+            },
+        ]));
+    let hour = IconHour::read(&null_vs_failed, &content).unwrap();
+    assert_eq!(
+        chosen(&content, &hour, &from_mixed, "tanks_1"),
         Ok(Some(Icon::Sprite("GFX_default_tank".into())))
+    );
+    assert!(
+        chosen(&content, &hour, &from_second, "tanks_1")
+            .unwrap_err()
+            .contains("continent capture unavailable")
+    );
+
+    let mut older_format = frame.clone();
+    *older_format.tables[TableId::States.index()] =
+        TableView::Complete(TableRows::States(vec![
+            StateRow {
+                id: 1,
+                continent: Recorded::NotRecorded,
+                ..Default::default()
+            },
+            StateRow {
+                id: 2,
+                continent: Recorded::NotRecorded,
+                ..Default::default()
+            },
+        ]));
+    let hour = IconHour::read(&older_format, &content).unwrap();
+    assert_eq!(
+        chosen(&content, &hour, &from_mixed, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_europe_tank".into())))
+    );
+    assert_eq!(
+        chosen(&content, &hour, &from_second, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_asia_tank".into())))
+    );
+}
+
+#[test]
+fn dynamic_creator_fallback_uses_original_reference_and_witnessed_handle_tag() {
+    use super::{Icon, IconContent, IconHour};
+    use content_reader_equipment_graphics::equipment_graphics;
+    use replay_data::rows::{
+        CountryAppearanceRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, Recorded, StateRow,
+        VariantDefinitionRow,
+    };
+
+    content_reader_core::test_game::enter();
+    let units = equipment_types(&[br#"
+        equipments = {
+            tanks = { is_archetype = yes type = armor }
+            tanks_1 = { archetype = tanks }
+        }
+    "#])
+    .unwrap();
+    let pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            europe = { tanks_1 = { pool = { icons = { GFX_holder1_europe } } } }
+            asia = { tanks_1 = { pool = { icons = { GFX_holder2_asia } } } }
+            default = { tanks_1 = { pool = { icons = { GFX_default_tank } } } }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["AAA".to_owned(), "D01".to_owned()].into(),
+            continents: ["europe".to_owned(), "asia".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let content = IconContent::from_parts(
+        units,
+        Default::default(),
+        pools,
+        Default::default(),
+        [
+            "GFX_holder1_europe".to_owned(),
+            "GFX_holder2_asia".to_owned(),
+            "GFX_default_tank".to_owned(),
+            "GFX_explicit".to_owned(),
+        ]
+        .into(),
+        Default::default(),
+    );
+
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        country(41, 3, b"AAA"),
+        country(42, 9, b"AAA"),
+        country(31, 50, b"D01"),
+    ]));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(41, 3), (42, 9), (31, 50), (99, 3)]
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .to_vec(),
+    ));
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            CountryAppearanceRow {
+                country: 41,
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 42,
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 31,
+                name_tag: b"AAA".to_vec(),
+                original_tag_reference: Recorded::Value(Some(41)),
+                original_tag: Recorded::Value(Some(b"AAA".to_vec())),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 31,
+            is_ruling: 1,
+            token: b"fascism".to_vec(),
+            ..Default::default()
+        }]));
+    for table in [TableId::Factions, TableId::FactionMembers] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 101,
+                literal: b"Europe".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 102,
+                literal: b"Asia".to_vec(),
+            },
+        ]));
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        StateRow {
+            id: 1,
+            continent: Recorded::Value(Some(101)),
+            ..Default::default()
+        },
+        StateRow {
+            id: 2,
+            continent: Recorded::Value(Some(102)),
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![
+        PoliticsRow {
+            country: 41,
+            original_capital: 1,
+            ..Default::default()
+        },
+        PoliticsRow {
+            country: 42,
+            original_capital: 2,
+            ..Default::default()
+        },
+        PoliticsRow {
+            country: 31,
+            original_capital: 2,
+            ..Default::default()
+        },
+    ]));
+    let hour = IconHour::read(&frame, &content).unwrap();
+    let from_dynamic = VariantDefinitionRow {
+        id: 90,
+        creator_link: 31,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(&content, &hour, &from_dynamic, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_holder1_europe".into())))
+    );
+    let unwitnessed_alias = VariantDefinitionRow {
+        id: 91,
+        origin_link: 99,
+        ..Default::default()
+    };
+    assert!(
+        chosen(&content, &hour, &unwitnessed_alias, "tanks_1")
+            .unwrap_err()
+            .contains("witnessed tag spelling")
+    );
+    let explicit_with_unwitnessed_alias = VariantDefinitionRow {
+        id: 92,
+        origin_link: 99,
+        icon_active: 1,
+        icon_kind: 0,
+        icon: b"GFX_explicit".to_vec(),
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(&content, &hour, &explicit_with_unwitnessed_alias, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_explicit".into())))
     );
 }

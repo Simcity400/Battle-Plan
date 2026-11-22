@@ -44,18 +44,19 @@ impl Setting {
     pub fn resolve_raster(
         self,
         display: Result<&Display, &str>,
-        monitors: Result<&[Option<Desktop>], &str>,
+        monitors: Result<&[Result<Desktop, String>], &str>,
     ) -> (Raster, Option<String>) {
         let (screen_scale, note) = self.resolve(display, monitors);
         let raster = match (self, display, monitors, &note) {
             (Self::MatchGame, Ok(display), Ok(monitors), None) => {
-                let frame = display.frame(monitors).expect("validated display frame");
-                let primary = monitors[0].expect("validated primary display");
+                let frame = display.frame_result(monitors).expect("validated display frame");
+                let gui_scale = display
+                    .effective_gui_scale_result(monitors)
+                    .expect("validated display gui scale");
                 Raster {
-                    ui_scale: display
-                        .interface_to_frame(frame, display.effective_gui_scale(primary)),
+                    ui_scale: display.interface_to_frame(frame, gui_scale),
                     stretch: display
-                        .stretch(monitors)
+                        .stretch_result(monitors)
                         .expect("validated display stretch"),
                 }
             }
@@ -73,7 +74,7 @@ impl Setting {
     pub fn resolve(
         self,
         display: Result<&Display, &str>,
-        monitors: Result<&[Option<Desktop>], &str>,
+        monitors: Result<&[Result<Desktop, String>], &str>,
     ) -> (f32, Option<String>) {
         let fallback = |why: String| {
             (
@@ -96,21 +97,21 @@ impl Setting {
             Ok(monitors) => monitors,
             Err(error) => return fallback(format!("the monitors are unavailable ({error})")),
         };
-        match display.screen_scale(monitors) {
-            Some(scale) if valid(scale) => (scale, None),
-            Some(scale) => fallback(format!(
+        match display.screen_scale_result(monitors) {
+            Ok(scale) if valid(scale) => (scale, None),
+            Ok(scale) => fallback(format!(
                 "the game's scale works out to {scale}, outside the viewer's {:.1}-{:.1}",
                 MAP_UI_SCALE_RANGE.start(),
                 MAP_UI_SCALE_RANGE.end()
             )),
-            None => fallback("the game's window size is not one these monitors can show".into()),
+            Err(why) => fallback(why),
         }
     }
 }
 
 struct MonitorState {
     generation: AtomicU64,
-    monitors: Mutex<Arc<Result<Vec<Option<Desktop>>, String>>>,
+    monitors: Mutex<Arc<Result<Vec<Result<Desktop, String>>, String>>>,
     reading: AtomicBool,
     again: AtomicBool,
 }
@@ -163,7 +164,7 @@ pub fn monitors_generation() -> u64 {
     monitor_state().generation.load(Ordering::Acquire)
 }
 
-pub fn monitors() -> Arc<Result<Vec<Option<Desktop>>, String>> {
+pub fn monitors() -> Arc<Result<Vec<Result<Desktop, String>>, String>> {
     Arc::clone(
         &monitor_state()
             .monitors

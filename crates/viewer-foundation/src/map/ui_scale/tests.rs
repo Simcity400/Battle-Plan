@@ -11,7 +11,7 @@ fn manual_and_unavailable_display_keep_direct_raster_and_input_scale() {
     assert_eq!(raster, Raster::direct(1.));
     assert!(note.is_some());
     let (raster, _) =
-        Setting::MatchGame.resolve_raster(Ok(&borderless_at(1.2)), Ok(&[Some(MONITOR)]));
+        Setting::MatchGame.resolve_raster(Ok(&borderless_at(1.2)), Ok(&[Ok(MONITOR)]));
     let screen_point = [200., 150.];
     let frame_point = screen_point.map(|point| point / raster.stretch);
     let hit = to_interface(frame_point, raster.ui_scale);
@@ -21,36 +21,54 @@ fn manual_and_unavailable_display_keep_direct_raster_and_input_scale() {
 
 #[test]
 fn matching_the_game_multiplies_its_scale_by_its_stretch() {
-    let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Some(MONITOR)]));
+    let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Ok(MONITOR)]));
     assert_eq!((scale, note), (1.25, None));
     let unscaled = Desktop { dpi: 96, ..MONITOR };
     assert_eq!(
-        Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Some(unscaled)])),
+        Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Ok(unscaled)])),
         (1.0, None)
     );
     let (scale, _) =
-        Setting::MatchGame.resolve(Ok(&borderless_at(1.2)), Ok(&[Some(unscaled)]));
+        Setting::MatchGame.resolve(Ok(&borderless_at(1.2)), Ok(&[Ok(unscaled)]));
     assert_eq!(scale, 2560.0 / 2133.0);
     let tv = Desktop {
         physical: [3840, 2160],
         dpi: 192,
+    };
+    let dpi_err = || {
+        Err("Could not read the display scale of monitor DISPLAY2 (0x80070057)".into())
     };
     let on_unavailable = Display {
         display_index: 1,
         ..borderless()
     };
     let (scale, note) =
-        Setting::MatchGame.resolve(Ok(&on_unavailable), Ok(&[Some(MONITOR), None, Some(tv)]));
+        Setting::MatchGame.resolve(Ok(&on_unavailable), Ok(&[Ok(MONITOR), dpi_err(), Ok(tv)]));
     assert_eq!(scale, 1.0);
-    assert!(note.is_some());
+    assert!(
+        note.as_deref()
+            .is_some_and(|text| text.contains("DISPLAY2") && text.contains("0x80070057")),
+        "{note:?}"
+    );
     let on_third = Display {
         display_index: 2,
         ..borderless()
     };
     assert_eq!(
-        Setting::MatchGame.resolve(Ok(&on_third), Ok(&[Some(MONITOR), None, Some(tv)])),
+        Setting::MatchGame.resolve(Ok(&on_third), Ok(&[Ok(MONITOR), dpi_err(), Ok(tv)])),
         (2.0, None)
     );
+    let on_secondary_without_primary = Display {
+        display_index: 1,
+        clamps: Vec::new(),
+        ..borderless()
+    };
+    let (raster, note) = Setting::MatchGame.resolve_raster(
+        Ok(&on_secondary_without_primary),
+        Ok(&[dpi_err(), Ok(tv)]),
+    );
+    assert_eq!(note, None);
+    assert_eq!(raster.screen_scale(), 2.0);
 }
 
 #[test]
