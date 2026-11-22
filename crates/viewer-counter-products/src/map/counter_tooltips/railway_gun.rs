@@ -205,7 +205,7 @@ pub(super) fn build(
                     ))
                 })
                 .collect();
-            next_location(context.loc, next_hours(&timed)?)
+            next_location(context.loc, next_hours(&timed)?, false)
         })();
         append(&mut out, context, true, "railway gun next location", next);
     }

@@ -284,6 +284,7 @@ fn label(key: &str) -> viewer_foundation::map::name_draw::WorldName {
         pages: vec![2, 2],
         corners: vec![[3399.9587, 10.140796, 1761.204], [3400.3167, 9.99884, 1760.4884]],
         uvs: vec![[0.0, 0.0, 0.5, 0.5], [0.5, 0.5, 1.0, 1.0]],
+        colors: vec![[1.0; 4], [1.0; 4]],
         aabb: [3398.0, 1759.0, 3401.0, 1762.0],
         wrapped: false,
         font_size: 1.0,

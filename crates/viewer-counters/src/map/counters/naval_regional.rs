@@ -155,21 +155,24 @@ pub(super) fn compare(a: SortKey, b: SortKey, coarse: bool) -> i32 {
 }
 
 pub(super) fn allegiance_break(
-    first: Allegiance,
-    next: Allegiance,
+    first: (u32, Option<Allegiance>),
+    next: (u32, Option<Allegiance>),
     first_selected: bool,
     next_selected: bool,
 ) -> bool {
-    if first == Allegiance::Ours && next == Allegiance::Ours {
-        return first_selected && !next_selected;
+    match (first.1, next.1) {
+        (Some(Allegiance::Ours), Some(Allegiance::Ours)) => first_selected && !next_selected,
+        (Some(first), Some(next)) => {
+            let rank = |side| match side {
+                Allegiance::Ours => 0,
+                Allegiance::Allied => 1,
+                Allegiance::Enemy => 2,
+                Allegiance::Other => 3,
+            };
+            rank(first) < rank(next)
+        }
+        _ => first.0 != next.0,
     }
-    let rank = |side| match side {
-        Allegiance::Ours => 0,
-        Allegiance::Allied => 1,
-        Allegiance::Enemy => 2,
-        Allegiance::Other => 3,
-    };
-    rank(first) < rank(next)
 }
 
 pub(super) fn sort_own(
@@ -414,8 +417,11 @@ pub(super) fn prepare<'a>(
                         Ok(true) => {
                             while end < units.len()
                                 && !allegiance_break(
-                                    countries.side(units[start].slot),
-                                    countries.side(units[end].slot),
+                                    (
+                                        units[start].slot,
+                                        countries.known_side(units[start].slot),
+                                    ),
+                                    (units[end].slot, countries.known_side(units[end].slot)),
                                     keys[start].selected,
                                     keys[end].selected,
                                 )
@@ -895,29 +901,31 @@ mod tests {
     #[test]
     fn allegiance_runs_split_only_when_the_first_members_priority_precedes_the_next() {
         assert!(allegiance_break(
-            Allegiance::Allied,
-            Allegiance::Enemy,
+            (1, Some(Allegiance::Allied)),
+            (2, Some(Allegiance::Enemy)),
             false,
             false
         ));
         assert!(!allegiance_break(
-            Allegiance::Enemy,
-            Allegiance::Allied,
+            (2, Some(Allegiance::Enemy)),
+            (1, Some(Allegiance::Allied)),
             false,
             false
         ));
         assert!(allegiance_break(
-            Allegiance::Ours,
-            Allegiance::Ours,
+            (0, Some(Allegiance::Ours)),
+            (0, Some(Allegiance::Ours)),
             true,
             false
         ));
         assert!(!allegiance_break(
-            Allegiance::Ours,
-            Allegiance::Ours,
+            (0, Some(Allegiance::Ours)),
+            (0, Some(Allegiance::Ours)),
             false,
             true
         ));
+        assert!(!allegiance_break((1, None), (1, None), false, false));
+        assert!(allegiance_break((1, None), (2, None), false, false));
     }
 
     #[test]

@@ -82,9 +82,7 @@ pub trait Kept: Send {
 pub struct Table<T: TableSchema> {
     lane: Lane,
     kinds: Vec<Kind>,
-    selected: Vec<Option<usize>>,
     mask: u64,
-    empty: Vec<Option<Vec<u8>>>,
     rows: TableRows,
     kind: std::marker::PhantomData<fn() -> T>,
     texts: HashMap<u32, Box<[u8]>>,
@@ -114,27 +112,10 @@ where
                 .map(|name| (0..kinds.len()).find(|&column| table.field_name(column) == Some(name)).ok_or_else(|| invalid(format!("{reader} reads {table:?}.{name}, which the recording's schema does not hold"))))
                 .collect::<io::Result<_>>()?,
         };
-        let mut selected = vec![None; kinds.len()];
-        for (at, &column) in columns.iter().enumerate() {
-            selected[column] = Some(at);
-        }
-        let empty = {
-            let mut empty = vec![None; kinds.len()];
-            T::Row::default().visit_wire(&mut |index, held| {
-                if let Field::Opaque(Opaque::Native(value)) = held {
-                    let mut bytes = Vec::new();
-                    value.encode_value(&mut bytes)?;
-                    empty[index] = Some(bytes);
-                }
-                Ok(())
-            })?;
-            empty
-        };
         let streams = [LIFETIMES].into_iter().chain(columns.iter().map(|&column| column_stream(column))).chain(columns.iter().any(|&column| kinds[column] == Kind::Bytes).then_some(STRINGS)).collect();
         Ok(Self {
             lane: Lane::new(Arc::clone(pages), run, table.index(), &columns, true)?,
             kinds,
-            selected,
             rows: T::wrap(Vec::new()),
             kind: std::marker::PhantomData,
             texts: HashMap::new(),
@@ -143,7 +124,6 @@ where
             touched: true,
             streams,
             mask: columns.iter().fold(0, |mask, &column| mask | 1 << column),
-            empty,
             pages: Arc::clone(pages),
             run,
             block: None,
@@ -183,41 +163,22 @@ where
         Ok(self.busy.get(hour as usize / 64).is_none_or(|word| word & (1 << (hour % 64)) != 0))
     }
 
-    fn cells_key(&self, slot: u32) -> Option<u128> {
-        self.lane.cells().key(slot)
-    }
-
     fn list(&mut self) -> &mut Vec<T::Row> {
         T::borrow_mut(&mut self.rows).expect("a table's own rows")
     }
 
-    fn row(&self, slot: u32, held: Option<&T::Row>) -> io::Result<Option<T::Row>> {
+    fn row(&self, slot: u32) -> io::Result<Option<T::Row>> {
         let cells = self.lane.cells();
         let Some(key) = cells.key(slot).filter(|_| cells.live().get(slot)) else { return Ok(None) };
-        let (kinds, selected, texts, format) = (&self.kinds, &self.selected, &self.texts, self.lane.format());
-        let read = |index: usize| field(kinds[index], Some(cells.value(index, slot)), texts, format);
-        if let Some(held) = held.filter(|held| held.key() == key) {
-            let mut row = held.clone();
-            if row.patch_from_wire(self.mask, &mut |index| Ok(read(index)))? {
-                return Ok(Some(row));
-            }
-        }
-        let empty = &self.empty;
-        T::Row::from_wire(key, &mut |index| {
-            Ok(match (selected[index], &empty[index]) {
-                (Some(_), _) => read(index),
-                (None, Some(bytes)) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
-                (None, None) => field(kinds[index], None, texts, format),
-            })
-        })
-        .map(Some)
+        let (kinds, texts, format) = (&self.kinds, &self.texts, self.lane.format());
+        T::Row::from_wire_fields(key, self.mask, &mut |index| Ok(field(kinds[index], Some(cells.value(index, slot)), texts, format))).map(Some)
     }
 
     fn rebuild(&mut self) -> io::Result<()> {
         let slots: Vec<u32> = self.lane.cells().rows().collect();
         let mut rows = Vec::with_capacity(slots.len());
         for slot in slots {
-            rows.extend(self.row(slot, None)?);
+            rows.extend(self.row(slot)?);
         }
         rows.sort_unstable_by_key(|row| row.key());
         self.rows = T::wrap(rows);
@@ -285,8 +246,7 @@ where
         slots.sort_unstable();
         slots.dedup();
         for slot in slots {
-            let held = self.cells_key(slot).and_then(|key| T::borrow(&self.rows).and_then(|rows| rows.binary_search_by_key(&key, RowCodec::key).ok().map(|at| rows[at].clone())));
-            if let Some(row) = self.row(slot, held.as_ref())? {
+            if let Some(row) = self.row(slot)? {
                 self.upsert(row);
             }
         }

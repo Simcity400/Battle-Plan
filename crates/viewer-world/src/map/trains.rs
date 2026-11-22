@@ -50,6 +50,9 @@ impl TrainDefines {
             )));
         }
         let table = defines.numbers("NGraphics", "TUNNELBANA_TIMETABLE")?;
+        if table.is_empty() {
+            return Err(invalid("NDefines.NGraphics.TUNNELBANA_TIMETABLE is empty"));
+        }
         let whole = |value: f64| {
             let value = value.trunc();
             (f64::from(i32::MIN)..=f64::from(i32::MAX))
@@ -61,14 +64,15 @@ impl TrainDefines {
             table.last().copied().and_then(whole),
         ) else {
             return Err(invalid(
-                "NDefines.NGraphics.TUNNELBANA_TIMETABLE needs integral first and last entries",
+                "NDefines.NGraphics.TUNNELBANA_TIMETABLE first and last entries must be finite \
+                 numbers within 32-bit signed integer range",
             ));
         };
         let timetable = [first.min(last), first.max(last)];
         if timetable[0] < 1 {
             return Err(invalid(format!(
-                "NDefines.NGraphics.TUNNELBANA_TIMETABLE {timetable:?} allows a zero interval, \
-                 one departure per rendered frame, which is not supported"
+                "NDefines.NGraphics.TUNNELBANA_TIMETABLE {timetable:?} allows a non-positive \
+                 interval, which is not supported"
             )));
         }
         let min = defines.int32("NGraphics", "MIN_TRAIN_WAGON_COUNT")?.max(1);
@@ -2321,6 +2325,55 @@ pub(crate) mod tests {
         assert!(intervals.iter().all(|i| (9.2..=12.0).contains(i)));
         assert_eq!(DEFINES.interval(0), 9.2);
         assert_eq!(DEFINES.interval(2800), 12.0);
+    }
+
+    #[test]
+    fn timetable_endpoints_follow_native_truncation_and_refuse_invalid_ranges() {
+        let load = |entries: &str| {
+            let defines = Defines::new().unwrap();
+            defines
+                .load(
+                    "common/defines/00_graphics.lua",
+                    format!(
+                        "NDefines = {{ NGraphics = {{ TRAIN_MAP_SPEED = 3, \
+                         TUNNELBANA_TIMETABLE = {{ {entries} }}, \
+                         MIN_TRAIN_WAGON_COUNT = 2, MAX_TRAIN_WAGON_COUNT = 5 }} }}"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            TrainDefines::load(&defines)
+        };
+        assert_eq!(load("9200, 12000").unwrap().timetable, [9200, 12000]);
+        assert_eq!(load("12000, 9200").unwrap().timetable, [9200, 12000]);
+        assert_eq!(load("5000").unwrap().timetable, [5000, 5000]);
+        assert_eq!(load("1.8, 3.9").unwrap().timetable, [1, 3]);
+        assert_eq!(load("12.9, 4.1").unwrap().timetable, [4, 12]);
+        let zero_from_fraction = load("0.8, 3.0").unwrap_err().to_string();
+        assert!(
+            zero_from_fraction.contains("TUNNELBANA_TIMETABLE")
+                && zero_from_fraction.contains("non-positive"),
+            "{zero_from_fraction}"
+        );
+        for negative in ["-5, 100", "-1.8, 100", "100, -1"] {
+            let error = load(negative).unwrap_err().to_string();
+            assert!(
+                error.contains("TUNNELBANA_TIMETABLE") && error.contains("non-positive"),
+                "{negative}: {error}"
+            );
+        }
+        let empty = load("").unwrap_err().to_string();
+        assert!(
+            empty.contains("TUNNELBANA_TIMETABLE") && empty.contains("empty"),
+            "{empty}"
+        );
+        for out_of_range in ["3000000000, 4000000000", "-3000000000, 100", "1/0, 100", "0/0, 100"] {
+            let error = load(out_of_range).unwrap_err().to_string();
+            assert!(
+                error.contains("TUNNELBANA_TIMETABLE") && error.contains("32-bit signed integer"),
+                "{out_of_range}: {error}"
+            );
+        }
     }
 
     #[test]
