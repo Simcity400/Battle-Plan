@@ -204,7 +204,7 @@ fn equipment_destruction_hourly_restoration_is_terminal_on_exactly_two_errors() 
         restore_hourly(
             &mut restored,
             &mut previous_errors,
-            Instant::now(),
+            || Duration::ZERO,
             || {
                 hourly_calls.set(hourly_calls.get() + 1);
                 if busy && hourly_calls.get() == 1 {
@@ -285,7 +285,7 @@ fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_captur
     let passed = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
-            wait_acquisitions(&admission, Instant::now()).unwrap();
+            wait_acquisitions(&admission, || Duration::ZERO).unwrap();
             passed.store(true, Ordering::SeqCst);
         });
         assert!(!passed.load(Ordering::SeqCst));
@@ -334,7 +334,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     let restoration_error = restore_result.unwrap_err();
     let admission = CaptureAdmission::new();
     admission.close();
-    wait_acquisitions(&admission, Instant::now()).unwrap();
+    wait_acquisitions(&admission, || Duration::ZERO).unwrap();
     assert!(observers_active());
     let pointer = ptr::NonNull::<Shared>::dangling().as_ptr();
     let retained_shared = AtomicPtr::new(pointer);

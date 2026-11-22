@@ -858,7 +858,7 @@ fn committed_frame_watermark_precedes_postwrite_durability_allocation_failure() 
     spool.start_segment(&[branch()], &frame(10, true)).unwrap();
     ATTEMPTED.with(|hour| hour.set(Some(11)));
     shared.borrow_mut().fault = Some(Fault::StartSyncOom);
-    spool.last_sync = Instant::now() - SYNC_INTERVAL;
+    spool.last_sync = None;
     assert_eq!(
         spool
             .append(&Record::Frame(frame(11, false)))
@@ -940,7 +940,7 @@ fn sealed_records_publish_watermarks_only_after_the_real_write_and_flush() {
         let record = sealed(11);
         assert_eq!(spool.committed_watermark(), preceding);
         memory.borrow_mut().fault = Some(fault);
-        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.last_sync = None;
         assert!(spool.append_sealed(record).is_err());
         assert_eq!(START.get().0, preceding);
         if matches!(fault, Fault::Flush) {
@@ -964,11 +964,11 @@ fn pending_periodic_sync_allows_ordered_frames_but_detach_remains_forced() {
     let mut spool = SegmentedSpool::new(backend);
     spool.start_segment(&[branch()], &frame(10, true)).unwrap();
     assert_eq!(shared.borrow().syncs, 1);
-    spool.last_sync = Instant::now() - SYNC_INTERVAL;
+    spool.last_sync = None;
     spool.sync_if_due().unwrap();
     assert!(shared.borrow().sync_pending);
     for hour in 11..20 {
-        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.last_sync = None;
         spool.append(&Record::Frame(frame(hour, false))).unwrap();
     }
     assert_eq!(shared.borrow().sync_requests, 1);
@@ -993,7 +993,7 @@ fn background_sync_failure_closes_segment_before_another_record_is_written() {
         shared.borrow_mut().background = true;
         let mut spool = SegmentedSpool::new(backend);
         spool.start_segment(&[branch()], &frame(10, true)).unwrap();
-        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.last_sync = None;
         spool.sync_if_due().unwrap();
         spool.append(&Record::Frame(frame(11, false))).unwrap();
         let length = shared.borrow().files[&0].len();
@@ -1026,7 +1026,7 @@ fn forced_boundaries_surface_a_still_pending_durability_failure() {
         shared.borrow_mut().background = true;
         let mut spool = SegmentedSpool::new(backend);
         spool.start_segment(&[branch()], &frame(10, true)).unwrap();
-        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.last_sync = None;
         spool.sync_if_due().unwrap();
         assert!(shared.borrow().sync_pending);
         shared.borrow_mut().fault = Some(Fault::Sync);
@@ -1110,7 +1110,7 @@ fn failed_write_flush_or_sync_permanently_abandons_that_segment() {
             Fault::WriteAfter(_) => Fault::WriteAfter(old_length + RECORD_HEADER_BYTES + 5),
             other => other,
         });
-        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.last_sync = None;
         assert!(
             spool
                 .append_encoded_frame(frame(11, false).encoded().unwrap())
@@ -1333,7 +1333,7 @@ fn every_record_flushes_and_pause_timeout_and_detach_sync() {
     assert_eq!(shared.borrow().flushes, flushes + 1);
     spool.sync_if_due().unwrap();
     assert_eq!(shared.borrow().syncs, 1);
-    spool.last_sync = Instant::now() - SYNC_INTERVAL;
+    spool.last_sync = None;
     spool.sync_if_due().unwrap();
     assert_eq!(shared.borrow().syncs, 2);
     spool
@@ -1356,7 +1356,7 @@ fn periodic_syncs_reuse_one_persistent_durability_thread() {
     let mut spool = SegmentedSpool::new(FileBackend::new(&directory).unwrap());
     spool.start_segment(&[branch()], &frame(10, true)).unwrap();
     for hour in 11..14 {
-        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.last_sync = None;
         spool.append(&Record::Frame(frame(hour, false))).unwrap();
         let requested = spool.background_sync_work().unwrap().requested;
         assert_eq!(requested, u64::from((hour - 10) as u32));
@@ -1373,7 +1373,7 @@ fn periodic_syncs_reuse_one_persistent_durability_thread() {
     let work = spool.background_sync_work().unwrap();
     assert_eq!((work.requested, work.completed, work.threads), (3, 3, 1));
     assert!(!work.pending);
-    spool.last_sync = Instant::now() - SYNC_INTERVAL;
+    spool.last_sync = None;
     spool.append(&Record::Frame(frame(14, false))).unwrap();
     spool.finish_segment().unwrap();
     let bytes = fs::read(directory.join("spool.0000.h4s")).unwrap();

@@ -131,17 +131,15 @@ test('following at 1,440 h/s with spend ticks on: a cluster once drawn never cha
 });
 
 function counting() {
-  const counts = { vertices: 0, strokes: 0 };
+  const counts = { moves: 0, lines: 0 };
   const nothing = () => {};
-  const ctx: Record<string, unknown> = {
-    moveTo: () => { counts.vertices++; }, lineTo: () => { counts.vertices++; }, stroke: () => { counts.strokes++; },
-  };
-  for (const name of ['save', 'restore', 'beginPath', 'fill', 'rect', 'clip', 'arc', 'closePath', 'fillRect', 'setLineDash'])
+  const ctx: Record<string, unknown> = { moveTo: () => { counts.moves++; }, lineTo: () => { counts.lines++; } };
+  for (const name of ['save', 'restore', 'beginPath', 'stroke', 'fill', 'rect', 'clip', 'arc', 'closePath', 'fillRect', 'setLineDash'])
     ctx[name] = nothing;
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, counts, reset: () => { counts.vertices = 0; counts.strokes = 0; } };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, counts, reset: () => { counts.moves = 0; counts.lines = 0; } };
 }
 
-test('a frame of eight lines and their spend ticks, clipped at a moving head, strokes at most eight vertices a line for each bin from the start of the view to the head, and one tick a shown cluster', async () => {
+test('a frame of eight lines and their spend ticks, clipped at a moving head, reads only the head bin of each line after the first, strokes at most eight vertices a line for each bin from the start of the view to the head, and draws one tick a shown cluster', async () => {
   const tags = ['GER', 'ITA', 'JAP', 'SOV', 'USA', 'ENG', 'FRA', 'CHI'];
   const cache = new TileCache(), marks = lane(tags);
   const view = new TileView(cache, marks, () => {});
@@ -149,6 +147,14 @@ test('a frame of eight lines and their spend ticks, clipped at a moving head, st
   view.setView(at);
   await settle();
   const lines = [...view.current!.values()];
+  let visits = 0;
+  for (const line of lines) {
+    const summary = line.summary as { buckets: readonly unknown[] };
+    summary.buckets = new Proxy(summary.buckets, { get: (target, key, receiver) => {
+      if (typeof key === 'string' && /^\d+$/.test(key)) visits++;
+      return Reflect.get(target, key, receiver);
+    } });
+  }
   const frame = plotFrame(700, 300, { top: 10, right: 40, bottom: 20, left: 60 }, [at.from, head], [-300, 300], false, 0, false);
   const tokens = { lineWidth: { series: 2 }, surface: '#fff', muted: '#888' } as unknown as Parameters<typeof drawLineSummary>[2];
   const { ctx, counts, reset } = counting();
@@ -157,11 +163,15 @@ test('a frame of eight lines and their spend ticks, clipped at a moving head, st
   for (let step = 0; step < 120; step++) {
     const now = head + step * 0.4;
     reset();
+    visits = 0;
     for (const line of lines) drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, now);
-    const bins = Math.ceil((now - frame.x[0]) / binHours) + 1;
-    assert.ok(counts.vertices <= lines.length * 8 * bins, `${counts.vertices} vertices for ${lines.length} lines of ${bins} bins at hour ${now}`);
+    if (step) assert.ok(visits <= lines.length, `the frame at hour ${now} read ${visits} buckets: at most the head bin of each line`);
+    else assert.ok(visits > lines.length * 100, 'the first frame shapes the lines from their buckets');
+    const bins = Math.ceil((now - frame.x[0]) / binHours) + 1, vertices = counts.moves + counts.lines;
+    assert.ok(vertices <= lines.length * 8 * bins, `${vertices} vertices for ${lines.length} lines of ${bins} bins at hour ${now}`);
     reset();
     for (const summary of ticks) drawMarkSummary(ctx, frame, tokens, summary, now);
-    assert.equal(counts.strokes, ticks.reduce((sum, summary) => sum + shownClusters(summary, now).length, 0), `one tick a shown cluster at hour ${now}`);
+    const shown = ticks.reduce((sum, summary) => sum + shownClusters(summary, now).length, 0);
+    assert.deepEqual([counts.moves, counts.lines], [shown, shown], `one tick a shown cluster at hour ${now}`);
   }
 });

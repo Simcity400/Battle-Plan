@@ -1641,7 +1641,7 @@ fn run(
     restore_hourly(
         &mut restored,
         &mut previous_errors,
-        detach_started,
+        || detach_started.elapsed(),
         || {
             hook.set_enabled(false)
                 .map_err(|_| "hourly hook restoration failed")
@@ -1658,7 +1658,7 @@ fn run(
     let drained = crate::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT);
     progress.step("final_hour_read", Some(u64::from(drained)));
     HOURLY_ADMISSION.close();
-    if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
+    if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, || detach_started.elapsed()) {
         progress.step("acquisitions_refused", None);
         retain_detach!(
             reason,
@@ -2583,7 +2583,7 @@ fn world_restore_ready(restored: &[bool; RestoreFamily::ALL.len()], active: bool
 fn restore_hourly(
     restored: &mut [bool; RestoreFamily::ALL.len()],
     previous_errors: &mut [bool; RestoreFamily::ALL.len()],
-    started: Instant,
+    elapsed: impl Fn() -> Duration,
     mut restore: impl FnMut() -> Result<bool, &'static str>,
     mut wait: impl FnMut(),
 ) {
@@ -2595,7 +2595,7 @@ fn restore_hourly(
                 return;
             }
             Ok(false) => {
-                if detach_retry_delay(started.elapsed(), Duration::from_millis(100)).is_none() {
+                if detach_retry_delay(elapsed(), Duration::from_millis(100)).is_none() {
                     return;
                 }
                 wait();
@@ -2732,9 +2732,12 @@ pub(crate) fn admit_hourly_capture() -> Option<CaptureLease<'static>> {
     HOURLY_ADMISSION.enter()
 }
 
-fn wait_acquisitions(admission: &CaptureAdmission, started: Instant) -> Result<(), &'static str> {
+fn wait_acquisitions(
+    admission: &CaptureAdmission,
+    elapsed: impl Fn() -> Duration,
+) -> Result<(), &'static str> {
     while !admission.quiet() {
-        if started.elapsed() >= DETACH_BUDGET {
+        if elapsed() >= DETACH_BUDGET {
             return Err("hourly acquisitions did not quiesce; collector retained");
         }
         std::thread::yield_now();
@@ -3391,13 +3394,12 @@ mod detach_tests {
 
     #[test]
     fn expired_detach_budget_does_not_restart_or_reset_acquisition_leases() {
-        let started = Instant::now() - DETACH_BUDGET;
         let mut restored = [false; RestoreFamily::ALL.len()];
         let mut errors = [false; RestoreFamily::ALL.len()];
         restore_hourly(
             &mut restored,
             &mut errors,
-            started,
+            || DETACH_BUDGET,
             || Ok(false),
             || panic!("hourly restoration restarted the detach budget"),
         );
@@ -3406,12 +3408,12 @@ mod detach_tests {
         let lease = admission.enter().unwrap();
         admission.close();
         assert_eq!(
-            wait_acquisitions(&admission, started),
+            wait_acquisitions(&admission, || DETACH_BUDGET),
             Err("hourly acquisitions did not quiesce; collector retained"),
         );
         assert!(!admission.quiet());
         drop(lease);
-        assert_eq!(wait_acquisitions(&admission, started), Ok(()));
+        assert_eq!(wait_acquisitions(&admission, || DETACH_BUDGET), Ok(()));
     }
 
     #[test]
@@ -7891,7 +7893,7 @@ mod tests {
         assert!(first > 0);
         assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), None);
         assert_eq!(memory.0.get(), first);
-        watch.last_logistics = Some(Instant::now() - RegistryWatch::INTEL_INTERVAL);
+        watch.last_logistics = None;
         assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), Some(0));
         assert!(memory.0.get() > first);
     }

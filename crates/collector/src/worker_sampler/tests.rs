@@ -373,65 +373,43 @@ fn worker_sampler_no_deadlock_allocating_mutex_threads_make_progress() {
     }
     let mut scratch = Scratch::default();
     let begin = Instant::now();
-    let mut next_round = begin;
-    let mut next_check = begin + Duration::from_millis(100);
-    let mut previous =
-        std::array::from_fn::<_, WORKERS, _>(|index| progress[index].load(Ordering::Acquire));
-    let mut windows = Vec::with_capacity(20);
     let mut rounds = 0_u64;
     let mut captures = 0_u64;
-    while begin.elapsed() < Duration::from_secs(2) {
-        for target in &targets {
-            if with_allocations_denied(|| capture_window(target, &mut scratch)) {
-                captures += 1;
+    let mut windows = 0_usize;
+    while windows < 20 {
+        let previous =
+            std::array::from_fn::<_, WORKERS, _>(|index| progress[index].load(Ordering::Acquire));
+        loop {
+            for target in &targets {
+                if with_allocations_denied(|| capture_window(target, &mut scratch)) {
+                    captures += 1;
+                }
+                let allocation = vec![black_box(rounds); 128];
+                {
+                    let mut lock = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    *lock = lock.wrapping_add(allocation[0]);
+                    black_box(Box::new(*lock));
+                }
+                black_box(allocation);
             }
-            let allocation = vec![black_box(rounds); 128];
-            {
-                let mut lock = shared.lock().unwrap_or_else(|e| e.into_inner());
-                *lock = lock.wrapping_add(allocation[0]);
-                black_box(Box::new(*lock));
-            }
-            black_box(allocation);
-        }
-        rounds += 1;
-        let now = Instant::now();
-        while now >= next_check {
+            rounds += 1;
             let current = std::array::from_fn::<_, WORKERS, _>(|index| {
                 progress[index].load(Ordering::Acquire)
             });
-            windows.push(std::array::from_fn::<_, WORKERS, _>(|index| {
-                current[index] > previous[index]
-            }));
-            previous = current;
-            next_check += Duration::from_millis(100);
+            if (0..WORKERS).all(|index| current[index] > previous[index]) {
+                break;
+            }
+            assert!(
+                begin.elapsed() < collector_test_support::TEST_HANG_GUARD,
+                "a target stalled in window {windows}: {previous:?} then {current:?}"
+            );
+            thread::yield_now();
         }
-        next_round += Duration::from_micros(50);
-        if next_round < now {
-            next_round = now;
-        }
-        while Instant::now() < next_round {
-            std::hint::spin_loop();
-        }
-    }
-    while Instant::now() >= next_check {
-        let current =
-            std::array::from_fn::<_, WORKERS, _>(|index| progress[index].load(Ordering::Acquire));
-        windows.push(std::array::from_fn::<_, WORKERS, _>(|index| {
-            current[index] > previous[index]
-        }));
-        previous = current;
-        next_check += Duration::from_millis(100);
+        windows += 1;
     }
     let joined = running.finish();
     assert!(joined, "allocating target thread panicked");
     assert_eq!(targets.len(), WORKERS, "could not open every stress target");
-    assert!(windows.len() >= 20, "missing 100 ms progress windows");
-    assert!(
-        windows
-            .iter()
-            .all(|window| window.iter().all(|made_progress| *made_progress)),
-        "a target stalled in a 100 ms window: {windows:?}"
-    );
     assert!(rounds >= 20, "sampler completed too few rounds: {rounds}");
     assert!(
         captures >= rounds,

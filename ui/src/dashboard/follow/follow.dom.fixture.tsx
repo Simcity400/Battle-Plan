@@ -75,19 +75,28 @@ function idOf(query: Record<string, unknown>): number {
 
 const series = (values: bigint[]): Spec => ({ keys: values.map((_, at) => BigInt(at + 1)), columns: 1, values });
 
-async function painted(root: Node, messages: Uint8Array[]) {
-  let written = 0;
-  const writes = new MutationObserver(records => { written += records.length; });
-  writes.observe(root, { characterData: true, subtree: true });
-  const rounds: { received: number; frames: number; paints: number; written: number }[] = [];
+async function painted(root: Node, cells: Node[], messages: Uint8Array[]) {
+  let records: MutationRecord[] = [];
+  const writes = new MutationObserver(seen => { records.push(...seen); });
+  writes.observe(root, { characterData: true, childList: true, attributes: true, subtree: true });
+  const expected = new Set(cells);
+  const rounds: { received: number; frames: number; paints: number; once: number; others: number }[] = [];
   for (const bytes of messages) {
     const before = { ...store.counts };
-    written = 0;
+    records = [];
     transport.deliver(bytes);
     const received = store.counts.paints - before.paints;
     await frame();
     await frame();
-    rounds.push({ received, frames: store.counts.frames - before.frames, paints: store.counts.paints - before.paints, written: written + writes.takeRecords().length });
+    records.push(...writes.takeRecords());
+    const written = new Map<Node, number>();
+    let others = 0;
+    for (const record of records) {
+      if (record.type === 'characterData' && expected.has(record.target)) written.set(record.target, (written.get(record.target) ?? 0) + 1);
+      else others++;
+    }
+    rounds.push({ received, frames: store.counts.frames - before.frames, paints: store.counts.paints - before.paints,
+      once: cells.filter(cell => written.get(cell) === 1).length, others });
   }
   writes.disconnect();
   return { rounds };
@@ -134,9 +143,12 @@ export const fixture = {
       values: Array.from({ length: 16 }, (_, row) => BigInt((row + round) * 100_000)), names: Array.from({ length: 16 }, (_, row) => `T${row}`) } }))));
     await settle();
     const versions = ids.map(id => store.get(id)!.version), counts = { ...store.counts };
-    for (const bytes of messages) transport.deliver(bytes);
+    const { decode } = TextDecoder.prototype;
+    let decoded = 0;
+    TextDecoder.prototype.decode = function (this: TextDecoder, ...input: Parameters<TextDecoder['decode']>) { decoded++; return decode.apply(this, input); };
+    try { for (const bytes of messages) transport.deliver(bytes); } finally { TextDecoder.prototype.decode = decode; }
     await settle();
-    return { moved: ids.map((id, at) => store.get(id)!.version - versions[at]!), frames: store.counts.frames - counts.frames, paints: store.counts.paints - counts.paints };
+    return { moved: ids.map((id, at) => store.get(id)!.version - versions[at]!), frames: store.counts.frames - counts.frames, paints: store.counts.paints - counts.paints, decoded };
   },
   async paintMany(rounds: number) {
     const spans: HTMLSpanElement[] = [];
@@ -152,7 +164,7 @@ export const fixture = {
     }
     const messages = Array.from({ length: rounds }, (_, round) => message(round, ids.map((id, at) => ({ id, answer: series([BigInt(at + round) * 100_000n]) }))));
     await settle();
-    return { ...await painted(many, messages), last: spans[499]!.textContent };
+    return { ...await painted(many, spans.map(span => span.firstChild!), messages), last: spans[499]!.textContent };
   },
   async paintTable(rows: number, rounds: number) {
     const handle = store.acquire({ table: rows });
@@ -167,7 +179,7 @@ export const fixture = {
       values: cells.map((_, row) => BigInt(row * 7 + round) * 100_000n), names: cells.map((_, row) => `T${row}`) } });
     const messages = Array.from({ length: rounds }, (_, round) => message(round, [answer(round)]));
     await settle();
-    return { ...await painted(table, messages), last: table.rows[rows - 1]!.cells[1]!.textContent };
+    return { ...await painted(table, [...table.rows].map(row => row.cells[1]!.firstChild!), messages), last: table.rows[rows - 1]!.cells[1]!.textContent };
   },
 };
 (window as unknown as { followFixture: typeof fixture }).followFixture = fixture;

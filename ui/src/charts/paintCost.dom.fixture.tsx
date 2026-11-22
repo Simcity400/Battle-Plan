@@ -14,6 +14,7 @@ import Table from './table/Table';
 import type { TableColumn } from './table/Table';
 import type { SortValue } from './table/logic';
 import LogList from './log/LogList';
+import { ENTRY_MS } from './log/entryLayer.ts';
 import { VirtualList } from '../components/VirtualList';
 import { useRef } from 'react';
 import type { LogRow } from './log/logData';
@@ -206,19 +207,19 @@ const api = {
     const scroller = host.querySelector<HTMLElement>('.log-scroll')!, body = host.querySelector<HTMLElement>('.log-body')!;
     let revealed = 0, before = shown();
     const reveals: { at: number; rows: number }[] = [];
+    const entryFrames = Math.ceil(ENTRY_MS * 60 / 1000);
     if (marks) performance.mark(marks.from);
     listening = true;
     for (let at = 0; at < frames; at++) {
       clock.set(clock.read() + hours);
       await frame();
       const now = shown();
-      if (now !== before) { revealed++; reveals.push({ at: performance.now(), rows: Math.abs(now - before) }); }
+      if (now !== before) { revealed++; reveals.push({ at, rows: Math.abs(now - before) }); }
       before = now;
     }
     listening = false;
     if (marks) performance.mark(marks.to);
-    const end = performance.now();
-    const entering = reveals.filter(reveal => end - reveal.at < 700).reduce((sum, reveal) => sum + reveal.rows, 0);
+    const entering = reveals.filter(reveal => frames - reveal.at <= entryFrames).reduce((sum, reveal) => sum + reveal.rows, 0);
     const layer = host.querySelectorAll('canvas.log-entries:not([hidden])').length;
     const animated = host.getAnimations({ subtree: true }).filter(animation => animation.playState === 'running').length;
     const scroll = { height: scroller.scrollHeight, list: body.offsetHeight, view: scroller.clientHeight };

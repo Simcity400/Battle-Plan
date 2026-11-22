@@ -186,11 +186,28 @@ async function rasterProof() {
     assert.equal((await compareCaptures(...dirs)).pass, true);
     const file = path.join(dirs[1], 'synthetic.png'), png = PNG.sync.read(await readFile(file)); png.data[0] ^= 1; await writeFile(file, PNG.sync.write(png));
     assert.equal((await compareCaptures(...dirs)).counts.DIFF, 1);
-    const failure = await captureWidget({ page: { close: async () => {} }, app: { prepare: () => new Promise(() => {}) }, kind: 'stall', directory: root, budgetMs: 20 });
-    assert.equal(failure.status, 'error'); assert.match(failure.error, /budget exceeded/); assert.ok(failure.wallMs < 1000);
-    await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(JSON.parse(await readFile(path.join(root, 'stall.json'))).status, 'error');
   } finally { await rm(root, { recursive: true, force: true }); }
 }
+
+test('a stalled capture fails when its budget runs out, closes its page and publishes the error', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'parity-stall-'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let closed = false, settled = false;
+    const pending = captureWidget({ page: { close: async () => { closed = true; } }, app: { prepare: () => new Promise(() => {}) }, kind: 'stall', directory: root, budgetMs: 20 });
+    void pending.then(() => { settled = true; });
+    t.mock.timers.tick(19);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([settled, closed], [false, false], 'inside its budget the capture waits');
+    t.mock.timers.tick(1);
+    const failure = await pending;
+    assert.equal(failure.status, 'error'); assert.match(failure.error, /budget exceeded/); assert.equal(closed, true);
+    assert.equal(JSON.parse(await readFile(path.join(root, 'stall.json'))).status, 'error');
+  } finally {
+    t.mock.timers.reset();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('refs refuse without exporting anything', async () => {
   await assert.rejects(cache.resolveUI('HEAD'), /Prepared UI worktree/);

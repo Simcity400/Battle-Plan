@@ -3807,7 +3807,7 @@ struct FinalizationProgress<'a> {
     directory: &'a Path,
     observe: &'a dyn Fn(u64),
     records: Cell<u64>,
-    last_write: Cell<Instant>,
+    last_write: Cell<Option<Instant>>,
     warned: Cell<bool>,
     work_warned: Cell<bool>,
 }
@@ -3817,7 +3817,7 @@ impl<'a> FinalizationProgress<'a> {
             directory,
             observe,
             records: Cell::new(0),
-            last_write: Cell::new(Instant::now()),
+            last_write: Cell::new(Some(Instant::now())),
             warned: Cell::new(false),
             work_warned: Cell::new(false),
         };
@@ -3827,8 +3827,8 @@ impl<'a> FinalizationProgress<'a> {
     fn advance(&self) {
         self.records.set(self.records.get().saturating_add(1));
         let now = Instant::now();
-        if now.duration_since(self.last_write.get()) >= Duration::from_secs(1) {
-            self.last_write.set(now);
+        if self.last_write.get().is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1)) {
+            self.last_write.set(Some(now));
             self.publish();
             (self.observe)(self.records.get());
         }
@@ -5957,9 +5957,7 @@ mod tests {
         assert!(write_json(&path, &json!({"records": 1})).is_err());
 
         let done = replay_io::finalize_session_outcome_with_progress(&session, &output, &|| {
-            progress
-                .last_write
-                .set(Instant::now() - Duration::from_secs(2));
+            progress.last_write.set(None);
             progress.advance();
             Ok(())
         })
@@ -5972,9 +5970,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before);
         drop(reader);
 
-        progress
-            .last_write
-            .set(Instant::now() - Duration::from_secs(2));
+        progress.last_write.set(None);
         progress.advance();
         let resumed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(resumed["records"], observed.get());
@@ -5991,16 +5987,13 @@ mod tests {
         let observed = Cell::new(0);
         let observe = |records| observed.set(records);
         let progress = FinalizationProgress::new(&session, &observe);
-        let previous_attempt = Instant::now() - Duration::from_secs(2);
-        progress.last_write.set(previous_attempt);
+        progress.last_write.set(None);
         progress.advance();
         assert_eq!(observed.get(), 1);
-        assert!(progress.last_write.get() > previous_attempt);
+        assert!(progress.last_write.get().is_some());
         fs::remove_file(&session).unwrap();
         fs::create_dir(&session).unwrap();
-        progress
-            .last_write
-            .set(Instant::now() - Duration::from_secs(2));
+        progress.last_write.set(None);
         progress.advance();
         let resumed: Value =
             serde_json::from_slice(&fs::read(session.join("finalization-progress.json")).unwrap())
