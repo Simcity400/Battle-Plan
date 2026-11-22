@@ -53,8 +53,8 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'line-styles-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
-          "import { createContext } from 'react'; const { useContext, useEffect, useState } = globalThis.__lineStylesFixture;");
+        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useRef, useState } from 'react';",
+          "import { createContext } from 'react'; const { useContext, useEffect, useRef, useState } = globalThis.__lineStylesFixture;");
         if (['useCountryLineStyles', 'products'].some(name => path.endsWith(`/dashboard/${name}.ts`)))
           return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__lineStylesFixture;');
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
