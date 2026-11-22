@@ -260,9 +260,7 @@ impl Fixture {
         let replay = Replay::from_synthetic(campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
-            if !matches!(data, Data::Tension) {
-                country_rows(frame, hour, matches!(data, Data::Power))?;
-            }
+            country_rows(frame, hour, matches!(data, Data::Power))?;
             match data {
                 Data::Power => Ok(()),
                 Data::Resources => resource_rows(frame, hour),

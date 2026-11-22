@@ -600,6 +600,8 @@ static WORLD: Series = Series {
 fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_is_never_ranked() {
     let fixture = tension_fixture();
     let query = fixture.query();
+    assert!(held(&query, "GER", FIRST));
+    assert!(!held(&query, "no such tag", FIRST));
     let last = query.timeline.last;
     let gap_end = query.timeline.stretches[1].first - 1;
     let line = Line::new(&query, &WORLD, &WORLD.measures[0]).unwrap();

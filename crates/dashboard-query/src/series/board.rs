@@ -155,10 +155,11 @@ mod tests {
 
     #[test]
     fn a_top_is_the_countries_greatest_at_the_hour_and_every_column_is_read_for_them() {
-        let hour = both_recorded() + 1;
+        let hour = ITA_FROM;
         let fixture = Fixture::new(Data::Power, hour - 1..=hour + 1);
         let query = fixture.query();
         let columns = [power_column(&query), Column { line: line(&query, "commandPower"), partial: Some(line(&query, "politicalPower")) }];
+        assert_eq!(columns[0].line.rank_at_by(query.timeline.first, 2, false).unwrap(), ["GER"]);
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
         let mut wanted: Vec<(i64, u32)> = [9001, 9002].into_iter().map(|id| (power(id, hour).unwrap(), id)).collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
