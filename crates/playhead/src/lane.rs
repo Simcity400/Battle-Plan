@@ -441,7 +441,7 @@ impl Lane {
             self.read = self.read.iter().filter_map(|slot| live.binary_search(slot).ok().map(|at| at as u32)).collect();
         }
         if self.keyed {
-            self.cells.index_keys();
+            self.cells.try_index_keys()?;
         }
         Ok(())
     }
@@ -574,7 +574,7 @@ impl Lane {
         let before = self.spent;
         self.cells = cells;
         if self.keyed {
-            self.cells.index_keys();
+            self.cells.try_index_keys()?;
         }
         self.ahead.clear();
         self.retired.clear();

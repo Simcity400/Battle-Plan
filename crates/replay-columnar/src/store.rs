@@ -1107,6 +1107,11 @@ impl PartialEq for KeyIndex {
 impl Eq for KeyIndex {}
 
 impl KeyIndex {
+    fn with_capacity(count: usize) -> Self {
+        let size = if count == 0 { 0 } else { (count * 4 / 3 + 1).next_power_of_two().max(16) };
+        Self { buckets: vec![0; size], held: 0, lookups: 0, hasher: foldhash::fast::RandomState::default() }
+    }
+
     #[inline]
     fn bucket(&self, key: u128, mask: usize) -> usize {
         std::hash::BuildHasher::hash_one(&self.hasher, key) as usize & mask
@@ -1125,6 +1130,14 @@ impl KeyIndex {
                 _ => at = (at + 1) & mask,
             }
         }
+    }
+
+    fn insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<()> {
+        if let Some(held) = self.find(key, keys) {
+            return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {held}")));
+        }
+        self.insert(key, slot, keys);
+        Ok(())
     }
 
     fn insert(&mut self, key: u128, slot: u32, keys: &Keys) {
@@ -1328,11 +1341,22 @@ impl TableState {
         self.last.as_ref()
     }
 
+    fn build_index(&self) -> io::Result<KeyIndex> {
+        let mut index = KeyIndex::with_capacity(self.live.count());
+        for slot in self.live.ones() {
+            index.insert_unique(self.keys.get(slot), slot, &self.keys)?;
+        }
+        Ok(index)
+    }
+
     pub fn slot(&mut self, key: u128) -> Option<u32> {
         if self.index.is_none() {
-            let mut index = KeyIndex::default();
+            let mut index = KeyIndex::with_capacity(self.live.count());
             for slot in self.live.ones() {
-                index.insert(self.keys.get(slot), slot, &self.keys);
+                let held = self.keys.get(slot);
+                if index.find(held, &self.keys).is_none() {
+                    index.insert(held, slot, &self.keys);
+                }
             }
             self.index = Some(index);
         }
@@ -1375,6 +1399,22 @@ impl TableState {
         }
     }
 
+    pub fn try_index_keys(&mut self) -> io::Result<()> {
+        if self.index.is_none() {
+            self.index = Some(self.build_index()?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_unique_keys(&self) -> io::Result<()> {
+        let _ = self.build_index()?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_index(&mut self) {
+        self.index = None;
+    }
+
     fn lowest_free(&mut self) -> Option<u32> {
         let mut word = self.free_from as usize / 64;
         while self.live.0.get(word) == Some(&u64::MAX) {
@@ -1393,6 +1433,11 @@ impl TableState {
         if self.live.get(slot) {
             return Err(invalid(format!("Insert names slot {slot}, which holds a row")));
         }
+        if let Some(index) = &self.index
+            && let Some(held) = index.find(key, &self.keys).filter(|&held| held != slot)
+        {
+            return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {held}")));
+        }
         if slot >= self.slots {
             self.slots = slot + 1;
         }
@@ -1403,9 +1448,6 @@ impl TableState {
             self.free_from += 1;
         }
         if let Some(index) = &mut self.index {
-            if index.find(key, &self.keys).is_some_and(|held| held != slot) {
-                return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held")));
-            }
             index.insert(key, slot, &self.keys);
         }
         for column in &mut self.columns {
@@ -1515,7 +1557,13 @@ impl TableState {
                 if low > 0 {
                     self.keys.low.store(slot, key as u64);
                 }
+                if let Some(index) = &mut self.index {
+                    index.insert_unique(key, slot, &self.keys)?;
+                }
             }
+        }
+        if self.index.is_none() {
+            self.check_unique_keys()?;
         }
         self.free_from = 0;
         Ok(())

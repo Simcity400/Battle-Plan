@@ -1103,3 +1103,18 @@ fn key_index_and_strings_use_keyed_hashing_and_preserve_pack_lookup_parity() {
         }
     }
 }
+
+#[test]
+fn put_rows_rejects_duplicate_live_keys_by_name() {
+    let mut table = TableState::new(&KINDS);
+    table.set_slots(3);
+    let refused = table.put_rows(0, 3, &[0b101], &[0x77, 0x77]).unwrap_err().to_string();
+    assert!(refused.contains("0x77") && refused.contains("already held"), "{refused}");
+
+    let mut unindexed = TableState::new(&KINDS);
+    unindexed.insert_at(0, 0x88).unwrap();
+    unindexed.insert_at(2, 0x88).unwrap();
+    let refused = unindexed.try_index_keys().unwrap_err().to_string();
+    assert!(refused.contains("0x88") && refused.contains("already held"), "{refused}");
+    assert_eq!(unindexed.slot(0x88), Some(0));
+}

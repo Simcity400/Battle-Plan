@@ -1478,6 +1478,10 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
             (from, to.min(meta.slots.max(from)))
         };
         let rows = stream(ROWS);
+        let multi = rows.len() > 1;
+        if multi {
+            table.try_index_keys()?;
+        }
         let mut keys = Vec::new();
         for index in 0..rows.len() {
             let against = chunk_and_prefix(source, &rows[index], reading, &mut raw, &mut prefix)?;
@@ -1490,6 +1494,9 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
             } else {
                 bulk::rows(bytes, from, to, &mut table, &mut keys)?;
             }
+        }
+        if multi {
+            table.clear_index();
         }
         let (mut values, mut cells) = (Vec::new(), Vec::new());
         for &column in columns {
