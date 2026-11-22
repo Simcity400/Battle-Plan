@@ -544,7 +544,7 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     use replay_data::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT;
     let schema = schema().unwrap();
     let columns = columns_at(AIR_HISTORY_SLOTS_FORMAT).unwrap();
-    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays].map(TableId::index).to_vec();
+    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::VariantStats, TableId::VariantChanges, TableId::RaidSpeedInputs, TableId::RocketProductionOutput].map(TableId::index).to_vec();
     changed.sort_unstable();
     let named = |format: u16| {
         withheld_at(format)
@@ -821,4 +821,145 @@ fn a_pool_let_go_last_on_its_own_thread_ends() {
     drop(pool);
     release.send(()).unwrap();
     end.recv().unwrap();
+}
+
+#[test]
+fn format_143_recording_opens_withholds_variant_tables_and_unverified_required_trucks() {
+    use super::synthetic::{Input, Sample};
+    use crate::rows::{CountryRow, Recorded, TrainInventoryRow};
+    let format = replay_data::rows::compatibility::VARIANT_STAT_WITNESS_FORMAT - 1;
+    let countries = [CountryRow {
+        id: 7,
+        tag: b"GER".to_vec(),
+        stability_raw: 5,
+        ..Default::default()
+    }];
+    let trains = [TrainInventoryRow {
+        country: 7,
+        node_count: 3,
+        allocated_trucks: Recorded::Value(Some(12)),
+        required_trucks_raw: Recorded::Value(Some(0)),
+        required_trains: Recorded::Value(Some(4)),
+        ..Default::default()
+    }];
+    let runs = [(1, 100, 1)];
+    let (bytes, _) = fixtures::written_at(
+        recorder_derive::writers_within,
+        format,
+        b"format 143",
+        &runs,
+        &[TableId::Countries, TableId::TrainInventory],
+        |synthetic, _, _| {
+            synthetic
+                .table(
+                    TableId::Countries,
+                    Input::Snapshot {
+                        rows: &countries,
+                        partial: None,
+                        read: true,
+                        sample: Sample::FromReadBit,
+                    },
+                )
+                .unwrap();
+            synthetic
+                .table(
+                    TableId::TrainInventory,
+                    Input::Snapshot {
+                        rows: &trains,
+                        partial: None,
+                        read: true,
+                        sample: Sample::FromReadBit,
+                    },
+                )
+                .unwrap();
+        },
+    );
+    let mut legacy_schema = schema().unwrap();
+    for column in &mut legacy_schema[TableId::VariantStats.index()][..10] {
+        *column = Column::I64;
+    }
+    let columns = columns_at(format).unwrap();
+    let legacy_digest =
+        envelope::schema_digest_prefix(&legacy_schema[..columns.len()], &columns).unwrap();
+
+    let recording = opened(bytes);
+    assert_eq!(recording.root_identity().schema, legacy_digest);
+    assert_eq!(recording.withheld_reason(TableId::PowerSpendDays.index()), None);
+    for withheld in [
+        TableId::VariantStats,
+        TableId::VariantChanges,
+        TableId::RaidSpeedInputs,
+        TableId::RocketProductionOutput,
+    ] {
+        let gap = withheld.last_change().table_gap(withheld, format).unwrap();
+        assert_eq!(
+            recording.withheld_reason(withheld.index()),
+            Some(gap.as_str())
+        );
+    }
+    let read = read_on(
+        &recording,
+        &[
+            TableId::Countries,
+            TableId::TrainInventory,
+            TableId::VariantStats,
+            TableId::VariantChanges,
+            TableId::RaidSpeedInputs,
+            TableId::RocketProductionOutput,
+        ],
+    );
+    let first = &read[0].0;
+    let TableView::Complete(TableRows::Countries(got_countries)) =
+        &*first.tables[TableId::Countries.index()]
+    else {
+        panic!("countries missing");
+    };
+    assert_eq!(got_countries, &countries);
+    let TableView::Complete(TableRows::TrainInventory(got_trains)) =
+        &*first.tables[TableId::TrainInventory.index()]
+    else {
+        panic!("train inventory missing");
+    };
+    assert_eq!(got_trains[0].allocated_trucks, Recorded::Value(Some(12)));
+    assert_eq!(got_trains[0].required_trains, Recorded::Value(Some(4)));
+    assert_eq!(got_trains[0].required_trucks_raw, Recorded::NotRecorded);
+    for withheld in [
+        TableId::VariantStats,
+        TableId::VariantChanges,
+        TableId::RaidSpeedInputs,
+        TableId::RocketProductionOutput,
+    ] {
+        assert!(matches!(
+            &*first.tables[withheld.index()],
+            TableView::Unavailable { reason } if reason.contains(&format!("{withheld:?}"))
+        ));
+    }
+
+    let mut queried = Vec::new();
+    let (queried_cols, _) = crate::points::cells(
+        &recording,
+        0,
+        TableId::TrainInventory,
+        &[3, 4],
+        crate::lanes::Keys::All,
+        100,
+        100,
+        &mut |hour, key, cells| {
+            queried.push((hour, key, cells.map(|c| c.to_vec())));
+            true
+        },
+    )
+    .unwrap();
+    assert_eq!(queried_cols, [3, 4]);
+    assert_eq!(
+        queried,
+        vec![(
+            100,
+            7,
+            Some(vec![
+                crate::points::Cell::Number(12),
+                crate::points::Cell::Unrecorded,
+            ])
+        )]
+    );
 }

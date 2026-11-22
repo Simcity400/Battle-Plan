@@ -1,10 +1,12 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { Coverage, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
+import type { Coverage, DestructionRun, ExactLossPoint, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
 import { mix } from '../../shell/appearance/color.ts';
 import { formatRate } from '../../charts/valueAxis.ts';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
 import { entryAt } from '../../dashboard/reads.ts';
 import { int, object } from '../../dashboard/validation.ts';
 
@@ -31,22 +33,29 @@ const isCoverage = (coverage: Coverage) => ['logged', 'notLogged', 'unknown', 'p
 const isSpan = (span: UnknownSpan) => object(span) && int(span.firstHour) && int(span.lastHour) && span.firstHour <= span.lastHour
   && Object.hasOwn(UNKNOWN_LABELS, span.reason) && text(span.detail);
 const isHours = (span: { firstHour: number; lastHour: number }) => object(span) && int(span.firstHour) && int(span.lastHour) && span.firstHour <= span.lastHour;
+const isDestructionRun = (run: DestructionRun) => isHours(run)
+  && (run.countedFrom === null || int(run.countedFrom)) && (run.withheldFrom === null || int(run.withheldFrom));
 const isDesign = (design: LossDesign) => object(design) && int(design.variant) && design.variant >= 0
   && [design.equipment, design.archetype, design.archetypeName].every(text)
   && Array.isArray(design.names) && design.names.every((read, index) => object(read) && int(read.firstHour) && text(read.name)
     && typeof read.known === 'boolean'
     && (index === 0 || design.names[index - 1].firstHour < read.firstHour));
+const isExactPoint = (point: ExactLossPoint) => object(point) && int(point.hour)
+  && (point.totalRaw === null || typeof point.totalRaw === 'string' && RAW.test(point.totalRaw));
 const isLeaf = (leaf: LossLeaf, designs: number) => object(leaf)
   && (leaf.design === null || (int(leaf.design) && leaf.design >= 0 && leaf.design < designs))
   && typeof leaf.key === 'string' && (leaf.lowerBoundFrom === null || int(leaf.lowerBoundFrom)) && Array.isArray(leaf.points)
   && leaf.points.every((point, index) => object(point) && int(point.hour) && typeof point.totalRaw === 'string' && RAW.test(point.totalRaw)
-    && (index === 0 || leaf.points[index - 1].hour < point.hour));
+    && (index === 0 || leaf.points[index - 1].hour < point.hour))
+  && Array.isArray(leaf.exact) && leaf.exact.every((point, index) => isExactPoint(point)
+    && (index === 0 || leaf.exact[index - 1].hour < point.hour));
 
 export function validateLossesReply(data: unknown): LossesReply {
   const reply = data as LossesReply;
   const ok = object(reply) && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
     && ['destruction', 'combatLog'].includes(reply.landSource) && text(reply.landLowerBound)
-    && (reply.destructionCountedFrom === null || int(reply.destructionCountedFrom))
+    && Array.isArray(reply.destructionRuns) && reply.destructionRuns.every((run, index) => isDestructionRun(run)
+      && (index === 0 || reply.destructionRuns[index - 1].lastHour < run.firstHour))
     && int(reply.amountScale) && reply.amountScale > 0 && Number.isInteger(Math.log10(reply.amountScale))
     && (reply.retainedMonths === null || int(reply.retainedMonths))
     && Array.isArray(reply.designs) && reply.designs.every(isDesign)
@@ -90,7 +99,7 @@ export function shipLeaves(ships: readonly ShipListing[], scale: number): LossLe
       total += BigInt(count) * BigInt(scale);
       return { hour, totalRaw: total.toString() };
     });
-    return { design, key: `ships:${design ?? 'none'}`, points, lowerBoundFrom: null };
+    return { design, key: `ships:${design ?? 'none'}`, points, exact: [], lowerBoundFrom: null };
   });
 }
 
@@ -105,24 +114,84 @@ export function withShips(reply: LossesReply, _hour?: number): LossesReply {
   return made;
 }
 
-export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLeaf) => number | string | null): LossesReply {
+export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLeaf) => number | bigint | string | null): LossesReply {
   return { ...reply, causes: reply.causes.map(cause => {
     if (cause.source.kind === 'sunkShips' || cause.unknown !== null) return cause;
     const missing: UnknownSpan[] = [];
     const leaves = cause.leaves.map(leaf => {
       const value = total(leaf);
-      if (value === null) return { ...leaf, points: [] };
+      if (value === null) return { ...leaf, points: [], exact: [] };
       if (typeof value === 'string') {
         missing.push({ firstHour: hour, lastHour: hour, reason: 'unread', detail: value });
-        return leaf;
+        return {
+          ...leaf,
+          exact: [...leaf.exact.filter(point => point.hour < hour), { hour, totalRaw: null }],
+        };
       }
-      return { ...leaf, points: [...leaf.points.filter(point => point.hour < hour), { hour, totalRaw: BigInt(Math.round(value)).toString() }] };
+      let raw: string;
+      if (typeof value === 'bigint') {
+        raw = value.toString();
+      } else if (Number.isSafeInteger(value)) {
+        raw = BigInt(value).toString();
+      } else {
+        const existingExact = exactPointAt(leaf, hour)?.totalRaw ?? null;
+        if (existingExact !== null && Number(BigInt(existingExact)) === value) {
+          raw = existingExact;
+        } else {
+          missing.push({ firstHour: hour, lastHour: hour, reason: 'unread', detail: 'Exact 64-bit total unavailable' });
+          return {
+            ...leaf,
+            exact: [...leaf.exact.filter(point => point.hour < hour), { hour, totalRaw: null }],
+          };
+        }
+      }
+      return {
+        ...leaf,
+        points: [...leaf.points.filter(point => point.hour < hour), { hour, totalRaw: raw }],
+        exact: [...leaf.exact.filter(point => point.hour < hour), { hour, totalRaw: raw }],
+      };
     });
     return { ...cause, leaves, unknownSpans: missing.length ? [...cause.unknownSpans, missing[0]] : cause.unknownSpans };
   }) };
 }
 
-export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
+export function atHead(reply: LossesReply, hour: number, cells: LiveValues<number>, named: ReadonlySet<string>): LossesReply {
+  return withHead(withShips(reply, hour), hour, (leaf: LossLeaf) => {
+    if (!named.has(leaf.key)) return null;
+    const key = liveKey(leaf.key, 'total');
+    return cells.raw?.(key) ?? cells.get(key) ?? cells.missing(key);
+  });
+}
+
+export function exactPointAt(leaf: LossLeaf, hour: number): ExactLossPoint | null {
+  let low = 0;
+  let high = leaf.exact.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const found = leaf.exact[middle];
+    if (found.hour === hour) return found;
+    if (found.hour < hour) low = middle + 1; else high = middle - 1;
+  }
+  return null;
+}
+
+function latestExactAt(leaf: LossLeaf, hour: number): LossPoint | null {
+  let low = 0;
+  let high = leaf.exact.length - 1;
+  let at = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (leaf.exact[middle].hour <= hour) { at = middle; low = middle + 1; } else high = middle - 1;
+  }
+  while (at >= 0) {
+    const found = leaf.exact[at];
+    if (found.totalRaw !== null) return { hour: found.hour, totalRaw: found.totalRaw };
+    at--;
+  }
+  return null;
+}
+
+export function binPointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   let low = 0;
   let high = leaf.points.length - 1;
   let found: LossPoint | null = null;
@@ -133,18 +202,44 @@ export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   return found;
 }
 
+export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
+  return pointIn(leaf, hour, null);
+}
+
+export function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): LossPoint | null {
+  const exact = exactPointAt(leaf, hour);
+  if (exact) {
+    if (exact.totalRaw === null) return null;
+    return minHour === null || exact.hour >= minHour ? { hour: exact.hour, totalRaw: exact.totalRaw } : null;
+  }
+  const rawBin = binPointAt(leaf, hour);
+  const bin = rawBin && (minHour === null || rawBin.hour >= minHour) ? rawBin : null;
+  const rawPrev = latestExactAt(leaf, hour);
+  const prev = rawPrev && (minHour === null || rawPrev.hour >= minHour) ? rawPrev : null;
+  if (prev && (!bin || prev.hour >= bin.hour)) return prev;
+  return bin;
+}
+
 const peaks = new WeakMap<LossLeaf, { firstHour: number; value: number }[]>();
-function weightAt(leaf: LossLeaf, hour: number, from?: number | null): number {
-  if (from != null) {
-    const baseline = BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0');
-    return leaf.points.reduce((peak, point) => point.hour < from || point.hour > hour ? peak
-      : Math.max(peak, Math.abs(Number(BigInt(point.totalRaw) - baseline))), 0);
+function weightAt(leaf: LossLeaf, hour: number, from?: number | null, minHour: number | null = null): number {
+  if (from != null || minHour !== null) {
+    const floor = from != null && minHour !== null ? Math.max(from, minHour) : (from ?? minHour!);
+    const baseline = from == null ? 0n : BigInt(pointIn(leaf, from - 1, minHour)?.totalRaw ?? '0');
+    let peak = leaf.points.reduce((best, point) => point.hour < floor || point.hour > hour ? best
+      : Math.max(best, Math.abs(Number(BigInt(point.totalRaw) - baseline))), 0);
+    for (const point of leaf.exact) {
+      if (point.totalRaw === null || point.hour < floor || point.hour > hour) continue;
+      peak = Math.max(peak, Math.abs(Number(BigInt(point.totalRaw) - baseline)));
+    }
+    return peak;
   }
   let steps = peaks.get(leaf);
   if (!steps) {
     steps = [];
     let peak = 0;
-    for (const point of leaf.points) {
+    const all = [...leaf.points, ...leaf.exact.filter((point): point is LossPoint => point.totalRaw !== null)]
+      .sort((a, b) => a.hour - b.hour);
+    for (const point of all) {
       const value = Math.abs(Number(BigInt(point.totalRaw)));
       if (value > peak) { peak = value; steps.push({ firstHour: point.hour, value }); }
     }
@@ -164,7 +259,10 @@ const destructionReason = (span: UnknownSpan) => span.reason.startsWith('destruc
 export const unknownCauses = (reply: LossesReply, hour: number) => reply.causes.filter(cause => cause.loss).flatMap(cause => {
   if (cause.unknown !== null) return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: Unavailable` }];
   if (!spansAt(cause, hour).length) return [];
-  return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: ${cause.leaves.some(leaf => pointAt(leaf, hour)) ? 'Incomplete' : 'Unavailable'}` }];
+  const isDestruction = cause.source.kind === 'destruction';
+  const floor = isDestruction ? destructionFloorAt(reply, hour) : null;
+  const measured = (!isDestruction || floor !== null) && cause.leaves.some(leaf => pointIn(leaf, hour, floor));
+  return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: ${measured ? 'Incomplete' : 'Unavailable'}` }];
 });
 
 type LandState = 'logged' | 'partial' | 'notLogged' | 'unknown';
@@ -198,9 +296,9 @@ export function lossWindow(window: { firstHour: number; lastHour: number } | nul
     from: mode === 'range' ? window.firstHour : null };
 }
 
-export function lossAmount(leaf: LossLeaf, hour: number, from?: number | null): bigint | null {
-  const point = pointAt(leaf, hour);
-  return point ? BigInt(point.totalRaw) - (from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0')) : null;
+export function lossAmount(leaf: LossLeaf, hour: number, from?: number | null, minHour: number | null = null): bigint | null {
+  const point = pointIn(leaf, hour, minHour);
+  return point ? BigInt(point.totalRaw) - (from == null ? 0n : BigInt(pointIn(leaf, from - 1, minHour)?.totalRaw ?? '0')) : null;
 }
 
 export const lossKey = (cause: LossCause, design: LossDesign | undefined) => JSON.stringify([sourceKey(cause.source), design?.variant ?? null]);
@@ -217,13 +315,35 @@ export interface LossItem extends SunburstItem {
 export interface LossTotal extends SunburstTotal { exact: bigint | null; incomplete: boolean }
 
 const NO_DESTRUCTION_READ = 'No destruction drain was recorded at this hour.';
+export function destructionRunAt(reply: LossesReply, hour: number): DestructionRun | null {
+  const run = entryAt(reply.destructionRuns, hour);
+  return run && run.lastHour >= hour ? run : null;
+}
+
+function destructionStartFor(reply: LossesReply, hour: number): number | null {
+  const run = destructionRunAt(reply, hour);
+  if (!run) return null;
+  return run.countedFrom ?? run.withheldFrom ?? null;
+}
+
+function destructionCountedFor(reply: LossesReply, hour: number): number | null {
+  return destructionRunAt(reply, hour)?.countedFrom ?? null;
+}
+
+function destructionFloorAt(reply: LossesReply, hour: number): number | null {
+  const run = destructionRunAt(reply, hour);
+  return run?.countedFrom != null && hour >= run.countedFrom ? Math.max(run.firstHour, run.countedFrom) : null;
+}
+
 export function destructionCoverageAt(reply: LossesReply, hour: number): string | null {
   const span = entryAt(reply.destructionCoverage, hour);
   return span && span.lastHour >= hour ? span.reason : NO_DESTRUCTION_READ;
 }
 
 export function destructionCoverageHours(reply: LossesReply, first: number, last: number) {
-  first = Math.max(first, reply.destructionCountedFrom ?? reply.destructionCoverage[0]?.firstHour ?? last + 1);
+  const run = destructionRunAt(reply, last);
+  const start = run ? (run.countedFrom ?? run.withheldFrom ?? null) : null;
+  first = Math.max(first, run && start !== null ? Math.max(run.firstHour, start) : last + 1);
   let recorded = 0;
   let unknown = 0;
   const reasons = new Set<string>();
@@ -239,8 +359,8 @@ export function destructionCoverageHours(reply: LossesReply, first: number, last
 }
 
 export function destructionLegend(reply: LossesReply, window: LossWindow, tokens: Pick<ChartTokens, 'positive' | 'surface' | 'text'>): LegendItem[] {
-  const first = reply.destructionCountedFrom;
-  if ((first === null && !reply.destructionCoverage.length) || (first !== null && window.hour < first)) return [];
+  const first = destructionStartFor(reply, window.hour);
+  if (first === null || window.hour < first) return [];
   const missing = window.campaign ? destructionCoverageHours(reply, window.first, window.hour).unknown > 0
     : destructionCoverageAt(reply, window.hour) !== null;
   return [{ id: missing ? 'unknown' : 'recorded', color: missing ? mix(tokens.surface, tokens.text, 0.1) : tokens.positive,
@@ -264,6 +384,8 @@ export function landNote(reply: LossesReply, first: number, hour: number): strin
 export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
   const items: LossItem[] = [];
   const land = landNote(reply, window.first, window.hour);
+  const destructionFloor = destructionFloorAt(reply, window.hour);
+  const endDestructionFloor = destructionFloorAt(reply, window.end);
   for (const cause of reply.causes) {
     if (!cause.loss) continue;
     const causePath = [{ id: `cause:${sourceKey(cause.source)}`, label: causeName(cause) }];
@@ -275,28 +397,33 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
     const destructionMissing = spans.some(destructionReason);
     const unread = spans.some(span => span.reason === 'unread');
     const ended = spans.some(span => span.reason === 'endedAfterLastRead');
-    const started = cause.source.kind !== 'destruction' || reply.destructionCountedFrom !== null && window.hour >= reply.destructionCountedFrom;
+    const isDestruction = cause.source.kind === 'destruction';
+    const started = !isDestruction || destructionFloor !== null;
+    const endStarted = !isDestruction || endDestructionFloor !== null;
+    const minHour = isDestruction ? destructionFloor : null;
+    const endMinHour = isDestruction ? endDestructionFloor : null;
     const incomplete = unread || ended || destructionMissing || !!(cause.domain === 'land' && started && land);
     const finalUnknown = finalSpans.length > 0 || !!(cause.domain === 'land' && landNote(reply, window.first, window.end));
-    const noAmount = !cause.leaves.some(leaf => pointAt(leaf, window.hour));
+    const noAmount = !started || !cause.leaves.some(leaf => pointIn(leaf, window.hour, minHour));
     const note = incomplete ? noAmount ? 'Unavailable' : 'Incomplete total.' : undefined;
     const noKnownAmount = noAmount && incomplete;
     items.push({ path: causePath, value: noKnownAmount ? null : 0, exact: 0n, final: 0,
       unknownValue: noKnownAmount, incomplete, finalUnknown, note: note || undefined, present: started || spans.length > 0 });
     for (const leaf of cause.leaves) {
-      const point = pointAt(leaf, window.hour);
+      const point = started ? pointIn(leaf, window.hour, minHour) : null;
       const design = leaf.design === null ? undefined : reply.designs[leaf.design];
-      const exact = lossAmount(leaf, window.hour, window.from), final = lossAmount(leaf, window.end, window.from);
+      const exact = started ? lossAmount(leaf, window.hour, window.from, minHour) : null;
+      const final = endStarted ? lossAmount(leaf, window.end, window.from, endMinHour) : null;
       const path = [...causePath, { id: `type:${design?.archetype ?? '?unknown'}`, label: typeName(design) },
         { id: `design:${design?.variant ?? 'none'}`, label: lossDesignName(design, window.hour), keepZero: true }];
       items.push({ path, value: exact === null ? null : Number(exact), exact, final: final === null ? null : Number(final),
-        weight: weightAt(leaf, window.end, window.from), present: point !== null,
-        incomplete: unread || cause.source.kind === 'destruction' && incomplete || !!(cause.domain === 'land' && land)
+        weight: endStarted ? weightAt(leaf, window.end, window.from, endMinHour) : 0, present: point !== null,
+        incomplete: unread || isDestruction && incomplete || !!(cause.domain === 'land' && land)
           || leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= window.hour,
-        finalUnknown: finalSpans.some(span => span.reason === 'unread') || cause.source.kind === 'destruction' && finalUnknown
+        finalUnknown: finalSpans.some(span => span.reason === 'unread') || isDestruction && finalUnknown
           || !!(cause.domain === 'land' && landNote(reply, window.first, window.end))
           || leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= window.end,
-        note: !ended || unread || cause.source.kind === 'destruction' || !!land
+        note: !ended || unread || isDestruction || !!land
           || leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= window.hour ? note || undefined : undefined,
         counted: [lossKey(cause, design)] });
     }
@@ -336,7 +463,8 @@ export function lossesTotal(items: readonly LossItem[]): LossTotal {
 }
 
 export function destructionCountingNote(reply: LossesReply, hour: number): string {
-  return reply.destructionCountedFrom === null || hour < reply.destructionCountedFrom ? 'Unavailable' : '';
+  const countedFrom = destructionCountedFor(reply, hour);
+  return countedFrom === null || hour < countedFrom ? 'Unavailable' : '';
 }
 
 export function stepHours(hours: readonly number[], key: NavigationKey, origin: number | null, first: number, last: number): number | null {

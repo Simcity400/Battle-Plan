@@ -338,7 +338,7 @@ pub fn written_captured(
 }
 
 pub fn written_at(
-    writers: impl FnOnce(usize) -> Writers,
+    writers: impl FnOnce(&[usize], &[usize]) -> Writers,
     format: u16,
     campaign: &[u8],
     runs: &[(u64, i32, u32)],
@@ -347,7 +347,7 @@ pub fn written_at(
 ) -> (Vec<u8>, Vec<Seen>) {
     use replay_data::identity::{CaptureMode as Mode, Identity as Game, IdentityCodec, SampleBoundary, SessionStart, Verification};
     let columns = columns_at(format).unwrap();
-    let schema = schema().unwrap();
+    let schema = super::schema_at(format).unwrap();
     let identity = Identity { schema: envelope::schema_digest_prefix(&schema[..columns.len()], &columns).unwrap(), ..identity(campaign, 0) };
     let game = Game {
         game_version: "synthetic".into(),
@@ -378,7 +378,7 @@ pub fn written_at(
     let unit = replay_columnar::unit::Settings { restore_blocks: 1, ..replay_columnar::unit::Settings::at(LEVEL) };
     let file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, columns.len(), Settings { level: unit.level }, None).unwrap();
     let file = HourWriter::framed(file, unit.level, unit, &columns, writers).unwrap();
-    written_into(file, Some(&capture), Some(&columns), runs, streams, write)
+    written_into(file, Some(&capture), Some((format, &columns)), runs, streams, write)
 }
 
 fn written_captured_with(
@@ -396,7 +396,7 @@ fn written_captured_with(
 fn written_into(
     mut file: HourWriter<std::io::Cursor<Vec<u8>>>,
     capture: Option<&crate::columnar_file::Capture>,
-    framed: Option<&[usize]>,
+    framed: Option<(u16, &[usize])>,
     runs: &[(u64, i32, u32)],
     streams: &[TableId],
     mut write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
@@ -405,7 +405,7 @@ fn written_into(
     let mut seen = Vec::new();
     for (run, &(branch, first_hour, units)) in (0..).zip(runs) {
         let mut synthetic = match framed {
-            Some(columns) => Synthetic::framed(branch, first_hour, columns.to_vec()),
+            Some((format, columns)) => Synthetic::framed_at(branch, first_hour, format, columns.to_vec()),
             None => Synthetic::new(branch, first_hour),
         }
         .unwrap();

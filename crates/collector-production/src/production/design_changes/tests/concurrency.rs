@@ -35,9 +35,10 @@ fn setup(population: usize) -> (Space, Vec<native::RegistryRow>, Variants) {
     for row in &registry {
         unsafe { std::ptr::write_unaligned((row.pointer() + native::ORIGIN_LINK) as *mut i32, 0) };
     }
-    let variants = acquire(&space, &registry);
     BASE.store(space.base, Ordering::Release);
     ENABLED.store(true, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
+    let variants = acquire(&space, &registry);
     begin_full();
     begin_read();
     prepare(&registry, &variants);
@@ -112,7 +113,13 @@ unsafe extern "system-unwind" fn edited(
     _: usize,
 ) -> usize {
     unsafe {
-        std::ptr::write_unaligned((pointer + native::MAP_RANGE_STAT) as *mut i64, value as i64);
+        let definition =
+            std::ptr::read_unaligned((pointer + native::DEFINITION) as *const usize);
+        std::ptr::write_unaligned(
+            (definition + engine_native::cequipment_type::STATS_BASE + 46 * 8) as *mut i64,
+            value as i64,
+        );
+        std::ptr::write_unaligned((pointer + native::AIR_RANGE_STAT) as *mut i64, value as i64);
         std::ptr::write((pointer + native::HIGHLIGHT) as *mut u8, value as u8);
     }
     if pause != 0 {
@@ -160,7 +167,7 @@ fn different_saved_designs_overlap_and_publish_exact_terminal_snapshots() {
             .iter()
             .map(|row| row.snapshot.as_ref().unwrap().stats[0])
             .collect::<Vec<_>>(),
-        [11, 22]
+        [Some(11), Some(22)]
     );
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
@@ -194,7 +201,7 @@ fn same_saved_design_overlap<const SITE: usize>() {
     assert_eq!(drain_with(&meter, space.base, 7, &mut changes), Ok(1));
     assert!(meter.reads.get() > 0);
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], 33);
+    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], Some(33));
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 2);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 0);
@@ -274,7 +281,7 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
             .iter()
             .map(|row| row.snapshot.as_ref().unwrap().stats[0])
             .collect::<Vec<_>>(),
-        [1, 2, 3]
+        [Some(1), Some(2), Some(3)]
     );
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
@@ -326,7 +333,7 @@ fn contended_marks_keep_every_receiver_for_one_terminal_snapshot_each() {
             .iter()
             .map(|row| row.snapshot.as_ref().unwrap().stats[0])
             .collect::<Vec<_>>(),
-        [2, 12]
+        [Some(2), Some(12)]
     );
     assert!(
         changes
@@ -359,7 +366,7 @@ fn a_contended_self_owned_derived_writer_marks_only_its_receiver() {
     assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].variant, registry[0].id);
-    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], 17);
+    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], Some(17));
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
@@ -424,7 +431,7 @@ fn a_parent_content_conflict_does_not_poison_an_independent_child_identity_snaps
             .iter()
             .map(|row| row.snapshot.as_ref().unwrap().stats[0])
             .collect::<Vec<_>>(),
-        [22, 7]
+        [Some(22), Some(7)]
     );
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
     assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
@@ -478,9 +485,10 @@ fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
     let space = space(1, 3);
     let mut registry = Vec::new();
     native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry);
-    let baseline = acquire(&space, &registry[..2]);
     BASE.store(space.base, Ordering::Release);
     ENABLED.store(true, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
+    let baseline = acquire(&space, &registry[..2]);
     begin_full();
     begin_read();
     prepare(&registry[..2], &baseline);
@@ -492,7 +500,7 @@ fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
     assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].variant, registry[2].id);
-    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], 17);
+    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], Some(17));
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -816,7 +824,7 @@ fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_ro
         [changes[2].variant, changes[3].variant],
         [registry[1].id, registry[2].id]
     );
-    assert_eq!(changes[3].snapshot.as_ref().unwrap().stats[0], 33);
+    assert_eq!(changes[3].snapshot.as_ref().unwrap().stats[0], Some(33));
     {
         let store = STORE.get().unwrap().lock().unwrap();
         assert_eq!(store.watched[&registry[0].pointer()].id, registry[1].id);

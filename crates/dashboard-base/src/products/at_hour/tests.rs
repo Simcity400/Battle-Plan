@@ -37,7 +37,7 @@ crate::reply_warnings!(PowerReply);
 fn streamed(data: &PanelData, fresh: bool) -> PanelData {
     data.clone().map(|mut reply| {
         for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
-            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); }
+            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); group.remove("rawValues"); }
         }
         reply
     })

@@ -343,6 +343,7 @@ pub struct EquipmentLossCoverageRow {
     pub ended_from: Recorded<Option<i32>>,
     pub unresolved: Recorded<u32>,
     pub unresolved_all: Recorded<u32>,
+    pub drain_state: Recorded<u8>,
 }
 
 impl EquipmentLossCoverageRow {
@@ -356,6 +357,20 @@ impl EquipmentLossCoverageRow {
     pub const UNREAD_SHIPS: u8 = 2;
     pub const UNREAD_CONVOYS: u8 = 4;
     pub const UNREAD_LEND_LEASE: u8 = 8;
+    pub const DRAIN_STATE_COMPLETE: u8 = 0;
+    pub const DRAIN_STATE_PARTIAL_INTERVAL: u8 = 1;
+    pub const DRAIN_STATE_NOT_READ: u8 = 2;
+    pub const DRAIN_STATE_LOST: u8 = 4;
+    pub const DRAIN_STATE_OWNER_UNKNOWN: u8 = 8;
+    pub const DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE: u8 = 16;
+    pub const DRAIN_STATE_WITHHELD: u8 = 32;
+    pub const DRAIN_STATE_MASK: u8 = Self::DRAIN_STATE_PARTIAL_INTERVAL
+        | Self::DRAIN_STATE_NOT_READ
+        | Self::DRAIN_STATE_LOST
+        | Self::DRAIN_STATE_OWNER_UNKNOWN
+        | Self::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE
+        | Self::DRAIN_STATE_WITHHELD;
+    pub const DRAIN_WITHHELD: &'static str = "Equipment destruction drain is withheld for the run";
     pub const DRAIN_TRUNCATED: &'static str = "Equipment destruction drain is truncated; withheld for the run";
     pub const DRAIN_SUPPLEMENTAL_NOT_RECORDED: &'static str = "EquipmentDestruction supplemental coverage not recorded";
     pub const DRAIN_OWNER_UNKNOWN: &'static str = "Equipment destruction ownership is unknown: raw country references have no CountryLink";
@@ -2004,7 +2019,7 @@ row_codec!(ThreatEventRow, 104, |row| (row.kind as u128) << 96 | (row.slot as u1
 row_codec!(EquipmentLossTotalRow, 105, |row| (row.slot as u128) << 73 | (row.country as u128) << 41 | (row.source as u128) << 33 | match row.variant { Some(variant) => 1 << 32 | variant as u128, None => 0 }, |key| { slot: (key >> 73) as u32, country: (key >> 41) as u32, source: (key >> 33) as u8, variant: if (key >> 32) & 1 == 1 { Some(key as u32) } else { None } }, {0 => total: I64, 1 => incomplete_from: OptionalI32, 2 => freed: I64}, |_row| Ok(()));
 row_codec!(CombatLogDroppedRow, 120, |row| (row.country as u128) << 88 | (row.group as u128) << 56 | (row.kind as u128) << 48 | (row.month as u128) << 32 | row.variant as u128, |key| { country: (key >> 88) as u32, group: (key >> 56) as u32, kind: (key >> 48) as u8, month: (key >> 32) as u16, variant: key as u32 }, {0 => date: I32, 1 => amount: I64}, |_row| Ok(()));
 row_codec!(ShipLossRow, 128, |row| (row.slot as u128) << 104 | (row.country as u128) << 80 | (row.hour as u32 as u128) << 48 | row.signature as u128, |key| { slot: (key >> 104) as u32 & ShipLossRow::FIELD, country: (key >> 80) as u32 & ShipLossRow::FIELD, hour: (key >> 48) as u32 as i32, signature: key as u64 & ShipLossRow::SIGNATURE }, {0 => sink_hour: I32, 1 => variant: U64, 2 => count: U32, 3 => check: U64}, |row| if row.slot > ShipLossRow::FIELD || row.country > ShipLossRow::FIELD || row.signature > ShipLossRow::SIGNATURE { Err(invalid("a ship loss's slot or country passes 24 bits, or its signature 48")) } else { Ok(()) });
-row_codec!(EquipmentLossCoverageRow, 64, |row| (row.slot as u128) << 32 | row.country as u128, |key| { slot: (key >> 32) as u32, country: key as u32 }, {0 => land: U8, 1 => ungrouped: U32, 2 => resolved: U8, 3 => convoy_drops: U32, 4 => drain: Bytes, 5 => unread: U8, 6 => counted_from: OptionalI32, 7 => withheld_from: OptionalI32, 8 => incomplete_from: OptionalI32, 9 => convoys_from: OptionalI32, 10 => lend_from: OptionalI32, 11 => exchanges_ended: U32, 12 => ended_from: OptionalI32, 13 => unresolved: U32, 14 => unresolved_all: U32}, |_row| Ok(()));
+row_codec!(EquipmentLossCoverageRow, 64, |row| (row.slot as u128) << 32 | row.country as u128, |key| { slot: (key >> 32) as u32, country: key as u32 }, {0 => land: U8, 1 => ungrouped: U32, 2 => resolved: U8, 3 => convoy_drops: U32, 4 => drain: Bytes, 5 => unread: U8, 6 => counted_from: OptionalI32, 7 => withheld_from: OptionalI32, 8 => incomplete_from: OptionalI32, 9 => convoys_from: OptionalI32, 10 => lend_from: OptionalI32, 11 => exchanges_ended: U32, 12 => ended_from: OptionalI32, 13 => unresolved: U32, 14 => unresolved_all: U32, 15 => drain_state: U8}, |row| if matches!(row.drain_state, Recorded::Value(state) if state & !EquipmentLossCoverageRow::DRAIN_STATE_MASK != 0) { Err(invalid("equipment loss coverage drain state has unsupported bits")) } else { Ok(()) });
 row_codec!(StockByVariantRow, 96, |row| (row.slot as u128) << 64 | row.variant as u128, |key| { slot: (key >> 64) as u32, variant: key as u64 }, {0 => amount: I64, 1 => positions: I64}, |_row| Ok(()));
 row_codec!(DivisionEquipmentCountRow, 40, |row| (row.slot as u128) << 8 | row.side as u128, |key| { slot: (key >> 8) as u32, side: key as u8 }, {0 => divisions: I64, 1 => short: I64, 2 => unknown: I64, 3 => unpooled: I64, 4 => unclassified: I64, 5 => unresolved: I64, 6 => pool_hour: OptionalI32, 7 => stock_hour: OptionalI32}, |row| if row.side > DivisionEquipmentCountRow::HOST { Err(invalid("a division equipment row's side is past host")) } else { Ok(()) });
 row_codec!(DivisionEquipmentTypeRow, 73, |row| (row.slot as u128) << 41 | (row.side as u128) << 33 | match row.archetype { Some(token) => 1 << 32 | token as u128, None => 0 }, |key| { slot: (key >> 41) as u32, side: (key >> 33) as u8, archetype: if (key >> 32) & 1 == 1 { Some(key as u32) } else { None } }, {0 => held: I64, 1 => needed: I64, 2 => filled: I64, 3 => missing: I64, 4 => short: I64, 5 => stock: I64}, |row| if row.side > DivisionEquipmentCountRow::HOST { Err(invalid("a division equipment row's side is past host")) } else { Ok(()) });

@@ -3733,6 +3733,44 @@ fn a_writer_across_the_hour_boundary_is_kept_in_the_interval_it_completes() {
 }
 
 #[test]
+fn drain_interval_separates_startup_and_branch_partials_from_refusals() {
+    let _serial = serial();
+    setup(8, 1);
+    boundary(clock(1, 1));
+    assert_eq!(
+        drain_interval(&mut vec![Entry::default(); 8]),
+        Ok(Drain::Partial(
+            replay_data::rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON
+        ))
+    );
+    boundary(clock(2, 1));
+    assert_eq!(
+        drain_interval(&mut vec![Entry::default(); 8]),
+        Ok(Drain::Rows(0))
+    );
+    boundary(clock(2, 2));
+    assert_eq!(
+        drain_interval(&mut vec![Entry::default(); 8]),
+        Ok(Drain::Partial(
+            replay_data::rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON
+        ))
+    );
+    boundary(clock(3, 2));
+    assert_eq!(
+        drain_interval(&mut vec![Entry::default(); 8]),
+        Ok(Drain::Rows(0))
+    );
+    folded().refuse(Some(0), "synthetic destruction refusal");
+    boundary(clock(4, 2));
+    assert_eq!(
+        drain_interval(&mut vec![Entry::default(); 8]),
+        Err("synthetic destruction refusal")
+    );
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
 fn a_writer_active_across_a_boundary_refuses_nothing() {
     let _serial = serial();
     setup(8, 1);

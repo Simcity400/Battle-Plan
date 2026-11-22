@@ -15,6 +15,19 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
+pub fn table_field<'a>(
+    id: TableId,
+    table: &TableView<'a>,
+    slot: u32,
+    column: usize,
+    format: u16,
+) -> io::Result<Field<'a>> {
+    if id.column_withheld_at(column, format) {
+        return Ok(Field::NotRecorded);
+    }
+    field(table, slot, column, format)
+}
+
 pub fn field<'a>(
     table: &TableView<'a>,
     slot: u32,
@@ -126,7 +139,7 @@ pub fn cells_rows_of(
     let keys = engine_allocation::collect_vec(keyed.iter().map(|&(key, _)| key))?;
     let absent = std::cell::Cell::new(None);
     id.rows_from_wire_fields(&keys, fields & id.full_mask(), &mut |at, column| {
-        let field = field(table, keyed[at].1, column, format)?;
+        let field = table_field(id, table, keyed[at].1, column, format)?;
         absent.set(matches!(field, Field::NotRecorded).then_some((keyed[at], column)));
         Ok(field)
     })
@@ -151,7 +164,7 @@ fn refusal(
             if at == column {
                 Ok(Field::NotRecorded)
             } else {
-                field(table, slot, at, format)
+                table_field(id, table, slot, at, format)
             }
         })
         .is_ok();

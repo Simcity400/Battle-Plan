@@ -127,6 +127,8 @@ impl EquipmentDestructionCause {
 
 pub const EQUIPMENT_DESTRUCTION_PARTIAL_REASON: &str =
     "equipment destruction first/branch interval is partial";
+pub const EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON: &str =
+    "equipment destruction first/branch interval is partial";
 
 impl TryFrom<u8> for EquipmentDestructionCause {
     type Error = io::Error;
@@ -227,6 +229,7 @@ pub enum EquipmentDestructionCoverage {
     #[default]
     Complete = 0,
     SupplementalUnavailable = 1,
+    PartialInterval = 2,
 }
 
 impl NativeValue for EquipmentDestructionCoverage {
@@ -245,6 +248,7 @@ impl NativeValue for EquipmentDestructionCoverage {
         match field {
             Field::U8(0) => Ok(Self::Complete),
             Field::U8(1) => Ok(Self::SupplementalUnavailable),
+            Field::U8(2) => Ok(Self::PartialInterval),
             _ => Err(invalid("unsupported equipment destruction coverage")),
         }
     }
