@@ -14,7 +14,7 @@ fn the_convoy_addition_takes_the_counter_colour_mode() {
         sides: BTreeMap::new(),
         groups: BTreeMap::new(),
         ui_colors: UiColors {
-            colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0])]),
+            colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0]))]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance {
                 inherited: BTreeMap::from([(4, 3)]),
                 ..Default::default()
