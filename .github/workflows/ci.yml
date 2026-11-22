@@ -61,7 +61,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.any == 'true'
     name: ${{ matrix.name }}
-    runs-on: ${{ fromJSON('{"repo":"ubuntu-24.04","ui":"ubuntu-24.04","tools":"windows-latest","browser":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-24.04","windows":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
     strategy:
       fail-fast: false
       matrix:
