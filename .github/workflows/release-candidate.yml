@@ -1,8 +1,6 @@
 name: Release candidate
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       channel:
@@ -24,7 +22,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: stable or preview; nightly candidates are built for each commit of main
+        description: The candidate's channel
         type: string
         required: true
       commit:
@@ -84,7 +82,7 @@ jobs:
         with:
           cache-targets: false
           shared-key: candidate
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Name the version
         id: version
