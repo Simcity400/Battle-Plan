@@ -614,7 +614,7 @@ fn check_native_read(
     Ok((read.items, misreads))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ObjectNode {
     Top,
     ObjectTypes,
@@ -688,18 +688,22 @@ fn read_object_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>,
     check_native_read(read, path)
 }
 
-fn read_object_items_recovering(bytes: &[u8]) -> parser::native::RecoveredRead {
-    let mut dispatch = object_dispatch;
-    parser::native::read_recovering(
+fn recover_object_names(bytes: &[u8]) -> BTreeSet<String> {
+    let explored = parser::native::recover_declared_names(
         bytes,
         parser::native::Mode::SkipMark,
-        parser::native::Top::File(ObjectNode::Top),
-        None,
-        &mut dispatch,
-    )
+        ObjectNode::Top,
+        |node| match node {
+            ObjectNode::Mesh => Some(parser::native::NamePolicy::FirstExact),
+            ObjectNode::NamedObject => Some(parser::native::NamePolicy::LastKeyword),
+            _ => None,
+        },
+        |node, field| parser::native::RecoveryShape::Exact(object_dispatch(node, field)),
+    );
+    recovered_utf8_names(explored.names)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EntityNode {
     Top,
     Entity,
@@ -815,15 +819,111 @@ fn read_entity_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>,
     check_native_read(read, path)
 }
 
-fn read_entity_items_recovering(bytes: &[u8]) -> parser::native::RecoveredRead {
-    let mut dispatch = entity_dispatch;
-    parser::native::read_recovering(
+fn entity_recovery_dispatch(
+    node: EntityNode,
+    field: &parser::native::Field<'_>,
+) -> parser::native::RecoveryShape<EntityNode> {
+    use parser::native::{RecoveryShape, Shape};
+    match node {
+        EntityNode::Entity => match field.keyword().as_deref() {
+            Some(b"state") if !field.opens() => RecoveryShape::ObjectOrSkip(EntityNode::State),
+            Some(b"cull_radius") => RecoveryShape::OneOrSkip,
+            _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+        },
+        EntityNode::State => match field.keyword().as_deref() {
+            Some(b"name" | b"animation") => RecoveryShape::OneOrSkip,
+            Some(b"game_data") => RecoveryShape::ObjectOrSkip(EntityNode::StateGameData),
+            _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+        },
+        EntityNode::StateGameData => match field.keyword().as_deref() {
+            Some(b"hitmiss_effect") => RecoveryShape::ObjectOrSkip(EntityNode::HitMissEffect),
+            _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+        },
+        EntityNode::HitMissEffect => match field.keyword().as_deref() {
+            Some(b"time" | b"type") => RecoveryShape::OneOrSkip,
+            _ => RecoveryShape::Exact(Shape::Skip),
+        },
+        _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum NamedBlockNode {
+    Top,
+    Body,
+}
+
+fn recover_named_block(
+    bytes: &[u8],
+    block_key: &str,
+    with_file: bool,
+    policy: parser::native::NamePolicy,
+) -> BTreeSet<String> {
+    let explored = parser::native::recover_declared_names(
         bytes,
         parser::native::Mode::SkipMark,
-        parser::native::Top::File(EntityNode::Top),
-        None,
-        &mut dispatch,
-    )
+        NamedBlockNode::Top,
+        |node| matches!(node, NamedBlockNode::Body).then_some(policy),
+        |node, field| match node {
+            NamedBlockNode::Top => {
+                if field.keyword_is(block_key) {
+                    parser::native::RecoveryShape::Exact(parser::native::Shape::Object(
+                        NamedBlockNode::Body,
+                    ))
+                } else {
+                    parser::native::RecoveryShape::Exact(parser::native::Shape::Skip)
+                }
+            }
+            NamedBlockNode::Body => {
+                if field.keyword_is("name") || (with_file && field.keyword_is("file")) {
+                    parser::native::RecoveryShape::Exact(parser::native::Shape::One)
+                } else {
+                    parser::native::RecoveryShape::Exact(parser::native::untraced(field))
+                }
+            }
+        },
+    );
+    recovered_utf8_names(explored.names)
+}
+
+fn recover_asset_names(bytes: &[u8]) -> BTreeSet<String> {
+    let entities = parser::native::recover_declared_names(
+        bytes,
+        parser::native::Mode::SkipMark,
+        EntityNode::Top,
+        |node| {
+            matches!(node, EntityNode::Entity).then_some(parser::native::NamePolicy::LastKeyword)
+        },
+        entity_recovery_dispatch,
+    );
+    let mut names = recovered_utf8_names(entities.names);
+    names.extend(recover_named_block(
+        bytes,
+        "animation",
+        true,
+        parser::native::NamePolicy::FirstExact,
+    ));
+    names.extend(recover_named_block(
+        bytes,
+        "light",
+        false,
+        parser::native::NamePolicy::LastKeyword,
+    ));
+    names
+}
+
+fn recovered_utf8_names(raw_names: BTreeSet<Vec<u8>>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for raw in raw_names {
+        let Ok(text) = std::str::from_utf8(&raw) else {
+            continue;
+        };
+        let name = unquote(text);
+        if !name.is_empty() {
+            names.insert(name);
+        }
+    }
+    names
 }
 
 fn collect(
@@ -919,6 +1019,12 @@ const OBJECTS: [&str; 4] = ["pdxmesh", "arrowType", "animatedmaptext", "pdxparti
 const ANIMATION_NAME: usize = 63;
 const ENTITY_NAME: usize = 255;
 
+struct ParsedFile {
+    document: parser::Document,
+    items: Vec<parser::Item>,
+    overlay_fallback_names: Option<BTreeSet<String>>,
+}
+
 impl Roster {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut roster = Self::default();
@@ -926,14 +1032,17 @@ impl Roster {
         let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
         let mut objects = BTreeMap::new();
         for path in crate::particles::object_file_order(&interface, &gfx) {
-            if let Some((_, items)) = roster.parse(
+            if let Some(parsed) = roster.parse(
                 layers,
                 &path,
                 &OBJECTS,
                 read_object_items,
-                read_object_items_recovering,
+                recover_object_names,
             )? {
-                add_objects(&items, &mut objects);
+                let registered = add_objects(&parsed.items, &mut objects);
+                if let Some(overlay_names) = parsed.overlay_fallback_names {
+                    roster.record_overlay_refusals(overlay_names, &registered, &[], &path.text());
+                }
             }
         }
         roster.descriptors.meshes = objects
@@ -943,19 +1052,20 @@ impl Roster {
         let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
         let mut entities = Entities::default();
         for file in crate::defines::load_order("gfx/", ".asset", &gfx) {
-            let Some((document, entity_items)) = roster.parse(
+            let Some(parsed) = roster.parse(
                 layers,
                 &file,
                 &["entity", "animation", "light"],
                 read_entity_items,
-                read_entity_items_recovering,
+                recover_asset_names,
             )?
             else {
                 continue;
             };
             let path = file.text();
             let directory = file.folder_text();
-            for item in &document.items {
+            let mut registered = BTreeSet::new();
+            for item in &parsed.document.items {
                 if item.keyword_is("animation") {
                     let Some(animation) =
                         animation_definition(&item.value, directory.unwrap_or_default())
@@ -974,6 +1084,7 @@ impl Roster {
                             animation.name
                         )));
                     }
+                    registered.insert(animation.name.clone());
                     animations
                         .entry(animation.name.clone())
                         .or_default()
@@ -987,13 +1098,29 @@ impl Roster {
                             "{path}: light {name} is longer than the {ANIMATION_NAME} bytes the engine keeps"
                         )));
                     }
+                    if !name.is_empty() {
+                        registered.insert(name.clone());
+                    }
                     roster.lights.insert(name, fields.to_vec());
                 }
             }
-            for item in entity_items {
+            let mut file_clones = Vec::new();
+            for item in parsed.items {
                 if item.keyword_is("entity") {
-                    entities.declare(&item.value, &file, &mut roster)?;
+                    if let Some(fields) = item.value.items()
+                        && let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty())
+                        && let Some(parent) =
+                            last_text(fields, "clone").filter(|parent| !parent.is_empty())
+                    {
+                        file_clones.push((name, parent));
+                    }
+                    if let Some(name) = entities.declare(&item.value, &file, &mut roster)? {
+                        registered.insert(name);
+                    }
                 }
+            }
+            if let Some(overlay_names) = parsed.overlay_fallback_names {
+                roster.record_overlay_refusals(overlay_names, &registered, &file_clones, &path);
             }
         }
         for (name, declarations) in animations {
@@ -1008,14 +1135,37 @@ impl Roster {
         Ok(roster)
     }
 
+    fn record_overlay_refusals(
+        &mut self,
+        overlay_names: BTreeSet<String>,
+        registered: &BTreeSet<String>,
+        file_clones: &[(String, String)],
+        path: &str,
+    ) {
+        let mut newly_refused: BTreeSet<String> = overlay_names
+            .into_iter()
+            .filter(|name| !registered.contains(name))
+            .collect();
+        for (child, parent) in file_clones {
+            if newly_refused.contains(parent) {
+                newly_refused.insert(child.clone());
+            }
+        }
+        for name in newly_refused {
+            self.unreadable_names
+                .entry(name)
+                .or_insert_with(|| path.to_owned());
+        }
+    }
+
     fn parse(
         &mut self,
         layers: &ResolvedLayers,
         file: &ScriptPath,
         words: &[&str],
         native: fn(&[u8], &str) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
-        recover: fn(&[u8]) -> parser::native::RecoveredRead,
-    ) -> io::Result<Option<(parser::Document, Vec<parser::Item>)>> {
+        recover: fn(&[u8]) -> BTreeSet<String>,
+    ) -> io::Result<Option<ParsedFile>> {
         let text = file.text();
         let path: &str = &text;
         let bytes = match file.read_uncovered(layers) {
@@ -1043,7 +1193,11 @@ impl Roster {
             Ok(document) => match validate(&bytes, &document) {
                 Ok((items, misreads)) => {
                     self.logged.extend(misreads);
-                    return Ok(Some((document, items)));
+                    return Ok(Some(ParsedFile {
+                        document,
+                        items,
+                        overlay_fallback_names: None,
+                    }));
                 }
                 Err(error) => (error, Some(document)),
             },
@@ -1056,30 +1210,28 @@ impl Roster {
             && let Ok((items, misreads)) = validate(&recorded_bytes, &document)
         {
             layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
-            let (overlay_names, recorded_names) = match &parsed {
-                Some(overlay) => (
-                    recover_names(&bytes, overlay, words, recover),
-                    declared_names_from(&items, &document, words),
-                ),
+            let overlay_names = match &parsed {
+                Some(_) => recover(&bytes),
                 None => {
-                    let mut recorded_names = lexical_names(&recorded_bytes);
-                    recorded_names.extend(declared_names_from(&items, &document, words));
-                    (lexical_names(&bytes), recorded_names)
+                    let mut overlay_names = lexical_names(&bytes);
+                    overlay_names.extend(recover(&bytes));
+                    overlay_names
                 }
             };
-            for name in overlay_names {
-                if !recorded_names.contains(&name) {
-                    self.unreadable_names
-                        .entry(name)
-                        .or_insert_with(|| path.to_owned());
-                }
-            }
             self.logged.extend(misreads);
-            return Ok(Some((document, items)));
+            return Ok(Some(ParsedFile {
+                document,
+                items,
+                overlay_fallback_names: Some(overlay_names),
+            }));
         }
         let names = match &parsed {
-            Some(document) => recover_names(&bytes, document, words, recover),
-            None => lexical_names(&bytes),
+            Some(_) => recover(&bytes),
+            None => {
+                let mut names = lexical_names(&bytes);
+                names.extend(recover(&bytes));
+                names
+            }
         };
         for name in names {
             self.unreadable_names
@@ -1153,7 +1305,8 @@ impl Roster {
 fn add_objects(
     items: &[parser::Item],
     objects: &mut BTreeMap<String, Option<MeshDefinition>>,
-) {
+) -> BTreeSet<String> {
+    let mut registered = BTreeSet::new();
     for item in items {
         if !item.keyword_is("objectTypes") {
             continue;
@@ -1161,6 +1314,7 @@ fn add_objects(
         for object in item.value.items().unwrap_or(&[]) {
             if object.keyword_is(OBJECTS[0]) {
                 if let Some(mesh) = mesh_definition(&object.value) {
+                    registered.insert(mesh.name.clone());
                     objects.insert(mesh.name.clone(), Some(mesh));
                 }
             } else if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
@@ -1169,10 +1323,14 @@ fn add_objects(
                     .items()
                     .and_then(|fields| last_text(fields, "name"))
             {
+                if !name.is_empty() {
+                    registered.insert(name.clone());
+                }
                 objects.insert(name, None);
             }
         }
     }
+    registered
 }
 
 fn loaded_animation(
@@ -1207,12 +1365,12 @@ impl Entities {
         value: &parser::Value,
         path: &ScriptPath,
         roster: &mut Roster,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
         let Some(fields) = value.items() else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty()) else {
-            return Ok(());
+            return Ok(None);
         };
         let clone = last_text(fields, "clone").filter(|parent| !parent.is_empty());
         let mesh = last_text(fields, "pdxmesh");
@@ -1244,17 +1402,17 @@ impl Entities {
                     roster.logged.push(format!(
                         "{name} in {path}: the engine drops it, finding no entity {parent} to clone yet"
                     ));
-                    return Ok(());
+                    return Ok(None);
                 }
             },
         };
         let registered = self.0.get(&name);
         let stored = registered.map(|(_, stored)| *stored);
         if stored.is_some_and(|stored| version < stored) {
-            return Ok(());
+            return Ok(None);
         }
         let Some(mut definition) = entity_definition(value) else {
-            return Ok(());
+            return Ok(None);
         };
         roster
             .logged
@@ -1295,8 +1453,8 @@ impl Entities {
             Some(parent) => roster.clones.insert(name.clone(), parent),
             None => roster.clones.remove(&name),
         };
-        self.0.insert(name, entry);
-        Ok(())
+        self.0.insert(name.clone(), entry);
+        Ok(Some(name))
     }
 }
 
@@ -1353,85 +1511,6 @@ pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
         .find(|item| item.keyword_is(key))
         .and_then(|item| item.value.scalar_str())
         .map(unquote)
-}
-
-fn declared_names_in(
-    items: &[parser::Item],
-    words: &[&str],
-    include_variables: bool,
-    recovered: Option<&parser::native::RecoveredRead>,
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    let mut add = |raw: &[u8], quoted: bool| {
-        if !include_variables && !quoted && raw.starts_with(b"@") {
-            return;
-        }
-        let Ok(text) = std::str::from_utf8(raw) else {
-            return;
-        };
-        let name = unquote(text);
-        if !name.is_empty() {
-            names.insert(name);
-        }
-    };
-    let mut record = |item: &parser::Item, prefix: &[usize]| {
-        let Some(fields) = item.value.items() else {
-            return;
-        };
-        let Some((field_index, field)) = fields
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, field)| field.keyword_is("name"))
-        else {
-            return;
-        };
-        let Some(raw) = field.value.scalar() else {
-            return;
-        };
-        add(raw, field.quoted());
-        if let Some(recovered) = recovered {
-            let mut path = prefix.to_vec();
-            path.push(field_index);
-            for candidate in recovered.candidates_at(&path) {
-                add(candidate, false);
-            }
-        }
-    };
-    for (item_index, item) in items.iter().enumerate() {
-        if item.keyword_is("objectTypes") {
-            for (block_index, block) in item.value.items().unwrap_or(&[]).iter().enumerate() {
-                if words.iter().any(|word| block.keyword_is(word)) {
-                    record(block, &[item_index, block_index]);
-                }
-            }
-        } else if words.iter().any(|word| item.keyword_is(word)) {
-            record(item, &[item_index]);
-        }
-    }
-    names
-}
-
-fn declared_names_from(
-    native_items: &[parser::Item],
-    document: &parser::Document,
-    words: &[&str],
-) -> BTreeSet<String> {
-    let mut names = declared_names_in(native_items, words, true, None);
-    names.extend(declared_names_in(&document.items, words, false, None));
-    names
-}
-
-fn recover_names(
-    bytes: &[u8],
-    document: &parser::Document,
-    words: &[&str],
-    recover: fn(&[u8]) -> parser::native::RecoveredRead,
-) -> BTreeSet<String> {
-    let recovered = recover(bytes);
-    let mut names = declared_names_in(&recovered.read.items, words, true, Some(&recovered));
-    names.extend(declared_names_in(&document.items, words, false, None));
-    names
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {

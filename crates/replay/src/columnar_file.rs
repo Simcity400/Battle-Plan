@@ -349,11 +349,12 @@ mod hours {
         #[cfg(any(test, feature = "test-support"))]
         pub fn framed(file: FileWriter<W>, level: i32, settings: unit::Settings, columns: &[usize]) -> io::Result<Self> {
             let mut kinds = crate::columnar_frames::schema()?;
+            let current: Vec<usize> = kinds.iter().map(Vec::len).collect();
             kinds.truncate(columns.len());
             for (kinds, &held) in kinds.iter_mut().zip(columns) {
                 kinds.truncate(held);
             }
-            let writers = recorder_derive::writers_within(kinds.len());
+            let writers = recorder_derive::writers_within(columns, &current);
             Self::with_schema(file, level, settings, kinds, writers)
         }
 

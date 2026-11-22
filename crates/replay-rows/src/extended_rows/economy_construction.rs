@@ -585,10 +585,10 @@ value_struct!(VariantSnapshotUpgrade {
 pub struct VariantSnapshot {
     pub definition: VariantSnapshotDefinition,
     pub modules: Vec<VariantSnapshotModule>,
-    pub stats: Vec<i64>,
+    pub stats: Vec<Option<i64>>,
     pub upgrades: Vec<VariantSnapshotUpgrade>,
 }
-value_struct!(VariantSnapshot { definition: VariantSnapshotDefinition, modules: Vec<VariantSnapshotModule>, stats: Vec<i64>, upgrades: Vec<VariantSnapshotUpgrade> });
+value_struct!(VariantSnapshot { definition: VariantSnapshotDefinition, modules: Vec<VariantSnapshotModule>, stats: Vec<Option<i64>>, upgrades: Vec<VariantSnapshotUpgrade> });
 opaque_value!(Option<VariantSnapshot>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

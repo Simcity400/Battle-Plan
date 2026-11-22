@@ -223,7 +223,8 @@ pub struct TrainInventoryRow {
 }
 typed_codec!(TrainInventoryRow, 32, |row| row.country as u128,
  |key| Self { country: key as u32, ..Default::default() },
- { 0 => (node_count): U32, 1 => (allocations): Opaque, 2 => (controller_access): Opaque, 3 => (allocated_trucks): OptionalI32, 4 => (required_trucks_raw): OptionalI64, 5 => (required_trains): OptionalI32 }, |_row| Ok(()));
+ { 0 => (node_count): U32, 1 => (allocations): Opaque, 2 => (controller_access): Opaque, 3 => (allocated_trucks): OptionalI32, 4 => (required_trucks_raw): OptionalI64, 5 => (required_trains): OptionalI32 }, |_row| Ok(()),
+ |field, format| field == 4 && format < crate::rows::compatibility::VARIANT_STAT_WITNESS_FORMAT);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]

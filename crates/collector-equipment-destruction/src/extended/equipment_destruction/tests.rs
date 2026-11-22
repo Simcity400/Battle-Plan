@@ -281,3 +281,58 @@ fn refused_supplemental_group_marks_observed_signed_totals_incomplete_even_when_
         assert!(reason.contains("sentinel"));
     }
 }
+
+#[test]
+fn startup_and_branch_partial_intervals_encode_structured_marker_distinct_from_withheld_refusals() {
+    let mut partial = Captured::vacant();
+    partial.capture_with(|_| Ok(producer::Drain::Partial("reworded startup interval")));
+    assert_eq!(
+        partial.outcomes(),
+        [
+            Outcome::Rows { len: 1 },
+            Outcome::Unavailable {
+                reason: "reworded startup interval"
+            },
+        ]
+    );
+    let [
+        TableView::Complete(TableRows::EquipmentDestruction(rows)),
+        TableView::Unavailable { reason },
+    ] = partial.tables()
+    else {
+        panic!("startup/branch partial interval must emit structured PartialInterval marker");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key(), 0);
+    assert_eq!(rows[0].amount_raw, 0);
+    assert_eq!(
+        rows[0].coverage,
+        EquipmentDestructionCoverage::PartialInterval.into()
+    );
+    assert_eq!(
+        rows[0].unavailable_reason.require("reason").unwrap(),
+        "reworded startup interval"
+    );
+    assert_eq!(reason, "reworded startup interval");
+
+    let mut refused = Captured::vacant();
+    refused.capture_with(|_| Err("drain overflowed"));
+    assert_eq!(
+        refused.outcomes(),
+        [
+            Outcome::Unavailable {
+                reason: "drain overflowed"
+            },
+            Outcome::Unavailable {
+                reason: "drain overflowed"
+            },
+        ]
+    );
+    assert!(matches!(
+        refused.tables(),
+        [
+            TableView::Unavailable { .. },
+            TableView::Unavailable { .. }
+        ]
+    ));
+}

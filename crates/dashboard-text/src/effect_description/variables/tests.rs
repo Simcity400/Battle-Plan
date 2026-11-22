@@ -630,3 +630,70 @@ fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
         }
     }
 }
+
+#[test]
+fn withheld_required_trucks_refuses_only_truck_need_while_other_vehicle_temps_work() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut fixture = fixture();
+    let TableView::Complete(TableRows::TrainInventory(rows)) =
+        &mut *fixture.frame.tables[TableId::TrainInventory.index()]
+    else {
+        panic!("complete train inventory");
+    };
+    rows[0].allocated_trucks = Recorded::Value(Some(45));
+    rows[0].required_trucks_raw = Recorded::Value(None);
+    rows[0].required_trains = Recorded::Value(Some(6));
+
+    let refused = fixture.render(
+        "get_supply_vehicles_temp={var=n type=truck need=yes} army_experience=n",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert!(refused.text.is_empty());
+    assert!(
+        refused
+            .refusals
+            .keys()
+            .any(|why| why.contains("train inventory, required trucks raw")),
+        "{:?}",
+        refused.refusals
+    );
+
+    for (script, expected) in [
+        ("get_supply_vehicles_temp={var=n type=truck need=no}", 4_500_000),
+        ("get_supply_vehicles_temp={var=n type=train need=yes}", 600_000),
+    ] {
+        fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+            let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+            let body = content_reader_core::parser::parse(script.as_bytes()).unwrap();
+            assert_eq!(renderer.group(&body.items, scopes, 0), "");
+            assert_eq!(
+                renderer.evaluator().unwrap().scoped_value(b"n", scopes),
+                Ok(expected),
+                "{script}"
+            );
+            assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
+        });
+    }
+
+    let TableView::Complete(TableRows::TrainInventory(rows)) =
+        &mut *fixture.frame.tables[TableId::TrainInventory.index()]
+    else {
+        panic!("complete train inventory");
+    };
+    rows[0].required_trucks_raw = Recorded::Value(Some(9_000_000));
+    fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        let body = content_reader_core::parser::parse(
+            b"get_supply_vehicles_temp={var=n type=truck need=yes}",
+        )
+        .unwrap();
+        assert_eq!(renderer.group(&body.items, scopes, 0), "");
+        assert_eq!(
+            renderer.evaluator().unwrap().scoped_value(b"n", scopes),
+            Ok(9_000_000)
+        );
+        assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
+    });
+}

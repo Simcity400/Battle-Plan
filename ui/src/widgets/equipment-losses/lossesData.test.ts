@@ -5,18 +5,19 @@ import { amountText, arcTargets, foldTree, groupTree, listed, sliceColours, slic
 import { resolveOptions } from '../../dashboard/options.ts';
 import { sunburstSettings, levelsShown } from '../../charts/sunburst/sunburstOptions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { nearest, shipLeaves, stepHours, withEdges } from './lossesData.ts';
-import { LEVELS, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
+import { nearest, shipLeaves, stepHours, withEdges, withHead } from './lossesData.ts';
+import { LEVELS, atHead, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 
 const ROOT = { id: 'all', label: 'All losses' };
 const TOKENS = { positive: '#00aa00', warning: '#aaaa00', error: '#aa0000', surface: '#000000', text: '#ffffff' };
 const live = (hour: number) => ({ first: 100, hour, end: 109, campaign: false });
 const whole = { ...live(109), campaign: true };
-const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], lowerBoundFrom: null, ...extra });
+const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], exact: [], lowerBoundFrom: null, ...extra });
 const cause = (extra: Partial<LossCause> = {}): LossCause => ({ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' },
   group: null, loss: true, unknown: null, unknownSpans: [], leaves: [leaf()], ...extra });
 const reply = (): LossesReply => ({
-  branchId: 'mod-branch', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'opaque: tag / 1', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100, destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
+  branchId: 'mod-branch', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'opaque: tag / 1', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null, destructionRuns: [{ firstHour: 100, lastHour: 109, countedFrom: 100, withheldFrom: null }], destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
   designs: [{ variant: 91001, equipment: 'mod_walkers_v2', archetype: 'mod_walkers', archetypeName: 'Walking machines',
     names: [{ firstHour: 100, name: 'First walker', known: true }, { firstHour: 105, name: 'Renamed walker', known: true }] }],
   coverage: [{ firstHour: 100, lastHour: 109, coverage: 'logged' }],
@@ -37,6 +38,8 @@ test('validates the contract and refuses malformed amounts, names, indices, span
     (bad: LossesReply) => { delete (bad.causes[0] as Partial<LossCause>).domain; },
     (bad: LossesReply) => { bad.causes[0].leaves[0].points[0].totalRaw = '1.25'; },
     (bad: LossesReply) => { bad.causes[0].leaves[0].points.reverse(); },
+    (bad: LossesReply) => { bad.causes[0].leaves[0].exact = [{ hour: 100, totalRaw: '1.25' }]; },
+    (bad: LossesReply) => { bad.causes[0].leaves[0].exact = [{ hour: 105, totalRaw: null }, { hour: 100, totalRaw: null }]; },
     (bad: LossesReply) => { bad.designs[0].names.reverse(); },
     (bad: LossesReply) => { bad.ships = [{ signature: 's', listedHour: 100, sinkHour: 99, design: 9, count: 1 }]; },
     (bad: LossesReply) => { delete (bad.causes[0].leaves[0] as Partial<LossLeaf>).key; },
@@ -44,7 +47,9 @@ test('validates the contract and refuses malformed amounts, names, indices, span
     (bad: LossesReply) => { bad.coverage.push({ firstHour: 105, lastHour: 110, coverage: 'unknown' }); },
     (bad: LossesReply) => { bad.causes[2].unknown = 'Not available.'; bad.causes[2].leaves = [leaf()]; },
     (bad: LossesReply) => { bad.amountScale = 3; },
-    (bad: LossesReply) => { bad.destructionCountedFrom = NaN; },
+    (bad: LossesReply) => { bad.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: NaN, withheldFrom: null }]; },
+    (bad: LossesReply) => { bad.destructionRuns = [{ firstHour: 105, lastHour: 104, countedFrom: 105, withheldFrom: null }]; },
+    (bad: LossesReply) => { bad.destructionRuns = [{ firstHour: 100, lastHour: 105, countedFrom: 100, withheldFrom: null }, { firstHour: 105, lastHour: 109, countedFrom: 105, withheldFrom: null }]; },
     (bad: LossesReply) => { bad.destructionCoverage = [{ firstHour: 105, lastHour: 104, reason: null }]; },
     (bad: LossesReply) => { bad.causes[0].unknownSpans = [{ firstHour: 105, lastHour: 104, reason: 'unread', detail: null }]; },
   ]) {
@@ -241,7 +246,7 @@ const destruction = (): LossesReply => {
   data.landSource = 'destruction';
   data.landLowerBound = null;
   data.coverage = [];
-  data.destructionCountedFrom = 101;
+  data.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: 101, withheldFrom: null }];
   data.destructionCoverage = [{ firstHour: 101, lastHour: 109, reason: null }];
   data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
   data.causes[0].leaves[0].points[0].hour = 101;
@@ -437,13 +442,177 @@ test('distinct details of the same reason survive in cause notes and Unknown cau
 
 test('destruction without a counting start stays unavailable even with later refusal spans', () => {
   const data = destruction();
-  data.destructionCountedFrom = null;
+  data.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: null, withheldFrom: 102 }];
   data.destructionCoverage = [{ firstHour: 102, lastHour: 109, reason: 'Destruction table withheld after overflow.' }];
   for (const hour of [100, 105, 109]) assert.equal(destructionCountingNote(data, hour),
     'Unavailable');
+  assert.deepEqual(destructionLegend(data, live(100), TOKENS), []);
+  assert.equal(destructionLegend(data, live(105), TOKENS)[0].label, 'Incomplete');
+  assert.equal(destructionLegend(data, whole, TOKENS)[0].label, 'Incomplete');
   assert.match(lossesFootnote(data, whole), /Unavailable/);
+  data.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: null, withheldFrom: null }];
   data.destructionCoverage = [];
   assert.equal(destructionCountingNote(data, 100), 'Unavailable');
+  assert.deepEqual(destructionLegend(data, live(105), TOKENS), []);
+});
+
+test('per-run boundaries separate contiguous branch loads, supplemental gaps and uncounted startup totals', () => {
+  const data = destruction();
+  data.from = 100;
+  data.to = 250;
+  data.restarts = [];
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 199, countedFrom: 101, withheldFrom: null },
+    { firstHour: 200, lastHour: 250, countedFrom: 201, withheldFrom: null },
+  ];
+  data.destructionCoverage = [
+    { firstHour: 101, lastHour: 139, reason: 'Supplemental hooks unavailable' },
+    { firstHour: 140, lastHour: 199, reason: null },
+    { firstHour: 201, lastHour: 250, reason: null },
+  ];
+  data.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [
+        leaf({ points: [{ hour: 101, totalRaw: '500000' }, { hour: 201, totalRaw: '200000' }] }),
+        leaf({ design: null, key: 'parent-only', points: [{ hour: 101, totalRaw: '900000' }] }),
+      ],
+    }),
+  ];
+  assert.equal(validateLossesReply(data), data);
+
+  assert.equal(destructionCountingNote(data, 120), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 120, end: 250, campaign: false }, TOKENS)[0].label, 'Incomplete');
+
+  assert.equal(destructionCountingNote(data, 150), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 150, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 150, end: 250, campaign: false })).exact, 1400000n);
+
+  assert.equal(destructionCountingNote(data, 200), 'Unavailable');
+  assert.deepEqual(destructionLegend(data, { first: 100, hour: 200, end: 250, campaign: false }, TOKENS), []);
+  const startupItems = lossItems(data, { first: 100, hour: 200, end: 250, campaign: false });
+  assert.equal(lossesTotal(startupItems).exact, null);
+  assert.equal(lossesTotal(startupItems).unknownValue, true);
+
+  assert.equal(destructionCountingNote(data, 201), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 201, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 201, end: 250, campaign: false })).exact, 200000n);
+  assert.equal(destructionLegend(data, { first: 100, hour: 250, end: 250, campaign: true }, TOKENS)[0].label, 'Complete');
+  assert.deepEqual(destructionCoverageHours(data, 100, 250), { recorded: 50, unknown: 0, reasons: [] });
+});
+
+test('exact read absence overrides a multi-hour chart bin without erasing the later loss', () => {
+  const make = (exactHour: number) => {
+    const data = destruction();
+    data.from = 120;
+    data.to = 130;
+    data.width = 1;
+    data.exactHours = [exactHour];
+    data.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+    data.destructionCoverage = [
+      { firstHour: 121, lastHour: 123, reason: 'supplemental hooks unavailable' },
+      { firstHour: 124, lastHour: 130, reason: null },
+    ];
+    data.causes = [
+      cause({
+        source: { kind: 'destruction', reason: 'land_combat' },
+        unknownSpans: [{ firstHour: 121, lastHour: 130, reason: 'destructionWithheld', detail: 'supplemental hooks unavailable' }],
+        leaves: [leaf({ points: [{ hour: 121, totalRaw: '100000' }], exact: [{ hour: exactHour, totalRaw: null }] })],
+      }),
+    ];
+    return data;
+  };
+
+  const at124 = make(124);
+  assert.equal(validateLossesReply(at124), at124);
+  assert.equal(pointAt(at124.causes[0].leaves[0], 124), null);
+  assert.equal(lossesTotal(lossItems(at124, { first: 120, hour: 124, end: 130, campaign: false })).exact, null);
+  assert.equal(lossesTotal(lossItems(at124, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
+  assert.equal(lossesTotal(lossItems(at124, { first: 120, hour: 130, end: 130, campaign: true })).exact, 100000n);
+
+  const at121 = make(121);
+  assert.equal(pointAt(at121.causes[0].leaves[0], 121), null);
+  assert.equal(lossesTotal(lossItems(at121, { first: 120, hour: 121, end: 130, campaign: false })).exact, null);
+  assert.equal(lossesTotal(lossItems(at121, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
+});
+
+test('withHead records explicit exact absence for missing live cells and preserves 64-bit integer precision', () => {
+  const missingBase = destruction();
+  missingBase.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 101, totalRaw: '200000' }] })],
+    }),
+  ];
+  const missingHead = withHead(missingBase, 105, () => 'Not recorded at this hour');
+  assert.equal(pointAt(missingHead.causes[0].leaves[0], 105), null);
+  assert.deepEqual(missingHead.causes[0].leaves[0].exact, [{ hour: 105, totalRaw: null }]);
+  assert.equal(lossesTotal(lossItems(missingHead, live(105))).exact, null);
+  assert.deepEqual(missingHead.causes[0].leaves[0].points, [{ hour: 101, totalRaw: '200000' }]);
+
+  const preciseBase = destruction();
+  preciseBase.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 105, totalRaw: '9007199254740993' }], exact: [{ hour: 105, totalRaw: '9007199254740993' }] })],
+    }),
+  ];
+  const preciseHead = withHead(preciseBase, 105, () => Number(9007199254740993n));
+  assert.equal(pointAt(preciseHead.causes[0].leaves[0], 105)?.totalRaw, '9007199254740993');
+  assert.equal(lossesTotal(lossItems(preciseHead, live(105))).exact, 9007199254740993n);
+
+  const betweenBase = destruction();
+  betweenBase.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 101, totalRaw: '9007199254740993' }], exact: [] })],
+    }),
+  ];
+  const exactBigIntHead = withHead(betweenBase, 106, () => 9007199254740993n);
+  assert.equal(pointAt(exactBigIntHead.causes[0].leaves[0], 106)?.totalRaw, '9007199254740993');
+  assert.equal(lossesTotal(lossItems(exactBigIntHead, live(106))).exact, 9007199254740993n);
+
+  const roundedFloatHead = withHead(betweenBase, 106, () => Number(9007199254740993n));
+  assert.equal(pointAt(roundedFloatHead.causes[0].leaves[0], 106), null);
+  assert.equal(lossesTotal(lossItems(roundedFloatHead, live(106))).exact, null);
+
+  const fallbackHeadJson = JSON.parse(JSON.stringify({
+    leaves: ['0'],
+    warnings: [],
+    live: {
+      groups: [{
+        table: 70,
+        columns: [0],
+        keys: ['0'],
+        values: [Number(9007199254740993n)],
+        rawValues: ['9007199254740993'],
+      }],
+      rows: ['0'],
+      kinds: [{ id: 'total', op: 'value', scale: 1 }],
+      cells: [0, 0, 1, 0, 0, 0],
+    },
+  }));
+  const fallbackOverlay = atHead(betweenBase, 106, repliedCells(fallbackHeadJson).read(), new Set(fallbackHeadJson.leaves));
+  assert.equal(pointAt(fallbackOverlay.causes[0].leaves[0], 106)?.totalRaw, '9007199254740993');
+  assert.equal(lossesTotal(lossItems(fallbackOverlay, live(106))).exact, 9007199254740993n);
+  assert.deepEqual(fallbackOverlay.causes[0].unknownSpans, []);
+
+  const coarseZero = destruction();
+  coarseZero.from = 120;
+  coarseZero.to = 130;
+  coarseZero.width = 1;
+  coarseZero.exactHours = [124];
+  coarseZero.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+  coarseZero.destructionCoverage = [{ firstHour: 121, lastHour: 130, reason: null }];
+  coarseZero.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 121, totalRaw: '100000' }, { hour: 125, totalRaw: '100000' }], exact: [{ hour: 124, totalRaw: '0' }] })],
+    }),
+  ];
+  assert.equal(lossesTotal(lossItems(coarseZero, { first: 120, hour: 124, end: 130, campaign: false })).exact, 0n);
+  assert.equal(lossesTotal(lossItems(coarseZero, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
+  assert.equal(lossesTotal(lossItems(coarseZero, { first: 120, hour: 126, end: 130, campaign: false })).exact, 100000n);
 });
 
 test('before counting starts destruction coverage has no rows in either land mode', () => {

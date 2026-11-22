@@ -164,7 +164,8 @@ fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>
     }
     let mut columns = columns_at(format)?;
     let tables = columns.len();
-    if envelope::schema_digest_prefix(&schema[..tables], &columns) != Some(root.identity.schema) {
+    let historical = super::schema_at(format)?;
+    if envelope::schema_digest_prefix(&historical[..tables], &columns) != Some(root.identity.schema) {
         return Err(differs(""));
     }
     columns.resize(TABLE_COUNT, 0);

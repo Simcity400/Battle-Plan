@@ -7,7 +7,10 @@ pub const KIND: usize = 0x08;
 pub const FLAG: usize = 0x0c;
 pub const AVAILABLE: usize = 0x38;
 pub const CONSUMED: usize = 0x40;
+pub const MOTORIZATION_OVERRIDES: usize = 0x60;
 pub const ROUTE_VALUE: usize = 0x78;
+pub const KIND_SUPPLY_HUB: u32 = 2;
+pub const KIND_NAVAL_BASE: u32 = 3;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x012a_6a60);
 
 use crate::{

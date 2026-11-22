@@ -227,13 +227,46 @@ typed_codec!(VariantModuleRow, 96, |row| (row.variant as u128) << 32 | row.sourc
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct VariantStatsRow {
     pub variant: u64,
-    pub values: [i64; 10],
+    pub values: [Option<i64>; 10],
     pub organisation: u64,
     pub organisation_trait_count: i32,
     pub organisation_bonuses: Vec<IndustrialOrganisationBonus>,
 }
+impl VariantStatsRow {
+    pub const AIR_RANGE: usize = 0;
+    pub const AIR_DEFENCE: usize = 1;
+    pub const AIR_ATTACK: usize = 2;
+    pub const AIR_AGILITY: usize = 3;
+    pub const MAXIMUM_SPEED: usize = 4;
+    pub const RELIABILITY: usize = 5;
+    pub const WEIGHT: usize = 6;
+    pub const THRUST: usize = 7;
+    pub const FUEL_CONSUMPTION: usize = 8;
+    pub const BUILD_COST_IC: usize = 9;
+    pub const LANE_NAMES: [&'static str; 10] = [
+        "air_range",
+        "air_defence",
+        "air_attack",
+        "air_agility",
+        "maximum_speed",
+        "reliability",
+        "weight",
+        "thrust",
+        "fuel_consumption",
+        "build_cost_ic",
+    ];
+
+    pub fn stat(&self, lane: usize) -> Result<i64, String> {
+        let name = Self::LANE_NAMES.get(lane).copied().unwrap_or("unknown");
+        self.values
+            .get(lane)
+            .copied()
+            .flatten()
+            .ok_or_else(|| format!("variant {} stat `{name}` was withheld", self.variant))
+    }
+}
 typed_codec!(VariantStatsRow, 64, |row| row.variant as u128, |key| Self { variant: key as u64, ..Default::default() },
- { 0 => (values[0]): I64, 1 => (values[1]): I64, 2 => (values[2]): I64, 3 => (values[3]): I64, 4 => (values[4]): I64, 5 => (values[5]): I64, 6 => (values[6]): I64, 7 => (values[7]): I64, 8 => (values[8]): I64, 9 => (values[9]): I64, 10 => (organisation): U64, 11 => (organisation_trait_count): I32, 12 => (organisation_bonuses): Opaque }, |_row| Ok(()));
+ { 0 => (values[0]): OptionalI64, 1 => (values[1]): OptionalI64, 2 => (values[2]): OptionalI64, 3 => (values[3]): OptionalI64, 4 => (values[4]): OptionalI64, 5 => (values[5]): OptionalI64, 6 => (values[6]): OptionalI64, 7 => (values[7]): OptionalI64, 8 => (values[8]): OptionalI64, 9 => (values[9]): OptionalI64, 10 => (organisation): U64, 11 => (organisation_trait_count): I32, 12 => (organisation_bonuses): Opaque }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -1000,7 +1033,7 @@ typed_codec!(EquipmentDestructionRow, 104,
     match (&row.coverage, &row.unavailable_reason) {
         (Recorded::NotRecorded, Recorded::NotRecorded) if row.amount_raw > 0 => Ok(()),
         (Recorded::Value(EquipmentDestructionCoverage::Complete), Recorded::Value(reason)) if row.key() != 0 && row.amount_raw != 0 && reason.is_empty() => Ok(()),
-        (Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable), Recorded::Value(reason)) if row.key() == 0 && row.amount_raw == 0 && !reason.is_empty() => Ok(()),
+        (Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable | EquipmentDestructionCoverage::PartialInterval), Recorded::Value(reason)) if row.key() == 0 && row.amount_raw == 0 && !reason.is_empty() => Ok(()),
         _ => Err(invalid("invalid equipment destruction amount or availability marker")),
     }
 });
