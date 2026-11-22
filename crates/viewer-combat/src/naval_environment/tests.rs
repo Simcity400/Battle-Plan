@@ -1048,6 +1048,66 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
         bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
         Some(0)
     );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            a1 = { add_stats = { lg_attack = 0.00327 } add_average_stats = { lg_attack = 0.00004 } }
+            a2 = { add_stats = { lg_attack = 0.08328 } add_average_stats = { lg_attack = 0.00004 } }
+            a3 = { add_stats = { lg_attack = 0.08329 } add_average_stats = { lg_attack = 0.00004 } }
+            a4 = { add_stats = { lg_attack = 0.08330 } add_average_stats = { lg_attack = 0.00004 } }
+            a5 = { add_stats = { lg_attack = 0.08331 } add_average_stats = { lg_attack = 0.00004 } }
+            a6 = { add_stats = { lg_attack = 0.08332 } add_average_stats = { lg_attack = 0.00004 } }
+            a7 = { add_stats = { lg_attack = 0.08334 } add_average_stats = { lg_attack = 0.00003 } }
+            a8 = { add_stats = { lg_attack = 0.08335 } add_average_stats = { lg_attack = 0.00003 } }
+            a9 = { add_stats = { lg_attack = 0.08336 } add_average_stats = { lg_attack = 0.00003 } }
+            a10 = { add_stats = { lg_attack = 0.08337 } add_average_stats = { lg_attack = 0.00003 } }
+            a11 = { add_stats = { lg_attack = 0.08338 } add_average_stats = { lg_attack = 0.00003 } }
+            a12 = { add_stats = { lg_attack = 0.16339 } add_average_stats = { lg_attack = 0.00003 } }
+            a13 = { add_stats = { lg_attack = 0.08333 } add_average_stats = { lg_attack = -1.08332 } }
+         }
+         equipments = {
+            thirteen_integrality_gap_upper = { type = convoy
+                default_modules = {
+                    s1 = a1 s2 = a2 s3 = a3 s4 = a4 s5 = a5 s6 = a6 s7 = a7
+                    s8 = a8 s9 = a9 s10 = a10 s11 = a11 s12 = a12 s13 = a13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-99_999, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            b1 = { add_stats = { lg_attack = -0.00327 } add_average_stats = { lg_attack = -0.00004 } }
+            b2 = { add_stats = { lg_attack = -0.08328 } add_average_stats = { lg_attack = -0.00004 } }
+            b3 = { add_stats = { lg_attack = -0.08329 } add_average_stats = { lg_attack = -0.00004 } }
+            b4 = { add_stats = { lg_attack = -0.08330 } add_average_stats = { lg_attack = -0.00004 } }
+            b5 = { add_stats = { lg_attack = -0.08331 } add_average_stats = { lg_attack = -0.00004 } }
+            b6 = { add_stats = { lg_attack = -0.08332 } add_average_stats = { lg_attack = -0.00004 } }
+            b7 = { add_stats = { lg_attack = -0.08334 } add_average_stats = { lg_attack = -0.00003 } }
+            b8 = { add_stats = { lg_attack = -0.08335 } add_average_stats = { lg_attack = -0.00003 } }
+            b9 = { add_stats = { lg_attack = -0.08336 } add_average_stats = { lg_attack = -0.00003 } }
+            b10 = { add_stats = { lg_attack = -0.08337 } add_average_stats = { lg_attack = -0.00003 } }
+            b11 = { add_stats = { lg_attack = -0.08338 } add_average_stats = { lg_attack = -0.00003 } }
+            b12 = { add_stats = { lg_attack = -0.16339 } add_average_stats = { lg_attack = -0.00003 } }
+            b13 = { add_stats = { lg_attack = -0.08333 } add_average_stats = { lg_attack = 1.08332 } }
+         }
+         equipments = {
+            thirteen_integrality_gap_lower = { type = convoy
+                default_modules = {
+                    s1 = b1 s2 = b2 s3 = b3 s4 = b4 s5 = b5 s6 = b6 s7 = b7
+                    s8 = b8 s9 = b9 s10 = b10 s11 = b11 s12 = b12 s13 = b13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-99_999, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
 }
 
 #[test]

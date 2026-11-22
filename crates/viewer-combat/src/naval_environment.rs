@@ -975,260 +975,363 @@ fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     a.max(1)
 }
 
-struct CountSlice<'a> {
-    groups: &'a [AvgAddGroup],
+#[derive(Clone, Copy)]
+struct CoupledItem {
+    r: i128,
+    u: i128,
+}
+
+#[derive(Clone, Copy)]
+struct NodeQuery {
+    need: usize,
+    r_req: i128,
+    u_cap: i128,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Feasibility {
+    Feasible,
+    Infeasible,
+    Unknown,
+}
+
+enum NodeOutcome {
+    Feasible,
+    Infeasible,
+    Unknown,
+    Branch { idx: usize, split: usize },
+}
+
+struct SearchScratch {
+    scored: Vec<(i128, i128, usize)>,
+    x_l: Vec<usize>,
+    x_r: Vec<usize>,
+    x_m: Vec<usize>,
+}
+
+fn extremal_selection(
+    items: &[CoupledItem],
+    caps: &[usize],
+    need: usize,
+    p: i128,
+    q: i128,
+    scored: &mut Vec<(i128, i128, usize)>,
+    chosen: &mut [usize],
+) -> Option<(i128, i128)> {
+    scored.clear();
+    chosen.fill(0);
+    for (idx, (&item, &cap)) in items.iter().zip(caps).enumerate() {
+        if cap == 0 {
+            continue;
+        }
+        let key = if q == 0 {
+            (-item.u, item.r, idx)
+        } else {
+            let s = q
+                .checked_mul(item.r)?
+                .checked_sub(p.checked_mul(item.u)?)?;
+            (s, -item.u, idx)
+        };
+        scored.push(key);
+    }
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut rem = need;
+    let mut sum_r = 0_i128;
+    let mut sum_u = 0_i128;
+    for &(_, _, idx) in scored.iter().rev() {
+        if rem == 0 {
+            break;
+        }
+        let take = rem.min(caps[idx]);
+        chosen[idx] = take;
+        let take_i = take as i128;
+        sum_r = sum_r.checked_add(items[idx].r.checked_mul(take_i)?)?;
+        sum_u = sum_u.checked_add(items[idx].u.checked_mul(take_i)?)?;
+        rem -= take;
+    }
+    Some((sum_r, sum_u))
+}
+
+fn check_node(
+    items: &[CoupledItem],
+    caps: &[usize],
+    query: NodeQuery,
+    scratch: &mut SearchScratch,
+) -> NodeOutcome {
+    if query.need == 0 {
+        return if query.r_req <= 0 && query.u_cap >= 0 {
+            NodeOutcome::Feasible
+        } else {
+            NodeOutcome::Infeasible
+        };
+    }
+    let total_cap: usize = caps.iter().sum();
+    if total_cap < query.need {
+        return NodeOutcome::Infeasible;
+    }
+    if total_cap == query.need {
+        let mut sum_r = 0_i128;
+        let mut sum_u = 0_i128;
+        for (&item, &cap) in items.iter().zip(caps) {
+            if cap == 0 {
+                continue;
+            }
+            let c = cap as i128;
+            let Some(next_r) = item.r.checked_mul(c).and_then(|v| sum_r.checked_add(v)) else {
+                return NodeOutcome::Unknown;
+            };
+            let Some(next_u) = item.u.checked_mul(c).and_then(|v| sum_u.checked_add(v)) else {
+                return NodeOutcome::Unknown;
+            };
+            sum_r = next_r;
+            sum_u = next_u;
+        }
+        return if sum_r >= query.r_req && sum_u <= query.u_cap {
+            NodeOutcome::Feasible
+        } else {
+            NodeOutcome::Infeasible
+        };
+    }
+    let Some((mut r_l, mut u_l)) = extremal_selection(
+        items,
+        caps,
+        query.need,
+        0,
+        1,
+        &mut scratch.scored,
+        &mut scratch.x_l,
+    ) else {
+        return NodeOutcome::Unknown;
+    };
+    if r_l < query.r_req {
+        return NodeOutcome::Infeasible;
+    }
+    if u_l <= query.u_cap {
+        return NodeOutcome::Feasible;
+    }
+    let Some((mut r_r, mut u_r)) = extremal_selection(
+        items,
+        caps,
+        query.need,
+        1,
+        0,
+        &mut scratch.scored,
+        &mut scratch.x_r,
+    ) else {
+        return NodeOutcome::Unknown;
+    };
+    if u_r > query.u_cap {
+        return NodeOutcome::Infeasible;
+    }
+    if r_r >= query.r_req {
+        return NodeOutcome::Feasible;
+    }
+    for _ in 0..32 {
+        let (Some(p_raw), Some(q_raw)) = (r_l.checked_sub(r_r), u_l.checked_sub(u_r)) else {
+            return NodeOutcome::Unknown;
+        };
+        if p_raw <= 0 || q_raw <= 0 {
+            break;
+        }
+        let g = gcd_u128(p_raw as u128, q_raw as u128) as i128;
+        let p = p_raw / g;
+        let q = q_raw / g;
+        let Some((r_m, u_m)) = extremal_selection(
+            items,
+            caps,
+            query.need,
+            p,
+            q,
+            &mut scratch.scored,
+            &mut scratch.x_m,
+        ) else {
+            return NodeOutcome::Unknown;
+        };
+        let Some(cert) = r_m
+            .checked_sub(query.r_req)
+            .and_then(|dr| q.checked_mul(dr))
+            .and_then(|qdr| {
+                u_m.checked_sub(query.u_cap)
+                    .and_then(|du| p.checked_mul(du))
+                    .and_then(|pdu| qdr.checked_sub(pdu))
+            })
+        else {
+            return NodeOutcome::Unknown;
+        };
+        if cert < 0 {
+            return NodeOutcome::Infeasible;
+        }
+        if r_m >= query.r_req && u_m <= query.u_cap {
+            return NodeOutcome::Feasible;
+        }
+        let Some(diff) = r_m
+            .checked_sub(r_l)
+            .and_then(|dr| q.checked_mul(dr))
+            .and_then(|qdr| {
+                u_m.checked_sub(u_l)
+                    .and_then(|du| p.checked_mul(du))
+                    .and_then(|pdu| qdr.checked_sub(pdu))
+            })
+        else {
+            return NodeOutcome::Unknown;
+        };
+        if diff <= 0 {
+            break;
+        }
+        if u_m > query.u_cap {
+            r_l = r_m;
+            u_l = u_m;
+            std::mem::swap(&mut scratch.x_l, &mut scratch.x_m);
+        } else {
+            r_r = r_m;
+            u_r = u_m;
+            std::mem::swap(&mut scratch.x_r, &mut scratch.x_m);
+        }
+    }
+    let mut best_branch: Option<(usize, (u128, u128))> = None;
+    for idx in 0..items.len() {
+        if caps[idx] == 0 || scratch.x_l[idx] == scratch.x_r[idx] {
+            continue;
+        }
+        let score = (items[idx].u.unsigned_abs(), items[idx].r.unsigned_abs());
+        if best_branch.is_none_or(|(_, prev)| score > prev) {
+            best_branch = Some((idx, score));
+        }
+    }
+    let Some((idx, _)) = best_branch else {
+        return NodeOutcome::Unknown;
+    };
+    let split = (scratch.x_l[idx] + scratch.x_r[idx]) / 2;
+    NodeOutcome::Branch { idx, split }
+}
+
+fn search_feasible(
+    items: &[CoupledItem],
+    caps: &mut [usize],
+    query: NodeQuery,
+    budget: &mut usize,
+    scratch: &mut SearchScratch,
+) -> Feasibility {
+    if *budget == 0 {
+        return Feasibility::Unknown;
+    }
+    *budget -= 1;
+    match check_node(items, caps, query, scratch) {
+        NodeOutcome::Feasible => Feasibility::Feasible,
+        NodeOutcome::Infeasible => Feasibility::Infeasible,
+        NodeOutcome::Unknown => Feasibility::Unknown,
+        NodeOutcome::Branch { idx, split } => {
+            let orig_cap = caps[idx];
+            caps[idx] = split;
+            let left = search_feasible(items, caps, query, budget, scratch);
+            caps[idx] = orig_cap;
+            if left != Feasibility::Infeasible {
+                return left;
+            }
+            let forced = split + 1;
+            if forced <= query.need {
+                let forced_i = forced as i128;
+                let Some(next_r_req) = items[idx]
+                    .r
+                    .checked_mul(forced_i)
+                    .and_then(|v| query.r_req.checked_sub(v))
+                else {
+                    return Feasibility::Unknown;
+                };
+                let Some(next_u_cap) = items[idx]
+                    .u
+                    .checked_mul(forced_i)
+                    .and_then(|v| query.u_cap.checked_sub(v))
+                else {
+                    return Feasibility::Unknown;
+                };
+                caps[idx] = orig_cap - forced;
+                let right = search_feasible(
+                    items,
+                    caps,
+                    NodeQuery {
+                        need: query.need - forced,
+                        r_req: next_r_req,
+                        u_cap: next_u_cap,
+                    },
+                    budget,
+                    scratch,
+                );
+                caps[idx] = orig_cap;
+                return right;
+            }
+            Feasibility::Infeasible
+        }
+    }
+}
+
+fn prove_sign_split_infeasible(
+    groups: &[AvgAddGroup],
     k: usize,
     d: i128,
     base_sum: i128,
-}
-
-impl CountSlice<'_> {
-    fn extremal(
-        &self,
-        p: i128,
-        q: i128,
-        maximize: bool,
-        scored: &mut Vec<(i128, i128, i128, usize)>,
-    ) -> Option<(i128, i128)> {
-        scored.clear();
-        let qd = q.checked_mul(self.d)?;
-        let qp = q.checked_sub(p)?;
-        for group in self.groups {
-            let a = i128::from(group.add);
-            let u = i128::from(group.avg);
-            let s = qd.checked_mul(a)?.checked_add(qp.checked_mul(u)?)?;
-            scored.push((s, -u, a, group.count));
-        }
-        scored.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));
-        let mut rem = self.k;
-        let mut sum_a = 0_i128;
-        let mut sum_u = self.base_sum;
-        if maximize {
-            for &(_, neg_u, a, count) in scored.iter().rev() {
-                if rem == 0 {
-                    break;
-                }
-                let take = rem.min(count) as i128;
-                sum_a = sum_a.checked_add(a.checked_mul(take)?)?;
-                sum_u = sum_u.checked_add((-neg_u).checked_mul(take)?)?;
-                rem -= take as usize;
-            }
+    target: i128,
+    upper: bool,
+) -> bool {
+    let Some(limit) = d.checked_mul(target) else {
+        return false;
+    };
+    let (r_req, u_cap) = if upper {
+        let Some(r_req) = limit.checked_add(1).and_then(|v| v.checked_sub(base_sum)) else {
+            return false;
+        };
+        let Some(u_cap) = (-1_i128).checked_sub(base_sum) else {
+            return false;
+        };
+        (r_req, u_cap)
+    } else {
+        let Some(r_req) = base_sum.checked_sub(limit).and_then(|v| v.checked_add(1)) else {
+            return false;
+        };
+        let Some(u_cap) = base_sum.checked_sub(1) else {
+            return false;
+        };
+        (r_req, u_cap)
+    };
+    let mut items = Vec::with_capacity(groups.len());
+    let mut caps = Vec::with_capacity(groups.len());
+    for group in groups {
+        let Some(r_pos) = d
+            .checked_mul(i128::from(group.add))
+            .and_then(|v| v.checked_add(i128::from(group.avg)))
+        else {
+            return false;
+        };
+        let u_pos = i128::from(group.avg);
+        let (r, u) = if upper {
+            (r_pos, u_pos)
         } else {
-            for &(_, neg_u, a, count) in scored.iter() {
-                if rem == 0 {
-                    break;
-                }
-                let take = rem.min(count) as i128;
-                sum_a = sum_a.checked_add(a.checked_mul(take)?)?;
-                sum_u = sum_u.checked_add((-neg_u).checked_mul(take)?)?;
-                rem -= take as usize;
-            }
-        }
-        let r = self.d.checked_mul(sum_a)?.checked_add(sum_u)?;
-        Some((r, sum_u))
+            let (Some(neg_r), Some(neg_u)) = (r_pos.checked_neg(), u_pos.checked_neg()) else {
+                return false;
+            };
+            (neg_r, neg_u)
+        };
+        items.push(CoupledItem { r, u });
+        caps.push(group.count);
     }
-
-    fn prove_neg_avg_upper(
-        &self,
-        target: i128,
-        scored: &mut Vec<(i128, i128, i128, usize)>,
-    ) -> bool {
-        let Some(limit) = self.d.checked_mul(target) else {
-            return false;
-        };
-        let Some((mut r_l, mut u_l)) = self.extremal(0, 1, true, scored) else {
-            return false;
-        };
-        if r_l <= limit {
-            return true;
-        }
-        if u_l < 0 {
-            return false;
-        }
-        let mut right: Option<(i128, i128)> = None;
-        let mut step_p = 1_i128;
-        for _ in 0..60 {
-            let Some((r, u)) = self.extremal(step_p, 1, true, scored) else {
-                return false;
-            };
-            let Some(m) = step_p.checked_mul(u).and_then(|pu| r.checked_sub(pu)) else {
-                return false;
-            };
-            if let Some(cert) = m.checked_sub(step_p)
-                && cert <= limit
-            {
-                return true;
-            }
-            if u < 0 {
-                if r > limit {
-                    return false;
-                }
-                right = Some((r, u));
-                break;
-            }
-            r_l = r;
-            u_l = u;
-            let Some(next_p) = step_p.checked_mul(2) else {
-                return false;
-            };
-            step_p = next_p;
-        }
-        let Some((mut r_r, mut u_r)) = right else {
-            return false;
-        };
-        for _ in 0..32 {
-            let Some(p_raw) = r_l.checked_sub(r_r) else {
-                return false;
-            };
-            let Some(q_raw) = u_l.checked_sub(u_r) else {
-                return false;
-            };
-            if p_raw <= 0 || q_raw <= 0 {
-                return false;
-            }
-            let g = gcd_u128(p_raw as u128, q_raw as u128) as i128;
-            let p = p_raw / g;
-            let q = q_raw / g;
-            let Some((r_m, u_m)) = self.extremal(p, q, true, scored) else {
-                return false;
-            };
-            let Some(m) = q
-                .checked_mul(r_m)
-                .and_then(|qr| p.checked_mul(u_m).and_then(|pu| qr.checked_sub(pu)))
-            else {
-                return false;
-            };
-            let Some(rhs) = q.checked_mul(limit) else {
-                return false;
-            };
-            if let Some(cert) = m.checked_sub(p)
-                && cert <= rhs
-            {
-                return true;
-            }
-            if u_m < 0 && r_m > limit {
-                return false;
-            }
-            let Some(line_val) = q
-                .checked_mul(r_l)
-                .and_then(|qr| p.checked_mul(u_l).and_then(|pu| qr.checked_sub(pu)))
-            else {
-                return false;
-            };
-            if m <= line_val {
-                return false;
-            }
-            if u_m >= 0 {
-                r_l = r_m;
-                u_l = u_m;
-            } else {
-                r_r = r_m;
-                u_r = u_m;
-            }
-        }
-        false
-    }
-
-    fn prove_pos_avg_lower(
-        &self,
-        target: i128,
-        scored: &mut Vec<(i128, i128, i128, usize)>,
-    ) -> bool {
-        let Some(limit) = self.d.checked_mul(target) else {
-            return false;
-        };
-        let Some((mut r_l, mut u_l)) = self.extremal(0, 1, false, scored) else {
-            return false;
-        };
-        if r_l >= limit {
-            return true;
-        }
-        if u_l > 0 {
-            return false;
-        }
-        let mut right: Option<(i128, i128)> = None;
-        let mut step_p = 1_i128;
-        for _ in 0..60 {
-            let Some((r, u)) = self.extremal(step_p, 1, false, scored) else {
-                return false;
-            };
-            let Some(m) = step_p.checked_mul(u).and_then(|pu| r.checked_sub(pu)) else {
-                return false;
-            };
-            if let Some(cert) = m.checked_add(step_p)
-                && cert >= limit
-            {
-                return true;
-            }
-            if u > 0 {
-                if r < limit {
-                    return false;
-                }
-                right = Some((r, u));
-                break;
-            }
-            r_l = r;
-            u_l = u;
-            let Some(next_p) = step_p.checked_mul(2) else {
-                return false;
-            };
-            step_p = next_p;
-        }
-        let Some((mut r_r, mut u_r)) = right else {
-            return false;
-        };
-        for _ in 0..32 {
-            let Some(p_raw) = r_r.checked_sub(r_l) else {
-                return false;
-            };
-            let Some(q_raw) = u_r.checked_sub(u_l) else {
-                return false;
-            };
-            if p_raw <= 0 || q_raw <= 0 {
-                return false;
-            }
-            let g = gcd_u128(p_raw as u128, q_raw as u128) as i128;
-            let p = p_raw / g;
-            let q = q_raw / g;
-            let Some((r_m, u_m)) = self.extremal(p, q, false, scored) else {
-                return false;
-            };
-            let Some(m) = q
-                .checked_mul(r_m)
-                .and_then(|qr| p.checked_mul(u_m).and_then(|pu| qr.checked_sub(pu)))
-            else {
-                return false;
-            };
-            let Some(rhs) = q.checked_mul(limit) else {
-                return false;
-            };
-            if let Some(cert) = m.checked_add(p)
-                && cert >= rhs
-            {
-                return true;
-            }
-            if u_m > 0 && r_m < limit {
-                return false;
-            }
-            let Some(line_val) = q
-                .checked_mul(r_l)
-                .and_then(|qr| p.checked_mul(u_l).and_then(|pu| qr.checked_sub(pu)))
-            else {
-                return false;
-            };
-            if m >= line_val {
-                return false;
-            }
-            if u_m <= 0 {
-                r_l = r_m;
-                u_l = u_m;
-            } else {
-                r_r = r_m;
-                u_r = u_m;
-            }
-        }
-        false
-    }
+    let mut scratch = SearchScratch {
+        scored: Vec::with_capacity(groups.len()),
+        x_l: vec![0; groups.len()],
+        x_r: vec![0; groups.len()],
+        x_m: vec![0; groups.len()],
+    };
+    let mut budget = 4096_usize;
+    search_feasible(
+        &items,
+        &mut caps,
+        NodeQuery {
+            need: k,
+            r_req,
+            u_cap,
+        },
+        &mut budget,
+        &mut scratch,
+    ) == Feasibility::Infeasible
 }
 
 fn coupled_non_mul_bound(
@@ -1254,7 +1357,6 @@ fn coupled_non_mul_bound(
             groups.iter().map(|group| (group.avg, group.count)).collect();
         by_avg.sort_by_key(|&(avg, _)| avg);
         let mut weighted: Vec<(i128, usize)> = Vec::with_capacity(groups.len());
-        let mut scored: Vec<(i128, i128, i128, usize)> = Vec::with_capacity(groups.len());
         for k in 1..=total_cnt {
             let d = i128::from(base_cnt).checked_add(k as i128)?;
             let mut rem = k;
@@ -1305,19 +1407,20 @@ fn coupled_non_mul_bound(
                 r_max = r_max.checked_add(w.checked_mul(take as i128)?)?;
                 rem -= take;
             }
-            let slice = CountSlice {
-                groups,
-                k,
-                d,
-                base_sum: i128::from(base_sum),
-            };
             let lo_floor = floor_div_i128(r_min, d);
             let lo_ceil = ceil_div_i128(r_min, d);
             let lo_k = if u_max <= 0 || lo_floor == lo_ceil {
                 lo_ceil
             } else if u_min >= 0 {
                 lo_floor
-            } else if slice.prove_pos_avg_lower(lo_ceil, &mut scored) {
+            } else if prove_sign_split_infeasible(
+                groups,
+                k,
+                d,
+                i128::from(base_sum),
+                lo_ceil,
+                false,
+            ) {
                 lo_ceil
             } else {
                 lo_floor
@@ -1328,7 +1431,14 @@ fn coupled_non_mul_bound(
                 hi_floor
             } else if u_max <= 0 {
                 hi_ceil
-            } else if slice.prove_neg_avg_upper(hi_floor, &mut scored) {
+            } else if prove_sign_split_infeasible(
+                groups,
+                k,
+                d,
+                i128::from(base_sum),
+                hi_floor,
+                true,
+            ) {
                 hi_floor
             } else {
                 hi_ceil
