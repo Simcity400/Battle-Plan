@@ -69,6 +69,7 @@ dashboard-core.workspace = true
 dashboard-text.workspace = true
 
 [dev-dependencies]
+viewer-map-icons = { workspace = true, features = ["test-support"] }
 viewer-buildings = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-unit-models = { workspace = true, features = ["test-support"] }

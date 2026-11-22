@@ -433,6 +433,14 @@ fn pair_candidates<'a>(
     ));
     let (ideology, culture) = creator_operands(definition, inputs.links, inputs.countries)?;
     let geography = inputs.geography.context(country_ref)?;
+    let capital_continent = match geography {
+        Some(country) => country
+            .capital_continent
+            .as_ref()
+            .map(Option::as_deref)
+            .map_err(String::as_str),
+        None => Ok(None),
+    };
     let graphical = inputs.graphics.lookup_with_limits(
         &content_reader_equipment_graphics::equipment_graphics::Context {
             equipment: equipment_key,
@@ -443,7 +451,7 @@ fn pair_candidates<'a>(
             culture,
             country: geography.map(|country| country.country_tag.as_str()),
             faction_tags: geography.map_or(&[], |country| country.faction_tags.as_slice()),
-            capital_continent: geography.and_then(|country| country.capital_continent.as_deref()),
+            capital_continent,
         },
         inputs.limits,
         |name| inputs.registered.contains(name),

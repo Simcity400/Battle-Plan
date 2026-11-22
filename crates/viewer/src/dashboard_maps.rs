@@ -105,6 +105,7 @@ impl MapView {
         }
         DashboardMapState {
             id: self.target.id.clone(),
+            clock_id: self.target.clock_id.clone(),
             source_id: Some(self.target.source_id.clone()),
             revision: Some(self.target.revision.clone()),
             requested_sequence: self.target.sequence,
@@ -165,6 +166,7 @@ pub struct DashboardMaps {
     muted: bool,
     audio_owner: Option<String>,
     view_events: Vec<(String, crate::app::picker::ViewEvent)>,
+    clock_origins: crate::page_clock::OriginGate,
 }
 
 struct MapLimits {
@@ -242,6 +244,7 @@ impl DashboardMaps {
             muted: false,
             audio_owner: None,
             view_events: Vec::new(),
+            clock_origins: Default::default(),
         })
     }
 
@@ -443,12 +446,13 @@ impl DashboardMaps {
                 || key.visual_mods != settings.visual_mods
         });
         if changed {
+            let clock_id = self.clock_origins.active().map(str::to_owned);
             let targets = self
                 .order
                 .iter()
                 .filter_map(|id| self.views.get(id).map(|view| view.target.clone()))
                 .collect();
-            self.set_views(targets, frame, ctx);
+            self.set_views(clock_id.as_deref(), targets, frame, ctx);
         }
         for view in self.views.values_mut() {
             let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) else {
@@ -492,10 +496,22 @@ impl DashboardMaps {
 
     pub fn set_views(
         &mut self,
+        clock_id: Option<&str>,
         views: Vec<DashboardMapView>,
         frame: &eframe::Frame,
         ctx: &egui::Context,
     ) {
+        let origin_status = match clock_id {
+            Some(clock_id) => self.clock_origins.admit(clock_id),
+            None if self.clock_origins.active().is_some() => {
+                crate::page_clock::OriginStatus::Retired
+            }
+            None => crate::page_clock::OriginStatus::Current,
+        };
+        if origin_status == crate::page_clock::OriginStatus::Retired {
+            return;
+        }
+        let new_origin = origin_status == crate::page_clock::OriginStatus::NewOrigin;
         let wanted: BTreeSet<_> = views.iter().map(|view| view.id.clone()).collect();
         let removed: Vec<_> = self
             .views
@@ -524,7 +540,7 @@ impl DashboardMaps {
             });
             if retained {
                 let view = self.views.get_mut(&target.id).expect("retained map");
-                if target.sequence >= view.target.sequence {
+                if new_origin || target.sequence >= view.target.sequence {
                     if view.source != source {
                         view.retire(frame);
                         view.source = source;
@@ -1308,6 +1324,7 @@ mod tests {
             sequence: 7,
             seek_sequence: Some(2),
             composed_at: 0.0,
+            clock_id: "page-1".into(),
             bounds: ViewBounds {
                 x: 0,
                 y: 0,
@@ -1393,13 +1410,14 @@ mod tests {
             sequence: 1,
             seek_sequence: None,
             composed_at: 0.0,
+            clock_id: "page-1".into(),
             bounds,
             clip: bounds,
             visible: true,
         };
         let ctx = egui::Context::default();
         let frame = eframe::Frame::_new_kittest();
-        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         settle(&mut maps, &ctx, &target.id, |view| view.error.is_some());
         let failed = maps.views[&target.id].error.clone();
         std::fs::rename(&away, &path).unwrap();
@@ -1408,7 +1426,7 @@ mod tests {
         for visible in [false, true] {
             target.visible = visible;
             target.sequence += 1;
-            maps.set_views(vec![target.clone()], &frame, &ctx);
+            maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         }
         settle(&mut maps, &ctx, &target.id, |view| {
             view.source.is_some() || view.error.is_some()
@@ -1446,21 +1464,22 @@ mod tests {
             sequence: 1,
             seek_sequence: None,
             composed_at: 0.0,
+            clock_id: "page-1".into(),
             bounds,
             clip: bounds,
             visible: true,
         };
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
-        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         let export = dashboard::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
         maps.views.get_mut(&target.id).unwrap().viewer.host_map_action(export, &ctx, &mut frame);
-        maps.set_views(Vec::new(), &frame, &ctx);
+        maps.set_views(Some("page-1"), Vec::new(), &frame, &ctx);
         assert!(maps.views.is_empty());
         assert_eq!(maps.take_export_results(), [(5, Err("Open a map and wait for any active export to finish".to_owned()))]);
         assert!(maps.take_export_results().is_empty(), "answered once");
 
-        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png", 6);
         maps.not_drawn();
         assert_eq!(maps.take_export_results(), [(6, Err("Capture widget.png failed: its map widget was not drawn before its picture was saved".to_owned()))]);
@@ -1516,6 +1535,7 @@ mod tests {
             sequence: 0,
             seek_sequence: None,
             composed_at: 0.0,
+            clock_id: "page-1".into(),
             bounds: bounds(0),
             clip: bounds(0),
             visible: true,
@@ -1537,5 +1557,113 @@ mod tests {
     #[test]
     fn map_registry_entries_do_not_move_renderers_on_the_ui_stack() {
         assert!(std::mem::size_of::<MapView>() < 1024);
+    }
+
+    #[test]
+    fn set_views_admits_reloaded_page_at_sequence_zero_and_ignores_late_old_page_snapshots() {
+        let mut maps = DashboardMaps::new(
+            Config::default(),
+            Options::default(),
+            Service::new(Arc::new(|_| true)).unwrap(),
+            None,
+            crate::worker_pool::WorkerPool::new().unwrap(),
+        )
+        .unwrap();
+        maps.limits.dimension = u32::MAX;
+        let bounds = ViewBounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let make = |id: &str, clock_id: &str, sequence: u64, hour: i32, playing: bool| DashboardMapView {
+            options: Default::default(),
+            id: id.into(),
+            source_id: "source".into(),
+            path: String::new(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+        let ctx = egui::Context::default();
+        let frame = eframe::Frame::_new_kittest();
+        maps.set_views(
+            Some("page-A"),
+            vec![
+                make("playing-widget", "page-A", 80, 100, true),
+                make("paused-widget", "page-A", 80, 100, false),
+            ],
+            &frame,
+            &ctx,
+        );
+        assert_eq!(maps.views["playing-widget"].target.sequence, 80);
+        assert_eq!(maps.views["paused-widget"].target.sequence, 80);
+
+        maps.set_views(
+            Some("page-B"),
+            vec![
+                make("playing-widget", "page-B", 0, 250, true),
+                make("paused-widget", "page-B", 0, 260, false),
+                make("new-widget", "page-B", 0, 270, false),
+            ],
+            &frame,
+            &ctx,
+        );
+        assert_eq!(maps.views["playing-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["playing-widget"].target.sequence, 0);
+        assert_eq!(maps.views["playing-widget"].target.hour, 250);
+        assert_eq!(maps.views["paused-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["paused-widget"].target.sequence, 0);
+        assert_eq!(maps.views["paused-widget"].target.hour, 260);
+        assert!(maps.views.contains_key("new-widget"));
+        assert!(
+            maps.states().iter().all(|state| state.clock_id == "page-B"),
+            "map-state replies must echo the accepted target's clock_id"
+        );
+
+        maps.set_views(
+            Some("page-A"),
+            vec![make("playing-widget", "page-A", 81, 999, true)],
+            &frame,
+            &ctx,
+        );
+        assert_eq!(maps.views.len(), 3, "a retired page snapshot must not remove reloaded widgets");
+        assert_eq!(maps.views["playing-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["playing-widget"].target.sequence, 0);
+        assert_eq!(maps.views["playing-widget"].target.hour, 250);
+        assert_eq!(maps.views["paused-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["paused-widget"].target.hour, 260);
+        assert!(maps.views.contains_key("new-widget"));
+
+        maps.set_views(Some("page-A"), Vec::new(), &frame, &ctx);
+        assert_eq!(
+            maps.views.len(),
+            3,
+            "a late empty clear from retired page A must not wipe page B's widgets"
+        );
+
+        maps.set_views(Some("page-B"), Vec::new(), &frame, &ctx);
+        assert!(maps.views.is_empty(), "a legitimate empty clear from active page B clears widgets");
+
+        maps.set_views(
+            Some("page-A"),
+            vec![make("playing-widget", "page-A", 82, 1000, true)],
+            &frame,
+            &ctx,
+        );
+        assert!(
+            maps.views.is_empty(),
+            "a late populated snapshot from retired page A after page B's clear must be ignored"
+        );
     }
 }

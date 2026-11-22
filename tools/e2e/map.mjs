@@ -70,9 +70,10 @@ export async function mapModes(s, dpr) {
   const { view } = await mapArea(s, dpr);
   const modes = await s.app.evaluate(`__e2e.mapModes[${JSON.stringify(view)}] ?? null`);
   if (!modes?.length) throw new Error('the viewer reported no modes for the map');
-  const views = s.app.lastSent('set_dashboard_maps')?.args.views ?? null;
-  if (!views?.some(entry => entry.id === view)) throw new Error('the app has sent no layout with the map in it');
-  const send = list => s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('set_dashboard_maps', { views: ${JSON.stringify(list)} }).then(() => true)`);
+  const last = s.app.lastSent('set_dashboard_maps')?.args ?? null;
+  const views = last?.views ?? null;
+  if (!last?.clockId || !views?.some(entry => entry.id === view)) throw new Error('the app has sent no layout with the map in it');
+  const send = list => s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('set_dashboard_maps', ${JSON.stringify({ ...last, views: list })}).then(() => true)`);
   const active = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(view)} && x.mapMode).at(-1)?.mapMode ?? null`);
   const ordered = [...modes.filter(mode => mode.token !== active), ...modes.filter(mode => mode.token === active)];
   for (const mode of ordered) {

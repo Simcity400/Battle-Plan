@@ -130,6 +130,7 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+viewer-map-icons = { workspace = true, features = ["test-support"] }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }

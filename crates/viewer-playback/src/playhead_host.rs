@@ -1190,7 +1190,18 @@ impl MapSide {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn frame_waiting(&mut self, head: Hour) -> io::Result<Frame> {
-        self.frame_step(head, crate::layers::Settling::step(), true, true)
+        let was = self.consumer.set_blocking(true);
+        let result = self.frame_step(head, crate::layers::Settling::step(), true, true);
+        self.consumer.set_blocking(was);
+        result
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn frame_synced(&mut self, head: Hour) -> io::Result<Frame> {
+        let was = self.consumer.set_blocking(true);
+        let result = self.frame_within(head, crate::layers::Settling::step(), true);
+        self.consumer.set_blocking(was);
+        result
     }
 
     #[cfg(any(test, feature = "test-support"))]

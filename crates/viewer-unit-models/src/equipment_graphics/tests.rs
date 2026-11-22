@@ -189,7 +189,7 @@ fn context<'a>(country: Option<&'a str>, factions: &'a [String]) -> Context<'a> 
         culture: Some("western_european_gfx"),
         country,
         faction_tags: factions,
-        capital_continent: Some("Europe"),
+        capital_continent: Ok(Some("Europe")),
     }
 }
 

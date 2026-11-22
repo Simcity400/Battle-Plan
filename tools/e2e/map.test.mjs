@@ -13,6 +13,7 @@ import {
   assertValidPng,
   cameraPoseMatches,
   deriveCloseCameraPose,
+  mapModes,
   mapPictures,
   zoomedMapPicture,
 } from './map.mjs';
@@ -402,4 +403,72 @@ test('sweep visual phase runs zoomedMapPicture and playback does not stub-fail i
   assert.ok(playbackStart > mapStart && catalogueStart > playbackStart);
   assert.match(sweep.slice(visualStart, mapStart), /await zoomedMapPicture\(/);
   assert.doesNotMatch(sweep.slice(playbackStart, catalogueStart), /zoomedMapPicture\(/);
+});
+
+test('mapModes preserves the set_dashboard_maps envelope including clockId on mode changes and restore', async () => {
+  const invokes = [];
+  const recorded = [];
+  let activeMode = 'terrain';
+  const lastArgs = {
+    clockId: 'page-e2e-1',
+    views: [
+      { id: 'overview-map', options: { fog: true, mapMode: 'terrain' } },
+      { id: 'other-map', options: { fog: false, mapMode: 'political' } },
+    ],
+  };
+  const s = {
+    app: {
+      lastSent(command) {
+        return command === 'set_dashboard_maps' ? { args: lastArgs } : null;
+      },
+      async evaluate(expression) {
+        if (expression.includes("article.dash-widget.kind-map")) {
+          return { view: 'overview-map', left: 12, top: 12, right: 200, bottom: 200 };
+        }
+        if (expression.startsWith('__e2e.mapModes[')) {
+          return [
+            { token: 'terrain', label: 'Terrain' },
+            { token: 'states', label: 'States' },
+          ];
+        }
+        if (expression.includes('x.mapMode).at(-1)?.mapMode')) {
+          return activeMode;
+        }
+        if (expression.includes("invoke('set_dashboard_maps'")) {
+          const fakeWindow = {
+            __TAURI_INTERNALS__: {
+              async invoke(command, payload) {
+                assert.equal(command, 'set_dashboard_maps');
+                invokes.push(payload);
+                const mapView = payload.views?.find(entry => entry.id === 'overview-map');
+                if (mapView?.options?.mapMode) activeMode = mapView.options.mapMode;
+              },
+            },
+          };
+          return await new Function('window', `return ${expression}`)(fakeWindow);
+        }
+        if (expression.startsWith('__e2e.mapState(')) {
+          return { id: 'overview-map', mapMode: activeMode, loading: false, drawnAt: Date.now() };
+        }
+        throw new Error(`unexpected evaluate: ${expression}`);
+      },
+    },
+    async watch() {},
+    async unwatch() { return []; },
+    async record(entry) { recorded.push(entry); },
+  };
+
+  await mapModes(s, 1);
+
+  assert.equal(invokes.length, 3, 'two mode switches plus final restore');
+  for (const payload of invokes) {
+    assert.equal(payload.clockId, 'page-e2e-1', `missing or wrong clockId: ${JSON.stringify(payload)}`);
+    assert.equal(payload.views.length, 2);
+    assert.deepEqual(payload.views[1], lastArgs.views[1]);
+  }
+  assert.equal(invokes[0].views[0].options.mapMode, 'states');
+  assert.equal(invokes[1].views[0].options.mapMode, 'terrain');
+  assert.deepEqual(invokes[2], lastArgs);
+  assert.equal(recorded.length, 2);
+  assert.deepEqual(recorded.map(entry => entry.reasons), [[], []]);
 });
