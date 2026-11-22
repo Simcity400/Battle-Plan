@@ -165,6 +165,7 @@ pub struct DashboardMaps {
     muted: bool,
     audio_owner: Option<String>,
     view_events: Vec<(String, crate::app::picker::ViewEvent)>,
+    clock_origins: crate::page_clock::OriginGate,
 }
 
 struct MapLimits {
@@ -242,6 +243,7 @@ impl DashboardMaps {
             muted: false,
             audio_owner: None,
             view_events: Vec::new(),
+            clock_origins: Default::default(),
         })
     }
 
@@ -496,6 +498,13 @@ impl DashboardMaps {
         frame: &eframe::Frame,
         ctx: &egui::Context,
     ) {
+        let origin_status = self
+            .clock_origins
+            .admit_all(views.iter().map(|view| view.clock_id.as_str()));
+        if origin_status == crate::page_clock::OriginStatus::Retired {
+            return;
+        }
+        let new_origin = origin_status == crate::page_clock::OriginStatus::NewOrigin;
         let wanted: BTreeSet<_> = views.iter().map(|view| view.id.clone()).collect();
         let removed: Vec<_> = self
             .views
@@ -524,7 +533,7 @@ impl DashboardMaps {
             });
             if retained {
                 let view = self.views.get_mut(&target.id).expect("retained map");
-                if target.sequence >= view.target.sequence {
+                if new_origin || target.sequence >= view.target.sequence {
                     if view.source != source {
                         view.retire(frame);
                         view.source = source;
@@ -1541,5 +1550,85 @@ mod tests {
     #[test]
     fn map_registry_entries_do_not_move_renderers_on_the_ui_stack() {
         assert!(std::mem::size_of::<MapView>() < 1024);
+    }
+
+    #[test]
+    fn set_views_admits_reloaded_page_at_sequence_zero_and_ignores_late_old_page_snapshots() {
+        let mut maps = DashboardMaps::new(
+            Config::default(),
+            Options::default(),
+            Service::new(Arc::new(|_| true)).unwrap(),
+            None,
+            crate::worker_pool::WorkerPool::new().unwrap(),
+        )
+        .unwrap();
+        maps.limits.dimension = u32::MAX;
+        let bounds = ViewBounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let make = |id: &str, clock_id: &str, sequence: u64, hour: i32, playing: bool| DashboardMapView {
+            options: Default::default(),
+            id: id.into(),
+            source_id: "source".into(),
+            path: String::new(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+        let ctx = egui::Context::default();
+        let frame = eframe::Frame::_new_kittest();
+        maps.set_views(
+            vec![
+                make("playing-widget", "page-A", 80, 100, true),
+                make("paused-widget", "page-A", 80, 100, false),
+            ],
+            &frame,
+            &ctx,
+        );
+        assert_eq!(maps.views["playing-widget"].target.sequence, 80);
+        assert_eq!(maps.views["paused-widget"].target.sequence, 80);
+
+        maps.set_views(
+            vec![
+                make("playing-widget", "page-B", 0, 250, true),
+                make("paused-widget", "page-B", 0, 260, false),
+                make("new-widget", "page-B", 0, 270, false),
+            ],
+            &frame,
+            &ctx,
+        );
+        assert_eq!(maps.views["playing-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["playing-widget"].target.sequence, 0);
+        assert_eq!(maps.views["playing-widget"].target.hour, 250);
+        assert_eq!(maps.views["paused-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["paused-widget"].target.sequence, 0);
+        assert_eq!(maps.views["paused-widget"].target.hour, 260);
+        assert!(maps.views.contains_key("new-widget"));
+
+        maps.set_views(
+            vec![make("playing-widget", "page-A", 81, 999, true)],
+            &frame,
+            &ctx,
+        );
+        assert_eq!(maps.views.len(), 3, "a retired page snapshot must not remove reloaded widgets");
+        assert_eq!(maps.views["playing-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["playing-widget"].target.sequence, 0);
+        assert_eq!(maps.views["playing-widget"].target.hour, 250);
+        assert_eq!(maps.views["paused-widget"].target.clock_id, "page-B");
+        assert_eq!(maps.views["paused-widget"].target.hour, 260);
+        assert!(maps.views.contains_key("new-widget"));
     }
 }

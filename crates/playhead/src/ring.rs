@@ -279,6 +279,11 @@ impl Ring {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn asked(&self, id: usize) -> bool {
+        self.consumers.get(id).and_then(Option::as_ref).is_some_and(|seat| seat.asks)
+    }
+
     pub(crate) fn reader_of(&self, id: usize) -> Option<Reader> {
         self.consumers.get(id)?.as_ref().map(|seat| seat.reader)
     }

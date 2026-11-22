@@ -51,6 +51,7 @@ struct Inner {
     muted: Option<bool>,
     exports: Vec<Export>,
     export_requests: u64,
+    clock_origins: viewer::page_clock::OriginGate,
 }
 
 struct Export {
@@ -204,6 +205,13 @@ impl NativeHost {
             let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
             if inner.shutting_down {
                 return Err("BattlePlan is closing.".into());
+            }
+            if inner
+                .clock_origins
+                .admit_all(views.iter().map(|view| view.clock_id.as_str()))
+                == viewer::page_clock::OriginStatus::Retired
+            {
+                return Ok(());
             }
             inner.dashboard_views = Some(views.to_vec());
             if !inner.active_dashboard {
@@ -455,6 +463,12 @@ impl NativeHost {
             return Err("A map seek must carry the revision its analysis read".into());
         }
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
+        if playback.as_ref().is_some_and(|clock| {
+            inner.clock_origins.admit(&clock.clock_id)
+                == viewer::page_clock::OriginStatus::Retired
+        }) {
+            return Ok(());
+        }
         inner.dashboard_views = None;
         inner.pending.maps = None;
         let current_matches = inner.status.viewer.path.as_ref() == Some(&path)

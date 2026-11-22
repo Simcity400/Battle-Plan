@@ -115,20 +115,26 @@ impl Viewer {
             self.embedded_seek = None;
         }
         if let Some(seek) = pending.seek {
-            let accepted = self
-                .document
+            if !seek
+                .playback
                 .as_ref()
-                .map(|document| (document.source_path.as_path(), self.revision.as_deref()));
-            let pending_load = if self.loading.is_some() || self.awaiting_folders {
-                self.options
-                    .replay
-                    .as_deref()
-                    .map(|path| (path, self.expected_revision.as_deref()))
-            } else {
-                None
-            };
-            self.embedded_open = seek_open_target(&seek, accepted, pending_load);
-            self.embedded_seek = Some(seek);
+                .is_some_and(|clock| self.page_clock.is_retired(&clock.clock_id))
+            {
+                let accepted = self
+                    .document
+                    .as_ref()
+                    .map(|document| (document.source_path.as_path(), self.revision.as_deref()));
+                let pending_load = if self.loading.is_some() || self.awaiting_folders {
+                    self.options
+                        .replay
+                        .as_deref()
+                        .map(|path| (path, self.expected_revision.as_deref()))
+                } else {
+                    None
+                };
+                self.embedded_open = seek_open_target(&seek, accepted, pending_load);
+                self.embedded_seek = Some(seek);
+            }
         }
         {
             let _other_cost = replay_frame::cpu::scope("frame.load", Some("other"));

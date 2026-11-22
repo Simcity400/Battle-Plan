@@ -39,8 +39,9 @@ impl Apart {
     #[cfg(any(test, feature = "test-support"))]
     pub fn drive(&mut self, hour: Hour) -> bool {
         let entry = Arc::clone(&self.entry);
+        self.consumer.advance_blocking(hour);
         let reached = entry.playhead().wait_for(|| {
-            self.advance_to(hour);
+            self.take_to(hour, true);
             self.applied == Some((hour, entry.playhead().epoch())) && self.home()
         });
         if reached.is_ok() {
@@ -65,12 +66,21 @@ impl Apart {
         for_the_makers(&self.entry).keys().all(|&table| self.mirrors.get(replay_data::rows::TableId::ALL[table]).is_some())
     }
 
-    fn advance_to(&mut self, hour: Hour) {
+    fn take_to(&mut self, hour: Hour, blocking: bool) {
         self.store.settled();
-        let mut steps: Vec<Arc<Step>> = Vec::new();
-        self.consumer.advance(hour);
-        self.consumer.take(hour, &mut steps);
         let Some(mirrors) = Arc::get_mut(&mut self.mirrors) else { return };
+        let mut steps: Vec<Arc<Step>> = Vec::new();
+        #[cfg(any(test, feature = "test-support"))]
+        if blocking {
+            self.consumer.take_blocking(hour, &mut steps);
+        } else {
+            self.consumer.take(hour, &mut steps);
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let _ = blocking;
+            self.consumer.take(hour, &mut steps);
+        }
         let mut tables = Vec::new();
         for step in &steps {
             if step.last() > hour {
@@ -91,7 +101,8 @@ impl Apart {
     }
 
     fn step(&mut self, hour: Hour) {
-        self.advance_to(hour);
+        self.consumer.advance(hour);
+        self.take_to(hour, false);
         if let Some((applied, epoch)) = self.applied {
             self.store.post(&self.mirrors, applied, self.branch, epoch, false);
         }

@@ -77,9 +77,17 @@ pub struct Pending {
     pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
+    clock_origins: crate::page_clock::OriginGate,
 }
 
 impl Pending {
+    fn take(&mut self) -> Self {
+        let origins = std::mem::take(&mut self.clock_origins);
+        let taken = std::mem::take(self);
+        self.clock_origins = origins;
+        taken
+    }
+
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
@@ -125,6 +133,13 @@ impl Pending {
             }
             NativeCommand::MapViews { views } => {
                 validate_map_views(&views)?;
+                if self
+                    .clock_origins
+                    .admit_all(views.iter().map(|view| view.clock_id.as_str()))
+                    == crate::page_clock::OriginStatus::Retired
+                {
+                    return Ok(());
+                }
                 self.map_views = Some(views);
                 self.campaign_map = false;
                 self.open = None;
@@ -171,12 +186,19 @@ impl Pending {
                 if branch.is_empty() || !branch.bytes().all(|byte| byte.is_ascii_digit()) {
                     return Err("A branch must be an unsigned decimal string".into());
                 }
+                let branch = branch
+                    .parse()
+                    .map_err(|_| "Branch exceeds the replay's u64 id")?;
+                if playback.as_ref().is_some_and(|clock| {
+                    self.clock_origins.admit(&clock.clock_id)
+                        == crate::page_clock::OriginStatus::Retired
+                }) {
+                    return Ok(());
+                }
                 self.seek = Some(Seek {
                     path: PathBuf::from(path),
                     revision,
-                    branch: branch
-                        .parse()
-                        .map_err(|_| "Branch exceeds the replay's u64 id")?,
+                    branch,
                     hour,
                     playback,
                 });
@@ -691,13 +713,12 @@ impl Controller {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) -> Pending {
-        let mut pending = std::mem::take(
-            &mut *self
-                .shared
-                .pending
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         pending.close |= self.closing;
         if !pending.close {
             let applied = (|| {
@@ -1655,5 +1676,37 @@ mod tests {
         drop(panel);
         assert!(following.upgrade().is_none(), "the last panel reader's close stops the store");
         assert!(entry.playhead().declarations() > declarations, "the store's playhead reader is retired");
+    }
+
+    #[test]
+    fn coalescing_rejects_seeks_from_retired_clock_origins_before_drain() {
+        let mut pending = Pending::default();
+        let seek = |path: &str, hour: i32, clock_id: &str| NativeCommand::Seek {
+            path: path.into(),
+            revision: "rev-1".into(),
+            branch: "1".into(),
+            hour,
+            playback: Some(dashboard::protocol::MapPlayback {
+                playing: true,
+                seek_sequence: 1,
+                fraction: 0.0,
+                hours_per_second: 1440.0,
+                composed_at: 10.0,
+                clock_id: clock_id.into(),
+            }),
+        };
+        pending.push(seek("old.battleplan", 100, "page-A")).unwrap();
+        pending.push(seek("new.battleplan", 200, "page-B")).unwrap();
+        pending.push(seek("old.battleplan", 300, "page-A")).unwrap();
+        let drained = pending.take();
+        let kept = drained.seek.expect("page-B seek survives");
+        assert_eq!(kept.path, PathBuf::from("new.battleplan"));
+        assert_eq!(kept.hour, 200);
+        assert_eq!(
+            kept.playback.as_ref().map(|clock| clock.clock_id.as_str()),
+            Some("page-B")
+        );
+        pending.push(seek("old.battleplan", 400, "page-A")).unwrap();
+        assert!(pending.take().seek.is_none(), "origin retirement persists across drains");
     }
 }

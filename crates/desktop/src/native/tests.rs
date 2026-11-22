@@ -380,3 +380,85 @@ fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
         ]
     ));
 }
+
+#[test]
+fn retired_clock_origin_seeks_cannot_overwrite_pending_seek_or_reopen_previous_recording() {
+    let playback = |clock_id: &str, seek_sequence: u64| {
+        Some(dashboard::protocol::MapPlayback {
+            playing: true,
+            seek_sequence,
+            fraction: 0.0,
+            hours_per_second: 1440.0,
+            composed_at: 100.0,
+            clock_id: clock_id.into(),
+        })
+    };
+    let host = NativeHost::default();
+    host.seek(
+        "old.battleplan".into(),
+        "rev-old".into(),
+        "1".into(),
+        100,
+        playback("page-A", 1),
+    )
+    .unwrap();
+    host.seek(
+        "new.battleplan".into(),
+        "rev-new".into(),
+        "2".into(),
+        200,
+        playback("page-B", 1),
+    )
+    .unwrap();
+    host.seek(
+        "old.battleplan".into(),
+        "rev-old".into(),
+        "1".into(),
+        105,
+        playback("page-A", 2),
+    )
+    .unwrap();
+    host.seek(
+        "new.battleplan".into(),
+        "rev-new".into(),
+        "2".into(),
+        999,
+        playback("page-A", 3),
+    )
+    .unwrap();
+    let inner = host.shared.lock().unwrap();
+    assert_eq!(inner.requested_path.as_deref(), Some("new.battleplan"));
+    assert_eq!(inner.requested_revision.as_deref(), Some("rev-new"));
+    assert_eq!(
+        inner.pending.open,
+        Some(("new.battleplan".into(), Some("rev-new".into())))
+    );
+    let pending_seek = inner.pending.seek.as_ref().expect("B seek stays queued");
+    assert_eq!(pending_seek.path, "new.battleplan");
+    assert_eq!(pending_seek.hour, 200);
+    assert_eq!(
+        pending_seek.playback.as_ref().map(|clock| clock.clock_id.as_str()),
+        Some("page-B")
+    );
+    let requested_seek = inner.requested_seek.as_ref().expect("B seek stays requested");
+    assert_eq!(requested_seek.path, "new.battleplan");
+    assert_eq!(requested_seek.hour, 200);
+    drop(inner);
+
+    let popout = NativeHost::popout(0, Arc::new(|| {}));
+    popout
+        .seek(
+            "popout.battleplan".into(),
+            "rev-pop".into(),
+            "1".into(),
+            50,
+            playback("page-A", 1),
+        )
+        .unwrap();
+    let popout_inner = popout.shared.lock().unwrap();
+    assert_eq!(
+        popout_inner.pending.seek.as_ref().map(|seek| seek.hour),
+        Some(50),
+        "origin retirement is scoped per NativeHost"
+    );
+}

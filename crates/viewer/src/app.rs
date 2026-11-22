@@ -355,6 +355,13 @@ enum PaintingPlaced {
     Refused(viewer_foundation::map::anchored::Refused),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OverlayPlaced {
+    Unchanged,
+    Placed,
+    Failed(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Playhead {
     branch: replay_data::BranchId,
@@ -1838,9 +1845,11 @@ impl Viewer {
         let Some(observed) = self.page_clock.observe(composed, now) else {
             return;
         };
+        let discontinuity = observed.new_origin && self.playhead.is_some();
         if observed.new_origin {
             self.clock_anchor = None;
         }
+        let sought = sought || discontinuity;
         let anchor = (target, playing, speed);
         self.seek_owed |= sought;
         if sought {
@@ -1978,7 +1987,24 @@ impl Viewer {
     }
 
     fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made, gaps: &[replay_frame::branches::Gap]) {
-        let crate::playhead_host::overlay::Made { generation, hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
+        let crate::playhead_host::overlay::Made {
+            generation,
+            hour,
+            branch,
+            mut prepared,
+            tables,
+            rows,
+            placed_at,
+            placed_pixels,
+            placed_ui_scale,
+            on: _,
+            published,
+            draws,
+            view,
+            left,
+            lay_ins,
+            moved,
+        } = made;
         let current_epoch = self
             .counter_view
             .presentation
@@ -2019,10 +2045,20 @@ impl Viewer {
         self.overlay_view = Some(view);
         self.overlay_shown = Some((branch, hour));
         self.overlay_placed = Some(placed_at);
+        self.overlay_placed_view = Some((placed_pixels, placed_ui_scale.to_bits()));
         self.overlay_fraction = None;
         self.overlay_unpainted = true;
         self.overlay_installed += 1;
         viewer_foundation::map::redraws::note("made.laid", 1);
+    }
+
+    fn withhold_overlay(&mut self, why: &str) {
+        self.drop_overlay_drawn();
+        self.overlay_unpainted = true;
+        self.overlay_fraction = None;
+        self.overlay_drawn_fraction = None;
+        self.overlay_loading
+            .push(format!("the overlay is withheld: {why}"));
     }
 
     #[allow(clippy::too_many_arguments, reason = "the frame's camera and what the placing reads")]
@@ -2035,28 +2071,38 @@ impl Viewer {
         tables: &crate::document::OverlayTables,
         rows: &Arc<replay_frame::frame::DecodedFrame>,
         left: crate::document::LeftToLayers,
-    ) -> bool {
+    ) -> OverlayPlaced {
         if self.overlay_placed == Some(camera)
             && self.overlay_placed_view == Some((pixels, ui_scale.to_bits()))
         {
-            return false;
+            return OverlayPlaced::Unchanged;
         }
         let Some(prepared) = self.prepared_overlay.as_mut() else {
-            return false;
+            return OverlayPlaced::Unchanged;
         };
         let read = crate::document::OverlayRows::at_head(Some(Arc::clone(rows))).leaving(left);
-        match prepared.project(now, camera, pixels, ui_scale, tables, &self.counter_view, &read) {
+        match prepared.project(
+            now,
+            camera,
+            pixels,
+            ui_scale,
+            tables,
+            &self.counter_view,
+            &read,
+            self.overlay_lay_ins.as_deref(),
+        ) {
             Ok(()) => {
                 viewer_foundation::map::redraws::note("made.placed", 1);
                 self.overlay_placed = Some(camera);
                 self.overlay_placed_view = Some((pixels, ui_scale.to_bits()));
                 self.overlay_fraction = None;
                 self.overlay_shifts.clear();
-                true
+                OverlayPlaced::Placed
             }
             Err(error) => {
-                self.overlay_loading.push(format!("the overlay: {error}"));
-                false
+                let why = error.to_string();
+                self.withhold_overlay(&why);
+                OverlayPlaced::Failed(why)
             }
         }
     }
@@ -2071,6 +2117,11 @@ impl Viewer {
         let Some(placed) = self.overlay_placed else {
             return Ok(PaintingPlaced::Placed);
         };
+        if self.overlay_placed_view != Some((pixels, ui_scale.to_bits())) {
+            return Ok(PaintingPlaced::Refused(
+                viewer_foundation::map::anchored::Refused::NotAMove,
+            ));
+        }
         if placed == camera
             && (camera.free().is_some() || !self.overlay.as_ref().is_some_and(Batch::moves))
         {
@@ -2141,7 +2192,6 @@ impl Viewer {
                 {
                     self.overlay_counted.painted(batch).record();
                 }
-                self.overlay_placed_view = Some((pixels, ui_scale.to_bits()));
                 self.overlay_unpainted = false;
                 self.overlay_clock_unavailable = clock_unavailable;
                 self.overlay_fraction = Some(hour_fraction);
@@ -2149,12 +2199,7 @@ impl Viewer {
                 Ok(None)
             }
             PaintingPlaced::Refused(why) => {
-                self.drop_overlay_drawn();
-                self.overlay_unpainted = true;
-                self.overlay_fraction = None;
-                self.overlay_drawn_fraction = None;
-                self.overlay_loading
-                    .push(format!("the overlay is withheld: {}", why.why()));
+                self.withhold_overlay(why.why());
                 Ok(Some(why))
             }
         }
@@ -5119,8 +5164,16 @@ impl Viewer {
             }
             let moved_now = !(clock_lost || clock_recovered || saved)
                 && self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
-            let placed_now = !moved_now
-                && self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left);
+            let place_outcome = if moved_now {
+                OverlayPlaced::Unchanged
+            } else {
+                self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left)
+            };
+            let placed_now = matches!(place_outcome, OverlayPlaced::Placed);
+            let place_failed = match place_outcome {
+                OverlayPlaced::Failed(why) => Some(why),
+                _ => None,
+            };
             if let Some(side) = live_of(&self.playhead_map)
                 && let Some(names) = side.products().placements.clone()
                 && !self.placements.as_ref().is_some_and(|held| Arc::ptr_eq(held, &names))
@@ -5220,7 +5273,16 @@ impl Viewer {
             }
             drop(scene_span);
             let mut painted_now = false;
-            if self.overlay_fraction != Some(document.hour_fraction)
+            if let Some(why) = place_failed {
+                if self.saves_a_frame() {
+                    let reason = format!(
+                        "A saved frame draws the overlay for the requested camera: {why}"
+                    );
+                    if self.refuse_capture(&reason, ui.ctx()) {
+                        return Err(reason);
+                    }
+                }
+            } else if self.overlay_fraction != Some(document.hour_fraction)
                 && let Some(prepared) = self.prepared_overlay.as_mut()
             {
                 let quiet = self.overlay_fraction.is_some_and(f32::is_nan)
@@ -5240,14 +5302,34 @@ impl Viewer {
                     let mut rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
                     let mut installed = false;
                     let mut settles = 0;
+                    let mut art_place_failed = false;
                     let art_moved = std::mem::take(&mut self.overlay_art_moved);
                     loop {
                         let (Some(rows), Some(tables)) = (self.overlay_frame.clone(), self.overlay_tables.clone()) else {
                             break;
                         };
                         let held = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
-                        if std::mem::take(&mut installed) {
-                            self.place_overlay(&held, overlay_camera, pixels, ui_scale, &tables, &rows, self.overlay_left);
+                        if std::mem::take(&mut installed)
+                            && let OverlayPlaced::Failed(why) = self.place_overlay(
+                                &held,
+                                overlay_camera,
+                                pixels,
+                                ui_scale,
+                                &tables,
+                                &rows,
+                                self.overlay_left,
+                            )
+                        {
+                            if self.saves_a_frame() {
+                                let reason = format!(
+                                    "A saved frame draws the overlay for the requested camera: {why}"
+                                );
+                                if self.refuse_capture(&reason, ui.ctx()) {
+                                    return Err(reason);
+                                }
+                            }
+                            art_place_failed = true;
+                            break;
                         }
                         let prepared = self.prepared_overlay.as_mut().expect("held above");
                         prepared
@@ -5301,54 +5383,59 @@ impl Viewer {
                         installed = true;
                         rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
                     }
-                    let withheld = self.finish_painting(
-                        overlay_camera,
-                        pixels,
-                        ui_scale,
-                        at,
-                        document.hour_fraction,
-                        clock_speed.is_none(),
-                        |viewer| {
-                            let (Some(rows), Some(tables)) = (viewer.overlay_frame.clone(), viewer.overlay_tables.clone()) else {
-                                return Ok(false);
-                            };
-                            let held = crate::document::Hour::new(&document.content, &rows, 0.0)
-                                .with_air_rosters(Some(document.playback.air_rosters()))
-                                .with_moved_hours(Arc::clone(&viewer.overlay_moved));
-                            if !viewer.place_overlay(&held, overlay_camera, pixels, ui_scale, &tables, &rows, viewer.overlay_left) {
-                                return Ok(false);
+                    if !art_place_failed {
+                        let withheld = self.finish_painting(
+                            overlay_camera,
+                            pixels,
+                            ui_scale,
+                            at,
+                            document.hour_fraction,
+                            clock_speed.is_none(),
+                            |viewer| {
+                                let (Some(rows), Some(tables)) = (viewer.overlay_frame.clone(), viewer.overlay_tables.clone()) else {
+                                    return Ok(false);
+                                };
+                                let held = crate::document::Hour::new(&document.content, &rows, 0.0)
+                                    .with_air_rosters(Some(document.playback.air_rosters()))
+                                    .with_moved_hours(Arc::clone(&viewer.overlay_moved));
+                                if !matches!(
+                                    viewer.place_overlay(&held, overlay_camera, pixels, ui_scale, &tables, &rows, viewer.overlay_left),
+                                    OverlayPlaced::Placed | OverlayPlaced::Unchanged
+                                ) {
+                                    return Ok(false);
+                                }
+                                let prepared = viewer.prepared_overlay.as_mut().expect("held above");
+                                prepared.set_pressed(viewer.counter_view.pressed, viewer.counter_view.plate_hovered);
+                                prepared
+                                    .draw_into(
+                                        &held,
+                                        overlay_camera,
+                                        pixels,
+                                        ui_scale,
+                                        &viewer.overlay_layers,
+                                        animation_time,
+                                        viewer.overlay.get_or_insert_with(Batch::default),
+                                        &mut viewer.counter_report,
+                                        &mut viewer.overlay_hits,
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                if viewer.label_report != *prepared.label_report() {
+                                    viewer.label_report.clone_from(prepared.label_report());
+                                }
+                                viewer.overlay_written += 1;
+                                Ok(true)
+                            },
+                        )?;
+                        if let Some(why) = withheld
+                            && self.saves_a_frame()
+                        {
+                            let reason = format!(
+                                "A saved frame draws the overlay for the requested camera: {}",
+                                why.why()
+                            );
+                            if self.refuse_capture(&reason, ui.ctx()) {
+                                return Err(reason);
                             }
-                            let prepared = viewer.prepared_overlay.as_mut().expect("held above");
-                            prepared.set_pressed(viewer.counter_view.pressed, viewer.counter_view.plate_hovered);
-                            prepared
-                                .draw_into(
-                                    &held,
-                                    overlay_camera,
-                                    pixels,
-                                    ui_scale,
-                                    &viewer.overlay_layers,
-                                    animation_time,
-                                    viewer.overlay.get_or_insert_with(Batch::default),
-                                    &mut viewer.counter_report,
-                                    &mut viewer.overlay_hits,
-                                )
-                                .map_err(|error| error.to_string())?;
-                            if viewer.label_report != *prepared.label_report() {
-                                viewer.label_report.clone_from(prepared.label_report());
-                            }
-                            viewer.overlay_written += 1;
-                            Ok(true)
-                        },
-                    )?;
-                    if let Some(why) = withheld
-                        && self.saves_a_frame()
-                    {
-                        let reason = format!(
-                            "A saved frame draws the overlay for the requested camera: {}",
-                            why.why()
-                        );
-                        if self.refuse_capture(&reason, ui.ctx()) {
-                            return Err(reason);
                         }
                     }
                 }
@@ -9301,6 +9388,102 @@ pub(crate) mod tests {
             viewer
                 .saved_overlay_camera_waiting(true, zoomed, [1600, 900], 1.0)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn failed_reprojection_on_resize_or_scale_withholds_overlay_without_stamping_view() {
+        use viewer_foundation::map::{
+            anchored::{Head, Refused},
+            camera::{MapDefines, MapSize, Placement},
+            sprites::{Batch, Quad},
+        };
+        let placed = Placement::map([1000.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
+        let make_batch = || {
+            let mut batch = Batch::default();
+            batch.quads.push(Quad {
+                texture: 0,
+                rect: [100.0, 200.0, 4.0, 4.0],
+                uv: [0.0; 4],
+                color: [1.0; 4],
+                rotation: 0.0,
+                layer: 0,
+                shade: 0.0,
+                exact: None,
+                anchor: None,
+                present: None,
+            });
+            batch
+        };
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options::default(),
+            None,
+            Arc::default(),
+            None,
+            None,
+        );
+        let original_view = ([1600, 900], 1.0f32.to_bits());
+        for (pixels, ui_scale) in [([1280, 720], 1.0f32), ([1600, 900], 1.5f32)] {
+            viewer.overlay_placed = Some(placed);
+            viewer.overlay_placed_view = Some(original_view);
+            viewer.overlay = Some(make_batch());
+            viewer.overlay_unpainted = false;
+            viewer.overlay_fraction = Some(0.25);
+            viewer.overlay_drawn_fraction = Some(0.25);
+            viewer.overlay_loading.clear();
+            assert_eq!(
+                viewer
+                    .place_painting(placed, pixels, ui_scale, Head::default())
+                    .unwrap(),
+                super::PaintingPlaced::Refused(Refused::NotAMove),
+                "resize or scale change at the same camera must not treat prior viewport geometry as placed"
+            );
+            let withheld = viewer
+                .finish_painting(
+                    placed,
+                    pixels,
+                    ui_scale,
+                    Head::default(),
+                    0.25,
+                    false,
+                    |_| Ok(false),
+                )
+                .unwrap();
+            assert_eq!(withheld, Some(Refused::NotAMove));
+            assert_eq!(
+                viewer.overlay_placed_view,
+                Some(original_view),
+                "failed reprojection must never stamp the requested viewport or scale"
+            );
+            assert!(viewer.overlay.is_none(), "stale batch is dropped on failed reprojection");
+            assert!(viewer.overlay_unpainted);
+            assert_eq!(viewer.overlay_fraction, None);
+            assert_eq!(viewer.overlay_drawn_fraction, None);
+            assert!(
+                viewer
+                    .saved_overlay_camera_waiting(true, placed, pixels, ui_scale)
+                    .is_some(),
+                "saved frame must refuse geometry whose viewport or scale failed to reproject"
+            );
+        }
+        viewer.overlay_placed = Some(placed);
+        viewer.overlay_placed_view = Some(original_view);
+        viewer.overlay = Some(make_batch());
+        viewer.overlay_unpainted = false;
+        viewer.overlay_fraction = Some(0.0);
+        viewer.overlay_drawn_fraction = Some(0.0);
+        viewer.overlay_loading.clear();
+        viewer.withhold_overlay("injected projection failure");
+        assert!(viewer.overlay.is_none(), "paused projection failure clears stale overlay batch");
+        assert!(viewer.overlay_unpainted);
+        assert_eq!(viewer.overlay_fraction, None);
+        assert_eq!(viewer.overlay_drawn_fraction, None);
+        assert!(
+            viewer
+                .overlay_loading
+                .iter()
+                .any(|line| line.contains("injected projection failure"))
         );
     }
 }

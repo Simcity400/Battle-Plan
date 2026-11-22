@@ -579,6 +579,18 @@ impl LayIns {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_icons(
+        resources: Option<(viewer_world::map::resource_icons::HourIcons, u64)>,
+        occupation: Option<(viewer_world::map::occupation_icons::Marks, u64)>,
+    ) -> Self {
+        Self {
+            resources,
+            occupation,
+            ..Self::default()
+        }
+    }
+
     pub fn set(&self, tables: &mut crate::document::OverlayTables) {
         if let Some((labels, ours)) = &self.labels {
             tables.set_labels(labels, *ours);
@@ -588,19 +600,34 @@ impl LayIns {
         }
     }
 
-    pub fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &crate::document::Hour<'_>, camera: viewer_foundation::map::camera::Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
+    pub fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &impl crate::document::IconHost, camera: viewer_foundation::map::camera::Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
+        let view = prepared.counter_view().clone();
+        self.lay_icons(&mut prepared.laid_icons, &view, hour, camera, pixels, ui_scale, ours)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the icon state, view, host, camera, viewport, scale and viewer country")]
+    pub fn lay_icons(
+        &self,
+        laid_icons: &mut crate::document::LaidIcons,
+        view: &crate::map_views::CounterView,
+        hour: &impl crate::document::IconHost,
+        camera: viewer_foundation::map::camera::Camera,
+        pixels: [u32; 2],
+        ui_scale: f32,
+        ours: u32,
+    ) -> bool {
         use crate::document::MadeBy;
         let mut laid = false;
         if let Some((icons, version)) = &self.resources
-            && prepared.resource_icons_by() != MadeBy::Layer(*version)
+            && laid_icons.resource_icons_by() != MadeBy::Layer(*version)
         {
-            prepared.replace_resource_icons(hour, camera, pixels, ui_scale, icons, *version);
+            laid_icons.replace_resource_icons(hour, camera, pixels, ui_scale, view.visibility, icons, *version);
             laid = true;
         }
         if let Some((marks, version)) = &self.occupation
-            && prepared.occupation_icons_by() != MadeBy::Layer(*version)
+            && laid_icons.occupation_icons_by() != MadeBy::Layer(*version)
         {
-            prepared.replace_occupation_icons(hour, camera, pixels, ui_scale, ours, marks, *version);
+            laid_icons.replace_occupation_icons(hour, camera, pixels, ui_scale, view.occupation, ours, marks, *version);
             laid = true;
         }
         laid

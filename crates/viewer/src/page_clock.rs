@@ -4,6 +4,63 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginStatus {
+    Current,
+    NewOrigin,
+    Retired,
+}
+
+#[derive(Debug, Default)]
+pub struct OriginGate {
+    origin: Option<String>,
+    retired: HashSet<String>,
+}
+
+impl OriginGate {
+    pub fn is_retired(&self, origin: &str) -> bool {
+        self.retired.contains(origin)
+    }
+
+    pub fn admit(&mut self, origin: &str) -> OriginStatus {
+        if origin.is_empty() {
+            return OriginStatus::Current;
+        }
+        if self.retired.contains(origin) {
+            return OriginStatus::Retired;
+        }
+        if self.origin.as_deref() == Some(origin) {
+            return OriginStatus::Current;
+        }
+        if let Some(previous) = self.origin.replace(origin.to_owned()) {
+            self.retired.insert(previous);
+        }
+        OriginStatus::NewOrigin
+    }
+
+    pub fn admit_all<'a>(&mut self, origins: impl IntoIterator<Item = &'a str>) -> OriginStatus {
+        let mut seen = Vec::new();
+        for origin in origins {
+            if origin.is_empty() {
+                continue;
+            }
+            if self.retired.contains(origin) {
+                return OriginStatus::Retired;
+            }
+            if !seen.contains(&origin) {
+                seen.push(origin);
+            }
+        }
+        let mut status = OriginStatus::Current;
+        for origin in seen {
+            if self.admit(origin) == OriginStatus::NewOrigin {
+                status = OriginStatus::NewOrigin;
+            }
+        }
+        status
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClockSample<'a> {
     pub(crate) origin: &'a str,
@@ -18,15 +75,14 @@ pub(crate) struct Observed {
 
 #[derive(Debug, Default)]
 pub(crate) struct PageClock {
-    origin: Option<String>,
-    retired: HashSet<String>,
+    origins: OriginGate,
     offset: Option<f64>,
     epoch: Option<Instant>,
 }
 
 impl PageClock {
     pub(crate) fn is_retired(&self, origin: &str) -> bool {
-        self.retired.contains(origin)
+        self.origins.is_retired(origin)
     }
 
     pub(crate) fn observe(
@@ -40,7 +96,7 @@ impl PageClock {
                 new_origin: false,
             });
         };
-        if self.retired.contains(sample.origin) {
+        if self.origins.is_retired(sample.origin) {
             return None;
         }
         if sample.origin.is_empty()
@@ -54,11 +110,8 @@ impl PageClock {
         }
         let epoch = *self.epoch.get_or_insert(at);
         let here = at.saturating_duration_since(epoch).as_secs_f64() * 1e3;
-        let new_origin = self.origin.as_deref() != Some(sample.origin);
+        let new_origin = self.origins.admit(sample.origin) == OriginStatus::NewOrigin;
         if new_origin {
-            if let Some(previous) = self.origin.replace(sample.origin.to_owned()) {
-                self.retired.insert(previous);
-            }
             self.offset = None;
         }
         let gap = here - sample.composed_at;

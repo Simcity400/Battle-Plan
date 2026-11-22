@@ -1049,7 +1049,7 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                         &frame,
                         Viewer {
                             vision: &original_base.vision,
-                            owner: &|raw| original_base.links.get(&raw).copied(),
+                            owner: &|raw| original_base.links().get(&raw).copied(),
                         },
                         &flags,
                         &[(81, kept)].into(),

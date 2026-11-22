@@ -502,16 +502,44 @@ impl Scripts {
     }
 
     #[cfg(test)]
-    fn wait_evaluation(&mut self) -> io::Result<bool> {
-        let Some(open) = &mut self.open else { return Ok(false) };
-        if !open.busy {
-            return Ok(false);
+    fn wait_whole(&mut self) -> io::Result<()> {
+        let Some(hour) = self.applied else { return Ok(()) };
+        if self.shown == (false, false) {
+            return Ok(());
         }
-        let done = open
-            .done
-            .recv()
-            .map_err(|_| io::Error::other(format!("The {NAME} layer's worker stopped")))?;
-        Ok(self.take(done))
+        let music = self.shown.1;
+        loop {
+            let whole = self.product.as_ref().is_some_and(|product| {
+                product.hour == hour && product.complete && (!music || product.music.as_ref().is_some_and(|(at, _)| *at == hour))
+            });
+            if whole && !self.open.as_ref().is_some_and(|open| open.busy) {
+                return Ok(());
+            }
+            let Some(open) = &mut self.open else { return Ok(()) };
+            if open.busy {
+                let done = open.done.recv().map_err(|_| {
+                    open.busy = false;
+                    open.evaluating = None;
+                    io::Error::other(format!("The {NAME} layer's worker stopped before answering for hour {hour}"))
+                })?;
+                if self.take(done) {
+                    return Ok(());
+                }
+                continue;
+            }
+            let Some(frame) = open.reader.frame() else {
+                self.ask_rows();
+                return Ok(());
+            };
+            if frame.hour != hour {
+                self.ask_rows();
+                return Ok(());
+            }
+            self.offer(true);
+            if !self.open.as_ref().is_some_and(|open| open.busy) {
+                return Ok(());
+            }
+        }
     }
 
     fn ask_rows(&mut self) {

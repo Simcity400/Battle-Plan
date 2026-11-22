@@ -461,10 +461,7 @@ pub struct PreparedOverlay {
     engaged_covered: bool,
     layers: [usize; 6],
     counter_view: CounterView,
-    resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
-    occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
-    resource_icons_by: MadeBy,
-    occupation_icons_by: MadeBy,
+    pub(crate) laid_icons: LaidIcons,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
     adjacency_priority: i8,
     mode_icons: Batch,
@@ -712,6 +709,134 @@ impl PreparedOverlay {
             self.icons.keep_drawn_by_value(&mut old.icons);
         }
     }
+}
+
+pub trait IconHost {
+    fn lay_resource_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        icons: &viewer_world::map::resource_icons::HourIcons,
+    ) -> viewer_world::map::resource_icons::PreparedResourceIcons;
+
+    fn lay_occupation_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        marks: &viewer_world::map::occupation_icons::Marks,
+    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons;
+}
+
+pub struct LaidIcons {
+    pub(crate) resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
+    pub(crate) occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
+    pub(crate) resource_icons_by: MadeBy,
+    pub(crate) occupation_icons_by: MadeBy,
+}
+
+impl Default for LaidIcons {
+    fn default() -> Self {
+        Self {
+            resource_icons: Default::default(),
+            occupation_icons: Default::default(),
+            resource_icons_by: MadeBy::Left,
+            occupation_icons_by: MadeBy::Left,
+        }
+    }
+}
+
+impl LaidIcons {
+    pub fn resource_icons_by(&self) -> MadeBy {
+        self.resource_icons_by
+    }
+
+    pub fn occupation_icons_by(&self) -> MadeBy {
+        self.occupation_icons_by
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the camera, view and layer product")]
+    pub fn replace_resource_icons(
+        &mut self,
+        hour: &impl IconHost,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        icons: &viewer_world::map::resource_icons::HourIcons,
+        version: u64,
+    ) {
+        self.resource_icons = hour.lay_resource_icons(camera, viewport, ui_scale, visibility, icons);
+        self.resource_icons_by = MadeBy::Layer(version);
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the camera, viewing country, mode and layer product")]
+    pub fn replace_occupation_icons(
+        &mut self,
+        hour: &impl IconHost,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        marks: &viewer_world::map::occupation_icons::Marks,
+        version: u64,
+    ) {
+        self.occupation_icons = hour.lay_occupation_icons(camera, viewport, ui_scale, mode, country, marks);
+        self.occupation_icons_by = MadeBy::Layer(version);
+    }
+}
+
+impl IconHost for Hour<'_> {
+    fn lay_resource_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        icons: &viewer_world::map::resource_icons::HourIcons,
+    ) -> viewer_world::map::resource_icons::PreparedResourceIcons {
+        self.resource_icons_with(camera, viewport, ui_scale, visibility, |inputs| {
+            viewer_world::map::resource_icons::lay_out(inputs, icons)
+        })
+    }
+
+    fn lay_occupation_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        marks: &viewer_world::map::occupation_icons::Marks,
+    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons {
+        self.occupation_icons_with(camera, viewport, ui_scale, mode, country, |inputs| {
+            viewer_world::map::occupation_icons::lay_out(inputs, marks)
+        })
+    }
+}
+
+impl PreparedOverlay {
+    fn finish_project(
+        &mut self,
+        mut placed: Self,
+        hour: &impl IconHost,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        ours: u32,
+        lay_ins: Option<&crate::playhead_host::side::LayIns>,
+    ) {
+        placed.icons.keep_drawn(&mut self.icons);
+        if let Some(lay_ins) = lay_ins {
+            lay_ins.lay(&mut placed, hour, camera, viewport, ui_scale, ours);
+        }
+        *self = placed;
+    }
 
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one placing")]
     pub fn project(
@@ -723,6 +848,7 @@ impl PreparedOverlay {
         tables: &OverlayTables,
         view: &CounterView,
         rows: &OverlayRows,
+        lay_ins: Option<&crate::playhead_host::side::LayIns>,
     ) -> io::Result<()> {
         if tables.identity() != self.tables {
             return Err(io::Error::other(format!(
@@ -734,9 +860,8 @@ impl PreparedOverlay {
         let mut still = self.take_still();
         let mut spans = viewer_foundation::profiling::BuilderSpans::new(false);
         match hour.prepare_overlay_with(camera, viewport, ui_scale, tables, view, rows, &mut spans, Some(&mut still)) {
-            Ok(mut placed) => {
-                placed.icons.keep_drawn(&mut self.icons);
-                *self = placed;
+            Ok(placed) => {
+                self.finish_project(placed, hour, camera, viewport, ui_scale, tables.ours(), lay_ins);
                 Ok(())
             }
             Err(error) => {
@@ -903,10 +1028,10 @@ impl PreparedOverlay {
             self.native_intel.draw(&hour.icons.intel, context, hour.icons.raids.priority, intel_view, &mut scratch, &mut Vec::new(), &mut intel_report);
         }
         if pools.resources {
-            let _ = self.resource_icons.draw(context, resources, &mut scratch);
+            let _ = self.laid_icons.resource_icons.draw(context, resources, &mut scratch);
         }
         if pools.occupation {
-            let _ = self.occupation_icons.draw(context, occupation, &mut scratch, &mut Vec::new());
+            let _ = self.laid_icons.occupation_icons.draw(context, occupation, &mut scratch, &mut Vec::new());
         }
         if pools.adjacency_rules {
             self.adjacency_icons.draw_with_hits(context, self.adjacency_priority, adjacency_rules, &mut scratch, &mut BTreeMap::new(), &mut Vec::new());
@@ -989,8 +1114,8 @@ impl PreparedOverlay {
         let raid_hovered = self.counter_view.raid_hovered;
         let native_intel = &self.native_intel;
         let labels = &self.labels;
-        let resource_icons = &self.resource_icons;
-        let occupation_icons = &self.occupation_icons;
+        let resource_icons = &self.laid_icons.resource_icons;
+        let occupation_icons = &self.laid_icons.occupation_icons;
         let adjacency_icons = &self.adjacency_icons;
         let adjacency_priority = self.adjacency_priority;
         let (mut occupation_drawn, mut adjacency_drawn) = (Vec::new(), Vec::new());
@@ -1240,22 +1365,24 @@ impl PreparedOverlay {
     }
 
     pub fn resource_icons_by(&self) -> MadeBy {
-        self.resource_icons_by
+        self.laid_icons.resource_icons_by()
     }
 
     pub fn occupation_icons_by(&self) -> MadeBy {
-        self.occupation_icons_by
+        self.laid_icons.occupation_icons_by()
     }
 
-    pub fn replace_resource_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
-        self.resource_icons = hour.resource_icons_with(camera, viewport, ui_scale, self.counter_view.visibility, |inputs| viewer_world::map::resource_icons::lay_out(inputs, icons));
-        self.resource_icons_by = MadeBy::Layer(version);
+    pub fn replace_resource_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
+        self.laid_icons.replace_resource_icons(hour, camera, viewport, ui_scale, self.counter_view.visibility, icons, version);
     }
 
     #[allow(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
-    pub fn replace_occupation_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
-        self.occupation_icons = hour.occupation_icons_with(camera, viewport, ui_scale, self.counter_view.occupation, country, |inputs| viewer_world::map::occupation_icons::lay_out(inputs, marks));
-        self.occupation_icons_by = MadeBy::Layer(version);
+    pub fn replace_occupation_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
+        self.laid_icons.replace_occupation_icons(hour, camera, viewport, ui_scale, self.counter_view.occupation, country, marks, version);
+    }
+
+    pub(crate) fn counter_view(&self) -> &CounterView {
+        &self.counter_view
     }
 
 }
@@ -1804,6 +1931,7 @@ impl Document {
         uncovered_reads: content_reader_core::content::UncoveredReads,
     ) -> io::Result<Self> {
         let serial = viewer_foundation::load_record::stage("content.serial");
+        let game_version = replay.identity.game_version.clone();
         let content = Arc::new(content);
         std::thread::scope(|prefix| {
             let scripted_content = Arc::clone(&content);
@@ -2849,12 +2977,14 @@ impl Document {
             let adjacency_icons = match content_reader_core::adjacency_rules::read(&content.layers) {
                 Ok(rules) => {
                     viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
+                        .with_build(game_version)
                 }
                 Err(error) => {
                     warnings.push(format!(
                     "No strait or canal icons are drawn: the adjacency rules cannot be read: {error}"
                 ));
                     viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+                        .with_build(game_version)
                 }
             };
             let trade_routes = crate::map_assets::graphics_define(
@@ -4862,10 +4992,12 @@ impl<'a> Hour<'a> {
                 naval_selection: std::mem::take(&mut still.naval_selection),
                 air_ranges: Arc::clone(&still.air_ranges),
                 radar: Arc::clone(&still.radar),
-                resource_icons: resource_icons.0,
-                resource_icons_by: resource_icons.1,
-                occupation_icons: occupation_icons.0,
-                occupation_icons_by: occupation_icons.1,
+                laid_icons: LaidIcons {
+                    resource_icons: resource_icons.0,
+                    resource_icons_by: resource_icons.1,
+                    occupation_icons: occupation_icons.0,
+                    occupation_icons_by: occupation_icons.1,
+                },
                 adjacency_icons,
                 adjacency_priority,
                 mode_icons: Batch::default(),
@@ -5790,5 +5922,189 @@ mod tests {
             "{warning}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finish_project_reapplies_resource_and_occupation_icons_when_panning_past_the_pad() {
+        use viewer_foundation::map::{
+            camera::{MapDefines, MapSize, Placement},
+            mode_visibility::{Priorities, PriorityIcon, PriorityTable, Visibility},
+        };
+        use viewer_world::map::{
+            map_mode::ColorList,
+            occupation_icons::{self, HourMarks, IconDefines, Mark, Mode, Occupation},
+            resource_icons::{self, Laid, ResourceIconContent, ResourceIconDefines, Row},
+        };
+
+        struct SyntheticHost {
+            resource_content: ResourceIconContent,
+            occupation_content: occupation_icons::Content,
+            localisation: content_reader_localisation::localisation::Localisation,
+            state_provinces: BTreeMap<u32, Vec<u32>>,
+        }
+
+        impl IconHost for SyntheticHost {
+            fn lay_resource_icons(
+                &self,
+                camera: Camera,
+                viewport: [u32; 2],
+                ui_scale: f32,
+                visibility: Visibility,
+                icons: &resource_icons::HourIcons,
+            ) -> resource_icons::PreparedResourceIcons {
+                let centroid = |province: u32| (province == 1).then_some([1000.0, 10.0, 500.0]);
+                resource_icons::lay_out(
+                    &resource_icons::ResourceIconInputs {
+                        content: &self.resource_content,
+                        localisation: &self.localisation,
+                        state_provinces: &self.state_provinces,
+                        centroid: &centroid,
+                        camera,
+                        viewport,
+                        ui_scale,
+                        visibility,
+                    },
+                    icons,
+                )
+            }
+
+            fn lay_occupation_icons(
+                &self,
+                camera: Camera,
+                viewport: [u32; 2],
+                ui_scale: f32,
+                mode: Option<Mode>,
+                country: u32,
+                marks: &occupation_icons::Marks,
+            ) -> occupation_icons::PreparedOccupationIcons {
+                let centroid = |province: u32| (province == 1).then_some([1000.0, 10.0, 500.0]);
+                occupation_icons::lay_out(
+                    &occupation_icons::Inputs {
+                        content: &self.occupation_content,
+                        mode,
+                        country,
+                        state_provinces: &self.state_provinces,
+                        centroid: &centroid,
+                        camera,
+                        viewport,
+                        ui_scale,
+                    },
+                    marks,
+                )
+            }
+        }
+
+        let mut priorities = Priorities::uniform([0; PriorityIcon::ALL.len()]);
+        priorities.set(PriorityTable::Resources, PriorityIcon::Resource, 10);
+        let host = SyntheticHost {
+            resource_content: ResourceIconContent {
+                origins: viewer_foundation::resource_origins::Content {
+                    resources: Vec::new(),
+                    buildings: Default::default(),
+                    bonuses: [0, 0],
+                    oil: String::new(),
+                    warnings: Vec::new(),
+                },
+                defines: ResourceIconDefines {
+                    icons_cutoff: 900.0,
+                    text_cutoff: 800.0,
+                    priorities,
+                },
+            },
+            occupation_content: occupation_icons::Content {
+                definitions: Default::default(),
+                defines: IconDefines {
+                    cutoff: 900.0,
+                    badge_cutoff: 700.0,
+                    reenable: 2_000_000,
+                    priority: 30,
+                    resistance_colors: ColorList(vec![0., 1., 0., 0., 0., 100., 0., 1., 0., 0.75]),
+                    compliance_colors: ColorList(vec![0., 0., 0., 1., 0., 100., 1., 1., 1., 1.]),
+                },
+            },
+            localisation: Default::default(),
+            state_provinces: BTreeMap::from([(1, vec![1])]),
+        };
+        let hour_icons: resource_icons::HourIcons = Ok(BTreeMap::from([(
+            1,
+            Ok(Some(Laid {
+                rows: Ok(vec![Row {
+                    text: "Steel: 12".into(),
+                    flag: None,
+                }]),
+                flag: Ok(None),
+            })),
+        )]));
+        let marks: occupation_icons::Marks = Ok(HourMarks {
+            marks: BTreeMap::from([(
+                1,
+                Mark {
+                    controller: 1,
+                    slot: Some(1),
+                    resistance: Some(Ok(Some(Occupation {
+                        level: 25_000_000,
+                        speed: 100_000,
+                        compliance: 0,
+                        badges: [Ok(Vec::new()), Ok(Vec::new())],
+                    }))),
+                },
+            )]),
+            viewers: BTreeMap::from([(1, 1)]),
+            resistance: None,
+        });
+        let lay_ins = crate::playhead_host::side::LayIns::with_icons(
+            Some((hour_icons, 7)),
+            Some((marks, 9)),
+        );
+        let counter_view = CounterView {
+            visibility: Visibility {
+                resource_icons: true,
+                ..Visibility::default()
+            },
+            occupation: Some(Mode::Resistance),
+            ..CounterView::default()
+        };
+        let placed = Placement::map([1000.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
+        let outside_pad =
+            Placement::map([1020.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
+        let mut icons = LaidIcons::default();
+        assert!(lay_ins.lay_icons(&mut icons, &counter_view, &host, placed, [1600, 900], 1.0, 1));
+        assert_eq!(icons.resource_icons_by(), MadeBy::Layer(7));
+        let before_resources = icons.resource_icons.placed_positions();
+        assert_eq!(before_resources.len(), 1);
+        assert_eq!(icons.occupation_icons_by(), MadeBy::Layer(9));
+        let before_occupation = icons.occupation_icons.placed_positions();
+        assert_eq!(before_occupation.len(), 1);
+
+        let mut reprojected = LaidIcons::default();
+        assert_eq!(reprojected.resource_icons_by(), MadeBy::Left);
+        assert_eq!(reprojected.occupation_icons_by(), MadeBy::Left);
+        assert!(lay_ins.lay_icons(&mut reprojected, &counter_view, &host, outside_pad, [1600, 900], 1.0, 1));
+        assert_eq!(reprojected.resource_icons_by(), MadeBy::Layer(7));
+        let after_resources = reprojected.resource_icons.placed_positions();
+        assert_eq!(
+            after_resources.len(),
+            1,
+            "retained resource icons must survive relayout when panning past the placement pad"
+        );
+        assert!(
+            after_resources[0][0] < before_resources[0][0],
+            "reprojected resource icon must shift to the new camera: before {:?}, after {:?}",
+            before_resources[0],
+            after_resources[0]
+        );
+        assert_eq!(reprojected.occupation_icons_by(), MadeBy::Layer(9));
+        let after_occupation = reprojected.occupation_icons.placed_positions();
+        assert_eq!(
+            after_occupation.len(),
+            1,
+            "retained occupation icons must survive relayout when panning past the placement pad"
+        );
+        assert!(
+            after_occupation[0][0] < before_occupation[0][0],
+            "reprojected occupation icon must shift to the new camera: before {:?}, after {:?}",
+            before_occupation[0],
+            after_occupation[0]
+        );
     }
 }

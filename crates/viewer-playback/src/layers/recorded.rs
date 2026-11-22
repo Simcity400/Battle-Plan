@@ -97,7 +97,7 @@ pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String,
         let before = side.entry().playhead().step_state();
         let carried_before = carried(side);
         let head = before.0.unwrap_or(0);
-        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame_synced(head) }.unwrap();
         if done(side, &frame) {
             return;
         }
@@ -122,7 +122,7 @@ pub fn frames_at_named(side: &mut MapSide, hour: replay_data::Hour, what: impl F
         reads_landed(side);
         let before = side.entry().playhead().step_state();
         let carried_before = carried(side);
-        let frame = if side.composing() { side.frame_waiting(hour) } else { side.frame(hour) }.unwrap();
+        let frame = if side.composing() { side.frame_waiting(hour) } else { side.frame_synced(hour) }.unwrap();
         if done(side, &frame) {
             return;
         }

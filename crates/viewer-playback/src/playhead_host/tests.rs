@@ -463,6 +463,12 @@ fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &super::Frame) ->
     crate::layers::recorded::frames_until(side, done);
 }
 
+fn step_frame(side: &mut MapSide, head: i32) -> super::Frame {
+    let frame = side.frame_synced(head).unwrap();
+    assert!(frame.steps > 0, "no frame consumed steps through hour {head}: applied {:?}", side.applied());
+    frame
+}
+
 fn sum_layer(side: &MapSide, at: usize) -> &Sum {
     side.parts().unwrap().1[at].any().downcast_ref::<Sum>().unwrap()
 }
@@ -1421,7 +1427,7 @@ fn a_map_with_a_worker_layer_is_drawn_at_its_shown_hour_and_keeps_up_while_playi
     for _ in 0..20 {
         let head = side.applied().unwrap() + 4;
         entry.playhead().wait_newest(head).unwrap();
-        let frame = side.frame(head).unwrap();
+        let frame = side.frame_synced(head).unwrap();
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head - 4), "the worker holds the step: drawn at its product's hour, not the {head} applied");
         let frame = side.frame(head).unwrap();
@@ -1481,7 +1487,7 @@ fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behi
         behind.store(lag, Ordering::Release);
         let head = side.applied().unwrap() + 4;
         entry.playhead().wait_newest(head).unwrap();
-        let frame = side.frame(head).unwrap();
+        let frame = side.frame_synced(head).unwrap();
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head), "the window clock is not held by a layer of rows at the head");
         assert_eq!(frame.oldest, Some(head - lag), "the oldest hour on screen counts it {lag} hours behind");
@@ -1643,7 +1649,7 @@ fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let head = side.applied().unwrap() + 4;
     entry.playhead().wait_newest(head).unwrap();
-    let frame = side.frame(head).unwrap();
+    let frame = side.frame_synced(head).unwrap();
     assert_eq!(frame.applied, Some(head), "the step to the held hour is applied");
     assert_ne!(frame.drawn, Some(head), "the worker has not shown it yet");
     let frame = side.frame(head).unwrap();
@@ -1848,10 +1854,10 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
         let before = entry.playhead().step_state();
         let head = before.0.unwrap_or(0);
         if !one_reset {
-            one_reset = first.frame(head).unwrap().resets > 0;
+            one_reset = first.frame_synced(head).unwrap().resets > 0;
         }
         if !other_reset {
-            other_reset = second.frame(head).unwrap().resets > 0;
+            other_reset = second.frame_synced(head).unwrap().resets > 0;
         }
         if one_reset && other_reset {
             break;
@@ -1934,6 +1940,7 @@ struct Ahead {
     permits: Permits,
     done: AheadDone,
     shown: Option<Summed>,
+    handed_through: Option<i32>,
     made_through: Option<i32>,
     changed: crate::layers::Changed,
 }
@@ -1942,7 +1949,7 @@ impl Ahead {
     fn new(permits: Option<u32>) -> (Self, Permits) {
         let permits: Permits = Arc::new((Mutex::new(permits), std::sync::Condvar::new()));
         let done: AheadDone = Arc::new((Mutex::new((0, None, false)), std::sync::Condvar::new()));
-        (Self { fed: crate::layers::Fed::default(), epoch: 0, jobs: None, made: None, permits: Arc::clone(&permits), done, shown: None, made_through: None, changed: crate::layers::Changed::default() }, permits)
+        (Self { fed: crate::layers::Fed::default(), epoch: 0, jobs: None, made: None, permits: Arc::clone(&permits), done, shown: None, handed_through: None, made_through: None, changed: crate::layers::Changed::default() }, permits)
     }
 
     fn wait_made(&self, hour: i32) {
@@ -2058,7 +2065,7 @@ impl Layer for Ahead {
         let column = Num::of(table(0), 0);
         let values = (0..mirror.slots() as u32).map(|slot| if mirror.live(slot) { mirror.number(column, slot).value() } else { None }).collect();
         self.epoch += 1;
-        (self.shown, self.made_through) = (None, None);
+        (self.shown, self.handed_through, self.made_through) = (None, None, None);
         self.fed.compose(mirror.head());
         self.jobs.as_ref().unwrap().send(Fold::Reset { epoch: self.epoch, values }).unwrap();
         self.exchange(true);
@@ -2076,6 +2083,7 @@ impl Layer for Ahead {
     fn ahead(&mut self, steps: &[Arc<Step>]) {
         let jobs = self.jobs.as_ref().unwrap();
         for step in self.fed.hand(steps) {
+            self.handed_through = self.handed_through.max(Some(step.last()));
             jobs.send(Fold::Step { epoch: self.epoch, step: Arc::clone(step) }).unwrap();
         }
     }
@@ -2170,15 +2178,16 @@ fn ahead_side(name: &str, permits: Option<u32>) -> (MapSide, Arc<super::Entry>, 
 fn made_ahead(side: &mut MapSide, hour: i32) {
     side.entry().playhead().wait_newest(hour).unwrap();
     let applied = side.applied().unwrap();
-    side.frame(applied).unwrap();
+    side.frame_synced(applied).unwrap();
+    assert!(ahead(side).handed_through >= Some(hour), "the ring never handed hour {hour} to the ahead worker");
     ahead(side).wait_made(hour);
-    side.frame(applied).unwrap();
+    side.frame_synced(applied).unwrap();
     assert!(ahead(side).made_through >= Some(hour), "the worker never made the product of hour {hour}");
 }
 
 fn until_current(side: &mut MapSide, hour: i32) {
     ahead(side).wait_made(hour);
-    side.frame(hour).unwrap();
+    side.frame_synced(hour).unwrap();
     assert_eq!(ahead(side).published(), crate::layers::Published::Current, "the layer never showed hour {hour}");
 }
 
@@ -2192,7 +2201,7 @@ fn a_step_made_ahead_is_shown_current_in_the_frame_that_applies_it() {
     for _ in 0..10 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        let frame = side.frame(next).unwrap();
+        let frame = step_frame(&mut side, next);
         assert_eq!((frame.applied, frame.steps), (Some(next), 1), "one step a frame");
         assert_eq!(frame.layers[0].ready_at_hour, Some(true), "the product of hour {next} was ready in the frame that applied it");
         assert_eq!(ahead(&side).published(), crate::layers::Published::Current);
@@ -2208,13 +2217,13 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
     entry.playhead().wait_newest(from + 12).unwrap();
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
-    let frame = side.frame(from + 4).unwrap();
+    let frame = step_frame(&mut side, from + 4);
     assert_eq!(frame.applied, Some(from + 4));
     assert_eq!(ahead(&side).shown.map(|(_, hour, _)| hour), Some(Some(from + 4)), "the product of {} is made; not shown before its hour", from + 8);
     assert_eq!(frame.drawn, Some(from + 4));
-    let frame = side.frame(from + 8).unwrap();
+    let frame = step_frame(&mut side, from + 8);
     assert_eq!((frame.drawn, frame.layers[0].ready_at_hour), (Some(from + 8), Some(true)));
-    let frame = side.frame(from + 12).unwrap();
+    let frame = step_frame(&mut side, from + 12);
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(frame.layers[0].ready_at_hour, Some(false), "the step to {} is not folded", from + 12);
     assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
@@ -2233,8 +2242,8 @@ fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
     entry.playhead().wait_newest(from + 12).unwrap();
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
-    side.frame(from + 8).unwrap();
-    let frame = side.frame(from + 12).unwrap();
+    step_frame(&mut side, from + 8);
+    let frame = step_frame(&mut side, from + 12);
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
     assert_eq!(
@@ -2253,7 +2262,7 @@ fn two_steps_taken_in_one_frame_show_the_seconds_product() {
     let (mut side, _entry, _permits) = ahead_side("ahead two", None);
     let from = side.applied().unwrap();
     made_ahead(&mut side, from + 8);
-    let frame = side.frame(from + 8).unwrap();
+    let frame = step_frame(&mut side, from + 8);
     assert_eq!((frame.applied, frame.steps), (Some(from + 8), 2));
     assert_eq!(frame.layers[0].ready_at_hour, Some(true));
     assert_eq!(ahead(&side).shown.map(|(_, hour, sum)| (hour, sum)), Some((Some(from + 8), mirrored(&side))));
@@ -2273,7 +2282,7 @@ fn a_seek_shows_none_of_the_products_made_ahead_before_it() {
     for _ in 0..6 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        side.frame(next).unwrap();
+        step_frame(&mut side, next);
         let shown = ahead(&side).shown.unwrap();
         assert_eq!(shown.0, epoch, "a product made before the seek was shown at hour {next}");
         assert_eq!((shown.1, shown.2), (Some(next), mirrored(&side)));
@@ -2286,7 +2295,7 @@ fn a_dependent_hears_a_fed_layers_change_in_the_frame_of_its_step() {
     for _ in 0..5 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        side.frame(next).unwrap();
+        step_frame(&mut side, next);
         let hears = side.parts().unwrap().1[1].any().downcast_ref::<Hears>().unwrap();
         let (stepped, heard) = hears.heard.last().unwrap();
         assert_eq!(*stepped, Some(next), "the dependent settled in the frame that applied {next}");
@@ -2630,5 +2639,51 @@ mod side_thread {
         window.take(Default::default());
         drop(window);
         assert_eq!(side.view().camera_height, 4.0, "the picture stands at the view asked");
+    }
+
+    #[test]
+    fn apart_drive_stops_when_a_read_fails() {
+        struct FailingExtents;
+        impl replay_columnar::unit::reader::Extents for FailingExtents {
+            fn read_at(&self, _offset: u64, _length: usize, _out: &mut Vec<u8>) -> std::io::Result<()> {
+                Err(std::io::Error::other("injected page read failure"))
+            }
+        }
+        struct FailingPages {
+            inner: Arc<super::Recording>,
+        }
+        impl playhead::pages::Pages for FailingPages {
+            fn extents(&self, _run: usize) -> &dyn replay_columnar::unit::reader::Extents {
+                &FailingExtents
+            }
+            fn runs(&self) -> &[playhead::pages::Run] {
+                &self.inner.runs
+            }
+            fn kinds(&self, table: usize) -> Option<&[replay_columnar::state::Kind]> {
+                self.inner.kinds.get(table).map(Vec::as_slice)
+            }
+        }
+        let (recording, _) = record(1, 8, busy);
+        let kinds = Arc::new(recording.kinds.clone());
+        let pages: Arc<dyn playhead::pages::Pages> = Arc::new(FailingPages { inner: recording });
+        let timeline = playhead::Timeline::whole(&*pages).unwrap();
+        let entry = open(
+            crate::playhead_host::Units {
+                name: "apart read failure".into(),
+                pages,
+                timeline,
+                kinds,
+            },
+            quick(),
+        )
+        .unwrap();
+        let mut apart = crate::playhead_host::views::apart::Apart::new(&entry, 1).unwrap();
+        entry.playhead().seek(4);
+        assert!(!apart.drive(4), "drive must return false instead of spinning after a read error");
+        assert!(
+            entry.playhead().error().is_some_and(|why| why.contains("injected page read failure")),
+            "the playhead reports the read error: {:?}",
+            entry.playhead().error()
+        );
     }
 }
