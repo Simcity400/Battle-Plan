@@ -501,7 +501,9 @@ mod tests {
                     assert_eq!(hooks.set_enabled(enabled), Ok(true));
                     assert_eq!(hooks.executable_ranges().count(), 0);
                 }
-                let mut drain = collector_player_commands::player_commands::Drain::default();
+                let command_hooks = hooks.inner.as_mut().unwrap();
+                let mut drain = command_hooks.take_drain().unwrap();
+                assert!(command_hooks.take_drain().is_none());
                 for final_drain in [false, true] {
                     assert!(drain.take(final_drain).unwrap().is_empty());
                 }

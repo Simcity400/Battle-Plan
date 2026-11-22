@@ -34,7 +34,7 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         [unavailable(ASSEMBLED)]
     }
-    pub fn seal(&mut self, hour: i32) -> u64 {
+    pub(crate) fn seal(&mut self, hour: i32) -> u64 {
         let started = collector_primitives::clock::qpc();
         self.interval = Some(map_events::interval::seal(
             hour,
@@ -55,21 +55,22 @@ impl Publication {
         self.0.allocated_bytes()
     }
 
-    pub fn admitted(&self) {
+    pub fn admitted(&self, _owner: &mut crate::sampling::SpoolOwner) {
         self.0.admitted();
     }
-    pub fn commit(self) {
+    pub fn commit(self, _owner: &mut crate::sampling::SpoolOwner) {
         self.0.commit();
     }
 }
 
-pub fn reset_admitted() {
+pub fn reset_admitted(_owner: &mut crate::sampling::SpoolOwner) {
     map_events::lanes::reset_admitted();
 }
 
 impl Ledger {
     pub fn assemble_owned(
         &mut self,
+        _owner: &mut crate::sampling::SpoolOwner,
         captured: &Captured,
         tables: &mut [TableInput],
     ) -> Option<Publication> {

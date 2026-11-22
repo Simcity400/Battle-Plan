@@ -209,6 +209,7 @@ call:sampling::record_lost
 call:serde_json::from_slice
 call:signal_done
 call:spool_loop
+call:sampling::SpoolOwner::claim
 call:std::mem::zeroed
 call:std::thread::Builder::new
 call:std::thread::sleep
@@ -272,6 +273,7 @@ method:handle
 method:id
 method:into
 method:into_iter
+method:install_acquisition
 method:is_empty
 method:is_err
 method:is_finished
@@ -335,6 +337,7 @@ method:saturating_mul
 method:sentinel
 method:set
 method:set_enabled
+method:set_command_drain
 method:set_helper
 method:shared
 method:shutdown

@@ -350,7 +350,9 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     )));
     fs::create_dir_all(&root.0).unwrap();
     let session_dir = root.0.join("session");
-    let mut processor = collector_spool::spooling::spool_failure_fixture(&session_dir).unwrap();
+    // SAFETY: the test owns the synthetic spool and uses no live collector.
+    let mut processor =
+        unsafe { collector_spool::spooling::spool_failure_fixture(&session_dir) }.unwrap();
     let frame = collector_spool::spooling::allocation_failure_frame(2);
     processor.prepare(&frame).unwrap();
     let prepared = processor.prepare_frame(&frame).unwrap();

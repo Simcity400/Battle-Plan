@@ -72,7 +72,7 @@ struct Job {
     command: Command,
 }
 
-pub struct Completion {
+pub(crate) struct Completion {
     pub ticket: u64,
     pub context: Context,
     pub frame: bool,
@@ -81,7 +81,7 @@ pub struct Completion {
 }
 
 #[derive(Clone, Copy, Default)]
-pub struct Diagnostics {
+pub(crate) struct Diagnostics {
     bytes: usize,
     deferred_bytes: usize,
     owned_bytes: usize,
@@ -246,7 +246,7 @@ impl State {
     }
 }
 
-pub struct Shared {
+pub(crate) struct Shared {
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -561,12 +561,12 @@ impl Shared {
     }
 }
 
-pub struct Writer {
+pub(crate) struct Writer {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
 impl Writer {
-    pub fn start(root: PathBuf) -> io::Result<Self> {
+    pub(crate) fn start(root: PathBuf) -> io::Result<Self> {
         let factory_bytes = root.capacity();
         let writer = Self::start_with(move |campaign| {
             let id = std::str::from_utf8(campaign).map_err(|_| io::ErrorKind::InvalidData)?;
@@ -695,7 +695,7 @@ impl Writer {
         }
     }
 
-    pub fn output(&self, campaign: CampaignId) -> Output<FileBackend> {
+    pub(crate) fn output(&self, campaign: CampaignId) -> Output<FileBackend> {
         Output::Queued {
             shared: Arc::clone(&self.shared),
             campaign,
@@ -705,7 +705,7 @@ impl Writer {
             last_close: None,
         }
     }
-    pub fn drain(&self) -> io::Result<()> {
+    pub(crate) fn drain(&self) -> io::Result<()> {
         let last = self.shared.lock().next_ticket - 1;
         self.shared.wait(last)
     }
@@ -716,7 +716,7 @@ impl Writer {
     pub(crate) fn resume_after_failure(&self) {
         self.shared.lock().blocked = false;
     }
-    pub fn completion(&self) -> Option<Completion> {
+    pub(crate) fn completion(&self) -> Option<Completion> {
         let mut state = self.shared.lock();
         let completion = state.completions.pop_front();
         Shared::reconcile(&mut state);
@@ -803,7 +803,7 @@ impl Writer {
         }
     }
 
-    pub fn shutdown(&mut self) {
+    pub(crate) fn shutdown(&mut self) {
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();
         if let Some(thread) = self.thread.take() {
@@ -817,7 +817,7 @@ impl Drop for Writer {
     }
 }
 
-pub enum Output<B: SegmentBackend = FileBackend> {
+pub(crate) enum Output<B: SegmentBackend = FileBackend> {
     #[cfg_attr(not(test), allow(dead_code))]
     Direct(SegmentedSpool<B>),
     Queued {
@@ -967,7 +967,7 @@ impl<B: SegmentBackend> Output<B> {
             }
         }
     }
-    pub fn append(&mut self, record: Record) -> io::Result<()> {
+    pub(crate) fn append(&mut self, record: Record) -> io::Result<()> {
         if let Self::Direct(spool) = self {
             return spool.append(&record);
         }
@@ -1123,7 +1123,7 @@ impl<B: SegmentBackend> Output<B> {
             }
         }
     }
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         if let Self::Queued { open, .. } = self {
             *open = false;
         }

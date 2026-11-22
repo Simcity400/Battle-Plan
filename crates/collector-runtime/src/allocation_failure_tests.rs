@@ -246,8 +246,9 @@ fn decode_refused(ordinal: usize) {
     // SAFETY: the child process owns the decode pools and runs no hooks or workers.
     let _pools = unsafe { collector_capture::decode::prepare_payload_pools(false) }.unwrap();
     let shared =
-        collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()).unwrap();
-    let index = shared.take_frame(&mut 0).unwrap();
+        collector_capture::sampling::Shared::with_sizing_for_test(0, 0, 1, &minimal_sizing())
+            .unwrap();
+    let index = shared.take_frame_for_test(&mut 0).unwrap();
     let baseline = unsafe {
         collector_capture::decode::refusal_exercise(&shared, index, 20, decode_work(u64::MAX))
     };
@@ -353,9 +354,9 @@ fn frame_build_refused() {
     collector_memory::terminal::install_hooks();
     let shared = collector_capture::sampling::Shared::new(0, 0, 1);
     let held: Vec<_> = (0..collector_capture::frame_pool::STEADY)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_| shared.take_frame_for_test(&mut 0).unwrap())
         .collect();
-    let extra = shared.take_frame(&mut 0).unwrap();
+    let extra = shared.take_frame_for_test(&mut 0).unwrap();
     drop(unsafe { shared.frames.vacate_for_test(extra) });
     let context = Context {
         campaign_id: Some(*CAMPAIGN),
@@ -367,7 +368,7 @@ fn frame_build_refused() {
         let _scope = collector_memory::terminal::enter(Phase::Callback);
         collector_memory::terminal::set_context(context);
         let guard = NullGuard::new(usize::MAX);
-        let built = shared.take_frame(&mut 0);
+        let built = shared.take_frame_for_test(&mut 0);
         let count = ATTEMPTS.load(Ordering::Relaxed);
         drop(guard);
         drop(unsafe {
@@ -387,7 +388,7 @@ fn frame_build_refused() {
         collector_memory::terminal::set_context(context);
         let mut grow_ns = u64::MAX;
         let guard = NullGuard::new(ordinal);
-        let refused = shared.take_frame(&mut grow_ns);
+        let refused = shared.take_frame_for_test(&mut grow_ns);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
         drop(scope);
@@ -507,7 +508,7 @@ fn frame_growth_refused() {
     collector_memory::terminal::install_hooks();
     let shared = collector_capture::sampling::Shared::new(0, 0, 1);
     let held: Vec<_> = (0..collector_capture::frame_pool::STEADY)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_| shared.take_frame_for_test(&mut 0).unwrap())
         .collect();
     let scope = collector_memory::terminal::enter(Phase::Callback);
     collector_memory::terminal::set_context(Context {
@@ -517,7 +518,7 @@ fn frame_growth_refused() {
         failed_hour: Some(41),
     });
     let mut grow_ns = u64::MAX;
-    let refused = with_allocations_denied(|| shared.take_frame(&mut grow_ns));
+    let refused = with_allocations_denied(|| shared.take_frame_for_test(&mut grow_ns));
     drop(scope);
     assert_eq!(refused, None);
     assert_eq!(grow_ns, 0);
@@ -848,7 +849,8 @@ fn thread_label(phase: Phase) -> io::Result<()> {
         #[cfg(feature = "alloc-fault-injection")]
         Phase::Journal => {
             collector_memory::terminal::inject(Phase::Journal, 1);
-            let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
+            // SAFETY: the test owns the synthetic spool and uses no live collector.
+            let mut processor = unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
             let mut frame = collector_spool::spooling::allocation_failure_frame(19);
             {
                 let _spool = collector_memory::terminal::enter(Phase::Spool);
@@ -890,7 +892,8 @@ fn set_aside_witness() -> io::Result<()> {
         .truncate(true)
         .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     collector_memory::terminal::prepare(&witness_file, 1, 1000);
-    let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
+    // SAFETY: the test owns the synthetic spool and uses no live collector.
+    let mut processor = unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
     {
         let _scope = collector_memory::terminal::enter(Phase::Spool);
         for hour in 10..=11 {
@@ -1321,8 +1324,10 @@ fn exercise_pipeline(
     } else {
         None
     };
-    let shared = collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing())?;
-    let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
+    let shared =
+        collector_capture::sampling::Shared::with_sizing_for_test(0, 0, 1, &minimal_sizing())?;
+    // SAFETY: the test owns the synthetic spool and uses no live collector.
+    let mut processor = unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
     if phase == Phase::Spool {
         processor.lockstep_writer();
     }
@@ -1346,7 +1351,9 @@ fn exercise_pipeline(
     if let Some(clock) = &mut frame.clock {
         clock.hour = 21;
     }
-    let index = shared.take_frame(&mut 0).ok_or(io::ErrorKind::Other)?;
+    let index = shared
+        .take_frame_for_test(&mut 0)
+        .ok_or(io::ErrorKind::Other)?;
     let mut status_probe = if phase == Phase::Status {
         Some(crate::status_writer::AllocationProbe::prepare(&root)?)
     } else {
@@ -1394,7 +1401,8 @@ fn exercise_pipeline(
         let _scope = collector_memory::terminal::enter(Phase::Bootstrap);
         let before = collector_capture::sampling::SHARED.identity_for_test();
         bootstrap_refused =
-            collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()).is_err();
+            collector_capture::sampling::Shared::with_sizing_for_test(0, 0, 1, &minimal_sizing())
+                .is_err();
         assert!(before.is_null());
         assert_eq!(
             before,

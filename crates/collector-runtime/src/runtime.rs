@@ -688,8 +688,12 @@ fn run(
     collector_observers::building_bombing::restore_sequence(bombing_sequence)?;
     collector_observers::nuclear_strikes::restore_sequence(nuclear_sequence)?;
     collector_observers::market_changes::restore_sequence(market_sequence)?;
-    let mut processor = Processor::new(&config.output_dir, history, session.clone())
-        .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
+    // SAFETY: this attach owns the spool and transfers ownership to its processor.
+    let spool_owner =
+        unsafe { sampling::SpoolOwner::claim() }.ok_or("collector spool already owned")?;
+    let mut processor =
+        Processor::new(&config.output_dir, history, session.clone(), spool_owner)
+            .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     let mut hook =
         unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }.map_err(
             |cause| {
@@ -884,6 +888,13 @@ fn run(
             )
         })
     })?;
+    if let Some(drain) = command_hooks
+        .inner
+        .as_mut()
+        .and_then(collector_player_commands::player_commands::Hooks::take_drain)
+    {
+        processor.set_command_drain(drain);
+    }
     let mut air_loss_hooks = FamilyHooks::construct(base, || {
         Ok::<_, &'static str>(unsafe { collector_observers::air_losses::Hooks::new(&memory, base) })
     })?;
@@ -1302,9 +1313,8 @@ fn run(
     shared
         .pool_bytes
         .fetch_add(acquisition.allocated_bytes() as u64, Ordering::Relaxed);
-    shared
-        .acquisition
-        .set(acquisition)
+    // SAFETY: capture state is unpublished and this attach owns pool shutdown.
+    let acquisition = unsafe { shared.install_acquisition(acquisition) }
         .map_err(|_| "acquisition pool already initialized")?;
     // SAFETY: the runtime owns the pools and retains them until its hooks and workers quiesce.
     let _payload_pools = unsafe { decode::prepare_payload_pools(config.game_score) }
@@ -1315,7 +1325,6 @@ fn run(
     if collector_memory::terminal::failed() {
         return Err("collector allocation failed before hooks");
     }
-    let acquisition = shared.acquisition.get().expect("initialized before hook");
     let mut owned_workers = acquisition.thread_ids();
     let mut priority_reconciler =
         collector_workers::frame_priority::Reconciler::start(shared.frame_priority.clone())?;
@@ -2913,9 +2922,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
             "hour_stages": collector_workers::hour_stages::status(),
             "collector_thread_cpu": collector_workers::thread_cpu::status(
                 shared
-                    .acquisition
-                    .get()
-                    .map(|acquisition| acquisition.calibration().executor.thread_ids)
+                    .acquisition_calibration()
+                    .map(|calibration| calibration.executor.thread_ids)
                     .unwrap_or_default()
                     .ids(),
             ),
@@ -2953,7 +2961,9 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS)
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-    assert!(shared.acquisition.set(pool).is_ok());
+    // SAFETY: this fixture owns the unpublished pool and shuts it down below.
+    let pool = unsafe { shared.install_acquisition(pool) }
+        .map_err(|_| io::Error::from(io::ErrorKind::AlreadyExists))?;
     shared.native_tick_calls.store(3, Ordering::Relaxed);
     let decode = with_allocations_denied(|| decode_status_from(Some(&shared)));
     let value = collector_status::status::status!({"decode": decode});
@@ -2992,11 +3002,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         assert!(absent[family].get(reason).is_some(), "{family}.{reason}");
     }
     assert!(absent["combat_log_history"].get("first_loss").is_some());
-    shared
-        .acquisition
-        .get()
-        .unwrap()
-        .shutdown()
+    pool.shutdown()
         .map_err(|_| io::Error::from(io::ErrorKind::Other))
 }
 
@@ -4096,26 +4102,29 @@ fn grow_combat_hints(
     }
     let mut refused = false;
     for index in 0..made {
-        shared.grow_idle_frame(index, |frame| {
-            let generation = generation(index);
-            let mut state = applied.get(index, generation);
-            let hint = hints.pending(capacities, &state);
-            if hint.land.is_none() && hint.naval.is_none() {
-                return;
-            }
-            let success = frame
-                .extended
-                .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
-            refused |=
-                (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
-            if success[0] {
-                state.land = hint.land;
-            }
-            if success[1] {
-                state.naval = hint.naval;
-            }
-            applied.set(index, generation, state);
-        });
+        // SAFETY: the runtime sizing pass only grows this idle frame.
+        unsafe {
+            shared.grow_idle_frame(index, |frame| {
+                let generation = generation(index);
+                let mut state = applied.get(index, generation);
+                let hint = hints.pending(capacities, &state);
+                if hint.land.is_none() && hint.naval.is_none() {
+                    return;
+                }
+                let success = frame
+                    .extended
+                    .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
+                refused |=
+                    (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
+                if success[0] {
+                    state.land = hint.land;
+                }
+                if success[1] {
+                    state.naval = hint.naval;
+                }
+                applied.set(index, generation, state);
+            });
+        }
     }
     refused
 }
@@ -4127,14 +4136,17 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         .combat_progress
         .presize(&live, shared.base);
     for idle_index in 0..shared.frames.made() {
-        shared.grow_idle_frame(idle_index, |idle| {
-            #[cfg(test)]
-            if let Some(check) = lock(&sizing.before_idle_frame_growth).take() {
-                check(sizing, shared);
-            }
-            capacities.grow_frame(idle);
-            sizing.account_homes(shared);
-        });
+        // SAFETY: the runtime sizing pass only grows this idle frame.
+        unsafe {
+            shared.grow_idle_frame(idle_index, |idle| {
+                #[cfg(test)]
+                if let Some(check) = lock(&sizing.before_idle_frame_growth).take() {
+                    check(sizing, shared);
+                }
+                capacities.grow_frame(idle);
+                sizing.account_homes(shared);
+            });
+        }
     }
 }
 
@@ -4276,6 +4288,16 @@ impl<F: Fn()> Drop for StopRecordingOnSpoolExit<F> {
     }
 }
 
+#[cfg(test)]
+fn test_processor(
+    root: &Path,
+    history: PreparedCampaigns,
+    session: SessionStart,
+) -> std::io::Result<Processor> {
+    // SAFETY: runtime tests use their own fixture state without a live collector.
+    unsafe { Processor::new_for_test(root, history, session) }
+}
+
 fn verify_content_roster(
     shared: &Shared,
     config: &Config,
@@ -4283,7 +4305,7 @@ fn verify_content_roster(
     processor: &mut Processor,
     writer: &crate::status_writer::StatusHandle,
 ) -> Result<(), &'static str> {
-    if let Some(roster) = shared.take_sampled_roster() {
+    if let Some(roster) = processor.owner().take_sampled_roster(shared) {
         shared
             .pool_bytes
             .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
@@ -4344,7 +4366,7 @@ fn spool_loop(
         }
         let span = phases.span(Phase::Observers);
         if !collector_workers::tick_gate::game_ticking() {
-            shared.prepare_frame_clocks(&live);
+            processor.owner().prepare_frame_clocks(shared, &live);
         }
         span.finish();
         verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
@@ -4353,7 +4375,7 @@ fn spool_loop(
             collector_workers::frame_priority::Role::Spool,
         );
         let mut received = false;
-        while let Some(index) = shared.frames.pop_ready() {
+        while let Some(index) = processor.owner().pop_ready(shared) {
             shared.frame_stage(index, sampling::FrameStage::Spool);
             let watch = collector_spool::slow_hours::SpoolWatch::start();
             let watched_hour = unsafe { shared.frames[index].captured() }
@@ -4497,9 +4519,7 @@ fn spool_loop(
             }
             let unpublished = processor.take_unpublished_families();
             if unpublished != 0 {
-                shared
-                    .forget_families
-                    .fetch_or(unpublished, Ordering::Release);
+                shared.request_forget_families(unpublished);
             }
             if pending_write.is_none() {
                 collector_memory::terminal::attempted_hour(None);
@@ -4612,7 +4632,7 @@ fn spool_loop(
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             collector_memory::terminal::attempted_hour(None);
             // SAFETY: the runtime stops the spool after all capture callbacks have drained.
-            let pending = unsafe { shared.take_pending_losses() };
+            let pending = unsafe { processor.owner().take_pending_losses(shared) };
             match processor.prepare_losses(&pending) {
                 Err(error) => add_terminal_error(
                     &mut drain_result,
@@ -4773,9 +4793,11 @@ struct SizingShared {
 
 impl SizingShared {
     fn new(shared: &Shared, capacities: BufferCapacities, state: Option<SizingState>) -> Self {
-        *shared.frame_capacities.lock() = capacities;
+        // SAFETY: this runtime's sizing state owns the capacity publisher.
+        let published = unsafe { shared.sizing_capacities() };
+        *published.lock() = capacities;
         Self {
-            capacities: shared.frame_capacities.clone(),
+            capacities: published,
             idle_growth_requested: AtomicBool::new(false),
             country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
             template_home_accounted: AtomicUsize::new(0),
@@ -5801,7 +5823,7 @@ mod tests {
         let hours = 2 * collector_capture::frame_pool::STEADY + 1;
         let taken: Vec<_> = (0..hours)
             .map(|_| {
-                let index = shared.take_frame(&mut 0).unwrap();
+                let index = shared.take_frame_for_test(&mut 0).unwrap();
                 unsafe { shared.frames.push_decode_for_test(index) };
                 index
             })
@@ -5820,14 +5842,14 @@ mod tests {
         assert_eq!(behind["frames"]["live_bytes"], bytes);
         assert_eq!(behind["frames"]["built_ahead"], 0);
         for _ in 0..collector_capture::frame_pool::AHEAD {
-            shared.build_frame_ahead().unwrap();
+            shared.build_frame_ahead_for_test().unwrap();
         }
         let ahead = status(&shared);
         let built = collector_capture::frame_pool::AHEAD as u64;
         assert_eq!(ahead["frames"]["built_ahead"], built);
         assert_eq!(ahead["frames"]["ahead_ready"], built);
         assert_eq!(ahead["frames"]["free"], built);
-        let index = shared.take_frame(&mut 0).unwrap();
+        let index = shared.take_frame_for_test(&mut 0).unwrap();
         unsafe { shared.frames.push_decode_for_test(index) };
         let taken_ahead = status(&shared);
         assert_eq!(taken_ahead["frames"]["ahead_taken"], 1);
@@ -5854,7 +5876,7 @@ mod tests {
         let steady = collector_capture::frame_pool::STEADY;
         shared.spool_stalled(true);
         let taken: Vec<_> = (0..2 * steady + 1)
-            .map(|_| shared.take_frame(&mut 0))
+            .map(|_| shared.take_frame_for_test(&mut 0))
             .collect();
         assert!(
             taken[..steady].iter().all(Option::is_some),
@@ -5873,7 +5895,7 @@ mod tests {
         assert_eq!(stalled["built_ahead"], 0);
         assert_eq!(stalled["dropped_spool_stalled"], steady as u64 + 1);
         shared.spool_stalled(false);
-        assert!(shared.take_frame(&mut 0).is_some());
+        assert!(shared.take_frame_for_test(&mut 0).is_some());
         let resumed = frames(&shared);
         assert_eq!(resumed["grown"], 1);
         assert_eq!(resumed["dropped_spool_stalled"], steady as u64 + 1);
@@ -5883,28 +5905,27 @@ mod tests {
     fn an_hour_building_its_own_frame_never_waits_on_the_held_frame_capacities() {
         let shared = Arc::new(Shared::new(0, 0, collector_test_support::qpc_frequency()));
         for _ in 0..collector_capture::frame_pool::STEADY {
-            shared.take_frame(&mut 0).unwrap();
+            shared.take_frame_for_test(&mut 0).unwrap();
         }
-        let before = shared.frame_capacities.published();
-        let mut held = shared.frame_capacities.lock();
+        // SAFETY: this fixture owns its capacity publisher.
+        let capacities = unsafe { shared.sizing_capacities() };
+        let before = capacities.published();
+        let mut held = capacities.lock();
         held.core[5] += 8;
         let hour = {
             let shared = Arc::clone(&shared);
             std::thread::spawn(move || {
                 let mut grow_ns = 0;
-                shared.take_frame(&mut grow_ns).map(|_| grow_ns)
+                shared.take_frame_for_test(&mut grow_ns).map(|_| grow_ns)
             })
         };
         let grow_ns = hour.join().unwrap().expect("the hour's own frame");
         assert!(
-            shared.frame_capacities.published() == before,
+            capacities.published() == before,
             "a change still held is not read"
         );
         drop(held);
-        assert_eq!(
-            shared.frame_capacities.published().core[5],
-            before.core[5] + 8
-        );
+        assert_eq!(capacities.published().core[5], before.core[5] + 8);
         assert!(grow_ns > 0, "an hour with no free frame builds its own");
         let frames = serde_json::to_value(acquisition_work(&shared)).unwrap()["frames"].clone();
         assert_eq!(frames["grown"], 1);
@@ -6660,7 +6681,7 @@ mod tests {
 
     fn sizing_fixture() -> (Shared, SizingThread) {
         let sizing = collector_capture::country_scale::Sizing::for_slots(0);
-        let shared = Shared::with_sizing(0, 0, 1, &sizing).unwrap();
+        let shared = Shared::with_sizing_for_test(0, 0, 1, &sizing).unwrap();
         let capacities = BufferCapacities {
             core: sizing.core,
             map: sizing.map,
@@ -6697,7 +6718,9 @@ mod tests {
     fn the_spool_records_sizing_observations_once_and_ends_on_a_sizing_failure() {
         let directory =
             std::env::temp_dir().join(format!("hoi4-sizing-handoff-{}", std::process::id()));
-        let mut processor = collector_spool::spooling::spool_failure_fixture(&directory).unwrap();
+        // SAFETY: the test owns the synthetic spool and uses no live collector.
+        let mut processor =
+            unsafe { collector_spool::spooling::spool_failure_fixture(&directory) }.unwrap();
         let (shared, sizing) = sizing_fixture();
         sizing.sizing.error("first sizing refusal");
         sizing.sizing.error("second sizing refusal");
@@ -6722,7 +6745,9 @@ mod tests {
     fn only_a_spool_pass_that_received_an_hour_requests_sizing() {
         let directory =
             std::env::temp_dir().join(format!("hoi4-sizing-request-{}", std::process::id()));
-        let mut processor = collector_spool::spooling::spool_failure_fixture(&directory).unwrap();
+        // SAFETY: the test owns the synthetic spool and uses no live collector.
+        let mut processor =
+            unsafe { collector_spool::spooling::spool_failure_fixture(&directory) }.unwrap();
         let (shared, mut sizing) = sizing_fixture();
         sizing.thread = Some(std::thread::spawn(std::thread::park));
         sizing.spool_pass(&shared, &mut processor, false).unwrap();
@@ -6840,7 +6865,7 @@ mod tests {
         let _demand = collector_equipment_destruction::equipment_destruction::tests::fresh_demand();
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let returning = shared.take_frame(&mut 0).unwrap();
+        let returning = shared.take_frame_for_test(&mut 0).unwrap();
         let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let factions = initial.core[6] + 8;
@@ -6882,7 +6907,8 @@ mod tests {
         assert!(capacities.core[5] > wars);
         assert!(capacities.core[6] >= factions);
         assert_eq!(capacities.extended.equipment_destruction, 24);
-        let free: [_; sampling::BUFFERS] = std::array::from_fn(|_| shared.frames.pop().unwrap());
+        let free: [_; sampling::BUFFERS] =
+            std::array::from_fn(|_| shared.frames.pop_free_for_test().unwrap());
         assert!(free.contains(&returning));
         for index in free {
             let frame = unsafe { shared.frames[index].captured() };
@@ -6903,7 +6929,7 @@ mod tests {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let held: [_; sampling::BUFFERS - collector_capture::frame_pool::AHEAD] =
-            std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+            std::array::from_fn(|_| shared.take_frame_for_test(&mut 0).unwrap());
         let idle: Vec<_> = (0..sampling::BUFFERS)
             .filter(|index| !held.contains(index))
             .collect();
@@ -6928,7 +6954,7 @@ mod tests {
         let mut taken: Vec<_> = (0..collector_capture::frame_pool::AHEAD)
             .map(|_| {
                 let mut wait = u64::MAX;
-                let index = shared.take_frame(&mut wait).unwrap();
+                let index = shared.take_frame_for_test(&mut wait).unwrap();
                 assert_eq!(wait, 0);
                 index
             })
@@ -7007,7 +7033,7 @@ mod tests {
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut grow_ns = u64::MAX;
-                        let index = shared.take_frame(&mut grow_ns).unwrap();
+                        let index = shared.take_frame_for_test(&mut grow_ns).unwrap();
                         assert_eq!(grow_ns, 0, "hour {hour}: {:?}", shared.frames.gauge());
                         index
                     })
@@ -7047,7 +7073,7 @@ mod tests {
         let fixture = Arc::new(sizing_fixture());
         let (shared, thread) = &*fixture;
         let sizing = &thread.sizing;
-        let returning = shared.take_frame(&mut 0).unwrap();
+        let returning = shared.take_frame_for_test(&mut 0).unwrap();
         let wars = sizing.capacities.lock().core[5] + 8;
         sizing.raise(shared, |capacities| capacities.core[5] = wars);
         let (leased, lease_seen) = std::sync::mpsc::channel();
@@ -7079,7 +7105,7 @@ mod tests {
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut wait = u64::MAX;
-                        let index = shared.take_frame(&mut wait).unwrap();
+                        let index = shared.take_frame_for_test(&mut wait).unwrap();
                         assert_eq!(wait, 0);
                         index
                     })
@@ -7089,7 +7115,7 @@ mod tests {
                 sizing.recycle_frame(shared, returning);
                 steps.at("the game reusing the recycled frame");
                 let mut wait = u64::MAX;
-                assert_eq!(shared.take_frame(&mut wait), Some(returning));
+                assert_eq!(shared.take_frame_for_test(&mut wait), Some(returning));
                 assert_eq!(wait, 0);
                 drop(release);
                 steps.at("idle growth, released");
@@ -7129,7 +7155,7 @@ mod tests {
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         shared
-                            .take_frame(&mut 0)
+                            .take_frame_for_test(&mut 0)
                             .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames.gauge()))
                     })
                     .collect();
@@ -7167,7 +7193,7 @@ mod tests {
                         (0..hours)
                             .map(|_| {
                                 let mut grow_ns = u64::MAX;
-                                (fixture.0.take_frame(&mut grow_ns), grow_ns)
+                                (fixture.0.take_frame_for_test(&mut grow_ns), grow_ns)
                             })
                             .collect::<Vec<_>>()
                     })
@@ -7223,7 +7249,7 @@ mod tests {
         let allocated_before = allocated_bytes();
         let pool_before = shared.pool_owned();
         let shared_before = shared.country_intel.allocated_bytes();
-        let returning = shared.take_frame(&mut 0).unwrap();
+        let returning = shared.take_frame_for_test(&mut 0).unwrap();
         let frame = unsafe { shared.frames[returning].captured() };
         let before_frame_bytes = frame.allocated_bytes();
         let initial = *sizing.capacities.lock();
@@ -7267,7 +7293,7 @@ mod tests {
     fn concurrent_frame_accounting_charges_shared_country_intel_growth_once() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let held: [_; 2] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+        let held: [_; 2] = std::array::from_fn(|_| shared.take_frame_for_test(&mut 0).unwrap());
         let before = shared.country_intel.allocated_bytes();
         let pool_before = shared.pool_owned();
         let mut rows = sizing.capacities.lock().extended.intel.rows[15] + 8;
@@ -7769,7 +7795,7 @@ mod tests {
     fn combat_hints_keep_the_next_hour_s_frame_and_its_spare_for_the_game() {
         let shared = Shared::new(0, 0, 1);
         let held: [_; sampling::BUFFERS - collector_capture::frame_pool::AHEAD] =
-            std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+            std::array::from_fn(|_| shared.take_frame_for_test(&mut 0).unwrap());
         let idle: Vec<_> = (0..sampling::BUFFERS)
             .filter(|index| !held.contains(index))
             .collect();
@@ -7872,7 +7898,7 @@ mod tests {
         check_accounting();
         assert!(applied == grown);
 
-        let held = shared.frames.pop().unwrap();
+        let held = shared.frames.pop_free_for_test().unwrap();
         let previous = applied[held];
         hints.land.as_mut().unwrap().rows = 1200;
         hints.naval.as_mut().unwrap().rows = 257;
@@ -8116,7 +8142,7 @@ mod tests {
         let directory = std::env::temp_dir()
             .join(format!("hoi4-political-hint-status-{}", std::process::id(),));
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
         let mut watch = RegistryWatch::default();
         assert!(
             processor
@@ -8190,7 +8216,7 @@ mod tests {
             std::process::id()
         ));
         let processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
         let shared = Shared::new(0, 0, 1);
         shared.stop_recording();
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();

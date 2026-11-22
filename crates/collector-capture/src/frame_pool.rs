@@ -151,6 +151,8 @@ impl Fifo {
 }
 
 pub struct FramePool {
+    #[cfg(any(test, feature = "test-support"))]
+    test_access: bool,
     segments: [AtomicPtr<Slot>; SEGMENTS],
     made: AtomicUsize,
     live: AtomicUsize,
@@ -194,6 +196,8 @@ pub struct Gauge {
 impl FramePool {
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(any(test, feature = "test-support"))]
+            test_access: false,
             segments: [const { AtomicPtr::new(ptr::null_mut()) }; SEGMENTS],
             made: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
@@ -248,7 +252,26 @@ impl FramePool {
         self.free.load(Ordering::Acquire)
     }
 
-    pub fn pop(&self) -> Option<usize> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn enable_test_access(&mut self) {
+        self.test_access = true;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn assert_test_access(&self) {
+        assert!(
+            self.test_access,
+            "only fixture pools may be accessed by test consumers"
+        );
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pop_free_for_test(&self) -> Option<usize> {
+        self.assert_test_access();
+        self.pop()
+    }
+
+    pub(crate) fn pop(&self) -> Option<usize> {
         self.free
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| {
                 free.checked_sub(1)
@@ -519,6 +542,7 @@ impl FramePool {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn pop_decode_for_test(&self) -> Option<usize> {
+        self.assert_test_access();
         self.pop_decode()
     }
 
@@ -531,7 +555,7 @@ impl FramePool {
         self.enqueue(&self.ready, index);
     }
 
-    pub fn pop_ready(&self) -> Option<usize> {
+    pub(crate) fn pop_ready(&self) -> Option<usize> {
         self.pop_from(&self.ready)
     }
 

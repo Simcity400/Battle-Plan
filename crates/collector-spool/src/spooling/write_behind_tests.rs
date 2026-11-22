@@ -202,6 +202,8 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
     let store = Arc::new(Mutex::new(Store::default()));
     let session = session();
     let processor = Processor {
+        // SAFETY: this fixture owns its observer inputs and no game is attached.
+        owner: unsafe { collector_capture::sampling::SpoolOwner::fixture() },
         root: std::env::temp_dir()
             .join("hoi4-spool-writer-synthetic")
             .join(format!(
@@ -226,7 +228,7 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
         queued: std::collections::VecDeque::new(),
         flight: None,
         writer_error: None,
-        command_drain: Default::default(),
+        command_drain: None,
         command_pending: Vec::new(),
         command_contexts: Default::default(),
         command_anchors: Default::default(),

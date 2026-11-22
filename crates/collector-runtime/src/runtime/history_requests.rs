@@ -827,14 +827,14 @@ mod tests {
             assert!(!path.with_extension("ack").exists());
             let shared = collector_capture::sampling::Shared::new(0, 0, 1);
             let held: Vec<_> = (0..collector_capture::sampling::BUFFERS)
-                .map(|_| shared.frames.pop().unwrap())
+                .map(|_| shared.frames.pop_free_for_test().unwrap())
                 .collect();
             assert_eq!(shared.frames.len(), 0);
             for &index in &held {
                 spool.poll_with(|_| panic!("worker is blocked outside the handoff"));
                 unsafe { shared.recycle_frame(index) };
                 let mut wait = u64::MAX;
-                assert_eq!(shared.take_frame(&mut wait), Some(index));
+                assert_eq!(shared.take_frame_for_test(&mut wait), Some(index));
                 assert_eq!(wait, 0);
             }
             for index in held {
@@ -1184,7 +1184,7 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
-            Processor::new(&live, PreparedCampaigns::default(), session(1)).unwrap();
+            super::test_processor(&live, PreparedCampaigns::default(), session(1)).unwrap();
         for index in 0..2 {
             let capture = frames.capture();
             capture.frame(&owned[index]);
@@ -1260,7 +1260,7 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
-            Processor::new(&root, PreparedCampaigns::default(), session(1)).unwrap();
+            super::test_processor(&root, PreparedCampaigns::default(), session(1)).unwrap();
         let capture = frames.capture();
         capture.frame(&owned[0]);
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0001 release {CAMPAIGN}")));
@@ -1336,7 +1336,7 @@ mod tests {
             ended.replays[0].clone()
         };
         let mut processor =
-            Processor::new(&earlier, PreparedCampaigns::default(), session(1)).unwrap();
+            super::test_processor(&earlier, PreparedCampaigns::default(), session(1)).unwrap();
         for hour in 10..=11 {
             processor
                 .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, hour))
@@ -1346,7 +1346,7 @@ mod tests {
         drop(processor);
         let recording = save(&earlier);
         let history = PreparedCampaigns::load(&output, &session(2), |_| Ok(())).unwrap();
-        let mut processor = Processor::new(&live, history, session(2)).unwrap();
+        let mut processor = super::test_processor(&live, history, session(2)).unwrap();
         for hour in 20..=21 {
             processor
                 .frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, hour))

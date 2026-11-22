@@ -136,6 +136,7 @@ struct Producer {
 }
 
 struct Live {
+    drain_id: u64,
     base: usize,
     capture: u64,
     sample_roster: unsafe fn(&LiveMemory, usize),
@@ -162,6 +163,7 @@ unsafe impl Send for Live {}
 
 static LIVE: AtomicPtr<Live> = AtomicPtr::new(std::ptr::null_mut());
 static STORE: Mutex<Option<Box<Live>>> = Mutex::new(None);
+static NEXT_DRAIN: AtomicU64 = AtomicU64::new(1);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
@@ -285,6 +287,7 @@ impl Live {
             names.max(64),
         )?;
         Ok(Self {
+            drain_id: 0,
             base,
             capture: u64::try_from(qpc())
                 .ok()
@@ -963,8 +966,13 @@ pub struct Drained {
     pub batch: Batch,
 }
 
-#[derive(Default)]
 pub struct Drain {
+    id: Option<u64>,
+    state: DrainState,
+}
+
+#[derive(Default)]
+struct DrainState {
     events: Vec<(u64, u64)>,
     actors: Vec<(u64, u64)>,
     windows: BTreeMap<u64, Option<Span>>,
@@ -984,12 +992,14 @@ impl Drain {
         let store = STORE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(live) = store.as_ref() else {
+        let Some(live) = store.as_ref().filter(|live| self.id == Some(live.drain_id)) else {
             return Ok(Vec::new());
         };
-        self.take_live(live, final_drain)
+        self.state.take_live(live, final_drain)
     }
+}
 
+impl DrainState {
     fn take_live(&mut self, live: &Live, final_drain: bool) -> io::Result<Vec<Drained>> {
         let version = live.version.load(Ordering::Acquire);
         if version & 1 != 0 {
@@ -1224,7 +1234,9 @@ impl Drain {
         }
         Ok(groups.into_values().collect())
     }
+}
 
+impl Drain {
     pub fn catalog() -> io::Result<Vec<Kind>> {
         let store = STORE
             .lock()
@@ -1248,6 +1260,7 @@ impl Drain {
 pub struct Hooks {
     taps: Vec<Tap>,
     publication_attempted: bool,
+    drain: Option<Drain>,
 }
 
 impl Hooks {
@@ -1263,6 +1276,7 @@ impl Hooks {
         base: usize,
         sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> Self {
+        let mut drain_id = None;
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];
             for (site, slot) in native::SITES.iter().zip(&mut located) {
@@ -1272,11 +1286,16 @@ impl Hooks {
                     return Err("command observer site instruction span differs".into());
                 }
             }
-            let live = engine_allocation::boxed(
+            let mut live = engine_allocation::boxed(
                 Live::new(memory, base, sample_roster)
                     .map_err(|error| Cow::Owned(error.to_string()))?,
             )
             .map_err(|_| "command observer storage allocation failed")?;
+            let id = NEXT_DRAIN
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| "command drain identity exhausted")?;
+            live.drain_id = id;
+            drain_id = Some(id);
             let pointer = std::ptr::from_ref(&*live).cast_mut();
             *STORE
                 .lock()
@@ -1302,7 +1321,15 @@ impl Hooks {
                 Vec::new()
             }),
             publication_attempted: false,
+            drain: Some(Drain {
+                id: drain_id,
+                state: DrainState::default(),
+            }),
         }
+    }
+
+    pub fn take_drain(&mut self) -> Option<Drain> {
+        self.drain.take()
     }
 
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
@@ -1356,6 +1383,7 @@ pub mod tests {
     fn live() -> Live {
         Live {
             base: 0,
+            drain_id: 0,
             capture: 1,
             sample_roster: |_, _| {},
             kinds: Vec::new(),
@@ -1551,7 +1579,7 @@ pub mod tests {
                     assert_eq!(loading.headers.get(), 1);
                     assert_eq!(live.failed.load(Ordering::Acquire), 1);
                     assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
-                    let mut drain = Drain::default();
+                    let mut drain = DrainState::default();
                     assert!(drain.take_live(&live, false).unwrap().is_empty());
                     attempt_mode(&live, &Fixture::new(), 1, 100, 3).unwrap();
                     live.closed_qpc.store(110, Ordering::Relaxed);
@@ -1603,7 +1631,7 @@ pub mod tests {
                 Err("command accepted before the game is in play")
             );
             assert!(!unsafe { (*live.producer.get()).active });
-            let mut drain = Drain::default();
+            let mut drain = DrainState::default();
             let mut groups = if drain_between {
                 drain.take_live(&live, false).unwrap()
             } else {
@@ -1755,7 +1783,7 @@ pub mod tests {
             };
             memory.0.remove(&native::IDLER_RVA.0);
             attempt_mode(&live, &memory, 7, 105, 2).unwrap();
-            let mut drain = Drain::default();
+            let mut drain = DrainState::default();
             let mut groups = drain.take_live(&live, false).unwrap();
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].batch.departures, vec![(1, 105)]);
@@ -1817,7 +1845,7 @@ pub mod tests {
             let (live, mut memory) = accepted_fixture(Some(Category::Army));
             live.closed_qpc.store(0, Ordering::Relaxed);
             live.closed_world.store(0, Ordering::Relaxed);
-            let mut drain = Drain::default();
+            let mut drain = DrainState::default();
             assert!(drain.take_live(&live, true).unwrap().is_empty());
             memory.0.remove(&native::IDLER_RVA.0);
             assert_eq!(
@@ -1888,7 +1916,7 @@ pub mod tests {
         })
         .unwrap();
         live.closed_qpc.store(115, Ordering::Relaxed);
-        let mut drain = Drain::default();
+        let mut drain = DrainState::default();
         let groups = drain.take_live(&live, false).unwrap();
         live.closed_qpc.store(120, Ordering::Relaxed);
         let continued = drain.take_live(&live, false).unwrap();
@@ -1992,7 +2020,7 @@ pub mod tests {
         assert!(unsafe { (*live.producer.get()).active });
         assert_eq!((live.metadata().pending(), live.events().pending()), (1, 1));
         live.closed_qpc.store(110, Ordering::Relaxed);
-        let groups = Drain::default().take_live(&live, true).unwrap();
+        let groups = DrainState::default().take_live(&live, true).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].lost, 0);
         assert!(groups[0].context.is_some());
@@ -2155,7 +2183,7 @@ pub mod tests {
         live.closed_order
             .store(1 + u64::from(burst), Ordering::Relaxed);
         live.closed_qpc.store(200, Ordering::Relaxed);
-        let groups = Drain::default().take_live(&live, true).unwrap();
+        let groups = DrainState::default().take_live(&live, true).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].lost, 0);
         assert_eq!(
@@ -2226,7 +2254,7 @@ pub mod tests {
         live.roster(&memory, producer, 2, 101).unwrap();
         live.closed_order.store(2, Ordering::Relaxed);
         live.closed_qpc.store(110, Ordering::Relaxed);
-        let mut drain = Drain::default();
+        let mut drain = DrainState::default();
         let groups = drain.take_live(&live, false).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].lost, 0);
@@ -2300,7 +2328,7 @@ pub mod tests {
             attempt_mode(&live, &memory, 1, 105, 2).unwrap();
             attempt_mode(&live, &memory, 1, 110, 3).unwrap();
             assert!(!unsafe { (*live.producer.get()).active });
-            let groups = Drain::default().take_live(&live, true).unwrap();
+            let groups = DrainState::default().take_live(&live, true).unwrap();
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].lost, 0);
             assert_eq!(
@@ -2333,7 +2361,7 @@ pub mod tests {
                 attempt_mode(&live, &memory, 0, 108, 3).unwrap();
             }
             live.closed_qpc.store(110, Ordering::Relaxed);
-            let mut drain = Drain::default();
+            let mut drain = DrainState::default();
             let groups = drain.take_live(&live, false).unwrap();
             assert_eq!(groups.len(), 2);
             assert_eq!(groups.iter().map(|group| group.lost).sum::<u64>(), 3);
@@ -2384,7 +2412,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let mut drain = Drain::default();
+        let mut drain = DrainState::default();
         let groups = drain.take_live(&live, false).unwrap();
         assert!(groups[0].batch.actors.is_empty());
         assert!(drain.known_actors.is_empty());
@@ -2408,7 +2436,7 @@ pub mod tests {
             ..Entry::default()
         })
         .unwrap();
-        let mut drain = Drain::default();
+        let mut drain = DrainState::default();
         let groups = drain.take_live(&live, true).unwrap();
         let context = groups[0].context.unwrap();
         assert_eq!(context.campaign, *b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6");
@@ -2445,7 +2473,7 @@ pub mod tests {
             })
             .unwrap();
         }
-        let mut drain = Drain::default();
+        let mut drain = DrainState::default();
         let groups = drain.take_live(&live, false).unwrap();
         assert_eq!(groups[0].batch.actors.len(), 1);
         assert_eq!(
@@ -2479,7 +2507,7 @@ pub mod tests {
         .unwrap();
         live.failed_qpc.store(125, Ordering::Relaxed);
         live.failed.store(1, Ordering::Release);
-        let mut drain = Drain::default();
+        let mut drain = DrainState::default();
         let groups = drain.take_live(&live, false).unwrap();
         assert_eq!(groups[0].lost, 1);
         live.closed_qpc.store(130, Ordering::Relaxed);

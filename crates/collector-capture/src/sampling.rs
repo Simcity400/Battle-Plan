@@ -762,8 +762,61 @@ impl WaitCounter {
     }
 }
 
+static SPOOL_OWNED: AtomicBool = AtomicBool::new(false);
+
+pub struct SpoolOwner {
+    live: bool,
+}
+
+impl SpoolOwner {
+    /// # Safety
+    /// Only the exclusive attach owner may claim the spool. Transfer it to the
+    /// processor that handles this session's live frames and observer buffers.
+    pub unsafe fn claim() -> Option<Self> {
+        SPOOL_OWNED
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self { live: true })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// The caller owns all fixture inputs and any observer buffers it uses.
+    /// A fixture must never access a live collector's state.
+    pub unsafe fn fixture() -> Self {
+        Self { live: false }
+    }
+
+    pub fn prepare_frame_clocks(&mut self, shared: &Shared, memory: &impl engine_native::Memory) {
+        shared.prepare_frame_clocks(memory);
+    }
+
+    pub fn pop_ready(&mut self, shared: &Shared) -> Option<usize> {
+        shared.frames.pop_ready()
+    }
+
+    pub fn take_sampled_roster(&mut self, shared: &Shared) -> Option<Box<Roster>> {
+        shared.take_sampled_roster()
+    }
+
+    /// # Safety
+    /// Capture and every other producer must have quiesced before the drain.
+    pub unsafe fn take_pending_losses(&mut self, shared: &Shared) -> LossBatch {
+        // SAFETY: the spool owns the drain and the caller has quiesced the producers.
+        unsafe { shared.take_pending_losses() }
+    }
+}
+
+impl Drop for SpoolOwner {
+    fn drop(&mut self) {
+        if self.live {
+            SPOOL_OWNED.store(false, Ordering::Release);
+        }
+    }
+}
+
 pub struct Shared {
-    pub acquisition: OnceLock<acquisition::Pool>,
+    acquisition: OnceLock<acquisition::Pool>,
     pub acquisition_panics: AtomicU64,
     #[cfg(feature = "callback_profile")]
     pub profile: ProfilePhases,
@@ -776,7 +829,7 @@ pub struct Shared {
     pub capture_mode: replay_data::scope::CaptureMode,
     pub tick_idle: Option<collector_workers::event::Event>,
     pub frames: crate::frame_pool::FramePool,
-    pub frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
+    frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
     history_frames: collector_workers::frame_fence::Frames,
     pub heap_waits: WaitCounter,
     pub frame_priority: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
@@ -876,13 +929,13 @@ pub struct Shared {
     appearance_store_bytes: AtomicU64,
     pub force_next: AtomicBool,
     pub refresh_next: AtomicBool,
-    pub forget_families: std::sync::atomic::AtomicU32,
+    forget_families: std::sync::atomic::AtomicU32,
     pub lexical_max: AtomicI32,
     pub fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
     fixed_layout_buffer: UnsafeCell<Vec<u8>>,
     pub modifier_table: [AtomicU64; 2],
     pub division_mark: AtomicU64,
-    pub country_cache_swap: Mutex<CountryCacheSwap>,
+    country_cache_swap: Mutex<CountryCacheSwap>,
     pub country_cache_cells: AtomicUsize,
     pub country_intel: collector_intel::daily_intel::Home,
     pub template_home: collector_division_templates::extended::division_templates::Home,
@@ -898,9 +951,9 @@ pub struct Shared {
 }
 
 #[derive(Default)]
-pub struct CountryCacheSwap {
-    pub next: Option<engine_allocation::SharedBox<Cache>>,
-    pub retired: Option<engine_allocation::SharedBox<Cache>>,
+struct CountryCacheSwap {
+    next: Option<engine_allocation::SharedBox<Cache>>,
+    retired: Option<engine_allocation::SharedBox<Cache>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -921,19 +974,62 @@ impl Shared {
         self.recording.store(false, Ordering::Release);
     }
 
+    pub fn request_forget_families(&self, families: u32) {
+        self.forget_families.fetch_or(families, Ordering::Release);
+    }
+
+    pub fn acquisition_calibration(&self) -> Option<acquisition::Calibration> {
+        self.acquisition.get().map(acquisition::Pool::calibration)
+    }
+
+    /// # Safety
+    /// Only the attach owner may install the pool, before publishing capture state.
+    /// That owner is responsible for shutting it down after acquisition quiesces.
+    pub unsafe fn install_acquisition(
+        &self,
+        pool: acquisition::Pool,
+    ) -> Result<&acquisition::Pool, acquisition::Pool> {
+        self.acquisition.set(pool)?;
+        Ok(self
+            .acquisition
+            .get()
+            .expect("acquisition pool was installed"))
+    }
+
+    /// # Safety
+    /// Only the runtime sizing owner may obtain the live capacity publisher.
+    /// Retain it only while this shared state is attached.
+    pub unsafe fn sizing_capacities(
+        &self,
+    ) -> engine_allocation::SharedBox<crate::frame_capacities::Capacities> {
+        self.frame_capacities.clone()
+    }
+
     pub fn request_retry_full(&self) {
         self.refresh_next.store(true, Ordering::Release);
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(base: usize, trampoline: usize, frequency: u64) -> Self {
-        Self::with_sizing(
+        Self::with_sizing_for_test(
             base,
             trampoline,
             frequency,
             &crate::country_scale::Sizing::for_slots(0),
         )
         .expect("synthetic capture buffers")
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sizing_for_test(
+        base: usize,
+        trampoline: usize,
+        frequency: u64,
+        sizing: &crate::country_scale::Sizing,
+    ) -> std::io::Result<Self> {
+        let mut shared = Self::with_sizing(base, trampoline, frequency, sizing)?;
+        shared.frames.enable_test_access();
+        Ok(shared)
     }
 
     pub fn with_sizing(
@@ -1356,7 +1452,13 @@ impl Shared {
         Ok(frame)
     }
 
-    pub fn build_frame_ahead(&self) -> std::io::Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_frame_ahead_for_test(&self) -> std::io::Result<()> {
+        self.frames.assert_test_access();
+        self.build_frame_ahead()
+    }
+
+    pub(crate) fn build_frame_ahead(&self) -> std::io::Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         self.build_ahead_seam(BuildAhead::Starting);
         let frame = self.new_frame()?;
@@ -1394,7 +1496,13 @@ impl Shared {
         }
     }
 
-    pub fn take_frame(&self, grow_ns: &mut u64) -> Option<usize> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_frame_for_test(&self, grow_ns: &mut u64) -> Option<usize> {
+        self.frames.assert_test_access();
+        self.take_frame(grow_ns)
+    }
+
+    pub(crate) fn take_frame(&self, grow_ns: &mut u64) -> Option<usize> {
         *grow_ns = 0;
         if self.acquisition_failed() {
             return None;
@@ -1565,7 +1673,10 @@ impl Shared {
         }
     }
 
-    pub fn grow_idle_frame(&self, index: usize, grow: impl FnOnce(&mut Captured)) {
+    /// # Safety
+    /// The closure is part of the runtime's sizing pass and may only grow buffers.
+    /// The frame is returned to the live pool after it runs.
+    pub unsafe fn grow_idle_frame(&self, index: usize, grow: impl FnOnce(&mut Captured)) {
         if !self.take_idle_frame_for_growth(index) {
             return;
         }
@@ -1658,7 +1769,7 @@ impl Shared {
         *self.clock_frames.get_mut() = len;
     }
 
-    pub fn prepare_frame_clocks(&self, memory: &impl engine_native::Memory) {
+    fn prepare_frame_clocks(&self, memory: &impl engine_native::Memory) {
         let native = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         let required = native.max(self.clock_required());
         if required > self.clock_frames.load(Ordering::Acquire) {
@@ -1781,7 +1892,7 @@ impl Shared {
         self.roster_ready.load(Ordering::Acquire)
     }
 
-    pub fn take_sampled_roster(&self) -> Option<Box<Roster>> {
+    fn take_sampled_roster(&self) -> Option<Box<Roster>> {
         if !self.roster_ready() || self.roster_taken.swap(true, Ordering::AcqRel) {
             return None;
         }
@@ -1791,7 +1902,7 @@ impl Shared {
 
     /// # Safety
     /// The capture callback and every other user of its pending loss buffer must have quiesced.
-    pub unsafe fn take_pending_losses(&self) -> LossBatch {
+    unsafe fn take_pending_losses(&self) -> LossBatch {
         // SAFETY: the caller owns the loss buffer after the capture has quiesced.
         unsafe { std::mem::take(&mut *self.pending.get()) }
     }

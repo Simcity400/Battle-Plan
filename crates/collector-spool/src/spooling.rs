@@ -1844,7 +1844,7 @@ pub struct Processor {
     queued: std::collections::VecDeque<Box<QueuedFrame>>,
     flight: Option<(String, BranchId)>,
     writer_error: Option<io::ErrorKind>,
-    command_drain: collector_player_commands::player_commands::Drain,
+    command_drain: Option<collector_player_commands::player_commands::Drain>,
     command_pending: Vec<collector_player_commands::player_commands::Drained>,
     command_contexts: std::collections::BTreeMap<u64, (String, BranchId)>,
     command_anchors: std::collections::BTreeMap<(u64, BranchId), (u64, i32, i64)>,
@@ -1853,6 +1853,7 @@ pub struct Processor {
     command_last_flush: std::time::Instant,
     command_ready: std::collections::BTreeMap<(u64, u64), CommandWrite>,
     command_inflight: std::collections::BTreeMap<u64, CommandWrite>,
+    owner: collector_capture::sampling::SpoolOwner,
 }
 
 impl Drop for Processor {
@@ -1962,13 +1963,19 @@ impl Processor {
             self.writer.wait_receipt_progress()?;
         }
     }
-    pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
+    pub fn new(
+        root: &Path,
+        history: PreparedCampaigns,
+        session: SessionStart,
+        owner: collector_capture::sampling::SpoolOwner,
+    ) -> io::Result<Self> {
         let _details = replay_data::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
         let writer = crate::spool_writer::Writer::start(root.into())?;
         let journal_thread = crate::columnar::JournalThread::start()?;
         Ok(Self {
+            owner,
             root: root.into(),
             history,
             session,
@@ -1987,7 +1994,7 @@ impl Processor {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
-            command_drain: Default::default(),
+            command_drain: None,
             command_pending: Vec::new(),
             command_contexts: Default::default(),
             command_anchors: Default::default(),
@@ -1997,6 +2004,29 @@ impl Processor {
             command_ready: Default::default(),
             command_inflight: Default::default(),
         })
+    }
+
+    pub fn owner(&mut self) -> &mut collector_capture::sampling::SpoolOwner {
+        &mut self.owner
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// The caller owns the synthetic session and any observer buffers used by it.
+    /// A fixture must never consume a live collector's buffers.
+    pub unsafe fn new_for_test(
+        root: &Path,
+        history: PreparedCampaigns,
+        session: SessionStart,
+    ) -> io::Result<Self> {
+        // SAFETY: the caller excludes live data and owns the fixture inputs.
+        Self::new(root, history, session, unsafe {
+            collector_capture::sampling::SpoolOwner::fixture()
+        })
+    }
+
+    pub fn set_command_drain(&mut self, drain: collector_player_commands::player_commands::Drain) {
+        self.command_drain = Some(drain);
     }
 
     pub fn set_helper(&mut self, helper: collector_workers::spool_helper::SpoolHelper) -> bool {
@@ -2426,9 +2456,11 @@ impl Processor {
         let operation_publication = campaign
             .operation_outcomes
             .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables);
-        let map_event_publication = campaign
-            .map_events
-            .assemble_owned(captured.extended.map_events(), &mut source.tables);
+        let map_event_publication = campaign.map_events.assemble_owned(
+            &mut self.owner,
+            captured.extended.map_events(),
+            &mut source.tables,
+        );
         if collector_memory::terminal::failed() {
             return Err(collector_memory::terminal::oom());
         }
@@ -2658,7 +2690,7 @@ impl Processor {
             publication.admitted();
         }
         if let Some(publication) = &frame.map_event_publication {
-            publication.admitted();
+            publication.admitted(&mut self.owner);
         }
         self.queued.push_back(frame);
         self.flight = Some((flight_id, branch));
@@ -2688,7 +2720,7 @@ impl Processor {
             publication.commit();
         }
         if let Some(publication) = map_event_publication {
-            publication.commit();
+            publication.commit(&mut self.owner);
         }
         let campaign = self.campaigns.get_mut(&id).unwrap();
         campaign.line_output.written(line_output_receipt);
@@ -2804,7 +2836,7 @@ impl Processor {
         }
         if lost {
             collector_operation_outcomes::extended::operation_outcomes::reset_admitted();
-            collector_capture::extended::map_events::reset_admitted();
+            collector_capture::extended::map_events::reset_admitted(&mut self.owner);
         }
         if failed {
             self.writer.resume_after_failure();
@@ -3113,9 +3145,11 @@ impl Processor {
         {
             return Ok(());
         }
-        let drained = self.command_drain.take(final_drain)?;
-        engine_allocation::reserve(&mut self.command_pending, drained.len())?;
-        self.command_pending.extend(drained);
+        if let Some(drain) = &mut self.command_drain {
+            let drained = drain.take(final_drain)?;
+            engine_allocation::reserve(&mut self.command_pending, drained.len())?;
+            self.command_pending.extend(drained);
+        }
         self.command_last_flush = std::time::Instant::now();
         if !self.session_verified {
             return if final_drain && !self.command_pending.is_empty() {
@@ -4252,9 +4286,22 @@ fn retired_reason(table: TableId) -> Option<&'static str> {
     .as_deref()
 }
 
+#[cfg(test)]
+fn test_processor(
+    root: &Path,
+    history: PreparedCampaigns,
+    session: SessionStart,
+) -> io::Result<Processor> {
+    // SAFETY: these tests supply fixture data and run without a live collector.
+    unsafe { Processor::new_for_test(root, history, session) }
+}
+
 #[cfg(any(test, feature = "test-support"))]
-pub fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
-    Processor::new(root, PreparedCampaigns::default(), session())
+/// # Safety
+/// The caller owns this synthetic session and its observer buffers.
+pub unsafe fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
+    // SAFETY: the caller excludes live observations.
+    unsafe { Processor::new_for_test(root, PreparedCampaigns::default(), session()) }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4466,7 +4513,7 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-contain-table-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         processor.frame(&captured(10)).unwrap();
         for hour in [11, 12] {
             let mut prepared = processor.prepare_frame(&captured(hour)).unwrap();
@@ -4534,7 +4581,7 @@ mod tests {
             ));
             fs::create_dir_all(&directory).unwrap();
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+                test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
             processor
                 .command_pending
                 .push(collector_player_commands::player_commands::Drained {
@@ -4674,7 +4721,7 @@ mod tests {
             memory: Default::default(),
         };
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         processor.set_verified_session(verified).unwrap();
         processor.command_pending =
             collector_player_commands::player_commands::tests::reactivated_world();
@@ -4749,7 +4796,7 @@ mod tests {
                 std::process::id()
             ));
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+                test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
             let mut verified = session();
             verified.identity.verification = replay_data::identity::Verification::Verified {
                 launcher: Default::default(),
@@ -4841,7 +4888,7 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-close-request-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         processor
             .frame(&crate::spooling::campaign_frame(ID, 1234, 10))
             .unwrap();
@@ -4881,7 +4928,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("hoi4-set-aside-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         let load = |campaign: &[u8], signal: i64, hour: i32| {
             let mut source = captured(hour);
             let clock = source.clock.as_mut().unwrap();
@@ -5010,7 +5057,7 @@ mod tests {
             };
             let folder = root.join("sessions").join(process.to_string());
             let history = PreparedCampaigns::load(&target, &session, |_| Ok(())).unwrap();
-            let mut processor = Processor::new(&folder, history, session).unwrap();
+            let mut processor = test_processor(&folder, history, session).unwrap();
             for hour in hours {
                 processor
                     .frame(&crate::spooling::campaign_frame(ID, signal, hour))
@@ -5103,7 +5150,7 @@ mod tests {
             };
         let earlier = root.join("sessions").join("1");
         let mut processor =
-            Processor::new(&earlier, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&earlier, PreparedCampaigns::default(), session()).unwrap();
         for hour in 10..=11 {
             processor
                 .frame(&crate::spooling::campaign_frame(ID, 1234, hour))
@@ -5119,7 +5166,7 @@ mod tests {
         };
         let folder = root.join("sessions").join("2");
         let history = PreparedCampaigns::load(&target, &session, |_| Ok(())).unwrap();
-        let mut processor = Processor::new(&folder, history, session).unwrap();
+        let mut processor = test_processor(&folder, history, session).unwrap();
         for hour in 20..=21 {
             processor
                 .frame(&crate::spooling::campaign_frame(ID, 5678, hour))
@@ -5224,7 +5271,7 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-native-halted-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         processor.frame(&captured(10)).unwrap();
         processor.take_retry_full();
         let campaign = processor
@@ -5278,7 +5325,7 @@ mod tests {
             let mut start = session();
             start.capture_mode = mode;
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+                test_processor(&directory, PreparedCampaigns::default(), start).unwrap();
             for hour in [10, 11] {
                 processor.frame(&captured(hour)).unwrap();
             }
@@ -5384,7 +5431,7 @@ mod tests {
             let mut start = session();
             start.capture_mode = mode;
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+                test_processor(&directory, PreparedCampaigns::default(), start).unwrap();
             collector_map_events::interval::begin(0, 0).unwrap();
             unsafe {
                 kit::capture(mode, fixture, refuse, |frame, trace, roles| {
@@ -5614,7 +5661,7 @@ mod tests {
             std::process::id()
         ));
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         let mut source = captured(10);
         processor.prepare(&source).unwrap();
         processor.frame(&source).unwrap();
@@ -5661,7 +5708,7 @@ mod tests {
         assert_eq!(persisted["last_error"], expected);
 
         let mut preflight =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            test_processor(&directory, PreparedCampaigns::default(), session()).unwrap();
         assert_eq!(
             preflight.prepare(&source).unwrap_err().to_string(),
             "attach output already contains spool segments; use a fresh attach directory"
@@ -5688,6 +5735,8 @@ mod tests {
     #[test]
     fn cached_callback_summary_does_not_freeze_status_errors_or_latest_cost() {
         let mut processor = Processor {
+            // SAFETY: this fixture owns its observer inputs and no game is attached.
+            owner: unsafe { collector_capture::sampling::SpoolOwner::fixture() },
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
@@ -5706,7 +5755,7 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
-            command_drain: Default::default(),
+            command_drain: None,
             command_pending: Vec::new(),
             command_contexts: Default::default(),
             command_anchors: Default::default(),
@@ -6820,6 +6869,8 @@ mod tests {
     #[test]
     fn malformed_campaign_witnesses_become_unknown_losses_without_filesystem_access() {
         let mut processor = Processor {
+            // SAFETY: this fixture owns its observer inputs and no game is attached.
+            owner: unsafe { collector_capture::sampling::SpoolOwner::fixture() },
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
@@ -6838,7 +6889,7 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
-            command_drain: Default::default(),
+            command_drain: None,
             command_pending: Vec::new(),
             command_contexts: Default::default(),
             command_anchors: Default::default(),
