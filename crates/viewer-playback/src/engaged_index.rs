@@ -56,7 +56,7 @@ enum Witness {
         land: BTreeMap<(u64, u8), engaged::Lists>,
         naval: BTreeMap<(u64, u8), engaged::Lists>,
         controller_targets: Vec<u32>,
-        local_all_sides: bool,
+        local_viewers: Vec<u32>,
     },
 }
 
@@ -85,13 +85,13 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
     let mut land = BTreeMap::<(u64, u8), engaged::Lists>::new();
     let mut naval = BTreeMap::<(u64, u8), engaged::Lists>::new();
     let mut controller_targets = Vec::new();
-    let mut local_all_sides = false;
+    let mut local_viewers = Vec::new();
     for row in rows {
         let recorded = (row.triggers & CombatEngagementRefreshRow::TRIGGER_RECORDED) != 0;
         let units = (row.triggers & CombatEngagementRefreshRow::TRIGGER_UNITS) != 0;
         match row.kind {
             CombatEngagementRefreshRow::LAND_SIDE => {
-                if row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
+                if row.target == 0 || row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
                     return Ok(Witness::Unavailable);
                 }
                 let entry = land.entry((row.target, row.side)).or_default();
@@ -99,7 +99,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
                 entry.units |= units;
             }
             CombatEngagementRefreshRow::NAVAL_SIDE => {
-                if row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
+                if row.target == 0 || row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
                     return Ok(Witness::Unavailable);
                 }
                 let entry = naval.entry((row.target, row.side)).or_default();
@@ -118,12 +118,12 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
             }
             CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
                 if row.side != 0
-                    || row.target != 0
+                    || row.target > i32::MAX as u64
                     || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
                 {
                     return Ok(Witness::Unavailable);
                 }
-                local_all_sides = true;
+                local_viewers.push(row.target as u32);
             }
             _ => return Ok(Witness::Unavailable),
         }
@@ -132,7 +132,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
         land,
         naval,
         controller_targets,
-        local_all_sides,
+        local_viewers,
     })
 }
 
@@ -225,15 +225,23 @@ impl Viewer {
                 land,
                 naval,
                 controller_targets,
-                local_all_sides,
+                local_viewers,
             } => engaged::RefreshWitness::Complete {
                 sides: if kind == NAVAL {
                     naval.clone()
                 } else {
                     land.clone()
                 },
-                controller_targets: controller_targets.clone(),
-                local_all_sides: recording && *local_all_sides,
+                controller_targets: if recording {
+                    Vec::new()
+                } else {
+                    controller_targets.clone()
+                },
+                local_viewers: if recording {
+                    local_viewers.clone()
+                } else {
+                    Vec::new()
+                },
             },
         };
         engaged::Sample {

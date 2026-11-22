@@ -1102,6 +1102,9 @@ typed_codec!(
     |row, mask| {
         match row.kind {
             CombatEngagementRefreshRow::LAND_SIDE | CombatEngagementRefreshRow::NAVAL_SIDE => {
+                if row.target == 0 {
+                    return Err(invalid("invalid combat engagement refresh combat handle"));
+                }
                 if row.side > 1 {
                     return Err(invalid("invalid combat engagement refresh side"));
                 }
@@ -1124,8 +1127,8 @@ typed_codec!(
                 if row.side != 0 {
                     return Err(invalid("invalid combat engagement refresh side for kind"));
                 }
-                if row.target != 0 {
-                    return Err(invalid("invalid combat engagement refresh target for kind"));
+                if row.target > i32::MAX as u64 {
+                    return Err(invalid("invalid combat engagement refresh local viewer"));
                 }
                 if mask & 1 != 0 && row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED {
                     return Err(invalid("invalid combat engagement refresh triggers for kind"));
@@ -1262,8 +1265,20 @@ mod combat_engagement_refresh_tests {
     fn rejects_malformed_combat_engagement_refresh_rows_on_decode() {
         for bad in [
             CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::NAVAL_SIDE,
+                target: 0,
+                side: 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
-                target: 9,
+                target: i32::MAX as u64 + 1,
                 side: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },

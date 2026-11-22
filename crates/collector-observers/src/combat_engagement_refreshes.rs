@@ -260,6 +260,24 @@ fn identify_controller_target(
     }))
 }
 
+fn read_local_viewing_country(memory: &impl Memory, base: usize) -> Result<u64, &'static str> {
+    let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .filter(|&pointer| pointer != 0)
+        .ok_or("combat engagement refresh game state unreadable")?;
+    let [country, observer] = engine_native::cgame_state::local_player(memory, game)
+        .map_err(|_| "combat engagement refresh local viewer unreadable")?;
+    let raw = if (country as i32) > 0 {
+        country
+    } else if (observer as i32) > 0 {
+        observer
+    } else {
+        0
+    };
+    Ok(u64::from(raw))
+}
+
 fn identify_all_combats(
     memory: &impl Memory,
     base: usize,
@@ -276,9 +294,10 @@ fn identify_all_combats(
     if vtable != expected {
         return Err("combat engagement refresh combat manager unauthenticated");
     }
+    let target = read_local_viewing_country(memory, base)?;
     Ok(Some(Entry {
         kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
-        target: 0,
+        target,
         side: 0,
         triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
     }))
@@ -309,7 +328,11 @@ fn read_manager_cached_viewer(
 fn identify_hourly_viewer_change(before: u32, after: u32) -> Option<Entry> {
     (before != after).then_some(Entry {
         kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
-        target: 0,
+        target: if (after as i32) > 0 {
+            u64::from(after)
+        } else {
+            0
+        },
         side: 0,
         triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
     })
@@ -347,9 +370,15 @@ impl FlightGuard {
 impl Drop for FlightGuard {
     fn drop(&mut self) {
         DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-        if !self.completed && self.observe && ENABLED.load(Ordering::SeqCst) {
-            LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
-            LEDGER.refuse("combat engagement refresh native call unwound");
+        if !self.completed {
+            if self.observe && ENABLED.load(Ordering::SeqCst) {
+                LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
+                LEDGER.refuse("combat engagement refresh native call unwound");
+            }
+            if self.entered_ledger {
+                LEDGER.leave();
+            }
+            return;
         }
         if self.entered_ledger {
             LEDGER.leave();
@@ -637,6 +666,8 @@ impl Hooks {
             hourly_update as *const () as usize,
         ];
         let install = || -> Result<Vec<Hook>, &'static str> {
+            engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                .ok_or("combat engagement refresh game state singleton withheld on this build")?;
             for rva in REQUIRED_VTABLES {
                 engine_sites::at(base, rva)
                     .ok_or("combat engagement refresh vtable withheld on this build")?;
@@ -695,6 +726,9 @@ mod tests {
     use engine_native::memory::SliceMemory;
     use std::sync::{Mutex, MutexGuard};
 
+    #[cfg(feature = "tap-foreign-probe")]
+    mod foreign_unwind;
+
     static OWNER: Mutex<()> = Mutex::new(());
     static OWNING_THREAD: AtomicUsize = AtomicUsize::new(0);
 
@@ -720,6 +754,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             OWNING_THREAD.store(current_thread_tag(), Ordering::Release);
+            FLIGHTS.store(0, Ordering::SeqCst);
             LEDGER.reset();
             ENABLED.store(true, Ordering::SeqCst);
             Self { _guard: guard }
@@ -729,6 +764,7 @@ mod tests {
     impl Drop for TestScope<'_> {
         fn drop(&mut self) {
             ENABLED.store(false, Ordering::SeqCst);
+            FLIGHTS.store(0, Ordering::SeqCst);
             LEDGER.reset();
             OWNING_THREAD.store(0, Ordering::Release);
         }
@@ -872,9 +908,41 @@ mod tests {
         );
         write_u32(&mut bytes, manager + native::COMBAT_MANAGER_CACHED_VIEWER, 11);
 
-        let memory = SliceMemory {
-            base: mem_base,
-            bytes: &bytes,
+        let game_state = 0x700;
+        write_u32(
+            &mut bytes,
+            game_state + engine_native::cgame_state::LOCAL_PLAYER_COUNTRY,
+            0,
+        );
+        write_u32(
+            &mut bytes,
+            game_state + engine_native::cgame_state::OBSERVED_COUNTRY,
+            17,
+        );
+
+        struct CompositeMemory<'a> {
+            slice: SliceMemory<'a>,
+            singleton_addr: usize,
+            game_state_ptr: u64,
+        }
+        impl Memory for CompositeMemory<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == self.singleton_addr && output.len() == 8 {
+                    output.copy_from_slice(&self.game_state_ptr.to_le_bytes());
+                    return true;
+                }
+                self.slice.copy(address, output)
+            }
+        }
+
+        let memory = CompositeMemory {
+            slice: SliceMemory {
+                base: mem_base,
+                bytes: &bytes,
+            },
+            singleton_addr: engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                .unwrap(),
+            game_state_ptr: addr(game_state) as u64,
         };
 
         assert_eq!(
@@ -946,7 +1014,7 @@ mod tests {
             identify_all_combats(&memory, base, addr(manager)),
             Ok(Some(Entry {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
-                target: 0,
+                target: 17,
                 side: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             }))
@@ -958,6 +1026,15 @@ mod tests {
         assert_eq!(identify_hourly_viewer_change(11, 11), None);
         assert_eq!(
             identify_hourly_viewer_change(11, 12),
+            Some(Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 12,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            })
+        );
+        assert_eq!(
+            identify_hourly_viewer_change(11, 0),
             Some(Entry {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 0,
@@ -1020,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn unwinding_native_call_clears_active_and_refuses_interval() {
+    fn unwinding_native_call_retains_flight_and_refuses_interval() {
         let _scope = TestScope::enter();
         presize(16);
         boundary(Some(clock(100)));
@@ -1046,11 +1123,14 @@ mod tests {
             )
         });
         assert!(unwound.is_err());
-        assert_eq!(active(), 0);
+        assert_eq!(active(), 1);
         assert_eq!(LEDGER.events.load(Ordering::SeqCst), 0);
 
         boundary(Some(clock(101)));
         assert!(drain(&mut out).is_err());
+
+        execute_observed(0, 2, || Ok(None), || 0, Ok);
+        assert_eq!(active(), 1);
     }
 
     #[test]

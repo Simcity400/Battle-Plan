@@ -2428,21 +2428,20 @@ impl Fixture for LandCombatDivisionModifierRow {
     }
 }
 impl Fixture for CombatEngagementRefreshRow {
+    fn smallest_key() -> u128 {
+        1 << 1
+    }
     fn largest_key() -> u128 {
-        u128::from(Self::LOCAL_ALL_SIDES) << 65
+        (u128::from(Self::LOCAL_ALL_SIDES) << 65) | (u128::from(i32::MAX as u64) << 1)
     }
     fn fixture(key: u128, tick: usize) -> Self {
         let kind = ((key >> 65) & 3) as u8;
-        let (target, side, triggers) = match kind {
-            Self::LAND_SIDE | Self::NAVAL_SIDE => {
-                ((key >> 1) as u64, (key & 1) as u8, ((tick % 3) + 1) as u8)
-            }
-            Self::CONTROLLER_TARGET => (
-                (((key >> 1) as u64) % (i32::MAX as u64)).max(1),
-                0,
-                Self::TRIGGER_RECORDED,
-            ),
-            _ => (0, 0, Self::TRIGGER_RECORDED),
+        let target = (key >> 1) as u64;
+        let side = (key & 1) as u8;
+        let triggers = if kind >= Self::CONTROLLER_TARGET {
+            Self::TRIGGER_RECORDED
+        } else {
+            ((tick % 3) + 1) as u8
         };
         Self {
             kind,

@@ -88,7 +88,7 @@ fn project(entries: &[Entry]) -> Result<Vec<CombatEngagementRefreshRow>, &'stati
     for entry in entries {
         let valid = match entry.kind {
             CombatEngagementRefreshRow::LAND_SIDE | CombatEngagementRefreshRow::NAVAL_SIDE => {
-                entry.side <= 1 && entry.triggers != 0 && (entry.triggers & !3) == 0
+                entry.target != 0 && entry.side <= 1 && entry.triggers != 0 && (entry.triggers & !3) == 0
             }
             CombatEngagementRefreshRow::CONTROLLER_TARGET => {
                 entry.side == 0
@@ -98,7 +98,7 @@ fn project(entries: &[Entry]) -> Result<Vec<CombatEngagementRefreshRow>, &'stati
             }
             CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
                 entry.side == 0
-                    && entry.target == 0
+                    && entry.target <= i32::MAX as u64
                     && entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
             }
             _ => false,
@@ -219,8 +219,20 @@ mod tests {
         );
         for bad in [
             Entry {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::NAVAL_SIDE,
+                target: 0,
+                side: 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            Entry {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
-                target: 9,
+                target: i32::MAX as u64 + 1,
                 side: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },

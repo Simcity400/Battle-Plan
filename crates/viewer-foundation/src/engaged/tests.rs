@@ -189,7 +189,7 @@ fn complete_witness() -> RefreshWitness {
     RefreshWitness::Complete {
         sides: BTreeMap::new(),
         controller_targets: Vec::new(),
-        local_all_sides: false,
+        local_viewers: Vec::new(),
     }
 }
 
@@ -235,7 +235,7 @@ fn a_land_removal_may_rebuild_the_other_side() {
         refreshes: RefreshWitness::Complete {
             sides: BTreeMap::from([((62, 0), UNITS)]),
             controller_targets: Vec::new(),
-            local_all_sides: false,
+            local_viewers: Vec::new(),
         },
         ..defended(&links, &allied, &[7], &[2], &[9])
     };
@@ -390,7 +390,7 @@ fn unavailable_added_ids_leave_a_possible_rebuild_until_two_observations_compare
         refreshes: RefreshWitness::Complete {
             sides: BTreeMap::from([((62, 0), RECORDED)]),
             controller_targets: Vec::new(),
-            local_all_sides: false,
+            local_viewers: Vec::new(),
         },
         ..added(&links, &allied, Added::Unavailable)
     };
@@ -487,7 +487,7 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
             RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: vec![1],
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             }
         ),
         Engaged::Yes
@@ -499,7 +499,7 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
             RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: vec![5],
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             }
         ),
         Engaged::No
@@ -511,7 +511,7 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
             RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: vec![99],
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             }
         ),
         Engaged::Ambiguous(Ambiguity::Scope)
@@ -616,7 +616,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::from([((62, 0), RECORDED)]),
                 controller_targets: Vec::new(),
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             },
             ..sample(&links, &allied, &[7], &[2])
         },
@@ -628,7 +628,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::from([((62, 0), RECORDED)]),
                 controller_targets: Vec::new(),
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             },
             ..sample(&links, &allied, &[7], &[2])
         },
@@ -665,7 +665,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
             RefreshWitness::Complete {
                 sides: BTreeMap::from([((62, 0), UNITS)]),
                 controller_targets: Vec::new(),
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             },
         ),
         Continuity::Next,
@@ -681,13 +681,37 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
-                local_all_sides: true,
+                local_viewers: vec![1],
             },
             ..sample(&links, &allied, &[7], &[2])
         },
         Continuity::Next,
     );
     assert_eq!(local.side(62, 0), Engaged::Yes);
+    local.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![0],
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local.side(62, 0), Engaged::No);
+    local.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![99],
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local.side(62, 0), Engaged::Unknown);
 }
 
 #[test]
@@ -699,7 +723,7 @@ fn remapped_controller_target_is_scope_ambiguous_not_proven() {
     let witness_seven = || RefreshWitness::Complete {
         sides: BTreeMap::new(),
         controller_targets: vec![7],
-        local_all_sides: false,
+        local_viewers: Vec::new(),
     };
 
     for (prev_links, next_links) in [
@@ -739,9 +763,40 @@ fn partial_previous_census_still_applies_witnessed_side_refresh() {
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::from([((62, 0), RECORDED)]),
                 controller_targets: Vec::new(),
-                local_all_sides: false,
+                local_viewers: Vec::new(),
             },
             ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+}
+
+#[test]
+fn partial_previous_naval_census_with_local_sweep_uses_recorded_lists_alone() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+    let allied = relations(true);
+    let mut history = History::default();
+    let partial_empty = Sample {
+        sides: BTreeMap::new(),
+        complete: false,
+        removal: Removal::BothSides,
+        ..sample(&links, &allied, &[], &[])
+    };
+    history.advance(partial_empty, Continuity::Load);
+    let mut convoy_side = side(&[], &[2]);
+    convoy_side.unit_lists = Some((Vec::new(), Vec::new()));
+    history.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![1],
+            },
+            sides: BTreeMap::from([((62, 0), convoy_side), ((62, 1), side(&[9], &[5]))]),
+            complete: true,
+            removal: Removal::BothSides,
+            ..sample(&links, &allied, &[], &[])
         },
         Continuity::Next,
     );

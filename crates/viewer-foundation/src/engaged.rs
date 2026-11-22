@@ -124,7 +124,7 @@ pub enum RefreshWitness {
     Complete {
         sides: BTreeMap<(u64, u8), Lists>,
         controller_targets: Vec<u32>,
-        local_all_sides: bool,
+        local_viewers: Vec<u32>,
     },
 }
 
@@ -146,23 +146,14 @@ pub(crate) fn step(
     refresh: Option<Refresh>,
     mut evaluate: impl FnMut(Tested, usize) -> Option<bool>,
 ) -> Engaged {
-    step_with_viewers(held, refresh, 1, |lists, when, _| evaluate(lists, when))
-}
-
-fn step_with_viewers(
-    held: Engaged,
-    refresh: Option<Refresh>,
-    viewers: usize,
-    mut evaluate: impl FnMut(Tested, usize, usize) -> Option<bool>,
-) -> Engaged {
     match refresh {
         None => Engaged::Unknown,
-        Some(Refresh::Load) => Engaged::of(evaluate(Tested::Recorded, 0, 0)),
+        Some(Refresh::Load) => Engaged::of(evaluate(Tested::Recorded, 0)),
         Some(Refresh::Hour { proven, possible }) => {
             if !proven.any() && !possible.any() {
                 return held;
             }
-            let mut evaluated = [Engaged::Unknown; 8];
+            let mut evaluated = [Engaged::Unknown; 4];
             let mut len = 0;
             for (tested, lists) in [
                 (proven.recorded || possible.recorded, Tested::Recorded),
@@ -170,10 +161,8 @@ fn step_with_viewers(
             ] {
                 if tested {
                     for when in 0..2 {
-                        for viewer in 0..viewers {
-                            evaluated[len] = Engaged::of(evaluate(lists, when, viewer));
-                            len += 1;
-                        }
+                        evaluated[len] = Engaged::of(evaluate(lists, when));
+                        len += 1;
                     }
                 }
             }
@@ -274,29 +263,49 @@ fn gained(before: &[u64], now: &[u64]) -> bool {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct EverySide {
-    proven: bool,
+    other_proven: bool,
+    local_proven: bool,
     possible: bool,
+}
+
+impl EverySide {
+    fn proven(self) -> bool {
+        self.other_proven || self.local_proven
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateViewer {
+    Slot(u32),
+    RawLocal(u32),
+}
+
+fn push_unique<T: Copy + PartialEq>(list: &mut Vec<T>, item: T) {
+    if !list.contains(&item) {
+        list.push(item);
+    }
 }
 
 impl Previous {
     fn every_side(&self, sample: &Sample<'_>) -> EverySide {
-        let mut proven = false;
+        let mut other_proven = false;
+        let mut local_proven = false;
         let mut possible = false;
         if self.viewer != sample.viewer {
             if self.alternate_viewer_refreshed == Some(sample.viewer) {
                 possible = true;
             } else {
-                proven = true;
+                other_proven = true;
             }
         }
         let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
         match &sample.refreshes {
             RefreshWitness::Complete {
                 controller_targets,
-                local_all_sides,
+                local_viewers,
                 ..
             } => {
-                proven |= *local_all_sides;
+                local_proven = !local_viewers.is_empty();
                 for &raw in controller_targets {
                     let now = sample.links.get(&raw).copied();
                     let before = self.links.get(&raw).copied();
@@ -311,7 +320,7 @@ impl Previous {
                             possible = true;
                         }
                     } else if now == Some(sample.viewer) && before == Some(sample.viewer) {
-                        proven = true;
+                        other_proven = true;
                     } else if now == Some(sample.viewer)
                         || before == Some(sample.viewer)
                         || now.is_none()
@@ -331,7 +340,11 @@ impl Previous {
                 };
             }
         }
-        EverySide { proven, possible }
+        EverySide {
+            other_proven,
+            local_proven,
+            possible,
+        }
     }
 
     fn refresh(
@@ -340,21 +353,35 @@ impl Previous {
         key: (u64, u8),
         side: &Side,
         every: EverySide,
-    ) -> Option<Refresh> {
-        let (mut proven, mut possible) = match self.own_refresh(sample, key, side) {
+    ) -> Option<(Lists, Lists, bool)> {
+        let (own_proven, own_possible) = match self.own_refresh(sample, key, side) {
             Some(own) => own,
-            None if every.proven => (
-                Lists::default(),
-                Lists {
-                    recorded: true,
-                    units: true,
-                },
-            ),
+            None if every.proven() => {
+                if matches!(sample.refreshes, RefreshWitness::Complete { .. }) {
+                    (Lists::default(), Lists::default())
+                } else {
+                    (
+                        Lists::default(),
+                        Lists {
+                            recorded: true,
+                            units: true,
+                        },
+                    )
+                }
+            }
             None => return None,
         };
-        proven.recorded |= every.proven;
-        possible.recorded |= every.possible;
-        Some(Refresh::Hour { proven, possible })
+        let non_local_recorded =
+            own_proven.recorded || own_possible.recorded || every.other_proven || every.possible;
+        let proven = Lists {
+            recorded: own_proven.recorded || every.proven(),
+            units: own_proven.units,
+        };
+        let possible = Lists {
+            recorded: own_possible.recorded || every.possible,
+            units: own_possible.units,
+        };
+        Some((proven, possible, non_local_recorded))
     }
 
     fn own_refresh(
@@ -498,51 +525,114 @@ impl History {
         let next = previous.as_ref().filter(|_| continuity == Continuity::Next);
         let every = next.map(|previous| previous.every_side(&sample));
         let mut held = BTreeMap::new();
+        let local_viewers: &[u32] = match &sample.refreshes {
+            RefreshWitness::Complete { local_viewers, .. } => local_viewers.as_slice(),
+            RefreshWitness::Unavailable => &[],
+        };
         let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
-        let viewers = [sample.viewer, alternate.unwrap_or(sample.viewer)];
-        let viewer_count = if alternate.is_some() { 2 } else { 1 };
         let before = next.map(|p| (&p.links, p.relations.as_ref().map_err(|reason| *reason)));
+        let mut evaluated = Vec::new();
+        let mut viewers = Vec::new();
         for (key, side) in &sample.sides {
-            let refresh = match (continuity, next, every) {
-                (Continuity::Load, ..) => Some(Refresh::Load),
-                (_, Some(previous), Some(every)) => previous.refresh(&sample, *key, side, every),
-                _ => None,
-            };
-            let same = side.unit_lists == side.lists;
-            let mut tested = [[[None; 2]; 2]; 2];
-            let evaluate = |lists: Tested, when: usize, viewer_index: usize| {
-                let lists = if same { Tested::Recorded } else { lists };
-                *tested[lists as usize][when][viewer_index].get_or_insert_with(|| {
-                    let viewer = viewers[viewer_index];
-                    let snapshot = if when == 0 {
-                        Some((sample.links, sample.relations))
-                    } else {
-                        before
-                    };
-                    let (primary, secondary) = match lists {
-                        Tested::Recorded => side.lists.as_ref(),
-                        Tested::Units => side.unit_lists.as_ref(),
-                    }?;
-                    let (links, relations) = snapshot?;
-                    test(primary, secondary, |raw| {
-                        let slot = *links.get(&raw)?;
-                        if slot == viewer {
-                            return Some((true, true));
-                        }
-                        Some((false, relations.ok()?.shared(slot, viewer)))
-                    })
+            let eval = |lists: Tested, when: usize, viewer: CandidateViewer| {
+                let snapshot = if when == 0 {
+                    Some((sample.links, sample.relations))
+                } else {
+                    before
+                };
+                let (primary, secondary) = match lists {
+                    Tested::Recorded => side.lists.as_ref(),
+                    Tested::Units => side.unit_lists.as_ref(),
+                }?;
+                let (links, relations) = snapshot?;
+                let slot = match viewer {
+                    CandidateViewer::Slot(slot) => slot,
+                    CandidateViewer::RawLocal(0) => return Some(false),
+                    CandidateViewer::RawLocal(raw) => *links.get(&raw)?,
+                };
+                test(primary, secondary, |raw| {
+                    let member = *links.get(&raw)?;
+                    if member == slot {
+                        return Some((true, true));
+                    }
+                    Some((false, relations.ok()?.shared(member, slot)))
                 })
             };
             let held_before = self.held.get(key).copied().unwrap_or(Engaged::Unknown);
-            held.insert(
-                *key,
-                step_with_viewers(held_before, refresh, viewer_count, evaluate),
-            );
+            let value = match (continuity, next, every) {
+                (Continuity::Load, ..) => {
+                    Engaged::of(eval(Tested::Recorded, 0, CandidateViewer::Slot(sample.viewer)))
+                }
+                (_, Some(previous), Some(every)) => {
+                    match previous.refresh(&sample, *key, side, every) {
+                        None => Engaged::Unknown,
+                        Some((proven, possible, non_local_recorded)) => {
+                            if !proven.any() && !possible.any() {
+                                held_before
+                            } else {
+                                evaluated.clear();
+                                if proven.recorded || possible.recorded {
+                                    viewers.clear();
+                                    for &raw in local_viewers {
+                                        push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
+                                    }
+                                    if non_local_recorded || local_viewers.is_empty() {
+                                        push_unique(
+                                            &mut viewers,
+                                            CandidateViewer::Slot(sample.viewer),
+                                        );
+                                        if let Some(alt) = alternate {
+                                            push_unique(&mut viewers, CandidateViewer::Slot(alt));
+                                        }
+                                    }
+                                    for &viewer in &viewers {
+                                        for when in 0..2 {
+                                            evaluated.push(Engaged::of(eval(
+                                                Tested::Recorded,
+                                                when,
+                                                viewer,
+                                            )));
+                                        }
+                                    }
+                                }
+                                if proven.units || possible.units {
+                                    viewers.clear();
+                                    push_unique(&mut viewers, CandidateViewer::Slot(sample.viewer));
+                                    if let Some(alt) = alternate {
+                                        push_unique(&mut viewers, CandidateViewer::Slot(alt));
+                                    }
+                                    for &raw in local_viewers {
+                                        push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
+                                    }
+                                    for &viewer in &viewers {
+                                        for when in 0..2 {
+                                            evaluated.push(Engaged::of(eval(
+                                                Tested::Units,
+                                                when,
+                                                viewer,
+                                            )));
+                                        }
+                                    }
+                                }
+                                Engaged::agreed(&evaluated, (!proven.any()).then_some(held_before))
+                            }
+                        }
+                    }
+                }
+                _ => Engaged::Unknown,
+            };
+            held.insert(*key, value);
         }
+        let alternate_viewer_refreshed = alternate.filter(|&alt| {
+            every.is_some_and(|e| e.other_proven)
+                || local_viewers
+                    .iter()
+                    .any(|&raw| raw != 0 && sample.links.get(&raw).copied() == Some(alt))
+        });
         let mut earlier = previous.map(|previous| previous.sides).unwrap_or_default();
         self.previous = Some(Previous {
             viewer: sample.viewer,
-            alternate_viewer_refreshed: alternate.filter(|_| every.is_some_and(|e| e.proven)),
+            alternate_viewer_refreshed,
             links: sample.links.clone(),
             relations: sample.relations.cloned(),
             controllers: sample.controllers,
