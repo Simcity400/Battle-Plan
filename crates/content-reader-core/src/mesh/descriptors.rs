@@ -1414,7 +1414,11 @@ fn recover_names(
     bytes: &[u8],
     document: &parser::Document,
     words: &[&str],
-    native: fn(&[u8], &str, Option<parser::native::Recovery>) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
+    native: fn(
+        &[u8],
+        &str,
+        Option<parser::native::Recovery>,
+    ) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
 ) -> BTreeSet<String> {
     use parser::native::Recovery;
     let recovered = |recovery| {
@@ -1423,8 +1427,79 @@ fn recover_names(
             .unwrap_or_default()
     };
     let mut names = declared_names_from(&recovered(Recovery::Reached), document, words);
-    names.extend(declared_names_in(&recovered(Recovery::Skipped), words, false));
+    names.extend(declared_names_in(&recovered(Recovery::Skipped), words, true));
+    names.extend(bound_names(&document.items, words));
     names
+}
+
+fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String> {
+    let mut definitions = BTreeMap::<&[u8], Vec<&parser::Item>>::new();
+    definitions_in(items, &mut definitions);
+    let mut pending = Vec::new();
+    let mut references = |item: &'a parser::Item| {
+        for field in item.value.items().unwrap_or(&[]) {
+            if field.keyword_is("name")
+                && !field.quoted()
+                && let Some(raw) = field.value.scalar()
+                && raw.starts_with(b"@")
+            {
+                pending.push(raw);
+            }
+        }
+    };
+    for item in items {
+        if item.keyword_is("objectTypes") {
+            for block in item.value.items().unwrap_or(&[]) {
+                if words.iter().any(|word| block.keyword_is(word)) {
+                    references(block);
+                }
+            }
+        } else if words.iter().any(|word| item.keyword_is(word)) {
+            references(item);
+        }
+    }
+    let mut followed = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    while let Some(reference) = pending.pop() {
+        if !followed.insert(reference) {
+            continue;
+        }
+        for definition in definitions.get(reference).into_iter().flatten() {
+            let Some(raw) = definition.value.scalar() else {
+                continue;
+            };
+            if !definition.quoted() && raw.starts_with(b"@") {
+                pending.push(raw);
+            } else if let Ok(text) = std::str::from_utf8(raw) {
+                let name = unquote(text);
+                if !name.is_empty() {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+fn definitions_in<'a>(
+    items: &'a [parser::Item],
+    definitions: &mut BTreeMap<&'a [u8], Vec<&'a parser::Item>>,
+) {
+    for item in items {
+        match &item.value {
+            parser::Value::Scalar(_) => {
+                if !item.key_quoted
+                    && let Some(key) = item.key.as_deref()
+                    && key.starts_with(b"@")
+                {
+                    definitions.entry(key).or_default().push(item);
+                }
+            }
+            parser::Value::Block(items) | parser::Value::Tagged { items, .. } => {
+                definitions_in(items, definitions);
+            }
+        }
+    }
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {

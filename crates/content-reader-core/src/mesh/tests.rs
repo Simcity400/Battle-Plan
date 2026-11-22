@@ -2264,6 +2264,14 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
         entity = { name = "third" pdxmesh = "m" locator = { name = "p" position = { @y = 1 } } }
         @later = overlay_later
         entity = { name = @later pdxmesh = "m" }
+        entity = {
+            name = "fourth"
+            pdxmesh = "m"
+            game_data = { atlas_size = { @id = id_first x = 1 } }
+            locator = { name = "q" position = { @id = id_middle x = 1 } }
+        }
+        @id = id_last
+        entity = { name = @id pdxmesh = "m" }
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
 
@@ -2337,13 +2345,16 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.refused_declaration("second"), None);
     assert_eq!(roster.unreadable_names.get("m"), None);
     assert_eq!(roster.unreadable_names.get("@model"), None);
-    assert_eq!(roster.unreadable_names.get("@extra"), None);
     assert_eq!(roster.unreadable_names.get("@after_extra"), None);
     assert_eq!(roster.unreadable_names.get("@broken_var"), None);
     assert!(roster.refused_declaration("overlay_only").is_some());
     assert!(roster.refused_declaration("overlay_after").is_some());
     assert!(roster.refused_declaration("overlay_redefined").is_some());
     assert!(roster.refused_declaration("overlay_later").is_some());
+    assert!(roster.refused_declaration("@extra").is_some());
+    assert!(roster.refused_declaration("id_first").is_some());
+    assert!(roster.refused_declaration("id_middle").is_some());
+    assert!(roster.refused_declaration("id_last").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(
