@@ -361,3 +361,95 @@ fn a_reserved_event_code_is_refused_by_the_event_walk_as_by_the_reader() {
     let damaged = advanced(&bytes, &entry).unwrap_err();
     assert!(damaged.to_string().contains("damaged"), "{damaged}");
 }
+
+#[test]
+fn cursor_lifetime_maps_use_keyed_hashing() {
+    let cursor = Cursor::new(&[Kind::U32], &[0], 0);
+    let _: &foldhash::fast::RandomState = cursor.open.hasher();
+    let _: &foldhash::fast::RandomState = cursor.skipped.hasher();
+}
+
+#[test]
+fn a_restore_with_duplicate_live_keys_is_refused_by_name() {
+    use crate::unit::restore::{Chunk, META, ROWS, RestoreEntry};
+    let push_frame = |bytes: &mut Vec<u8>, stream: u32, raw: &[u8]| -> FrameEntry {
+        let stored = zstd::bulk::compress(raw, 1).unwrap();
+        let digest = blake3::hash(&stored).as_bytes()[..16].try_into().unwrap();
+        let offset = bytes.len() as u64;
+        bytes.extend_from_slice(&stored);
+        FrameEntry { streams: vec![stream], offset, stored: stored.len() as u32, raw: raw.len() as u32, digest, chained: false, small: false }
+    };
+    let encode_meta = |slots: u32| -> Vec<u8> {
+        let mut raw = Vec::new();
+        put_varint(&mut raw, u64::from(slots));
+        raw.push(0);
+        raw.push(0);
+        raw.push(0);
+        put_varint(&mut raw, 0);
+        raw.push(0);
+        raw
+    };
+    let encode_rows = |bits: &[u8], keys: &[u128]| -> Vec<u8> {
+        let mut raw = bits.to_vec();
+        let mut prev = 0_u128;
+        for &key in keys {
+            put_wide(&mut raw, zig_wide(key.wrapping_sub(prev) as i128));
+            prev = key;
+        }
+        raw
+    };
+
+    let mut single_bytes = Vec::new();
+    let meta = push_frame(&mut single_bytes, META, &encode_meta(3));
+    let rows = push_frame(&mut single_bytes, ROWS, &encode_rows(&[0b101], &[0xdead, 0xdead]));
+    let entry = RestoreEntry {
+        whole: true,
+        streams: vec![
+            (META, vec![Chunk { first: 0, frame: meta, prefix: None }]),
+            (ROWS, vec![Chunk { first: 0, frame: rows, prefix: None }]),
+        ],
+        log: false,
+    };
+    let refused = restore(&single_bytes, &entry, &[Kind::I32], &[]).unwrap_err().to_string();
+    assert!(refused.contains("0xdead") && refused.contains("already held"), "{refused}");
+
+    let mut multi_bytes = Vec::new();
+    let meta = push_frame(&mut multi_bytes, META, &encode_meta(16));
+    let first = push_frame(&mut multi_bytes, ROWS, &encode_rows(&[0b010], &[0xbeef]));
+    let second = push_frame(&mut multi_bytes, ROWS, &encode_rows(&[0b010], &[0xbeef]));
+    let multi = RestoreEntry {
+        whole: true,
+        streams: vec![
+            (META, vec![Chunk { first: 0, frame: meta, prefix: None }]),
+            (
+                ROWS,
+                vec![
+                    Chunk { first: 0, frame: first, prefix: None },
+                    Chunk { first: 8, frame: second, prefix: None },
+                ],
+            ),
+        ],
+        log: false,
+    };
+    let refused = restore(&multi_bytes, &multi, &[Kind::I32], &[]).unwrap_err().to_string();
+    assert!(refused.contains("0xbeef") && refused.contains("already held"), "{refused}");
+    let refused_keyed = restore_keyed(&multi_bytes, &multi, &[Kind::I32], &[]).unwrap_err().to_string();
+    assert!(refused_keyed.contains("0xbeef") && refused_keyed.contains("already held"), "{refused_keyed}");
+
+    let mut clean_bytes = Vec::new();
+    let meta = push_frame(&mut clean_bytes, META, &encode_meta(3));
+    let rows = push_frame(&mut clean_bytes, ROWS, &encode_rows(&[0b101], &[0x11, 0x22]));
+    let clean = RestoreEntry {
+        whole: true,
+        streams: vec![
+            (META, vec![Chunk { first: 0, frame: meta, prefix: None }]),
+            (ROWS, vec![Chunk { first: 0, frame: rows, prefix: None }]),
+        ],
+        log: false,
+    };
+    let (unkeyed, _) = restore(&clean_bytes, &clean, &[Kind::I32], &[]).unwrap();
+    assert_eq!(unkeyed.bytes().index, 0);
+    let (keyed, _) = restore_keyed(&clean_bytes, &clean, &[Kind::I32], &[]).unwrap();
+    assert!(keyed.bytes().index > 0);
+    assert_eq!((keyed.find(0x11), keyed.find(0x22), keyed.find(0x33)), (Some(0), Some(2), None));
+}
