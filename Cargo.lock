@@ -604,7 +604,6 @@ dependencies = [
 name = "collector"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "collector-advisors",
  "collector-air",
@@ -844,7 +843,6 @@ name = "collector-army-icons"
 version = "0.1.0"
 dependencies = [
  "collector-army-icons",
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -1040,7 +1038,6 @@ dependencies = [
 name = "collector-combat"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-combat",
  "collector-hooks",
  "collector-lifetime",
@@ -1203,7 +1200,6 @@ dependencies = [
 name = "collector-division-templates"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "collector-certificates",
  "collector-division-templates",
@@ -1247,7 +1243,6 @@ dependencies = [
 name = "collector-divisions"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "collector-certificates",
  "collector-combat",
@@ -1298,7 +1293,6 @@ dependencies = [
 name = "collector-economy"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-economy",
  "collector-hooks",
  "collector-lifetime",
@@ -1442,7 +1436,6 @@ dependencies = [
 name = "collector-fuel-awards"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-fuel-awards",
  "collector-hooks",
@@ -1508,7 +1501,6 @@ dependencies = [
 name = "collector-hook-failures"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-hook-failures",
  "collector-hooks",
  "collector-naval-management",
@@ -1592,7 +1584,6 @@ dependencies = [
 name = "collector-land-events"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-combat-log",
  "collector-hooks",
  "collector-land-events",
@@ -1641,9 +1632,7 @@ dependencies = [
 name = "collector-ledger-tables"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-ledger-tables",
@@ -2225,7 +2214,6 @@ dependencies = [
 name = "collector-output"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -2363,7 +2351,6 @@ dependencies = [
 name = "collector-politics"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -2446,7 +2433,6 @@ dependencies = [
 name = "collector-production-daily"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-intel",
@@ -2803,7 +2789,6 @@ dependencies = [
 name = "collector-slow-tables"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -3078,7 +3063,6 @@ dependencies = [
 name = "collector-war-overview"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -4023,69 +4007,49 @@ dependencies = [
  "blake3",
  "content-reader-core",
  "content-reader-country-names",
- "content-reader-division-names",
  "content-reader-equipment-graphics",
- "content-reader-events",
- "content-reader-focus",
- "content-reader-gfx",
- "content-reader-image",
- "content-reader-localisation",
- "content-reader-province-area",
- "content-reader-raids",
- "content-reader-regions",
- "content-reader-settings",
- "content-reader-states",
  "content-reader-wargoals",
  "content-reader-weather",
  "dashboard",
+ "dashboard-air",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-economy",
  "dashboard-follow",
  "dashboard-intelligence",
+ "dashboard-land",
+ "dashboard-naval",
+ "dashboard-players",
+ "dashboard-politics",
+ "dashboard-production",
  "dashboard-query",
  "dashboard-research",
  "dashboard-text",
+ "dashboard-wars",
+ "dashboard-world",
  "either",
- "engine-air-history",
  "engine-allocation",
  "engine-executable",
- "engine-fuel",
  "engine-heap",
- "engine-intelligence",
- "engine-land-inputs",
  "engine-native",
- "engine-power-balance",
- "engine-projects",
- "engine-research",
- "engine-resources",
- "engine-stability",
- "game-model",
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "map-snow",
  "num-traits",
  "once_cell",
  "playhead",
- "png 0.18.1",
- "rayon",
  "recorder-derive",
- "recorder-platform",
  "recording-upgrade",
  "replay",
- "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "replay-looks",
- "replay-spool",
  "rfd",
  "rmp-serde",
  "serde",
  "serde_json",
- "sha2",
  "shader-pipeline",
  "smallvec",
  "test-unify",
@@ -4097,6 +4061,55 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-sys 0.61.2",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-air"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "content-reader-core",
+ "content-reader-equipment-graphics",
+ "content-reader-localisation",
+ "content-reader-regions",
+ "content-reader-weather",
+ "dashboard-air",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-air-history",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "rayon",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4219,6 +4232,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-economy"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "content-reader-localisation",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-economy",
+ "dashboard-follow",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-fuel",
+ "engine-heap",
+ "engine-native",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
@@ -4257,6 +4313,7 @@ dependencies = [
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
+ "content-reader-raids",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4295,10 +4352,243 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashboard-query"
+name = "dashboard-land"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
+ "content-reader-core",
+ "content-reader-division-names",
+ "content-reader-localisation",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-intelligence",
+ "dashboard-land",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-executable",
+ "engine-heap",
+ "engine-land-inputs",
+ "engine-native",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "rayon",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-naval"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "content-reader-core",
+ "content-reader-division-names",
+ "content-reader-localisation",
+ "content-reader-regions",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-land",
+ "dashboard-naval",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-heap",
+ "engine-native",
+ "game-model",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-players"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-follow",
+ "dashboard-players",
+ "dashboard-query",
+ "dashboard-text",
+ "either",
+ "engine-allocation",
+ "engine-heap",
+ "engine-native",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-politics"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "blake3",
+ "content-reader-core",
+ "content-reader-country-names",
+ "content-reader-events",
+ "content-reader-image",
+ "content-reader-localisation",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-politics",
+ "dashboard-query",
+ "dashboard-research",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "engine-power-balance",
+ "game-model",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "rayon",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-production"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "content-reader-core",
+ "content-reader-gfx",
+ "content-reader-localisation",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-economy",
+ "dashboard-follow",
+ "dashboard-production",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "engine-resources",
+ "game-model",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "rayon",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-query"
+version = "0.1.0"
+dependencies = [
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -4329,6 +4619,8 @@ name = "dashboard-research"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
+ "content-reader-core",
+ "content-reader-localisation",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4336,9 +4628,12 @@ dependencies = [
  "dashboard-query",
  "dashboard-research",
  "dashboard-text",
+ "dashboard-world",
  "either",
+ "engine-executable",
  "engine-heap",
  "engine-native",
+ "engine-projects",
  "indexmap 2.14.2",
  "log",
  "num-traits",
@@ -4346,6 +4641,7 @@ dependencies = [
  "playhead",
  "recorder-derive",
  "replay",
+ "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
@@ -4424,6 +4720,109 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dashboard-wars"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "content-reader-core",
+ "content-reader-country-names",
+ "content-reader-localisation",
+ "content-reader-wargoals",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-intelligence",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-wars",
+ "dashboard-world",
+ "either",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "engine-projects",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "replay-looks",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-world"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "blake3",
+ "content-reader-core",
+ "content-reader-country-names",
+ "content-reader-gfx",
+ "content-reader-image",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-regions",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-query",
+ "dashboard-text",
+ "dashboard-world",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "engine-stability",
+ "indexmap 2.14.2",
+ "log",
+ "num-traits",
+ "once_cell",
+ "playhead",
+ "png 0.18.1",
+ "recorder-derive",
+ "recording-upgrade",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "replay-looks",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "smallvec",
+ "test-unify",
+ "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -7991,7 +8390,6 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "playhead"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9920,7 +10318,6 @@ dependencies = [
 name = "recorder-platform"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9975,7 +10372,6 @@ dependencies = [
 name = "recorder-sizes"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -10273,8 +10669,13 @@ dependencies = [
  "content-reader-settings",
  "content-reader-weather",
  "dashboard",
- "dashboard-base",
+ "dashboard-air",
+ "dashboard-core",
  "dashboard-follow",
+ "dashboard-land",
+ "dashboard-politics",
+ "dashboard-text",
+ "dashboard-wars",
  "engine-executable",
  "engine-heap",
  "engine-native",
@@ -11754,6 +12155,7 @@ dependencies = [
  "alloc-stdlib",
  "anyhow",
  "base64 0.23.1",
+ "bitflags 2.13.1",
  "block-buffer",
  "brotli",
  "brotli-decompressor",
@@ -12441,8 +12843,14 @@ dependencies = [
  "content-reader-states",
  "content-reader-weather",
  "dashboard",
+ "dashboard-air",
  "dashboard-base",
+ "dashboard-core",
  "dashboard-follow",
+ "dashboard-land",
+ "dashboard-politics",
+ "dashboard-text",
+ "dashboard-wars",
  "dpi",
  "eframe",
  "engine-allocation",

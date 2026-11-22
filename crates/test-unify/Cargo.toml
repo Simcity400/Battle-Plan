@@ -20,6 +20,7 @@ alloc-no-stdlib = { version = "2.0.4", default-features = false, features = [] }
 alloc-stdlib = { version = "0.2.4", default-features = false, features = [] }
 anyhow = { version = "1.0.104", default-features = false, features = ["default", "std"] }
 base64 = { version = "0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
+bitflags = { version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
 block-buffer = { version = "0.10.4", default-features = false, features = [] }
 brotli = { version = "8.0.4", default-features = false, features = ["alloc-stdlib", "std"] }
 brotli-decompressor = { version = "5.0.3", default-features = false, features = ["alloc-stdlib", "std"] }

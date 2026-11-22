@@ -1,10 +1,7 @@
 use super::{Inner, Lane, Lease, Request, queue::Receiver};
-use crate::{
-    Source, SourceKey, map_settings,
-    products::{self, ContentOptions, LoadContext},
-    protocol::{CampaignMapSettings, replay_revision},
-    transport::{MapSettingsTarget, ProductRequest, SourceReply, bounded_json, bounded_text},
-};
+use dashboard_base::{Source, SourceKey, products::{ContentOptions, LoadContext}};
+use dashboard_core::{map_settings, protocol::{CampaignMapSettings, replay_revision}, transport::{MapSettingsTarget, ProductRequest, SourceReply, bounded_json, bounded_text}};
+use crate::products;
 use job_priority::SpawnCarried as _;
 use std::{
     collections::BTreeMap,
@@ -30,11 +27,11 @@ pub(super) fn product_lane(product: &str, params: &serde_json::Value) -> Lane {
     }
 }
 
-fn work(content_dependent: bool, request: &Arc<Request>) -> crate::source::Work {
+fn work(content_dependent: bool, request: &Arc<Request>) -> dashboard_base::source::Work {
     if content_dependent {
-        crate::source::Work::Content(Arc::clone(request) as Arc<dyn crate::presentation::Cancel>)
+        dashboard_base::source::Work::Content(Arc::clone(request) as Arc<dyn dashboard_base::presentation::Cancel>)
     } else {
-        crate::source::Work::Recorded
+        dashboard_base::source::Work::Recorded
     }
 }
 
@@ -123,7 +120,7 @@ impl Inner {
     pub(super) fn content_for(
         &self,
         source: &Source,
-        work: crate::source::Work,
+        work: dashboard_base::source::Work,
     ) -> Option<ContentOptions> {
         source.admit_resolved(work)
     }
@@ -142,9 +139,9 @@ impl Inner {
     }
 
     pub(super) fn rebind(&self, source: &Arc<Source>, cancelled: &AtomicBool) -> Result<(), String> {
-        use crate::presentation::Presentation;
+        use dashboard_base::presentation::Presentation;
         let moved = std::cell::Cell::new(false);
-        let result = crate::presentation::rebind(
+        let result = dashboard_base::presentation::rebind(
             &self.content,
             cancelled,
             |content| {
@@ -211,7 +208,7 @@ impl Inner {
     }
 
     fn warm(&self, source: &Arc<Source>) {
-        let Some(content) = self.content_for(source, crate::source::Work::Recorded) else {
+        let Some(content) = self.content_for(source, dashboard_base::source::Work::Recorded) else {
             return;
         };
         let warming = Arc::clone(source);
@@ -221,7 +218,7 @@ impl Inner {
     }
 
     pub(super) fn configure_game(&self) {
-        let _ = crate::presentation::rebind(
+        let _ = dashboard_base::presentation::rebind(
             &self.content,
             &self.closed,
             |content| {
@@ -390,7 +387,7 @@ impl Inner {
             match loader.as_ref() {
                 Some(lanes) => match lanes.sender(lane).try_send(job, LoadJob::cancelled) {
                     Ok(()) => Ok(()),
-                    Err(TrySendError::Full(_)) => Err(crate::transport::CAPACITY_REACHED),
+                    Err(TrySendError::Full(_)) => Err(dashboard_core::transport::CAPACITY_REACHED),
                     Err(TrySendError::Disconnected(_)) => Err("Dashboard data service is closing"),
                 },
                 None => Err("Dashboard data service is closing"),
@@ -464,7 +461,7 @@ impl Inner {
         }
         let replay = source.as_ref().map(|source| source.replay_ref());
         let recorded = replay
-            .map(crate::presentation::recorded_mods)
+            .map(dashboard_base::presentation::recorded_mods)
             .unwrap_or_default();
         let recorded_mods = recorded
             .iter()
@@ -609,7 +606,7 @@ impl Inner {
         lease_id: &str,
         source: &Arc<Source>,
         body: ProductRequest,
-    ) -> Result<String, crate::QueryError> {
+    ) -> Result<String, dashboard_core::QueryError> {
         let Some(product) = products::find(&body.product) else {
             return Err(format!("Unknown data product: {}", body.product).into());
         };
@@ -625,13 +622,13 @@ impl Inner {
         lease_id: &str,
         source: &Arc<Source>,
         body: &ProductRequest,
-    ) -> Result<String, crate::QueryError> {
+    ) -> Result<String, dashboard_core::QueryError> {
         let context = LoadContext {
             content: self.content_for(source, work(false, request)),
         };
         let data = source
             .in_scope(|| crate::answer::answer(source, &body.product, &body.params, &context, &request.cancelled))
-            .map_err(crate::QueryError::from)?;
+            .map_err(dashboard_core::QueryError::from)?;
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Envelope<'a> {
@@ -649,7 +646,7 @@ impl Inner {
             },
             &request.cancelled,
         )?;
-        if reply.len() > crate::transport::MAX_REPLY_BYTES {
+        if reply.len() > dashboard_core::transport::MAX_REPLY_BYTES {
             return Err("Projected response exceeds the transport byte budget".into());
         }
         Ok(reply)
@@ -682,7 +679,7 @@ impl Inner {
             Ok(source)
         });
         let ahead = result.as_ref().ok().map(|source| {
-            let content = source.admit(crate::source::Work::Ahead);
+            let content = source.admit(dashboard_base::source::Work::Ahead);
             (Arc::clone(source), content)
         });
         let ahead = ahead.and_then(|(source, content)| Some((source, content?)));
@@ -744,7 +741,7 @@ impl Inner {
         drop(pending);
         self.signal.notify();
         if let Some((source, content)) = ahead {
-            products::read_ahead::warm_in_background(&source, content);
+            dashboard_base::products::read_ahead::warm_in_background(&source, content);
         }
     }
 }
@@ -764,7 +761,7 @@ fn read_naming_ahead(source: &Arc<Source>) {
     let _ = std::thread::Builder::new().name("feed naming ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| products::feed::warm_naming(&source, branch));
+            let _ = source.in_scope(|| dashboard_politics::products::feed::warm_naming(&source, branch));
         })
     });
 }
@@ -775,7 +772,7 @@ fn read_feed_scope_ahead(source: &Arc<Source>) {
     let _ = std::thread::Builder::new().name("feed scope ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| products::feed::scope::warm(&source, branch));
+            let _ = source.in_scope(|| dashboard_politics::products::feed::scope::warm(&source, branch));
         })
     });
 }
@@ -786,7 +783,7 @@ fn read_air_observed_ahead(source: &Arc<Source>) {
     let _ = std::thread::Builder::new().name("air observed ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| products::air_ledger::warm_observed(&source, branch));
+            let _ = source.in_scope(|| dashboard_air::products::air_ledger::warm_observed(&source, branch));
         })
     });
 }
@@ -796,7 +793,7 @@ fn read_lexicons_ahead(source: &Arc<Source>) {
     let _ = std::thread::Builder::new().name("lexicons ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| crate::answer::warm_lexicons(&source));
+            let _ = source.in_scope(|| dashboard_base::queries::warm_lexicons(&source));
         })
     });
 }
@@ -829,7 +826,7 @@ pub(super) struct MapSettingsJob {
     pub(super) source_id: String,
     pub(super) source: Option<Arc<Source>>,
     pub(super) settings: Option<CampaignMapSettings>,
-    pub(super) flip: Option<crate::protocol::MapSetting>,
+    pub(super) flip: Option<dashboard_core::protocol::MapSetting>,
     pub(super) options: content_reader_core::ResolveOptions,
 }
 

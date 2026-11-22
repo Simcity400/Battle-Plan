@@ -226,6 +226,15 @@ collector-workers = { path = "crates/collector-workers", default-features = fals
 blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
+dashboard-world = { path = "crates/dashboard-world" }
+dashboard-wars = { path = "crates/dashboard-wars" }
+dashboard-production = { path = "crates/dashboard-production" }
+dashboard-politics = { path = "crates/dashboard-politics" }
+dashboard-players = { path = "crates/dashboard-players" }
+dashboard-naval = { path = "crates/dashboard-naval" }
+dashboard-land = { path = "crates/dashboard-land" }
+dashboard-economy = { path = "crates/dashboard-economy" }
+dashboard-air = { path = "crates/dashboard-air" }
 dashboard-research = { path = "crates/dashboard-research" }
 dashboard-intelligence = { path = "crates/dashboard-intelligence" }
 dashboard-core = { path = "crates/dashboard-core" }
