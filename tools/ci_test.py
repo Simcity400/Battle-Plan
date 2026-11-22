@@ -215,16 +215,18 @@ class Crates(unittest.TestCase):
                 "crates/mid/Cargo.toml": '[package]\nname = "mid"\n[dev-dependencies]\nshared-core = { workspace = true }\n',
                 "crates/top/Cargo.toml": '[package]\nname = "top"\n[target."cfg(windows)".dependencies]\nm = { package = "mid", path = "../mid" }\n'
                                          '[dependencies]\ntao = { path = "../../vendor/tao" }\n'
-                                         '[target.\'cfg(all())\'.dev-dependencies]\nshared-core = { workspace = true, features = ["x"] }\n',
+                                         '[target.\'cfg(all())\'.dev-dependencies]\nshared-core = { workspace = true, features = ["x"] }\n'
+                                         'test-unify = { path = "../test-unify" }\n',
+                "crates/test-unify/Cargo.toml": '[package]\nname = "test-unify"\n',
                 "crates/gone/Cargo.toml": '[package]\nname = "gone"\n',
             }
             for name, text in files.items():
                 Path(root, name).parent.mkdir(parents=True, exist_ok=True)
                 Path(root, name).write_text(text, encoding="utf-8")
             found = ci.crates_from_manifests(root)
-            self.assertEqual(sorted(found), ["core", "mid", "top"])
+            self.assertEqual(sorted(found), ["core", "mid", "test-unify", "top"])
             self.assertEqual(found["mid"].deps, {"core"})
-            self.assertEqual(found["top"].deps, {"mid"})
+            self.assertEqual(found["top"].deps, {"mid", "test-unify"})
             self.assertEqual(found["core"].folder, "crates/core")
 
 
