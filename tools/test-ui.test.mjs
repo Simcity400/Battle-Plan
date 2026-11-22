@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, runGroups, selectTests, testArguments, testGroups } from './test-ui.mjs';
+import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, plannedGroups, runGroups, testArguments, testGroups } from './test-ui.mjs';
 
 const driverTimeoutMs = 30_000;
 let checkedFiles;
@@ -35,17 +35,21 @@ test('test:ui runs every file once, with normal pure concurrency and serial brow
 test('test:ui runs only the named files, in their own groups, and refuses names it cannot run', async () => {
   const files = await checkedTestFiles();
   const pure = 'tools/test-ui.test.mjs', browser = browserTests[0];
-  const options = testArguments(['--group', 'browser', pure, browser.split('/').join('\\'), resolve(repositoryRoot, pure)]);
-  assert.equal(options.group, 'browser');
-  const chosen = selectTests(files, options.files, repositoryRoot, repositoryRoot);
-  assert.deepEqual(chosen, [pure, browser].sort(), 'separators and absolute paths name the same file once');
-  assert.deepEqual(selectTests(files, ['test-ui.test.mjs'], repositoryRoot, resolve(repositoryRoot, 'tools')), [pure]);
-  const groups = testGroups(chosen);
-  assert.deepEqual(groups.map(group => group.files), [[pure], [browser]]);
-  assert.throws(() => selectTests(files, [pure, 'ui/src/missing.test.ts'], repositoryRoot, repositoryRoot), /Not a discovered UI test: ui\/src\/missing\.test\.ts$/);
+  const here = { root: repositoryRoot, cwd: repositoryRoot, caseless: false };
+  const plan = (argv, location = here) => plannedGroups(files, testArguments(argv), location).map(group => group.files);
+  assert.deepEqual(plan([pure, browser.split('/').join('\\'), resolve(repositoryRoot, pure)]), [[pure], [browser]],
+    'separators and absolute paths name the same file once, in its own group');
+  assert.deepEqual(plan(['test-ui.test.mjs'], { ...here, cwd: resolve(repositoryRoot, 'tools') }), [[pure], []]);
+  assert.deepEqual(plan(['--group', 'browser', browser]), [[browser]]);
+  assert.deepEqual(plan([browser.toUpperCase()], { ...here, caseless: true }), [[], [browser]], 'a caseless file system names the discovered spelling');
+  assert.throws(() => plan([browser.toUpperCase()]), /Not a discovered UI test/);
+  assert.throws(() => plan([pure, 'ui/src/missing.test.ts']), /Not a discovered UI test: ui\/src\/missing\.test\.ts$/);
+  assert.throws(() => plan(['--group', 'browser', pure, browser]), /Not in the browser group: tools\/test-ui\.test\.mjs$/);
   assert.throws(() => testArguments(['--tab-full', pure]), /takes no test files/);
+  assert.throws(() => testArguments(['--check-imports', pure]), /takes no test files/);
   assert.throws(() => testArguments(['--files', pure]), /Unknown option: --files/);
   assert.throws(() => testArguments(['--group', 'all']), /--group takes node or browser, not all/);
+  assert.equal(plan([]).flat().length, files.length, 'no names runs every test');
 });
 
 test('test:ui:tab-full selects only the native Tab fixture with serial browser ownership', async () => {

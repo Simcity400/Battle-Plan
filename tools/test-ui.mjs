@@ -189,12 +189,23 @@ export async function checkBrowserManifest(files, manifest = browserTests, root 
   }
 }
 
-export function selectTests(files, requested, root = repositoryRoot, cwd = process.cwd()) {
-  const known = new Set(files);
-  const selected = requested.map(file => relative(root, resolve(cwd, file)).split(sep).join('/'));
-  const unknown = requested.filter((_, i) => !known.has(selected[i]));
+export function selectTests(files, requested, { root = repositoryRoot, cwd = process.cwd(), caseless = process.platform === 'win32' } = {}) {
+  const fold = name => caseless ? name.toLowerCase() : name;
+  const known = new Map(files.map(file => [fold(file), file]));
+  const selected = requested.map(file => known.get(fold(relative(root, resolve(cwd, file.replaceAll('\\', '/'))).split(sep).join('/'))));
+  const unknown = requested.filter((_, i) => selected[i] === undefined);
   if (unknown.length) throw new Error(`Not a discovered UI test: ${unknown.join(', ')}`);
   return [...new Set(selected)].sort();
+}
+
+export function plannedGroups(files, options, location = {}) {
+  const chosen = options.files.length ? selectTests(files, options.files, location) : files;
+  const groups = testGroups(chosen, browserTests, { tabFull: options.tabFull })
+    .filter(group => options.group === null || group.concurrency === (options.group === 'node' ? true : 1));
+  const running = new Set(groups.flatMap(group => group.files));
+  const excluded = options.files.length ? chosen.filter(file => !running.has(file)) : [];
+  if (excluded.length) throw new Error(`Not in the ${options.group} group: ${excluded.join(', ')}`);
+  return groups;
 }
 
 export function testArguments(argv) {
@@ -210,6 +221,7 @@ export function testArguments(argv) {
     else options.files.push(arg);
   }
   if (options.tabFull && options.files.length) throw new Error('--tab-full runs only the native Tab fixture and takes no test files');
+  if (options.checkImports && options.files.length) throw new Error('--check-imports checks every test and takes no test files');
   return options;
 }
 
@@ -265,9 +277,6 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   await checkNodeImports(files, repositoryRoot, graph);
   await checkBrowserManifest(files, browserTests, repositoryRoot, graph);
   if (!options.checkImports) {
-    const chosen = options.files.length ? selectTests(files, options.files) : files;
-    const groups = testGroups(chosen, browserTests, { tabFull: options.tabFull });
-    const only = options.group;
-    process.exitCode = await runGroups(groups.filter(group => only === null || group.concurrency === (only === 'node' ? true : 1)));
+    process.exitCode = await runGroups(plannedGroups(files, options));
   }
 }
