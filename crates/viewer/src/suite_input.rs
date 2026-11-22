@@ -5,7 +5,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener},
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -28,10 +28,15 @@ pub(crate) struct ResolvedCamera {
 #[derive(Debug)]
 pub(crate) struct PendingCamera {
     pub(crate) target: CameraTarget,
+    cancelled: Arc<AtomicBool>,
     reply: Option<mpsc::SyncSender<Result<ResolvedCamera, String>>>,
 }
 
 impl PendingCamera {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
     pub(crate) fn finish(mut self, result: Result<ResolvedCamera, String>) {
         if let Some(tx) = self.reply.take() {
             let _ = tx.send(result);
@@ -41,6 +46,7 @@ impl PendingCamera {
 
 #[derive(Debug)]
 struct QueuedCamera {
+    id: u64,
     view: Option<String>,
     pending: PendingCamera,
 }
@@ -80,18 +86,53 @@ impl CameraLine {
 
 #[derive(Debug, Default)]
 struct CameraQueue {
+    next_id: u64,
     pending: Vec<QueuedCamera>,
 }
 
 impl CameraQueue {
-    fn push(&mut self, command: QueuedCamera) {
-        self.pending.push(command);
+    fn push(
+        &mut self,
+        view: Option<String>,
+        target: CameraTarget,
+        reply: Option<mpsc::SyncSender<Result<ResolvedCamera, String>>>,
+    ) -> (u64, Arc<AtomicBool>) {
+        self.next_id += 1;
+        let id = self.next_id;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.pending.push(QueuedCamera {
+            id,
+            view,
+            pending: PendingCamera {
+                target,
+                cancelled: Arc::clone(&cancelled),
+                reply,
+            },
+        });
+        (id, cancelled)
+    }
+
+    fn cancel(&mut self, id: u64) -> bool {
+        let mut removed = false;
+        let existing = std::mem::take(&mut self.pending);
+        for command in existing {
+            if command.id == id {
+                command.pending.cancelled.store(true, Ordering::Release);
+                removed = true;
+            } else {
+                self.pending.push(command);
+            }
+        }
+        removed
     }
 
     fn take(&mut self, view: Option<&str>) -> Option<PendingCamera> {
         let mut chosen = None;
         let existing = std::mem::take(&mut self.pending);
         for command in existing {
+            if command.pending.is_cancelled() {
+                continue;
+            }
             if command.view.as_deref() == view {
                 chosen = Some(command.pending);
             } else {
@@ -114,7 +155,10 @@ enum Line {
 }
 
 static PENDING: Mutex<Vec<Line>> = Mutex::new(Vec::new());
-static PENDING_CAMERAS: Mutex<CameraQueue> = Mutex::new(CameraQueue { pending: Vec::new() });
+static PENDING_CAMERAS: Mutex<CameraQueue> = Mutex::new(CameraQueue {
+    next_id: 0,
+    pending: Vec::new(),
+});
 static WAKER: Mutex<Option<egui::Context>> = Mutex::new(None);
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -166,20 +210,19 @@ fn enabled() -> bool {
                                 let reply = match camera.into_command() {
                                     Ok((view, target)) => {
                                         let (tx, rx) = mpsc::sync_channel(1);
-                                        PENDING_CAMERAS
+                                        let (id, cancelled) = PENDING_CAMERAS
                                             .lock()
                                             .unwrap_or_else(|error| error.into_inner())
-                                            .push(QueuedCamera {
-                                                view,
-                                                pending: PendingCamera {
-                                                    target,
-                                                    reply: Some(tx),
-                                                },
-                                            });
+                                            .push(view, target, Some(tx));
                                         wake();
                                         match rx.recv_timeout(Duration::from_secs(10)) {
                                             Ok(result) => result,
                                             Err(mpsc::RecvTimeoutError::Timeout) => {
+                                                cancelled.store(true, Ordering::Release);
+                                                PENDING_CAMERAS
+                                                    .lock()
+                                                    .unwrap_or_else(|error| error.into_inner())
+                                                    .cancel(id);
                                                 Err("viewer did not apply camera command within 10 s".into())
                                             }
                                             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -357,9 +400,9 @@ mod tests {
         let (tx_reset, rx_reset) = mpsc::sync_channel(1);
         let (tx_campaign, rx_campaign) = mpsc::sync_channel(1);
         let mut queue = CameraQueue::default();
-        queue.push(QueuedCamera { view: placed_view, pending: PendingCamera { target: placed_target, reply: Some(tx_old) } });
-        queue.push(QueuedCamera { view: campaign_view, pending: PendingCamera { target: campaign_target, reply: Some(tx_campaign) } });
-        queue.push(QueuedCamera { view: reset_view, pending: PendingCamera { target: reset_target, reply: Some(tx_reset) } });
+        queue.push(placed_view, placed_target, Some(tx_old));
+        queue.push(campaign_view, campaign_target, Some(tx_campaign));
+        queue.push(reset_view, reset_target, Some(tx_reset));
 
         let taken = queue.take(Some("overview-map")).unwrap();
         assert_eq!(taken.target, CameraTarget::Reset);
@@ -375,6 +418,32 @@ mod tests {
         taken_campaign.finish(Ok(placed));
         assert_eq!(rx_campaign.recv().unwrap(), Ok(placed));
         assert!(queue.take(None).is_none());
+    }
+
+    #[test]
+    fn timed_out_camera_command_is_discarded_and_never_applies_later() {
+        let mut queue = CameraQueue::default();
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let (id, cancelled) = queue.push(
+            Some("overview-map".into()),
+            CameraTarget::Place { center: [2816.0, 1024.0], height: 180.0 },
+            Some(tx),
+        );
+        cancelled.store(true, Ordering::Release);
+        assert!(queue.cancel(id));
+        assert!(queue.take(Some("overview-map")).is_none());
+
+        let (tx_in_flight, _rx_in_flight) = mpsc::sync_channel(1);
+        let (in_flight_id, in_flight_cancelled) = queue.push(
+            Some("overview-map".into()),
+            CameraTarget::Place { center: [2816.0, 1024.0], height: 180.0 },
+            Some(tx_in_flight),
+        );
+        let taken = queue.take(Some("overview-map")).unwrap();
+        assert!(!taken.is_cancelled());
+        in_flight_cancelled.store(true, Ordering::Release);
+        assert!(!queue.cancel(in_flight_id));
+        assert!(taken.is_cancelled());
     }
 
     #[test]

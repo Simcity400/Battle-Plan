@@ -5,6 +5,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { crc32, inflateSync } from 'node:zlib';
+import { PNG } from 'pngjs';
 import { log, sleep } from './cdp.mjs';
 import { Session } from './session.mjs';
 
@@ -217,6 +218,23 @@ export const CLOSE_CAMERA_ZOOM_SHARE = 0.06;
 export const CLOSE_CAMERA_MIN_HEIGHT = 120;
 export const CLOSE_CAMERA_TOLERANCE = 0.5;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_SAMPLES = new Map([[0, 1], [2, 3], [3, 1], [4, 2], [6, 4]]);
+const ADAM7_PASSES = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
+
+function expectedPngScanlineBytes(width, height, bitDepth, colorType, interlace) {
+  const samples = PNG_SAMPLES.get(colorType);
+  if (!samples || bitDepth <= 0) throw new Error(`unsupported PNG format (colorType=${colorType}, bitDepth=${bitDepth})`);
+  const rowBytes = cols => 1 + Math.ceil((cols * samples * bitDepth) / 8);
+  if (interlace === 0) return height * rowBytes(width);
+  if (interlace !== 1) throw new Error(`unsupported PNG interlace method (${interlace})`);
+  let total = 0;
+  for (const [x0, y0, dx, dy] of ADAM7_PASSES) {
+    const pw = Math.ceil((width - x0) / dx);
+    const ph = Math.ceil((height - y0) / dy);
+    if (pw > 0 && ph > 0) total += ph * rowBytes(pw);
+  }
+  return total;
+}
 
 export async function assertValidPng(filePath) {
   const bytes = await readFile(filePath);
@@ -224,9 +242,7 @@ export async function assertValidPng(filePath) {
     throw new Error('file does not start with a valid PNG signature');
   }
   let offset = 8;
-  let width = 0;
-  let height = 0;
-  let seenIhdr = false;
+  let ihdr = null;
   let seenIend = false;
   const idatParts = [];
   while (offset < bytes.length) {
@@ -235,33 +251,43 @@ export async function assertValidPng(filePath) {
     const type = bytes.toString('ascii', offset + 4, offset + 8);
     const dataStart = offset + 8;
     const dataEnd = dataStart + length;
-    const crcOffset = dataEnd;
-    if (crcOffset + 4 > bytes.length) throw new Error(`PNG chunk ${type} is truncated`);
+    if (dataEnd + 4 > bytes.length) throw new Error(`PNG chunk ${type} is truncated`);
     const expectedCrc = crc32(bytes.subarray(offset + 4, dataEnd)) >>> 0;
-    const actualCrc = bytes.readUInt32BE(crcOffset);
-    if (expectedCrc !== actualCrc) throw new Error(`PNG chunk ${type} failed CRC verification`);
-    if (!seenIhdr) {
+    if (expectedCrc !== bytes.readUInt32BE(dataEnd)) throw new Error(`PNG chunk ${type} failed CRC verification`);
+    if (!ihdr) {
       if (type !== 'IHDR' || length !== 13) throw new Error('PNG does not begin with a valid IHDR chunk');
-      width = bytes.readUInt32BE(dataStart);
-      height = bytes.readUInt32BE(dataStart + 4);
-      if (width === 0 || height === 0) throw new Error('PNG IHDR has zero dimensions');
-      seenIhdr = true;
+      ihdr = {
+        width: bytes.readUInt32BE(dataStart),
+        height: bytes.readUInt32BE(dataStart + 4),
+        bitDepth: bytes[dataStart + 8],
+        colorType: bytes[dataStart + 9],
+        interlace: bytes[dataStart + 12],
+      };
+      if (ihdr.width === 0 || ihdr.height === 0) throw new Error('PNG IHDR has zero dimensions');
     } else if (type === 'IDAT') {
       idatParts.push(bytes.subarray(dataStart, dataEnd));
     } else if (type === 'IEND') {
       if (length !== 0) throw new Error('PNG IEND chunk is non-empty');
       seenIend = true;
-      offset = crcOffset + 4;
+      offset = dataEnd + 4;
       break;
     }
-    offset = crcOffset + 4;
+    offset = dataEnd + 4;
   }
-  if (!seenIhdr || !seenIend || offset !== bytes.length) {
+  if (!ihdr || !seenIend || offset !== bytes.length) {
     throw new Error('PNG is incomplete or missing a terminal IEND chunk');
   }
   if (!idatParts.length) throw new Error('PNG contains no IDAT image data');
-  inflateSync(Buffer.concat(idatParts));
-  return { width, height };
+  const inflated = inflateSync(Buffer.concat(idatParts));
+  const needed = expectedPngScanlineBytes(ihdr.width, ihdr.height, ihdr.bitDepth, ihdr.colorType, ihdr.interlace);
+  if (inflated.length !== needed) {
+    throw new Error(`PNG scanline payload length ${inflated.length} does not match expected ${needed} bytes`);
+  }
+  const decoded = PNG.sync.read(bytes);
+  if (decoded.width !== ihdr.width || decoded.height !== ihdr.height || decoded.data.length !== ihdr.width * ihdr.height * 4) {
+    throw new Error('PNG decode mismatch');
+  }
+  return { width: decoded.width, height: decoded.height };
 }
 
 export function deriveCloseCameraPose(state) {
@@ -367,11 +393,11 @@ export async function zoomedMapPicture(s, input, visual, dpr, work, [label, frac
     visual.fail(caseId, 'map', error.message);
     return;
   }
-  let sent = false;
+  let dispatched = false;
   try {
     const before = Date.now();
+    dispatched = true;
     const reply = await input.ask({ op: 'camera', view: area.view, center: requested.center, height: requested.height });
-    sent = true;
     const pose = resolveCameraReply(reply);
     if (!(pose.height < base.zoom - CLOSE_CAMERA_TOLERANCE)) {
       visual.fail(caseId, 'map', `the resolved close camera height (${pose.height}) is not closer than the default zoom (${base.zoom})`);
@@ -388,7 +414,7 @@ export async function zoomedMapPicture(s, input, visual, dpr, work, [label, frac
   } catch (error) {
     visual.fail(caseId, 'map', `close camera capture failed: ${error.message}`);
   } finally {
-    if (sent) {
+    if (dispatched) {
       try {
         const resetBefore = Date.now();
         const resetReply = await input.ask({ op: 'camera', view: area.view, reset: true });

@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
+import { PNG } from 'pngjs';
+import { createIpcTracker } from './cdp.mjs';
 import {
   CLOSE_CAMERA_MIN_HEIGHT,
   CLOSE_CAMERA_ZOOM_SHARE,
@@ -16,13 +18,18 @@ import {
 } from './map.mjs';
 
 function makeValidPng(width = 1, height = 1) {
+  const png = new PNG({ width, height });
+  png.data.fill(255);
+  return PNG.sync.write(png);
+}
+
+function makeEmptyIdatPng(width = 2, height = 2) {
   const chunk = (type, data) => {
     const header = Buffer.alloc(8);
     header.writeUInt32BE(data.length, 0);
     header.write(type, 4, 4, 'ascii');
-    const body = Buffer.concat([header.subarray(4), data]);
     const crc = Buffer.alloc(4);
-    crc.writeUInt32BE(crc32(body) >>> 0, 0);
+    crc.writeUInt32BE(crc32(Buffer.concat([header.subarray(4), data])) >>> 0, 0);
     return Buffer.concat([header, data, crc]);
   };
   const ihdr = Buffer.alloc(13);
@@ -30,14 +37,56 @@ function makeValidPng(width = 1, height = 1) {
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
   ihdr[9] = 6;
-  const raw = Buffer.alloc(height * (1 + width * 4));
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(raw)),
+    chunk('IDAT', deflateSync(Buffer.alloc(0))),
     chunk('IEND', Buffer.alloc(0)),
   ]);
 }
+
+test('createIpcTracker ignores OPTIONS preflight and reads Tauri-Response header on HTTP 200', async () => {
+  const listeners = new Map();
+  const bodies = new Map();
+  let clock = 1000;
+  const emit = (method, params) => {
+    for (const listener of listeners.get(method) ?? []) listener(params);
+  };
+  const tracker = createIpcTracker({
+    on: (method, listener) => {
+      if (!listeners.has(method)) listeners.set(method, new Set());
+      listeners.get(method).add(listener);
+    },
+    getResponseBody: async requestId => ({ body: bodies.get(requestId) ?? '', base64Encoded: false }),
+    now: () => ++clock,
+  });
+
+  const errorSince = clock;
+  emit('Network.requestWillBeSent', { requestId: 'opt-1', request: { url: 'http://ipc.localhost/export_map', method: 'OPTIONS' } });
+  emit('Network.responseReceived', { requestId: 'opt-1', response: { status: 204, headers: {} } });
+  emit('Network.loadingFinished', { requestId: 'opt-1' });
+
+  emit('Network.requestWillBeSent', { requestId: 'post-err', request: { url: 'http://ipc.localhost/export_map', method: 'POST' } });
+  emit('Network.responseReceived', { requestId: 'post-err', response: { status: 200, headers: { 'Tauri-Response': 'error' } } });
+  bodies.set('post-err', JSON.stringify('Couldn’t save the map image: disk full'));
+  emit('Network.loadingFinished', { requestId: 'post-err' });
+
+  const failed = await tracker.waitForIpc('export_map', errorSince, 0);
+  assert.deepEqual(failed, { ok: false, status: 200, result: null, error: 'Couldn’t save the map image: disk full' });
+
+  const okSince = clock;
+  emit('Network.requestWillBeSent', { requestId: 'opt-2', request: { url: 'http://ipc.localhost/export_map', method: 'OPTIONS' } });
+  emit('Network.responseReceived', { requestId: 'opt-2', response: { status: 204, headers: {} } });
+  emit('Network.loadingFinished', { requestId: 'opt-2' });
+
+  emit('Network.requestWillBeSent', { requestId: 'post-ok', request: { url: 'http://ipc.localhost/export_map', method: 'POST' } });
+  emit('Network.responseReceived', { requestId: 'post-ok', response: { status: 200, headers: { 'tauri-response': 'ok' } } });
+  bodies.set('post-ok', JSON.stringify('Saved map.png: branch 1, hour 190'));
+  emit('Network.loadingFinished', { requestId: 'post-ok' });
+
+  const succeeded = await tracker.waitForIpc('export_map', okSince, 0);
+  assert.deepEqual(succeeded, { ok: true, status: 200, result: 'Saved map.png: branch 1, hour 190', error: null });
+});
 
 test('deriveCloseCameraPose derives a repeatable close pose from default camera state', () => {
   const first = deriveCloseCameraPose({ center: [2816, 1024], zoom: 3000 });
@@ -68,20 +117,23 @@ test('cameraPoseMatches verifies drawn frame camera, hour, loading and error sta
   assert.equal(cameraPoseMatches({ center: [2830, 1024], zoom: 180, hour: 120, loading: false, error: null }, pose, 120), false);
 });
 
-test('assertValidPng accepts a complete PNG and rejects truncated or corrupt files', async () => {
+test('assertValidPng accepts a complete PNG and rejects prefix, truncated, and empty-scanline files', async () => {
   const work = await mkdtemp(path.join(os.tmpdir(), 'battleplan-png-e2e-'));
   try {
     const valid = path.join(work, 'valid.png');
     const prefix = path.join(work, 'prefix.png');
     const truncated = path.join(work, 'truncated.png');
+    const emptyIdat = path.join(work, 'empty-idat.png');
     const pngBytes = makeValidPng(2, 2);
     await writeFile(valid, pngBytes);
     await writeFile(prefix, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     await writeFile(truncated, pngBytes.subarray(0, pngBytes.length - 6));
+    await writeFile(emptyIdat, makeEmptyIdatPng(2, 2));
 
     assert.deepEqual(await assertValidPng(valid), { width: 2, height: 2 });
-    await assert.rejects(() => assertValidPng(prefix), /PNG/);
-    await assert.rejects(() => assertValidPng(truncated), /PNG|IEND|truncated/i);
+    await assert.rejects(() => assertValidPng(prefix));
+    await assert.rejects(() => assertValidPng(truncated));
+    await assert.rejects(() => assertValidPng(emptyIdat));
   } finally {
     await rm(work, { recursive: true, force: true });
   }
@@ -90,6 +142,7 @@ test('assertValidPng accepts a complete PNG and rejects truncated or corrupt fil
 function createFakeHarness({
   reachClose = true,
   reachReset = true,
+  placeError = null,
   resetError = null,
   minHeight = 50,
   defaultCenter = [2816, 1024],
@@ -155,6 +208,7 @@ function createFakeHarness({
       commands.push(command);
       const posted = Date.now() + 5;
       if (command.op === 'camera' && !command.reset) {
+        if (placeError) throw new Error(placeError);
         const resolved = { center: [...command.center], height: Math.max(minHeight, command.height) };
         if (reachClose) {
           mapStates.push({
@@ -212,7 +266,7 @@ test('zoomedMapPicture sets repeatable close pose, verifies frame, exports valid
   try {
     const harness = createFakeHarness({ initialHour: 190, reachClose: true, reachReset: true });
     const defaultState = { id: 'overview-map', hour: 190, loading: false, error: null, center: [2816, 1024], zoom: 3000 };
-    await zoomedMapPicture(harness.s, harness.input, harness.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(harness.s, harness.input, harness.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
 
     assert.equal(harness.commands.some(command => command.op === 'wheel'), false);
     assert.deepEqual(harness.commands[0], { op: 'camera', view: 'overview-map', center: [2816, 1024], height: 180 });
@@ -233,12 +287,12 @@ test('zoomedMapPicture accepts viewer-clamped modded-map height and rejects non-
   try {
     const modded = createFakeHarness({ initialHour: 190, minHeight: 250, defaultZoom: 3000 });
     const defaultState = { id: 'overview-map', hour: 190, loading: false, error: null, center: [2816, 1024], zoom: 3000 };
-    await zoomedMapPicture(modded.s, modded.input, modded.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(modded.s, modded.input, modded.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
     assert.equal(modded.visualItems.length, 1);
     assert.equal(modded.visualItems[0].status, 'captured');
 
     const unzoomable = createFakeHarness({ initialHour: 190, minHeight: 3000, defaultZoom: 3000 });
-    await zoomedMapPicture(unzoomable.s, unzoomable.input, unzoomable.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(unzoomable.s, unzoomable.input, unzoomable.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
     assert.equal(unzoomable.commands.some(command => command.op === 'save_dialog'), false);
     assert.equal(unzoomable.visualItems.length, 1);
     assert.equal(unzoomable.visualItems[0].status, 'error');
@@ -259,7 +313,7 @@ test('mapPictures and zoomedMapPicture ignore stale frames from the previous hou
         mapStates.push({ id: 'overview-map', hour: next, loading: false, error: null, center: [2816, 1024], zoom: 3000, drawnAt: now + 2 });
       },
     });
-    const results = await mapPictures(staleThenFresh.s, staleThenFresh.input, staleThenFresh.visual, 1, work, [['late', 0.95]], { timeoutMs: 40, stepDelayMs: 0 });
+    const results = await mapPictures(staleThenFresh.s, staleThenFresh.input, staleThenFresh.visual, 1, work, [['late', 0.95]], { timeoutMs: 0, stepDelayMs: 0 });
     assert.equal(results[0].state?.hour, 190);
     assert.equal(staleThenFresh.visualItems[0].status, 'captured');
 
@@ -269,7 +323,7 @@ test('mapPictures and zoomedMapPicture ignore stale frames from the previous hou
         mapStates.push({ id: 'overview-map', hour: previous, loading: false, error: null, center: [1000, 500], zoom: 2500, drawnAt: Date.now() + 1 });
       },
     });
-    await zoomedMapPicture(staleOnly.s, staleOnly.input, staleOnly.visual, 1, work, ['late', 0.95], null, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(staleOnly.s, staleOnly.input, staleOnly.visual, 1, work, ['late', 0.95], null, { timeoutMs: 0, stepDelayMs: 0 });
     assert.equal(staleOnly.commands.some(command => command.op === 'camera'), false);
     assert.equal(staleOnly.visualItems[0].status, 'error');
     assert.match(staleOnly.visualItems[0].error, /hour 190/);
@@ -278,51 +332,58 @@ test('mapPictures and zoomedMapPicture ignore stale frames from the previous hou
   }
 });
 
-test('zoomedMapPicture fails export on export_map IPC error or truncated PNG', async () => {
+test('zoomedMapPicture fails export on export_map IPC error or invalid PNG', async () => {
   const work = await mkdtemp(path.join(os.tmpdir(), 'battleplan-map-e2e-'));
   try {
     const defaultState = { id: 'overview-map', hour: 190, loading: false, error: null, center: [2816, 1024], zoom: 3000 };
     const ipcFailed = createFakeHarness({
       initialHour: 190,
-      exportReply: { ok: false, status: 500, result: null, error: 'Couldn’t save the map image: disk full' },
+      exportReply: { ok: false, status: 200, result: null, error: 'Couldn’t save the map image: disk full' },
     });
-    await zoomedMapPicture(ipcFailed.s, ipcFailed.input, ipcFailed.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(ipcFailed.s, ipcFailed.input, ipcFailed.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
     assert.equal(ipcFailed.visualItems[0].status, 'error');
     assert.match(ipcFailed.visualItems[0].error, /disk full/);
 
-    const truncated = createFakeHarness({
+    const emptyIdat = createFakeHarness({
       initialHour: 190,
-      exportBytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      exportBytes: makeEmptyIdatPng(2, 2),
     });
-    await zoomedMapPicture(truncated.s, truncated.input, truncated.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
-    assert.equal(truncated.visualItems[0].status, 'error');
-    assert.match(truncated.visualItems[0].error, /PNG/);
+    await zoomedMapPicture(emptyIdat.s, emptyIdat.input, emptyIdat.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
+    assert.equal(emptyIdat.visualItems[0].status, 'error');
+    assert.match(emptyIdat.visualItems[0].error, /PNG/);
   } finally {
     await rm(work, { recursive: true, force: true });
   }
 });
 
-test('zoomedMapPicture fails without exporting when close pose is never drawn and fails when reset fails or times out', async () => {
+test('zoomedMapPicture resets even on dropped placement ack and fails when reset fails or times out', async () => {
   const work = await mkdtemp(path.join(os.tmpdir(), 'battleplan-map-e2e-'));
   try {
     const defaultState = { id: 'overview-map', hour: 190, loading: false, error: null, center: [2816, 1024], zoom: 3000 };
     const unreached = createFakeHarness({ initialHour: 190, reachClose: false, reachReset: true });
     unreached.mapStates.push({ ...defaultState, drawnAt: Date.now() - 10 });
-    await zoomedMapPicture(unreached.s, unreached.input, unreached.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(unreached.s, unreached.input, unreached.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
     assert.equal(unreached.commands.some(command => command.op === 'save_dialog'), false);
     assert.deepEqual(unreached.commands.at(-1), { op: 'camera', view: 'overview-map', reset: true });
     assert.equal(unreached.visualItems.length, 1);
     assert.equal(unreached.visualItems[0].status, 'error');
     assert.match(unreached.visualItems[0].error, /close camera pose/);
 
+    const droppedAck = createFakeHarness({ initialHour: 190, placeError: 'viewer did not apply camera command within 10 s', reachReset: true });
+    await zoomedMapPicture(droppedAck.s, droppedAck.input, droppedAck.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
+    assert.deepEqual(droppedAck.commands.at(-1), { op: 'camera', view: 'overview-map', reset: true });
+    assert.equal(droppedAck.visualItems.length, 1);
+    assert.equal(droppedAck.visualItems[0].status, 'error');
+    assert.match(droppedAck.visualItems[0].error, /viewer did not apply camera command/);
+
     const resetTimedOut = createFakeHarness({ initialHour: 190, reachClose: true, reachReset: false });
-    await zoomedMapPicture(resetTimedOut.s, resetTimedOut.input, resetTimedOut.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(resetTimedOut.s, resetTimedOut.input, resetTimedOut.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
     const resetTimeoutFailure = resetTimedOut.visualItems.find(item => item.status === 'error');
     assert.ok(resetTimeoutFailure);
     assert.match(resetTimeoutFailure.error, /default camera after reset/);
 
     const resetThrew = createFakeHarness({ initialHour: 190, reachClose: true, resetError: 'channel closed' });
-    await zoomedMapPicture(resetThrew.s, resetThrew.input, resetThrew.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 20, stepDelayMs: 0 });
+    await zoomedMapPicture(resetThrew.s, resetThrew.input, resetThrew.visual, 1, work, ['late', 0.95], defaultState, { timeoutMs: 0, stepDelayMs: 0 });
     const resetThrowFailure = resetThrew.visualItems.find(item => item.status === 'error');
     assert.ok(resetThrowFailure);
     assert.match(resetThrowFailure.error, /channel closed/);

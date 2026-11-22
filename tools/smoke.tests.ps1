@@ -19,7 +19,7 @@ foreach ($definition in $driverAst.FindAll({param($node)
     $node.Name -in @(
         'Get-SubstDriveNames', 'Resolve-LaunchUserDirectory', 'Write-LaunchSelection', 'Copy-ShaderCompiler',
         'Invoke-WithFocusRetry', 'Invoke-SequentialFocusInput', 'Get-UiRegionBox',
-        'Test-UiPatchMatch', 'Test-UiRegionChanged', 'Resolve-UiDialogProbe', 'Test-UiDialogState',
+        'Test-UiPatchMatch', 'Resolve-UiDialogProbe', 'Resolve-SmokeUiProbes', 'Test-UiDialogState',
         'Reset-UiToCleanMap', 'Invoke-ObservedUiStep', 'Invoke-BoundedUiSequence',
         'Invoke-UiSaveFlow', 'Invoke-UiExitFlow', 'Invoke-ExitThenVerify',
         'Read-SharedUtf8Text', 'Start-SmokeTool', 'Wait-SmokeTool',
@@ -32,7 +32,7 @@ catch { throw "ScratchRoot prerequisite failed: supply an existing physical, hyp
 if (-not ('Hoi4ProbeInput' -as [type])) {
     Add-Type 'public static class Hoi4ProbeInput { public static System.IntPtr GetForegroundWindow() { return System.IntPtr.Zero; } }'
 }
-function Get-Process { param([string]$Name, $ErrorAction) }
+function Get-Process { [CmdletBinding()] param([string[]]$Name, [Parameter(ValueFromRemainingArguments)]$Extra) }
 $fixtureState = @{ Arguments=$null; SelectionPath=''; SelectionAtLaunch=$null }
 function Start-Process {
     param($FilePath, $WorkingDirectory, $ArgumentList, [switch]$PassThru)
@@ -267,25 +267,46 @@ param(
     [string]$UserDirectory,
     [switch]$Foreground,
     [switch]$KeepForeground,
-    [string]$Out
+    [string]$Out,
+    [string]$Text
 )
 $logPath = Join-Path (Split-Path -Parent $PSCommandPath) 'stub-driver.jsonl'
 $attempt = if (Test-Path -LiteralPath $logPath) { @([IO.File]::ReadAllLines($logPath)).Count + 1 } else { 1 }
-[IO.File]::AppendAllText($logPath, (([ordered]@{ attempt = $attempt; action = $Action; out = $Out } | ConvertTo-Json -Compress) + "`n"))
-if ($Action -cne 'Screenshot') { throw "Unexpected action received by driver: $Action" }
-if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not sent.' }
-[pscustomobject]@{ Action = $Action; Path = $Out; Width = 1920; Height = 1080 }
+[IO.File]::AppendAllText($logPath, (([ordered]@{ attempt = $attempt; action = $Action; out = $Out; text = $Text } | ConvertTo-Json -Compress) + "`n"))
+if ($Action -ceq 'Screenshot') {
+    if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not sent.' }
+    return [pscustomobject]@{ Action = $Action; Path = $Out; Width = 1920; Height = 1080 }
+}
+if ($Action -ceq 'Text' -and $Text -ceq 'pre-event-loss') {
+    if ($attempt -eq 3) { throw 'Game focus was lost; input was not sent.' }
+    return [pscustomobject]@{ Action = $Action; Text = $Text }
+}
+if ($Action -ceq 'Text' -and $Text -ceq 'mid-event-loss') {
+    throw 'Game focus was lost after delivering partial input (1 of 3).'
+}
+throw "Unexpected action received by driver: $Action"
 '@
     [IO.File]::WriteAllText($stubDriverPath, $stubDriverBody, $utf8)
-    $driver = $stubDriverPath
-    $CaptureRoot = $root; $InputShimDir = ''; $game = [pscustomobject]@{ Id = 4321 }; $gamePath = $exe; $userPath = $fixtureProfile; $Foreground = $false
-    $driveOut = Join-Path $root 'drive-shot.png'
-    $driveReply = Drive 'Screenshot' @{ Out = $driveOut }
-    $driveEntries = @([IO.File]::ReadAllLines($stubDriverLog) | ForEach-Object { $_ | ConvertFrom-Json })
-    if ($driveReply.Action -cne 'Screenshot' -or $driveEntries.Count -ne 2 -or $driveEntries[0].action -cne 'Screenshot' -or $driveEntries[1].action -cne 'Screenshot') {
-        throw "Drive did not preserve Action across focus retry: $($driveEntries | ConvertTo-Json -Compress)"
+    $savedDriver = $Driver
+    try {
+        $driver = $stubDriverPath
+        $CaptureRoot = $root; $InputShimDir = ''; $game = [pscustomobject]@{ Id = 4321 }; $gamePath = $exe; $userPath = $fixtureProfile; $Foreground = $false
+        $driveOut = Join-Path $root 'drive-shot.png'
+        $driveReply = Drive 'Screenshot' @{ Out = $driveOut } $false {}
+        $textPreLossReply = Drive 'Text' @{ Text = 'pre-event-loss' } $true {}
+        $midLossErr = $null
+        try { $null = Drive 'Text' @{ Text = 'mid-event-loss' } $true {} } catch { $midLossErr = $_.Exception.Message }
+    } finally {
+        $Driver = $savedDriver
     }
-    $script:Passed++; Write-Host 'PASS focus-borrow retries preserve Drive Action and stay bounded'
+    $driveEntries = @([IO.File]::ReadAllLines($stubDriverLog) | ForEach-Object { $_ | ConvertFrom-Json })
+    if ($driveReply.Action -cne 'Screenshot' -or $driveEntries.Count -ne 5 -or
+        $driveEntries[0].action -cne 'Screenshot' -or $driveEntries[1].action -cne 'Screenshot' -or
+        $textPreLossReply.Text -cne 'pre-event-loss' -or $driveEntries[2].action -cne 'Text' -or $driveEntries[3].action -cne 'Text' -or
+        $driveEntries[4].text -cne 'mid-event-loss' -or $midLossErr -notlike '*partial input*') {
+        throw "Drive did not preserve Action or pre/mid-input focus semantics: $($driveEntries | ConvertTo-Json -Compress) err=$midLossErr"
+    }
+    $script:Passed++; Write-Host 'PASS focus-borrow retries preserve Drive Action, retry pre-input loss, and refuse partial replay'
 
     $delivered = [Collections.Generic.List[string]]::new()
     $reacquired = 0
@@ -337,6 +358,8 @@ if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not se
     $menuOpenImg = Join-Path $imgDir 'menu-open.png'
     $confirmOpenImg = Join-Path $imgDir 'confirm-open.png'
     $menuPatchImg = Join-Path $imgDir 'menu-patch.png'
+    $saveDialogPatchImg = Join-Path $imgDir 'save-dialog-patch.png'
+    $confirmPatchImg = Join-Path $imgDir 'confirm-patch.png'
     New-SolidPng $cleanMapImg 320 200 ([Drawing.Color]::FromArgb(40, 70, 110))
     New-SolidPng $noisyMapImg 320 200 ([Drawing.Color]::FromArgb(40, 70, 110)) {
         param($bmp, $g)
@@ -357,22 +380,60 @@ if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not se
         try { $g.FillRectangle($brush, 60, 40, 200, 120) } finally { $brush.Dispose() }
     }
     New-SolidPng $menuPatchImg 80 40 ([Drawing.Color]::FromArgb(200, 190, 165))
+    New-SolidPng $saveDialogPatchImg 80 40 ([Drawing.Color]::FromArgb(145, 160, 180))
+    New-SolidPng $confirmPatchImg 80 40 ([Drawing.Color]::FromArgb(25, 30, 45))
 
-    $regionBox = Get-UiRegionBox @(150, 100) 320 200 80 40
-    if (Test-UiRegionChanged $cleanMapImg $noisyMapImg $regionBox) {
-        throw 'Sparse unrelated map noise falsely triggered UI dialog transition.'
+    $coordOnlyUi = [pscustomobject]@{ width = 320; height = 200; save_menu = @(150, 100); save_name = @(150, 100); exit_confirm = @(150, 100) }
+    $coordOnlyRefused = $null
+    try { $null = Resolve-SmokeUiProbes -Ui $coordOnlyUi } catch { $coordOnlyRefused = $_.Exception.Message }
+    if (-not $coordOnlyRefused -or $coordOnlyRefused -notlike '*calibrated pause-menu reference image*') {
+        throw "Coordinate-only UiConfig was not refused by name: $coordOnlyRefused"
     }
-    if (-not (Test-UiRegionChanged $cleanMapImg $menuOpenImg $regionBox)) {
-        throw 'Real opaque menu opening was not detected.'
+
+    $patchedUi = [pscustomobject]@{
+        width = 320; height = 200
+        menu = @(10, 10); speed_up = @(20, 10); speed_down = @(30, 10); pause = @(40, 10)
+        save_menu = @(150, 100); save_name = @(150, 100); save_confirm = @(160, 120); save_back = @(120, 120)
+        menu_close = @(150, 150); exit_game = @(150, 130); exit_confirm = @(150, 100)
+        map_center = @(160, 100); capture_cursor = @(200, 20)
+        menu_patch = $menuPatchImg; menu_patch_origin = @(110, 80)
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
     }
-    if (Test-UiPatchMatch -ImagePath $noisyMapImg -PatchPath $menuPatchImg -Origin @(110, 80) -Tolerance 22) {
-        throw 'Calibrated menu patch falsely matched closed map.'
+    $resolvedProbes = Resolve-SmokeUiProbes -Ui $patchedUi
+    if (Test-UiDialogState -ShotPath $noisyMapImg -Probe $resolvedProbes.Menu) {
+        throw 'Calibrated menu patch falsely matched closed noisy map.'
     }
-    if (-not (Test-UiPatchMatch -ImagePath $menuOpenImg -PatchPath $menuPatchImg -Origin @(110, 80) -Tolerance 22)) {
+    if (-not (Test-UiDialogState -ShotPath $menuOpenImg -Probe $resolvedProbes.Menu)) {
         throw 'Calibrated menu patch did not match open menu.'
     }
 
-    $regionProbe = [pscustomobject]@{ Mode = 'Region'; Box = $regionBox }
+    $badPatchUiPath = Join-Path $root 'bad-patch-ui.json'
+    $badPatchUi = [ordered]@{
+        width = 320; height = 200; expected_hour = 1; expected_seed = 1
+        menu = @(10, 10); speed_up = @(20, 10); speed_down = @(30, 10); pause = @(40, 10)
+        save_menu = @(150, 100); save_name = @(150, 100); save_confirm = @(160, 120); save_back = @(120, 120)
+        menu_close = @(150, 150); exit_game = @(150, 130); exit_confirm = @(150, 100)
+        map_center = @(160, 100); capture_cursor = @(200, 20)
+        menu_patch = (Join-Path $root 'missing-menu.png'); menu_patch_origin = @(110, 80)
+        save_dialog_patch = $saveDialogPatchImg; save_dialog_patch_origin = @(110, 80)
+        exit_confirm_patch = $confirmPatchImg; exit_confirm_patch_origin = @(110, 80)
+    }
+    [IO.File]::WriteAllText($badPatchUiPath, ($badPatchUi | ConvertTo-Json -Depth 4), $utf8)
+    [IO.File]::WriteAllText((Join-Path $fixtureProfile 'settings.txt'), "save_as_binary=no`n", $utf8)
+    $badPatchLock = Join-Path $root 'badpatchlock'
+    $badPatchReceipt = Join-Path $root 'bad-patch-receipt.json'
+    [IO.File]::WriteAllText($badPatchReceipt, '{}', $utf8)
+    $badPatchErr = $null
+    try {
+        $null = & $Driver -Action Smoke -GameExe $exe -UserDirectory $fixtureProfile -ExpectedSave 'fixture.hoi4' `
+            -UiConfig $badPatchUiPath -BuildReceipt $badPatchReceipt -CaptureRoot $root -Out (Join-Path $root 'badpatchout') -GameLock $badPatchLock
+    } catch { $badPatchErr = $_.Exception.Message }
+    if (-not $badPatchErr -or $badPatchErr -notlike '*calibrated pause-menu reference image*' -or (Test-Path -LiteralPath $badPatchLock)) {
+        throw "Invalid UI patch stranded shared game lock or failed unexpectedly: err=$badPatchErr lockExists=$(Test-Path -LiteralPath $badPatchLock)"
+    }
+    $script:Passed++; Write-Host 'PASS missing or invalid UI patches are refused before acquiring the shared game lock'
+
     $noiseClicks = [Collections.Generic.List[string]]::new()
     $noiseEscapes = 0
     $noiseExitErr = $null
@@ -381,11 +442,49 @@ if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not se
             -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $false } `
             -PauseGame {} -Click { param($name) $noiseClicks.Add([string]$name) } `
             -SendEscape { $script:noiseEscapes++ } `
-            -IsMenuOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg } `
-            -IsConfirmOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg -SecondaryReferencePath $menuOpenImg }
+            -IsMenuOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $resolvedProbes.Menu } `
+            -IsConfirmOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $resolvedProbes.ExitConfirm }
     } catch { $noiseExitErr = $_.Exception.Message }
     if ($noiseClicks -contains 'exit_game' -or $noiseClicks -contains 'exit_confirm' -or $noiseEscapes -ne 0 -or $noiseExitErr -notlike '*did not exit through its confirmation dialog*') {
         throw "Closed menu with unrelated pixel noise sent follow-up click or blind Escape: clicks=$($noiseClicks -join ',') escapes=$noiseEscapes err=$noiseExitErr"
+    }
+
+    $alreadyOpenShot = @{ Path = $menuOpenImg }
+    $alreadyOpenClicks = [Collections.Generic.List[string]]::new()
+    $alreadyOpenEscapes = 0
+    $alreadyOpenErr = $null
+    try {
+        $null = Invoke-UiExitFlow -MaxAttempts 2 -MaxPolls 2 -Pause {} `
+            -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $false } `
+            -PauseGame {} -Click {
+                param($name)
+                $alreadyOpenClicks.Add([string]$name)
+                if ($name -eq 'menu') { $alreadyOpenShot.Path = if ($alreadyOpenShot.Path -eq $menuOpenImg) { $cleanMapImg } else { $menuOpenImg } }
+            } -SendEscape { $script:alreadyOpenEscapes++ } `
+            -IsMenuOpen { Test-UiDialogState -ShotPath $alreadyOpenShot.Path -Probe $resolvedProbes.Menu } `
+            -IsConfirmOpen { Test-UiDialogState -ShotPath $alreadyOpenShot.Path -Probe $resolvedProbes.ExitConfirm }
+    } catch { $alreadyOpenErr = $_.Exception.Message }
+    if ($alreadyOpenEscapes -lt 1 -or $alreadyOpenClicks.Count -ne 0 -or $alreadyOpenErr -notlike '*starting UI state was not the clean map*') {
+        throw "Already-open pause menu was mistaken for clean map or sent confirmation clicks: escapes=$alreadyOpenEscapes clicks=$($alreadyOpenClicks -join ',') err=$alreadyOpenErr"
+    }
+
+    $alreadyOpenRecoversShot = @{ Path = $menuOpenImg }
+    $alreadyOpenRecoversClicks = [Collections.Generic.List[string]]::new()
+    $alreadyOpenRecoversEscapes = 0
+    $alreadyOpenRecovers = Invoke-UiExitFlow -MaxAttempts 2 -MaxPolls 2 -Pause {} `
+        -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $true } `
+        -PauseGame {} -Click {
+            param($name)
+            $alreadyOpenRecoversClicks.Add([string]$name)
+            if ($name -eq 'menu') { $alreadyOpenRecoversShot.Path = if ($alreadyOpenRecoversShot.Path -eq $menuOpenImg) { $cleanMapImg } else { $menuOpenImg } }
+            elseif ($name -eq 'exit_game') { $alreadyOpenRecoversShot.Path = $confirmOpenImg }
+        } -SendEscape {
+            $script:alreadyOpenRecoversEscapes++
+            $alreadyOpenRecoversShot.Path = $cleanMapImg
+        } -IsMenuOpen { Test-UiDialogState -ShotPath $alreadyOpenRecoversShot.Path -Probe $resolvedProbes.Menu } `
+        -IsConfirmOpen { Test-UiDialogState -ShotPath $alreadyOpenRecoversShot.Path -Probe $resolvedProbes.ExitConfirm }
+    if (-not $alreadyOpenRecovers.Done -or $alreadyOpenRecoversEscapes -ne 1 -or ($alreadyOpenRecoversClicks -join ',') -cne 'menu,exit_game,exit_confirm') {
+        throw "Already-open pause menu recovery failed: escapes=$alreadyOpenRecoversEscapes clicks=$($alreadyOpenRecoversClicks -join ',')"
     }
 
     $noiseSaveClicks = [Collections.Generic.List[string]]::new()
@@ -396,8 +495,8 @@ if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not se
             -IsSaveComplete { $false } -CheckClock {} -PauseGame {} `
             -Click { param($name) $noiseSaveClicks.Add([string]$name) } `
             -TypeSaveName {} -SendEscape { $script:noiseSaveEscapes++ } `
-            -IsMenuOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg } `
-            -IsSaveDialogOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg -SecondaryReferencePath $menuOpenImg } `
+            -IsMenuOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $resolvedProbes.Menu } `
+            -IsSaveDialogOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $resolvedProbes.SaveDialog } `
             -WaitForSave { [pscustomobject]@{ Done = $false; Reason = 'not saved' } }
     } catch { $noiseSaveErr = $_.Exception.Message }
     if ($noiseSaveClicks -contains 'save_menu' -or $noiseSaveClicks -contains 'save_confirm' -or $noiseSaveEscapes -ne 0 -or $noiseSaveErr -notlike '*did not produce a complete text save*') {
@@ -410,7 +509,7 @@ if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not se
     if (-not $cleanedState -or $resetEscapes -ne 1) {
         throw "Reset-UiToCleanMap sent wrong Escape count: cleaned=$cleanedState escapes=$resetEscapes"
     }
-    $script:Passed++; Write-Host 'PASS dialog probes reject map noise and reset observes starting state without blind Escapes'
+    $script:Passed++; Write-Host 'PASS calibrated dialog probes reject noise, identify already-open menus, and reset cleanly'
 
     $preConfirmClicks = [Collections.Generic.List[string]]::new()
     $preConfirmExited = $false
@@ -478,7 +577,48 @@ if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not se
     if ($cleanExitReport.normal_game_exit -ne $true -or -not $cleanExitResult.ConfirmationSent -or $cleanExitResult.ExitCode -ne 0) {
         throw 'Confirmed zero-code exit did not report clean normal_game_exit.'
     }
-    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0 while still verifying offline on failure'
+
+    $lateCleanState = @{ Menu = $false; Confirm = $false; Exited = $false; Waits = 0; Escapes = 0; Clicks = [Collections.Generic.List[string]]::new() }
+    $lateCleanReport = [ordered]@{}
+    $lateCleanResult = $null
+    Invoke-ExitThenVerify -Report $lateCleanReport -ExitGame {
+        $script:lateCleanResult = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+            -HasExited { $lateCleanState.Exited } -GetExitCode { 0 } -WaitForExit {
+                param($ms)
+                $lateCleanState.Waits++
+                $lateCleanState.Exited = $true
+                $false
+            } -PauseGame {} -Click {
+                param($name)
+                $lateCleanState.Clicks.Add([string]$name)
+                if ($name -eq 'menu') { $lateCleanState.Menu = $true }
+                elseif ($name -eq 'exit_game') { $lateCleanState.Confirm = $true }
+            } -SendEscape { $lateCleanState.Escapes++ } `
+            -IsMenuOpen { $lateCleanState.Menu } -IsConfirmOpen { $lateCleanState.Confirm }
+    } -Verify { $lateCleanReport.oracle_differences = 0 }
+    if ($lateCleanReport.normal_game_exit -ne $true -or -not $lateCleanResult.ConfirmationSent -or $lateCleanResult.ExitCode -ne 0 -or
+        $lateCleanState.Escapes -ne 0 -or ($lateCleanState.Clicks -join ',') -cne 'menu,exit_game,exit_confirm') {
+        throw "Clean exit right after first wait failed or sent extra input: exit=$($lateCleanReport.normal_game_exit) escapes=$($lateCleanState.Escapes) clicks=$($lateCleanState.Clicks -join ',')"
+    }
+
+    $lateCrashState = @{ Menu = $false; Confirm = $false; Exited = $false }
+    $lateCrashErr = $null
+    try {
+        $null = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+            -HasExited { $lateCrashState.Exited } -GetExitCode { 7 } -WaitForExit {
+                param($ms)
+                $lateCrashState.Exited = $true
+                $false
+            } -PauseGame {} -Click {
+                param($name)
+                if ($name -eq 'menu') { $lateCrashState.Menu = $true }
+                elseif ($name -eq 'exit_game') { $lateCrashState.Confirm = $true }
+            } -SendEscape {} -IsMenuOpen { $lateCrashState.Menu } -IsConfirmOpen { $lateCrashState.Confirm }
+    } catch { $lateCrashErr = $_.Exception.Message }
+    if ($lateCrashErr -notlike '*non-zero exit code 7 after exit confirmation*') {
+        throw "Non-zero exit after wait 1 was misclassified: $lateCrashErr"
+    }
+    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0, accepts clean exit after first wait, and verifies offline on failure'
 
     $box = Get-UiRegionBox @(10, 20) 1920 1080 120 60
     if (($box -join ',') -cne '0,0,130,80') { throw "Clamped top-left UI box mismatch: $($box -join ',')" }

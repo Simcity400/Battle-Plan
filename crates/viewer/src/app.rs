@@ -4517,7 +4517,7 @@ impl Viewer {
                 ui.ctx().request_repaint();
             }
         }
-        let pending_camera = crate::suite_input::take_camera(view_id);
+        let pending_camera = crate::suite_input::take_camera(view_id).filter(|command| !command.is_cancelled());
         if let Some(command) = &pending_camera {
             self.zoom.reset();
             self.orbit.reset();
