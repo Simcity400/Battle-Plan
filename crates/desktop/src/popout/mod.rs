@@ -2,7 +2,7 @@ mod lifecycle;
 mod shell;
 
 use crate::native::{HostStatus, NativeHost};
-use dashboard::protocol::{MapAction, MapPlayback, ViewBounds};
+use dashboard_core::protocol::{MapAction, MapPlayback, ViewBounds};
 use lifecycle::{Effect, Input, Lifecycle};
 use serde::Serialize;
 use std::sync::{
@@ -182,7 +182,7 @@ impl PopOuts {
         }
     }
 
-    pub fn set_folders(&self, config: &dashboard::Config) {
+    pub fn set_folders(&self, config: &dashboard_core::config::Config) {
         if let Some(host) = self.host() {
             host.set_folders(config);
         }
@@ -674,7 +674,7 @@ pub fn popout_seek(
 pub fn popout_configure(
     popouts: State<'_, PopOuts>,
     generation: u64,
-    options: dashboard::protocol::MapOptions,
+    options: dashboard_core::protocol::MapOptions,
 ) -> Result<(), String> {
     running(&popouts, Some(generation))?.map_action(MapAction::Configure { options })
 }
@@ -683,7 +683,7 @@ pub fn popout_configure(
 pub fn popout_camera_mode(
     popouts: State<'_, PopOuts>,
     generation: u64,
-    mode: dashboard::protocol::CameraMode,
+    mode: dashboard_core::protocol::CameraMode,
     overlays: bool,
 ) -> Result<(), String> {
     running(&popouts, Some(generation))?.map_action(MapAction::CameraMode { mode, overlays })
@@ -753,7 +753,7 @@ mod tests {
                 user: "u".into(),
             },
             MapAction::CameraMode {
-                mode: dashboard::protocol::CameraMode::Fly,
+                mode: dashboard_core::protocol::CameraMode::Fly,
                 overlays: true,
             },
             MapAction::FlyAircraft {

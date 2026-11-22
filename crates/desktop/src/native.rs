@@ -3,9 +3,7 @@ mod gamepad;
 mod lifecycle;
 mod pending;
 
-use dashboard::protocol::{
-    DashboardMapView, ViewBounds, ViewerState, validate_map_views,
-};
+use dashboard_core::protocol::{DashboardMapView, ViewBounds, ViewerState, validate_map_views};
 pub use gamepad::start_gamepad;
 use pending::{DashboardSnapshot, Pending, SeekTarget};
 use serde::Serialize;
@@ -15,15 +13,15 @@ use tauri::WebviewWindow;
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
-    pub map_details: Option<dashboard::protocol::MapDetails>,
+    pub map_details: Option<dashboard_core::protocol::MapDetails>,
     pub running: bool,
     pub ready: bool,
     pub visible: bool,
     pub viewer: ViewerState,
     pub error: Option<String>,
-    pub camera_mode: dashboard::protocol::CameraMode,
+    pub camera_mode: dashboard_core::protocol::CameraMode,
     pub camera_overlays: bool,
-    pub fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
+    pub fly_aircraft: Option<dashboard_core::protocol::FlyAircraftStatus>,
 }
 
 #[derive(Default)]
@@ -44,8 +42,8 @@ struct Inner {
     shutting_down: bool,
     last_diagnostic: Option<String>,
     diagnostics: Option<bool>,
-    folders: Option<dashboard::Config>,
-    display: Vec<(u64, dashboard::protocol::MapAction)>,
+    folders: Option<dashboard_core::config::Config>,
+    display: Vec<(u64, dashboard_core::protocol::MapAction)>,
     display_sent: u64,
     popout: Option<PopOutWindow>,
     muted: Option<bool>,
@@ -77,7 +75,7 @@ impl Inner {
     }
 
     fn refuse_exports(&mut self, why: &str) {
-        self.pending.actions.retain(|action| !matches!(action, dashboard::protocol::MapAction::Export { .. }));
+        self.pending.actions.retain(|action| !matches!(action, dashboard_core::protocol::MapAction::Export { .. }));
         for export in self.exports.drain(..) {
             let _ = export.answer.send(Err(why.to_owned()));
         }
@@ -93,7 +91,7 @@ impl Inner {
         }
         for native in self.pending.take_commands(visible) {
             let permit = match &native {
-                dashboard::protocol::NativeCommand::MapAction { action: dashboard::protocol::MapAction::Export { request, .. } } => {
+                dashboard_core::protocol::NativeCommand::MapAction { action: dashboard_core::protocol::MapAction::Export { request, .. } } => {
                     self.exports.iter().find(|export| export.request == *request).map(|export| Arc::clone(&export.permit))
                 }
                 _ => None,
@@ -110,7 +108,7 @@ impl Inner {
         }
         self.pending.action_room()?;
         let request = self.export_requests + 1;
-        let action = dashboard::protocol::MapAction::Export { path, view_id, request };
+        let action = dashboard_core::protocol::MapAction::Export { path, view_id, request };
         action.validate().map_err(str::to_owned)?;
         let permit = Arc::new(replay::writes::WRITES.begin().map_err(|error| error.to_string())?);
         self.export_requests = request;
@@ -175,8 +173,8 @@ impl Inner {
     }
 }
 
-fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::MapAction) -> bool {
-    use dashboard::protocol::MapAction;
+fn same_display(a: &dashboard_core::protocol::MapAction, b: &dashboard_core::protocol::MapAction) -> bool {
+    use dashboard_core::protocol::MapAction;
     matches!(
         (a, b),
         (MapAction::Vsync { .. }, MapAction::Vsync { .. })
@@ -186,10 +184,10 @@ fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::Map
 }
 
 fn launch_display(
-    read: impl IntoIterator<Item = dashboard::protocol::MapAction>,
-    sent: &[(u64, dashboard::protocol::MapAction)],
+    read: impl IntoIterator<Item = dashboard_core::protocol::MapAction>,
+    sent: &[(u64, dashboard_core::protocol::MapAction)],
     since: u64,
-) -> Vec<dashboard::protocol::MapAction> {
+) -> Vec<dashboard_core::protocol::MapAction> {
     let newer: Vec<_> = sent
         .iter()
         .filter(|(number, _)| *number > since)
@@ -279,13 +277,13 @@ impl NativeHost {
         inner.ask_export(path, view_id)
     }
 
-    pub fn map_action(&self, action: dashboard::protocol::MapAction) -> Result<(), String> {
+    pub fn map_action(&self, action: dashboard_core::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
-        if matches!(action, dashboard::protocol::MapAction::Export { .. }) {
+        if matches!(action, dashboard_core::protocol::MapAction::Export { .. }) {
             return Err("An export is asked for with export_map, which answers it".into());
         }
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if let dashboard::protocol::MapAction::Unload { path } = &action
+        if let dashboard_core::protocol::MapAction::Unload { path } = &action
             && inner.map.is_none()
         {
             inner.forget_recording(path);
@@ -296,8 +294,8 @@ impl NativeHost {
         }
         if matches!(
             action,
-            dashboard::protocol::MapAction::CameraMode { .. }
-                | dashboard::protocol::MapAction::FlyAircraft { .. }
+            dashboard_core::protocol::MapAction::CameraMode { .. }
+                | dashboard_core::protocol::MapAction::FlyAircraft { .. }
         ) {
             let kind = std::mem::discriminant(&action);
             inner
@@ -306,7 +304,7 @@ impl NativeHost {
                 .retain(|queued| std::mem::discriminant(queued) != kind);
         }
         inner.pending.action_room()?;
-        if let dashboard::protocol::MapAction::Unload { path } = &action {
+        if let dashboard_core::protocol::MapAction::Unload { path } = &action {
             inner.forget_recording(path);
         }
         inner.pending.actions.push_back(action);
@@ -316,7 +314,7 @@ impl NativeHost {
     }
 
     pub fn set_diagnostics(&self, enabled: bool) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.diagnostics = Some(enabled);
         if inner.map.is_none() || inner.shutting_down {
@@ -334,7 +332,7 @@ impl NativeHost {
         self.flush();
     }
 
-    pub fn set_display(&self, action: dashboard::protocol::MapAction) {
+    pub fn set_display(&self, action: dashboard_core::protocol::MapAction) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.display_sent += 1;
         let number = inner.display_sent;
@@ -367,14 +365,14 @@ impl NativeHost {
     }
 
     pub fn map_settings_saved(&self) {
-        self.queue_once(dashboard::protocol::MapAction::MapSettingsSaved);
+        self.queue_once(dashboard_core::protocol::MapAction::MapSettingsSaved);
     }
 
     pub fn refresh_visual_mods(&self) {
-        self.queue_once(dashboard::protocol::MapAction::RefreshVisualMods);
+        self.queue_once(dashboard_core::protocol::MapAction::RefreshVisualMods);
     }
 
-    fn queue_once(&self, action: dashboard::protocol::MapAction) {
+    fn queue_once(&self, action: dashboard_core::protocol::MapAction) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if (inner.map.is_none() && !inner.starting) || inner.shutting_down {
             return;
@@ -393,7 +391,7 @@ impl NativeHost {
     }
 
     pub fn set_muted(&self, muted: bool) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.muted = Some(muted);
         if inner.map.is_none() || inner.shutting_down {
@@ -408,8 +406,8 @@ impl NativeHost {
         self.flush();
     }
 
-    pub fn set_folders(&self, config: &dashboard::Config) {
-        use dashboard::protocol::MapAction;
+    pub fn set_folders(&self, config: &dashboard_core::config::Config) {
+        use dashboard_core::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.folders = Some(config.clone());
         if inner.map.is_none() || inner.shutting_down {
@@ -483,7 +481,7 @@ impl NativeHost {
         revision: String,
         branch: String,
         hour: i32,
-        playback: Option<dashboard::protocol::MapPlayback>,
+        playback: Option<dashboard_core::protocol::MapPlayback>,
     ) -> Result<(), String> {
         if let Some(playback) = &playback {
             playback.validate()?;

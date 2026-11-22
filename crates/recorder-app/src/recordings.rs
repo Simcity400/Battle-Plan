@@ -81,6 +81,7 @@ pub struct Library {
     names: Arc<Mutex<Names>>,
     namer: Option<Arc<Namer>>,
     installation: Arc<dyn Fn() -> Result<(PathBuf, PathBuf), String> + Send + Sync>,
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
     settings: PathBuf,
 }
 
@@ -91,6 +92,7 @@ impl Default for Library {
             names: Arc::default(),
             namer: None,
             installation: Arc::new(WaitingNames::installation_key),
+            clock: Arc::new(Instant::now),
             settings: RecorderSettings::path(),
         }
     }
@@ -314,6 +316,7 @@ impl Library {
             names: Arc::default(),
             namer: Some(namer),
             installation: Arc::new(|| Err("custom recording namer".into())),
+            clock: Arc::new(Instant::now),
             settings: std::env::temp_dir().join(format!(
                 "hoi4-library-settings-{}-{}.json",
                 std::process::id(),
@@ -546,7 +549,7 @@ impl Library {
         }
         let mut wanted = Vec::new();
         let mut refresh = false;
-        let now = Instant::now();
+        let now = (self.clock)();
         for ((target, _, row), key) in unsaved.iter_mut().zip(keys) {
             let Some(key) = key.filter(|_| view_open) else {
                 continue;
@@ -573,6 +576,7 @@ impl Library {
             names.busy = true;
             let previous_waiting = std::mem::replace(&mut names.waiting, asked.clone());
             let (shared, namer) = (Arc::clone(&self.names), self.namer.clone());
+            let clock = Arc::clone(&self.clock);
             let (content, generation) = (Arc::clone(&names.content), names.generation);
             let spawned = std::thread::Builder::new()
                 .name("recording-names".into())
@@ -593,7 +597,7 @@ impl Library {
                     if names.generation == generation {
                         for ((id, key, _), name) in wanted.into_iter().zip(named) {
                             let known =
-                                KnownName::new(key, name, names.known.get(&id), Instant::now());
+                                KnownName::new(key, name, names.known.get(&id), clock());
                             names.known.insert(id, known);
                         }
                     }
@@ -1260,6 +1264,11 @@ mod tests {
             let installation = Arc::clone(&installation);
             Arc::new(move || installation.lock().unwrap().clone())
         };
+        let ahead = Arc::new(Mutex::new(Duration::ZERO));
+        library.clock = {
+            let ahead = Arc::clone(&ahead);
+            Arc::new(move || Instant::now() + *ahead.lock().unwrap())
+        };
         let live = Live {
             session: None,
             target: None,
@@ -1280,7 +1289,7 @@ mod tests {
             {
                 let mut names = library.names.lock().unwrap();
                 for known in names.known.values_mut() {
-                    known.checked = Instant::now() + Duration::from_secs(86_400);
+                    known.checked = (library.clock)() + Duration::from_secs(86_400);
                 }
             }
             let view = library.view("panel", visit.get(), true);
@@ -1304,13 +1313,18 @@ mod tests {
         write(&session.join("admitted.json"), 20);
         refresh(&settings, Some("Z01"));
         *response.lock().unwrap() = Some("Repaired country".into());
+        let now = (library.clock)();
         for known in library.names.lock().unwrap().known.values_mut() {
-            assert_eq!(known.retry, Some(NAME_RETRY));
-            known.retry = Some(Duration::ZERO);
+            known.checked = now;
         }
+        *ahead.lock().unwrap() += NAME_RETRY;
         refresh(&settings, Some("Repaired country"));
         *response.lock().unwrap() = Some("Changed game installation".into());
-        assert!(library.names.lock().unwrap().known.values().all(|known| known.retry.is_none()));
+        let now = (library.clock)();
+        for known in library.names.lock().unwrap().known.values_mut() {
+            known.checked = now;
+        }
+        *ahead.lock().unwrap() += NAME_RETRY_MAX;
         let view = library.view("panel", visit.get(), true);
         let listed = library.list(&settings, view, &live, &BTreeMap::new(), || {});
         assert_eq!(listed.unsaved[0].name.as_deref(), Some("Repaired country"));

@@ -46,25 +46,25 @@ impl VideoSettings {
             return Err("Invalid UI scale".into());
         }
         if self.map_ui_scale.is_some_and(|percent| {
-            !dashboard::protocol::MAP_UI_SCALE_RANGE.contains(&((percent / 100.0) as f32))
+            !dashboard_core::protocol::MAP_UI_SCALE_RANGE.contains(&((percent / 100.0) as f32))
         }) {
             return Err("Invalid map UI scale".into());
         }
         if self
             .map_frame_limit
-            .is_some_and(|hz| !dashboard::protocol::MAP_FRAME_LIMIT_RANGE.contains(&hz))
+            .is_some_and(|hz| !dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.contains(&hz))
         {
             return Err("Invalid map frame rate limit".into());
         }
         Ok(())
     }
-    fn map_ui_scale_action(&self) -> dashboard::protocol::MapAction {
-        dashboard::protocol::MapAction::UiScale {
+    fn map_ui_scale_action(&self) -> dashboard_core::protocol::MapAction {
+        dashboard_core::protocol::MapAction::UiScale {
             scale: self.map_ui_scale.map(|percent| (percent / 100.0) as f32),
         }
     }
-    fn map_frame_limit_action(&self) -> dashboard::protocol::MapAction {
-        dashboard::protocol::MapAction::FrameLimit {
+    fn map_frame_limit_action(&self) -> dashboard_core::protocol::MapAction {
+        dashboard_core::protocol::MapAction::FrameLimit {
             hz: self.map_frame_limit,
         }
     }
@@ -182,7 +182,7 @@ fn game_settings() -> Result<VideoSettings, String> {
 fn game_map_ui_scale() -> Option<f64> {
     let display = read_game_settings(content_reader_settings::settings::read_display).ok()?;
     let scale = display.screen_scale(&content_reader_settings::settings::desktops().ok()?)?;
-    dashboard::protocol::MAP_UI_SCALE_RANGE
+    dashboard_core::protocol::MAP_UI_SCALE_RANGE
         .contains(&scale)
         .then(|| (f64::from(scale) * 100.0).round())
 }
@@ -223,12 +223,12 @@ fn reply(settings: VideoSettings) -> VideoReply {
         game_settings,
         game_settings_error,
         game_map_ui_scale: game_map_ui_scale(),
-        map_ui_scale_choices: &dashboard::protocol::MAP_UI_SCALE_CHOICES,
+        map_ui_scale_choices: &dashboard_core::protocol::MAP_UI_SCALE_CHOICES,
     }
 }
 pub fn launch_actions(
     window: &WebviewWindow,
-) -> Result<[dashboard::protocol::MapAction; 3], String> {
+) -> Result<[dashboard_core::protocol::MapAction; 3], String> {
     let settings = window
         .state::<VideoState>()
         .0
@@ -250,7 +250,7 @@ pub fn launch_actions(
     }
     .map_ui_scale_action();
     Ok([
-        dashboard::protocol::MapAction::Vsync { enabled: vsync },
+        dashboard_core::protocol::MapAction::Vsync { enabled: vsync },
         map_ui_scale,
         settings.map_frame_limit_action(),
     ])
@@ -286,12 +286,12 @@ pub fn video_settings(
         if game.ui_scale != settings.ui_scale {
             apply_scale(&window, &game)?;
         }
-        host.set_display(dashboard::protocol::MapAction::Vsync {
+        host.set_display(dashboard_core::protocol::MapAction::Vsync {
             enabled: game.vsync,
         });
         window
             .state::<crate::popout::PopOuts>()
-            .mirror(&dashboard::protocol::MapAction::Vsync {
+            .mirror(&dashboard_core::protocol::MapAction::Vsync {
                 enabled: game.vsync,
             });
         let mut current = stored(&state.0)?;
@@ -348,7 +348,7 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
         if before.is_err() || settings.ui_scale != previous.ui_scale {
             apply_scale(window, &settings)?;
         }
-        host.set_display(dashboard::protocol::MapAction::Vsync {
+        host.set_display(dashboard_core::protocol::MapAction::Vsync {
             enabled: settings.vsync,
         });
         host.set_display(settings.map_ui_scale_action());
@@ -357,7 +357,7 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
             with_display(saved, &settings)
         })?;
         let popouts = window.state::<crate::popout::PopOuts>();
-        popouts.mirror(&dashboard::protocol::MapAction::Vsync {
+        popouts.mirror(&dashboard_core::protocol::MapAction::Vsync {
             enabled: settings.vsync,
         });
         popouts.mirror(&settings.map_ui_scale_action());
@@ -366,7 +366,7 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
     })();
     if let Err(error) = result {
         let _ = apply_scale(window, &previous);
-        host.set_display(dashboard::protocol::MapAction::Vsync {
+        host.set_display(dashboard_core::protocol::MapAction::Vsync {
             enabled: previous.vsync,
         });
         host.set_display(previous.map_ui_scale_action());
@@ -481,7 +481,7 @@ fn muted_in(stored: &Result<VideoSettings, String>) -> bool {
 fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool) -> MapSwitch {
     app.state::<NativeHost>().set_muted(muted);
     app.state::<crate::popout::PopOuts>()
-        .mirror(&dashboard::protocol::MapAction::Mute { muted });
+        .mirror(&dashboard_core::protocol::MapAction::Mute { muted });
     MapSwitch {
         value: muted,
         sequence: next_change(state),
@@ -491,7 +491,7 @@ fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool) -> MapSwitch
 fn announce_diagnostics(app: &AppHandle, state: &VideoState, enabled: bool) -> MapSwitch {
     app.state::<NativeHost>().set_diagnostics(enabled);
     app.state::<crate::popout::PopOuts>()
-        .mirror(&dashboard::protocol::MapAction::Diagnostics { enabled });
+        .mirror(&dashboard_core::protocol::MapAction::Diagnostics { enabled });
     MapSwitch {
         value: enabled,
         sequence: next_change(state),
@@ -739,11 +739,11 @@ mod tests {
         );
         assert!(matches!(
             limited.map_frame_limit_action(),
-            dashboard::protocol::MapAction::FrameLimit { hz: Some(60.0) }
+            dashboard_core::protocol::MapAction::FrameLimit { hz: Some(60.0) }
         ));
         assert!(matches!(
             VideoSettings::default().map_frame_limit_action(),
-            dashboard::protocol::MapAction::FrameLimit { hz: None }
+            dashboard_core::protocol::MapAction::FrameLimit { hz: None }
         ));
         for bad in [0.0, -60.0, 0.5, 1_000.1, f64::NAN] {
             let invalid = VideoSettings {
@@ -777,11 +777,11 @@ mod tests {
         settings.validate().unwrap();
         assert!(matches!(
             settings.map_ui_scale_action(),
-            dashboard::protocol::MapAction::UiScale { scale: Some(1.25) }
+            dashboard_core::protocol::MapAction::UiScale { scale: Some(1.25) }
         ));
         assert!(matches!(
             VideoSettings::default().map_ui_scale_action(),
-            dashboard::protocol::MapAction::UiScale { scale: None }
+            dashboard_core::protocol::MapAction::UiScale { scale: None }
         ));
         for bad in [10.0, 400.0, f64::NAN] {
             let invalid = VideoSettings {

@@ -3,16 +3,16 @@ use crate::map::scene_failure_tests::Fixture;
 use viewer_foundation::map::camera::Placement;
 #[cfg(test)]
 use viewer_foundation::map::test_support::TEST_HANG_GUARD;
-use viewer_world::map::scene_faults::Point;
+use viewer_world::scene_faults::Point;
 
-pub(super) fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds {
+pub(super) fn target(fixture: &Fixture) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds {
         x: 0,
         y: 0,
         width: 256,
         height: 144,
     };
-    dashboard::protocol::DashboardMapView {
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: "failure-fixture".into(),
         source_id: "verified-fixture".into(),
@@ -37,7 +37,7 @@ fn draw(
     viewer: &mut Viewer,
     ctx: &egui::Context,
     frame: &eframe::Frame,
-    target: &dashboard::protocol::DashboardMapView,
+    target: &dashboard_core::protocol::DashboardMapView,
 ) {
     let mut output = ctx.run_ui(
         egui::RawInput {
@@ -56,7 +56,7 @@ pub(super) fn until(
     viewer: &mut Viewer,
     ctx: &egui::Context,
     frame: &eframe::Frame,
-    target: &dashboard::protocol::DashboardMapView,
+    target: &dashboard_core::protocol::DashboardMapView,
     done: impl Fn(&Viewer) -> bool,
 ) {
     let deadline = Instant::now() + TEST_HANG_GUARD;

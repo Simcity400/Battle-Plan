@@ -19,7 +19,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use viewer_world::map::unit_models::{KeptChoices, Made, SelectionKey, Told};
+use viewer_unit_models::unit_models::{KeptChoices, Made, SelectionKey, Told};
 
 pub const TABLES: &[TableId] = &[
     TableId::Clock,

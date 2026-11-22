@@ -49,7 +49,7 @@ fn ids(set: &[Choice]) -> std::collections::BTreeSet<&str> {
 }
 
 pub(super) fn viewer(
-    config: &dashboard::Config,
+    config: &dashboard_core::config::Config,
     options: &Options,
     state: &eframe::egui_wgpu::RenderState,
     service: &Arc<dashboard::Service>,
@@ -85,10 +85,10 @@ pub(super) fn viewer(
 }
 
 fn save(key: &str, set: &[Choice]) -> io::Result<()> {
-    let mut store = dashboard::map_settings::Store::open();
+    let mut store = dashboard_core::map_settings::Store::open();
     store.save(
         key.to_owned(),
-        dashboard::protocol::CampaignMapSettings {
+        dashboard_core::protocol::CampaignMapSettings {
             visual_mods: Some(set.to_vec()),
             ..Default::default()
         },
@@ -299,7 +299,7 @@ fn until_correct(
 
 #[expect(clippy::too_many_arguments, reason = "one open's whole input")]
 fn open(
-    config: &dashboard::Config,
+    config: &dashboard_core::config::Config,
     options: &Options,
     state: &eframe::egui_wgpu::RenderState,
     run: &Toggle,
@@ -310,11 +310,11 @@ fn open(
 ) -> io::Result<(Value, Viewer, Arc<dashboard::Service>, egui::Context, String)> {
     let service = dashboard::Service::new(Arc::new(|_| true))?;
     service.configure_content(config, options.allow_unverified)?;
-    let revision = dashboard::protocol::replay_revision(path)?;
+    let revision = dashboard_core::protocol::replay_revision(path)?;
     let source = service
         .open_map(path, Some(&revision))
         .map_err(io::Error::other)?;
-    let key = dashboard::map_settings::campaign_key(&source.replay());
+    let key = dashboard_core::map_settings::campaign_key(&source.replay());
     save(&key, set)?;
     service.reload_map_settings();
     let mut viewer = viewer(config, options, state, &service)?;
@@ -330,7 +330,7 @@ fn open(
 }
 
 pub(crate) fn measure(
-    config: dashboard::Config,
+    config: dashboard_core::config::Config,
     mut options: Options,
     path: PathBuf,
     run: Toggle,

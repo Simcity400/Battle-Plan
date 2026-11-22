@@ -23,7 +23,7 @@ use std::{
 };
 use viewer_foundation::map::{perspective, tables::core};
 use viewer_raids::map::intel_icons::{self, IntelIcons};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub const NAME: &str = "intel icons";
 

@@ -17,8 +17,9 @@ use viewer_foundation::map::gpu_contract::is_software;
 use viewer_foundation::map::ui_scale::Setting;
 use viewer_foundation::worker_priority::background_priority;
 
-use dashboard::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
-use dashboard::{Service, Source, SourceKey};
+use dashboard_core::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
+use dashboard::Service;
+use dashboard_base::{Source, SourceKey};
 use eframe::{egui, wgpu};
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
     app::{Viewer, date, load_scene, map_overlay, partial_notice},
     document::{Content, Document, InitialHour},
 };
-use viewer_world::map::scene::Scene;
+use viewer_world::scene::Scene;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MapSourceKey {
@@ -204,7 +205,7 @@ impl DashboardMaps {
         view.viewer.hold_permit(request, permit);
         engine_executable::executable_tables::scope(tables, || {
             view.viewer.host_map_action(
-                dashboard::protocol::MapAction::Export {
+                dashboard_core::protocol::MapAction::Export {
                     path,
                     view_id: None,
                     request,
@@ -1127,8 +1128,8 @@ impl DashboardMaps {
                 });
             } else if view.viewer.has_map() {
                 if let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) {
-                    let scope = dashboard::map_settings::widget_key(
-                        &dashboard::map_settings::campaign_key(&source.source.replay()),
+                    let scope = dashboard_core::map_settings::widget_key(
+                        &dashboard_core::map_settings::campaign_key(&source.source.replay()),
                         &view.target.id,
                     );
                     view.viewer.follow_map_settings(&self.service, scope);
@@ -1314,7 +1315,7 @@ mod tests {
         ));
         let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
-        let revision = dashboard::protocol::replay_revision(&path).unwrap();
+        let revision = dashboard_core::protocol::replay_revision(&path).unwrap();
         let service = Service::new(Arc::new(|_| true)).unwrap();
         let mut target = DashboardMapView {
             options: Default::default(),
@@ -1385,7 +1386,7 @@ mod tests {
         let away = path.with_extension("away");
         let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
-        let revision = dashboard::protocol::replay_revision(&path).unwrap();
+        let revision = dashboard_core::protocol::replay_revision(&path).unwrap();
         std::fs::rename(&path, &away).unwrap();
         let mut maps = DashboardMaps::new(
             Config::default(),
@@ -1478,7 +1479,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
         maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
-        let export = dashboard::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
+        let export = dashboard_core::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
         maps.views.get_mut(&target.id).unwrap().viewer.host_map_action(export, &ctx, &mut frame);
         maps.set_views(Some("page-1"), Vec::new(), &frame, &ctx);
         assert!(maps.views.is_empty());

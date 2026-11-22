@@ -27,7 +27,6 @@ tauri = { version = "2.11.5", default-features = false, features = ["common-cont
 test-unify = { workspace = true }
 unify-adler2 = { workspace = true }
 unify-bitflags-1 = { workspace = true }
-unify-crossbeam-utils = { workspace = true }
 unify-fdeflate = { workspace = true }
 unify-flate2 = { workspace = true }
 unify-hashbrown = { workspace = true }

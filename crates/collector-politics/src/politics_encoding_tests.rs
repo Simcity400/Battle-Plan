@@ -128,9 +128,8 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
         .map(|_| TableInput::Sampled(unavailable("fixture")))
         .collect::<Vec<_>>();
     tables[TableId::OperativeMemberships.index()] = TableInput::Sampled(operative_view);
-    ledger
-        .assemble_owned(1, 22, &captured, &countries, census, &mut tables)
-        .unwrap();
+    // SAFETY: The spool assembles its own frame's interval while the originating observer is live.
+    unsafe { ledger.assemble_owned(1, 22, &captured, &countries, census, &mut tables) }.unwrap();
     frames.push((22, tables.clone()));
     let hour_gate = Barrier::new(17);
     let event_gate = Barrier::new(16);
@@ -163,8 +162,9 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
                 country.politics_witness = Some((1, Some((hour - 21) as u32)));
             }
             captured.handoff = Some(staging.handoff(&mut captured.cursors));
-            ledger
-                .assemble_owned(1, hour, &captured, &countries, census, &mut tables)
+            // SAFETY: The spool assembles its own frame's interval while the originating observer
+            // is live.
+            unsafe { ledger.assemble_owned(1, hour, &captured, &countries, census, &mut tables) }
                 .unwrap();
             let scratch = ledger.scratch.as_ref().unwrap();
             let drain = scratch.drained.unwrap().unwrap();

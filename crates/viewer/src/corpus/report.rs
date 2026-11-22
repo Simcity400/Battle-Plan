@@ -41,9 +41,9 @@ impl From<content_reader_core::DiagnosticKind> for Kind {
     }
 }
 
-impl From<dashboard::content_check::Kind> for Kind {
-    fn from(kind: dashboard::content_check::Kind) -> Self {
-        use dashboard::content_check::Kind as ProductKind;
+impl From<dashboard_core::findings::Kind> for Kind {
+    fn from(kind: dashboard_core::findings::Kind) -> Self {
+        use dashboard_core::findings::Kind as ProductKind;
         match kind {
             ProductKind::ParseFailure => Self::ParseFailure,
             ProductKind::Misread => Self::Misread,
@@ -1217,7 +1217,9 @@ mod tests {
 
     #[test]
     fn summary_lists_stack_descriptors_dependencies_and_every_product() {
-        use dashboard::products::{Product, doctrines::Doctrines, national_focus::NationalFocus};
+        use dashboard_base::products::Product;
+        use dashboard_land::products::doctrines::Doctrines;
+        use dashboard_politics::products::national_focus::NationalFocus;
         let reader = format!("dashboard.{}", NationalFocus::KEY);
         let mut report = StackReport {
             stack: "local-fixture".into(),
