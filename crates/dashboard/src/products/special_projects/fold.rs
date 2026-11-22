@@ -6,6 +6,7 @@ pub const COMPLETION_MARKER: u32 = 0x4c17;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {
+    pub owner: u32,
     pub local: u32,
     pub definition: u32,
     pub program: u64,
@@ -79,7 +80,7 @@ pub struct Fold {
     pub episodes: Vec<ProjectEpisode>,
     pub looks: Vec<Look>,
     look_ids: HashMap<Look, u32>,
-    open: BTreeMap<(u32, u32), usize>,
+    open: BTreeMap<(u32, u32, u32), usize>,
     holder: Option<(u32, u32)>,
     last_iterations: HashMap<usize, i32>,
     pub warnings: BTreeMap<String, usize>,
@@ -119,7 +120,7 @@ impl Fold {
         for observed in projects {
             let row = observed.row;
             let state = state(row);
-            let key = (row.local, row.definition);
+            let key = (row.owner, row.local, row.definition);
             if !visible(row, self.open.contains_key(&key)) {
                 continue;
             }
@@ -139,7 +140,7 @@ impl Fold {
                 Some(&index) => index,
                 None => {
                     let index = self.episodes.len();
-                    self.episodes.push(ProjectEpisode { id: format!("{}:{first}:{index}", row.local), start: ProjectDate { hour: first, exact: false }, runs: Vec::new() });
+                    self.episodes.push(ProjectEpisode { id: format!("{}:{first}:{index}", row.local), owner: row.owner, local: row.local, start: ProjectDate { hour: first, exact: false }, runs: Vec::new() });
                     index
                 }
             };

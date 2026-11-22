@@ -28,6 +28,6 @@ fn effects_without_the_recorded_content_are_withheld_by_name() {
 
 #[test]
 fn a_request_without_a_technology_is_refused() {
-    let params = TechnologyEffectsParams { branch_id: "1".into(), country: serde_json::from_value(json!("GER")).unwrap(), token: String::new() };
+    let params = TechnologyEffectsParams { branch_id: "1".into(), country: serde_json::from_value(json!("GER")).unwrap(), token: String::new(), database_index: None };
     assert_eq!(TechnologyEffectsAt::validate(&params), Err("Technology effects need a technology"));
 }

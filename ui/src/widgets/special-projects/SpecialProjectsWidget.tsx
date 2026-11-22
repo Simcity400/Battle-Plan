@@ -259,7 +259,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
       const shown = opened?.tag === reply.tag ? opened : null;
       const popup = shown && <ProjectWindow key={shown.id} runtime={runtime} widget={widget} tag={reply.tag} active={active} reply={reply} feed={feed}
-        card={observed ? shownCard(reply, at, shown.id) : null} anchor={shown}
+        card={observed ? shownCard(reply, at, shown.id) : null} hour={at} anchor={shown}
         missing={observed ? 'This project is not in progress or completed at this time.' : 'Projects were not recorded at this time.'}
         onClose={() => setOpened(null)} onWarnings={reportWarnings} />;
       body = observed ? <><CurrentList clock={runtime.clock} feed={feed} reply={reply} at={at} item={item(reply)}

@@ -102,7 +102,7 @@ fn recording() -> Source {
 
 #[test]
 fn stats_without_the_recorded_content_are_withheld_by_name() {
-    let request = json!({ "branchId": "1", "country": "GER", "kind": "equipment", "token": "infantry_equipment_1", "hour": 25 });
+    let request = json!({ "branchId": "1", "kind": "equipment", "token": "infantry_equipment_1", "hour": 25 });
     let text = (entry::<EntityStatsAt>().registered.load)(&recording(), "lease", request, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let reply: Value = serde_json::from_str::<Value>(&text).unwrap()["data"].take();
     assert_eq!(reply["stats"], json!([]));
@@ -112,6 +112,7 @@ fn stats_without_the_recorded_content_are_withheld_by_name() {
 
 #[test]
 fn a_request_without_a_token_is_refused() {
-    let params = EntityStatsParams { branch_id: "1".into(), country: serde_json::from_value(json!("GER")).unwrap(), kind: EntityKind::Tactic, token: String::new() };
+    let params = EntityStatsParams { branch_id: "1".into(), kind: EntityKind::Tactic, token: String::new() };
     assert_eq!(EntityStatsAt::validate(&params), Err("Entity stats need a content token"));
+    assert!(EntityStatsAt::tables(&params).is_empty(), "a stats sheet is recorded content alone, so playback never reads or recomputes it");
 }

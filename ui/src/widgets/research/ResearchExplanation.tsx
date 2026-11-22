@@ -6,13 +6,14 @@ import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products.ts';
 import WidgetState from '../../components/WidgetState';
-import { validateResearchBreakdown, withBreakdown } from './researchData';
+import { validateResearchBreakdown, validateResearchSlots, withBreakdown } from './researchData';
+import { slotNumbers } from './researchSlots';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar';
 import { Icon } from '../../components/Icons';
 import { researchNumber } from './researchBreakdown';
 import { completedResearchJourney, researchAssignments, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
 import { researchDaysLeftMissing, researchTimeRows, type ResearchSegment } from './researchTimeBar';
-import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry } from '../../generated/dashboard';
+import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry, ResearchSlotsReply } from '../../generated/dashboard';
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
@@ -48,13 +49,23 @@ export function breakdownParts(slots: readonly ResearchSlotHistory[], slot: Rese
     started: part.entry.startedAfterHour !== null }));
 }
 
-export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description, daysLeft }: {
-  client: DashboardClient; track: BoundTrack; tag: string; hour: number; daysLeft: number | null;
+export function daysLeftAt(reply: ResearchSlotsReply, slot: number, entry: ResearchEntry, hour: number) {
+  const read = reply.slots.find(item => item.index === slot && item.state.token === entry.token && item.state.entryFirstObservedHour === entry.firstObservedHour);
+  return read ? slotNumbers(read, hour).left : null;
+}
+
+export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description }: {
+  client: DashboardClient; track: BoundTrack; tag: string; hour: number;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
   const parts = breakdownParts(slots, slot, entry, hour);
-  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), parts } };
+  const country = countryFromKey(tag);
+  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country, parts } };
   const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
+  const active = entry.outcome === 'active';
+  const estimate = useProduct<ResearchSlotsReply>(client, active ? { sourceId: track.source.id, revision: track.source.revision, product: 'research-slots',
+    params: { branchId: track.branch.id, country, hour } } : null, true, validateResearchSlots, track.source);
+  const daysLeft = estimate.data ? daysLeftAt(estimate.data, slot.index, entry, hour) : null;
   const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);
   const joinedSlots = useMemo(() => withBreakdown(slots, data), [slots, data]);
   const joinedSlot = joinedSlots.find(owner => owner.index === slot.index) ?? slot;
@@ -62,7 +73,6 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
     [data, joined, slot.index, entry.firstObservedHour, entry.technologyHandle, entry.level, entry.token,
       entry.outcome, entry.endedByHour, entry.outcomeObservedHour]);
   const journey = useMemo(() => completed ?? researchJourney(joinedSlots, joinedSlot, entry), [completed, joinedSlots, joinedSlot, entry]);
-  const active = entry.outcome === 'active';
   const split = useMemo(() => data ? researchTimeSplit(journey, active) : null, [data, journey, active]);
   const missing = data?.parts.flatMap(part => part.missing ?? []) ?? [];
   return <div className="research-description">
@@ -71,9 +81,11 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
         ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>Completed</small>{date(entry.endedByHour)}</span>
         : <span data-tooltip={journey.startKnown ? formatDateTime(journey.firstHour) : 'Start date unknown.'}>
           <small>{journey.startKnown ? 'Started' : 'Started by'}</small>{date(journey.firstHour)}</span>}
+      {active && <span data-tooltip={formatDateTime(hour)}><small>As of</small>{date(hour)}</span>}
     </div>
-    {error && !data ? <WidgetState kind="error" failure={error} onRetry={retry} />
-      : !data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>
+    {(error || active && estimate.error) && !(data && (!active || estimate.data))
+      ? <WidgetState kind="error" failure={(error ?? estimate.error)!} onRetry={error ? retry : estimate.retry} />
+      : !data || active && !estimate.data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>
         : split && researchDaysLeftMissing(split, active, daysLeft)
           ? <p className="research-unavailable">Research time breakdown unavailable: the game's days-left estimate is not recorded at this hour.</p>
         : split ? <TimeBar split={split} active={active} daysLeft={daysLeft} />

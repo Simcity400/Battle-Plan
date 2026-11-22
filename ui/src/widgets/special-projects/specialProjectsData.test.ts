@@ -24,7 +24,7 @@ const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spa
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},
   people:[{assigned:true,id:77,name:'Mod scientist',portrait:null,missing:'Portrait not recorded.'}],
   presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,scientistAsOf:null}],
-  projects:[{id:'episode',start:{hour:100,exact:false},runs:[
+  projects:[{id:'episode',owner:9,local:3,start:{hour:100,exact:false},runs:[
     {firstHour:100,lastHour:147,presentation:0,progress:17,state:'running',cancellation:null,completion:null,iterations:2},
     {firstHour:148,lastHour:199,presentation:0,progress:100,state:'completed',cancellation:null,completion:{hour:140,exact:true},iterations:3},
   ]}],
@@ -316,11 +316,11 @@ function projects(): SpecialProjectsReply {
   const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: SpecialProjectRun['state'], extra: Partial<SpecialProjectRun> = {}): SpecialProjectRun =>
     ({ firstHour, lastHour, presentation, progress, state, completion: null, cancellation: null, iterations: 0, ...extra });
   data.projects = [
-    { id: 'done', start: { hour: 100, exact: false }, runs: [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed', { completion: { hour: 160, exact: true } })] },
-    { id: 'early', start: { hour: 100, exact: false }, runs: [run(100, 199, 1, 100, 'completed', { completion: { hour: 100, exact: false } })] },
-    { id: 'beta', start: { hour: 120, exact: false }, runs: [run(120, 149, 2, 0, 'running'), run(150, 172, 2, 30, 'running'), run(173, 199, 2, 30, 'running', { iterations: 1 })] },
-    { id: 'gamma', start: { hour: 110, exact: false }, runs: [run(110, 199, 3, 55, 'running')] },
-    { id: 'delta', start: { hour: 100, exact: false }, runs: [run(100, 199, 4, 65, 'cancelled', { cancellation: { hour: 100, exact: false } })] },
+    { id: 'done', owner: 9, local: 1, start: { hour: 100, exact: false }, runs: [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed', { completion: { hour: 160, exact: true } })] },
+    { id: 'early', owner: 9, local: 2, start: { hour: 100, exact: false }, runs: [run(100, 199, 1, 100, 'completed', { completion: { hour: 100, exact: false } })] },
+    { id: 'beta', owner: 9, local: 3, start: { hour: 120, exact: false }, runs: [run(120, 149, 2, 0, 'running'), run(150, 172, 2, 30, 'running'), run(173, 199, 2, 30, 'running', { iterations: 1 })] },
+    { id: 'gamma', owner: 9, local: 4, start: { hour: 110, exact: false }, runs: [run(110, 199, 3, 55, 'running')] },
+    { id: 'delta', owner: 9, local: 5, start: { hour: 100, exact: false }, runs: [run(100, 199, 4, 65, 'cancelled', { cancellation: { hour: 100, exact: false } })] },
   ];
   return validateSpecialProjectsReply(data);
 }
@@ -413,15 +413,15 @@ test('the iteration mark names its count only, and its tooltip says what the cou
   assert.equal(iterationTooltip(data,{...card,run:{...card.run,iterations:null}}).rows[0].value, 'Not recorded');
 });
 
-test('a project window finds its runtime project by local id and withholds an ambiguous match', () => {
-  const data=fixture(); data.projects[0].id='3:100:0';
-  const card=shownCard(data,120,'3:100:0')!;
-  assert.equal(shownCard(data,120,'4:100:0'), null);
+test('a project window joins its runtime project on the episode owner and local id, read within the episode and not after the hour', () => {
+  const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
+  const card=shownCard(data,120,data.projects[0].id)!;
   const runtime=(owner:number,id:number,name:string|null):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour:120,pendingKnown:true,pending:null,seed:null,variables:null,choices:null});
-  const details=(projects:ProjectRuntimeDetails[]|null):SpecialProjectDetails=>({hour:120,scientists:null,programs:null,breakthroughs:null,projects,unavailable:[],warnings:[]});
-  assert.deepEqual(runtimeProject(details([runtime(9,4,'Other'),runtime(9,3,'Mod project name')]),card), runtime(9,3,'Mod project name'));
-  assert.equal((runtimeProject(details([runtime(9,3,'Other'),runtime(10,3,'Mod project name')]),card) as ProjectRuntimeDetails).owner, 10);
-  assert.match(runtimeProject(details([runtime(9,3,'Mod project name'),runtime(10,3,'Mod project name')]),card) as string, /withheld/);
-  assert.match(runtimeProject(details([]),card) as string, /not recorded/);
-  assert.match(runtimeProject(details(null),card) as string, /not read/);
+  const details=(projects:ProjectRuntimeDetails[]|null,hour=120):SpecialProjectDetails=>({hour,scientists:null,programs:null,breakthroughs:null,projects,unavailable:[],warnings:[]});
+  assert.deepEqual(runtimeProject(details([runtime(9,4,'Mod project name'),runtime(9,3,'Other')]),card,120), runtime(9,3,'Other'), 'the name is not the join');
+  assert.match(runtimeProject(details([runtime(10,3,'Mod project name')]),card,120) as string, /not recorded/, 'another owner with the same local id is not this project');
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name')],99),card,120) as string, /before this project/);
+  assert.equal(runtimeProject(details([runtime(9,3,'Mod project name')],121),card,120), null, 'a reply from after the displayed hour waits');
+  assert.match(runtimeProject(details([]),card,120) as string, /not recorded/);
+  assert.match(runtimeProject(details(null),card,120) as string, /not read/);
 });

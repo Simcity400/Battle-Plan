@@ -25,6 +25,8 @@ pub struct TechnologyEffectsParams {
     pub branch_id: String,
     pub country: Country,
     pub token: String,
+    #[doc = " The template occurrence the research reads named; null for a technology named only by its token, as a game link names it."]
+    pub database_index: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -65,7 +67,7 @@ impl AtHour for TechnologyEffectsAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        if params.token.is_empty() {
+        if params.token.is_empty() || params.database_index.is_some_and(|index| index <= 0) {
             return Err("Technology effects need a technology");
         }
         dashboard_base::products::validate_country(&params.country)
@@ -108,7 +110,7 @@ impl AtHour for TechnologyEffectsAt {
             let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, owner.slot);
             let cache = scripted.effects()?;
             let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, owner.slot, "technology effects", cache.view(None)).with_entity_links();
-            Ok(dashboard_text::effect_description::technology_description(&params.token, &context, owner.slot))
+            Ok(dashboard_text::effect_description::technology_description(&params.token, params.database_index, &context, owner.slot))
         };
         match render() {
             Ok(mut description) => {

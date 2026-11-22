@@ -6,8 +6,7 @@ use super::{
 };
 use crate::{Source, catalogue};
 use content_reader_core::{combat_tactics::Tactic, equipment::StatGroup, parser::c_string};
-use content_reader_localisation::localisation::{Argument, Localisation, plain_text};
-use dashboard_base::products::Country;
+use content_reader_localisation::localisation::{Argument, Localisation};
 use dashboard_text::subunit_requirements::Content as SubUnitSheets;
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
@@ -26,7 +25,6 @@ pub struct EntityStatsAt;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntityStatsParams {
     pub branch_id: String,
-    pub country: Country,
     pub kind: EntityKind,
     pub token: String,
 }
@@ -48,8 +46,6 @@ pub struct EntityStats {
     pub hour: i32,
     pub kind: EntityKind,
     pub token: String,
-    #[doc = " The thing's name as the game shows it to the country; null where it is not localised."]
-    pub name: Option<String>,
     pub stats: Vec<EntityStat>,
     #[doc = " Why stats were withheld, with how often each was met."]
     pub refusals: BTreeMap<String, usize>,
@@ -181,18 +177,6 @@ fn stat_metadata() -> Result<&'static Metadata, String> {
         .map_err(|why| format!("The game's stat names are withheld: {why}"))
 }
 
-fn name(localisation: &Localisation, tag: Option<&str>, token: &str) -> Result<String, String> {
-    let key = tag
-        .map(|tag| format!("{tag}_{token}"))
-        .filter(|key| localisation.get(key).is_some())
-        .unwrap_or_else(|| token.to_owned());
-    if localisation.get(&key).is_none() {
-        return Err(format!("{token} has no localised name"));
-    }
-    let text = localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
-    Ok(plain_text(&text)?.trim().to_owned())
-}
-
 impl AtHour for EntityStatsAt {
     const KEY: &'static str = "content-entity-stats";
     const TITLE: &'static str = "Content entity stats";
@@ -206,7 +190,7 @@ impl AtHour for EntityStatsAt {
         if params.token.is_empty() {
             return Err("Entity stats need a content token");
         }
-        dashboard_base::products::validate_country(&params.country)
+        Ok(())
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -214,15 +198,10 @@ impl AtHour for EntityStatsAt {
         vec![EntityStatsParams::decl(), EntityStats::decl(), EntityStat::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&Country> {
-        Some(&params.country)
-    }
+    const CLOCK_DEPENDENT: bool = false;
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables: Vec<TableId> = dashboard_text::effect_description::recorded_tables().chain([TableId::CountryAppearance, TableId::LexicalTokens]).collect();
-        tables.sort_unstable();
-        tables.dedup();
-        tables
+        Vec::new()
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -233,9 +212,8 @@ impl AtHour for EntityStatsAt {
         Ok(Context { content })
     }
 
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let owner = at.owner.ok_or_else(|| dashboard_core::refused("Entity stats name no country"))?;
-        let mut out = EntityStats { hour: at.hour, kind: params.kind, token: params.token.clone(), name: None, stats: Vec::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() };
+    fn reply(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let mut out = EntityStats { hour: at.hour, kind: params.kind, token: params.token.clone(), stats: Vec::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() };
         let content = match &at.context.content {
             Ok(content) => content,
             Err(why) => {
@@ -247,16 +225,8 @@ impl AtHour for EntityStatsAt {
         let localisation = &catalogue.localisation;
         let mut sheet = Sheet::new(localisation);
         let token = params.token.as_str();
-        let mut tag: Result<Option<String>, String> = Err("The country's tag for this name was not read".into());
         let read = (|| -> Result<(), String> {
-            let scripted = catalogue.scripted_content()?;
-            let text = dashboard_text::scripted_text::ScriptedText::new(frame, localisation, scripted, owner.slot);
-            tag = match params.kind {
-                EntityKind::Building => Ok(None),
-                EntityKind::Module => text.country_tag(0).map(|tag| Some(tag.to_owned())),
-                _ => text.country_tag(owner.slot).map(|tag| Some(tag.to_owned())),
-            };
-            let effects = scripted.effects()?;
+            let effects = catalogue.scripted_content()?.effects()?;
             let view = effects.view(None);
             let technologies = || view.doctrines.and_then(|doctrines| doctrines.technologies.as_ref()).ok_or_else(|| "The recorded technology content was not read".to_owned());
             match params.kind {
@@ -296,10 +266,6 @@ impl AtHour for EntityStatsAt {
         })();
         if let Err(why) = read {
             out.unavailable = Some(why);
-        }
-        match tag.and_then(|tag| name(localisation, tag.as_deref(), token)) {
-            Ok(name) => out.name = Some(name),
-            Err(why) => *sheet.refusals.entry(why).or_default() += 1,
         }
         out.stats = sheet.stats;
         out.refusals = sheet.refusals;

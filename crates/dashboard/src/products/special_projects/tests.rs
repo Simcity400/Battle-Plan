@@ -5,7 +5,7 @@ const START: i32 = 1_000;
 const HOLDER: (u32, u32) = (5, 9);
 
 fn running(local: u32, progress: i32) -> Row {
-    Row { local, definition: 40, program: (7_u64 << 32) | u64::from(PROGRAM_REFERENCE), started: true, offset: 0x18, not_completed: 1, prototype_progress: progress }
+    Row { owner: 11, local, definition: 40, program: (7_u64 << 32) | u64::from(PROGRAM_REFERENCE), started: true, offset: 0x18, not_completed: 1, prototype_progress: progress }
 }
 
 fn done(local: u32) -> Row {
@@ -41,6 +41,16 @@ fn a_completed_project_keeps_its_last_scientist_and_its_history_date() {
     let last = episode.runs.last().unwrap();
     assert_eq!(last.completion, Some(ProjectDate { hour: 1_060, exact: true }));
     assert_eq!(fold.looks[last.presentation as usize], Look { definition: 40, person: scientist, as_of: Some(1_071) });
+}
+
+#[test]
+fn projects_of_two_raw_owners_sharing_a_local_id_are_their_own_episodes() {
+    let mut fold = Fold::new(START);
+    let other = Row { owner: 12, ..running(1, 25) };
+    observe(&mut fold, 1_000, 1_010, &[(running(1, 40), None, Person::Unassigned), (other.clone(), None, Person::Unassigned)]);
+    observe(&mut fold, 1_011, 1_020, &[(running(1, 41), None, Person::Unassigned), (Row { prototype_progress: 26, ..other }, None, Person::Unassigned)]);
+    let episodes: Vec<_> = fold.episodes.iter().map(|episode| (episode.owner, episode.local, episode.runs.iter().map(|run| run.progress).collect::<Vec<_>>())).collect();
+    assert_eq!(episodes, [(11, 1, vec![40, 41]), (12, 1, vec![25, 26])]);
 }
 
 #[test]

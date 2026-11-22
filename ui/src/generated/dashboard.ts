@@ -3358,7 +3358,11 @@ progress: number, state: ProjectState, completion: ProjectDate | null, cancellat
  * History entries less the completion's; none where the history was not recorded.
  */
 iterations: number | null, };
-export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<SpecialProjectRun>, };
+export type ProjectEpisode = { id: string,
+/**
+ * The project's raw owner id and its id within it, as the project detail products key it.
+ */
+owner: number, local: number, start: ProjectDate, runs: Array<SpecialProjectRun>, };
 export type SpecialProjectsReply = { branchId: string, tag: string,
 /**
  * The tag's holders over the branch.
@@ -5803,7 +5807,11 @@ export type IterationSection = {
  */
 heading: Array<GameRun> | null, runs: Array<GameRun>, };
 export type SpecialProjectIterationParamsAtHour = SpecialProjectIterationParams & { hour: number };
-export type TechnologyEffectsParams = { branchId: string, country: CountryRef, token: string, };
+export type TechnologyEffectsParams = { branchId: string, country: CountryRef, token: string,
+/**
+ * The template occurrence the research reads named; null for a technology named only by its token, as a game link names it.
+ */
+databaseIndex: number | null, };
 export type TechnologyEffects = { hour: number,
 /**
  * The game's text for what researching the technology does, as it shows it; empty where nothing could be described.
@@ -5816,12 +5824,8 @@ refusals: { [key in string]?: number }, unavailable: string | null, warnings: Ar
 export type GameRun = { "kind": "text", text: string, tone: string | null, } | { "kind": "icon", sprite: string, } | { "kind": "flag", tag: string, } | { "kind": "link", entity: EntityKind, token: string, text: string, tone: string | null, };
 export type EntityKind = "equipment" | "module" | "subUnit" | "building" | "tactic" | "technology";
 export type TechnologyEffectsParamsAtHour = TechnologyEffectsParams & { hour: number };
-export type EntityStatsParams = { branchId: string, country: CountryRef, kind: EntityKind, token: string, };
-export type EntityStats = { hour: number, kind: EntityKind, token: string,
-/**
- * The thing's name as the game shows it to the country; null where it is not localised.
- */
-name: string | null, stats: Array<EntityStat>,
+export type EntityStatsParams = { branchId: string, kind: EntityKind, token: string, };
+export type EntityStats = { hour: number, kind: EntityKind, token: string, stats: Array<EntityStat>,
 /**
  * Why stats were withheld, with how often each was met.
  */

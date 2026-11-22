@@ -151,7 +151,7 @@ impl Episodes {
                                 c.scientists = Some(Track::new(r, &at, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| c.programs.contains(&k), count)?);
                             }
                         }
-                        if within(&c.owners[&((key >> 32) as u32)], next) && let Some(row) = project_row(key as u32, cells) {
+                        if within(&c.owners[&((key >> 32) as u32)], next) && let Some(row) = project_row((key >> 32) as u32, key as u32, cells) {
                             rows.push((key, row));
                         }
                     }

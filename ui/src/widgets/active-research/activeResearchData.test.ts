@@ -3,7 +3,8 @@ import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
-import { activeSlots, completedResearch } from './activeResearchData.ts';
+import { activeSlots, researchAfter } from './activeResearchData.ts';
+import { researchAt } from '../research/researchData.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
 
@@ -80,13 +81,21 @@ test('at an hour without a read, slots open at the last read are unavailable rat
   assert.deepEqual(covered.map(slot => slot.kind === 'unavailable' && slot.reason), ['This country\'s research slots were not read together']);
 });
 
-test('a researched technology opens as completed only once the recording has seen it complete', () => {
-  const done = (ended: number, seen: number | null): ResearchEntry => ({ ...active, outcome: 'completed', endedByHour: ended, outcomeObservedHour: seen });
-  const slots = [{ index: 0, availability: open, entries: [done(day(20), null), done(day(60), day(64))], states: [], progress: [] },
-    { index: 1, availability: open, entries: [{ ...done(day(30), null), token: 'sonar' }], states: [], progress: [] }];
-  assert.equal(completedResearch(slots, 'radar', day(10)), null);
-  assert.equal(completedResearch(slots, 'radar', day(62))?.hour, day(20), 'a completion is not shown before it was observed');
-  assert.equal(completedResearch(slots, 'radar', day(70))?.hour, day(60));
-  assert.equal(completedResearch(slots, 'radar', day(70))?.slot.index, 0);
-  assert.equal(completedResearch(slots, 'missing', day(70)), null);
+test('an opened research keeps its own assignment: completed only once seen complete, never another level, and named when gone', () => {
+  const done = (first: number, ended: number, seen: number | null): ResearchEntry => ({ ...active, firstObservedHour: first, outcome: 'completed', endedByHour: ended, outcomeObservedHour: seen });
+  const history: ResearchHistory = { coverage: open, slots: [
+    { index: 0, availability: open, entries: [done(day(0), day(20), null), done(day(30), day(60), day(64)), { ...active, firstObservedHour: day(70), level: 1 }], states: [], progress: [] },
+    { index: 1, availability: open, entries: [{ ...active, firstObservedHour: day(5), outcome: 'switched', endedByHour: day(15) }], states: [], progress: [] },
+  ] };
+  const after = (opened: { slot?: number; first: number | null; index?: number }, hour: number) =>
+    researchAfter(researchAt(history, hour), { slot: opened.slot ?? 0, token: 'radar', databaseIndex: opened.index ?? 4, firstObservedHour: opened.first }, hour);
+  const completed = (result: ReturnType<typeof researchAfter>) => result.kind === 'completed' ? result.hour : result.message;
+  assert.equal(completed(after({ first: day(30) }, day(62))), 'Left its slot; what became of it is not recorded at this hour.', 'a completion is not shown before it was observed');
+  assert.equal(completed(after({ first: day(30) }, day(70))), day(60));
+  assert.equal(completed(after({ first: day(0) }, day(90))), day(20), 'the earlier level keeps its own date, not the latest one of its token');
+  assert.equal(completed(after({ first: day(70) }, day(90))), 'This research is not recorded in its slot at this hour.');
+  assert.equal(completed(after({ first: day(30), index: 5 }, day(90))), 'This research is not recorded in its slot at this hour.', 'another definition of the token is not this research');
+  assert.match(completed(after({ slot: 1, first: day(5) }, day(20))) as string, /^Switched out of its slot by /);
+  assert.match(completed(after({ first: day(30) }, day(10))) as string, /^Not in its slot yet at this hour/);
+  assert.match(completed(after({ first: null }, day(10))) as string, /history was not joined/);
 });

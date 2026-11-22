@@ -2,20 +2,13 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icons';
+import { BAR, MARGIN, clampPanel } from './floatingPlacement.ts';
 import './FloatingPanel.css';
 
 export interface FloatingAnchor { x: number; y: number }
 
-const MARGIN = 12;
-
-function clamp(panel: HTMLElement, x: number, y: number) {
-  const width = panel.offsetWidth, height = panel.offsetHeight;
-  return { x: Math.round(Math.min(Math.max(MARGIN, x), Math.max(MARGIN, innerWidth - width - MARGIN))),
-    y: Math.round(Math.min(Math.max(MARGIN, y), Math.max(MARGIN, innerHeight - Math.min(height, 48) - MARGIN))) };
-}
-
-function place(panel: HTMLElement, x: number, y: number) {
-  const at = clamp(panel, x, y);
+function place(panel: HTMLElement, x: number, y: number, shown = Infinity) {
+  const at = clampPanel(panel.offsetWidth, panel.offsetHeight, x, y, { width: innerWidth, height: innerHeight }, shown);
   panel.style.left = at.x + 'px';
   panel.style.top = at.y + 'px';
 }
@@ -57,7 +50,7 @@ export default function FloatingPanel({ title, label, anchor, onClose, className
     const handle = event.currentTarget, dx = event.clientX - node.offsetLeft, dy = event.clientY - node.offsetTop;
     handle.setPointerCapture(event.pointerId);
     node.classList.add('is-dragging');
-    const move = (next: PointerEvent) => place(node, next.clientX - dx, next.clientY - dy);
+    const move = (next: PointerEvent) => place(node, next.clientX - dx, next.clientY - dy, BAR);
     const end = () => {
       node.classList.remove('is-dragging');
       handle.removeEventListener('pointermove', move);

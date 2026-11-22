@@ -129,6 +129,9 @@ pub struct SpecialProjectRun {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEpisode {
     pub id: String,
+    #[doc = " The project's raw owner id and its id within it, as the project detail products key it."]
+    pub owner: u32,
+    pub local: u32,
     pub start: ProjectDate,
     pub runs: Vec<SpecialProjectRun>,
 }
@@ -386,9 +389,10 @@ fn number(cell: Cell) -> Option<i64> {
     }
 }
 
-fn project_row(local: u32, cells: &[Cell]) -> Option<Row> {
+fn project_row(owner: u32, local: u32, cells: &[Cell]) -> Option<Row> {
     let value = |at: usize| cells.get(at).copied().and_then(number);
     Some(Row {
+        owner,
         local,
         definition: value(0)? as u32,
         program: value(1)? as u64,
@@ -581,7 +585,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         for (raw, local, cursor) in &mut projects {
             let (raw, local) = (*raw, *local);
             let linked = read.owners.get(&raw).is_some_and(|spans| within(spans, first));
-            if let Some(row) = cursor.at(first).and_then(|cells| project_row(local, cells))
+            if let Some(row) = cursor.at(first).and_then(|cells| project_row(raw, local, cells))
                 && linked
             {
                 let program = (row.program as u32 == PROGRAM_REFERENCE).then(|| (row.program >> 32) as u32);

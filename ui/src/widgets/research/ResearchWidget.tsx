@@ -229,8 +229,6 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const detailSlots = detailHour === null ? null : researchAt(data.history, detailHour);
   const shownSlot = shown ? detailSlots?.find(item => item.index === shown.slotIndex) : undefined;
   const shownEntry = shownSlot?.entries.find(entry => entry.firstObservedHour === shown!.entry.firstObservedHour && entry.token === shown!.entry.token);
-  const shownRead = shownEntry?.outcome === 'active' && now.data ? now.data.slots.find(read => read.index === shownSlot!.index && read.state.token === shownEntry.token) : undefined;
-  const shownLeft = shownRead && now.data ? slotNumbers(shownRead, now.data.hour).left : null;
   const choices = folders.map(folder => ({ value: setToken(folder.key), label: folder.name }));
   const toggle = (token: string) => { const next = toggleContentSet(options.folders, token, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('folders', next); };
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="research-widget" aria-label="Research history"
@@ -253,7 +251,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
       {breakdown.open && shownSlot && shownEntry && <>
         <PopoverHeading title={text.name(shownEntry.token, shownEntry.databaseIndex)} menu={breakdown} />
         <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={detailHour!} history={data.history} slots={detailSlots!} slot={shownSlot} entry={shownEntry}
-          description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} daysLeft={shownLeft} />
+          description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} />
       </>}
     </Popover>
     {menu.menu}

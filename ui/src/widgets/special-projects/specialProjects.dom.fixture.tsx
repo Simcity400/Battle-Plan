@@ -54,9 +54,9 @@ export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identiti
   people: [{ assigned: false, id: null, name: null, portrait: null, missing: 'No scientist assigned.' }],
   iterationTexts: { 0: '0', 1: '1', 2: '2', 3: '3', 4: '4' }, unavailable: null, warnings: [],
   projects: [
-    { id: 'fast', start: { hour: 0, exact: false }, runs: merge(daily(0, 10, 1 / 50)) },
-    { id: 'slow', start: { hour: 0, exact: false }, runs: merge(daily(0, 0, 1 / 60)) },
-    { id: 'late', start: { hour: LATE, exact: false }, runs: merge(daily(LATE, 0, 0)) },
+    { id: 'fast', owner: 9, local: 1, start: { hour: 0, exact: false }, runs: merge(daily(0, 10, 1 / 50)) },
+    { id: 'slow', owner: 9, local: 2, start: { hour: 0, exact: false }, runs: merge(daily(0, 0, 1 / 60)) },
+    { id: 'late', owner: 9, local: 3, start: { hour: LATE, exact: false }, runs: merge(daily(LATE, 0, 0)) },
   ] };
 
 export const details = (read: number): SpecialProjectDetails => ({ hour: read, unavailable: [], warnings: [], projects: [],

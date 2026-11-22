@@ -15,8 +15,8 @@ import { researchDate } from '../research/researchLayout';
 import { slotNumbers, slotsStructure } from '../research/researchSlots';
 import { historyTokens, useResearchReply, useResearchSlots } from '../research/useResearch';
 import { useTechnologyArtwork } from '../research/useTechnologyArtwork';
-import { activeSlots } from './activeResearchData';
-import type { ActiveSlot } from './activeResearchData';
+import { activeSlots, isOpenedResearch, openedResearch } from './activeResearchData';
+import type { ActiveSlot, OpenedResearch } from './activeResearchData';
 import ResearchWindow from './ResearchWindow';
 import './activeResearch.css';
 
@@ -40,17 +40,15 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
-  const [opened, setOpened] = useState<{ tag: string; slot: number; token: string; databaseIndex: number | null; x: number; y: number } | null>(null);
+  const [opened, setOpened] = useState<{ tag: string; research: OpenedResearch; x: number; y: number } | null>(null);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (now.read === 'off') return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   const failure = history.error ?? now.error;
   if (failure && (!data || !reply)) return <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
   if (!data || !reply) return <ListSkeleton label="Loading research..." />;
-  const describe = (token: string, databaseIndex: number | null) => {
-    const art = researchArt(artwork, token, databaseIndex);
-    return { token, name: contentTitle(art?.name, token, 'Technology name unavailable'), icon: artwork.get(token)?.icon ?? undefined };
-  };
-  const open = (slot: number, token: string, databaseIndex: number | null, x: number, y: number) => { untip(); setOpened({ tag, slot, token, databaseIndex, x, y }); };
+  const describe = ({ token, databaseIndex }: OpenedResearch) =>
+    ({ name: contentTitle(researchArt(artwork, token, databaseIndex)?.name, token, 'Technology name unavailable'), icon: artwork.get(token)?.icon ?? undefined });
+  const open = (item: Extract<ActiveSlot, { kind: 'researching' }>, x: number, y: number) => { untip(); setOpened({ tag, research: openedResearch(item), x, y }); };
   const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');
   const row = (item: ActiveSlot) => {
     const key = `slot:${item.slot.index}`;
@@ -64,7 +62,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const databaseIndex = entry?.databaseIndex ?? null;
     const art = researchArt(artwork, token, databaseIndex);
     const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
-    const click = (event: MouseEvent<HTMLElement>) => open(slot.index, token, databaseIndex, event.clientX, event.clientY);
+    const click = (event: MouseEvent<HTMLElement>) => open(item, event.clientX, event.clientY);
     const content = (): TooltipContent => {
       const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
       const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
@@ -80,7 +78,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
       onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); showTooltip(owner, content(), box.right, box.top, key); }} onBlur={untip}
       onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
         if (event.key !== 'Enter') return;
-        event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(slot.index, token, databaseIndex, box.left + 40, box.bottom);
+        event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(item, box.left + 40, box.bottom);
       }}>
       <span className="active-row-art is-open" onClick={click}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
       <span className="active-row-name is-open" onClick={click}>{name}</span>
@@ -90,9 +88,9 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     </div>;
   };
   const shown = opened?.tag === tag ? opened : null;
-  const popup = shown && <ResearchWindow key={`${shown.token}:${shown.databaseIndex}`} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={reply}
-    item={researching.find(item => item.slot.index === shown.slot && item.token === shown.token) ?? null}
-    shown={describe(shown.token, shown.databaseIndex)} feed={now.feed} active={active} anchor={shown} onClose={() => setOpened(null)} />;
+  const popup = shown && <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={reply}
+    opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
+    shown={describe(shown.research)} feed={now.feed} active={active} anchor={shown} onClose={() => setOpened(null)} />;
   const idle = rows.filter(item => item.kind === 'idle').length;
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}

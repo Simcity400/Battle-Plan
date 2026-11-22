@@ -8,10 +8,15 @@ impl Renderer<'_, '_, '_> {
     pub(in crate::effect_description) fn bound_technology_effect(
         &mut self,
         token: &str,
+        database_index: Option<i32>,
         scopes: Scopes,
     ) -> Result<String, String> {
         let catalog = self.technology_catalog()?;
-        let Some(template) = catalog.get(token.as_bytes())?.cloned() else {
+        let template = match database_index {
+            Some(index) => Some(catalog.template(index, token.as_bytes())?.ok_or_else(|| format!("technology {token}: recorded template {index} is absent from the content"))?),
+            None => catalog.get(token.as_bytes())?,
+        };
+        let Some(template) = template.cloned() else {
             return Ok(String::new());
         };
         let country = match scopes.this {
@@ -24,7 +29,7 @@ impl Renderer<'_, '_, '_> {
         let world = self.context.world()?;
         let definition = find(
             self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY_ID)?,
-            |row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
+            |row| database_index.is_none_or(|index| row.database_index == index) && c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
         )?
         .ok_or("technology definitions lacks bound technology identity")?;
         let status = self

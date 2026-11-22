@@ -27,9 +27,10 @@ export function OpenedLink({ opened, onClose, ...shown }: Shown & { opened: Enti
   return opened && <LinkWindow key={`${opened.kind}:${opened.token}`} {...shown} link={opened} onClose={onClose} />;
 }
 
-export function TechnologyEffects({ token, ...shown }: Shown & { token: string }) {
+export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { token: string; databaseIndex: number | null }) {
   const { runtime, widget, tag, active } = shown;
-  const effects = useHeadProduct<TechnologyEffectsReply>(runtime, widget, 'technology-effects', { country: countryFromKey(tag), token },
+  const params = useMemo(() => ({ country: countryFromKey(tag), token, databaseIndex }), [tag, token, databaseIndex]);
+  const effects = useHeadProduct<TechnologyEffectsReply>(runtime, widget, 'technology-effects', params,
     { active, validate: validateTechnologyEffects, structure: technologyEffectsStructure });
   const [opened, setOpened] = useState<EntityLink | null>(null);
   const { data, error, retry } = effects;
@@ -63,7 +64,7 @@ export default function TechnologyWindow({ link, onClose, ...shown }: Shown & { 
         </div>
       </header>
       <div className="dossier-body">
-        <TechnologyEffects {...shown} token={link.token} />
+        <TechnologyEffects {...shown} token={link.token} databaseIndex={null} />
       </div>
     </div>
   </FloatingPanel>;

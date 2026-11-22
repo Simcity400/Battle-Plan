@@ -1333,7 +1333,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 }
 
-pub fn technology_description(token: &str, context: &Context<'_, '_>, country: u32) -> Description {
+pub fn technology_description(token: &str, database_index: Option<i32>, context: &Context<'_, '_>, country: u32) -> Description {
     let mut renderer = Renderer {
         context,
         graph: Rc::new(RefCell::new(EventScopes::new(vec![
@@ -1344,7 +1344,7 @@ pub fn technology_description(token: &str, context: &Context<'_, '_>, country: u
         scripted_stack: Vec::new(),
         concise: None,
     };
-    match renderer.bound_technology_effect(token, Scopes::of(Scope::Country(country))) {
+    match renderer.bound_technology_effect(token, database_index, Scopes::of(Scope::Country(country))) {
         Ok(text) => renderer.out.text = text,
         Err(why) => renderer.refuse("technology effects", why),
     }

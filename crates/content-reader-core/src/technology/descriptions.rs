@@ -313,6 +313,9 @@ mod tests {
         assert_eq!(catalog.get(b"RePeAt").unwrap().unwrap().parent, b"first");
         assert_eq!(catalog.definitions[1].parent, b"second");
         assert_eq!(catalog.definitions[2].parent, b"third");
+        assert_eq!(catalog.template(3, b"repeat").unwrap().unwrap().parent, b"third", "a recorded template names its own definition of a shared token");
+        assert!(catalog.template(2, b"other").is_err(), "a template whose content names another technology is refused, never read");
+        assert!(catalog.template(4, b"repeat").unwrap().is_none());
         assert!(catalog.get(b"hidden").unwrap().is_none());
         assert!(catalog.get(b"ignored").unwrap().is_none());
     }

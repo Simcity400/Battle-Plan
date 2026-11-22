@@ -36,7 +36,8 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     || !(info.scientistAsOf === null || integer(info.scientistAsOf)) || !integer(info.scientist) || info.scientist < 0 || info.scientist >= input.people.length) return bad();
   const ids = new Set<string>();
   for (const project of input.projects) {
-    if (!object(project) || typeof project.id !== 'string' || ids.has(project.id) || !date(project.start) || !Array.isArray(project.runs)) return bad();
+    if (!object(project) || typeof project.id !== 'string' || ids.has(project.id) || !integer(project.owner) || project.owner < 0 || !integer(project.local) || project.local < 0
+      || !date(project.start) || !Array.isArray(project.runs)) return bad();
     ids.add(project.id);
     for (const run of project.runs) if (!span(run) || !object(run) || !integer(run.presentation) || run.presentation < 0 || run.presentation >= input.presentations.length
       || !integer(run.progress) || run.progress < -100 || run.progress > 100 || !STATES.includes(run.state as string)
@@ -123,13 +124,12 @@ export function shownCard(data: SpecialProjectsReply, hour: number, id: string):
   return running.find(card => card.project.id === id) ?? completed.find(card => card.project.id === id) ?? earlier.find(card => card.project.id === id) ?? null;
 }
 
-export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard): ProjectRuntimeDetails | string {
+export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number): ProjectRuntimeDetails | string | null {
+  if (details.hour > hour) return null;
+  if (details.hour < card.project.start.hour) return 'Project rewards and output were last read before this project began.';
   if (!details.projects) return 'Project rewards and output were not read at this time.';
-  const [local] = card.project.id.split(':');
-  const same = details.projects.filter(project => String(project.id) === local);
-  const named = same.length > 1 ? same.filter(project => project.label.name === card.info.name) : same;
-  if (named.length === 1) return named[0];
-  return named.length ? 'Several recorded projects match this one, so its rewards and output are withheld.' : 'Project rewards and output were not recorded for this project at this time.';
+  const { owner, local } = card.project;
+  return details.projects.find(project => project.owner === owner && project.id === local) ?? 'Project rewards and output were not recorded for this project at this time.';
 }
 
 const shownRuns = (project: ProjectEpisode, hour: number, membership?: readonly HourSpan[]) => {

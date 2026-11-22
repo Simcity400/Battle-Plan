@@ -5,7 +5,6 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 
 export function validateEntityStats(value: unknown): EntityStats {
   if (!object(value) || !Number.isSafeInteger(value.hour) || !entityKind(value.kind) || typeof value.token !== 'string'
-    || !(value.name === null || typeof value.name === 'string')
     || !Array.isArray(value.stats) || !value.stats.every(stat => object(stat) && validGameRuns(stat.label) && validGameRuns(stat.value))
     || !object(value.refusals) || !Object.values(value.refusals).every(count => Number.isSafeInteger(count))
     || !(value.unavailable === null || typeof value.unavailable === 'string')
@@ -13,4 +12,4 @@ export function validateEntityStats(value: unknown): EntityStats {
   return value as unknown as EntityStats;
 }
 
-export const entityStatsStructure = (reply: EntityStats) => JSON.stringify([reply.kind, reply.token, reply.name, reply.stats, reply.refusals, reply.unavailable, reply.warnings]);
+export const entityStatsStructure = (reply: EntityStats) => JSON.stringify([reply.kind, reply.token, reply.stats, reply.refusals, reply.unavailable, reply.warnings]);

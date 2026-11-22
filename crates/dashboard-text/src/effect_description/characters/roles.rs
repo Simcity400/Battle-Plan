@@ -156,7 +156,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     std::str::from_utf8(token).map_err(|_| "bound formatter token is not UTF-8")?;
                 let text = match formatter.as_slice() {
                     b"idea_desc" if scoped => self.bound_idea_description(token, scopes)?,
-                    b"tech_effect" if scoped => self.bound_technology_effect(token, scopes)?,
+                    b"tech_effect" if scoped => self.bound_technology_effect(token, None, scopes)?,
                     b"idea_desc" | b"tech_effect" => "NULL".to_owned(),
                     _ => {
                         return Err(format!(

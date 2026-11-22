@@ -26,14 +26,14 @@ import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProje
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
 
-type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | null; missing: string; feed: PanelFeed | null; anchor: FloatingAnchor;
+type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | null; hour: number; missing: string; feed: PanelFeed | null; anchor: FloatingAnchor;
   onClose: () => void; onWarnings: (warnings: readonly string[]) => void };
 
-export default function ProjectWindow({ reply, card, missing, feed, anchor, onClose, onWarnings, ...asked }: WindowProps) {
+export default function ProjectWindow({ reply, card, hour, missing, feed, anchor, onClose, onWarnings, ...asked }: WindowProps) {
   return <FloatingPanel title="Special project" label="special project details" anchor={anchor} onClose={onClose} className="project-window">
     {card ? <div className="dossier is-blueprint">
       <Summary reply={reply} card={card} feed={feed} active={asked.active} clock={asked.runtime.clock} />
-      <Runtime {...asked} card={card} onWarnings={onWarnings} />
+      <Runtime {...asked} card={card} hour={hour} onWarnings={onWarnings} />
     </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}
   </FloatingPanel>;
 }
@@ -67,7 +67,7 @@ function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsR
   </>;
 }
 
-function Runtime({ runtime, widget, tag, active, card, onWarnings }: Asked & { card: ProjectCard; onWarnings: (warnings: readonly string[]) => void }) {
+function Runtime({ runtime, widget, tag, active, card, hour, onWarnings }: Asked & { card: ProjectCard; hour: number; onWarnings: (warnings: readonly string[]) => void }) {
   const box = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
     { active, validate: validateProjectDetails, structure: detailsStructure });
@@ -78,7 +78,7 @@ function Runtime({ runtime, widget, tag, active, card, onWarnings }: Asked & { c
   useEffect(() => onWarnings(JSON.parse(warnings) as string[]), [warnings, onWarnings]);
   useEffect(() => () => onWarnings([]), [onWarnings]);
   const ref = useCallback((element: HTMLDivElement | null) => { box.current = element; root(element); }, [root]);
-  const match = data ? runtimeProject(data, card) : null;
+  const match = data ? runtimeProject(data, card, hour) : null;
   return <div className="dossier-body" ref={ref}>
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data || !match ? <WidgetState kind="loading" label="Loading project rewards…" />
       : typeof match === 'string' ? <p className="dossier-missing">{match}</p>
