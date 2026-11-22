@@ -2679,6 +2679,7 @@ dependencies = [
  "collector-stability",
  "collector-states",
  "collector-status",
+ "collector-supply-trains",
  "collector-test-support",
  "collector-timing",
  "collector-visibility",

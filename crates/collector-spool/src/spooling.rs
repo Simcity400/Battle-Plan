@@ -4954,8 +4954,9 @@ mod tests {
             launcher: Default::default(),
             memory: Default::default(),
         };
+        // SAFETY: The isolated test owns this spool's directory and joins its writer at detach.
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
         processor.set_verified_session(verified).unwrap();
         let campaign_id = std::str::from_utf8(ID).unwrap();
         let (branch, start) = {

@@ -142,6 +142,7 @@ collector-spool.workspace = true
 collector-stability.workspace = true
 collector-states.workspace = true
 collector-status.workspace = true
+collector-supply-trains.workspace = true
 collector-timing.workspace = true
 collector-visibility.workspace = true
 collector-war-overview.workspace = true
