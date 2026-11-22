@@ -962,6 +962,23 @@ impl<'n> Reader<'n> {
                 continue;
             }
             self.key = self.current();
+            if !self.unknown_scopes.is_empty() {
+                let peek = self.peek();
+                let (closes, line) = (peek.kind == Kind::Close, peek.line);
+                if closes && let Some((_, block)) = self.unknown_scopes.last() {
+                    self.unsettled = Some(Misread {
+                        kind: crate::DiagnosticKind::Unsettled,
+                        count: None,
+                        line,
+                        what: format!(
+                            "key {} ends block `{}` without an operator under unknown dispatch: a key reader consumes `}}` as its operator while a skip or list reader closes the block here",
+                            self.key.shown(),
+                            String::from_utf8_lossy(block),
+                        ),
+                    });
+                    return Slots::Ended;
+                }
+            }
             if !self.advance() || !self.current().operator() {
                 return Slots::NoOperator;
             }
@@ -2173,14 +2190,16 @@ impl<'n> Reader<'n> {
                 definition = Some(String::from_utf8_lossy(&token.text).into_owned());
             }
             at += 2;
-            if tokens.get(at).is_some_and(|value| value.kind == Kind::Open) {
-                let (next_at, nested_def) = scan_block(tokens, at);
-                if definition.is_none() {
-                    definition = nested_def;
+            match tokens.get(at).map(|value| value.kind) {
+                Some(Kind::Open) => {
+                    let (next_at, nested_def) = scan_block(tokens, at);
+                    if definition.is_none() {
+                        definition = nested_def;
+                    }
+                    at = next_at;
                 }
-                at = next_at;
-            } else {
-                at += 1;
+                Some(Kind::Close) | None => break,
+                Some(_) => at += 1,
             }
         }
         (keyless, definition)

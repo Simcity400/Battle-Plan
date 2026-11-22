@@ -84,6 +84,46 @@ impl<'n> Shaper<'n> {
         }
     }
 
+    pub fn set_names(&mut self, names: &'n KeyNames) {
+        self.names = Some(names);
+    }
+
+    pub fn needs_names(&self, node: Node, field: &Field<'_>) -> bool {
+        if self.names.is_some() {
+            return false;
+        }
+        let keyword = field.keyword();
+        let keyword = keyword.as_deref();
+        match node {
+            Node::Limit(_) | Node::Trigger | Node::Modifier => {
+                matches!(key_names::load_key(None, field), Load::Unknown(_))
+            }
+            Node::Conditional(_) if keyword == Some(b"limit") => false,
+            Node::Conditional(_) => {
+                matches!(key_names::load_key(None, field), Load::Unknown(_))
+            }
+            Node::Class(token) => {
+                let reader = trigger_keys::key_reader(token);
+                if let KeyReader::ThenLoadKey(keys) | KeyReader::Only(keys) = reader
+                    && keys
+                        .iter()
+                        .any(|key| keyword == Some(key.name().as_bytes()))
+                {
+                    return false;
+                }
+                matches!(reader, KeyReader::ThenLoadKey(_))
+                    && matches!(key_names::load_key(None, field), Load::Unknown(_))
+            }
+            Node::KeyReader(_)
+            | Node::Mtth
+            | Node::CollectionOperator
+            | Node::ScalarFields
+            | Node::Top
+            | Node::Tactic
+            | Node::BoundLocalization => false,
+        }
+    }
+
     pub fn shape(&mut self, node: Node, field: &Field<'_>) -> Shape<Node> {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();

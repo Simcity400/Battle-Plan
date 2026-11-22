@@ -1340,3 +1340,21 @@ fn equipment_limit_and_math_arguments_preserve_proved_partial_children_on_refusa
     assert_eq!(keys(min), ["value"]);
     assert_eq!(min[0].value, Value::Scalar(b"2".to_vec()));
 }
+
+#[test]
+fn duplicate_valueless_definition_before_close_under_unknown_dispatch_refuses_without_absorbing_sibling() {
+    let read = read(
+        br#"@x = 1 a = { trigger = { @x = } n = @x } b = { n = 4 }"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"a" | b"b") => Shape::Object(()),
+            Some(b"trigger") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+}

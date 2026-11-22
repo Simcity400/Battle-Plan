@@ -259,6 +259,32 @@ fn trigger_registry_status() -> Option<Result<(), String>> {
     )
 }
 
+fn key_names_tables_status() -> Result<(), String> {
+    let Some(tables) = engine_executable::executable_tables::current() else {
+        return Ok(());
+    };
+    if let Err(withheld) = &tables.keywords {
+        return Err(withheld.to_string());
+    }
+    if let Err(withheld) = &tables.registries {
+        return Err(withheld.to_string());
+    }
+    let auxiliary = tables.auxiliary.as_ref().map_err(ToString::to_string)?;
+    if let Some(withheld) = [
+        auxiliary.category_names.as_ref().err(),
+        auxiliary.stat_metadata.as_ref().err(),
+        auxiliary.equipment_missions.as_ref().err(),
+        auxiliary.equipment_categories.as_ref().err(),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    {
+        return Err(withheld.to_string());
+    }
+    Ok(())
+}
+
 fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<AdjacencyRule>> {
     let lazy_names: std::cell::OnceCell<Result<std::sync::Arc<KeyNames>, String>> =
         std::cell::OnceCell::new();
@@ -275,9 +301,11 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
         provided,
         &mut |node, field| {
             let mut trigger_shape = |target: crate::combat_tactics::Node| {
-                let registry = trigger_registry_status();
-                if let Some(Err(withheld)) = &registry {
-                    return Shape::Unsettled(withheld.clone());
+                let Some(registry) = trigger_registry_status() else {
+                    return native::untraced(field);
+                };
+                if let Err(withheld) = registry {
+                    return Shape::Unsettled(withheld);
                 }
                 match names {
                     TriggerNames::Provided(names) => shaper
@@ -285,58 +313,41 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
                         .shape(target, field)
                         .map(Node::Trigger),
                     TriggerNames::Lazy(layers) => {
-                        let loaded = lazy_names.get_or_init(|| match layers.key_names() {
-                            Ok(names) => Ok(names),
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                                let reason = error.to_string();
-                                interrupted = Some(error);
-                                Err(reason)
-                            }
-                            Err(error) => Err(error.to_string()),
-                        });
-                        match loaded {
-                            Ok(names) => shaper
-                                .get_or_insert_with(|| {
-                                    crate::combat_tactics::Shaper::new(Some(names))
-                                })
-                                .shape(target, field)
-                                .map(Node::Trigger),
-                            Err(why) => {
-                                if interrupted.is_some() {
-                                    Shape::Unsettled(why.clone())
-                                } else if matches!(registry, Some(Ok(()))) {
-                                    match shaper
-                                        .get_or_insert_with(|| {
-                                            crate::combat_tactics::Shaper::new(None)
-                                        })
-                                        .shape(target, field)
-                                        .map(Node::Trigger)
-                                    {
-                                        Shape::Unsettled(reason) => {
-                                            Shape::Unsettled(format!("{reason} ({why})"))
-                                        }
-                                        other => other,
+                        let shaper = shaper
+                            .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None));
+                        if shaper.needs_names(target, field) {
+                            let loaded = lazy_names.get_or_init(|| {
+                                key_names_tables_status()?;
+                                match layers.key_names() {
+                                    Ok(names) => Ok(names),
+                                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                        let reason = error.to_string();
+                                        interrupted = Some(error);
+                                        Err(reason)
                                     }
-                                } else if field.opens() || field.skips_block() {
-                                    Shape::Unsettled(format!(
-                                        "trigger dispatch requires key names, which failed to load: {why}"
-                                    ))
-                                } else {
-                                    Shape::One
+                                    Err(error) => Err(error.to_string()),
                                 }
+                            });
+                            match loaded {
+                                Ok(names) => shaper.set_names(names),
+                                Err(why) if interrupted.is_some() => {
+                                    return Shape::Unsettled(why.clone());
+                                }
+                                Err(_) => {}
                             }
                         }
-                    }
-                    TriggerNames::None => {
-                        if matches!(registry, Some(Ok(()))) {
-                            shaper
-                                .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
-                                .shape(target, field)
-                                .map(Node::Trigger)
-                        } else {
-                            native::untraced(field)
+                        match shaper.shape(target, field).map(Node::Trigger) {
+                            Shape::Unsettled(reason) => match lazy_names.get() {
+                                Some(Err(why)) => Shape::Unsettled(format!("{reason} ({why})")),
+                                _ => Shape::Unsettled(reason),
+                            },
+                            other => other,
                         }
                     }
+                    TriggerNames::None => shaper
+                        .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
+                        .shape(target, field)
+                        .map(Node::Trigger),
                 }
             };
             match node {
@@ -866,5 +877,78 @@ adjacency_rule = {
             .unwrap_err()
             .to_string();
         assert!(error.contains("fixture withheld registries"), "{error}");
+    }
+
+    #[test]
+    fn parse_with_names_without_executable_tables_does_not_panic() {
+        engine_executable::executable_tables::enter(None);
+        let rules = parse_with_names(
+            b"adjacency_rule = { name = A is_enemy = { always = yes } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn withheld_auxiliary_tables_read_registered_triggers_and_refuse_dynamic_without_panicking() {
+        crate::test_game::with(|game| {
+            game.withhold(
+                synthetic_game::Part::Auxiliary,
+                "fixture withheld auxiliary",
+            )
+        });
+        let stack = crate::test_support::Stack::new("adjacency_rules_withheld_auxiliary_ok");
+        stack.write(
+            &stack.base(),
+            "common/units/fixture.txt",
+            "sub_units = { infantry = { type = infantry } }",
+        );
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A is_enemy = { always = yes } }",
+        );
+        let layers = stack.layers(&[]);
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+
+        let dynamic = crate::test_support::Stack::new("adjacency_rules_withheld_auxiliary_dynamic");
+        dynamic.write(
+            &dynamic.base(),
+            "common/units/fixture.txt",
+            "sub_units = { infantry = { type = infantry } }",
+        );
+        dynamic.write(
+            &dynamic.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        dynamic.write(
+            &dynamic.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = B is_enemy = { custom_scope = { always = yes } } }",
+        );
+        let layers = dynamic.layers(&[]);
+        let error = read(&layers).unwrap_err().to_string();
+        assert!(error.contains("fixture withheld auxiliary"), "{error}");
+
+        let error = parse_with_names(
+            b"adjacency_rule = { name = C is_enemy = { custom_scope = { always = yes } } }",
+            &KeyNames::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("fixture withheld auxiliary"), "{error}");
     }
 }
