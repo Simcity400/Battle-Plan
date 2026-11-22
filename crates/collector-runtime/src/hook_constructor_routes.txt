@@ -47,6 +47,7 @@ call:collector_air_relations::relation_changes::presize
 call:collector_capture::capture_point::Thread::start
 call:collector_capture::capture_point::drain
 call:collector_capture::capture_point::set_beside
+call:collector_capture::capture_point::settle_next
 call:collector_capture::capture_point::take_unread
 call:collector_capture::command_batch::enabled
 call:collector_capture::country_scale::Sizing::for_slots
@@ -224,13 +225,14 @@ call:world_restore_ready
 call:write_status
 call:write_status_bytes
 macro-definition:refuse_detach:9d440c9e26d76929
-macro-definition:retain_detach:3113e762852d2eff
+macro-definition:retain_detach:5fdda758088583b2
 macro:collector_status::status::status
 macro:format
 macro:format_args
 macro:retain_detach
 macro:vec
 method:account_writer
+method:acquisition
 method:acquisition_failed
 method:activate
 method:allocated_bytes
@@ -249,6 +251,7 @@ method:close
 method:completion_sequence
 method:copied
 method:count
+method:economy_mut
 method:elapsed
 method:err
 method:event_feed_counts
@@ -265,6 +268,8 @@ method:fetch_add
 method:find
 method:finish
 method:flatten
+method:frame_priority
+method:frames
 method:get
 method:get_or_insert
 method:get_or_insert_with
@@ -292,6 +297,7 @@ method:matches
 method:max
 method:moved
 method:name
+method:naval_counters_mut
 method:naval_result_sequence
 method:observe_game_score_sizing
 method:observe_input_demand
@@ -302,6 +308,7 @@ method:open
 method:opened
 method:or
 method:politics_epoch
+method:pool_bytes
 method:prepare
 method:prepare_clock_capture
 method:prepare_roster
@@ -325,6 +332,7 @@ method:raise_for_supply_origins
 method:raise_reserved_visibility
 method:ready_len
 method:recognised
+method:recording
 method:refusal
 method:release
 method:release_after_quiet
@@ -343,11 +351,13 @@ method:spawn
 method:stack_size
 method:step
 method:stop
+method:stop_spool
 method:store
 method:summary
 method:then
 method:thread_id
 method:thread_ids
+method:tick_idle_mut
 method:to_string
 method:trampoline
 method:unwrap
