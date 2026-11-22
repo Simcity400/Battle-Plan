@@ -315,6 +315,10 @@ impl Reads<'_, '_> {
         read <= self.hour && self.hour - read < STAGGER_PERIOD && held_since(self.query, self.tag, self.holder, read, self.hour)
     }
 
+    fn follows(&self, read: i32, until: i32) -> bool {
+        self.hour < read && read <= until && held_since(self.query, self.tag, self.holder, self.hour, read)
+    }
+
     fn continued(&self, previous: i32, table: TableId, what: &str) -> Option<Option<i32>> {
         let before = Self { hour: previous, ..*self };
         match (before.last(table, what), self.last(table, what)) {
@@ -404,6 +408,27 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
     fn warnings(self) -> Vec<String> {
         self.naming.map(Naming::warnings).unwrap_or_default()
     }
+}
+
+fn slice_read(table: TableId, owner: u32) -> u128 {
+    (table.index() as u128) << 32 | u128::from(owner)
+}
+
+fn project_slices(owner: u32) -> Read {
+    Read::these(TableId::SliceReads, [slice_read(TableId::Projects, owner), slice_read(TableId::ProjectHistory, owner)])
+}
+
+fn owner_read(frame: &DecodedFrame, table: TableId, owner: u32) -> Result<i32, String> {
+    let slices = frame.complete::<tables::SliceReads>().map_err(|why| format!("Project read hours are unavailable: {why}"))?;
+    replay_data::sliced::read_hour(slices, table, owner).ok_or_else(|| "Projects were not read in the day up to this hour while this country held the tag".to_owned())
+}
+
+fn supplied_project<'f>(frame: &'f DecodedFrame, reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<&'f ProjectRow, String> {
+    if !owner_read(frame, TableId::Projects, owner).is_ok_and(|read| reads.supplies(read)) {
+        return Err("Projects were not read in the day up to this hour while this country held the tag".into());
+    }
+    let rows = frame.complete::<tables::Projects>().map_err(|why| format!("Projects are unavailable: {why}"))?;
+    rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| &rows[at]).ok_or_else(|| "The project is not recorded at this hour".to_owned())
 }
 
 fn owners_of(frame: &DecodedFrame, slot: u32) -> io::Result<BTreeSet<u32>> {
@@ -591,12 +616,11 @@ impl AtHour for SpecialProjectDetailsAt {
                     })
                     .flatten()
                     .collect();
-                let projects = TableId::Projects.index() as u128;
                 vec![
                     Read { table: TableId::Projects, keys: owner_ranges(&owners, 32) },
                     Read { table: TableId::ProjectHistory, keys: owner_ranges(&owners, 64) },
                     Read { table: TableId::ProjectBreakthroughs, keys: owner_ranges(&owners, 32) },
-                    Read::these(TableId::SliceReads, owners.iter().map(|&owner| projects << 32 | u128::from(owner))),
+                    Read::these(TableId::SliceReads, owners.iter().map(|&owner| slice_read(TableId::Projects, owner))),
                     Read::these(TableId::ScientistDaily, roster.iter().map(|&id| u128::from(id))),
                     Read { table: TableId::ScientistSkills, keys: owner_ranges(&roster, 32) },
                     Read::these(TableId::CharacterRoleTraits, roster.iter().map(|&id| u128::from(id) << 40 | u128::from(CharacterRoleTraitRow::SCIENTIST) << 32)),
@@ -989,7 +1013,16 @@ impl AtHour for SpecialProjectEffectsAt {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        effect_tables()
+        let mut tables = effect_tables();
+        tables.push(TableId::SliceReads);
+        tables
+    }
+
+    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
+        if step != 0 {
+            return Vec::new();
+        }
+        effect_tables().into_iter().map(Read::all).chain([project_slices(params.owner)]).collect()
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -998,18 +1031,22 @@ impl AtHour for SpecialProjectEffectsAt {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project effects name no country"))?;
-        let content = at.context.content.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
         let mut out = SpecialProjectEffects { hour: at.hour, output: None, options: Vec::new(), unavailable: None, warnings: Vec::new() };
         if !owners_of(frame, owner.slot)?.contains(&params.owner) {
             out.unavailable = Some("The project's owner is not this country at this hour".into());
             return Ok(out);
         }
-        let rows = frame.complete::<tables::Projects>()?;
-        let key = (params.owner, params.project);
-        let Some(project) = rows.binary_search_by_key(&key, |row| (row.owner, row.local_id)).ok().map(|at| &rows[at]) else {
-            out.unavailable = Some("The project is not recorded at this hour".into());
-            return Ok(out);
+        let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
+        let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
+        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
+        let project = match supplied_project(frame, &reads, params.owner, params.project) {
+            Ok(project) => project,
+            Err(why) => {
+                out.unavailable = Some(why);
+                return Ok(out);
+            }
         };
+        let content = at.context.content.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
         let token = match spelled(frame, project.definition_id) {
             Ok(token) => token,
             Err(why) => {
@@ -1021,9 +1058,6 @@ impl AtHour for SpecialProjectEffectsAt {
             out.unavailable = Some(format!("Definition {token} is absent from content"));
             return Ok(out);
         };
-        let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
-        let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
         let scientist = (|| {
             if project.program_reference as u32 != PROGRAM_REFERENCE {
                 return Err("Scientist assignment has no supplying read at this hour".to_owned());

@@ -15,10 +15,11 @@ use std::sync::atomic::AtomicBool;
 const FIRST: i32 = 20;
 const LAST: i32 = 55;
 const DAILY_READS: [i32; 2] = [28, 52];
-const PROJECTS_READ: i32 = 30;
+const PROJECT_READS: [i32; 3] = [30, 40, 55];
 const UNHELD: i32 = 45;
-const LATE_READ: i32 = 50;
 const LATE_ITERATION: i32 = 48;
+const NEXT_DAY_ITERATION: i32 = 31;
+const UNHELD_NEXT_ITERATION: i32 = 42;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -44,21 +45,25 @@ fn frame(hour: i32) -> DecodedFrame {
         ..Default::default()
     }]));
     set(&mut frame, TableId::ProjectBreakthroughs, TableRows::ProjectBreakthroughs(vec![ProjectBreakthroughRow { owner: 11, specialization: 41, points: 777 }]));
-    let read = hour >= PROJECTS_READ;
-    set(&mut frame, TableId::Projects, TableRows::Projects(if read { vec![ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }] } else { Vec::new() }));
-    set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(if read {
-        vec![
-            ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: PROJECTS_READ, ..Default::default() },
-            ProjectHistoryRow { owner: 9001, project: 3, ordinal: 1, prototype_reward_handle: COMPLETION_MARKER, option_handle: COMPLETION_MARKER, date: PROJECTS_READ, ..Default::default() },
+    let read = PROJECT_READS.into_iter().filter(|&at| at <= hour).max();
+    let history = |ordinal, date, first: i32| read.filter(|&read| read >= first).map(|_| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() });
+    set(&mut frame, TableId::Projects, TableRows::Projects(read.map(|_| ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }).into_iter().collect()));
+    set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(
+        [
+            history(0, PROJECT_READS[0], PROJECT_READS[0]),
+            history(1, PROJECT_READS[0], PROJECT_READS[0]).map(|row| ProjectHistoryRow { prototype_reward_handle: COMPLETION_MARKER, option_handle: COMPLETION_MARKER, ..row }),
+            history(2, LATE_ITERATION, PROJECT_READS[2]),
+            history(3, NEXT_DAY_ITERATION, PROJECT_READS[1]),
+            history(4, UNHELD_NEXT_ITERATION, PROJECT_READS[2]),
         ]
         .into_iter()
-        .chain((hour >= LATE_READ).then_some(ProjectHistoryRow { owner: 9001, project: 3, ordinal: 2, prototype_reward_handle: 41, option_handle: 42, date: LATE_ITERATION, ..Default::default() }))
-        .collect()
-    } else {
-        Vec::new()
-    }));
-    let projects = TableId::Projects.index() as u32;
-    set(&mut frame, TableId::SliceReads, TableRows::SliceReads(if read { vec![SliceReadRow { table: projects, owner: 9001, sample_hour: PROJECTS_READ }] } else { Vec::new() }));
+        .flatten()
+        .collect(),
+    ));
+    let mut slices: Vec<SliceReadRow> =
+        read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner: 9001, sample_hour })).into_iter().flatten().collect();
+    slices.sort_by_key(|row| (row.table, row.owner));
+    set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
     for table in [TableId::ProjectPrograms, TableId::ProjectBreakthroughs, TableId::ScientistDaily] {
         frame.metrics.table_ns[table.index()] = u64::from(DAILY_READS.contains(&hour));
     }
@@ -105,9 +110,9 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     assert_eq!(program["assignments"][0]["person"]["assigned"], json!(false), "an empty assignment is no scientist");
     assert_eq!((reply["breakthroughs"][0]["points"].clone(), reply["breakthroughs"][0]["readHour"].clone()), (json!(777), json!(28)));
     let project = &reply["projects"][0];
-    assert_eq!((project["readHour"].clone(), project["label"]["token"].clone(), project["label"]["name"].clone()), (json!(PROJECTS_READ), json!("77"), Value::Null));
+    assert_eq!((project["readHour"].clone(), project["label"]["token"].clone(), project["label"]["name"].clone()), (json!(PROJECT_READS[1]), json!("77"), Value::Null));
     assert!(has(&reply, "77"), "an unspelled definition keeps its project, named as missing: {reply}");
-    assert_eq!(project["choices"].as_array().unwrap().len(), 1, "the completion marker is not a chosen option");
+    assert_eq!(project["choices"].as_array().unwrap().len(), 2, "the completion marker is not a chosen option");
     assert_eq!(details(&source, 53)["programs"][0]["readHour"], json!(52), "the next day's read supplies the next day");
 }
 
@@ -185,9 +190,27 @@ fn an_iteration_is_read_at_its_own_hour_and_names_what_was_not_recorded() {
     };
     assert!(refused(iteration(0, FIRST - 1)).contains("hour is not recorded"), "an hour outside the recording is named, never guessed");
     let unavailable = |ordinal, hour| iteration(ordinal, hour).unwrap()["unavailable"].as_str().unwrap().to_owned();
-    assert_eq!(unavailable(0, PROJECTS_READ + 1), "The asked hour is not this iteration's hour");
-    assert_eq!(unavailable(1, PROJECTS_READ), "This history entry is the project's completion, not an iteration");
-    assert_eq!(unavailable(9, 40), "This iteration's choice was not read within a day of its hour");
-    assert!(refused(iteration(0, PROJECTS_READ)).contains("content"), "an iteration read at its hour goes on to the recorded content");
-    assert!(refused(iteration(2, LATE_ITERATION)).contains("content"), "a choice first read later in its day is still found for its own hour");
+    let first = PROJECT_READS[0];
+    assert_eq!(unavailable(0, first + 1), "The asked hour is not this iteration's hour");
+    assert_eq!(unavailable(1, first), "This history entry is the project's completion, not an iteration");
+    assert_eq!(unavailable(9, NEXT_DAY_ITERATION), "This iteration's choice was not read within a day of its hour");
+    assert!(refused(iteration(0, first)).contains("content"), "an iteration read at its hour goes on to the recorded content");
+    assert!(refused(iteration(3, NEXT_DAY_ITERATION)).contains("content"), "a choice first read later in its day, under the same holder, is found for its own hour");
+    assert_eq!(
+        unavailable(4, UNHELD_NEXT_ITERATION),
+        "This iteration's choice was next read after this country stopped holding the tag",
+        "a later read is a reading of this country's history only while it held the tag throughout"
+    );
+    assert_eq!(
+        unavailable(2, LATE_ITERATION),
+        "Projects were not read in the day up to this hour while this country held the tag",
+        "the project state retained from before the holder's run is not this country's"
+    );
+}
+
+#[test]
+fn effects_withhold_a_project_last_read_before_the_holder_took_the_tag() {
+    let source = recording();
+    let effects = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "hour": UNHELD + 2 })).unwrap();
+    assert_eq!(effects["unavailable"], json!("Projects were not read in the day up to this hour while this country held the tag"), "{effects}");
 }
