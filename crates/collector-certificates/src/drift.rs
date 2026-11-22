@@ -147,28 +147,26 @@ impl Store {
         }
         rows[start..end].copy_from_slice(&held.rows);
         pointers[start..end].copy_from_slice(&held.pointers);
-        match drift(memory, &held.assigned_pointers, ctechnology::LIVE_PROGRESS) {
-            Drift::Copied(progress) => {
-                for (&row, progress) in held.assigned.iter().zip(progress) {
-                    rows[start + row].progress_raw = progress;
-                }
-                return Carried::Rows(len);
-            }
-            Drift::Failed => {
-                engine_native::batch_fallback::record(
-                    engine_native::batch_fallback::Batch::GovernanceTechnologyDrift,
-                );
-            }
-            Drift::Serial => {}
+        let progress = drift(memory, &held.assigned_pointers, ctechnology::LIVE_PROGRESS);
+        if matches!(progress, Drift::Partial(_)) {
+            engine_native::batch_fallback::record(
+                engine_native::batch_fallback::Batch::GovernanceTechnologyDrift,
+            );
         }
-        for &row in &held.assigned {
-            let progress = held.pointers[row]
-                .checked_add(ctechnology::LIVE_PROGRESS)
-                .and_then(|at| read::<i64>(memory, at));
-            match progress {
-                Some(progress) => rows[start + row].progress_raw = progress,
-                None => return Carried::Failed("technology fields unreadable"),
-            }
+        let progress = progress.values();
+        for (index, &row) in held.assigned.iter().enumerate() {
+            let value = if let Some(&value) = progress.get(index) {
+                value
+            } else {
+                let Some(value) = held.pointers[row]
+                    .checked_add(ctechnology::LIVE_PROGRESS)
+                    .and_then(|at| read::<i64>(memory, at))
+                else {
+                    return Carried::Failed("technology fields unreadable");
+                };
+                value
+            };
+            rows[start + row].progress_raw = value;
         }
         Carried::Rows(len)
     }
@@ -274,44 +272,46 @@ impl Store {
         }
         inputs[..held.inputs.len()].clone_from_slice(&held.inputs);
         let banked = drift(memory, &held.slot_pointers, cresearch_slot::BANKED_DAYS);
-        let progress = if matches!(banked, Drift::Failed) {
+        let progress = if matches!(banked, Drift::Partial(_)) {
             Drift::Serial
         } else {
             drift(memory, &held.assigned_pointers, ctechnology::LIVE_PROGRESS)
         };
-        if let (Drift::Copied(banked), Drift::Copied(progress)) = (&banked, &progress) {
-            let mut assigned = progress.iter();
-            for (&(_, row), &banked) in held.slots_to_rows.iter().zip(banked) {
-                inputs[row].slot.banked_days_raw = banked;
-                if held.inputs[row].technology_pointer != 0 {
-                    inputs[row].progress_raw = *assigned.next().unwrap();
-                }
-            }
-            bonuses[..held.bonuses.len()].clone_from_slice(&held.bonuses);
-            modifiers[..held.modifiers.len()].clone_from_slice(&held.modifiers);
-            return Carried::Rows([held.inputs.len(), held.bonuses.len(), held.modifiers.len()]);
-        }
-        if matches!(banked, Drift::Failed) || matches!(progress, Drift::Failed) {
+        if matches!(banked, Drift::Partial(_)) || matches!(progress, Drift::Partial(_)) {
             engine_native::batch_fallback::record(
                 engine_native::batch_fallback::Batch::GovernanceResearchDrift,
             );
         }
-        for &(slot, row) in &held.slots_to_rows {
-            let Some(banked) = slot
-                .checked_add(cresearch_slot::BANKED_DAYS)
-                .and_then(|at| read::<i64>(memory, at))
-            else {
-                return Carried::Failed("research slot fields unreadable");
+        let banked = banked.values();
+        let progress = progress.values();
+        let mut assigned = 0;
+        for (index, &(slot, row)) in held.slots_to_rows.iter().enumerate() {
+            let banked = if let Some(&value) = banked.get(index) {
+                value
+            } else {
+                let Some(value) = slot
+                    .checked_add(cresearch_slot::BANKED_DAYS)
+                    .and_then(|at| read::<i64>(memory, at))
+                else {
+                    return Carried::Failed("research slot fields unreadable");
+                };
+                value
             };
             inputs[row].slot.banked_days_raw = banked;
             let technology = held.inputs[row].technology_pointer;
             if technology != 0 {
-                let Some(progress) = technology
-                    .checked_add(ctechnology::LIVE_PROGRESS)
-                    .and_then(|at| read::<i64>(memory, at))
-                else {
-                    return Carried::Failed("assigned technology unreadable");
+                let progress = if let Some(&value) = progress.get(assigned) {
+                    value
+                } else {
+                    let Some(value) = technology
+                        .checked_add(ctechnology::LIVE_PROGRESS)
+                        .and_then(|at| read::<i64>(memory, at))
+                    else {
+                        return Carried::Failed("assigned technology unreadable");
+                    };
+                    value
                 };
+                assigned += 1;
                 inputs[row].progress_raw = progress;
             }
         }
@@ -350,13 +350,21 @@ fn copy_into<T: Clone + PartialEq>(held: &mut Vec<T>, rows: &[T]) -> Option<()> 
 }
 
 enum Drift {
-    Copied(Vec<i64>),
-    Failed,
+    Complete(Vec<i64>),
+    Partial(Vec<i64>),
     Serial,
+}
+impl Drift {
+    fn values(&self) -> &[i64] {
+        match self {
+            Self::Complete(values) | Self::Partial(values) => values,
+            Self::Serial => &[],
+        }
+    }
 }
 fn drift(memory: &impl Memory, pointers: &[usize], offset: usize) -> Drift {
     if pointers.is_empty() {
-        return Drift::Copied(Vec::new());
+        return Drift::Complete(Vec::new());
     }
     let storage = engine_allocation::advisory(|| {
         let len = pointers.len().checked_mul(8)?;
@@ -376,18 +384,21 @@ fn drift(memory: &impl Memory, pointers: &[usize], offset: usize) -> Drift {
         len: 8,
     }];
     let layout = engine_native::memory::RecordLayout::new(&fields, 8).unwrap();
-    if memory.copy_records(
-        engine_native::memory::RecordSources::Pointers(pointers),
-        &layout,
-        &mut bytes,
-    ) != pointers.len()
-    {
-        return Drift::Failed;
-    }
+    let done = memory
+        .copy_records(
+            engine_native::memory::RecordSources::Pointers(pointers),
+            &layout,
+            &mut bytes,
+        )
+        .min(pointers.len());
     values.extend(
-        bytes
+        bytes[..done * 8]
             .chunks_exact(8)
             .map(|bytes| i64::from_le_bytes(bytes.try_into().unwrap())),
     );
-    Drift::Copied(values)
+    if done == pointers.len() {
+        Drift::Complete(values)
+    } else {
+        Drift::Partial(values)
+    }
 }

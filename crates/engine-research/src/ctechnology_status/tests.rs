@@ -1516,3 +1516,160 @@ fn governance_batch_slots_persistent_and_one_shot_every_serial_operand() {
         }
     }
 }
+
+#[test]
+fn full_census_and_researched_identity_batches_retry_once_without_rereading_completed_rows() {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    struct CountedFault<'a> {
+        inner: SliceMemory<'a>,
+        fault: usize,
+        once: bool,
+        spent: Cell<bool>,
+        reads: RefCell<HashMap<usize, usize>>,
+    }
+
+    impl<'a> CountedFault<'a> {
+        fn new(bytes: &'a [u8], fault: usize, once: bool) -> Self {
+            Self {
+                inner: SliceMemory {
+                    base: COUNTRY_POINTER,
+                    bytes,
+                },
+                fault,
+                once,
+                spent: Cell::new(false),
+                reads: RefCell::new(HashMap::new()),
+            }
+        }
+
+        fn reads_at(&self, address: usize) -> usize {
+            self.reads.borrow().get(&address).copied().unwrap_or(0)
+        }
+    }
+
+    impl Memory for CountedFault<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            {
+                let mut reads = self.reads.borrow_mut();
+                for offset in 0..destination.len() {
+                    *reads.entry(address + offset).or_insert(0) += 1;
+                }
+            }
+            if address <= self.fault
+                && self.fault < address.saturating_add(destination.len())
+                && (!self.once || !self.spent.get())
+            {
+                if self.once {
+                    self.spent.set(true);
+                }
+                destination.fill(0xfe);
+                return false;
+            }
+            self.inner.copy(address, destination)
+        }
+    }
+
+    let bytes = bulk_fixture();
+    let kept = BULK_INSTANCES + 30 * 0x200 + ctechnology::LIVE_PROGRESS;
+    let fault = BULK_INSTANCES + 31 * 0x200 + ctechnology::LIVE_PROGRESS;
+    let after = BULK_INSTANCES + 32 * 0x200 + ctechnology::LIVE_PROGRESS;
+    for once in [true, false] {
+        let memory = CountedFault::new(&bytes, fault, once);
+        let mut rows = vec![ctechnology::Row::default(); BULK_COUNT];
+        let mut source_pointers = vec![0; BULK_COUNT];
+        let mut entries = vec![ctechnology_template::Entry::default(); BULK_COUNT + 1];
+        let mut names = vec![0; BULK_COUNT * 4];
+        let mut definitions = ctechnology_template::Dictionary::new(&mut entries, &mut names);
+        let outcome = walk_technologies(
+            &memory,
+            MODULE,
+            COUNTRY_POINTER,
+            7,
+            (&mut rows, &mut source_pointers),
+            0,
+            &mut definitions,
+        );
+        if once {
+            assert_eq!(outcome, Outcome::Rows { len: BULK_COUNT });
+            assert_eq!(rows[31].progress_raw, i64::MAX - 31);
+            assert_eq!(memory.reads_at(after), 1);
+        } else {
+            assert_eq!(
+                outcome,
+                Outcome::Unavailable {
+                    reason: "technology fields unreadable"
+                }
+            );
+            assert_eq!(memory.reads_at(after), 0);
+        }
+        assert_eq!(memory.reads_at(kept), 1);
+        assert_eq!(memory.reads_at(fault), 2);
+    }
+
+    const ALIAS_A: usize = TECHNOLOGY_B + 0x200;
+    const ALIAS_B: usize = TECHNOLOGY_B + 0x400;
+    let mut bytes = fixture();
+    bytes.copy_within(
+        TECHNOLOGY_B - COUNTRY_POINTER..TECHNOLOGY_B - COUNTRY_POINTER + 0x200,
+        ALIAS_A - COUNTRY_POINTER,
+    );
+    bytes.copy_within(
+        TECHNOLOGY_A - COUNTRY_POINTER..TECHNOLOGY_A - COUNTRY_POINTER + 0x200,
+        ALIAS_B - COUNTRY_POINTER,
+    );
+    array(&mut bytes, STATUS_POINTER + RESEARCHED_DATA, COMPLETED, 2);
+    put(&mut bytes, COMPLETED, (ALIAS_A as u64).to_le_bytes());
+    put(&mut bytes, COMPLETED + 8, (ALIAS_B as u64).to_le_bytes());
+    for once in [true, false] {
+        let memory = CountedFault::new(&bytes, ALIAS_A + ctechnology::STATUS, once);
+        let mut rows = vec![ctechnology::Row::default(); 3];
+        let mut source_pointers = vec![0; 3];
+        let mut entries = vec![ctechnology_template::Entry::default(); 32];
+        let mut names = vec![0; 64];
+        let mut definitions = ctechnology_template::Dictionary::new(&mut entries, &mut names);
+        let outcome = walk_technologies(
+            &memory,
+            MODULE,
+            COUNTRY_POINTER,
+            7,
+            (&mut rows, &mut source_pointers),
+            0,
+            &mut definitions,
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Unavailable {
+                reason: if once {
+                    "researched technology pointer disagrees with country roster"
+                } else {
+                    "technology fields unreadable"
+                }
+            }
+        );
+        assert_eq!(memory.reads_at(ALIAS_A + ctechnology::STATUS), 2);
+    }
+    let memory = CountedFault::new(&bytes, ALIAS_B + ctechnology::STATUS, false);
+    let mut rows = vec![ctechnology::Row::default(); 3];
+    let mut source_pointers = vec![0; 3];
+    let mut entries = vec![ctechnology_template::Entry::default(); 32];
+    let mut names = vec![0; 64];
+    let mut definitions = ctechnology_template::Dictionary::new(&mut entries, &mut names);
+    let outcome = walk_technologies(
+        &memory,
+        MODULE,
+        COUNTRY_POINTER,
+        7,
+        (&mut rows, &mut source_pointers),
+        0,
+        &mut definitions,
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Unavailable {
+            reason: "researched technology pointer disagrees with country roster"
+        }
+    );
+    assert_eq!(memory.reads_at(ALIAS_A + ctechnology::STATUS), 1);
+}
