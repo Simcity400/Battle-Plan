@@ -93,19 +93,14 @@ export function closeRequests(onRequest: (request: CloseRequest) => void): Close
   return { watch: () => invoke<void>('watch_close_requests', { seq, requests }) };
 }
 
-export function answerCloseQuestion(id: number, unsaved: boolean): Promise<void> {
+export function answerCloseQuestion(id: number, stays: boolean): Promise<boolean> {
   requireDesktop();
-  return invoke<void>('answer_close_question', { id, unsaved });
+  return invoke<boolean>('answer_close_question', { id, stays });
 }
 
 export function leaveApp(): Promise<void> {
   requireDesktop();
   return invoke<void>('leave_app');
-}
-
-export function installUpdateLeaving(): Promise<void> {
-  requireDesktop();
-  return invoke<void>('install_update_leaving');
 }
 
 export { errorMessage } from './errors';

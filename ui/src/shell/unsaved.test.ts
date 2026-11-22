@@ -8,10 +8,9 @@ test('a restart to update goes ahead at once only when nothing is unsaved', () =
     title: 'Restart to update without saving?',
     detail: 'Layout changes on Overview and the theme “Carbon copy” aren’t saved.',
     discard: 'Discard and restart',
-    failed: 'Couldn’t restart to update.',
   });
   assert.deepEqual(leavePrompt('close', unsavedDetail([], '')), {
-    title: 'Close BattlePlan without saving?', detail: 'Your new theme isn’t saved.', discard: 'Discard and close', failed: 'Couldn’t close BattlePlan.',
+    title: 'Close BattlePlan without saving?', detail: 'Your new theme isn’t saved.', discard: 'Discard and close',
   });
 });
 

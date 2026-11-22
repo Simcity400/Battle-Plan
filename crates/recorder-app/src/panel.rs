@@ -6,57 +6,68 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{
-    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Rect, WebviewUrl,
+    AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Rect, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 pub const LABEL: &str = "panel";
-pub const ASK_STOP_EVENT: &str = "recorder-ask-stop";
 const WIDTH: f64 = 360.0;
 const MARGIN: f64 = 12.0;
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
 const REPLAY_IDENTIFIER: &str = "local.battleplan.replay";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Opening {
-    Panel,
-    QuitPrompt,
-    DiscardPrompt,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Ask {
-    pub quitting: bool,
-    pub discarding: bool,
-}
-
-impl Ask {
-    fn of(opening: Opening) -> Self {
-        Self {
-            quitting: opening == Opening::QuitPrompt,
-            discarding: opening == Opening::DiscardPrompt,
-        }
-    }
-
-    fn join(&mut self, other: Self) {
-        self.quitting |= other.quitting;
-        self.discarding |= other.discarding;
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Prompt {
     pub id: u64,
-    #[serde(flatten)]
-    pub ask: Ask,
+    pub quitting: bool,
+    pub discarding: bool,
+    pub session_key: u64,
+}
+
+#[derive(Default)]
+pub struct Prompts {
+    asked: Vec<Prompt>,
+    next: u64,
+}
+
+impl Prompts {
+    pub fn ask(&mut self, session_key: u64, quitting: bool) -> Prompt {
+        let prompt = Prompt { id: self.next, quitting, discarding: !quitting, session_key };
+        self.next += 1;
+        self.asked.push(prompt);
+        prompt
+    }
+
+    pub fn pending(&self, session_key: Option<u64>) -> Option<Prompt> {
+        self.asked.iter().copied().filter(|prompt| Some(prompt.session_key) == session_key).reduce(|mut joined, prompt| {
+            joined.quitting |= prompt.quitting;
+            joined.discarding |= prompt.discarding;
+            joined.id = joined.id.max(prompt.id);
+            joined
+        })
+    }
+
+    pub fn retire(&mut self, through: u64) {
+        self.asked.retain(|prompt| prompt.id > through);
+    }
+
+    pub fn clear(&mut self) {
+        self.asked.clear();
+    }
+
+    pub fn follow(&mut self, session_key: u64) {
+        self.asked.retain(|prompt| prompt.quitting);
+        for prompt in &mut self.asked {
+            prompt.session_key = session_key;
+        }
+    }
 }
 
 #[derive(Default)]
 struct State {
     anchor: Option<Rect>,
     closed_at: Option<Instant>,
-    prompts: Vec<Prompt>,
-    next_prompt: u64,
     compact: bool,
     moved: Option<PhysicalPosition<i32>>,
     placed: Option<PhysicalPosition<i32>>,
@@ -65,27 +76,6 @@ struct State {
     shown: bool,
     opening: bool,
     recordings_panel: Option<String>,
-}
-
-impl State {
-    fn prompt(&mut self, ask: Ask) -> Prompt {
-        let prompt = Prompt { id: self.next_prompt, ask };
-        self.next_prompt += 1;
-        self.prompts.push(prompt);
-        prompt
-    }
-
-    fn pending(&self) -> Option<Prompt> {
-        self.prompts.iter().copied().reduce(|mut joined, prompt| {
-            joined.ask.join(prompt.ask);
-            joined.id = joined.id.max(prompt.id);
-            joined
-        })
-    }
-
-    fn retire(&mut self, through: u64) {
-        self.prompts.retain(|prompt| prompt.id > through);
-    }
 }
 
 #[derive(Default)]
@@ -137,19 +127,13 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
                 let _ = window.destroy();
             }
         }
-        Click::Open => open(app, Some(anchor), Opening::Panel),
+        Click::Open => open(app, Some(anchor), false),
         Click::Ignore => {}
     }
 }
 
-pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
-    let ask_stop = opening != Opening::Panel;
-    let ask = Ask::of(opening);
+pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
     if let Some(window) = app.get_webview_window(LABEL) {
-        if ask_stop {
-            let prompt = state(app).prompt(ask);
-            let _ = window.emit(ASK_STOP_EVENT, prompt);
-        }
         let _ = window.set_focus();
         return;
     }
@@ -160,22 +144,15 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
     {
         let mut state = state(app);
         if state.opening {
-            if ask_stop {
-                state.prompt(ask);
-            }
             return;
         }
         *state = State {
             anchor,
-            compact: ask_stop,
+            compact: prompted,
             moved: state.moved,
-            next_prompt: state.next_prompt,
             opening: true,
             ..State::default()
         };
-        if ask_stop {
-            state.prompt(ask);
-        }
     }
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
@@ -255,7 +232,6 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
                 state.closed_at = Some(Instant::now());
                 state.focused = false;
                 state.shown = false;
-                state.prompts.clear();
                 if let Some(panel) = state.recordings_panel.take() {
                     handle.state::<crate::recordings::Library>().close(&panel);
                 }
@@ -267,7 +243,7 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn opening(app: &AppHandle, panel: &str) -> (bool, Option<Prompt>) {
+pub fn opening(app: &AppHandle, panel: &str) -> bool {
     let mut state = state(app);
     if state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel) {
         let library = app.state::<crate::recordings::Library>();
@@ -276,13 +252,7 @@ pub fn opening(app: &AppHandle, panel: &str) -> (bool, Option<Prompt>) {
         }
         library.register_panel(panel);
     }
-    (state.compact, state.pending())
-}
-
-pub fn retire(app: &AppHandle, prompt: Option<u64>) {
-    if let Some(prompt) = prompt {
-        state(app).retire(prompt);
-    }
+    state.compact
 }
 
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
@@ -500,26 +470,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_prompt_stays_until_a_panel_retires_it_and_a_newer_one_outlives_that() {
-        let mut state = State::default();
-        let discard = state.prompt(Ask::of(Opening::DiscardPrompt));
-        assert_eq!(state.pending(), Some(discard));
-        assert_eq!(state.pending(), Some(discard), "a panel that asks again, or a reloaded one, hears the same prompt");
-        state.retire(discard.id);
-        assert_eq!(state.pending(), None, "a reloaded panel isn’t asked what the user already cancelled");
+    fn a_prompt_is_shown_for_its_own_session_until_retired_and_a_newer_one_outlives_that() {
+        let mut prompts = Prompts::default();
+        let discard = prompts.ask(1, false);
+        assert_eq!(prompts.pending(Some(1)), Some(discard));
+        assert_eq!(prompts.pending(Some(2)), None, "a Discard asked about one session isn’t shown for another");
+        assert_eq!(prompts.pending(None), None);
+        prompts.retire(discard.id);
+        assert_eq!(prompts.pending(Some(1)), None, "a reloaded panel isn’t asked what the user already cancelled");
 
-        let quit = state.prompt(Ask::of(Opening::QuitPrompt));
-        let discard = state.prompt(Ask::of(Opening::DiscardPrompt));
+        let quit = prompts.ask(1, true);
+        let discard = prompts.ask(1, false);
         assert_eq!(
-            state.pending(),
-            Some(Prompt { id: discard.id, ask: Ask { quitting: true, discarding: true } }),
+            prompts.pending(Some(1)),
+            Some(Prompt { id: discard.id, quitting: true, discarding: true, session_key: 1 }),
             "prompts asked together are shown together"
         );
-        state.retire(quit.id);
-        assert_eq!(state.pending(), Some(discard), "a prompt asked after the one handled stays");
-        state.retire(discard.id);
-        state.retire(discard.id);
-        assert_eq!(state.pending(), None);
+        prompts.retire(quit.id);
+        assert_eq!(prompts.pending(Some(1)), Some(discard), "a prompt asked after the one handled stays");
+        prompts.retire(discard.id);
+        prompts.retire(discard.id);
+        assert_eq!(prompts.pending(Some(1)), None, "retiring an id again changes nothing");
+    }
+
+    #[test]
+    fn a_new_session_drops_the_discard_asked_about_the_old_one_and_asks_the_quit_again() {
+        let mut prompts = Prompts::default();
+        let quit = prompts.ask(1, true);
+        prompts.ask(1, false);
+        prompts.follow(2);
+        assert_eq!(prompts.pending(Some(1)), None);
+        assert_eq!(prompts.pending(Some(2)), Some(Prompt { session_key: 2, ..quit }));
     }
 
     #[test]

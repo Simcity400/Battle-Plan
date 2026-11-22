@@ -1,6 +1,12 @@
 export type Leaving = 'close' | 'update';
 
-export interface LeavePrompt { title: string; detail: string; discard: string; failed: string }
+export const RESTARTING = 'Restarting…';
+
+export function leavingTitle(leaving: Leaving): string {
+  return leaving === 'update' ? 'Restarting BattlePlan to update…' : 'Closing BattlePlan…';
+}
+
+export interface LeavePrompt { title: string; detail: string; discard: string }
 
 const listed = (names: readonly string[]) => names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
 
@@ -14,6 +20,6 @@ export function unsavedDetail(layoutPages: readonly string[], theme: string | nu
 export function leavePrompt(leaving: Leaving, unsaved: string | null): LeavePrompt | null {
   if (!unsaved) return null;
   return leaving === 'update'
-    ? { title: 'Restart to update without saving?', detail: unsaved, discard: 'Discard and restart', failed: 'Couldn’t restart to update.' }
-    : { title: 'Close BattlePlan without saving?', detail: unsaved, discard: 'Discard and close', failed: 'Couldn’t close BattlePlan.' };
+    ? { title: 'Restart to update without saving?', detail: unsaved, discard: 'Discard and restart' }
+    : { title: 'Close BattlePlan without saving?', detail: unsaved, discard: 'Discard and close' };
 }

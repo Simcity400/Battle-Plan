@@ -157,15 +157,28 @@ FunctionEnd
       ${IfThen} $0 <> 0 ${|} ${ExitDo} ${|}
       IntOp $6 $5 % 8
       ${If} $6 = 0
-        System::Call 'kernel32::CallNamedPipeW(w r4, *i 67, i 1, *i 0 .r7, i 4, *i 0 .r8, i 60000) i .r9'
-        IntOp $7 $7 & 0xFF
+        System::Alloc 2048
+        Pop $7
+        System::Call '*$7(i 0, i 0)'
+        System::Call 'kernel32::CallNamedPipeW(w r4, *i 67, i 1, p r7, i 2046, *i 0 .r8, i 60000) i .r9'
+        StrCpy $6 ""
         ${If} $9 <> 0
-        ${AndIf} $7 = 89
+          System::Call '*$7(&w1023 .r6)'
+        ${EndIf}
+        System::Free $7
+        StrCpy $7 $6 1
+        StrCpy $6 $6 "" 1
+        ${If} $9 <> 0
+        ${AndIf} $7 S== "Y"
           StrCpy $HoiAppClosed 1
         ${EndIf}
         ${If} $9 <> 0
-        ${AndIf} $7 = 78
-          MessageBox MB_ICONEXCLAMATION|MB_OK "${busy}" /SD IDOK
+        ${AndIf} $7 S== "N"
+          ${If} $6 == ""
+            MessageBox MB_ICONEXCLAMATION|MB_OK "${busy}" /SD IDOK
+          ${Else}
+            MessageBox MB_ICONEXCLAMATION|MB_OK "$6$\r$\n$\r$\nSetup stopped. Run it again once ${name} can close." /SD IDOK
+          ${EndIf}
           Abort
         ${EndIf}
       ${EndIf}

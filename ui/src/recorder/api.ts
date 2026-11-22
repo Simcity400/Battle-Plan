@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { CaptureMode, NextLoad, PanelOpening, PanelPrompt, RecorderSettings, Recordings, RecordingsView, Snapshot } from './status';
+import type { CaptureMode, NextLoad, PanelOpening, RecorderSettings, Recordings, RecordingsView, Snapshot } from './status';
 import type { Compression } from './compression';
 
 export interface SettingsPatch {
@@ -19,9 +19,8 @@ export const panelOpened = (panel: string) => invoke<PanelOpening>('panel_opened
 export const panelFit = (height: number) => invoke<void>('panel_fit', { height });
 export const closePanel = () => invoke<void>('close_panel');
 export const startRecording = () => invoke<void>('start_recording');
-export const stopRecording = (discard: boolean, prompt: number | null) => invoke<void>('stop_recording', { discard, prompt });
-export const cancelStopPrompt = (prompt: number | null) => invoke<void>('cancel_stop_prompt', { prompt });
-export const retirePrompt = (prompt: number) => invoke<void>('retire_prompt', { prompt });
+export const stopRecording = (discard: boolean, sessionKey: number) => invoke<void>('stop_recording', { discard, sessionKey });
+export const cancelStopPrompt = (prompt: number) => invoke<void>('cancel_stop_prompt', { prompt });
 export const recorderSettings = () => invoke<RecorderSettings>('recorder_settings');
 export const updateSettings = (patch: SettingsPatch) => invoke<RecorderSettings>('update_recorder_settings', { patch });
 export const setCampaignChoice = (campaign: string, choice: { record?: boolean; next?: NextLoad }) =>
@@ -38,6 +37,5 @@ export const compressRecording = (path: string) => invoke<void>('compress_record
 
 export const onStatus = (handler: (snapshot: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>('recorder-status', event => handler(event.payload));
-export const onAskStop = (handler: (prompt: PanelPrompt) => void): Promise<UnlistenFn> => listen<PanelPrompt>('recorder-ask-stop', event => handler(event.payload));
 export const onSettings = (handler: () => void): Promise<UnlistenFn> => listen('recorder-settings', () => handler());
 export const onRecordings = (handler: () => void): Promise<UnlistenFn> => listen('recorder-recordings', () => handler());

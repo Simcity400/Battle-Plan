@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, openPanel, PANEL_UNOPENED, panelPrompts, panelStage, PROMPTS_UNHEARD, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, panelStage, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
-import type { PanelFailure, PanelOpening, PanelPrompt, RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
+import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
 const PATH = `C:\\Users\\Example\\BattlePlan\\${CAMPAIGN}.battleplan`;
@@ -245,65 +245,13 @@ test('trying the status again listens again before reading, and the attempt it r
   assert.equal(shown.at(-1), 'saved');
 });
 
-test('the panel hears the recorder’s questions before it reads what it opened for, and says when it can’t', async () => {
-  const steps: string[] = [];
-  const failures: (PanelFailure | null)[] = [];
-  const prompts: PanelPrompt[] = [];
-  let listenFails = true, publish: (prompt: PanelPrompt) => void = () => {};
-  const discard = { id: 3, quitting: false, discarding: true };
-  const opening = openPanel(async onPrompt => {
-    steps.push('listen');
-    if (listenFails) throw new Error('no event channel');
-    publish = onPrompt;
-    return () => { steps.push('unlisten'); };
-  }, async (): Promise<PanelOpening> => {
-    steps.push('opened');
-    return { compact: true, prompt: discard };
-  }, { prompt: prompt => { prompts.push(prompt); }, opened: ({ prompt }) => { if (prompt) prompts.push(prompt); }, failed: failure => { failures.push(failure); } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(steps, ['listen'], 'a panel that can’t hear questions doesn’t read its opening state');
-  assert.deepEqual(failures.map(failure => failure && [failure.title, failure.detail]), [[PROMPTS_UNHEARD, 'no event channel']]);
-
-  listenFails = false;
-  const shown = failures[0]!;
-  shown.retry();
-  shown.retry();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(steps, ['listen', 'listen', 'opened'], 'Try again listens once, then reads the opening');
-  assert.deepEqual(failures.at(-1), null);
-  publish(discard);
-  assert.deepEqual(prompts, [discard, discard], 'a prompt can arrive both ways; panelPrompts shows it once');
-  opening.end();
-  publish({ id: 4, quitting: true, discarding: false });
-  assert.equal(prompts.length, 2, 'an ended panel hears nothing');
-  assert.deepEqual(steps.at(-1), 'unlisten');
-});
-
-test('a panel whose opening read fails retries only that read', async () => {
-  const steps: string[] = [];
-  const failures: (PanelFailure | null)[] = [];
-  let openFails = true;
-  openPanel(async () => { steps.push('listen'); return () => {}; }, async () => {
-    steps.push('opened');
-    if (openFails) throw 'no recorder';
-    return { compact: false, prompt: null };
-  }, { prompt: () => {}, opened: () => { steps.push('shown'); }, failed: failure => { failures.push(failure); } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(failures[0]?.title, PANEL_UNOPENED);
-  openFails = false;
-  failures[0]!.retry();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(steps, ['listen', 'opened', 'opened', 'shown']);
-});
-
-test('a prompt the panel handled is retired by id, and a newer one is still shown', () => {
-  const prompts = panelPrompts();
-  assert.equal(prompts.retire(), null, 'a prompt the panel raised itself retires nothing in the recorder');
-  const discard = { id: 0, quitting: false, discarding: true };
-  assert.equal(prompts.show(discard), true);
-  assert.equal(prompts.retire(), 0, 'cancelling the tray’s Discard retires it');
-  assert.equal(prompts.show(discard), false, 'a late copy of a cancelled prompt isn’t shown again');
-  assert.equal(prompts.show({ id: 1, quitting: true, discarding: false }), true);
-  assert.equal(prompts.retire(), 1);
-  assert.equal(prompts.retire(), null);
+test('the stop prompt asks what the recorder asked about the live session, or what the panel’s own Stop asked, and nothing once it stops', () => {
+  const live = recording({ sessionKey: 3, prompt: null });
+  assert.equal(askedPrompt(live, false), null);
+  assert.deepEqual(askedPrompt(live, true), { quitting: false, discarding: false, sessionKey: 3 }, 'the panel’s own Stop asks about the session it shows');
+  const asked = { id: 7, quitting: true, discarding: false, sessionKey: 3 };
+  assert.deepEqual(askedPrompt({ ...live, prompt: asked }, false), asked, 'the tray’s question stays until the recorder retires it');
+  assert.equal(askedPrompt({ ...live, prompt: asked, stopping: true }, true), null, 'a stopping session asks nothing');
+  assert.equal(askedPrompt({ ...live, sessionKey: null }, true), null, 'without a live session there is nothing to stop');
+  assert.equal(askedPrompt(null, true), null);
 });

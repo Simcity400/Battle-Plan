@@ -18,10 +18,18 @@ use windows_sys::Win32::{
 
 pub const CLOSE: u8 = b'C';
 pub const QUERY: u8 = b'Q';
-const CLOSING: u8 = b'Y';
-const REFUSED: u8 = b'N';
+const CLOSING: char = 'Y';
+const REFUSED: char = 'N';
 const FREE: u8 = b'I';
 const BUSY: u8 = b'B';
+
+fn close_reply(closing: Result<(), String>) -> Vec<u8> {
+    let reply = match closing {
+        Ok(()) => CLOSING.to_string(),
+        Err(reason) => format!("{REFUSED}{reason}"),
+    };
+    reply.encode_utf16().chain(Some(0)).flat_map(u16::to_le_bytes).collect()
+}
 
 pub trait Answer: Send + Sync + 'static {
     fn close_for_update(&self) -> Result<(), String>;
@@ -88,13 +96,11 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
                     && read == 1
                 {
                     match request[0] {
-                        CLOSE => vec![match answer.close_for_update() {
-                            Ok(()) => {
-                                closing = true;
-                                CLOSING
-                            }
-                            Err(_) => REFUSED,
-                        }],
+                        CLOSE => {
+                            let answered = answer.close_for_update();
+                            closing = answered.is_ok();
+                            close_reply(answered)
+                        }
                         QUERY => match answer.busy() {
                             None => vec![FREE],
                             Some(reason) => [&[BUSY], reason.as_bytes()].concat(),

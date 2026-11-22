@@ -52,6 +52,7 @@ recorder-oracle-support = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+tauri = { version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "test", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 test-unify = { workspace = true }
 unify-bitflags-1 = { workspace = true }
 unify-bytemuck = { workspace = true }

@@ -58,7 +58,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::recorder_status,
             commands::panel_opened,
-            commands::retire_prompt,
             commands::panel_fit,
             commands::close_panel,
             commands::start_recording,

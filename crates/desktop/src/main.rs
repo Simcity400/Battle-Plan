@@ -16,6 +16,7 @@ mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
+use leaving::{Answered, Closing, Leaving, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::http::HeaderValue;
@@ -199,8 +200,6 @@ fn context() -> tauri::Context {
     context
 }
 
-type PageLeaving = leaving::Leaving<tauri::ipc::Channel<leaving::Request>>;
-
 fn main_page(webview: &tauri::Webview) -> Result<(), String> {
     if webview.label() == "main" {
         Ok(())
@@ -212,20 +211,26 @@ fn main_page(webview: &tauri::Webview) -> Result<(), String> {
 #[tauri::command]
 fn watch_close_requests(
     webview: tauri::Webview,
-    leaving: State<'_, PageLeaving>,
+    leaving: State<'_, Leaving>,
     seq: u64,
-    requests: tauri::ipc::Channel<leaving::Request>,
+    requests: tauri::ipc::JavaScriptChannelId,
 ) -> Result<(), String> {
     main_page(&webview)?;
-    leaving.watch(seq, requests);
+    leaving.watch(seq, move || requests.channel_on(webview));
     Ok(())
 }
 
 #[tauri::command]
-fn answer_close_question(webview: tauri::Webview, leaving: State<'_, PageLeaving>, id: u64, unsaved: bool) -> Result<(), String> {
+fn answer_close_question(webview: tauri::Webview, leaving: State<'_, Leaving>, id: u64, stays: bool) -> Result<bool, String> {
     main_page(&webview)?;
-    leaving.answer(id, unsaved);
-    Ok(())
+    Ok(match leaving.answer(id, stays) {
+        Answered::Leave => {
+            webview.app_handle().exit(0);
+            true
+        }
+        Answered::Heard => true,
+        Answered::Unknown => false,
+    })
 }
 
 #[tauri::command]
@@ -235,16 +240,33 @@ fn leave_app(webview: tauri::Webview) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-async fn install_update_leaving(webview: tauri::Webview) -> Result<(), String> {
-    main_page(&webview)?;
-    let app = webview.app_handle().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let updates = Arc::clone(app.state::<Arc<app_update::Updates>>().inner());
-        updates.install(&app, true)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+fn close_without_answer(owner: Option<isize>, why: Unanswered) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MessageBoxW};
+    let reason = match why {
+        Unanswered::Close => "BattlePlan’s page hasn’t answered, so it can’t say whether it has unsaved changes.",
+        Unanswered::Unresponsive => "BattlePlan’s page isn’t responding, so it can’t say whether it has unsaved changes.",
+    };
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let text = wide(&format!("{reason}\n\nClose BattlePlan now? Anything unsaved is lost. Choose No to keep waiting."));
+    let caption = wide("BattlePlan");
+    let owner = owner.map_or(std::ptr::null_mut(), |hwnd| hwnd as *mut std::ffi::c_void);
+    unsafe { MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES }
+}
+
+fn offer_to_close(app: &tauri::AppHandle, why: Unanswered) {
+    let owner = app.get_webview_window("main").and_then(|window| window.hwnd().ok()).map(|hwnd| hwnd.0 as isize);
+    let handle = app.clone();
+    let shown = std::thread::Builder::new().name("close choice".into()).spawn(move || {
+        let close = close_without_answer(owner, why);
+        handle.state::<Leaving>().chosen();
+        if close {
+            handle.exit(0);
+        }
+    });
+    if let Err(error) = shown {
+        eprintln!("BattlePlan couldn’t offer to close without its page’s answer, so the window stays open: {error}");
+        app.state::<Leaving>().chosen();
+    }
 }
 
 fn watch_page_process(window: &WebviewWindow) -> tauri::Result<()> {
@@ -252,17 +274,21 @@ fn watch_page_process(window: &WebviewWindow) -> tauri::Result<()> {
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
-            COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
         };
         let handler = webview2_com::ProcessFailedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else { return Ok(()) };
             let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
             unsafe { args.ProcessFailedKind(&mut kind)? };
+            let leaving = app.state::<Leaving>();
             if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
                 || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
             {
                 eprintln!("BattlePlan’s page process ended, so closing no longer waits for it.");
-                app.state::<PageLeaving>().page_died();
+                leaving.page_gone();
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE && leaving.page_unresponsive() {
+                eprintln!("BattlePlan’s page isn’t responding, so its update questions were refused and the user is asked whether to close.");
+                offer_to_close(&app, Unanswered::Unresponsive);
             }
             Ok(())
         }));
@@ -335,7 +361,7 @@ fn main() {
         })
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
-                webview.state::<PageLeaving>().page_left();
+                webview.state::<Leaving>().page_started();
             }
         })
         .manage(video::VideoState::default())
@@ -371,7 +397,7 @@ fn main() {
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
         .manage(follow_push::FollowPush::default())
-        .manage(PageLeaving::default())
+        .manage(Leaving::default())
         .invoke_handler(tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
@@ -384,7 +410,6 @@ fn main() {
             watch_close_requests,
             answer_close_question,
             leave_app,
-            install_update_leaving,
             set_map_view,
             select_native_view,
             map_action,
@@ -441,12 +466,18 @@ fn main() {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == "main" && app.state::<PageLeaving>().close_requested() => api.prevent_close(),
-        tauri::RunEvent::WindowEvent {
-            label,
-            event: tauri::WindowEvent::CloseRequested { api, .. },
-            ..
-        } if label == "main" && exit_after_maps(app) => api.prevent_close(),
+        } if label == "main" => match app.state::<Leaving>().close_requested() {
+            Closing::Through => {
+                if exit_after_maps(app) {
+                    api.prevent_close();
+                }
+            }
+            Closing::Held => api.prevent_close(),
+            Closing::Offer(why) => {
+                api.prevent_close();
+                offer_to_close(app, why);
+            }
+        },
         tauri::RunEvent::ExitRequested { api, .. } if exit_after_maps(app) => api.prevent_exit(),
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             shutdown(app);

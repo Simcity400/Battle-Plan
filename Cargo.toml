@@ -46,7 +46,7 @@ unify-proc-macro2 = { package = "proc-macro2", version = "1.0.107", default-feat
 unify-rustc-hash = { package = "rustc-hash", version = "2.1.3", default-features = false, features = ["default", "std"] }
 unify-simd-adler32 = { package = "simd-adler32", version = "0.3.10", default-features = false, features = ["const-generics", "default", "std"] }
 unify-smallvec = { package = "smallvec", version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
-unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
+unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "test", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 unify-thiserror = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }
 unify-tracing = { package = "tracing", version = "0.1.44", default-features = false, features = ["std"] }
 unify-uuid = { package = "uuid", version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }

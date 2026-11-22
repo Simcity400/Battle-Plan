@@ -42,7 +42,10 @@ struct Inner {
     snapshot: Snapshot,
     record_requested: bool,
     quit_when_idle: bool,
-    quit_after_stop: bool,
+    quit_after_stop: Option<u64>,
+    prompts: panel::Prompts,
+    sessions: u64,
+    stopped: Option<(u64, bool)>,
     capturing: bool,
     unloading: bool,
     result: bool,
@@ -84,6 +87,44 @@ const RECORDING_FOR_UPDATE: &str =
 const CONNECTED_FOR_UPDATE: &str =
     "BattlePlan Recorder is connected to the game. Restart to update once the game has closed.";
 const CLOSING_FOR_UPDATE: &str = "BattlePlan Recorder is closing for an update.";
+const SESSION_ENDED: &str = "The session you asked about has already ended, so nothing was changed.";
+const SESSION_STOPPING: &str = "BattlePlan Recorder is already stopping this session.";
+
+enum Quitting {
+    Exit,
+    Prompt,
+    Stop,
+    Wait,
+}
+
+fn cancelled(inner: &mut Inner, through: u64, stopping: bool) {
+    inner.prompts.retire(through);
+    if !stopping && inner.quit_after_stop.is_some_and(|quit| quit <= through) {
+        inner.quit_after_stop = None;
+    }
+}
+
+impl Inner {
+    fn new_session(&mut self) {
+        self.sessions += 1;
+        self.snapshot.session_key = Some(self.sessions);
+        self.prompts.follow(self.sessions);
+    }
+
+    fn live_session(&self) -> Option<u64> {
+        (self.capturing && self.snapshot.phase == Phase::Recording && !self.snapshot.stopping)
+            .then_some(self.snapshot.session_key)
+            .flatten()
+    }
+
+    fn ask(&mut self, session: u64, quitting: bool) -> panel::Prompt {
+        let prompt = self.prompts.ask(session, quitting);
+        if quitting {
+            self.quit_after_stop = Some(prompt.id);
+        }
+        prompt
+    }
+}
 
 fn update_busy(inner: &Inner) -> Option<&'static str> {
     if inner.unloading || inner.acting > 0 || inner.snapshot.phase == Phase::Saving {
@@ -419,6 +460,7 @@ impl Recorder {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
+            inner.snapshot.prompt = inner.prompts.pending(inner.live_session());
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
@@ -507,62 +549,66 @@ impl Recorder {
         self.wake.notify_all();
     }
 
-    pub fn stop(&self, app: &AppHandle, discard: bool) {
-        let mut accepted = false;
+    pub fn stop(&self, app: &AppHandle, discard: bool, session: u64) -> Result<(), String> {
+        let mut accepted = Ok(false);
         self.update(app, |inner| {
-            accepted = accept_stop(inner, &self.control, discard);
+            accepted = accept_stop(inner, &self.control, discard, session);
         });
-        if accepted {
+        if accepted? {
             self.wake.notify_all();
         }
-    }
-
-    fn recording(&self) -> bool {
-        let inner = self.lock();
-        inner.capturing && inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping
+        Ok(())
     }
 
     pub fn save(&self, app: &AppHandle) {
-        if self.recording() {
-            self.stop(app, false);
+        let session = self.lock().live_session();
+        if let Some(session) = session
+            && let Err(error) = self.stop(app, false, session)
+        {
+            eprintln!("The tray’s Save didn’t stop the recording: {error}");
         }
     }
 
     pub fn ask_discard(&self, app: &AppHandle) {
-        if self.recording() {
-            panel::open(app, None, panel::Opening::DiscardPrompt);
+        let mut prompted = false;
+        self.update(app, |inner| {
+            if let Some(session) = inner.live_session() {
+                inner.ask(session, false);
+                prompted = true;
+            }
+        });
+        if prompted {
+            panel::open(app, None, true);
         }
     }
 
     pub fn quit(&self, app: &AppHandle) {
-        let mut inner = self.lock();
-        if !inner.capturing && !inner.unloading {
-            drop(inner);
-            app.exit(0);
-        } else if !inner.capturing {
-            inner.quit_when_idle = true;
-            drop(inner);
-            self.wake.notify_all();
-        } else if inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping {
-            inner.quit_after_stop = true;
-            drop(inner);
-            panel::open(app, None, panel::Opening::QuitPrompt);
-        } else {
-            inner.quit_when_idle = true;
-            let stopping = inner.snapshot.stopping;
-            drop(inner);
-            if !stopping {
+        let mut quitting = Quitting::Wait;
+        self.update(app, |inner| {
+            quitting = if let Some(session) = inner.live_session() {
+                inner.ask(session, true);
+                Quitting::Prompt
+            } else if !inner.capturing && !inner.unloading {
+                Quitting::Exit
+            } else {
+                inner.quit_when_idle = true;
+                if inner.capturing && !inner.snapshot.stopping { Quitting::Stop } else { Quitting::Wait }
+            };
+        });
+        match quitting {
+            Quitting::Prompt => panel::open(app, None, true),
+            Quitting::Exit => app.exit(0),
+            Quitting::Stop => {
                 self.control.stop(false);
+                self.wake.notify_all();
             }
-            self.wake.notify_all();
+            Quitting::Wait => self.wake.notify_all(),
         }
     }
 
-    pub fn cancel_stop_prompt(&self) {
-        let mut inner = self.lock();
-        if !self.control.stopping() {
-            inner.quit_after_stop = false;
-        }
+    pub fn cancel_prompt(&self, app: &AppHandle, through: u64) {
+        let stopping = self.control.stopping();
+        self.update(app, |inner| cancelled(inner, through, stopping));
     }
 
     pub fn panel_opened(&self, app: &AppHandle) {
@@ -573,8 +619,9 @@ impl Recorder {
         let stopping = self.control.stopping();
         self.update(app, |inner| {
             inner.panel_open = false;
+            inner.prompts.clear();
             if !stopping {
-                inner.quit_after_stop = false;
+                inner.quit_after_stop = None;
             }
             if std::mem::take(&mut inner.seen) {
                 inner.result = false;
@@ -672,7 +719,7 @@ impl Recorder {
 
     fn exit_requested(&self) -> bool {
         let inner = self.lock();
-        inner.quit_when_idle || inner.quit_after_stop
+        inner.quit_when_idle || inner.quit_after_stop.is_some()
     }
 
     fn run(&self, app: &AppHandle) {
@@ -975,6 +1022,7 @@ impl Recorder {
             if let Some((loaded, recording, bytes)) = opening {
                 inner.earlier = Some((loaded.campaign.clone(), recording.clone(), bytes));
                 inner.snapshot.flag = inner.last_flags.get(&loaded.campaign).cloned();
+                inner.new_session();
                 let snapshot = &mut inner.snapshot;
                 snapshot.phase = Phase::Recording;
                 snapshot.started_at = Some(now_ms());
@@ -1348,17 +1396,25 @@ fn discarded_failure(report: &Path) -> Problem {
     )
 }
 
-fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
-    if !inner.capturing {
-        return false;
+fn accept_stop(inner: &mut Inner, control: &Control, discard: bool, session: u64) -> Result<bool, String> {
+    if inner.stopped == Some((session, discard)) {
+        return Ok(false);
+    }
+    if !inner.capturing || inner.snapshot.session_key != Some(session) {
+        return Err(SESSION_ENDED.into());
+    }
+    if inner.snapshot.stopping {
+        return Err(SESSION_STOPPING.into());
     }
     control.stop(discard);
+    inner.stopped = Some((session, discard));
+    inner.prompts.clear();
     inner.snapshot.stopping = true;
     if !discard {
         inner.snapshot.phase = Phase::Saving;
         inner.snapshot.problem = None;
     }
-    true
+    Ok(true)
 }
 
 fn loaded_live(mut live: snapshot::Live, loaded: Option<LoadedCampaign>) -> snapshot::Live {
@@ -1385,6 +1441,11 @@ fn fold_live(
         inner.hours = hours;
     }
     inner.names.clone_from(names);
+    if let Some(campaign) = &live.campaign
+        && (inner.snapshot.phase != Phase::Recording || inner.snapshot.campaign.as_ref() != Some(campaign))
+    {
+        inner.new_session();
+    }
     let snapshot = &mut inner.snapshot;
     snapshot.session = Some(session.display().to_string());
     if let Some(campaign) = live.campaign {
@@ -1576,7 +1637,9 @@ mod tests {
             ..Inner::default()
         };
         inner.snapshot.phase = Phase::Recording;
-        assert!(accept_stop(&mut inner, &control, false));
+        inner.new_session();
+        let session = inner.snapshot.session_key.unwrap();
+        assert_eq!(accept_stop(&mut inner, &control, false, session), Ok(true));
         assert!(control.stopping() && !control.discarding());
         assert_eq!(inner.snapshot.phase, Phase::Saving);
         assert!(inner.snapshot.stopping);
@@ -1587,9 +1650,35 @@ mod tests {
         };
         inner.snapshot.phase = Phase::Saved;
         let ended = inner.snapshot.clone();
-        assert!(!accept_stop(&mut inner, &control, false));
+        assert_eq!(accept_stop(&mut inner, &control, false, session), Err(SESSION_ENDED.into()));
         assert_eq!(inner.snapshot, ended);
         assert!(!control.stopping());
+    }
+
+    #[test]
+    fn a_stop_acts_only_on_the_session_it_was_asked_about_and_a_repeat_changes_nothing() {
+        let control = Control::new();
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        inner.new_session();
+        let asked = inner.snapshot.session_key.unwrap();
+        let discard = inner.ask(asked, false);
+        inner.new_session();
+        let live = inner.snapshot.session_key.unwrap();
+        assert_eq!(inner.prompts.pending(Some(live)), None, "the Discard asked about the earlier session isn’t shown for this one");
+        assert_eq!(accept_stop(&mut inner, &control, true, discard.session_key), Err(SESSION_ENDED.into()), "and discards nothing");
+        assert!(!control.stopping());
+
+        let quit = inner.ask(live, true);
+        assert_eq!(accept_stop(&mut inner, &control, false, live), Ok(true));
+        assert_eq!(inner.prompts.pending(Some(live)), None, "a stop answers every prompt about its session");
+        assert_eq!(inner.quit_after_stop, Some(quit.id), "and the Quit it answered goes ahead");
+        assert_eq!(accept_stop(&mut inner, &control, false, live), Ok(false), "the same stop sent again after a lost reply");
+        assert_eq!(accept_stop(&mut inner, &control, true, live), Err(SESSION_STOPPING.into()), "a later Discard can’t turn the save into one");
+        assert!(control.stopping() && !control.discarding());
     }
 
     #[test]
@@ -1783,15 +1872,20 @@ mod tests {
     }
 
     #[test]
-    fn dismissing_the_stop_prompt_cancels_a_pending_quit() {
-        let recorder = Recorder::default();
-        recorder.lock().quit_after_stop = true;
-        recorder.cancel_stop_prompt();
-        assert!(!recorder.lock().quit_after_stop);
-        recorder.lock().quit_after_stop = true;
-        recorder.control.stop(false);
-        recorder.cancel_stop_prompt();
-        assert!(recorder.lock().quit_after_stop);
+    fn cancelling_a_prompt_cancels_the_quit_it_carries_and_no_newer_one() {
+        let mut inner = Inner::default();
+        let discard = inner.ask(1, false);
+        let quit = inner.ask(1, true);
+        cancelled(&mut inner, discard.id, false);
+        assert_eq!(inner.quit_after_stop, Some(quit.id), "cancelling the older Discard keeps the newer Quit");
+        assert_eq!(inner.prompts.pending(Some(1)), Some(quit));
+        cancelled(&mut inner, discard.id, false);
+        assert_eq!(inner.quit_after_stop, Some(quit.id), "a cancel sent again changes nothing");
+        cancelled(&mut inner, quit.id, false);
+        assert_eq!(inner.quit_after_stop, None);
+        let quit = inner.ask(1, true);
+        cancelled(&mut inner, quit.id, true);
+        assert_eq!(inner.quit_after_stop, Some(quit.id), "a quit whose session is already stopping goes ahead");
     }
 
     #[test]

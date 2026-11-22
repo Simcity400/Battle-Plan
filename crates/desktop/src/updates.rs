@@ -1,11 +1,11 @@
-use crate::PageLeaving;
+use crate::leaving::Leaving;
 use tauri::{AppHandle, Manager};
 
 pub struct Host(pub AppHandle);
 
 impl Host {
-    fn leaving(&self) -> &PageLeaving {
-        self.0.state::<PageLeaving>().inner()
+    fn leaving(&self) -> &Leaving {
+        self.0.state::<Leaving>().inner()
     }
 }
 
@@ -14,8 +14,8 @@ impl app_update::Host for Host {
         self.leaving().busy()
     }
 
-    fn install(&self, launch: app_update::Launch, confirmed: bool) -> Result<(), String> {
-        self.leaving().install(confirmed, launch)?;
+    fn install(&self, launch: app_update::Launch) -> Result<(), String> {
+        self.leaving().install(launch)?;
         self.0.exit(0);
         Ok(())
     }

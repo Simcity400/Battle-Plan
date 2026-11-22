@@ -13,10 +13,10 @@ import { AUTO_COMPRESS_HIGH } from '../shell/RecordingCompressionSetting';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, openPanel, PANEL_UNOPENED, panelPrompts, panelStage, promptTitle, recordingName,
+import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, promptTitle, recordingName,
   recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion,
   whatToRecord } from './status.ts';
-import type { CaptureMode, FlagImage, Head, NextLoad, PanelFailure, PanelPrompt, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
+import type { CaptureMode, FlagImage, Head, NextLoad, PanelFailure, PromptFailure, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
 import { AUTO_COMPRESS_NOTE, COMPRESS_TOOLTIP, COMPRESSION_NOTE } from './compression';
 import type { Compression } from './compression';
 import { setUpdateChannel, updatesAvailable } from '../update/api';
@@ -68,6 +68,8 @@ export interface PanelViewProps {
   quitting?: boolean;
   discarding?: boolean;
   confirmingWaiting?: string | null;
+  promptBusy?: boolean;
+  promptFailure?: PromptFailure | null;
   update?: PanelUpdate;
 }
 
@@ -155,7 +157,7 @@ export function PanelPending({ failure, title = PANEL_UNOPENED, retry, root }: {
 const waitingCount = (recordings: Recordings | null | undefined) => recordings?.unsaved.filter(row => row.status !== 'recording').length ?? 0;
 
 export function PanelView({ snapshot, settings, view, asking, error, errorDetail = null, errorCaveat = false, now, actions, root, compact = false, recordings = null, relisting = false, quitting = false,
-  discarding = false, confirmingWaiting = null, update }: PanelViewProps) {
+  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, update }: PanelViewProps) {
   const [disclosed, setDisclosed] = useState<string | null>(null);
   const shown = head(snapshot);
   const files = snapshot.session != null && snapshot.problem?.failed === true;
@@ -178,16 +180,19 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
     : <p className="recorder-note" role="status"><Icon name="info" /><span>{preparation.text}</span></p>);
   const prompt = stopPromptVisible(asking, snapshot);
   const length = sessionLength(snapshot.startedAt, now);
-  const promptActions = <div className="recorder-prompt-actions">{discarding ? <>
-    <button key="cancel-discard" type="button" className="button small quiet" autoFocus onClick={actions.cancelDiscard}>Cancel</button>
-    <button key="confirm-discard" type="button" className="button small is-danger" onClick={() => actions.stop(true)}>Discard</button>
+  const promptActions = <>{promptFailure && <FailureLine className="recorder-failure" message={promptFailure.text} detail={promptFailure.detail}
+    onRetry={promptFailure.retry} retryDisabled={promptBusy} />}
+    <div className="recorder-prompt-actions">{discarding ? <>
+    <button key="cancel-discard" type="button" className="button small quiet" autoFocus disabled={promptBusy} onClick={actions.cancelDiscard}>Cancel</button>
+    <button key="confirm-discard" type="button" className="button small is-danger" disabled={promptBusy} onClick={() => actions.stop(true)}>Discard</button>
   </> : <>
-    <button key="cancel" type="button" className="button small quiet" onClick={actions.toggleAsk}>Cancel</button>
-    <button key="discard" type="button" className="button small recorder-discard" data-focus="discard" onClick={actions.askDiscard}>Discard</button>
-    <button key="save" type="button" className="button small primary" autoFocus onClick={() => actions.stop(false)}>Save</button>
-  </>}</div>;
+    <button key="cancel" type="button" className="button small quiet" disabled={promptBusy} onClick={actions.toggleAsk}>Cancel</button>
+    <button key="discard" type="button" className="button small recorder-discard" data-focus="discard" disabled={promptBusy} onClick={actions.askDiscard}>Discard</button>
+    <button key="save" type="button" className="button small primary" autoFocus disabled={promptBusy} onClick={() => actions.stop(false)}>Save</button>
+  </>}</div></>;
 
   if (compact) return <div ref={root} className="recorder recorder-compact">
+    {error && notice}
     {prompt && <div className="recorder-prompt" role="alertdialog" aria-labelledby="recorder-prompt-title"
       aria-describedby={discarding ? 'recorder-prompt-question recorder-prompt-consequence' : 'recorder-prompt-question'}>
       <strong id="recorder-prompt-title">{promptTitle(quitting, discarding)}</strong>
@@ -441,10 +446,10 @@ export default function RecorderPanel() {
   const [settings, setSettings] = useState<RecorderSettings | null>(null);
   const [recordings, setRecordings] = useState<Recordings | null>(null);
   const [view, setView] = useState<View>('main');
-  const [asking, setAsking] = useState(false);
-  const [quitting, setQuitting] = useState(false);
-  const [discarding, setDiscarding] = useState(false);
-  const discardStepped = useRef(false);
+  const [opened, setOpened] = useState(false);
+  const [stepped, setStepped] = useState(false);
+  const [promptAction, setPromptAction] = useState(false);
+  const [promptFailure, setPromptFailure] = useState<PromptFailure | null>(null);
   const [confirmingWaiting, setConfirmingWaiting] = useState<string | null>(null);
   const [compact, setCompact] = useState<boolean | null>(null);
   const [failure, setFailure] = useState<{ text: string; detail?: string; caveat?: boolean } | null>(null);
@@ -456,7 +461,6 @@ export default function RecorderPanel() {
   const root = useRef<HTMLDivElement>(null);
   const [panel] = useState(newId);
   const visit = useRef({ number: 0, open: false });
-  const [prompts] = useState(panelPrompts);
   const [openFailure, setOpenFailure] = useState<PanelFailure | null>(null);
   const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings));
   const { state: updateState, error: updateReadFailure, retry: retryUpdateRead } = useUpdateState();
@@ -478,20 +482,14 @@ export default function RecorderPanel() {
   }, [queue, panel]);
 
   useEffect(() => {
-    const show = (prompt: PanelPrompt) => {
-      if (!prompts.show(prompt)) return;
-      setView('main');
-      setAsking(true);
-      if (prompt.quitting) setQuitting(true);
-      if (prompt.discarding) { discardStepped.current = false; setDiscarding(true); }
+    let active = true;
+    const open = () => {
+      void api.panelOpened(panel).then(({ compact: alone }) => { if (active) setCompact(alone); },
+        cause => { if (active) setOpenFailure({ title: PANEL_UNOPENED, detail: errorMessage(cause), retry: () => { setOpenFailure(null); open(); } }); });
     };
-    const opening = openPanel(api.onAskStop, () => api.panelOpened(panel), {
-      prompt: show,
-      opened: ({ compact: alone, prompt }) => { setCompact(alone); if (prompt) show(prompt); },
-      failed: setOpenFailure,
-    });
-    return () => opening.end();
-  }, [panel, prompts]);
+    open();
+    return () => { active = false; };
+  }, [panel]);
 
   const listing = compact === false;
   const [changed, setChanged] = useState(0);
@@ -527,7 +525,12 @@ export default function RecorderPanel() {
     return () => observer.disconnect();
   }, [stage]);
 
-  const prompting = snapshot != null && stopPromptVisible(asking, snapshot);
+  const asked = askedPrompt(snapshot, opened);
+  const prompting = asked !== null;
+  const quitting = asked?.quitting ?? false;
+  const discarding = stepped || (asked?.discarding ?? false);
+  const hostPrompt = snapshot?.prompt ?? null;
+  useEffect(() => { if (hostPrompt) setView('main'); }, [hostPrompt?.id]);
   const refocus = useRef<string | null>(null);
   useEffect(() => {
     if (!refocus.current) return;
@@ -538,19 +541,36 @@ export default function RecorderPanel() {
     if (PARENT_VIEW[view] === to) refocus.current = `[data-opens="${view}"]`;
     setView(to);
   };
+  const answerPrompt = (sentence: string, work: () => Promise<unknown>, again: () => void) => {
+    if (promptAction) return;
+    setPromptAction(true);
+    setPromptFailure(null);
+    void work().then(() => {
+      setPromptAction(false);
+      setOpened(false);
+      setStepped(false);
+      refocus.current = '[data-focus="stop"]';
+    }, cause => {
+      setPromptAction(false);
+      setPromptFailure({ ...actionFailure(sentence, errorMessage(cause)), retry: again });
+    });
+  };
   const cancelPrompt = () => {
-    setAsking(false);
-    setQuitting(false);
-    setDiscarding(false);
-    discardStepped.current = false;
     clearError();
-    refocus.current = '[data-focus="stop"]';
-    void api.cancelStopPrompt(prompts.retire()).catch(cause => setError('Couldn’t keep recording.', cause));
+    if (!hostPrompt) {
+      setOpened(false);
+      setStepped(false);
+      setPromptFailure(null);
+      refocus.current = '[data-focus="stop"]';
+      return;
+    }
+    const { id } = hostPrompt;
+    const cancel = () => answerPrompt('Couldn’t keep recording.', () => api.cancelStopPrompt(id), cancel);
+    cancel();
   };
   const cancelDiscard = () => {
-    if (!discardStepped.current) { cancelPrompt(); return; }
-    discardStepped.current = false;
-    setDiscarding(false);
+    if (!stepped) { cancelPrompt(); return; }
+    setStepped(false);
     refocus.current = '[data-focus="discard"]';
   };
   const askDiscardWaiting = (recording: UnsavedRecording | null) => {
@@ -589,22 +609,22 @@ export default function RecorderPanel() {
     return () => clearTimeout(timer);
   }, [prompting, startedAt]);
 
-  const askedAbout = snapshot != null && stopPromptVisible(true, snapshot) ? `${snapshot.startedAt}/${snapshot.campaign}` : null;
-  const previousAsked = useRef(askedAbout);
+  const sessionKey = snapshot?.sessionKey ?? null;
+  const askedSession = useRef(sessionKey);
   useEffect(() => {
-    if (previousAsked.current !== null && previousAsked.current !== askedAbout) {
-      setAsking(false);
-      setQuitting(false);
-      setDiscarding(false);
-      const retired = prompts.retire();
-      if (retired !== null) void api.retirePrompt(retired).catch(cause => setError('Couldn’t dismiss the recorder’s question.', cause));
+    if (askedSession.current !== sessionKey) {
+      setOpened(false);
+      setStepped(false);
+      setPromptFailure(null);
     }
-    previousAsked.current = askedAbout;
-  }, [askedAbout]);
+    askedSession.current = sessionKey;
+  }, [sessionKey]);
 
+  useEffect(() => { if (!prompting) setPromptFailure(null); }, [prompting]);
+  const settled = !prompting && !promptAction && !failure && !promptFailure;
   useEffect(() => {
-    if (compact && snapshot && !prompting) void api.closePanel();
-  }, [compact, snapshot, prompting]);
+    if (compact && snapshot && settled) void api.closePanel();
+  }, [compact, snapshot, settled]);
 
   if (stage === 'pending') {
     if (openFailure) return <PanelPending root={root} title={openFailure.title} failure={openFailure.detail} retry={openFailure.retry} />;
@@ -619,15 +639,17 @@ export default function RecorderPanel() {
   const actions: PanelActions = {
     view: navigate,
     toggleAsk: () => {
-      if (!asking) { setAsking(true); setDiscarding(false); return; }
+      if (!prompting) { setOpened(true); setStepped(false); setPromptFailure(null); return; }
       cancelPrompt();
     },
-    askDiscard: () => { discardStepped.current = true; setDiscarding(true); },
+    askDiscard: () => setStepped(true),
     cancelDiscard,
     stop: discard => {
-      setAsking(false); setDiscarding(false); discardStepped.current = false;
-      const prompt = prompts.retire();
-      run(discard ? 'Couldn’t discard the session.' : 'Couldn’t save the recording.', () => api.stopRecording(discard, prompt));
+      if (!asked) return;
+      clearError();
+      const { sessionKey: key } = asked;
+      const stop = () => answerPrompt(discard ? 'Couldn’t discard the session.' : 'Couldn’t save the recording.', () => api.stopRecording(discard, key), stop);
+      stop();
     },
     record: () => run('Couldn’t start recording.', api.startRecording),
     open: recording => run(recording ? 'Couldn’t open the recording in BattlePlan.' : 'Couldn’t open BattlePlan.', () => api.openReplay(recording)),
@@ -670,8 +692,8 @@ export default function RecorderPanel() {
       void updates.run('Couldn’t change the update channel.', () => setUpdateChannel(channel));
     },
   };
-  return <PanelView snapshot={snapshot} settings={settings} view={view} asking={asking} error={failure?.text ?? null} errorDetail={failure?.detail}
+  return <PanelView snapshot={snapshot} settings={settings} view={view} asking={prompting} error={failure?.text ?? null} errorDetail={failure?.detail}
     errorCaveat={failure?.caveat} now={Date.now()}
     actions={actions} root={root} compact={compact} recordings={recordings} relisting={relisting} quitting={quitting} discarding={discarding} confirmingWaiting={confirmingWaiting}
-    update={updatesAvailable ? update : undefined} />;
+    promptBusy={promptAction} promptFailure={promptFailure} update={updatesAvailable ? update : undefined} />;
 }

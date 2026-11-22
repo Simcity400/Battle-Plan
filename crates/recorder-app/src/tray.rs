@@ -216,7 +216,7 @@ pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            OPEN => panel::open(app, None, panel::Opening::Panel),
+            OPEN => panel::open(app, None, false),
             START => recorder.record(),
             SAVE => recorder.save(app),
             DISCARD => recorder.ask_discard(app),

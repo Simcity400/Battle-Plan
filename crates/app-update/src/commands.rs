@@ -38,7 +38,7 @@ pub async fn app_update_download(app: AppHandle) -> Result<UpdateState, String> 
 
 #[tauri::command]
 pub async fn app_update_install(app: AppHandle) -> Result<(), String> {
-    blocking(app, |app, updates| updates.install(app, false)).await
+    blocking(app, |app, updates| updates.install(app)).await
 }
 
 #[tauri::command]
