@@ -1,4 +1,4 @@
-#[path = "../../engine/tests/support/unit_world.rs"]
+#[path = "../../engine/tests/native/support/unit_world.rs"]
 pub(crate) mod fixture;
 use crate::division_detail::OwnedDetails;
 use collector_divisions::division_census::Census;
