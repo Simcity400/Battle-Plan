@@ -32,7 +32,7 @@ const WAR_SUPPORT_KEY: u32 = 6;
 const UNTRACKED_KEY: u32 = TRACKED as u32 + 1;
 const IMAGE: usize = (localization_root_layout::SINGLETON_RVA.0 + 8 + 15) & !15;
 const ACTIVE_STATICS: [usize; 3] = [0, 2, 3];
-const ACTIVE_SCALED: [usize; 1] = [4];
+const ACTIVE_SCALED: [usize; 0] = [];
 
 struct Arena {
     bytes: Vec<u8>,
@@ -603,7 +603,7 @@ impl Run {
             };
             kinds[index] += 1;
         }
-        assert_eq!(kinds, [112, 30, 2, 2, 6, 6, 2, 20, 20]);
+        assert_eq!(kinds, [114, 30, 2, 2, 6, 6, 0, 20, 20]);
     }
 
     fn report(&self, n: usize, times: &mut [u128], reads: ReadCounts) {

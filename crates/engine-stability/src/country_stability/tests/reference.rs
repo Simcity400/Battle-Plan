@@ -97,26 +97,22 @@ fn inputs<M: Memory>(
     let mut penalties = [0_u8; 40];
     let mut coastal = [0_u8; 8];
     let mut children = [0_u8; 16];
-    let mut pride_sunk = [0_u8; 1];
     if memory.copy_scattered(
         [
             at(c, ccountry::STABILITY)?,
             at(c, PROPAGANDA_STABILITY_PENALTY)?,
             at(c, COASTAL_PROTECTION_STABILITY)?,
             at(c, MODIFIER_CHILDREN)?,
-            at(c, PRIDE_OF_THE_FLEET_SUNK_ACTIVE)?,
         ],
-        &mut [
-            &mut bases,
-            &mut penalties,
-            &mut coastal,
-            &mut children,
-            &mut pride_sunk,
-        ],
-    ) != 5
+        &mut [&mut bases, &mut penalties, &mut coastal, &mut children],
+    ) != 4
     {
         return Err("country stability fields unreadable");
     }
+    let pride_sunk = at(c, PRIDE_OF_THE_FLEET_SUNK_ACTIVE)
+        .ok()
+        .and_then(|address| read::<u8>(memory, address))
+        .map(|flag| flag != 0);
     let children = Array::from_header(children, 8).ok_or("country modifier children invalid")?;
     let wars = war_flags(memory, base, countries, country)?;
     phase!(Totals);
@@ -170,7 +166,7 @@ fn inputs<M: Memory>(
         StaticWitnesses {
             attache_sent: wars.attache_sent,
             at_war_mode0: wars.at_war_mode0,
-            pride_sunk: pride_sunk[0] != 0,
+            pride_sunk,
         },
     ))
 }
@@ -179,11 +175,11 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
     phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
     let head = read::<[u8; 8]>(memory, status).ok_or("political status unreadable")?;
-    if u64::from_le_bytes(head) != at(base, cpolitical_status::VTABLE_RVA.0)? as u64 {
+    if u64::from_le_bytes(head) != site(base, cpolitical_status::VTABLE_RVA)? as u64 {
         return Err("political status vtable mismatch");
     }
     let party = pointer(memory, at(status, cpolitical_status::RULING_PARTY)?)?;
-    if read::<u64>(memory, party) != Some(at(base, cpolitical_party::VTABLE_RVA.0)? as u64) {
+    if read::<u64>(memory, party) != Some(site(base, cpolitical_party::VTABLE_RVA)? as u64) {
         return Err("ruling party vtable mismatch");
     }
     read::<i64>(memory, at(party, cpolitical_party::POPULARITY)?)
@@ -201,28 +197,28 @@ fn war_flags<M: Memory>(
     let mut head = [0_u8; 8];
     let mut owned = [0_u8; 16];
     let mut owner = [0_u8; 8];
-    let mut enemies = [0_u8; 4];
     if memory.copy_scattered(
         [
             diplomacy,
             at(diplomacy, cdiplomacy_status::OWNED_RELATIONS)?,
             at(diplomacy, cdiplomacy_status::COUNTRY)?,
-            at(diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)?,
         ],
-        &mut [&mut head, &mut owned, &mut owner, &mut enemies],
-    ) != 4
+        &mut [&mut head, &mut owned, &mut owner],
+    ) != 3
     {
         return Err("country diplomacy unreadable");
     }
-    if u64::from_le_bytes(head) != at(base, cdiplomacy_status::VTABLE_RVA.0)? as u64 {
+    if u64::from_le_bytes(head) != site(base, cdiplomacy_status::VTABLE_RVA)? as u64 {
         return Err("country diplomacy vtable mismatch");
     }
     if pointer_from(&owner)? != country.pointer {
         return Err("country diplomacy owner is another country");
     }
     let owned = Array::from_header(owned, 8).ok_or("owned relation array invalid")?;
-    let war_vtable = at(base, cwar_relation::VTABLE_RVA.0)? as u64;
-    let attache_vtable = at(base, cattache_relation::VTABLE_RVA.0)? as u64;
+    let war_vtable = site(base, cwar_relation::VTABLE_RVA)? as u64;
+    let attache_vtable = site(base, cattache_relation::VTABLE_RVA)
+        .ok()
+        .map(|address| address as u64);
     let same = |raw: u32| -> Result<bool, &'static str> {
         Ok(raw == country.id
             || (raw != 0
@@ -230,7 +226,8 @@ fn war_flags<M: Memory>(
                 && countries.link(raw)? == countries.link(country.id)?))
     };
     let (mut at_war, mut offensive, mut defensive) = (false, false, false);
-    let (mut has_war_relation, mut attache_sent) = (false, false);
+    let mut has_war_relation = false;
+    let mut attache_sent = attache_vtable.map(|_| false);
     pointer_pages(memory, owned, |relation| {
         let header = read::<[u8; 0x18]>(memory, relation).ok_or("relation unreadable")?;
         let type_id = u32::from_le_bytes(
@@ -239,15 +236,26 @@ fn war_flags<M: Memory>(
                 .unwrap(),
         );
         if type_id == cattache_relation::TYPE {
-            if u64::from_le_bytes(header[..8].try_into().unwrap()) != attache_vtable {
-                return Err("attache relation vtable mismatch");
+            if let Some(expected_vtable) = attache_vtable {
+                if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected_vtable {
+                    attache_sent = None;
+                } else {
+                    let first = u32::from_le_bytes(
+                        header[crelation::FIRST_COUNTRY..crelation::FIRST_COUNTRY + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    match same(first) {
+                        Ok(true) => {
+                            if let Some(sent) = attache_sent.as_mut() {
+                                *sent = true;
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(_) => attache_sent = None,
+                    }
+                }
             }
-            let first = u32::from_le_bytes(
-                header[crelation::FIRST_COUNTRY..crelation::FIRST_COUNTRY + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            attache_sent |= same(first)?;
             return Ok(());
         }
         if type_id != cwar_relation::TYPE {
@@ -277,11 +285,19 @@ fn war_flags<M: Memory>(
         }
         Ok(())
     })?;
+    let at_war_mode0 = if has_war_relation {
+        Some(true)
+    } else {
+        at(diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)
+            .ok()
+            .and_then(|address| read::<i32>(memory, address))
+            .map(|count| count != 0)
+    };
     Ok(WarFlags {
         at_war,
         offensive_war: offensive,
         defensive_war: defensive,
-        at_war_mode0: i32::from_le_bytes(enemies) != 0 || has_war_relation,
+        at_war_mode0,
         attache_sent,
         diplomacy,
     })
@@ -338,7 +354,7 @@ fn read_children(
         crate::allocation::resize(&mut scratch.backward, count, NONE)
             .map_err(|_| "stability pairing storage allocation failed")?;
     }
-    let vtable = at(base, cmodifier::VTABLE_RVA.0)? as u64;
+    let vtable = site(base, cmodifier::VTABLE_RVA)? as u64;
     let mut index = 0;
     let mut heads = [0_u8; 64 * CHILD_HEAD_BYTES];
     pointer_pages_gathered(memory, children, &mut heads, |child, head| {
@@ -569,8 +585,8 @@ fn candidates(
     let status = pointer(memory, at(c, ccountry::POLITICAL_STATUS)?)?;
     let ideas = Array::read(memory, at(status, cpolitical_status::IDEAS)?, 8)
         .ok_or("active idea array invalid")?;
-    let primary = at(base, cidea::VTABLE_RVA.0)? as u64;
-    let secondary = at(base, cidea::SECONDARY_VTABLE_RVA.0)? as u64;
+    let primary = site(base, cidea::VTABLE_RVA)? as u64;
+    let secondary = site(base, cidea::SECONDARY_VTABLE_RVA)? as u64;
     pointer_pages(memory, ideas, |idea| {
         let vtable = read::<u64>(memory, idea).ok_or("active idea vtable unreadable")?;
         let object = if vtable == secondary {
@@ -608,7 +624,7 @@ fn candidates(
         let mut head = [0_u8; 16];
         if !read_slice(memory, leader, &mut head)
             || u64::from_le_bytes(head[..8].try_into().unwrap())
-                != at(base, ccountry_leader::VTABLE_RVA.0)? as u64
+                != site(base, ccountry_leader::VTABLE_RVA)? as u64
         {
             return Err("country leader unreadable or vtable mismatch");
         }
@@ -623,7 +639,7 @@ fn candidates(
     }
     phase!(Ideology);
     let group = pointer_from(&group)?;
-    if read::<u64>(memory, group) != Some(at(base, cideology_group::VTABLE_RVA.0)? as u64) {
+    if read::<u64>(memory, group) != Some(site(base, cideology_group::VTABLE_RVA)? as u64) {
         return Err("ruling ideology group vtable mismatch");
     }
     list.source(
@@ -640,7 +656,7 @@ fn candidates(
         let object = usize::try_from(object).map_err(|_| "country characters overflow")?;
         let head = read::<[u8; 16]>(memory, object).ok_or("country characters unreadable")?;
         if u64::from_le_bytes(head[..8].try_into().unwrap())
-            != at(base, ccountry_characters::VTABLE_RVA.0)? as u64
+            != site(base, ccountry_characters::VTABLE_RVA)? as u64
             || pointer_from(&head[8..])? != c
         {
             return Err("country characters vtable or owner mismatch");
@@ -651,7 +667,7 @@ fn candidates(
             8,
         )
         .ok_or("appointed advisor array invalid")?;
-        let vtable = at(base, cadvisor::VTABLE_RVA.0)? as u64;
+        let vtable = site(base, cadvisor::VTABLE_RVA)? as u64;
         pointer_pages(memory, advisors, |advisor| {
             let mut head = [0_u8; 24];
             if !read_slice(memory, advisor, &mut head)
@@ -699,7 +715,6 @@ fn candidates(
         list.values(memory, definition, header.values)?
             .identity(id, scope.0, scope.1);
     }
-    list.statics(memory, context, witnesses, 3)?;
     Ok(list.len)
 }
 
@@ -862,7 +877,7 @@ impl Builder<'_> {
 fn character_id(memory: &impl Memory, base: usize, character: usize) -> Result<u32, &'static str> {
     let identity = read::<[u8; 16]>(memory, character).ok_or("character unreadable")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap())
-        != at(base, ccharacter::VTABLE_RVA.0)? as u64
+        != site(base, ccharacter::VTABLE_RVA)? as u64
         || u32::from_le_bytes(
             identity[ccharacter::TYPE..ccharacter::ID]
                 .try_into()

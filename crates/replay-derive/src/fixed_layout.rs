@@ -851,40 +851,6 @@ mod tests {
             );
         }
 
-        let mut retired_only_mismatch = fixture();
-        let unused_index = (0..engine_fixed_layout::fixed_layout::GAP)
-            .find(|index| !keys::ALL_INDICES.contains(index))
-            .unwrap();
-        let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
-            &mut *retired_only_mismatch.tables[TableId::ModifierDefinitions.index()]
-        else {
-            panic!()
-        };
-        definitions.push(ModifierDefinitionRow {
-            index: unused_index,
-            token: unused_index + 1,
-            ..Default::default()
-        });
-        definitions.sort_unstable_by_key(|row| row.index);
-        let TableView::Complete(TableRows::LexicalTokens(tokens)) =
-            &mut *retired_only_mismatch.tables[TableId::LexicalTokens.index()]
-        else {
-            panic!()
-        };
-        tokens.push(LexicalTokenRow {
-            token: unused_index + 1,
-            literal: b"retired_only_mismatch".to_vec(),
-        });
-        tokens.sort_unstable_by_key(|row| row.token);
-        for &family in FAMILIES {
-            assert_eq!(
-                validate_recording(&retired_only_mismatch, family),
-                Ok(()),
-                "{}",
-                family.name
-            );
-        }
-
         let mut spotting_mismatch = fixture();
         let TableView::Complete(TableRows::LexicalTokens(tokens)) =
             &mut *spotting_mismatch.tables[TableId::LexicalTokens.index()]

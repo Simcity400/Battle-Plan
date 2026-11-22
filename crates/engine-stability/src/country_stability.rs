@@ -93,18 +93,18 @@ enum StaticWitness {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct StaticWitnesses {
-    attache_sent: bool,
-    at_war_mode0: bool,
-    pride_sunk: bool,
+    attache_sent: Option<bool>,
+    at_war_mode0: Option<bool>,
+    pride_sunk: Option<bool>,
 }
 
 impl StaticWitnesses {
     fn active(self, witness: StaticWitness) -> bool {
         match witness {
-            StaticWitness::AttacheSent => self.attache_sent,
-            StaticWitness::AtPeace => !self.at_war_mode0,
-            StaticWitness::AtWar => self.at_war_mode0,
-            StaticWitness::PrideSunk => self.pride_sunk,
+            StaticWitness::AttacheSent => self.attache_sent == Some(true),
+            StaticWitness::AtPeace => self.at_war_mode0 == Some(false),
+            StaticWitness::AtWar => self.at_war_mode0 == Some(true),
+            StaticWitness::PrideSunk => self.pride_sunk == Some(true),
         }
     }
 }
@@ -116,7 +116,7 @@ struct StaticSlot {
     phase: u8,
     witness: StaticWitness,
 }
-const STATIC_SLOTS: [StaticSlot; 5] = [
+const STATIC_SLOTS: [StaticSlot; 4] = [
     StaticSlot {
         offset: 0x90,
         scaled: false,
@@ -140,12 +140,6 @@ const STATIC_SLOTS: [StaticSlot; 5] = [
         scaled: false,
         phase: 2,
         witness: StaticWitness::PrideSunk,
-    },
-    StaticSlot {
-        offset: 0x88,
-        scaled: true,
-        phase: 3,
-        witness: StaticWitness::AtWar,
     },
 ];
 
@@ -732,26 +726,22 @@ fn inputs<M: Memory>(
     let mut penalties = [0_u8; 40];
     let mut coastal = [0_u8; 8];
     let mut children = [0_u8; 16];
-    let mut pride_sunk = [0_u8; 1];
     if memory.copy_scattered(
         [
             at(c, ccountry::STABILITY)?,
             at(c, PROPAGANDA_STABILITY_PENALTY)?,
             at(c, COASTAL_PROTECTION_STABILITY)?,
             at(c, MODIFIER_CHILDREN)?,
-            at(c, PRIDE_OF_THE_FLEET_SUNK_ACTIVE)?,
         ],
-        &mut [
-            &mut bases,
-            &mut penalties,
-            &mut coastal,
-            &mut children,
-            &mut pride_sunk,
-        ],
-    ) != 5
+        &mut [&mut bases, &mut penalties, &mut coastal, &mut children],
+    ) != 4
     {
         return Err("country stability fields unreadable");
     }
+    let pride_sunk = at(c, PRIDE_OF_THE_FLEET_SUNK_ACTIVE)
+        .ok()
+        .and_then(|address| read::<u8>(memory, address))
+        .map(|flag| flag != 0);
     let children = Array::from_header(children, 8).ok_or("country modifier children invalid")?;
     let wars = war_flags(memory, base, countries, country)?;
     phase!(Totals);
@@ -805,7 +795,7 @@ fn inputs<M: Memory>(
         StaticWitnesses {
             attache_sent: wars.attache_sent,
             at_war_mode0: wars.at_war_mode0,
-            pride_sunk: pride_sunk[0] != 0,
+            pride_sunk,
         },
     ))
 }
@@ -829,8 +819,8 @@ struct WarFlags {
     at_war: bool,
     offensive_war: bool,
     defensive_war: bool,
-    at_war_mode0: bool,
-    attache_sent: bool,
+    at_war_mode0: Option<bool>,
+    attache_sent: Option<bool>,
     diplomacy: usize,
 }
 
@@ -845,16 +835,14 @@ fn war_flags<M: Memory>(
     let mut head = [0_u8; 8];
     let mut owned = [0_u8; 16];
     let mut owner = [0_u8; 8];
-    let mut enemies = [0_u8; 4];
     if memory.copy_scattered(
         [
             diplomacy,
             at(diplomacy, cdiplomacy_status::OWNED_RELATIONS)?,
             at(diplomacy, cdiplomacy_status::COUNTRY)?,
-            at(diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)?,
         ],
-        &mut [&mut head, &mut owned, &mut owner, &mut enemies],
-    ) != 4
+        &mut [&mut head, &mut owned, &mut owner],
+    ) != 3
     {
         return Err("country diplomacy unreadable");
     }
@@ -866,7 +854,9 @@ fn war_flags<M: Memory>(
     }
     let owned = Array::from_header(owned, 8).ok_or("owned relation array invalid")?;
     let war_vtable = site(base, cwar_relation::VTABLE_RVA)? as u64;
-    let attache_vtable = site(base, cattache_relation::VTABLE_RVA)? as u64;
+    let attache_vtable = site(base, cattache_relation::VTABLE_RVA)
+        .ok()
+        .map(|address| address as u64);
     let same = |raw: u32| -> Result<bool, &'static str> {
         Ok(raw == country.id
             || (raw != 0
@@ -874,7 +864,8 @@ fn war_flags<M: Memory>(
                 && countries.link(raw)? == countries.link(country.id)?))
     };
     let (mut at_war, mut offensive, mut defensive) = (false, false, false);
-    let (mut has_war_relation, mut attache_sent) = (false, false);
+    let mut has_war_relation = false;
+    let mut attache_sent = attache_vtable.map(|_| false);
     pointer_pages(memory, owned, |relation| {
         let header = read::<[u8; 0x18]>(memory, relation).ok_or("relation unreadable")?;
         let type_id = u32::from_le_bytes(
@@ -883,15 +874,26 @@ fn war_flags<M: Memory>(
                 .unwrap(),
         );
         if type_id == cattache_relation::TYPE {
-            if u64::from_le_bytes(header[..8].try_into().unwrap()) != attache_vtable {
-                return Err("attache relation vtable mismatch");
+            if let Some(expected_vtable) = attache_vtable {
+                if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected_vtable {
+                    attache_sent = None;
+                } else {
+                    let first = u32::from_le_bytes(
+                        header[crelation::FIRST_COUNTRY..crelation::FIRST_COUNTRY + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    match same(first) {
+                        Ok(true) => {
+                            if let Some(sent) = attache_sent.as_mut() {
+                                *sent = true;
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(_) => attache_sent = None,
+                    }
+                }
             }
-            let first = u32::from_le_bytes(
-                header[crelation::FIRST_COUNTRY..crelation::FIRST_COUNTRY + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            attache_sent |= same(first)?;
             return Ok(());
         }
         if type_id != cwar_relation::TYPE {
@@ -921,11 +923,19 @@ fn war_flags<M: Memory>(
         }
         Ok(())
     })?;
+    let at_war_mode0 = if has_war_relation {
+        Some(true)
+    } else {
+        at(diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)
+            .ok()
+            .and_then(|address| read::<i32>(memory, address))
+            .map(|count| count != 0)
+    };
     Ok(WarFlags {
         at_war,
         offensive_war: offensive,
         defensive_war: defensive,
-        at_war_mode0: i32::from_le_bytes(enemies) != 0 || has_war_relation,
+        at_war_mode0,
         attache_sent,
         diplomacy,
     })
@@ -1496,7 +1506,6 @@ fn candidates(
                 .identity(id, scope.0, scope.1);
         }
     }
-    list.statics(memory, context, witnesses, 3)?;
     Ok(list.len)
 }
 

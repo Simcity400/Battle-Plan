@@ -833,11 +833,9 @@ fn witnessed_conditional_statics_attribute_only_when_their_native_predicate_hold
         text(&walked, walked.lines[3].identity),
         b"pride_of_the_fleet_sunk_temporary"
     );
-    assert_eq!(walked.lines[4].kind, Kind::StaticScaled);
-    assert_eq!(
-        text(&walked, walked.lines[4].identity),
-        b"war_support_during_war"
-    );
+    assert_eq!(walked.lines[4].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[4].text), b"War support");
+    assert_eq!(walked.lines[4].value, -700);
 
     w.u32(ATTACHE_REL + crelation::FIRST_COUNTRY, 1);
     w.u32(ATTACHE_REL + crelation::SECOND_COUNTRY, 2);
@@ -845,6 +843,113 @@ fn witnessed_conditional_statics_attribute_only_when_their_native_predicate_hold
     assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 5 });
     assert_eq!(walked.lines[0].kind, Kind::Static);
     assert_eq!(text(&walked, walked.lines[0].identity), b"attache_sent");
+    assert_eq!(walked.lines[4].kind, Kind::Unpaired);
+}
+
+#[test]
+fn failed_witness_reads_preserve_stability_and_leave_only_that_static_unpaired() {
+    const PEACE: usize = 0x3b000;
+    const ATTACHE: usize = 0x3b400;
+    const SUNK: usize = 0x3b800;
+    const ATTACHE_REL: usize = 0x31400;
+    let fixture = || {
+        let mut w = world();
+        for (slot_offset, address, name, entries, display) in [
+            (
+                0x390,
+                PEACE,
+                b"country_is_at_peace".as_slice(),
+                [(STABILITY_KEY, 2_000)].as_slice(),
+                b"At peace".as_slice(),
+            ),
+            (
+                0x90,
+                ATTACHE,
+                b"attache_sent".as_slice(),
+                [(WAR_SUPPORT_KEY, 4_000)].as_slice(),
+                b"Attache".as_slice(),
+            ),
+            (
+                0xc0,
+                SUNK,
+                b"pride_of_the_fleet_sunk_temporary".as_slice(),
+                [(WAR_SUPPORT_KEY, -3_000)].as_slice(),
+                b"Pride sunk".as_slice(),
+            ),
+        ] {
+            w.u64(DATABASE + slot_offset, address as u64);
+            w.vtable(address, cstatic_modifier::VTABLE_RVA.0);
+            w.modifier(address, entries, display);
+            w.string(address + STATIC_NAME, name);
+        }
+        w.children(&[
+            (&[(WAR_SUPPORT_KEY, 4_000)], b"Attache"),
+            (&[(STABILITY_KEY, 2_000)], b"At peace"),
+            (&[(STABILITY_KEY, 5_000)], b"At war"),
+            (&[(WAR_SUPPORT_KEY, -3_000)], b"Pride sunk"),
+        ]);
+        w
+    };
+
+    let mut pride_fault = fixture();
+    pride_fault
+        .bytes
+        .remove(&(C1 + PRIDE_OF_THE_FLEET_SUNK_ACTIVE));
+    let walked = walk(&pride_fault, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 4 });
+    assert_eq!(walked.input.stability_raw, 50_000);
+    assert_eq!(walked.lines[2].kind, Kind::Static);
+    assert_eq!(text(&walked, walked.lines[2].identity), b"country_is_at_war");
+    assert_eq!(walked.lines[3].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[3].text), b"Pride sunk");
+
+    let mut enemy_fault = fixture();
+    enemy_fault.array(D1 + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+    enemy_fault.put(C1 + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
+    enemy_fault
+        .bytes
+        .remove(&(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT));
+    let walked = walk(&enemy_fault, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 4 });
+    assert_eq!(walked.input.stability_raw, 50_000);
+    assert_eq!(walked.lines[1].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[1].text), b"At peace");
+    assert_eq!(walked.lines[2].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[2].text), b"At war");
+    assert_eq!(walked.lines[3].kind, Kind::Static);
+    assert_eq!(
+        text(&walked, walked.lines[3].identity),
+        b"pride_of_the_fleet_sunk_temporary"
+    );
+
+    for bad_link in [false, true] {
+        let mut attache_fault = fixture();
+        attache_fault.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
+        attache_fault.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+        attache_fault.u64(RELATIONS, ATTACHE_REL as u64);
+        attache_fault.vtable(
+            ATTACHE_REL,
+            if bad_link {
+                cattache_relation::VTABLE_RVA.0
+            } else {
+                cwar_relation::VTABLE_RVA.0
+            },
+        );
+        attache_fault.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
+        attache_fault.u32(ATTACHE_REL + 0xc, 0);
+        attache_fault.u32(
+            ATTACHE_REL + crelation::FIRST_COUNTRY,
+            if bad_link { 99 } else { 1 },
+        );
+        attache_fault.u32(ATTACHE_REL + crelation::SECOND_COUNTRY, 2);
+        let walked = walk(&attache_fault, 16);
+        assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 4 });
+        assert_eq!(walked.input.stability_raw, 50_000);
+        assert_eq!(walked.lines[0].kind, Kind::Unpaired);
+        assert_eq!(text(&walked, walked.lines[0].text), b"Attache");
+        assert_eq!(walked.lines[2].kind, Kind::Static);
+        assert_eq!(text(&walked, walked.lines[2].identity), b"country_is_at_war");
+    }
 }
 
 #[test]
@@ -1119,7 +1224,34 @@ fn scaled_static_pairing_has_no_nonzero_key_population_cap() {
     assert!(
         walked.lines[..3]
             .iter()
-            .all(|row| row.kind == Kind::StaticScaled && row.value == 7)
+            .all(|row| row.kind == Kind::Unpaired && row.value == 7)
+    );
+    let source_entries = Array::read(&w, SCALED + cmodifier::ACCUMULATOR, 16).unwrap();
+    let child_entries = Array::read(&w, CHILD + cmodifier::ACCUMULATOR, 16).unwrap();
+    let child_signature = signature(&w, child_entries, |_, _| {}).unwrap();
+    let source_display = SCALED + cmodifier::DISPLAY_NAME;
+    let source_header = read::<[u8; 32]>(&w, source_display).unwrap();
+    let (len, digest) = display_digest(&w, source_display, source_header).unwrap();
+    assert!(
+        matches(
+            &w,
+            &[],
+            &Child {
+                entries: child_entries,
+                signature: child_signature,
+                display: (CHILD + cmodifier::DISPLAY_NAME, digest),
+                ..Default::default()
+            },
+            &Candidate {
+                kind: Kind::StaticScaled,
+                content: Content::Entries(source_entries),
+                display: Some((source_display, len, digest)),
+                scaled: true,
+                tracked: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
     );
 }
 
@@ -1198,11 +1330,12 @@ fn assert_same_walk(old: &Walked, new: &Walked) {
 
 fn scaled_world() -> World {
     let mut w = world();
-    const SCALED: usize = 0x6100_0000;
-    w.u64(DATABASE + 0x88, SCALED as u64);
-    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA.0);
-    w.modifier(SCALED, &[(STABILITY_KEY, 1)], b"Scaled static");
-    w.string(SCALED + STATIC_NAME, b"scaled_static");
+    const SUNK: usize = 0x6100_0000;
+    w.put(C1 + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
+    w.u64(DATABASE + 0xc0, SUNK as u64);
+    w.vtable(SUNK, cstatic_modifier::VTABLE_RVA.0);
+    w.modifier(SUNK, &[(STABILITY_KEY, 7)], b"Pride sunk");
+    w.string(SUNK + STATIC_NAME, b"pride_sunk");
     w.i64(VALUES, 250);
     w.children(&[
         (&[(STABILITY_KEY, 10_000)], b"Politics: Idea A"),
@@ -1213,9 +1346,9 @@ fn scaled_world() -> World {
         ),
         (&[(WAR_SUPPORT_KEY, 10_000)], b"Advisor"),
         (&[(STABILITY_KEY, 5_000)], b"At war"),
+        (&[(STABILITY_KEY, 7)], b"Pride sunk"),
         (&[(COMMAND_KEY, 100)], b"Dyn"),
         (&[(STABILITY_KEY, 250)], b"Dyn"),
-        (&[(STABILITY_KEY, 7)], b"Scaled static"),
     ]);
     w
 }
@@ -1318,7 +1451,6 @@ fn stability_batched_source_pages_keep_aliases_and_every_static_slot() {
         Phase::Advisors,
         Phase::Statics,
         Phase::Dynamic,
-        Phase::ScaledStatics,
     ] {
         assert!(
             batched.counts()[phase as usize] < serial.counts()[phase as usize],
@@ -1424,8 +1556,9 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
                         country,
                         &context,
                         StaticWitnesses {
-                            at_war_mode0: true,
-                            ..Default::default()
+                            attache_sent: Some(false),
+                            at_war_mode0: Some(true),
+                            pride_sunk: Some(true),
                         },
                         &mut scratch,
                     )
@@ -1513,12 +1646,12 @@ fn stability_failed_source_preparation_acquires_no_missing_scalars() {
 fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
     let expected = [
         (
-            [1, 16, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
-            [1, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
+            [2, 16, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
+            [2, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
         ),
         (
-            [1, 16, 4, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9],
-            [1, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6],
+            [2, 16, 4, 5, 6, 12, 1, 11, 8, 3, 9, 6, 13, 0, 50, 9],
+            [2, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 0, 0, 6],
         ),
     ];
     for (w, (before, after)) in [world(), scaled_world()].into_iter().zip(expected) {
@@ -1806,7 +1939,7 @@ fn stability_batched_copies_match_serial() {
         );
         assert_eq!(
             copies.counts(),
-            [1, 2, 4, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9]
+            [2, 3, 4, 5, 6, 12, 1, 11, 8, 3, 9, 6, 13, 0, 50, 9]
         );
         before += copies.calls.borrow().len();
         copies.calls.borrow_mut().clear();
@@ -1832,16 +1965,16 @@ fn stability_batched_copies_match_serial() {
         assert_eq!(
             copies.counts(),
             if slot == 1 {
-                [1, 2, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6]
+                [2, 3, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 0, 0, 6]
             } else {
-                [1, 2, 4, 5, 6, 3, 1, 5, 6, 0, 7, 0, 7, 0, 0, 2]
+                [2, 3, 4, 5, 6, 3, 1, 5, 6, 0, 7, 0, 7, 0, 0, 2]
             }
         );
         assert_eq!(new_scratch.batch_fallbacks(), 0);
         after += copies.calls.borrow().len();
     }
-    assert_eq!(before, COUNT as usize * 140);
-    assert_eq!(after, 57 + (COUNT as usize - 1) * 49);
+    assert_eq!(before, COUNT as usize * 142);
+    assert_eq!(after, 57 + (COUNT as usize - 1) * 51);
 }
 
 #[test]
