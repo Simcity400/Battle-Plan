@@ -141,6 +141,75 @@ pub struct Summary {
     pub elapsed: Duration,
 }
 
+struct RvaMap {
+    entries: Box<[(u32, u32)]>,
+    mask: usize,
+    shift: u32,
+}
+
+impl RvaMap {
+    const EMPTY_KEY: u32 = u32::MAX;
+
+    fn empty() -> Self {
+        Self {
+            entries: Box::new([]),
+            mask: 0,
+            shift: 0,
+        }
+    }
+
+    fn from_pairs(count: usize, pairs: impl Iterator<Item = (u32, u32)>) -> Self {
+        if count == 0 {
+            return Self::empty();
+        }
+        let capacity = (count.saturating_mul(2).max(16)).next_power_of_two();
+        let mask = capacity - 1;
+        let shift = 32 - capacity.trailing_zeros();
+        let mut entries = vec![(Self::EMPTY_KEY, 0_u32); capacity].into_boxed_slice();
+        for (key, value) in pairs {
+            if key == Self::EMPTY_KEY {
+                continue;
+            }
+            let mut slot = (key.wrapping_mul(0x9E37_79B1) >> shift) as usize & mask;
+            loop {
+                let stored = entries[slot].0;
+                if stored == Self::EMPTY_KEY {
+                    entries[slot] = (key, value);
+                    break;
+                }
+                if stored == key {
+                    break;
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+        Self {
+            entries,
+            mask,
+            shift,
+        }
+    }
+
+    #[inline]
+    fn get(&self, key: u32) -> Option<u32> {
+        if key == Self::EMPTY_KEY || self.entries.is_empty() {
+            return None;
+        }
+        let mask = self.mask;
+        let mut slot = (key.wrapping_mul(0x9E37_79B1) >> self.shift) as usize & mask;
+        loop {
+            let (stored, value) = self.entries[slot];
+            if stored == key {
+                return Some(value);
+            }
+            if stored == Self::EMPTY_KEY {
+                return None;
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+}
+
 pub struct Located {
     base: usize,
     identity: Option<[u8; 32]>,
@@ -148,7 +217,11 @@ pub struct Located {
     vtables: Vec<Result<u32, Reason>>,
     data: Vec<Result<u32, Reason>>,
     by_live: Vec<(u32, u32, u16)>,
+    live_code_min: u32,
+    live_code_max: u32,
     globals: Vec<(u32, u32)>,
+    resolved_keys: RvaMap,
+    globals_map: RvaMap,
     originals: Vec<([u8; ORIGINAL], u8)>,
     layout: Result<(), Reason>,
     messages: Vec<Option<String>>,
@@ -394,6 +467,8 @@ impl Located {
             originals.fill(([0; ORIGINAL], 0));
             layout = Err(Reason::Unreadable);
         }
+        let live_code_min = by_live.first().map_or(u32::MAX, |&(start, _, _)| start);
+        let live_code_max = by_live.iter().map(|&(_, end, _)| end).max().unwrap_or(0);
         let mut located = Self {
             base: image.base,
             identity: None,
@@ -401,7 +476,11 @@ impl Located {
             vtables,
             data,
             by_live,
+            live_code_min,
+            live_code_max,
             globals: Vec::new(),
+            resolved_keys: RvaMap::empty(),
+            globals_map: RvaMap::empty(),
             originals,
             layout,
             messages: Vec::new(),
@@ -419,6 +498,21 @@ impl Located {
             })
             .collect();
         located.globals.sort_unstable();
+        located.globals_map = RvaMap::from_pairs(
+            located.globals.len(),
+            located.globals.iter().copied(),
+        );
+        if located.layout.is_ok() {
+            let pairs = KEYS.iter().filter_map(|k| {
+                let live = match k.kind {
+                    Kind::Code(f) => located.code_address(f, k.rva),
+                    Kind::Vtable(v) => located.vtables[v as usize].ok(),
+                    Kind::Data(d) => located.data[d as usize].ok(),
+                }?;
+                Some((k.rva, live))
+            });
+            located.resolved_keys = RvaMap::from_pairs(KEYS.len(), pairs);
+        }
         located.messages = KEYS
             .iter()
             .map(|k| located.why(k).map(|r| Withheld::new(k.name, r.text()).to_string()))
@@ -493,7 +587,20 @@ impl Located {
         }
     }
 
+    #[inline]
     pub(crate) fn resolve(&self, base: usize, key: Rva) -> Verified<usize> {
+        if base == self.base
+            && let Ok(rva) = u32::try_from(key.0)
+            && let Some(live) = self.resolved_keys.get(rva)
+        {
+            return Ok(self.base + live as usize);
+        }
+        self.resolve_slow(base, key)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn resolve_slow(&self, base: usize, key: Rva) -> Verified<usize> {
         if base != self.base {
             return Err(Withheld::new(crate::name(key), "image base differs from the located module"));
         }
@@ -570,23 +677,22 @@ impl Located {
         self.messages[i].as_deref()
     }
 
+    #[inline]
     pub(crate) fn reference(&self, base: usize, address: usize) -> Option<Rva> {
         let rva = u32::try_from(address.checked_sub(base)?).ok()?;
         if base != self.base || self.layout.is_err() {
             return None;
         }
-        let i = self.by_live.partition_point(|&(s, _, _)| s <= rva).checked_sub(1);
-        if let Some(i) = i {
-            let (start, end, f) = self.by_live[i];
-            if rva < end {
-                return Some(Rva((FUNCTIONS[f as usize].reference + (rva - start)) as usize));
+        if rva >= self.live_code_min && rva < self.live_code_max {
+            let i = self.by_live.partition_point(|&(s, _, _)| s <= rva).checked_sub(1);
+            if let Some(i) = i {
+                let (start, end, f) = self.by_live[i];
+                if rva < end {
+                    return Some(Rva((FUNCTIONS[f as usize].reference + (rva - start)) as usize));
+                }
             }
         }
-        let i = self.globals.partition_point(|&(live, _)| live < rva);
-        self.globals
-            .get(i)
-            .filter(|&&(live, _)| live == rva)
-            .map(|&(_, key)| Rva(key as usize))
+        self.globals_map.get(rva).map(|key| Rva(key as usize))
     }
 }
 

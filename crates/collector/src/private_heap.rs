@@ -28,14 +28,14 @@ const FINE_CLASSES: usize = 64;
 const SMALL_LIMIT: usize = 32 * 1024;
 const CLASSES: usize = FINE_CLASSES + 5;
 const CACHE_CLASS_BYTES: usize = 64 * 1024;
-const DEPOT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_BATCH: usize = 128;
 const _: () = assert!(SMALL_LIMIT <= CACHE_CLASS_BYTES / 2);
 const PAGE: usize = 4096;
 const GRANULARITY: usize = 64 * 1024;
 const RECORD_BYTES: usize = 64;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 64 * 1024 * 1024;
+const KEPT_BYTES: usize = 512 * 1024 * 1024;
 
 fn class(size: usize) -> Option<usize> {
     if size <= FINE_CLASSES * 16 {
@@ -56,11 +56,27 @@ const fn class_size(class: usize) -> usize {
 }
 
 const fn batch(class: usize) -> u32 {
-    (CACHE_CLASS_BYTES / 2 / class_size(class)) as u32
+    let count = CACHE_CLASS_BYTES / 2 / class_size(class);
+    if count > MAX_BATCH {
+        MAX_BATCH as u32
+    } else {
+        count as u32
+    }
 }
 
-const fn batch_bytes(class: usize) -> usize {
-    batch(class) as usize * class_size(class)
+const fn slab_bytes(class: usize) -> usize {
+    let size = class_size(class);
+    let min_blocks = if (batch(class) as usize) < 4 {
+        4
+    } else {
+        batch(class) as usize
+    };
+    let want = min_blocks * size + RECORD_BYTES;
+    let mut bytes = GRANULARITY;
+    while bytes < want {
+        bytes *= 2;
+    }
+    bytes
 }
 
 fn next(block: *mut u8) -> *mut *mut u8 {
@@ -240,11 +256,11 @@ impl Cache {
         head
     }
 
-    fn keep(&mut self, class: usize, block: *mut u8, depot: &Depot, bounded: bool) -> bool {
+    fn keep(&mut self, class: usize, block: *mut u8, depot: &Depot) {
         let list = &mut self.lists[class];
         if list.count == batch(class) {
-            if !list.spare.is_null() && !depot.keep(class, list.spare, bounded) {
-                return false;
+            if !list.spare.is_null() {
+                depot.keep(class, list.spare);
             }
             list.spare = list.head;
             list.head = ptr::null_mut();
@@ -253,7 +269,6 @@ impl Cache {
         unsafe { next(block).write(list.head) };
         list.head = block;
         list.count += 1;
-        true
     }
 }
 
@@ -297,48 +312,41 @@ fn side() -> usize {
 
 struct Depot {
     classes: [Stack; CLASSES],
-    bytes: AtomicUsize,
+    singles: [Stack; CLASSES],
 }
 
 impl Depot {
     const fn new() -> Self {
         Self {
             classes: [const { Stack::new() }; CLASSES],
-            bytes: AtomicUsize::new(0),
+            singles: [const { Stack::new() }; CLASSES],
         }
     }
 
-    fn keep(&self, class: usize, batch_head: *mut u8, bounded: bool) -> bool {
-        let bytes = batch_bytes(class);
-        if bounded {
-            let reserved = self
-                .bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
-                    (held + bytes <= DEPOT_BYTES).then_some(held + bytes)
-                });
-            if reserved.is_err() {
-                return false;
-            }
-        } else {
-            self.bytes.fetch_add(bytes, Ordering::Relaxed);
-        }
+    fn keep(&self, class: usize, batch_head: *mut u8) {
         unsafe { parked_next(batch_head).write(next(batch_head).read()) };
         self.classes[class].push(batch_head);
-        true
     }
 
     fn take(&self, class: usize) -> *mut u8 {
         let head = self.classes[class].pop();
         if !head.is_null() {
             unsafe { next(head).write(parked_next(head).read()) };
-            self.bytes.fetch_sub(batch_bytes(class), Ordering::Relaxed);
         }
         head
     }
 
+    fn keep_single(&self, class: usize, block: *mut u8) {
+        self.singles[class].push(block);
+    }
+
+    fn take_single(&self, class: usize) -> *mut u8 {
+        self.singles[class].pop()
+    }
+
     fn clear(&self) {
         self.classes.iter().for_each(Stack::clear);
-        self.bytes.store(0, Ordering::Relaxed);
+        self.singles.iter().for_each(Stack::clear);
     }
 }
 
@@ -501,7 +509,6 @@ impl PrivateHeap {
         if size > SMALL_LIMIT {
             return unsafe { self.allocate_large(bytes, size, align, zeroed) };
         }
-        let flags = if zeroed { HEAP_ZERO_MEMORY } else { 0 };
         if align <= HEAP_ALIGNMENT
             && let Some(class) = class(bytes)
         {
@@ -513,11 +520,25 @@ impl PrivateHeap {
                     }
                     return kept;
                 }
+                let single = self.depot.take_single(class);
+                if !single.is_null() {
+                    if zeroed {
+                        unsafe { single.write_bytes(0, bytes) };
+                    }
+                    return single;
+                }
+                return unsafe { self.refill_slab(class, Some(cache)) };
             }
-            return self
-                .heap_call(|| unsafe { HeapAlloc(heap, flags, class_size(class)) })
-                .cast();
+            let reused = self.take_closed(class);
+            if !reused.is_null() {
+                if zeroed {
+                    unsafe { reused.write_bytes(0, bytes) };
+                }
+                return reused;
+            }
+            return unsafe { self.refill_slab(class, None) };
         }
+        let flags = if zeroed { HEAP_ZERO_MEMORY } else { 0 };
         let raw = self
             .heap_call(|| unsafe { HeapAlloc(heap, flags, bytes) })
             .cast::<u8>();
@@ -528,6 +549,86 @@ impl PrivateHeap {
         let aligned = unsafe { start.add(start.align_offset(align)) };
         unsafe { aligned.cast::<*mut u8>().sub(1).write(raw) };
         aligned
+    }
+
+    fn take_closed(&self, class: usize) -> *mut u8 {
+        let single = self.depot.take_single(class);
+        if !single.is_null() {
+            return single;
+        }
+        let head = self.depot.take(class);
+        if !head.is_null() {
+            let mut rest = unsafe { next(head).read() };
+            while !rest.is_null() {
+                let following = unsafe { next(rest).read() };
+                self.depot.keep_single(class, rest);
+                rest = following;
+            }
+        }
+        head
+    }
+
+    /// # Safety
+    /// `class` is a valid small size class `< CLASSES`. If `cache` is `Some`, its `lists[class]`
+    /// must currently be empty (`count == 0` and `spare.is_null()`).
+    unsafe fn refill_slab(&self, class: usize, cache: Option<&mut Cache>) -> *mut u8 {
+        let bytes = slab_bytes(class);
+        let base = self.virtual_alloc(ptr::null(), bytes, MEM_RESERVE | MEM_COMMIT);
+        if base.is_null() {
+            return ptr::null_mut();
+        }
+        let record = base.cast::<Record>();
+        unsafe {
+            (*record).reserved = bytes;
+            (*record).committed = bytes;
+        }
+        self.pages.made(record);
+        let size = class_size(class);
+        let count = (bytes - RECORD_BYTES) / size;
+        let first = unsafe { base.add(RECORD_BYTES) };
+        let batch_len = batch(class) as usize;
+        let mut index = 1;
+        if let Some(cache) = cache {
+            let list = &mut cache.lists[class];
+            let head_take = (count - index).min(batch_len - 1);
+            if head_take > 0 {
+                let mut head = ptr::null_mut();
+                for offset in 0..head_take {
+                    let block = unsafe { base.add(RECORD_BYTES + (index + offset) * size) };
+                    unsafe { next(block).write(head) };
+                    head = block;
+                }
+                list.head = head;
+                list.count = head_take as u32;
+                index += head_take;
+            }
+            if count - index >= batch_len {
+                let mut spare = ptr::null_mut();
+                for offset in 0..batch_len {
+                    let block = unsafe { base.add(RECORD_BYTES + (index + offset) * size) };
+                    unsafe { next(block).write(spare) };
+                    spare = block;
+                }
+                list.spare = spare;
+                index += batch_len;
+            }
+        }
+        while count - index >= batch_len {
+            let mut batch_head = ptr::null_mut();
+            for offset in 0..batch_len {
+                let block = unsafe { base.add(RECORD_BYTES + (index + offset) * size) };
+                unsafe { next(block).write(batch_head) };
+                batch_head = block;
+            }
+            self.depot.keep(class, batch_head);
+            index += batch_len;
+        }
+        while index < count {
+            let block = unsafe { base.add(RECORD_BYTES + index * size) };
+            self.depot.keep_single(class, block);
+            index += 1;
+        }
+        first
     }
 
     /// # Safety
@@ -651,12 +752,6 @@ impl PrivateHeap {
                 return ptr::null_mut();
             }
             unsafe { (*record).committed = end };
-        } else if end < committed
-            && self.page_call(|| unsafe {
-                VirtualFree(base.add(end).cast(), committed - end, MEM_DECOMMIT)
-            }) != 0
-        {
-            unsafe { (*record).committed = end };
         }
         body
     }
@@ -678,16 +773,21 @@ impl PrivateHeap {
         }
         let cache = std::mem::replace(&mut thread.cache, Cache::EMPTY);
         for (class, list) in cache.lists.into_iter().enumerate() {
-            for (head, whole) in [(list.spare, true), (list.head, list.count == batch(class))] {
-                if head.is_null() || (whole && self.depot.keep(class, head, true)) {
-                    continue;
-                }
-                let mut block = head;
-                while !block.is_null() {
-                    let following = unsafe { next(block).read() };
-                    self.heap_call(|| unsafe { HeapFree(heap, 0, block.cast()) });
-                    block = following;
-                }
+            if !list.spare.is_null() {
+                self.depot.keep(class, list.spare);
+            }
+            if list.head.is_null() {
+                continue;
+            }
+            if list.count == batch(class) {
+                self.depot.keep(class, list.head);
+                continue;
+            }
+            let mut block = list.head;
+            while !block.is_null() {
+                let following = unsafe { next(block).read() };
+                self.depot.keep_single(class, block);
+                block = following;
             }
         }
     }
@@ -755,21 +855,19 @@ unsafe impl GlobalAlloc for PrivateHeap {
             return unsafe { self.free_large(pointer) };
         }
         let domain = self.domain();
-        let heap = domain.handle.load(Ordering::Relaxed) as HANDLE;
-        let raw = if layout.align() <= HEAP_ALIGNMENT {
-            if let Some(class) = class(layout.size()) {
-                let thread = unsafe { &mut *thread() };
-                let bounded = thread.off_hold;
-                if let Some(cache) = thread.cache(domain.id)
-                    && cache.keep(class, pointer, &self.depot, bounded)
-                {
-                    return;
-                }
+        if layout.align() <= HEAP_ALIGNMENT
+            && let Some(class) = class(layout.size())
+        {
+            let thread = unsafe { &mut *thread() };
+            if let Some(cache) = thread.cache(domain.id) {
+                cache.keep(class, pointer, &self.depot);
+            } else {
+                self.depot.keep_single(class, pointer);
             }
-            pointer
-        } else {
-            unsafe { pointer.cast::<*mut u8>().sub(1).read() }
-        };
+            return;
+        }
+        let heap = domain.handle.load(Ordering::Relaxed) as HANDLE;
+        let raw = unsafe { pointer.cast::<*mut u8>().sub(1).read() };
         self.heap_call(|| unsafe { HeapFree(heap, 0, raw.cast()) });
     }
 
