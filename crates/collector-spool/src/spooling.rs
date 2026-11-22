@@ -2445,7 +2445,10 @@ impl Processor {
             },
         )?;
         campaign.assemble_line_output(&mut source, captured);
-        let event_feed_publication = captured.extended.event_feed().prepare_pack()?;
+        let event_feed_publication = captured
+            .extended
+            .event_feed(&mut self.owner)
+            .prepare_pack()?;
         if let Some(publication) = &event_feed_publication {
             let mut rows = engine_allocation::vec(1)?;
             rows.push(replay_data::rows::RowCodec::try_clone(publication.row())?);
@@ -2453,9 +2456,10 @@ impl Processor {
                 TableView::Complete(replay_data::rows::TableRows::EventFeedHistory(rows)),
             );
         }
-        let operation_publication = campaign
-            .operation_outcomes
-            .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables);
+        let operation_publication = campaign.operation_outcomes.assemble_owned(
+            captured.extended.operation_outcomes(&mut self.owner),
+            &mut source.tables,
+        );
         let map_event_publication = campaign.map_events.assemble_owned(
             &mut self.owner,
             captured.extended.map_events(),

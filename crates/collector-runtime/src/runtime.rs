@@ -4493,7 +4493,7 @@ fn spool_loop(
                     None
                 }
                 Err(error) => {
-                    frame.extended.discard_event_feed();
+                    frame.extended.discard_spooled_event_feed(processor.owner());
                     collector_equipment_destruction::equipment_destruction::lost_drain();
                     collector_naval_results::naval_result_sources::lost_drain();
                     collector_experience_gains::experience_gains::lost_drain();

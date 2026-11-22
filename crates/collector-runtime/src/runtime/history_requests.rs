@@ -1184,7 +1184,8 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
-            super::test_processor(&live, PreparedCampaigns::default(), session(1)).unwrap();
+            crate::runtime::test_processor(&live, PreparedCampaigns::default(), session(1))
+                .unwrap();
         for index in 0..2 {
             let capture = frames.capture();
             capture.frame(&owned[index]);
@@ -1260,7 +1261,8 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
-            super::test_processor(&root, PreparedCampaigns::default(), session(1)).unwrap();
+            crate::runtime::test_processor(&root, PreparedCampaigns::default(), session(1))
+                .unwrap();
         let capture = frames.capture();
         capture.frame(&owned[0]);
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0001 release {CAMPAIGN}")));
@@ -1336,7 +1338,8 @@ mod tests {
             ended.replays[0].clone()
         };
         let mut processor =
-            super::test_processor(&earlier, PreparedCampaigns::default(), session(1)).unwrap();
+            crate::runtime::test_processor(&earlier, PreparedCampaigns::default(), session(1))
+                .unwrap();
         for hour in 10..=11 {
             processor
                 .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, hour))
@@ -1346,7 +1349,7 @@ mod tests {
         drop(processor);
         let recording = save(&earlier);
         let history = PreparedCampaigns::load(&output, &session(2), |_| Ok(())).unwrap();
-        let mut processor = super::test_processor(&live, history, session(2)).unwrap();
+        let mut processor = crate::runtime::test_processor(&live, history, session(2)).unwrap();
         for hour in 20..=21 {
             processor
                 .frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, hour))

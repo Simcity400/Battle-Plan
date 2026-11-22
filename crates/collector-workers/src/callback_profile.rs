@@ -361,18 +361,25 @@ mod tests {
 
     #[test]
     fn slowest_join_retains_first_tie_and_does_not_cross_callbacks() {
-        reset_join();
-        assert!(take_join().role.is_none());
+        // SAFETY: this test owns its thread-local profile sample.
+        unsafe { reset_join() };
+        // SAFETY: this test owns its thread-local profile sample.
+        assert!(unsafe { take_join() }.role.is_none());
         record_join(0, 10, crate::acquisition::Profile::default());
         record_join(1, 9, crate::acquisition::Profile::default());
         record_join(2, 10, crate::acquisition::Profile::default());
-        assert_eq!(take_join().role, Some(0));
-        assert!(take_join().role.is_none());
+        // SAFETY: this test owns its thread-local profile sample.
+        assert_eq!(unsafe { take_join() }.role, Some(0));
+        // SAFETY: this test owns its thread-local profile sample.
+        assert!(unsafe { take_join() }.role.is_none());
         record_join(3, 11, crate::acquisition::Profile::default());
         record_join(4, 12, crate::acquisition::Profile::default());
-        assert_eq!(take_join().role, Some(4));
+        // SAFETY: this test owns its thread-local profile sample.
+        assert_eq!(unsafe { take_join() }.role, Some(4));
         record_join(5, 13, crate::acquisition::Profile::default());
-        reset_join();
-        assert!(take_join().role.is_none());
+        // SAFETY: this test owns its thread-local profile sample.
+        unsafe { reset_join() };
+        // SAFETY: this test owns its thread-local profile sample.
+        assert!(unsafe { take_join() }.role.is_none());
     }
 }

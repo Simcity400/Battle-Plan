@@ -1104,7 +1104,10 @@ impl Captured {
         self.overhead[TableId::LandCombatProgress.index()] += ticks;
     }
 
-    pub fn operation_outcomes(&self) -> &operation_outcomes::Captured {
+    pub fn operation_outcomes(
+        &self,
+        _owner: &mut crate::sampling::SpoolOwner,
+    ) -> &operation_outcomes::Captured {
         &self.operation_outcomes
     }
 
@@ -1119,7 +1122,11 @@ impl Captured {
         ticks
     }
 
-    pub fn discard_event_feed(&mut self) {
+    pub fn discard_spooled_event_feed(&mut self, _owner: &mut crate::sampling::SpoolOwner) {
+        self.discard_event_feed();
+    }
+
+    pub(crate) fn discard_event_feed(&mut self) {
         self.event_feed.discard();
     }
     pub(crate) fn take_event_feed_seal(&mut self) -> event_feed::Captured {
@@ -1135,7 +1142,7 @@ impl Captured {
         }
         self.event_feed = feed;
     }
-    pub fn event_feed(&self) -> &event_feed::Captured {
+    pub fn event_feed(&self, _owner: &mut crate::sampling::SpoolOwner) -> &event_feed::Captured {
         &self.event_feed
     }
 
@@ -2777,7 +2784,7 @@ impl Captured {
     }
 
     #[inline(never)]
-    pub fn capture_tables(
+    pub(crate) fn capture_tables(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -3079,7 +3086,7 @@ impl Captured {
 
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
-    pub fn capture_tables_late(
+    pub(crate) fn capture_tables_late(
         &mut self,
         memory: &impl Memory,
         base: usize,

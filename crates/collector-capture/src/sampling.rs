@@ -935,7 +935,7 @@ pub struct Shared {
     fixed_layout_buffer: UnsafeCell<Vec<u8>>,
     pub modifier_table: [AtomicU64; 2],
     pub division_mark: AtomicU64,
-    country_cache_swap: Mutex<CountryCacheSwap>,
+    pub(crate) country_cache_swap: Mutex<CountryCacheSwap>,
     pub country_cache_cells: AtomicUsize,
     pub country_intel: collector_intel::daily_intel::Home,
     pub template_home: collector_division_templates::extended::division_templates::Home,
@@ -951,9 +951,9 @@ pub struct Shared {
 }
 
 #[derive(Default)]
-struct CountryCacheSwap {
+pub(crate) struct CountryCacheSwap {
     next: Option<engine_allocation::SharedBox<Cache>>,
-    retired: Option<engine_allocation::SharedBox<Cache>>,
+    pub(crate) retired: Option<engine_allocation::SharedBox<Cache>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2289,7 +2289,10 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     #[cfg(feature = "callback_profile")]
     let profile_before = callback_profile_counters(shared);
     #[cfg(feature = "callback_profile")]
-    collector_workers::callback_profile_state::reset_join();
+    // SAFETY: the admitted capture owns this thread's profile sample.
+    unsafe {
+        collector_workers::callback_profile_state::reset_join()
+    };
     #[cfg(feature = "callback_profile")]
     let profile_stamp = collector_workers::callback_profile::Stamp::start();
     let dispatched = qpc();
@@ -2350,7 +2353,8 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
         sample.join_wait_ns = std::array::from_fn(|i| {
             after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
         });
-        sample.join = collector_workers::callback_profile_state::take_join();
+        // SAFETY: this capture is the sole consumer of its thread's profile sample.
+        sample.join = unsafe { collector_workers::callback_profile_state::take_join() };
         collector_workers::callback_profile::record(sample);
     }
 }

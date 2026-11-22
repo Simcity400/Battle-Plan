@@ -12,7 +12,9 @@ thread_local! {
     static JOIN: std::cell::Cell<Option<JoinSample>> = const { std::cell::Cell::new(None) };
 }
 
-pub fn reset_join() {
+/// # Safety
+/// Only the active capture on this thread may reset its profile sample.
+pub unsafe fn reset_join() {
     JOIN.set(None);
 }
 
@@ -41,7 +43,9 @@ fn keep(sample: JoinSample) {
     }
 }
 
-pub fn take_join() -> JoinSample {
+/// # Safety
+/// Only the active capture on this thread may take its profile sample.
+pub unsafe fn take_join() -> JoinSample {
     JOIN.take().unwrap_or_default()
 }
 
