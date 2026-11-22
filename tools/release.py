@@ -1,8 +1,8 @@
 """Release BattlePlan and BattlePlan Recorder, which share one version (Python 3.11+).
 
-The steps of the release workflows (docs/adr/0001-release-channels.md). Main's CI builds one
-release candidate per commit (.github/workflows/release-candidate.yml). The release workflow
-(.github/workflows/release.yml) verifies, signs, smoke-tests and publishes one, without compiling.
+The steps of the release workflows (docs/adr/0001-release-channels.md). The release workflow
+(.github/workflows/release.yml) builds a candidate when a release is due and none is kept
+(.github/workflows/release-candidate.yml), then verifies, signs, smoke-tests and publishes it.
 
   version   --channel stable|nightly|preview [--sha SHA] [--version V] [--github-output]
   candidate --installer FILE --channel C --version V --commit SHA --output FILE
@@ -21,7 +21,8 @@ compiled in, so a candidate belongs to one channel. After a stable release, `fin
 as the workspace version, over SSH with the release deploy key the checkout carries.
 
 `resolve` decides whether a release is due and from what. A nightly is due when main has changed
-since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true. A stable
+since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true or another
+nightly release run is going. A stable
 takes the commit the nightly feed offers unless `--sha` names one. A preview, a draft with no feed,
 takes main's head or `--sha`. `resolve --prepare` builds a stable candidate ahead, so its release
 only promotes. `publish --draft` is the dry run: everything goes to a new draft
@@ -71,6 +72,8 @@ ASSET_LIMIT = 2 * GB
 INSTALLER = "battleplan-{version}-x64-setup.exe"
 CANDIDATE_WORKFLOW = "release-candidate.yml"
 RELEASE_WORKFLOW = "release.yml"
+CI_WORKFLOW = "ci.yml"
+NIGHTLY_RUN = "Release nightly"
 PUSH_ATTEMPTS = 5
 BUMP_AUTHOR = "github-actions[bot]"
 BUMP_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
@@ -558,19 +561,19 @@ def artifact_name(channel, commit, version=None):
     return f"candidate-{channel}-{commit}" + (f"-{version}" if channel == "stable" else "")
 
 
-def produced(repo, artifact, channel):
-    """Whether this repository's main built the artifact `artifact` names: the candidate workflow on a
-    push to main or a dispatch on it, or, for stable and preview, the release workflow's build job,
-    whatever its later jobs did. None when it did; else why not."""
+def produced(repo, artifact):
+    """Whether this repository's main built the artifact `artifact` names: the candidate workflow
+    dispatched on main, or the release workflow's build job, whatever its later jobs did. None when
+    it did; else why not."""
     origin = artifact["workflow_run"]
     if origin.get("head_repository_id") != origin.get("repository_id") or origin.get("head_branch") != "main":
         return "it was not built from this repository's main"
     state = json.loads(run(["gh", "api", f"repos/{repo}/actions/runs/{origin['id']}"]).stdout)
-    if state["path"] == f".github/workflows/{CANDIDATE_WORKFLOW}" and state["event"] in ("push", "workflow_dispatch"):
+    if state["path"] == f".github/workflows/{CANDIDATE_WORKFLOW}" and state["event"] == "workflow_dispatch":
         if state["status"] != "completed":
             return "the run that builds it is still going"
         return None if state["conclusion"] == "success" else f"the run that built it ended {state['conclusion']}"
-    if state["path"] == f".github/workflows/{RELEASE_WORKFLOW}" and state["event"] == "workflow_dispatch" and channel != "nightly":
+    if state["path"] == f".github/workflows/{RELEASE_WORKFLOW}" and state["event"] in ("schedule", "workflow_dispatch"):
         jobs = run(["gh", "api", "--paginate", f"repos/{repo}/actions/runs/{origin['id']}/jobs",
                     "--jq", ".jobs[] | [.name, (.conclusion // \"\")] | @tsv"]).stdout.splitlines()
         built = [line.split("\t") for line in jobs if line.startswith("Build")]
@@ -578,7 +581,7 @@ def produced(repo, artifact, channel):
     return f"{state['path']} on {state['event']} does not build release candidates"
 
 
-def find_candidate(repo, name, channel):
+def find_candidate(repo, name):
     """The id of the newest run of this repository's main that built and kept the artifact `name`,
     or None and why there is none."""
     found = json.loads(run(["gh", "api", f"repos/{repo}/actions/artifacts?name={name}&per_page=100"]).stdout)["artifacts"]
@@ -589,7 +592,7 @@ def find_candidate(repo, name, channel):
         if artifact["expired"]:
             reasons.append("expired")
             continue
-        why = produced(repo, artifact, channel)
+        why = produced(repo, artifact)
         if why is None:
             return artifact["workflow_run"]["id"], None
         reasons.append(why)
@@ -599,9 +602,11 @@ def find_candidate(repo, name, channel):
 
 
 def ci_state(repo, commit):
-    """Why main's CI is not green on `commit`, or None once every workflow its push started has
-    settled green. Scheduled and dispatched runs, this release's own among them, are not main's CI."""
+    """Why main's CI is not green on `commit`, or None once every workflow its push started, CI among
+    them, has settled green. Scheduled and dispatched runs, this release's own among them, are not main's CI."""
     runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/runs?head_sha={commit}&event=push&per_page=100"]).stdout)["workflow_runs"]
+    if not any(found["path"] == f".github/workflows/{CI_WORKFLOW}" for found in runs):
+        return "its CI run has not started"
     latest = {}
     for found in runs:
         known = latest.get(found["workflow_id"])
@@ -615,11 +620,18 @@ def ci_state(repo, commit):
     return None
 
 
+def nightly_going(repo):
+    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{RELEASE_WORKFLOW}/runs?status=in_progress&per_page=100"]).stdout)["workflow_runs"]
+    own = int(os.environ.get("GITHUB_RUN_ID") or 0)
+    others = [found["run_number"] for found in runs if found["display_title"] == NIGHTLY_RUN and found["id"] != own]
+    return min(others, default=None)
+
+
 def resolve(args):
     """Whether a release of the channel is due, from which commit, and which artifact holds its
     candidate. A stable candidate can be prepared ahead (`--prepare`), so its release only promotes."""
     if args.prepare and args.channel != "stable":
-        raise Refused(f"Only a stable candidate is prepared ahead; a {args.channel} release takes its candidate from main's CI.")
+        raise Refused(f"Only a stable candidate is prepared ahead; a {args.channel} release builds its own.")
     repo = repository()
     git("fetch", "--quiet", "origin", "main")
     found = {"due": "false", "commit": "", "version": "", "artifact": "", "candidate_run": "", "build": "false",
@@ -643,11 +655,12 @@ def resolve(args):
             return outputs(found, args.github_output) or 0
         if why := ci_state(repo, commit):
             return not_yet(f"{commit[:12]}'s CI is not green: {why}")
+        if not args.draft and (going := nightly_going(repo)):
+            return not_yet(f"nightly release run {going} is going")
         name = artifact_name("nightly", commit)
-        built, why = find_candidate(repo, name, "nightly")
-        if built is None:
-            return not_yet(f"{commit[:12]} has no candidate: {why}")
-        found.update(due="true", commit=commit, artifact=name, candidate_run=str(built), publish="true")
+        built, _ = find_candidate(repo, name)
+        found.update(due="true", commit=commit, artifact=name, candidate_run=str(built or ""),
+                     build="false" if built else "true", publish="true")
     elif args.channel == "stable":
         if not args.sha:
             feed = read_feed(repo, "nightly")
@@ -661,7 +674,7 @@ def resolve(args):
         if not (newest == resolved and released(repo, f"v{resolved}")):
             refuse_older(resolved, newest, "the newest stable release")
         name = artifact_name("stable", commit, resolved)
-        built, _ = find_candidate(repo, name, "stable")
+        built, _ = find_candidate(repo, name)
         if built and args.prepare:
             say(f"The stable candidate {resolved} of {commit[:12]} is already prepared.")
             return outputs(found, args.github_output) or 0
@@ -893,8 +906,8 @@ def finalize(args):
     """After a stable release, main's workspace version becomes it: the release deploy key, which
     main's ruleset lets bypass its pull-request rule, pushes the bump straight to main over SSH,
     refetching main and stamping again whenever main moved first. A push with a deploy key starts
-    main's CI, so the bump gets its candidate as any commit does. An older release never sets the
-    version back."""
+    main's CI as any commit's does, so the next nightly can release the bump. An older release never
+    sets the version back."""
     for attempt in range(1, PUSH_ATTEMPTS + 1):
         git("fetch", "--quiet", "origin", "main")
         current = workspace_version(git("show", "origin/main:Cargo.toml"))

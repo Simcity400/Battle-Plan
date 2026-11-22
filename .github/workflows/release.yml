@@ -1,4 +1,5 @@
 name: Release
+run-name: Release ${{ inputs.channel || 'nightly' }}${{ inputs.draft && ' (dry run)' || '' }}
 
 on:
   schedule:
@@ -31,7 +32,7 @@ on:
         default: false
 
 concurrency:
-  group: release-${{ inputs.channel || 'nightly' }}${{ inputs.draft && format('-draft-{0}', github.run_id) || '' }}
+  group: ${{ (inputs.channel == 'stable' || inputs.channel == 'preview') && !inputs.draft && format('release-{0}', inputs.channel) || format('release-run-{0}', github.run_id) }}
   cancel-in-progress: false
   queue: max
 
@@ -87,7 +88,7 @@ jobs:
     if: needs.resolve.outputs.due == 'true' && needs.resolve.outputs.build == 'true'
     uses: ./.github/workflows/release-candidate.yml
     with:
-      channel: ${{ inputs.channel }}
+      channel: ${{ inputs.channel || 'nightly' }}
       commit: ${{ needs.resolve.outputs.commit }}
       version: ${{ inputs.channel == 'stable' && needs.resolve.outputs.version || '' }}
     secrets:
