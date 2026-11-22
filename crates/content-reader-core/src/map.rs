@@ -188,7 +188,10 @@ pub fn parse_definitions(input: &[u8]) -> io::Result<BTreeMap<u32, ProvinceDefin
     Ok(read_definitions(input)?.provinces)
 }
 
-pub fn decode_provinces_bmp(input: &[u8], definitions: &Definitions) -> io::Result<ProvinceImage> {
+pub fn decode_provinces_bmp(
+    input: &[u8],
+    definitions: &mut Definitions,
+) -> io::Result<ProvinceImage> {
     let bitmap = NativeBitmap::decode(input)?;
     let count = bitmap
         .width
@@ -198,16 +201,47 @@ pub fn decode_provinces_bmp(input: &[u8], definitions: &Definitions) -> io::Resu
     province_ids
         .try_reserve_exact(count)
         .map_err(|_| invalid("province image exceeds available memory"))?;
-    for y in 0..bitmap.height {
+    province_ids.resize(count, 0);
+    let mut next_id = definitions.provinces.len();
+    let mut added_colors = HashMap::new();
+    let mut added_provinces = Vec::new();
+    for file_row in 0..bitmap.height {
+        let y = bitmap.height - 1 - file_row;
         for x in 0..bitmap.width {
-            let rgb = bitmap.rgb(x, bitmap.height - 1 - y)?;
-            province_ids.push(*definitions.colors.get(&color_key(rgb)).ok_or_else(|| {
-                invalid(format!(
-                    "province BMP pixel ({x},{y}) has undefined RGB [{},{},{}]",
-                    rgb[0], rgb[1], rgb[2]
-                ))
-            })?);
+            let rgb = bitmap.rgb(x, file_row)?;
+            let key = color_key(rgb);
+            let id = match definitions
+                .colors
+                .get(&key)
+                .or_else(|| added_colors.get(&key))
+                .copied()
+            {
+                Some(id) => id,
+                None => {
+                    let id = u16::try_from(next_id).map_err(|_| {
+                        invalid(format!(
+                            "{} province records exceed the native u16 province IDs",
+                            next_id + 1
+                        ))
+                    })?;
+                    let id = u32::from(id);
+                    next_id += 1;
+                    added_colors.insert(key, id);
+                    added_provinces.push(ProvinceDefinition {
+                        id,
+                        rgb,
+                        kind: ProvinceKind::Land,
+                        continent: 0,
+                    });
+                    id
+                }
+            };
+            province_ids[y * bitmap.width + x] = id;
         }
+    }
+    definitions.colors.extend(added_colors);
+    for province in added_provinces {
+        definitions.provinces.insert(province.id, province);
     }
     Ok(ProvinceImage {
         width: bitmap.width as u32,
@@ -262,8 +296,8 @@ pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors>
 
 pub fn load(layers: &ResolvedLayers) -> io::Result<MapData> {
     let files = crate::terrain::read_default_map(layers)?;
-    let definitions = read_definitions(&layers.read(&files.file("definitions")?)?)?;
-    let image = decode_provinces_bmp(&layers.read(&files.file("provinces")?)?, &definitions)?;
+    let mut definitions = read_definitions(&layers.read(&files.file("definitions")?)?)?;
+    let image = decode_provinces_bmp(&layers.read(&files.file("provinces")?)?, &mut definitions)?;
     Ok(MapData {
         width: image.width,
         height: image.height,
@@ -294,13 +328,16 @@ mod tests {
 
     #[test]
     fn bmp_bgr_padding_and_file_rows_produce_top_left_ids() {
-        let definitions =
+        let mut definitions =
             read_definitions(b"0;0;0;0;land\n1;1;2;3;sea\n2;4;5;6;lake\n3;9;9;9;land\n").unwrap();
         let top_row = [3, 2, 1, 6, 5, 4, 222, 222];
         let bottom_row = [9, 9, 9, 3, 2, 1, 111, 111];
         assert_eq!(
-            decode_provinces_bmp(&bitmap(2, 2, &[bottom_row, top_row].concat()), &definitions)
-                .unwrap(),
+            decode_provinces_bmp(
+                &bitmap(2, 2, &[bottom_row, top_row].concat()),
+                &mut definitions,
+            )
+            .unwrap(),
             ProvinceImage {
                 width: 2,
                 height: 2,
@@ -311,52 +348,76 @@ mod tests {
 
     #[test]
     fn the_native_bitmap_loader_reads_what_the_header_says_it_reads() {
-        let definitions = read_definitions(b"0;0;0;0;land\n1;4;5;6;land\n").unwrap();
+        let mut definitions = read_definitions(b"0;0;0;0;land\n1;4;5;6;land\n").unwrap();
         let good = bitmap(1, 1, &[6, 5, 4, 88]);
         for (offset, value) in [(34, 999_u32), (10, 40), (2, 1)] {
             let mut bytes = good.clone();
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             assert_eq!(
-                decode_provinces_bmp(&bytes, &definitions)
+                decode_provinces_bmp(&bytes, &mut definitions)
                     .unwrap()
                     .province_ids,
                 [1]
             );
         }
         let unknown = bitmap(1, 1, &[3, 2, 1, 88]);
-        assert!(
-            decode_provinces_bmp(&unknown, &definitions)
-                .unwrap_err()
-                .to_string()
-                .contains("undefined RGB [1,2,3]")
+        let mut with_unclaimed = definitions.clone();
+        assert_eq!(
+            decode_provinces_bmp(&unknown, &mut with_unclaimed)
+                .unwrap()
+                .province_ids,
+            [2]
+        );
+        assert_eq!(
+            with_unclaimed.provinces.get(&2),
+            Some(&ProvinceDefinition {
+                id: 2,
+                rgb: [1, 2, 3],
+                kind: ProvinceKind::Land,
+                continent: 0,
+            })
         );
         for length in 0..good.len() {
-            assert!(decode_provinces_bmp(&good[..length], &definitions).is_err());
+            assert!(decode_provinces_bmp(&good[..length], &mut definitions).is_err());
         }
         for (offset, value) in [(18, 0_u32), (22, -1_i32 as u32), (30, 1)] {
             let mut bytes = good.clone();
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-            assert!(decode_provinces_bmp(&bytes, &definitions).is_err());
+            assert!(decode_provinces_bmp(&bytes, &mut definitions).is_err());
         }
         let mut wrong_bits = good;
         wrong_bits[28..30].copy_from_slice(&32_u16.to_le_bytes());
-        assert!(decode_provinces_bmp(&wrong_bits, &definitions).is_err());
+        assert!(decode_provinces_bmp(&wrong_bits, &mut definitions).is_err());
     }
 
     #[test]
     fn a_later_record_takes_a_shared_colour_and_record_zero_never_claims_one() {
-        let definitions =
+        let mut definitions =
             read_definitions(b"0;0;0;0;land\n1;0;0;0;land\n2;5;5;5;sea\n3;0;0;0;lake\n").unwrap();
         assert_eq!(definitions.provinces.len(), 4);
         let image = bitmap(2, 1, &[0, 0, 0, 5, 5, 5, 0, 0]);
         assert_eq!(
-            decode_provinces_bmp(&image, &definitions)
+            decode_provinces_bmp(&image, &mut definitions)
                 .unwrap()
                 .province_ids,
             [3, 2]
         );
-        let zero_only = read_definitions(b"0;0;0;0;land\n1;5;5;5;land\n").unwrap();
-        assert!(decode_provinces_bmp(&image, &zero_only).is_err());
+        let mut zero_only = read_definitions(b"0;0;0;0;land\n1;5;5;5;land\n").unwrap();
+        assert_eq!(
+            decode_provinces_bmp(&image, &mut zero_only)
+                .unwrap()
+                .province_ids,
+            [2, 1]
+        );
+        assert_eq!(
+            zero_only.provinces.get(&2),
+            Some(&ProvinceDefinition {
+                id: 2,
+                rgb: [0, 0, 0],
+                kind: ProvinceKind::Land,
+                continent: 0,
+            })
+        );
     }
 
     #[test]
@@ -545,5 +606,84 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("unresolved"));
+    }
+
+    #[test]
+    fn modded_bitmap_allocates_unclaimed_colours_in_file_row_order_and_carries_definitions() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("map_unclaimed_bmp");
+        let base = stack.base();
+        let addon = stack.addon();
+        stack.write(
+            &base,
+            "map/default.map",
+            "definitions=\"definition.csv\" provinces=\"provinces.bmp\" terrain=\"t.bmp\" rivers=\"r.bmp\" heightmap=\"h.bmp\" tree_definition=\"tr.bmp\"",
+        );
+        stack.write(
+            &base,
+            "map/definition.csv",
+            "0;0;0;0;land;false;unknown;0\n1;10;20;30;sea;false;ocean;0\n2;40;50;60;lake;false;lakes;2\n",
+        );
+        let bottom_row = [3, 2, 1, 0, 0, 0, 3, 2, 1, 0, 0, 0];
+        let top_row = [9, 8, 7, 30, 20, 10, 9, 8, 7, 0, 0, 0];
+        let pixels = [bottom_row, top_row].concat();
+        let modded_bmp = bitmap(3, 2, &pixels);
+        let path = addon.join("map/provinces.bmp");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, modded_bmp).unwrap();
+
+        let map = load(&stack.layers(&[])).unwrap();
+        assert_eq!((map.width, map.height), (3, 2));
+        assert_eq!(map.province_ids, [5, 1, 5, 3, 4, 3]);
+        assert_eq!(
+            map.definitions.get(&3),
+            Some(&ProvinceDefinition {
+                id: 3,
+                rgb: [1, 2, 3],
+                kind: ProvinceKind::Land,
+                continent: 0,
+            })
+        );
+        assert_eq!(
+            map.definitions.get(&4),
+            Some(&ProvinceDefinition {
+                id: 4,
+                rgb: [0, 0, 0],
+                kind: ProvinceKind::Land,
+                continent: 0,
+            })
+        );
+        assert_eq!(
+            map.definitions.get(&5),
+            Some(&ProvinceDefinition {
+                id: 5,
+                rgb: [7, 8, 9],
+                kind: ProvinceKind::Land,
+                continent: 0,
+            })
+        );
+        assert_eq!(map.definitions.len(), 6);
+        let mut full = Definitions {
+            provinces: (0..=u32::from(u16::MAX))
+                .map(|id| {
+                    (
+                        id,
+                        ProvinceDefinition {
+                            id,
+                            rgb: [0, 0, 0],
+                            kind: ProvinceKind::Land,
+                            continent: 0,
+                        },
+                    )
+                })
+                .collect(),
+            colors: HashMap::new(),
+        };
+        let overflow = bitmap(1, 1, &[1, 2, 3, 0]);
+        let error = decode_provinces_bmp(&overflow, &mut full)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("u16 province IDs"), "{error}");
+        assert_eq!(full.provinces.len(), 1 << 16);
     }
 }

@@ -231,18 +231,20 @@ mod tests {
             Some([2.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0, 1.0])
         );
         let packed = parse(
-            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}}}",
+            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}} argb={color=0x80102030}}",
             &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(packed.color(b"isle").unwrap(), Some([0.0, 1.0, 0.0, 1.0]));
-        assert!(
-            packed
-                .color(b"part")
-                .unwrap_err()
-                .contains("the packed colour 16711680")
+        assert_eq!(
+            packed.color(b"part").unwrap(),
+            Some([0.0, 1.0, 128.0 / 255.0, 1.0])
         );
         assert_eq!(packed.color(b"late").unwrap(), Some([0.0, 0.0, 1.0, 0.5]));
+        assert_eq!(
+            packed.color(b"argb").unwrap(),
+            Some([16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 128.0 / 255.0])
+        );
     }
 
     #[test]

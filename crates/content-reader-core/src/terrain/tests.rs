@@ -42,7 +42,7 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
 fn category_colours_read_over_white() {
     crate::test_game::enter();
     let definitions = database(&[
-        "categories={ bare={} forest={ color={ 89 199 85 } } pale={ color={ 0.5 0.25 1 0.5 } } }",
+        "categories={ bare={} forest={ color={ 89 199 85 } } pale={ color={ 0.5 0.25 1 0.5 } } packed={ color=0x80102030 } }",
     ]);
     let colors: Vec<_> = definitions
         .categories
@@ -55,6 +55,7 @@ fn category_colours_read_over_white() {
             Ok([1.0; 4]),
             Ok([89.0 / 255.0, 199.0 / 255.0, 85.0 / 255.0, 1.0]),
             Ok([0.5, 0.25, 1.0, 0.5]),
+            Ok([16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 128.0 / 255.0]),
         ]
     );
 }

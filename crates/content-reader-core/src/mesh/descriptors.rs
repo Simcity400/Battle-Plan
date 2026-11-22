@@ -1188,9 +1188,12 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     Some(MeshDefinition {
         name,
         file,
-        scale: text(items, b"scale")
-            .and_then(|value| crt::scan_f32(value.as_bytes()))
-            .unwrap_or(1.0),
+        scale: items
+            .iter()
+            .filter(|item| item.keyword_is("scale"))
+            .fold(1.0, |held, item| {
+                item.value.scalar().and_then(crt::scan_f32).unwrap_or(held)
+            }),
         settings,
         animations,
         cull_distance_squared,
@@ -1317,7 +1320,17 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         mesh: text(items, b"pdxmesh").map(unquote),
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
-        scale: text(items, b"scale").and_then(|value| crt::scan_f32(value.as_bytes())),
+        scale: items
+            .iter()
+            .filter(|item| item.keyword_is("scale"))
+            .fold(None, |held, item| {
+                Some(
+                    item.value
+                        .scalar()
+                        .and_then(crt::scan_f32)
+                        .unwrap_or_else(|| held.unwrap_or(1.0)),
+                )
+            }),
         cull_radius: Some(
             items
                 .iter()

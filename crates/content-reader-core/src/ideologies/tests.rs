@@ -166,10 +166,9 @@ fn colours_follow_component_reads_in_order() {
               c = { color = { 1tail 0 0 } } }",
         );
     assert_eq!(color(&ideologies, "a"), Ok([2.0 / 255.0, 0.0, 0.5, 1.0]));
-    assert!(
-        color(&ideologies, "b")
-            .unwrap_err()
-            .contains("the packed colour 16711680")
+    assert_eq!(
+        color(&ideologies, "b"),
+        Ok([113.0 / 255.0, 22.0 / 255.0, 128.0 / 255.0, 22.0 / 255.0])
     );
     assert_eq!(color(&ideologies, "c"), Ok([1.0, 0.0, 0.0, 1.0]));
     let ideologies = parsed(
@@ -189,14 +188,11 @@ fn a_later_complete_colour_replaces_a_packed_one() {
               b = { color = 16711680 color = { 0 0 x } } c = { color = { 0 0 0 } color = 16711680 } }",
     );
     assert_eq!(color(&ideologies, "a"), Ok([0.0, 1.0, 0.0, 1.0]));
-    for token in ["b", "c"] {
-        assert!(
-            color(&ideologies, token)
-                .unwrap_err()
-                .contains("the packed colour 16711680"),
-            "{token}"
-        );
-    }
+    assert_eq!(color(&ideologies, "b"), Ok([0.0, 0.0, 128.0 / 255.0, 1.0]));
+    assert_eq!(
+        color(&ideologies, "c"),
+        Ok([113.0 / 255.0, 22.0 / 255.0, 128.0 / 255.0, 22.0 / 255.0])
+    );
 }
 
 #[test]
@@ -335,4 +331,64 @@ fn count_names_preserve_sub_ideology_identity() {
     assert_eq!(names.is_ideology_type(b"SYNTHETIC_TYPE"), Ok(true));
     assert_eq!(names.is_ideology_type(b"synthetic_group"), Ok(false));
     assert_eq!(names.is_ideology(b"synthetic_group"), Ok(true));
+}
+
+#[test]
+fn packed_colours_decode_argb_handle_malformed_and_follow_order() {
+    crate::test_game::enter();
+    let rgba = |r: u8, g: u8, b: u8, a: u8| [r, g, b, a].map(|byte| f32::from(byte) / 255.0);
+    let ideologies = parsed(
+        b"ideologies = { \
+            argb = { color = 0x80102030 } \
+            hex_digits = { color = 16711680 } \
+            overflow = { color = 0x4ffffffff } \
+            neg_one = { color = -1 } \
+            prefix = { color = 12g } \
+            empty_hex = { color = { 10 20 30 } color = 0x } \
+            bare_minus = { color = { 10 20 30 } color = - } \
+            bad_dot = { color = { 10 20 30 } color = .5 } \
+            bad_hex = { color = { 10 20 30 } color = 0xg } \
+            bad_minus = { color = { 10 20 30 } color = -xyz } \
+            quoted = { color = { 10 20 30 } color = \"0x80102030\" } \
+            packed_then_block = { color = 0x80102030 color = { 0 255 0 } } \
+            packed_then_partial = { color = 0x80102030 color = { 0 0 x } } \
+            block_then_packed = { color = { 10 20 30 } color = 0x40506070 } \
+            packed_then_bad_packed = { color = 0x80102030 color = 0xg } \
+            packed_then_packed = { color = 0x80102030 color = 0x40506070 } \
+          }",
+    );
+    assert_eq!(color(&ideologies, "argb"), Ok(rgba(0x10, 0x20, 0x30, 0x80)));
+    assert_eq!(color(&ideologies, "hex_digits"), Ok(rgba(0x71, 0x16, 0x80, 0x16)));
+    assert_eq!(color(&ideologies, "overflow"), Ok(rgba(0xff, 0xff, 0xff, 0xff)));
+    assert_eq!(color(&ideologies, "neg_one"), Ok(rgba(0xff, 0xff, 0xff, 0xff)));
+    assert_eq!(color(&ideologies, "prefix"), Ok(rgba(0x00, 0x00, 0x12, 0x00)));
+    assert_eq!(color(&ideologies, "empty_hex"), Ok([0.0; 4]));
+    assert_eq!(color(&ideologies, "bare_minus"), Ok([0.0; 4]));
+    for preserved in ["bad_dot", "bad_hex", "bad_minus", "quoted"] {
+        assert_eq!(
+            color(&ideologies, preserved),
+            Ok(rgba(10, 20, 30, 255)),
+            "{preserved}"
+        );
+    }
+    assert_eq!(
+        color(&ideologies, "packed_then_block"),
+        Ok([0.0, 1.0, 0.0, 1.0])
+    );
+    assert_eq!(
+        color(&ideologies, "packed_then_partial"),
+        Ok([0.0, 0.0, f32::from(0x30_u8) / 255.0, 1.0])
+    );
+    assert_eq!(
+        color(&ideologies, "block_then_packed"),
+        Ok(rgba(0x50, 0x60, 0x70, 0x40))
+    );
+    assert_eq!(
+        color(&ideologies, "packed_then_bad_packed"),
+        Ok(rgba(0x10, 0x20, 0x30, 0x80))
+    );
+    assert_eq!(
+        color(&ideologies, "packed_then_packed"),
+        Ok(rgba(0x50, 0x60, 0x70, 0x40))
+    );
 }

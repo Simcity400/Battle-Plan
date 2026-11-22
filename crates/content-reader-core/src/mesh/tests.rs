@@ -2081,3 +2081,75 @@ fn collision_keeps_the_last_collision_shaded_mesh_and_narrows_its_indices() {
     assert_eq!(collision(&root(vec![shape(vec![mesh("PdxMeshStandard", triangle.clone(), vec![0, 1, 2])])])).unwrap(), None);
     assert!(collision(&root(vec![shape(vec![mesh("Collision", triangle, vec![0, 1, 3])])])).is_err());
 }
+
+#[test]
+fn entity_and_mesh_scale_multiply_and_follow_native_clone_and_field_rules() {
+    let descriptors = parse_descriptors(
+        br#"
+        objectTypes = {
+            pdxmesh = { name = "unit_mesh" file = "u.mesh" }
+            pdxmesh = { name = "mesh_only" file = "m.mesh" scale = 2.5 }
+            pdxmesh = { name = "alt_mesh" file = "a.mesh" scale = 0.75 }
+            pdxmesh = { name = "mesh_last_wins" file = "l.mesh" scale = 2.0 SCALE = 4.5 scale = bad }
+        }
+        entity = { name = "only_mesh" pdxmesh = "mesh_only" }
+        entity = { name = "only_entity" pdxmesh = "unit_mesh" scale = 3.25 }
+        entity = { name = "combined" pdxmesh = "mesh_only" scale = 0.4 }
+        entity = { name = "inherited" clone = "combined" }
+        entity = { name = "grandchild" clone = "inherited" }
+        entity = { name = "overridden" clone = "combined" scale = 1.6 }
+        entity = { name = "switched_mesh" clone = "combined" pdxmesh = "alt_mesh" }
+        entity = { name = "entity_last_wins" pdxmesh = "mesh_only" scale = 1.5 SCALE = 0.6 scale = bad }
+        entity = { name = "clone_bad_scale" clone = "combined" scale = bad }
+        "#,
+        "gfx/entities/scales.asset",
+    )
+    .unwrap();
+    let approx = |actual: f32, expected: f32, label: &str| {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "{label}: expected {expected}, got {actual}"
+        );
+    };
+    approx(descriptors.resolve("mesh_only").unwrap().scale, 2.5, "bare mesh");
+    approx(descriptors.resolve("only_mesh").unwrap().scale, 2.5, "entity unscaled");
+    approx(descriptors.resolve("only_entity").unwrap().scale, 3.25, "mesh unscaled");
+    approx(descriptors.resolve("combined").unwrap().scale, 1.0, "2.5 * 0.4");
+    approx(descriptors.resolve("inherited").unwrap().scale, 1.0, "clone inherits");
+    approx(descriptors.resolve("grandchild").unwrap().scale, 1.0, "grandchild inherits");
+    approx(descriptors.resolve("overridden").unwrap().scale, 4.0, "clone overrides 2.5 * 1.6");
+    approx(descriptors.resolve("switched_mesh").unwrap().scale, 0.3, "clone switches mesh 0.75 * 0.4");
+    approx(descriptors.resolve("mesh_last_wins").unwrap().scale, 4.5, "mesh repeated/case/bad scale");
+    approx(descriptors.resolve("entity_last_wins").unwrap().scale, 1.5, "entity repeated/case/bad scale");
+    approx(descriptors.resolve("clone_bad_scale").unwrap().scale, 2.5, "clone malformed scale resets entity factor to 1.0");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn roster_clone_inheritance_multiplies_entity_and_mesh_scale_factors() {
+    let roster = roster_of(
+        "scales",
+        &[
+            (
+                "gfx/models/meshes.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh scale = 2.5 }
+                    pdxmesh = { name = n file = n.mesh scale = 0.75 } }",
+            ),
+            (
+                "gfx/entities/scales.asset",
+                br#"entity = { name = "base" pdxmesh = "m" scale = 0.4 }
+                    entity = { name = "inherited" clone = "base" }
+                    entity = { name = "overridden" clone = "base" scale = 1.6 }
+                    entity = { name = "switched" clone = "base" pdxmesh = "n" }
+                    entity = { name = "bad_override" clone = "base" scale = bad }"#,
+            ),
+        ],
+        &[],
+    );
+    let resolve = |name: &str| roster.descriptors.resolve(name).unwrap().scale;
+    assert!((resolve("base") - 1.0).abs() < 1e-6);
+    assert!((resolve("inherited") - 1.0).abs() < 1e-6);
+    assert!((resolve("overridden") - 4.0).abs() < 1e-6);
+    assert!((resolve("switched") - 0.3).abs() < 1e-6);
+    assert!((resolve("bad_override") - 2.5).abs() < 1e-6);
+}

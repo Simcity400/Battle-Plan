@@ -2,7 +2,7 @@
 use crate::{
     ResolvedLayers,
     coverage::{Coverage, Gap},
-    crt::scan_f32,
+    crt::{Scanned, scan_f32, scan_x32},
     ideas::{RuleNode, rule_field},
     modifiers,
     parser::{
@@ -183,17 +183,11 @@ fn read_file_in(
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorReads {
     color: [f32; 4],
-    unknown: [bool; 4],
-    cause: String,
 }
 
 impl Default for ColorReads {
     fn default() -> Self {
-        Self {
-            color: WHITE,
-            unknown: [false; 4],
-            cause: String::new(),
-        }
+        Self { color: WHITE }
     }
 }
 
@@ -201,11 +195,15 @@ impl ColorReads {
     pub fn read(&mut self, item: &Item) {
         let Some(components) = item.value.items() else {
             if item.number() {
-                self.unknown = [true; 4];
-                self.cause = format!(
-                    "the packed colour {} (read as hexadecimal) is not converted",
-                    item.value.scalar().unwrap_or_default().escape_ascii()
-                );
+                let value = match scan_x32(item.value.scalar().unwrap_or_default()) {
+                    Scanned::Stored(value) => Some(value),
+                    Scanned::End => Some(0),
+                    Scanned::NoMatch => None,
+                };
+                if let Some(value) = value {
+                    let [b, g, r, a] = value.to_le_bytes();
+                    self.color = [r, g, b, a].map(|byte| f32::from(byte) / 255.0);
+                }
             }
             return;
         };
@@ -215,30 +213,23 @@ impl ColorReads {
             if index == 3 {
                 if let Some(alpha) = scanned {
                     self.color[3] = alpha;
-                    self.unknown[3] = false;
                 }
                 continue;
             }
             if let Some(value) = scanned {
                 self.color[index] = value;
-                self.unknown[index] = false;
             }
             if self.color[index] > 1.0 {
                 self.color[index] /= 255.0;
             }
             if index == 2 {
                 self.color[3] = 1.0;
-                self.unknown[3] = false;
             }
         }
     }
 
     pub fn color(&self) -> Result<[f32; 4], String> {
-        if self.unknown.contains(&true) {
-            Err(self.cause.clone())
-        } else {
-            Ok(self.color)
-        }
+        Ok(self.color)
     }
 }
 
