@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, runGroups, testGroups } from './test-ui.mjs';
+import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, runGroups, selectTests, testArguments, testGroups } from './test-ui.mjs';
 
 const driverTimeoutMs = 30_000;
 let checkedFiles;
@@ -30,6 +30,22 @@ test('test:ui runs every file once, with normal pure concurrency and serial brow
   const scheduled = groups.flatMap(group => group.files);
   assert.equal(new Set(scheduled).size, files.length, 'no test is scheduled twice');
   assert.deepEqual(scheduled.slice().sort(), files, 'no test is omitted');
+});
+
+test('test:ui runs only the named files, in their own groups, and refuses names it cannot run', async () => {
+  const files = await checkedTestFiles();
+  const pure = 'tools/test-ui.test.mjs', browser = browserTests[0];
+  const options = testArguments(['--group', 'browser', pure, browser.split('/').join('\\'), resolve(repositoryRoot, pure)]);
+  assert.equal(options.group, 'browser');
+  const chosen = selectTests(files, options.files, repositoryRoot, repositoryRoot);
+  assert.deepEqual(chosen, [pure, browser].sort(), 'separators and absolute paths name the same file once');
+  assert.deepEqual(selectTests(files, ['test-ui.test.mjs'], repositoryRoot, resolve(repositoryRoot, 'tools')), [pure]);
+  const groups = testGroups(chosen);
+  assert.deepEqual(groups.map(group => group.files), [[pure], [browser]]);
+  assert.throws(() => selectTests(files, [pure, 'ui/src/missing.test.ts'], repositoryRoot, repositoryRoot), /Not a discovered UI test: ui\/src\/missing\.test\.ts$/);
+  assert.throws(() => testArguments(['--tab-full', pure]), /takes no test files/);
+  assert.throws(() => testArguments(['--files', pure]), /Unknown option: --files/);
+  assert.throws(() => testArguments(['--group', 'all']), /--group takes node or browser, not all/);
 });
 
 test('test:ui:tab-full selects only the native Tab fixture with serial browser ownership', async () => {

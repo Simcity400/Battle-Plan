@@ -189,6 +189,30 @@ export async function checkBrowserManifest(files, manifest = browserTests, root 
   }
 }
 
+export function selectTests(files, requested, root = repositoryRoot, cwd = process.cwd()) {
+  const known = new Set(files);
+  const selected = requested.map(file => relative(root, resolve(cwd, file)).split(sep).join('/'));
+  const unknown = requested.filter((_, i) => !known.has(selected[i]));
+  if (unknown.length) throw new Error(`Not a discovered UI test: ${unknown.join(', ')}`);
+  return [...new Set(selected)].sort();
+}
+
+export function testArguments(argv) {
+  const options = { checkImports: false, tabFull: false, group: null, files: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--check-imports') options.checkImports = true;
+    else if (arg === '--tab-full') options.tabFull = true;
+    else if (arg === '--group') {
+      options.group = argv[++i] ?? null;
+      if (options.group !== 'node' && options.group !== 'browser') throw new Error(`--group takes node or browser, not ${options.group}`);
+    } else if (arg.startsWith('--')) throw new Error(`Unknown option: ${arg}`);
+    else options.files.push(arg);
+  }
+  if (options.tabFull && options.files.length) throw new Error('--tab-full runs only the native Tab fixture and takes no test files');
+  return options;
+}
+
 export function testGroups(files, manifest = browserTests, { tabFull = false } = {}) {
   if (tabFull) {
     if (!files.includes(tabFullTest)) throw new Error(`Missing native Tab fixture: ${tabFullTest}`);
@@ -235,14 +259,15 @@ export async function runGroups(groups, execute = executeGroup) {
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  const options = testArguments(process.argv.slice(2));
   const files = await discoverTests();
   const graph = moduleGraph(repositoryRoot);
   await checkNodeImports(files, repositoryRoot, graph);
   await checkBrowserManifest(files, browserTests, repositoryRoot, graph);
-  if (!process.argv.includes('--check-imports')) {
-    const only = process.argv.includes('--group') ? process.argv[process.argv.indexOf('--group') + 1] : null;
-    if (only !== null && only !== 'node' && only !== 'browser') throw new Error(`--group takes node or browser, not ${only}`);
-    const groups = testGroups(files, browserTests, { tabFull: process.argv.includes('--tab-full') });
+  if (!options.checkImports) {
+    const chosen = options.files.length ? selectTests(files, options.files) : files;
+    const groups = testGroups(chosen, browserTests, { tabFull: options.tabFull });
+    const only = options.group;
     process.exitCode = await runGroups(groups.filter(group => only === null || group.concurrency === (only === 'node' ? true : 1)));
   }
 }
