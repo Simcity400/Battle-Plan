@@ -32,8 +32,11 @@ unsafe extern "system" {
 }
 const THREAD_START_ADDRESS: u32 = 9;
 
-pub fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
-    let image = image(module);
+/// # Safety
+/// The module must be a loaded PE32+ image in this process and must remain mapped for this call.
+pub unsafe fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
+    // SAFETY: the caller keeps the loaded image mapped.
+    let image = unsafe { image(module) };
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(format!(
@@ -64,7 +67,7 @@ pub fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
     listed.map(|()| found)
 }
 
-fn image(module: HMODULE) -> Range<usize> {
+unsafe fn image(module: HMODULE) -> Range<usize> {
     let base = module as usize;
     // SAFETY: a loaded image's headers stay mapped while it is loaded, which the caller's being
     // in it or holding it guarantees.

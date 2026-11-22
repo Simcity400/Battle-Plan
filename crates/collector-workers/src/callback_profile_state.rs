@@ -25,7 +25,7 @@ pub fn record_join(role: usize, wall_ns: u64, profile: crate::acquisition::Profi
     });
 }
 
-pub fn record_readiness(ticks: i64) {
+pub(crate) fn record_readiness(ticks: i64) {
     let mut frequency = 0;
     unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
     keep(JoinSample {
@@ -62,10 +62,10 @@ pub fn thread_cycles() -> Option<u64> {
     (ok != 0).then_some(cycles)
 }
 
-pub const JOIN_SCALARS: usize = 15;
+pub(crate) const JOIN_SCALARS: usize = 15;
 
 impl JoinSample {
-    pub fn fields(self) -> [u64; JOIN_SCALARS] {
+    pub(crate) fn fields(self) -> [u64; JOIN_SCALARS] {
         [
             u64::from(self.role.is_some()),
             self.role.unwrap_or(0) as u64,
@@ -85,7 +85,7 @@ impl JoinSample {
         ]
     }
 
-    pub fn from_fields(fields: [u64; JOIN_SCALARS]) -> Self {
+    pub(crate) fn from_fields(fields: [u64; JOIN_SCALARS]) -> Self {
         Self {
             role: (fields[0] != 0).then_some(fields[1] as usize),
             wall_ns: fields[2],

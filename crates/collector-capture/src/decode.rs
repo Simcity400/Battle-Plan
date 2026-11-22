@@ -189,19 +189,19 @@ pub fn worker_finished() -> bool {
         slot.as_ref().is_none_or(|handle| handle.is_finished())
     })
 }
-pub fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
     RELATIONS
         .iter()
         .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-pub fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
     CHARACTERS
         .iter()
         .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     let walk = replay_data::cadence::should_walk(PROJECTS[0], hour, force_full);
     for table in PROJECTS.iter().skip(1) {
         debug_assert_eq!(
@@ -212,11 +212,11 @@ pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     walk
 }
 
-pub fn lexical_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn lexical_refresh_hour(hour: i32, force_full: bool) -> bool {
     replay_data::cadence::should_walk(LEXICAL[0], hour, force_full)
 }
 
-pub fn next_seq() -> u64 {
+pub(crate) fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -514,7 +514,7 @@ fn reclaim_payloads() {
 static SPARE_RETIREMENT: Mutex<Vec<RetiredPayload>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
-pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
+pub(crate) fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     if collector_memory::terminal::failed() {
         return Some(job);
     }
@@ -902,7 +902,8 @@ pub unsafe fn start_worker() -> Result<(), &'static str> {
         return Err("decode worker already running");
     }
     STOP.store(false, Ordering::Release);
-    set_decode_worker(0);
+    // SAFETY: the decode owner clears publication before start or after joining.
+    unsafe { set_decode_worker(0) };
     *slot = Some(
         std::thread::Builder::new()
             .name("hoi4-decode".into())
@@ -912,10 +913,14 @@ pub unsafe fn start_worker() -> Result<(), &'static str> {
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
                 #[cfg(feature = "worker_sampler")]
-                collector_workers::thread_cpu::register_decode();
-                set_decode_worker(unsafe {
-                    windows_sys::Win32::System::Threading::GetCurrentThreadId()
-                });
+                // SAFETY: this is the owned decode worker with an exit guard.
+                unsafe {
+                    collector_workers::thread_cpu::register_decode()
+                };
+                // SAFETY: the owned decode worker publishes its own live ID.
+                unsafe {
+                    set_decode_worker(windows_sys::Win32::System::Threading::GetCurrentThreadId())
+                };
                 failure::worker(decode_loop);
             })
             .map_err(|_| "cannot start decode worker")?,
@@ -1554,7 +1559,8 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
             "decode worker panicked; its in-flight frame may be incomplete",
         ));
     }
-    set_decode_worker(0);
+    // SAFETY: the decode owner clears publication before start or after joining.
+    unsafe { set_decode_worker(0) };
     let shared_ptr = sampling::SHARED.load(Ordering::Acquire);
     if shared_ptr.is_null() {
         STOP.store(false, Ordering::Release);
@@ -1598,7 +1604,7 @@ fn pop(shared: &Shared) -> Option<DecodeJob> {
 }
 
 #[cfg(test)]
-pub fn push(shared: &Shared, job: DecodeJob) {
+pub(crate) fn push(shared: &Shared, job: DecodeJob) {
     let mut reserved = reserve(shared, job.index);
     *reserved.job() = job;
     reserved.publish();

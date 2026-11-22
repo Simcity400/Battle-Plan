@@ -133,7 +133,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
     use collector_capture::extended::capture_live_shape;
     use collector_capture::pack_conversion::{MAX_THREADS, Plan};
     use collector_projection::projection::{Projection, ProjectionScratch};
-    let pool = [
+    let mut pool = [
         collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
         collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
         collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
@@ -152,7 +152,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
         source.extended.set_ordinary_failure(ordinary_failure);
         let clock = source.clock.as_ref().unwrap().copy_owned().unwrap();
         let encoder = FrameEncoder::new();
-        let convert = |helper| {
+        let convert = |helper: Option<HelperSplit<'_>>| {
             let scratch = ProjectionScratch::default();
             let mut projection = Projection::new(&encoder, 1, clock.hour, false, &scratch);
             decoded_with_costs(
@@ -177,7 +177,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
                 assert_eq!(plan.helpers(), helpers);
                 let (split, costs) = convert(Some(HelperSplit {
                     helpers: collector_workers::spool_helper::Helpers {
-                        pool: &pool,
+                        pool: &mut pool,
                         backlogged: helpers % 2 == 0,
                     },
                     plan,

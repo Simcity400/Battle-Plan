@@ -49,7 +49,10 @@ static HELPERS: [AtomicU32; MAX_HELPERS] = [const { AtomicU32::new(0) }; MAX_HEL
 static HELPER_CREATION: [AtomicU64; MAX_HELPERS] = [const { AtomicU64::new(0) }; MAX_HELPERS];
 use crate::spool_helper::MAX_HELPERS;
 
-pub fn register_helper(index: usize, id: u32) {
+/// # Safety
+/// The ID must identify this runtime's live spool helper at the given slot. That helper
+/// must participate in the sampler exit handshake.
+pub unsafe fn register_helper(index: usize, id: u32) {
     let Some(slot) = HELPERS.get(index) else {
         return;
     };
@@ -59,7 +62,7 @@ pub fn register_helper(index: usize, id: u32) {
 }
 
 #[cfg(feature = "worker_sampler")]
-pub fn helpers() -> impl Iterator<Item = u32> {
+pub(crate) fn helpers() -> impl Iterator<Item = u32> {
     HELPERS.iter().map(|id| id.load(Ordering::Acquire))
 }
 
@@ -73,11 +76,18 @@ pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-pub fn register(role: Role) {
-    register_id(role, unsafe { GetCurrentThreadId() });
+/// # Safety
+/// This thread must be the collector worker for the given role. If sampled, its
+/// owner must join the sampler before the thread exits.
+pub unsafe fn register(role: Role) {
+    // SAFETY: the caller owns this worker's registration and exit protocol.
+    unsafe { register_id(role, GetCurrentThreadId()) };
 }
 
-pub fn register_id(role: Role, id: u32) {
+/// # Safety
+/// A nonzero ID must identify the live collector worker owned by this runtime for
+/// the given role. If sampled, its owner must join the sampler before it exits.
+pub unsafe fn register_id(role: Role, id: u32) {
     #[cfg(feature = "worker_sampler")]
     REGISTERED_CREATION[role as usize]
         .store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
@@ -102,7 +112,10 @@ fn registered_creation_time(id: u32) -> Option<u64> {
 }
 
 #[cfg(feature = "worker_sampler")]
-pub fn register_decode() {
+/// # Safety
+/// This must be the runtime's decode worker registering itself. Its owner must join
+/// the sampler before the decode thread exits.
+pub unsafe fn register_decode() {
     DECODE_CREATION.store(
         registered_creation_time(unsafe { GetCurrentThreadId() }).unwrap_or(0),
         Ordering::Release,
@@ -343,7 +356,7 @@ macro_rules! named_threads {
 }
 
 #[cfg(feature = "worker_sampler")]
-pub fn registered() -> impl Iterator<Item = (&'static str, u32)> {
+pub(crate) fn registered() -> impl Iterator<Item = (&'static str, u32)> {
     named_threads!()
         .into_iter()
         .take(BASE_NAMED)
@@ -469,9 +482,11 @@ mod tests {
 
     #[test]
     fn registered_threads_appear_in_live_status() {
-        register(Role::Runtime);
+        // SAFETY: this test owns the thread registry and starts no sampler.
+        unsafe { register(Role::Runtime) };
         let me = unsafe { GetCurrentThreadId() };
-        register_id(Role::Capture, me);
+        // SAFETY: this test registers its own unsampled capture thread.
+        unsafe { register_id(Role::Capture, me) };
         let status: Value = serde_json::to_value(status(&[me])).unwrap();
         let threads = status["threads"].as_array().unwrap();
         let worker = threads
@@ -497,6 +512,8 @@ pub fn decode_worker() -> u32 {
     WORKER_ID.load(Ordering::Acquire)
 }
 
-pub fn set_decode_worker(id: u32) {
+/// # Safety
+/// Only the owner of the decode worker may publish its live ID or clear it with zero.
+pub unsafe fn set_decode_worker(id: u32) {
     WORKER_ID.store(id, Ordering::Release);
 }

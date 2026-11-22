@@ -380,7 +380,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
         })
         .unwrap();
     let shared = Shared::new(0, 0, session.qpc_frequency);
-    shared.recording.store(false, Ordering::Release);
+    shared.stop_recording();
     let mut writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
     let status = collector_status::status::serialize(
         &spool_status(

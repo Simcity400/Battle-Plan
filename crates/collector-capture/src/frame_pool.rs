@@ -62,9 +62,9 @@ pub struct Slot {
     pub(crate) frame: AtomicPtr<Captured>,
     pub(crate) completed: AtomicI64,
     pub(crate) callback_tail: AtomicI64,
-    pub bytes: AtomicU64,
-    pub generation: AtomicU64,
-    pub fence: AtomicU64,
+    pub(crate) bytes: AtomicU64,
+    generation: AtomicU64,
+    pub(crate) fence: AtomicU64,
     stage: AtomicU64,
     state: AtomicU8,
     returned: AtomicU64,
@@ -74,6 +74,15 @@ pub struct Slot {
 }
 
 impl Slot {
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn allocated_bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
     pub fn completed_callback_ticks(&self) -> Option<i64> {
         crate::sampling::completed_callback_ticks(&self.completed, &self.callback_tail)
     }
@@ -183,7 +192,7 @@ pub struct Gauge {
 }
 
 impl FramePool {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             segments: [const { AtomicPtr::new(ptr::null_mut()) }; SEGMENTS],
             made: AtomicUsize::new(0),
@@ -377,18 +386,18 @@ impl FramePool {
         self.dropped_stalled.load(Ordering::Relaxed)
     }
 
-    pub fn grew(&self, ns: u64) {
+    pub(crate) fn grew(&self, ns: u64) {
         self.grown.fetch_add(1, Ordering::Relaxed);
         self.grow_ns.fetch_add(ns, Ordering::Relaxed);
         self.grow_max_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
-    pub fn built_ahead(&self, index: usize) {
+    pub(crate) fn built_ahead(&self, index: usize) {
         self.slot(index).ahead.store(true, Ordering::Relaxed);
         self.built_ahead.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn taken(&self, index: usize) {
+    pub(crate) fn taken(&self, index: usize) {
         if self.slot(index).ahead.swap(false, Ordering::Relaxed) {
             self.ahead_taken.fetch_add(1, Ordering::Relaxed);
         }
@@ -400,7 +409,7 @@ impl FramePool {
         slot.state.store(VACANT, Ordering::Release);
     }
 
-    pub fn surplus(&self) -> bool {
+    pub(crate) fn surplus(&self) -> bool {
         self.live() > STEADY && self.len() > AHEAD
     }
 
@@ -448,14 +457,14 @@ impl FramePool {
         gauge
     }
 
-    pub fn stage(&self, index: usize, stage: FrameStage, now: u64) {
+    pub(crate) fn stage(&self, index: usize, stage: FrameStage, now: u64) {
         let stamp = now & ((1 << STAGE_SHIFT) - 1);
         self.slot(index)
             .stage
             .store((stage as u64) << STAGE_SHIFT | stamp, Ordering::Relaxed);
     }
 
-    pub fn stages(&self, now: u64) -> [(u32, u64); STAGES.len()] {
+    pub(crate) fn stages(&self, now: u64) -> [(u32, u64); STAGES.len()] {
         let now = now & ((1 << STAGE_SHIFT) - 1);
         let mut stages = [(0, 0); STAGES.len()];
         for slot in self.slots() {
@@ -504,7 +513,7 @@ impl FramePool {
         self.vacate(index)
     }
 
-    pub fn pop_decode(&self) -> Option<usize> {
+    pub(crate) fn pop_decode(&self) -> Option<usize> {
         self.pop_from(&self.decode)
     }
 

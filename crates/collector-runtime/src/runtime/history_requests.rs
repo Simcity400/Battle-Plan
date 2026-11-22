@@ -65,15 +65,12 @@ struct Mailbox {
 }
 pub(super) struct SpoolHistory(Arc<Mutex<Mailbox>>);
 impl SpoolHistory {
-    pub(super) fn poll<'a>(
+    pub(super) fn poll(
         &self,
         processor: &mut Processor,
-        frames: &collector_workers::frame_fence::Frames,
-        owned: impl IntoIterator<Item = &'a std::sync::atomic::AtomicU64>,
+        pending: impl FnOnce(&mut Option<u64>) -> bool,
     ) {
-        self.poll_fenced_with(Some((frames, owned)), |text| {
-            processor.try_history_request(text)
-        });
+        self.poll_fenced_with(pending, |text| processor.try_history_request(text));
         self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
     }
 
@@ -88,21 +85,12 @@ impl SpoolHistory {
         &self,
         begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
     ) {
-        self.poll_fenced_with(
-            None::<(
-                &collector_workers::frame_fence::Frames,
-                [&std::sync::atomic::AtomicU64; 0],
-            )>,
-            begin,
-        );
+        self.poll_fenced_with(|_| false, begin);
     }
 
-    fn poll_fenced_with<'a>(
+    fn poll_fenced_with(
         &self,
-        frames: Option<(
-            &collector_workers::frame_fence::Frames,
-            impl IntoIterator<Item = &'a std::sync::atomic::AtomicU64>,
-        )>,
+        pending: impl FnOnce(&mut Option<u64>) -> bool,
         mut begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
     ) {
         let Ok(mut mailbox) = self.0.try_lock() else {
@@ -112,10 +100,7 @@ impl SpoolHistory {
         let Some(Command::Begin(text)) = command.as_ref() else {
             return;
         };
-        if let Some((frames, owned)) = frames
-            && matches!(text.split_whitespace().nth(1), Some("close" | "release"))
-            && frames.pending(*fence.get_or_insert_with(|| frames.snapshot()), owned)
-        {
+        if matches!(text.split_whitespace().nth(1), Some("close" | "release")) && pending(fence) {
             return;
         }
         *fence = None;
@@ -767,12 +752,13 @@ mod tests {
     fn a_delayed_close_is_acknowledged_once_only_after_its_durable_receipt() {
         let root = root();
         let path = request(&root, "0001", "close");
-        let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+        let (receipt, complete) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
         let mut requests = HistoryRequests::default();
         let mut began = 0;
         for finished in [false, false, true, true] {
             if finished {
-                receipt.complete(Ok(()));
+                complete(Ok(()));
             }
             requests
                 .poll_with(
@@ -1059,9 +1045,10 @@ mod tests {
         }
         let frames = collector_workers::frame_fence::Frames::default();
         let acquiring = frames.capture();
-        handoff.poll_fenced_with(Some((&frames, std::iter::empty())), |_| {
-            panic!("capture has not drained")
-        });
+        handoff.poll_fenced_with(
+            |fence| frames.pending_snapshot(fence, std::iter::empty()),
+            |_| panic!("capture has not drained"),
+        );
         assert!(handoff.0.lock().unwrap().fence.is_some());
         worker.finish().unwrap();
         assert!(root.join("history-requests/detached").exists());
@@ -1208,13 +1195,17 @@ mod tests {
         frames.recycle(&owned[0]);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0001 close {CAMPAIGN} 1234")));
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(mailbox.lock().unwrap().response.is_none());
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 11))
             .unwrap();
         frames.recycle(&owned[1]);
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         let Some(Response::Began(Ok((HistoryReply::Closing { receipt, .. }, None)))) =
             mailbox.lock().unwrap().response.take()
         else {
@@ -1225,7 +1216,9 @@ mod tests {
         }
         assert_eq!(receipt.result(), Some(Ok(())));
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0002 release {CAMPAIGN}")));
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0002 ok"));
         let settings = root.join("settings.json");
@@ -1271,16 +1264,22 @@ mod tests {
         let capture = frames.capture();
         capture.frame(&owned[0]);
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0001 release {CAMPAIGN}")));
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(mailbox.lock().unwrap().response.is_none());
         drop(capture);
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(mailbox.lock().unwrap().response.is_none());
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10))
             .unwrap();
         frames.recycle(&owned[0]);
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0001 refused the campaign is recording"));
         let capture = frames.capture();
@@ -1288,7 +1287,9 @@ mod tests {
         drop(capture);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0002 close {CAMPAIGN} 1234")));
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(mailbox.lock().unwrap().response.is_none());
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, 20))
@@ -1296,7 +1297,9 @@ mod tests {
         frames.recycle(&owned[1]);
         let later_b = frames.capture();
         later_b.frame(&owned[2]);
-        spool.poll(&mut processor, &frames, &owned);
+        spool.poll(&mut processor, |fence| {
+            frames.pending_snapshot(fence, &owned)
+        });
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0002 refused the campaign was loaded again"));
         drop(later_b);

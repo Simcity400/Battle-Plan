@@ -384,7 +384,8 @@ pub unsafe fn start(
         .name("worker-sampler".into())
         .spawn(move || {
             SAMPLER_ID.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            crate::thread_cpu::register(crate::thread_cpu::Role::Sampler);
+            // SAFETY: this is the owned sampler and it does not sample itself.
+            unsafe { crate::thread_cpu::register(crate::thread_cpu::Role::Sampler) };
             unsafe {
                 SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             }

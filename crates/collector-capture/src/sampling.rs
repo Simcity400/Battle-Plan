@@ -777,12 +777,12 @@ pub struct Shared {
     pub tick_idle: Option<collector_workers::event::Event>,
     pub frames: crate::frame_pool::FramePool,
     pub frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
-    pub history_frames: collector_workers::frame_fence::Frames,
+    history_frames: collector_workers::frame_fence::Frames,
     pub heap_waits: WaitCounter,
     pub frame_priority: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
     pub dropped: AtomicU64,
     pub pool_bytes: engine_allocation::SharedBox<AtomicU64>,
-    pub recording: AtomicBool,
+    recording: AtomicBool,
     stop_spool: AtomicBool,
     pub spool_waker: OnceLock<std::thread::Thread>,
     pub(crate) decode_waker: OnceLock<std::thread::Thread>,
@@ -913,6 +913,14 @@ enum Return {
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    pub fn is_recording(&self) -> bool {
+        self.recording.load(Ordering::Acquire)
+    }
+
+    pub fn stop_recording(&self) {
+        self.recording.store(false, Ordering::Release);
+    }
+
     pub fn request_retry_full(&self) {
         self.refresh_next.store(true, Ordering::Release);
     }
@@ -936,15 +944,14 @@ impl Shared {
     ) -> std::io::Result<Self> {
         let shared = Self::without_frames(base, trampoline, frequency, sizing)?;
         shared.publish_steady_frames()?;
-        shared.bind_doctrine_observer();
         Ok(shared)
     }
 
-    fn bind_doctrine_observer(&self) {
-        // SAFETY: `with_sizing` binds the store and all three handlers before any hook is
-        // published. Shared keeps one owner of the store for its whole life, and a slow request
-        // only holds another, so no request dropped on any path frees it; Shared itself is dropped
-        // only after hook restoration and native callback quiescence.
+    /// # Safety
+    /// The exclusive runtime owner must bind before publishing doctrine callbacks and keep
+    /// this state alive until those callbacks are restored and quiescent.
+    pub unsafe fn bind_doctrine_observer(&self) {
+        // SAFETY: the runtime owns the binding and keeps the store alive for all callbacks.
         unsafe {
             collector_observers::doctrine_changes::bind(
                 engine_allocation::SharedBox::as_ptr(&self.doctrine_store) as usize,
@@ -1468,6 +1475,11 @@ impl Shared {
         }
         self.frame_priority.claim();
         true
+    }
+
+    pub fn history_pending(&self, fence: &mut Option<u64>) -> bool {
+        self.history_frames
+            .pending_snapshot(fence, self.frames.slots().map(|slot| &slot.fence))
     }
 
     pub fn spool_stopping(&self) -> bool {
@@ -2094,7 +2106,7 @@ pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
     true
 }
 
-pub fn hurry() {
+pub(crate) fn hurry() {
     let shared = SHARED.load(Ordering::Acquire);
     if !shared.is_null()
         && let Some(pool) = unsafe { &*shared }.acquisition.get()
@@ -2252,11 +2264,13 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(shared.trampoline) };
     let ticking = TICKING.replace(true);
-    collector_workers::tick_gate::enter(shared.tick_idle.as_ref());
+    // SAFETY: the hourly detour owns this native update and pairs entry with exit below.
+    unsafe { collector_workers::tick_gate::enter(shared.tick_idle.as_ref()) };
     shared.frame_priority.tick(Some(main_processor()));
     timing.original(|| unsafe { original(state, commands) });
     shared.frame_priority.tick(None);
-    collector_workers::tick_gate::leave(shared.tick_idle.as_ref());
+    // SAFETY: this is the same update and idle event used at entry.
+    unsafe { collector_workers::tick_gate::leave(shared.tick_idle.as_ref()) };
     TICKING.set(ticking);
     let original_end = qpc();
     if recording {

@@ -101,7 +101,7 @@ impl SampledJob {
         self.0.load(Ordering::Acquire)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn fixture(slot: Arc<AtomicU16>) -> Self {
         Self(slot)
     }

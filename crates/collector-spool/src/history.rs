@@ -222,7 +222,7 @@ impl PreparedCampaigns {
     }
 
     #[cfg(test)]
-    pub fn history_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
+    pub(crate) fn history_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
         match recording_files::unsaved_recording(&self.directory, id.as_bytes())? {
             Some(unsaved) => Ok(Some(unsaved)),
             None => recording_files::recording_of(&self.directory, id.as_bytes()),
@@ -238,7 +238,7 @@ impl PreparedCampaigns {
     pub fn event_feed_counts(&self) -> replay_data::event_feed_rows::EventFeedCounts {
         self.event_feed_counts
     }
-    pub fn campaign_world_generation(&self, id: &str) -> Option<u64> {
+    pub(crate) fn campaign_world_generation(&self, id: &str) -> Option<u64> {
         self.entries
             .get(&id.to_ascii_lowercase())
             .and_then(|prepared| prepared.as_ref().ok())

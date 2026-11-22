@@ -41,7 +41,7 @@ pub(crate) fn encode(
     encoder: &FrameEncoder,
     source: &FrameInput,
     (branch, hour, force): (BranchId, Hour, bool),
-    helpers: collector_workers::spool_helper::Helpers<'_>,
+    helpers: &mut collector_workers::spool_helper::Helpers<'_>,
 ) -> [Option<TableSegment>; TABLE_COUNT] {
     let context = encoder.frame_context(branch, hour, force);
     let mut order = [(0_usize, 0_usize); TABLE_COUNT];
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn segments_encoded_on_the_helpers_assemble_the_frame_one_thread_encodes() {
-        let pool = [
+        let mut pool = [
             collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
             collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
         ];
@@ -157,11 +157,11 @@ mod tests {
             let input = frame(hour, 10 + hour as u32 / 2);
             let force = hour == 4;
             let expected = whole.encode_bytes(input.clone(), force).unwrap();
-            let helpers = collector_workers::spool_helper::Helpers {
-                pool: &pool[..if hour % 2 == 0 { 2 } else { 1 }],
+            let mut helpers = collector_workers::spool_helper::Helpers {
+                pool: &mut pool[..if hour % 2 == 0 { 2 } else { 1 }],
                 backlogged: false,
             };
-            let mut segments = encode(&split, &input, (1, hour, force), helpers);
+            let mut segments = encode(&split, &input, (1, hour, force), &mut helpers);
             for table in [TableId::Provinces, TableId::States, TableId::Countries] {
                 assert!(segments[table.index()].is_some(), "{table:?}");
             }

@@ -94,11 +94,11 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::SeqCst) != 0
 }
 
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::SeqCst)
 }
 
-pub fn observed() -> bool {
+pub(crate) fn observed() -> bool {
     OBSERVED.load(Ordering::SeqCst)
 }
 
@@ -161,11 +161,11 @@ fn enter() {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub(crate) mod tests {
     use super::*;
     use collector_timing::capture_gate;
 
-    pub fn observe(observed: bool) {
+    pub(crate) fn observe(observed: bool) {
         OBSERVED.store(observed, Ordering::SeqCst);
     }
 

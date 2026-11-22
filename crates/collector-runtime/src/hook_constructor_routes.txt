@@ -29,11 +29,11 @@ call:Processor::new
 call:QueryPerformanceFrequency
 call:RestoreWait::new
 call:SessionStart::decode
-call:Shared::with_sizing
 call:SizingThread::start
 call:Some
 call:Vec::new
 call:acquisition::Pool::start
+call:attach_capture_state
 call:add_terminal_error
 call:append_event_feed_detach_status
 call:append_history_release_status
@@ -343,6 +343,7 @@ method:spawn
 method:stack_size
 method:step
 method:stop
+method:stop_recording
 method:stop_spool
 method:store
 method:summary

@@ -644,7 +644,6 @@ pub struct SpoolConversion<'a, 'cache> {
     pub helper: Option<HelperSplit<'a>>,
 }
 
-#[derive(Clone, Copy)]
 pub struct HelperSplit<'a> {
     pub helpers: collector_workers::spool_helper::Helpers<'a>,
     pub plan: Plan,

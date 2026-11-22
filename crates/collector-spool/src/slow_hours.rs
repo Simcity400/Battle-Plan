@@ -8,7 +8,7 @@ pub(crate) fn over_budget(callback_ns: u64, phases: &HourPhases) -> bool {
     callback_ns.saturating_add(phases.entry_ns) > BUDGET_NS
 }
 
-pub fn top_tables(
+pub(crate) fn top_tables(
     table_ns: &[u64; replay_data::rows::TABLE_COUNT],
 ) -> [(replay_data::rows::TableId, u64); TOP_TABLES] {
     let mut top = [(replay_data::rows::TableId::Clock, 0); TOP_TABLES];
@@ -44,6 +44,7 @@ pub struct SpoolFrame {
 }
 
 pub struct SpoolWatch {
+    thread: std::marker::PhantomData<*const ()>,
     begin: i64,
     cycles: Option<u64>,
     spool: [u64; collector_workers::spool_phases::WALL_NAMES.len()],
@@ -53,6 +54,7 @@ pub struct SpoolWatch {
 impl SpoolWatch {
     pub fn start() -> Self {
         Self {
+            thread: std::marker::PhantomData,
             begin: collector_primitives::clock::qpc(),
             cycles: collector_workers::spool_phases::thread_cycles(),
             spool: collector_workers::spool_phases::SPOOL.walls(),
@@ -112,7 +114,7 @@ impl SpoolFrame {
 }
 
 #[derive(Default)]
-pub struct Recorder {
+pub(crate) struct Recorder {
     histogram: [u64; HISTOGRAM_FLOOR_MS.len()],
     slow: Vec<Slow>,
     spool: Vec<SpoolFrame>,
@@ -157,7 +159,7 @@ impl Recorder {
         Ok(())
     }
 
-    pub fn record_spool(&mut self, frame: SpoolFrame) -> std::io::Result<()> {
+    pub(crate) fn record_spool(&mut self, frame: SpoolFrame) -> std::io::Result<()> {
         engine_allocation::reserve(&mut self.spool, 1)?;
         self.spool.push(frame);
         Ok(())

@@ -243,6 +243,8 @@ fn decode_refused(ordinal: usize) {
     let decode_work = |ordinal: u64| {
         move || collector_memory::terminal::inject_any(&[Phase::Decode, Phase::Raw], ordinal)
     };
+    // SAFETY: the child process owns the decode pools and runs no hooks or workers.
+    let _pools = unsafe { collector_capture::decode::prepare_payload_pools(false) }.unwrap();
     let shared =
         collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()).unwrap();
     let index = shared.take_frame(&mut 0).unwrap();
@@ -417,7 +419,7 @@ fn frame_build_refused() {
         )
     };
     assert!(!complete);
-    assert!(!shared.recording.load(Ordering::Acquire));
+    assert!(!shared.is_recording());
     assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
     assert!(unsafe { shared.pending_losses_empty_for_test() });
     for index in held {
@@ -435,7 +437,8 @@ fn attach_refused() {
     let unbind = || unsafe {
         collector_observers::doctrine_changes::bind(0, collector_slow_tables::doctrines::observe);
     };
-    drop(collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing).unwrap());
+    // SAFETY: the fixture owns the binding and no doctrine callbacks are installed.
+    drop(unsafe { crate::runtime::attach_capture_state(0, 0, 1, &sizing) }.unwrap());
     let stores = {
         let guard = NullGuard::new(usize::MAX);
         drop(collector_capture::sampling::Shared::without_frames(0, 0, 1, &sizing).unwrap());
@@ -447,7 +450,8 @@ fn attach_refused() {
         unbind();
         let scope = collector_memory::terminal::enter(Phase::Bootstrap);
         let guard = NullGuard::new(ordinal);
-        let attached = collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing);
+        // SAFETY: the fixture owns the binding and no doctrine callbacks are installed.
+        let attached = unsafe { crate::runtime::attach_capture_state(0, 0, 1, &sizing) };
         let attempts = ATTEMPTS.load(Ordering::Relaxed);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
@@ -533,7 +537,7 @@ fn frame_growth_refused() {
         )
     };
     assert!(!complete);
-    assert!(!shared.recording.load(Ordering::Acquire));
+    assert!(!shared.is_recording());
     assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
     assert!(unsafe { shared.pending_losses_empty_for_test() });
     for index in held {
@@ -832,10 +836,10 @@ fn thread_label(phase: Phase) -> io::Result<()> {
     collector_memory::terminal::prepare(&witness_file, 1, 1000);
     match phase {
         Phase::SpoolHelper => {
-            let helper = collector_workers::spool_helper::SpoolHelper::start(None)?;
+            let mut helper = collector_workers::spool_helper::SpoolHelper::start(None)?;
             let job = || drop(engine_allocation::vec::<u64>(usize::MAX));
             collector_workers::spool_helper::Helpers {
-                pool: std::slice::from_ref(&helper),
+                pool: std::slice::from_mut(&mut helper),
                 backlogged: false,
             }
             .join_each(&job, || ());
@@ -1311,6 +1315,12 @@ fn exercise_pipeline(
         .create(true)
         .truncate(true)
         .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
+    let _pools = if phase == Phase::Decode {
+        // SAFETY: this child owns the pools and runs the decode fixture synchronously.
+        Some(unsafe { collector_capture::decode::prepare_payload_pools(false) }?)
+    } else {
+        None
+    };
     let shared = collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing())?;
     let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
     if phase == Phase::Spool {

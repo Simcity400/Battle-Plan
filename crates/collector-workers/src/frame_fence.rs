@@ -1,7 +1,8 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Default)]
 pub struct Frames {
+    active: AtomicBool,
     started: AtomicU64,
     published: AtomicU64,
 }
@@ -13,6 +14,10 @@ pub struct Capture<'a> {
 
 impl Frames {
     pub fn capture(&self) -> Capture<'_> {
+        assert!(
+            !self.active.swap(true, Ordering::Acquire),
+            "a capture already owns this fence"
+        );
         Capture {
             frames: self,
             sequence: self.started.fetch_add(1, Ordering::SeqCst) + 1,
@@ -21,6 +26,14 @@ impl Frames {
 
     pub fn snapshot(&self) -> u64 {
         self.started.load(Ordering::SeqCst)
+    }
+
+    pub fn pending_snapshot<'a>(
+        &self,
+        fence: &mut Option<u64>,
+        owned: impl IntoIterator<Item = &'a AtomicU64>,
+    ) -> bool {
+        self.pending(*fence.get_or_insert_with(|| self.snapshot()), owned)
     }
 
     pub fn pending<'a>(&self, fence: u64, owned: impl IntoIterator<Item = &'a AtomicU64>) -> bool {
@@ -47,6 +60,7 @@ impl Drop for Capture<'_> {
         self.frames
             .published
             .store(self.sequence, Ordering::Release);
+        self.frames.active.store(false, Ordering::Release);
     }
 }
 

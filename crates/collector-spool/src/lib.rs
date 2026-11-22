@@ -1,12 +1,12 @@
 #![recursion_limit = "512"]
 
-pub mod columnar;
+mod columnar;
 pub mod history;
-pub mod map_spool;
-pub mod site_withholding;
+mod map_spool;
+mod site_withholding;
 pub mod slow_hours;
-pub mod spool_compare;
-pub mod spool_segments;
+mod spool_compare;
+mod spool_segments;
 pub mod spool_writer;
 pub mod spooling;
 

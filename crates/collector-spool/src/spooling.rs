@@ -1242,10 +1242,11 @@ impl<B: SegmentBackend> Campaign<B> {
         }
         let span = collector_workers::spool_phases::SPOOL
             .span(collector_workers::spool_phases::Phase::Encode);
+        let mut helpers = helpers;
         let frame = {
             let _phase =
                 collector_memory::terminal::enter(collector_memory::terminal::Phase::Encode);
-            let mut segments = match helpers {
+            let mut segments = match helpers.as_mut() {
                 Some(helpers) => crate::spool_segments::encode(
                     &self.encoder,
                     &source,
@@ -2301,11 +2302,11 @@ impl Processor {
         let unknown = self.unknown_pending;
         self.campaign(&id)?;
         let helper = (!self.helpers.is_empty()).then(|| HelperSplit {
+            plan: self.stats.conversion.plan(self.helpers.len()),
             helpers: collector_workers::spool_helper::Helpers {
-                pool: &self.helpers,
+                pool: &mut self.helpers,
                 backlogged: self.backlogged,
             },
-            plan: self.stats.conversion.plan(self.helpers.len()),
         });
         let campaign = self
             .campaigns
@@ -2534,9 +2535,9 @@ impl Processor {
             campaign.gap(branch, clock.hour, clock.hour, reason)?;
             return self.drain_writer();
         }
-        let helpers =
+        let mut helpers =
             (!self.helpers.is_empty()).then(|| collector_workers::spool_helper::Helpers {
-                pool: &self.helpers,
+                pool: &mut self.helpers,
                 backlogged: self.backlogged,
             });
         collector_hook_failures::apply(&mut source)?;
@@ -2549,7 +2550,7 @@ impl Processor {
                 restarting: !campaign.spool.is_open(),
             },
             &mut source,
-            helpers,
+            helpers.as_mut(),
             &self.comparison,
         );
         let result = campaign.write_with(
@@ -3792,7 +3793,7 @@ fn decoded_with_costs(
         unavailable_tables(reason)
     } else {
         let mut tables = unavailable_tables(NOT_ACQUIRED);
-        match conversion.helper {
+        match conversion.helper.take() {
             None => {
                 let started = std::time::Instant::now();
                 let map = crate::map_spool::table_inputs(
@@ -3814,16 +3815,17 @@ fn decoded_with_costs(
                 );
                 costs.thread(started);
             }
-            Some(split) => {
+            Some(mut split) => {
                 convert_with_helper(
                     captured,
                     &clock,
                     conversion,
-                    split,
+                    &mut split,
                     &mut tables,
                     &mut costs,
                     span,
                 );
+                conversion.helper = Some(split);
             }
         }
         tables[TableId::StateResistance.index()] = captured
@@ -4051,7 +4053,7 @@ fn convert_with_helper(
     captured: &Captured,
     clock: &Clock<&[u8]>,
     conversion: &mut SpoolConversion<'_, '_>,
-    split: HelperSplit<'_>,
+    split: &mut HelperSplit<'_>,
     tables: &mut [TableInput; TABLE_COUNT],
     costs: &mut collector_capture::pack_conversion::HourCosts,
     span: collector_workers::spool_phases::Span<'static>,

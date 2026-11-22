@@ -284,7 +284,9 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
         let _ = fs::write(path.with_file_name("collector.error.txt"), error);
     }
     finish_worker(&SHARED, witness, |witness| {
-        let resident = resident_reason(collector_workers::module_threads::started_in(module));
+        // SAFETY: this is the collector DLL executing before its own unload.
+        let resident =
+            resident_reason(unsafe { collector_workers::module_threads::started_in(module) });
         if let Some(reason) = &resident
             && let Ok(path) = module_path(module)
         {
@@ -441,6 +443,21 @@ mod bootstrap_witness_tests {
         let _ = fs::remove_dir_all(&directory);
     }
 }
+/// # Safety
+/// Only the attach owner may build and bind a capture state. Keep it alive until any
+/// published doctrine callbacks have been restored and are quiescent.
+pub(crate) unsafe fn attach_capture_state(
+    base: usize,
+    trampoline: usize,
+    frequency: u64,
+    sizing: &collector_capture::country_scale::Sizing,
+) -> std::io::Result<Shared> {
+    let shared = Shared::with_sizing(base, trampoline, frequency, sizing)?;
+    // SAFETY: the caller owns the binding and retains the store while callbacks can run.
+    unsafe { shared.bind_doctrine_observer() };
+    Ok(shared)
+}
+
 fn run(
     module: HMODULE,
     prepared_session: u64,
@@ -449,7 +466,10 @@ fn run(
 ) -> Result<(), &'static str> {
     engine_sites::production();
     collector_timing::hook_timing::start();
-    collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Runtime);
+    // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+    unsafe {
+        collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Runtime);
+    }
     #[cfg(feature = "worker_sampler")]
     // SAFETY: this runtime owns the sampler and is preparing it before starting workers.
     unsafe {
@@ -557,10 +577,13 @@ fn run(
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let progress = crate::progress::Progress::open(&config.output_dir);
-    let worker_panic = collector_workers::worker_panic::Guard::install(
-        &config.output_dir.join(crate::progress::FILE),
-        progress.opened(),
-    );
+    // SAFETY: the exclusive runtime owns this hook and releases the nested decode hook first.
+    let worker_panic = unsafe {
+        collector_workers::worker_panic::Guard::install(
+            &config.output_dir.join(crate::progress::FILE),
+            progress.opened(),
+        )
+    };
     progress.step("attach_started", None);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
@@ -1248,8 +1271,10 @@ fn run(
     ranges.extend(fuel_hooks.executable_ranges());
     ranges.extend(operation_hooks.executable_ranges());
     ranges.extend(politics_hooks.executable_ranges());
-    let mut shared = Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
-        .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
+    // SAFETY: the attach owner binds before publishing hooks and retains Shared until they quiesce.
+    let mut shared =
+        unsafe { attach_capture_state(base, hook.trampoline(), frequency as u64, &sizing) }
+            .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
     shared.capture_mode = session.capture_mode;
     shared.tick_idle = Some(idle);
     shared.prepare_roster(&memory);
@@ -1312,22 +1337,31 @@ fn run(
             break;
         }
         owned_workers.push(id);
-        collector_workers::thread_cpu::register_helper(index, id);
+        // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+        unsafe {
+            collector_workers::thread_cpu::register_helper(index, id);
+        }
     }
     let sizing = SizingThread::start(shared.clone(), spool_state);
     if let Some(id) = sizing.thread_id() {
         owned_workers.push(id);
-        collector_workers::thread_cpu::register_id(
-            collector_workers::thread_cpu::Role::SpoolSizing,
-            id,
-        );
+        // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+        unsafe {
+            collector_workers::thread_cpu::register_id(
+                collector_workers::thread_cpu::Role::SpoolSizing,
+                id,
+            );
+        }
     }
     if let Some(id) = sizing.builder_id() {
         owned_workers.push(id);
-        collector_workers::thread_cpu::register_id(
-            collector_workers::thread_cpu::Role::FrameBuilder,
-            id,
-        );
+        // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+        unsafe {
+            collector_workers::thread_cpu::register_id(
+                collector_workers::thread_cpu::Role::FrameBuilder,
+                id,
+            );
+        }
     }
     let spool_id = Arc::new(AtomicU32::new(0));
     let spool_thread_id = Arc::clone(&spool_id);
@@ -1349,7 +1383,10 @@ fn run(
         .spawn(move || {
             collector_workers::private_heap::off_hold_path();
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Spool);
+            // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+            unsafe {
+                collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Spool);
+            }
             spool_loop(
                 &spool_shared,
                 &config,
@@ -1616,7 +1653,8 @@ fn run(
     if installation_error.is_none() && !collector_memory::terminal::failed() {
         // SAFETY: the runtime has published the capture state and has not begun teardown.
         unsafe { HOURLY_ADMISSION.open() };
-        collector_capture::capture_point::set_beside(capture_thread.as_ref());
+        // SAFETY: the runtime owns the thread through hourly admission and capture quiescence.
+        unsafe { collector_capture::capture_point::set_beside(capture_thread.as_ref()) };
         progress.step("ready", None);
         ready.set();
     } else {
@@ -1656,7 +1694,7 @@ fn run(
                 .or_else(collector_workers::worker_panic::first)
                 .unwrap_or(reason);
             refuse_detach!(error, |_error| {
-                shared.recording.store(false, Ordering::Release);
+                shared.stop_recording();
                 status_writer.finish();
                 if !collector_memory::terminal::failed() {
                     let status = collector_status::status::status!({
@@ -1700,9 +1738,11 @@ fn run(
         Some(u64::from(restored[RestoreFamily::Hourly as usize])),
     );
     if !restored[RestoreFamily::Hourly as usize] {
-        shared.recording.store(false, Ordering::Release);
+        shared.stop_recording();
     }
-    let drained = collector_capture::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT);
+    // SAFETY: the runtime attempted hourly restoration and still owns hourly admission.
+    let drained =
+        unsafe { collector_capture::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT) };
     progress.step("final_hour_read", Some(u64::from(drained)));
     HOURLY_ADMISSION.close();
     if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
@@ -1718,7 +1758,8 @@ fn run(
         let id = thread.id();
         owned_workers.retain(|worker| *worker != id);
     }
-    let unread = collector_capture::capture_point::take_unread();
+    // SAFETY: the runtime closed hourly admission, waited for captures and stopped the worker.
+    let unread = unsafe { collector_capture::capture_point::take_unread() };
     if unread != 0 {
         // SAFETY: no capture runs or can start.
         unsafe { sampling::record_lost(&shared, unread) };
@@ -1898,7 +1939,7 @@ fn run(
         installation_error,
     });
     if restore_result.is_err() {
-        shared.recording.store(false, Ordering::Release);
+        shared.stop_recording();
     }
     let hooks = HookLifetime {
         restored: restore_result.is_ok(),
@@ -1929,7 +1970,7 @@ fn run(
         },
         None,
     );
-    shared.recording.store(false, Ordering::Release);
+    shared.stop_recording();
     if let Err(reason) = acquisition.shutdown() {
         progress.step("acquisition_refused", None);
         retain_detach!(
@@ -4043,7 +4084,7 @@ fn grow_combat_hints(
     hints: &CombatHints,
     applied: &mut AppliedHints,
 ) -> bool {
-    let generation = |index: usize| shared.frames.slot(index).generation.load(Ordering::Acquire);
+    let generation = |index: usize| shared.frames.slot(index).generation();
     let made = shared.frames.made();
     if (0..made).all(|index| {
         let hint = hints.pending(capacities, &applied.get(index, generation(index)));
@@ -4221,15 +4262,13 @@ fn wait_completed_callback(
     }
 }
 
-struct StopRecordingOnSpoolExit<'a> {
-    recording: &'a AtomicBool,
-}
-impl StopRecordingOnSpoolExit<'_> {
+struct StopRecordingOnSpoolExit<F: Fn()>(F);
+impl<F: Fn()> StopRecordingOnSpoolExit<F> {
     fn stop(&self) {
-        self.recording.store(false, Ordering::Release);
+        (self.0)();
     }
 }
-impl Drop for StopRecordingOnSpoolExit<'_> {
+impl<F: Fn()> Drop for StopRecordingOnSpoolExit<F> {
     fn drop(&mut self) {
         self.stop();
     }
@@ -4283,9 +4322,7 @@ fn spool_loop(
 ) -> Result<SpoolOutcome, &'static str> {
     #[cfg(feature = "worker_sampler")]
     let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
-    let stop_recording = StopRecordingOnSpoolExit {
-        recording: &shared.recording,
-    };
+    let stop_recording = StopRecordingOnSpoolExit(|| shared.stop_recording());
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let live = unsafe { LiveMemory::new() };
     let mut last_warning = None;
@@ -4488,11 +4525,7 @@ fn spool_loop(
             if let Err(error) = processor.flush_commands(false) {
                 last_warning = Some(error_reason(error, "command capture publication failed"));
             }
-            history_requests.poll(
-                &mut processor,
-                &shared.history_frames,
-                shared.frames.slots().map(|slot| &slot.fence),
-            );
+            history_requests.poll(&mut processor, |fence| shared.history_pending(fence));
             processor
                 .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
                 .map_err(|_| "spool slow-frame allocation failed")?;
@@ -4526,11 +4559,7 @@ fn spool_loop(
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         span.finish();
-        history_requests.poll(
-            &mut processor,
-            &shared.history_frames,
-            shared.frames.slots().map(|slot| &slot.fence),
-        );
+        history_requests.poll(&mut processor, |fence| shared.history_pending(fence));
         if reported.elapsed() >= Duration::from_secs(1) || shared.spool_stopping() {
             let _span = phases.span(Phase::Status);
             collector_memory::terminal::attempted_hour(None);
@@ -4546,7 +4575,7 @@ fn spool_loop(
                 &processor,
                 shared,
                 &session,
-                if shared.recording.load(Ordering::Acquire) {
+                if shared.is_recording() {
                     "recording"
                 } else {
                     "detaching"
@@ -4928,9 +4957,12 @@ impl SizingThread {
                 .stack_size(BACKGROUND_STACK_BYTES)
                 .spawn(move || {
                     collector_workers::private_heap::off_hold_path();
-                    collector_workers::thread_cpu::register(
-                        collector_workers::thread_cpu::Role::FrameBuilder,
-                    );
+                    // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+                    unsafe {
+                        collector_workers::thread_cpu::register(
+                            collector_workers::thread_cpu::Role::FrameBuilder,
+                        );
+                    }
                     frame_builder(&shared, &sizing);
                 })
                 .ok()
@@ -4941,9 +4973,12 @@ impl SizingThread {
             .stack_size(BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                collector_workers::thread_cpu::register(
-                    collector_workers::thread_cpu::Role::SpoolSizing,
-                );
+                // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
+                unsafe {
+                    collector_workers::thread_cpu::register(
+                        collector_workers::thread_cpu::Role::SpoolSizing,
+                    );
+                }
                 sizing_loop(&shared, &worker);
             })
             .ok();
@@ -5328,7 +5363,8 @@ fn sizing_pass(
             }
         });
         if changed {
-            decode::presize_weather_jobs();
+            // SAFETY: teardown joins the sizing path before releasing the decode pools.
+            unsafe { decode::presize_weather_jobs() };
         }
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
@@ -5352,7 +5388,8 @@ fn sizing_pass(
         collector_air_relations::relation_changes::presize(slots);
         collector_observers::world_input_changes::presize(slots);
         collector_air_histories::history_changes::presize(slots, regions);
-        decode::presize_country_pools();
+        // SAFETY: teardown joins the sizing path before releasing the decode pools.
+        unsafe { decode::presize_country_pools() };
         let country_cells = sizing.raise(shared, |capacities| {
             let mut raised = collector_capture::country_scale::Sizing {
                 core: capacities.core,
@@ -5451,7 +5488,8 @@ fn sizing_pass(
             .flatten()
     {
         collector_air::sizing::note_air_wing_name_bytes(bytes);
-        decode::presize_air_wing_names();
+        // SAFETY: teardown joins the sizing path before releasing the decode pools.
+        unsafe { decode::presize_air_wing_names() };
         sizing.raise(shared, |capacities| {
             capacities.map.raise_for_air_wing_names(bytes)
         });
@@ -5470,7 +5508,8 @@ fn sizing_pass(
         if let Ok(carrier) = demand.carrier
             && collector_air::sizing::note_carrier_demand(carrier)
         {
-            decode::presize_country_pools();
+            // SAFETY: teardown joins the sizing path before releasing the decode pools.
+            unsafe { decode::presize_country_pools() };
         }
         for reason in demand.map_refusals() {
             sizing.error(reason);
@@ -5538,7 +5577,8 @@ fn sizing_pass(
         if sizing.raise(shared, |capacities| {
             capacities.extended.game_score.raise(demand)
         }) {
-            decode::presize_country_pools();
+            // SAFETY: teardown joins the sizing path before releasing the decode pools.
+            unsafe { decode::presize_country_pools() };
         }
     }
     if capacity_census
@@ -5736,9 +5776,7 @@ mod tests {
     fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
         let recording = AtomicBool::new(true);
         {
-            let stop = StopRecordingOnSpoolExit {
-                recording: &recording,
-            };
+            let stop = StopRecordingOnSpoolExit(|| recording.store(false, Ordering::Release));
             stop.stop();
             assert!(!recording.load(Ordering::Acquire));
             recording.store(true, Ordering::Release);
@@ -5773,7 +5811,7 @@ mod tests {
         assert_eq!(behind["frames"]["grown"], hours as u64 - steady);
         let bytes: u64 = taken
             .iter()
-            .map(|&index| shared.frames.slot(index).bytes.load(Ordering::Relaxed))
+            .map(|&index| shared.frames.slot(index).allocated_bytes())
             .sum();
         assert!(bytes > 0);
         assert_eq!(behind["frames"]["in_flight_bytes"], bytes);
@@ -8089,7 +8127,7 @@ mod tests {
         );
 
         let shared = Shared::new(0, 0, 1);
-        shared.recording.store(false, Ordering::Release);
+        shared.stop_recording();
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
         let status = serde_json::to_value(
             spool_status(
@@ -8144,7 +8182,7 @@ mod tests {
         let processor =
             Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
         let shared = Shared::new(0, 0, 1);
-        shared.recording.store(false, Ordering::Release);
+        shared.stop_recording();
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
         for (warning, error, installation_error, drain_complete) in [
             (None, None, None, true),

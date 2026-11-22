@@ -117,11 +117,11 @@ pub(crate) struct GovernanceReport {
 }
 impl GovernanceRequest {
     #[cfg(test)]
-    pub fn allocated_bytes(&self) -> usize {
+    pub(crate) fn allocated_bytes(&self) -> usize {
         self.captured.allocated_bytes() + self.buildings.allocated_bytes()
     }
 
-    pub fn fail(&mut self, reason: &'static str) -> GovernanceReport {
+    pub(crate) fn fail(&mut self, reason: &'static str) -> GovernanceReport {
         self.captured.fail_owned_capture(self.context, reason);
         self.buildings.fail(reason);
         GovernanceReport::default()
@@ -138,13 +138,13 @@ pub(crate) struct VariantsRequest {
 }
 impl VariantsRequest {
     #[cfg(test)]
-    pub fn allocated_bytes(&self) -> usize {
+    pub(crate) fn allocated_bytes(&self) -> usize {
         self.registry.allocated_bytes()
             + self.variants.allocated_bytes()
             + self.changes.allocated_bytes()
     }
 
-    pub fn fail(&mut self, reason: &'static str) -> [u64; production::N] {
+    pub(crate) fn fail(&mut self, reason: &'static str) -> [u64; production::N] {
         if !self.changes_finished {
             self.changes.fail(reason);
         }
@@ -213,11 +213,11 @@ pub(crate) struct OrdinaryRequest {
 }
 impl OrdinaryRequest {
     #[cfg(test)]
-    pub fn allocated_bytes(&self) -> usize {
+    pub(crate) fn allocated_bytes(&self) -> usize {
         self.packs.allocated_bytes()
     }
 
-    pub fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
+    pub(crate) fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
         self.packs.fail(reason);
         OrdinaryReport
     }
@@ -232,11 +232,11 @@ pub(crate) struct OrdinaryPartRequest {
 }
 impl OrdinaryPartRequest {
     #[cfg(test)]
-    pub fn allocated_bytes(&self) -> usize {
+    pub(crate) fn allocated_bytes(&self) -> usize {
         self.part.allocated_bytes()
     }
 
-    pub fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
+    pub(crate) fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
         self.part.fail(reason);
         OrdinaryReport
     }
@@ -269,7 +269,7 @@ pub(crate) struct AirMissionsRequest {
     pub mission_store: Option<Box<collector_air::extended::air::MissionStore>>,
 }
 impl AirMissionsRequest {
-    pub fn refuse(&mut self) {
+    pub(crate) fn refuse(&mut self) {
         self.pack
             .fail_missions("air mission worker admission failed", &mut self.histories);
     }
@@ -410,7 +410,7 @@ pub(crate) struct OrdersPartRequest {
     pub rejected: bool,
 }
 impl OrdersPartRequest {
-    pub fn failure(&self, failed: bool) -> Option<&'static str> {
+    pub(crate) fn failure(&self, failed: bool) -> Option<&'static str> {
         if self.rejected {
             Some("army order worker admission failed")
         } else if failed {
@@ -499,7 +499,7 @@ impl OrdersRequest {
         self.orders.plan_split();
     }
 
-    pub fn fail(&mut self, reason: &'static str) -> OrdersReport {
+    pub(crate) fn fail(&mut self, reason: &'static str) -> OrdersReport {
         self.orders.fail(reason);
         self.plans.fail(reason);
         OrdersReport
@@ -726,7 +726,7 @@ pub(crate) struct PresentationSpeedTermsRequest {
 }
 impl PresentationSpeedTermsRequest {
     #[cfg(test)]
-    pub fn allocated_bytes(&self) -> usize {
+    pub(crate) fn allocated_bytes(&self) -> usize {
         self.pass.allocated_bytes()
     }
 }
@@ -947,13 +947,13 @@ impl Job {
         self.role().callback_help()
     }
 
-    pub fn worker_only(&self) -> bool {
+    pub(crate) fn worker_only(&self) -> bool {
         match self {
             Self::ChildFronts(request) => request.plans.child_fronts_allocate(),
             job => job.role().worker_only(),
         }
     }
-    pub fn priority(&self) -> u8 {
+    pub(crate) fn priority(&self) -> u8 {
         let cold_tail = match self {
             Self::Governance(request) => request.context.force_full,
             Self::GatedProjects(request) => request.force_full && request.recorded,
@@ -962,7 +962,7 @@ impl Job {
         if cold_tail { 0 } else { self.role().priority() }
     }
 
-    pub fn role(&self) -> Role {
+    pub(crate) fn role(&self) -> Role {
         match self {
             Self::Characters(request) => [
                 Role::Characters,
@@ -1058,7 +1058,7 @@ impl Job {
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
-pub struct WorkerCalibration {
+pub(crate) struct WorkerCalibration {
     pub accepted: u64,
     pub completed: u64,
     pub panicked: u64,
@@ -1069,7 +1069,7 @@ pub struct WorkerCalibration {
     pub inline_panicked: u64,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
-pub struct RoleCalibration {
+pub(crate) struct RoleCalibration {
     pub role: Role,
     #[serde(flatten)]
     pub counters: WorkerCalibration,
@@ -1078,7 +1078,7 @@ pub struct RoleCalibration {
 pub struct Calibration {
     pub executor: collector_workers::acquisition::Calibration,
     #[serde(serialize_with = "serialize_roles")]
-    pub roles: [RoleCalibration; ROLE_COUNT],
+    pub(crate) roles: [RoleCalibration; ROLE_COUNT],
 }
 fn serialize_roles<S: serde::Serializer>(
     roles: &[RoleCalibration; ROLE_COUNT],
@@ -2269,16 +2269,16 @@ impl Pool {
         completed
     }
 
-    pub fn worker_count(&self) -> usize {
+    pub(crate) fn worker_count(&self) -> usize {
         self.worker_count
     }
     pub fn thread_ids(&self) -> Vec<u32> {
         self.executor.thread_ids()
     }
-    pub fn hold_pace(&self) {
+    pub(crate) fn hold_pace(&self) {
         self.executor.hold_pace();
     }
-    pub fn beside_pace(&self, regulars: usize, game: Option<u32>) {
+    pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
         self.executor.beside_pace(regulars, game);
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -2308,10 +2308,10 @@ impl Pool {
     pub fn shutdown(&self) -> Result<(), &'static str> {
         self.executor.shutdown()
     }
-    pub fn stopped(&self) -> bool {
+    pub(crate) fn stopped(&self) -> bool {
         self.executor.stopped()
     }
-    pub fn stop_for_contained_panic(&self, role: Role) {
+    pub(crate) fn stop_for_contained_panic(&self, role: Role) {
         self.calibration.roles[role as usize]
             .panicked
             .fetch_add(1, Ordering::Relaxed);
@@ -2338,7 +2338,7 @@ pub(crate) struct Batch<'a> {
     presentation_stitch: Arc<PresentationFanIn>,
 }
 impl<'a> Batch<'a> {
-    pub fn new(pool: &'a Pool) -> Self {
+    pub(crate) fn new(pool: &'a Pool) -> Self {
         pool.presentation_preparation.open();
         pool.presentation_stitch.open();
         pool.final_inputs.open();
@@ -2352,10 +2352,10 @@ impl<'a> Batch<'a> {
             presentation_stitch: Arc::clone(&pool.presentation_stitch),
         }
     }
-    pub fn hold(&mut self) {
+    pub(crate) fn hold(&mut self) {
         self.held = true;
     }
-    pub fn release(&mut self) -> usize {
+    pub(crate) fn release(&mut self) -> usize {
         let jobs = std::mem::take(&mut self.held_jobs);
         self.held = false;
         if jobs != 0 {
@@ -2407,19 +2407,19 @@ impl<'a> Batch<'a> {
         self.parked[slot] = pending.parked;
         (pending.ticket, pending.parked)
     }
-    pub fn stopped(&self) -> bool {
+    pub(crate) fn stopped(&self) -> bool {
         self.pool.stopped()
     }
-    pub fn is_complete(&self, ticket: Ticket) -> bool {
+    pub(crate) fn is_complete(&self, ticket: Ticket) -> bool {
         self.pool.executor.is_complete(ticket)
     }
-    pub fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
+    pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
         self.pool.executor.completed_report(ticket)
     }
-    pub fn wait_ready<T>(&self, mut ready: impl FnMut(&Self) -> Option<T>) -> T {
+    pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut(&Self) -> Option<T>) -> T {
         self.pool.executor.wait_ready(|| ready(self))
     }
-    pub fn stop_for_contained_panic(&self, role: Role) {
+    pub(crate) fn stop_for_contained_panic(&self, role: Role) {
         self.pool.stop_for_contained_panic(role);
     }
     /// # Safety
@@ -2485,7 +2485,7 @@ impl<'a> Batch<'a> {
         true
     }
     #[cfg(test)]
-    pub fn finish(&mut self, ticket: Ticket) -> Option<Completion<Job, Report>> {
+    pub(crate) fn finish(&mut self, ticket: Ticket) -> Option<Completion<Job, Report>> {
         let mut completed = None;
         self.finish_into(ticket, &mut completed);
         completed

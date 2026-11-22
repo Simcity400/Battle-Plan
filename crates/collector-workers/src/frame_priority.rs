@@ -487,7 +487,8 @@ impl Reconciler {
                 crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit::default();
-                crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority);
+                // SAFETY: this is the owned reconciler with an exit guard.
+                unsafe { crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority) };
                 let mut own = crate::priority::OwnPriority::frame_pipeline();
                 if !own.reconciler() {
                     let _ = send.send(false);
@@ -523,7 +524,8 @@ impl Reconciler {
             .map_err(|_| "frame priority reconciler could not start")?;
         if ready.recv() != Ok(true) {
             let _ = thread.join();
-            crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0);
+            // SAFETY: the reconciler owner clears its own registration.
+            unsafe { crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0) };
             return Err("frame priority reconciler policy failed");
         }
         Ok(Self {
@@ -547,7 +549,8 @@ impl Reconciler {
             // SAFETY: the pipeline owns this event until after the joined worker exits.
             unsafe { SetEvent(self.pipeline.event.get().unwrap().as_raw_handle()) };
             let _ = thread.join();
-            crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0);
+            // SAFETY: the reconciler owner clears its own registration.
+            unsafe { crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0) };
         }
     }
 }

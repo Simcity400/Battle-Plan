@@ -395,7 +395,7 @@ pub(crate) fn compare_frame(
     encoder: &FrameEncoder,
     target: Target,
     source: &mut FrameInput,
-    helpers: Option<collector_workers::spool_helper::Helpers<'_>>,
+    helpers: Option<&mut collector_workers::spool_helper::Helpers<'_>>,
     counters: &Counters,
 ) {
     if target.restarting {
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn compared_frames_encode_the_bytes_of_complete_frames() {
-        let pool = [
+        let mut pool = [
             collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
             collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
         ];
@@ -656,10 +656,12 @@ mod tests {
                         restarting: hour == 10,
                     },
                     &mut input,
-                    (helpers != 0).then_some(collector_workers::spool_helper::Helpers {
-                        pool: &pool[..helpers],
-                        backlogged: hour % 2 == 0,
-                    }),
+                    (helpers != 0)
+                        .then_some(collector_workers::spool_helper::Helpers {
+                            pool: &mut pool[..helpers],
+                            backlogged: hour % 2 == 0,
+                        })
+                        .as_mut(),
                     &counters,
                 );
                 let states = &input.tables[TableId::States.index()];

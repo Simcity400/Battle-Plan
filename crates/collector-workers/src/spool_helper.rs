@@ -17,30 +17,30 @@ pub fn pool_size() -> usize {
 
 const ENCODING_HELPERS: usize = 2;
 
-#[derive(Clone, Copy)]
 pub struct Helpers<'a> {
-    pub pool: &'a [SpoolHelper],
+    pub pool: &'a mut [SpoolHelper],
     pub backlogged: bool,
 }
 
 impl<'a> Helpers<'a> {
-    pub fn encoding_lanes(self) -> usize {
+    pub fn encoding_lanes(&self) -> usize {
         1 + self.pool.len().min(ENCODING_HELPERS)
     }
 
-    pub fn join_each<R>(self, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
+    pub fn join_each<R>(&mut self, job: &Job<'_>, own: impl FnOnce() -> R) -> R {
         self.join_some(ENCODING_HELPERS, &|_: usize| job(), own)
     }
 
     pub fn join_some<R>(
-        self,
+        &mut self,
         count: usize,
         job: &(dyn Fn(usize) + Sync),
         own: impl FnOnce() -> R,
     ) -> R {
         let mut own = Some(own);
         let mut result = None;
-        let helpers = &self.pool[..count.min(self.pool.len())];
+        let count = count.min(self.pool.len());
+        let helpers = &mut self.pool[..count];
         join_from(helpers, 0, self.backlogged, job, &mut || {
             result = own.take().map(|own| own());
         });
@@ -49,18 +49,18 @@ impl<'a> Helpers<'a> {
 }
 
 fn join_from(
-    helpers: &[SpoolHelper],
+    helpers: &mut [SpoolHelper],
     at: usize,
     backlogged: bool,
     job: &(dyn Fn(usize) + Sync),
     own: &mut dyn FnMut(),
 ) {
-    match helpers.get(at) {
+    match helpers.split_first_mut() {
         None => own(),
-        Some(helper) => {
+        Some((helper, rest)) => {
             let mine = || job(at);
             helper.join(backlogged, &mine, || {
-                join_from(helpers, at + 1, backlogged, job, own)
+                join_from(rest, at + 1, backlogged, job, own)
             });
         }
     }
@@ -92,7 +92,6 @@ impl Shared {
 }
 
 pub struct SpoolHelper {
-    submission: Mutex<()>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     thread_id: u32,
@@ -123,7 +122,6 @@ impl SpoolHelper {
             .recv()
             .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
         Ok(Self {
-            submission: Mutex::new(()),
             shared,
             thread: Some(thread),
             thread_id,
@@ -134,11 +132,7 @@ impl SpoolHelper {
         self.thread_id
     }
 
-    fn join<'a, R>(&self, _backlogged: bool, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
-        let _submission = self
-            .submission
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    fn join<'a, R>(&mut self, _backlogged: bool, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
         // SAFETY: erases the borrow of `job`; `Finish` below waits for the
         // helper before this frame can return or unwind.
         let erased =
@@ -256,7 +250,7 @@ mod tests {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_NORMAL,
         };
-        let helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start(None).unwrap();
         for backlogged in [false, true, false] {
             let observed = AtomicI32::new(i32::MIN);
             helper.join(
@@ -275,7 +269,7 @@ mod tests {
 
     #[test]
     fn jobs_run_on_one_persistent_thread_and_join_waits_for_both_shares() {
-        let helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start(None).unwrap();
         let ran_on = AtomicU32::new(0);
         let total = AtomicUsize::new(0);
         for round in 1..=5 {
@@ -298,7 +292,7 @@ mod tests {
 
     #[test]
     fn a_helper_panic_is_resumed_and_an_own_panic_still_waits_for_the_job() {
-        let helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start(None).unwrap();
         let failing = || panic!("synthetic helper failure");
         let resumed = catch_unwind(AssertUnwindSafe(|| helper.join(false, &failing, || 1)));
         assert!(resumed.is_err());
@@ -317,15 +311,11 @@ mod tests {
 
     #[test]
     fn join_some_runs_each_index_once_on_its_own_helper_beside_the_own_share() {
-        let pool = [
+        let mut pool = [
             SpoolHelper::start(None).unwrap(),
             SpoolHelper::start(None).unwrap(),
             SpoolHelper::start(None).unwrap(),
         ];
-        let helpers = Helpers {
-            pool: &pool,
-            backlogged: false,
-        };
         for count in [1, 2, 3, 7] {
             let ran: [AtomicU32; 3] = std::array::from_fn(|_| AtomicU32::new(0));
             let runs = AtomicUsize::new(0);
@@ -334,7 +324,11 @@ mod tests {
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 assert_eq!(ran[index].swap(id, Ordering::Relaxed), 0);
             };
-            let own = helpers.join_some(count, &job, || count * 10);
+            let own = Helpers {
+                pool: &mut pool,
+                backlogged: false,
+            }
+            .join_some(count, &job, || count * 10);
             assert_eq!(own, count * 10);
             let used = count.min(pool.len());
             assert_eq!(runs.load(Ordering::Relaxed), used);
@@ -343,12 +337,19 @@ mod tests {
                 assert_eq!(ran[index].load(Ordering::Relaxed), expected);
             }
         }
-        assert_eq!(helpers.encoding_lanes(), 1 + ENCODING_HELPERS);
+        assert_eq!(
+            Helpers {
+                pool: &mut pool,
+                backlogged: false
+            }
+            .encoding_lanes(),
+            1 + ENCODING_HELPERS
+        );
     }
 
     #[test]
     fn joining_allocates_nothing_on_the_spool_thread() {
-        let helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start(None).unwrap();
         let count = AtomicUsize::new(0);
         let job = || {
             count.fetch_add(1, Ordering::Relaxed);

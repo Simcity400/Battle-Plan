@@ -13,14 +13,19 @@ const CAP: Duration = Duration::from_millis(200);
 
 static GATE: Gate = Gate::new();
 
-pub fn enter(idle: Option<&crate::event::Event>) {
+/// # Safety
+/// Only the hourly detour may signal entry to the native update. Pair this with
+/// `leave` at the end of that update, on the same thread and with the same event.
+pub unsafe fn enter(idle: Option<&crate::event::Event>) {
     GATE.enter();
     if let Some(idle) = idle {
         idle.reset();
     }
 }
 
-pub fn leave(idle: Option<&crate::event::Event>) {
+/// # Safety
+/// The detour must have entered the update on this thread using the same event.
+pub unsafe fn leave(idle: Option<&crate::event::Event>) {
     GATE.leave();
     if let Some(idle) = idle {
         idle.set();

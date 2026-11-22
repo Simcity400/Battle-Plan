@@ -52,7 +52,10 @@ type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 pub struct Guard(Option<Arc<Hook>>);
 
 impl Guard {
-    pub fn install(progress: &Path, opened: Instant) -> Self {
+    /// # Safety
+    /// The runtime must own the process panic-hook installation and unwind nested hook guards
+    /// before dropping this guard. No other runtime may replace the hook in the meantime.
+    pub unsafe fn install(progress: &Path, opened: Instant) -> Self {
         let file = std::fs::OpenOptions::new().append(true).open(progress).ok();
         let previous = Arc::new(std::panic::take_hook());
         let chained = Arc::clone(&previous);

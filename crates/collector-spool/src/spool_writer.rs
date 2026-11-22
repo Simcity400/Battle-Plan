@@ -42,13 +42,13 @@ enum Command {
 #[derive(Clone, Default)]
 pub struct CloseReceipt {
     result: Arc<Mutex<Option<Result<(), io::ErrorKind>>>>,
-    pub ticket: u64,
+    pub(crate) ticket: u64,
 }
 impl CloseReceipt {
     pub fn result(&self) -> Option<Result<(), io::ErrorKind>> {
         *self.result.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    pub fn complete(&self, result: Result<(), io::ErrorKind>) {
+    pub(crate) fn complete(&self, result: Result<(), io::ErrorKind>) {
         let mut outcome = self.result.lock().unwrap_or_else(PoisonError::into_inner);
         if outcome.is_none() {
             *outcome = Some(result);
@@ -57,6 +57,13 @@ impl CloseReceipt {
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending() -> Self {
         Self::default()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_with_completion() -> (Self, impl Fn(Result<(), io::ErrorKind>)) {
+        let receipt = Self::pending();
+        let writer = receipt.clone();
+        (receipt, move |result| writer.complete(result))
     }
 }
 

@@ -49,7 +49,7 @@ static ENDED_WORLD: AtomicU64 = AtomicU64::new(0);
 static CLAIMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Update {
+pub(crate) enum Update {
     #[default]
     Uncounted,
     Counted,
@@ -171,7 +171,10 @@ pub fn settle_next() {
     SETTLE.store(true, Ordering::Release);
 }
 
-pub fn drain(deadline: Instant) -> bool {
+/// # Safety
+/// Only the runtime that owns the hooks may mark the current capture as draining,
+/// after attempting to restore the hourly hook and before closing hourly admission.
+pub unsafe fn drain(deadline: Instant) -> bool {
     DRAINING.store(true, Ordering::SeqCst);
     loop {
         let unread = PENDING.load(Ordering::SeqCst) && PENDING_WORLD.load(Ordering::SeqCst) != 0;
@@ -185,7 +188,14 @@ pub fn drain(deadline: Instant) -> bool {
     }
 }
 
-pub fn take_unread() -> u32 {
+/// # Safety
+/// Only the runtime owner may close and take the unread count, after hourly admission is closed
+/// and all capture work has stopped.
+pub unsafe fn take_unread() -> u32 {
+    take_unread_inner()
+}
+
+fn take_unread_inner() -> u32 {
     let hours = HOURS.fetch_or(CLOSED, Ordering::SeqCst);
     if hours & CLOSED != 0 {
         return 0;
@@ -288,11 +298,14 @@ fn hurry() {
     }
 }
 
-pub fn hurried() -> bool {
+pub(crate) fn hurried() -> bool {
     HURRIED.load(Ordering::SeqCst)
 }
 
-pub fn set_beside(thread: Option<&Thread>) {
+/// # Safety
+/// The attach owner must keep the thread alive until hourly admission is closed and
+/// all beside captures have drained.
+pub unsafe fn set_beside(thread: Option<&Thread>) {
     set_beside_enabled(
         thread.is_some_and(|thread| thread.handle.is_some()) && crate::command_batch::enabled(),
     );
@@ -327,10 +340,13 @@ impl Thread {
         let raw = handle.as_raw_handle();
         THREAD.store(raw as isize, Ordering::Release);
         let id = unsafe { GetThreadId(raw as _) };
-        collector_workers::thread_cpu::register_id(
-            collector_workers::thread_cpu::Role::Capture,
-            id,
-        );
+        // SAFETY: this is the owned capture worker and the sampler does not sample this role.
+        unsafe {
+            collector_workers::thread_cpu::register_id(
+                collector_workers::thread_cpu::Role::Capture,
+                id,
+            );
+        }
         Ok(Self {
             _owner: owner,
             handle: Some(handle),
@@ -487,7 +503,7 @@ pub fn status() -> impl serde::Serialize {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::{
         cell::{Cell, RefCell},
@@ -522,7 +538,7 @@ pub mod tests {
 
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    pub fn serial() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
         let guard = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
         for flag in [
             &PENDING, &SETTLE, &FULL, &DRAINING, &BESIDE, &FAILED, &CLAIMED,
@@ -735,8 +751,8 @@ pub mod tests {
         PENDING.store(false, Ordering::SeqCst);
         let inner = update_entered();
         assert_eq!((outer, inner), (Update::Counted, Update::Counted));
-        assert_eq!(take_unread(), 3);
-        assert_eq!(take_unread(), 0);
+        assert_eq!(take_unread_inner(), 3);
+        assert_eq!(take_unread_inner(), 0);
         let _ = take_reads();
         hour_ended(inner);
         hour_ended(outer);
@@ -758,7 +774,7 @@ pub mod tests {
             take_reads(),
             [(Placement::Held, false), (Placement::Held, false)]
         );
-        assert_eq!(take_unread(), 0);
+        assert_eq!(take_unread_inner(), 0);
     }
 
     #[test]
@@ -782,6 +798,6 @@ pub mod tests {
         serve(|_| unreachable!("a failed capture thread reads no more"));
         assert!(!capture_gate::running());
         assert!(PENDING.load(Ordering::SeqCst));
-        assert_eq!(take_unread(), 1);
+        assert_eq!(take_unread_inner(), 1);
     }
 }

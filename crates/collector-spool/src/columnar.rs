@@ -44,14 +44,19 @@ pub(crate) enum Columnar {
 }
 
 pub(crate) struct Lanes<'a> {
-    helpers: Option<collector_workers::spool_helper::Helpers<'a>>,
+    helpers: Mutex<Option<collector_workers::spool_helper::Helpers<'a>>>,
+    count: usize,
     spool: std::thread::ThreadId,
 }
 
 impl<'a> Lanes<'a> {
     pub(crate) fn new(helpers: Option<collector_workers::spool_helper::Helpers<'a>>) -> Self {
+        let count = helpers
+            .as_ref()
+            .map_or(1, collector_workers::spool_helper::Helpers::encoding_lanes);
         Self {
-            helpers,
+            helpers: Mutex::new(helpers),
+            count,
             spool: std::thread::current().id(),
         }
     }
@@ -59,12 +64,35 @@ impl<'a> Lanes<'a> {
 
 impl native_frame::Lanes for Lanes<'_> {
     fn count(&self) -> usize {
-        self.helpers
-            .map_or(1, collector_workers::spool_helper::Helpers::encoding_lanes)
+        self.count
     }
 
     fn run(&self, job: &(dyn Fn() + Sync)) {
-        let Some(helpers) = self.helpers else {
+        use collector_workers::spool_helper::Helpers;
+        struct Submission<'a, 'pool> {
+            slot: &'a Mutex<Option<Helpers<'pool>>>,
+            helpers: Option<Helpers<'pool>>,
+        }
+        impl Drop for Submission<'_, '_> {
+            fn drop(&mut self) {
+                if let Some(helpers) = self.helpers.take() {
+                    *self
+                        .slot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(helpers);
+                }
+            }
+        }
+        let helpers = self
+            .helpers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let mut submission = Submission {
+            slot: &self.helpers,
+            helpers,
+        };
+        let Some(helpers) = submission.helpers.as_mut() else {
             return job();
         };
         let (phase, context) = (
