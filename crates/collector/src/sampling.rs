@@ -1896,7 +1896,7 @@ pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
             match placement {
                 Placement::Held => pool.hold_pace(),
                 Placement::Beside(game) => {
-                    pool.beside_pace(crate::capture_point::BESIDE_READERS, game);
+                    pool.beside_pace(crate::capture_point::beside_readers(), game);
                     if crate::capture_point::hurried() {
                         pool.hold_pace();
                     }
@@ -2427,6 +2427,39 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 }};
             }
             batch.hold();
+            let (gated_pending, gated_projects_pending) = out_of_line(|| {
+                let mut request = frame.extended.take_gated_request(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    unsafe { take_slice_store(shared, crate::slicing::PROJECTS) },
+                    Some(engine_allocation::SharedBox::clone(&country_snapshot)),
+                );
+                let projects = request.take_projects();
+                let projects = queue!(acquisition::Job::GatedProjects(projects));
+                (queue!(acquisition::Job::Gated(request)), projects)
+            });
+            let (launch_store, state_stores) = unsafe {
+                (
+                    take_slice_store(shared, crate::slicing::RAID_LAUNCH),
+                    crate::extended::RaidStateStores {
+                        states: take_slice_store(shared, crate::slicing::RAID_STATE),
+                        buildings: take_slice_store(shared, crate::slicing::RAID_BUILDINGS),
+                        routes: take_slice_store(shared, crate::slicing::TRADE_ROUTES),
+                    },
+                )
+            };
+            let raid_state_pending = queue!(acquisition::Job::RaidState(
+                frame.extended.take_raid_state_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    state_stores,
+                )
+            ));
             let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
             let ship_models_pending = out_of_line(|| {
                 let mut request = frame.extended.take_ship_models_request(
@@ -3026,19 +3059,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             frame.extended.projects_pilot().raw_mode =
                 projects_pending.is_some() || projects_omitted;
             frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
-            let (gated_pending, gated_projects_pending) = out_of_line(|| {
-                let mut request = frame.extended.take_gated_request(
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    unsafe { take_slice_store(shared, crate::slicing::PROJECTS) },
-                    Some(engine_allocation::SharedBox::clone(&country_snapshot)),
-                );
-                let projects = request.take_projects();
-                let projects = queue!(acquisition::Job::GatedProjects(projects));
-                (queue!(acquisition::Job::Gated(request)), projects)
-            });
             let lexical_ctx = extended::lexical::LexicalCopyContext { base: shared.base };
             let lexical_pending = if lexical_refresh {
                 Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {
@@ -3068,26 +3088,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 frame.extended.session_pilot().raw_mode = session_omitted;
                 None
             };
-            let (launch_store, state_stores) = unsafe {
-                (
-                    take_slice_store(shared, crate::slicing::RAID_LAUNCH),
-                    crate::extended::RaidStateStores {
-                        states: take_slice_store(shared, crate::slicing::RAID_STATE),
-                        buildings: take_slice_store(shared, crate::slicing::RAID_BUILDINGS),
-                        routes: take_slice_store(shared, crate::slicing::TRADE_ROUTES),
-                    },
-                )
-            };
-            let raid_state_pending = queue!(acquisition::Job::RaidState(
-                frame.extended.take_raid_state_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    state_stores,
-                )
-            ));
             let raid_targets_pending = frame
                 .extended
                 .records_any(&extended::raid_target_statuses::TABLES)

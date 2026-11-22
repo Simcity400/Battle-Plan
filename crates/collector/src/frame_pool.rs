@@ -371,7 +371,7 @@ impl FramePool {
     }
 
     pub(crate) fn surplus(&self) -> bool {
-        self.live() > STEADY && self.len() > AHEAD
+        self.live() > STEADY && self.len() >= STEADY
     }
 
     pub(crate) fn vacate(&self, index: usize) -> Box<Captured> {

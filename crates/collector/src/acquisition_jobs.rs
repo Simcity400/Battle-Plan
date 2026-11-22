@@ -1176,6 +1176,7 @@ impl Role {
             | Self::IntelResidual
             | Self::ScriptVariables
             | Self::Templates
+            | Self::GatedProjects
             | Self::Slow
             | Self::Stability
             | Self::WarOverview
@@ -1184,7 +1185,6 @@ impl Role {
             | Self::ProductionModifierParts => 1,
             Self::Governance
             | Self::Gated
-            | Self::GatedProjects
             | Self::Projects
             | Self::CharacterInputs
             | Self::AdvisorRoles

@@ -3618,8 +3618,8 @@ struct RegistryWatch {
 }
 
 impl RegistryWatch {
-    const INTERVAL: Duration = Duration::from_millis(50);
-    const INTEL_INTERVAL: Duration = Duration::from_secs(1);
+    const INTERVAL: Duration = Duration::from_millis(250);
+    const INTEL_INTERVAL: Duration = Duration::from_secs(4);
 
     fn poll_reserved_visibility(
         &mut self,
@@ -5103,6 +5103,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
     let mut next_pass = Instant::now();
+    let mut last_pass = Instant::now() - SIZING_IDLE_WAIT;
     while !sizing.stop.load(Ordering::Acquire) && !crate::allocation::failed() {
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
         crate::allocation::set_context(*lock(&sizing.context));
@@ -5111,15 +5112,21 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             let _span = phases.span(Phase::Retire);
             drop(retired);
         }
-        let due = Instant::now() >= next_pass;
-        if sizing.pass_requested.swap(false, Ordering::AcqRel) || due {
+        let now = Instant::now();
+        let due = now >= next_pass;
+        let urgent = crate::world_lifetime::invalidating()
+            || sizing.hint_demand.load(Ordering::Acquire)
+            || sizing.idle_growth_requested.load(Ordering::Acquire);
+        let requested = sizing.pass_requested.load(Ordering::Acquire)
+            && (urgent || last_pass.elapsed() >= SIZING_IDLE_WAIT);
+        if due || urgent || requested {
+            sizing.pass_requested.store(false, Ordering::Release);
+            last_pass = now;
             if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases, true) {
                 let _ = sizing.failure.set(failure);
                 shared.wake_spool();
                 return;
             }
-        }
-        if due {
             next_pass = Instant::now()
                 + if crate::world_lifetime::invalidating() {
                     SPOOL_IDLE_WAIT
@@ -5142,7 +5149,7 @@ fn sizing_pass(
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
-    let once_a_second = state.second.elapsed() >= Duration::from_secs(1);
+    let once_a_second = state.second.elapsed() >= Duration::from_secs(2);
     let loading = crate::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
     let capacity_census = state.capacity_census.due(
@@ -7504,7 +7511,6 @@ mod tests {
 
     #[test]
     fn an_hour_building_its_own_frame_never_waits_for_the_spool_freeing_a_surplus_one() {
-        use crate::frame_pool::AHEAD;
         use sampling::BUFFERS;
         use std::sync::mpsc;
         let fixture = Arc::new(sizing_fixture());
@@ -7533,7 +7539,7 @@ mod tests {
                             .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames.gauge()))
                     })
                     .collect();
-                for _ in 0..=AHEAD {
+                for _ in 0..BUFFERS {
                     let index = taken.pop().unwrap();
                     steps.at(format_args!("the spool returning frame {index}"));
                     thread.sizing.recycle_frame(shared, index);
@@ -7541,7 +7547,7 @@ mod tests {
                 let gauge = shared.frames.gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.grown),
-                    (BUFFERS + 1, AHEAD + 1, 1),
+                    (BUFFERS + 1, BUFFERS, 1),
                     "{gauge:?}"
                 );
                 let surplus = taken.pop().unwrap();
@@ -7553,7 +7559,7 @@ mod tests {
                 free_held.recv_timeout(crate::TEST_HANG_GUARD).unwrap_or_else(|_| {
                     panic!("the spool never freed a surplus frame: {:?}", shared.frames.gauge())
                 });
-                let hours = AHEAD + 2;
+                let hours = BUFFERS + 1;
                 let game = {
                     let fixture = Arc::clone(&fixture);
                     crate::spawn_ending(move || {

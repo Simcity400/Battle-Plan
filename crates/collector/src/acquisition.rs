@@ -15,7 +15,7 @@ use std::{
 use serde::Serialize;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, GetCurrentThreadId, SetThreadPriority, SetThreadPriorityBoost,
-    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
     WakeByAddressSingle,
 };
 
@@ -1131,7 +1131,14 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.work_ready.notify_one();
     }
     pub(crate) fn hold_pace(&self) {
+        if self.shared.called_up.load(Ordering::Acquire)
+            && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_ABOVE_NORMAL
+            && self.shared.away.load(Ordering::Acquire) == 0
+        {
+            return;
+        }
         let state = self.shared.lock();
+        let clear_away = self.shared.away.load(Ordering::Acquire) != 0;
         if let Ok(threads) = self.threads.try_lock() {
             for thread in threads.iter() {
                 let handle = thread.as_raw_handle();
@@ -1139,15 +1146,26 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
-                crate::frame_priority::select_away(handle as _, None);
+                if clear_away {
+                    crate::frame_priority::select_away(handle as _, None);
+                }
             }
             self.shared.hurried.fetch_add(1, Ordering::Release);
         }
         self.pace(state, usize::MAX, THREAD_PRIORITY_ABOVE_NORMAL, true, None);
     }
     pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
+        let regulars = regulars.max(1);
+        let away = game.map_or(0, |processor| processor.saturating_add(1));
+        if !self.shared.called_up.load(Ordering::Acquire)
+            && self.shared.regulars.load(Ordering::Acquire) == regulars
+            && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_NORMAL
+            && self.shared.away.load(Ordering::Acquire) == away
+        {
+            return;
+        }
         let state = self.shared.lock();
-        self.pace(state, regulars.max(1), THREAD_PRIORITY_BELOW_NORMAL, false, game);
+        self.pace(state, regulars, THREAD_PRIORITY_NORMAL, false, game);
     }
     fn pace(
         &self,
@@ -1157,7 +1175,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         called_up: bool,
         away: Option<u32>,
     ) {
-        self.shared.regulars.store(regulars, Ordering::Release);
+        let previous_regulars = self.shared.regulars.swap(regulars, Ordering::AcqRel);
         self.shared.priority.store(priority, Ordering::Release);
         self.shared.away.store(
             away.map_or(0, |processor| processor.saturating_add(1)),
@@ -1167,7 +1185,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         drop(state);
         if called_up && rested {
             self.shared.reserve_ready.notify_all();
-        } else if !called_up {
+        } else if !called_up && (!rested || regulars < previous_regulars) {
             self.shared.work_ready.notify_all();
         }
     }
@@ -1937,7 +1955,7 @@ mod tests {
             for _ in 0..64 {
                 assert_eq!(
                     run(&pool),
-                    (regular, THREAD_PRIORITY_BELOW_NORMAL),
+                    (regular, THREAD_PRIORITY_NORMAL),
                     "a resting reserve took work"
                 );
             }

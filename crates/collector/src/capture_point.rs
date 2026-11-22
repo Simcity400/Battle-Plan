@@ -10,10 +10,13 @@ use std::{
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, GetThreadId, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
-    THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
+    THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
 };
 
-pub(crate) const BESIDE_READERS: usize = 3;
+pub(crate) fn beside_readers() -> usize {
+    let cpus = crate::acquisition::usable_cpus();
+    (cpus * 3 / 4).clamp(3, crate::acquisition::MAX_WORKERS)
+}
 
 const IDLE: u32 = 0;
 const REQUESTED: u32 = 1;
@@ -31,6 +34,7 @@ static WORK_FULL: AtomicBool = AtomicBool::new(false);
 static THREAD: AtomicIsize = AtomicIsize::new(0);
 static GAME: AtomicU32 = AtomicU32::new(0);
 static HURRIED: AtomicBool = AtomicBool::new(false);
+static HURRY_GEN: AtomicU64 = AtomicU64::new(0);
 static CONFINED: AtomicBool = AtomicBool::new(false);
 static FAILED: AtomicBool = AtomicBool::new(false);
 static BESIDE_CAPTURES: AtomicU64 = AtomicU64::new(0);
@@ -279,6 +283,7 @@ fn hurry() {
     sampling::hurry();
     let thread = THREAD.load(Ordering::SeqCst);
     if thread != 0 {
+        HURRY_GEN.fetch_add(1, Ordering::Release);
         // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
         unsafe { SetThreadPriority(thread as _, THREAD_PRIORITY_ABOVE_NORMAL) };
         if CONFINED.swap(false, Ordering::SeqCst) {
@@ -355,13 +360,30 @@ impl Drop for Gate {
     }
 }
 
-fn beside(away: &mut crate::frame_priority::AwayFromGame, game: Option<u32>) -> bool {
+fn beside(
+    priority: &mut i32,
+    seen_hurry: &mut u64,
+    away: &mut crate::frame_priority::AwayFromGame,
+    game: Option<u32>,
+) -> bool {
+    let hurry_gen = HURRY_GEN.load(Ordering::Acquire);
+    if hurry_gen != *seen_hurry {
+        *seen_hurry = hurry_gen;
+        *priority = i32::MIN;
+        *away = crate::frame_priority::AwayFromGame::default();
+    }
     let own = unsafe { GetCurrentThread() };
-    unsafe { SetThreadPriority(own, THREAD_PRIORITY_BELOW_NORMAL) };
+    if *priority != THREAD_PRIORITY_NORMAL {
+        unsafe { SetThreadPriority(own, THREAD_PRIORITY_NORMAL) };
+        *priority = THREAD_PRIORITY_NORMAL;
+    }
     away.follow(game);
     CONFINED.store(away.confined(), Ordering::SeqCst);
     if HURRIED.load(Ordering::SeqCst) {
-        unsafe { SetThreadPriority(own, THREAD_PRIORITY_ABOVE_NORMAL) };
+        if *priority != THREAD_PRIORITY_ABOVE_NORMAL {
+            unsafe { SetThreadPriority(own, THREAD_PRIORITY_ABOVE_NORMAL) };
+            *priority = THREAD_PRIORITY_ABOVE_NORMAL;
+        }
         CONFINED.store(false, Ordering::SeqCst);
         away.follow(None);
     }
@@ -370,6 +392,8 @@ fn beside(away: &mut crate::frame_priority::AwayFromGame, game: Option<u32>) -> 
 
 fn run() {
     capture_gate::reader();
+    let mut priority = i32::MIN;
+    let mut seen_hurry = 0;
     let mut away = crate::frame_priority::AwayFromGame::default();
     let idle = IDLE;
     loop {
@@ -377,7 +401,7 @@ fn run() {
             STOP => return,
             REQUESTED => {
                 WORK.store(IDLE, Ordering::Release);
-                serve(|full| capture_beside(&mut away, full));
+                serve(|full| capture_beside(&mut priority, &mut seen_hurry, &mut away, full));
             }
             _ => {
                 unsafe {
@@ -411,10 +435,15 @@ fn serve(capture: impl FnOnce(bool)) {
     }
 }
 
-fn capture_beside(away: &mut crate::frame_priority::AwayFromGame, full: bool) {
+fn capture_beside(
+    priority: &mut i32,
+    seen_hurry: &mut u64,
+    away: &mut crate::frame_priority::AwayFromGame,
+    full: bool,
+) {
     let game = GAME.load(Ordering::Relaxed).checked_sub(1);
     let started = Instant::now();
-    if beside(away, game) {
+    if beside(priority, seen_hurry, away, game) {
         CONFINED_CAPTURES.fetch_add(1, Ordering::Relaxed);
     }
     let _images = crate::portrait_changes::PreImagesCapture::begin();
@@ -423,8 +452,10 @@ fn capture_beside(away: &mut crate::frame_priority::AwayFromGame, full: bool) {
     // writers proceed, and the portrait reader validates the live bytes it reads against the
     // pre-images `_images` keeps for this read.
     let admitted = unsafe { read(Placement::Beside(game), full) };
-    CONFINED.store(false, Ordering::SeqCst);
-    away.follow(None);
+    if HURRIED.load(Ordering::SeqCst) {
+        CONFINED.store(false, Ordering::SeqCst);
+        away.follow(None);
+    }
     if !admitted {
         unread(full);
         return;
