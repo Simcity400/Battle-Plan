@@ -1536,10 +1536,15 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
         .copy_from_slice(&((m_base + mod_obj_off) as u64).to_le_bytes());
     modified[mod_obj_off..mod_obj_off + 8]
         .copy_from_slice(&(crate::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
-    modified[mod_obj_off + 0x138..mod_obj_off + 0x140]
+    modified[mod_obj_off + crate::cequipment_module::ADD_STATS
+        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 8]
         .copy_from_slice(&((m_base + mod_add_off) as u64).to_le_bytes());
-    modified[mod_obj_off + 0x140..mod_obj_off + 0x144].copy_from_slice(&1_u32.to_le_bytes());
-    modified[mod_obj_off + 0x144..mod_obj_off + 0x148].copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 8
+        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 12]
+        .copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 12
+        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 16]
+        .copy_from_slice(&1_u32.to_le_bytes());
     modified[mod_add_off..mod_add_off + 4].copy_from_slice(&62_i32.to_le_bytes());
     modified[mod_add_off + 8..mod_add_off + 16].copy_from_slice(&5_000_000_i64.to_le_bytes());
     modified[var1 + MAXIMUM_SPEED_STAT..var1 + MAXIMUM_SPEED_STAT + 8]
@@ -1621,4 +1626,266 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
     assert_eq!(rows[0].values[3], None);
     assert_eq!(rows[0].values[0], Some(100_000_000));
     assert_eq!(engine_sites::take_taint(), None);
+}
+
+#[test]
+fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_reliability_and_recovers_independent_operands()
+{
+    struct SteppingWorld<'a> {
+        bytes: &'a [u8],
+        trigger_at: Option<usize>,
+        blocked: Option<usize>,
+        revision: &'a Cell<u64>,
+    }
+    impl Memory for SteppingWorld<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self
+                .blocked
+                .is_some_and(|at| (address..address.saturating_add(output.len())).contains(&at))
+            {
+                return false;
+            }
+            if self
+                .trigger_at
+                .is_some_and(|at| (address..address.saturating_add(output.len())).contains(&at))
+            {
+                self.revision.set(self.revision.get() + 1);
+            }
+            if address == THRUST_WEIGHT_AGILITY_FACTOR_RVA.0 && output.len() == 8 {
+                output.copy_from_slice(&50_000_i64.to_le_bytes());
+                return true;
+            }
+            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            {
+                output.copy_from_slice(&0x100_u32.to_le_bytes());
+                return true;
+            }
+            let base = self.bytes.as_ptr() as usize;
+            let Some(offset) = address.checked_sub(base) else {
+                return false;
+            };
+            let Some(slice) = self.bytes.get(offset..offset.saturating_add(output.len())) else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+
+    struct LiveRevisionWitness<'a> {
+        revision: &'a Cell<u64>,
+        withheld: Vec<(&'static str, &'static str)>,
+    }
+    impl StatWitness for LiveRevisionWitness<'_> {
+        fn quiet(&self) -> Result<(u64, u64), &'static str> {
+            Ok((1, self.revision.get()))
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.withheld.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    let mut bytes = vec![0_u8; 0x2000];
+    let base_ptr = bytes.as_ptr() as usize;
+    let var_off = 0x0;
+    let def_off = 0x600;
+    let mod_entry_off = 0xc00;
+    let mod_obj_off = 0xd00;
+    let mod_add_off = 0x1000;
+    let base_values = [
+        100_000_000_i64,
+        1_200_000,
+        1_800_000,
+        4_500_000,
+        42_000_000,
+        80_000,
+        1_000_000,
+        1_500_000,
+        21_000,
+        2_400_000,
+    ];
+    bytes[def_off..def_off + 8]
+        .copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4]
+        .copy_from_slice(&77_u32.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        let off = def_off + cequipment_type::STATS_BASE + lane.stat_index * 8;
+        bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[var_off..var_off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[var_off + TYPE..var_off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+    bytes[var_off + ID..var_off + ID + 4].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[var_off + EQUIPMENT_TOKEN..var_off + EQUIPMENT_TOKEN + 4]
+        .copy_from_slice(&77_u32.to_le_bytes());
+    bytes[var_off + DEFINITION..var_off + DEFINITION + 8]
+        .copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
+    bytes[var_off + CLASSIFIER_FLAGS..var_off + CLASSIFIER_FLAGS + 8]
+        .copy_from_slice(&0x400_u64.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        let v = if lane.offset == AIR_AGILITY_STAT {
+            4_750_000
+        } else {
+            value
+        };
+        bytes[var_off + lane.offset..var_off + lane.offset + 8].copy_from_slice(&v.to_le_bytes());
+    }
+    bytes[var_off + BUILD_COST..var_off + BUILD_COST + 8]
+        .copy_from_slice(&2_400_000_i64.to_le_bytes());
+
+    let mut modified = bytes.clone();
+    let m_base = modified.as_ptr() as usize;
+    modified[var_off + DEFINITION..var_off + DEFINITION + 8]
+        .copy_from_slice(&((m_base + def_off) as u64).to_le_bytes());
+    modified[var_off + MODULES + 8..var_off + MODULES + 16]
+        .copy_from_slice(&((m_base + mod_entry_off) as u64).to_le_bytes());
+    modified[var_off + MODULES + 16..var_off + MODULES + 20].copy_from_slice(&1_u32.to_le_bytes());
+    modified[var_off + MODULES + 20..var_off + MODULES + 24].copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_entry_off + 8..mod_entry_off + 16]
+        .copy_from_slice(&((m_base + mod_obj_off) as u64).to_le_bytes());
+    modified[mod_obj_off..mod_obj_off + 8]
+        .copy_from_slice(&(crate::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
+    modified[mod_obj_off + crate::cequipment_module::ADD_STATS
+        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 8]
+        .copy_from_slice(&((m_base + mod_add_off) as u64).to_le_bytes());
+    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 8
+        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 12]
+        .copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 12
+        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 16]
+        .copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_add_off..mod_add_off + 4].copy_from_slice(&62_i32.to_le_bytes());
+    modified[mod_add_off + 8..mod_add_off + 16].copy_from_slice(&5_000_000_i64.to_le_bytes());
+    modified[var_off + MAXIMUM_SPEED_STAT..var_off + MAXIMUM_SPEED_STAT + 8]
+        .copy_from_slice(&47_000_000_i64.to_le_bytes());
+
+    let rev = Cell::new(7_u64);
+    let mut rows = Vec::new();
+    let mut witness = LiveRevisionWitness {
+        revision: &rev,
+        withheld: Vec::new(),
+    };
+    let mv = RegistryRow {
+        id: (1_u64 << 32) | u64::from(REFERENCE_TYPE),
+        address: m_base + var_off,
+    };
+    assert_eq!(
+        walk_stats_carried(
+            &SteppingWorld {
+                bytes: &modified,
+                trigger_at: Some(m_base + mod_add_off),
+                blocked: None,
+                revision: &rev,
+            },
+            0,
+            &[mv],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert!(
+        witness
+            .withheld
+            .iter()
+            .any(|(_, reason)| *reason == "variant stat writer crossed read")
+    );
+
+    for cached_rel in [100_000_i64, 150_000_i64] {
+        let mut high_rel = bytes.clone();
+        let hr_base = high_rel.as_ptr() as usize;
+        high_rel[var_off + DEFINITION..var_off + DEFINITION + 8]
+            .copy_from_slice(&((hr_base + def_off) as u64).to_le_bytes());
+        high_rel[def_off + cequipment_type::STATS_BASE + 65 * 8
+            ..def_off + cequipment_type::STATS_BASE + 65 * 8 + 8]
+            .copy_from_slice(&150_000_i64.to_le_bytes());
+        high_rel[var_off + RELIABILITY_STAT..var_off + RELIABILITY_STAT + 8]
+            .copy_from_slice(&cached_rel.to_le_bytes());
+        let hv = RegistryRow {
+            id: mv.id,
+            address: hr_base + var_off,
+        };
+        let mut witness = LiveRevisionWitness {
+            revision: &rev,
+            withheld: Vec::new(),
+        };
+        assert_eq!(
+            walk_stats_carried(
+                &SteppingWorld {
+                    bytes: &high_rel,
+                    trigger_at: None,
+                    blocked: None,
+                    revision: &rev,
+                },
+                0,
+                &[hv],
+                &mut rows,
+                &mut (),
+                &mut witness,
+            ),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows[0].values[5], None);
+        assert_eq!(rows[0].values[4], Some(42_000_000));
+        assert!(
+            witness
+                .withheld
+                .iter()
+                .any(|(lane, reason)| *lane == "reliability"
+                    && *reason == "variant stat reliability rebuild cap mode ambiguous")
+        );
+    }
+
+    let v = RegistryRow {
+        id: mv.id,
+        address: base_ptr + var_off,
+    };
+    let mut witness = LiveRevisionWitness {
+        revision: &rev,
+        withheld: Vec::new(),
+    };
+    assert_eq!(
+        walk_stats_carried(
+            &SteppingWorld {
+                bytes: &bytes,
+                trigger_at: None,
+                blocked: Some(base_ptr + def_off + cequipment_type::STATS_BASE + 46 * 8),
+                revision: &rev,
+            },
+            0,
+            &[v],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[0], None);
+    assert_eq!(rows[0].values[4], Some(42_000_000));
+    assert_eq!(rows[0].values[9], Some(2_400_000));
+
+    let mut witness = LiveRevisionWitness {
+        revision: &rev,
+        withheld: Vec::new(),
+    };
+    assert_eq!(
+        walk_stats_carried(
+            &SteppingWorld {
+                bytes: &bytes,
+                trigger_at: None,
+                blocked: Some(base_ptr + var_off + BUILD_COST),
+                revision: &rev,
+            },
+            0,
+            &[v],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[9], None);
+    assert_eq!(rows[0].values[0], Some(100_000_000));
+    assert_eq!(rows[0].values[4], Some(42_000_000));
 }

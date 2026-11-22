@@ -466,12 +466,19 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "pol/capture-factions",
         )
     };
-    history[TableId::RocketProductionOutput.index()] = table(
-        TableId::RocketProductionOutput,
-        WIDGET_CAPTURE_FORMAT,
-        "wc/rocket",
+    history[TableId::RocketProductionOutput.index()] = LastChange {
+        introduced: WIDGET_CAPTURE_FORMAT,
+        ..table(
+            TableId::RocketProductionOutput,
+            VARIANT_STAT_WITNESS_FORMAT,
+            "variant stat lane witnesses",
+        )
+    };
+    history[TableId::RaidSpeedInputs.index()] = table(
+        TableId::RaidSpeedInputs,
+        VARIANT_STAT_WITNESS_FORMAT,
+        "variant stat lane witnesses",
     );
-    history[TableId::RocketProductionOutput.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::ProductionLineOutput.index()] = appended_at(
         TableId::ProductionLineOutput,
         CONVERSION_PURPOSE_FORMAT,

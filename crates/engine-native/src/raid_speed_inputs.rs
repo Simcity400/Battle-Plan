@@ -96,6 +96,7 @@ fn transports(
     arena: &mut crate::walk::Buffer<'_, i64>,
     len: &mut usize,
     required: &mut usize,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Result<usize, &'static str> {
     let items = pool
         .checked_add(cequipment_variant_pool::ITEMS)
@@ -117,7 +118,7 @@ fn transports(
         if flags & AIR_TRANSPORT == 0 {
             continue;
         }
-        let speed = cequipment_variant::verified_cached_stat(memory, base, variant, 4)?;
+        let speed = cequipment_variant::verified_cached_stat(memory, base, variant, 4, witness)?;
         if speed < 0 {
             return Err("raid transport speed stat negative");
         }
@@ -157,6 +158,7 @@ fn read_row(
     memo: &DefinitionMemo,
     arena: &mut crate::walk::Buffer<'_, i64>,
     walk: &mut Walk,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Result<Row, &'static str> {
     let (reference_type, id, phase, outcome, end_hour) = identity;
     let mut row = Row {
@@ -188,6 +190,7 @@ fn read_row(
         arena,
         &mut walk.transport_len,
         &mut walk.required_transport,
+        witness,
     )?;
     if found == 0 {
         let owner: u64 = field(memory, raid, craid_instance::OWNER_OBJECT)?;
@@ -204,6 +207,7 @@ fn read_row(
                 arena,
                 &mut walk.transport_len,
                 &mut walk.required_transport,
+                witness,
             )?;
             row.transport_from_country = 1;
         }
@@ -340,6 +344,10 @@ pub fn each_raid(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Raid speed walk passes memory, base, game state, modifier memo, output buffers and stat timing witness explicitly."
+)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -347,6 +355,7 @@ pub fn walk(
     memo: &DefinitionMemo,
     rows: &mut Vec<Row>,
     arena: &mut Vec<i64>,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Walk {
     walk_buffer(
         memory,
@@ -355,9 +364,14 @@ pub fn walk(
         memo,
         crate::walk::Buffer::Growing(rows),
         crate::walk::Buffer::Growing(arena),
+        witness,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Raid speed walk passes memory, base, game state, modifier memo, output buffers and stat timing witness explicitly."
+)]
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -365,6 +379,7 @@ pub fn walk_buffer(
     memo: &DefinitionMemo,
     mut rows: crate::walk::Buffer<'_, Row>,
     mut arena: crate::walk::Buffer<'_, i64>,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Walk {
     let mut walk = Walk {
         outcome: Outcome::Rows { len: 0 },
@@ -395,6 +410,7 @@ pub fn walk_buffer(
                 memo,
                 &mut arena,
                 &mut walk,
+                witness,
             )?;
             let fitted = walk.required_transport - before.1 == walk.transport_len - before.0;
             rows.ensure(len.checked_add(1).ok_or("raid speed row count overflow")?)?;
@@ -602,6 +618,13 @@ mod tests {
         m
     }
 
+    struct QuietTestWitness;
+    impl cequipment_variant::StatWitness for QuietTestWitness {
+        fn quiet(&self) -> Result<(u64, u64), &'static str> {
+            Ok((1, 7))
+        }
+    }
+
     fn run(memory: &Image) -> (Walk, Vec<Row>, Vec<i64>) {
         let mut rows = vec![Row::default(); 2];
         let mut arena = vec![0; 4];
@@ -612,6 +635,7 @@ mod tests {
             &DefinitionMemo::default(),
             &mut rows,
             &mut arena,
+            &QuietTestWitness,
         );
         (walk, rows, arena)
     }
@@ -663,6 +687,18 @@ mod tests {
     #[test]
     fn raid_transport_refuses_unverified_cached_speed_stat() {
         let mut memory = fixture();
+        let mut rows = vec![Row::default(); 2];
+        let mut arena = vec![0; 4];
+        let disabled = walk(
+            &memory,
+            0,
+            GS,
+            &DefinitionMemo::default(),
+            &mut rows,
+            &mut arena,
+            &(),
+        );
+        assert!(matches!(disabled.outcome, Outcome::Unavailable { .. }));
         memory.u64(TRANSPORT + TRANSPORT_SPEED_STAT, 999_999);
         assert!(matches!(
             run(&memory).0.outcome,

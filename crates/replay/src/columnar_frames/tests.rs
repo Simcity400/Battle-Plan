@@ -544,7 +544,7 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     use replay_data::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT;
     let schema = schema().unwrap();
     let columns = columns_at(AIR_HISTORY_SLOTS_FORMAT).unwrap();
-    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::VariantStats, TableId::VariantChanges].map(TableId::index).to_vec();
+    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::VariantStats, TableId::VariantChanges, TableId::RaidSpeedInputs, TableId::RocketProductionOutput].map(TableId::index).to_vec();
     changed.sort_unstable();
     let named = |format: u16| {
         withheld_at(format)
@@ -883,7 +883,12 @@ fn format_142_recording_opens_withholds_variant_tables_and_unverified_required_t
 
     let recording = opened(bytes);
     assert_eq!(recording.root_identity().schema, legacy_digest);
-    for withheld in [TableId::VariantStats, TableId::VariantChanges] {
+    for withheld in [
+        TableId::VariantStats,
+        TableId::VariantChanges,
+        TableId::RaidSpeedInputs,
+        TableId::RocketProductionOutput,
+    ] {
         let gap = withheld.last_change().table_gap(withheld, format).unwrap();
         assert_eq!(
             recording.withheld_reason(withheld.index()),
@@ -897,6 +902,8 @@ fn format_142_recording_opens_withholds_variant_tables_and_unverified_required_t
             TableId::TrainInventory,
             TableId::VariantStats,
             TableId::VariantChanges,
+            TableId::RaidSpeedInputs,
+            TableId::RocketProductionOutput,
         ],
     );
     let first = &read[0].0;
@@ -914,10 +921,43 @@ fn format_142_recording_opens_withholds_variant_tables_and_unverified_required_t
     assert_eq!(got_trains[0].allocated_trucks, Recorded::Value(Some(12)));
     assert_eq!(got_trains[0].required_trains, Recorded::Value(Some(4)));
     assert_eq!(got_trains[0].required_trucks_raw, Recorded::NotRecorded);
-    for withheld in [TableId::VariantStats, TableId::VariantChanges] {
+    for withheld in [
+        TableId::VariantStats,
+        TableId::VariantChanges,
+        TableId::RaidSpeedInputs,
+        TableId::RocketProductionOutput,
+    ] {
         assert!(matches!(
             &*first.tables[withheld.index()],
             TableView::Unavailable { reason } if reason.contains(&format!("{withheld:?}"))
         ));
     }
+
+    let mut queried = Vec::new();
+    let (queried_cols, _) = crate::points::cells(
+        &recording,
+        0,
+        TableId::TrainInventory,
+        &[3, 4],
+        crate::lanes::Keys::All,
+        100,
+        100,
+        &mut |hour, key, cells| {
+            queried.push((hour, key, cells.map(|c| c.to_vec())));
+            true
+        },
+    )
+    .unwrap();
+    assert_eq!(queried_cols, [3, 4]);
+    assert_eq!(
+        queried,
+        vec![(
+            100,
+            7,
+            Some(vec![
+                crate::points::Cell::Number(12),
+                crate::points::Cell::Unrecorded,
+            ])
+        )]
+    );
 }

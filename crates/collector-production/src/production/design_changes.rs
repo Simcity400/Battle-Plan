@@ -141,6 +141,7 @@ fn withdraw_baselines() {
 }
 
 fn update_enabled() {
+    collector_observers::variant_stat_witness::install(stat_timing_quiet);
     let enabled = OWN_ENABLED.load(Ordering::Acquire)
         && WORLD_ENABLED.load(Ordering::Acquire)
         && source_hooks::enabled()

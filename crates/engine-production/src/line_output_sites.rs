@@ -234,6 +234,7 @@ pub fn read_rocket_spending(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Option<RocketTick> {
     let field = |offset| pointer.checked_add(offset).filter(|_| pointer != 0);
     let variant = field(ROCKET_VARIANT)
@@ -277,7 +278,7 @@ pub fn read_rocket_spending(
         Some(0) => tick.spent_raw = speed,
         Some(_) => {
             let cost = variant.and_then(|variant| {
-                cequipment_variant::verified_cached_stat(memory, base, variant, 9).ok()
+                cequipment_variant::verified_cached_stat(memory, base, variant, 9, witness).ok()
             });
             if let Some(cost) = cost {
                 tick.instant_raw = speed.max(cost);

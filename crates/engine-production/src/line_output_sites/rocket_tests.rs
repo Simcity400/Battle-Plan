@@ -38,6 +38,13 @@ impl Memory for World {
     }
 }
 
+struct QuietTestWitness;
+impl cequipment_variant::StatWitness for QuietTestWitness {
+    fn quiet(&self) -> Result<(u64, u64), &'static str> {
+        Ok((1, 7))
+    }
+}
+
 impl World {
     fn new() -> Self {
         let mut world = Self {
@@ -79,7 +86,7 @@ impl World {
     }
 
     fn tick(&self) -> RocketTick {
-        read_rocket_spending(self, BASE, ROCKET).unwrap()
+        read_rocket_spending(self, BASE, ROCKET, &QuietTestWitness).unwrap()
     }
 }
 
@@ -146,7 +153,7 @@ fn null_variant_skips_spending_but_a_zero_design_id_is_bound() {
     world.word(ROCKET + ROCKET_VARIANT, 0);
     world.blocked = Some(ROCKET + ROCKET_STATUS);
     world.instant = None;
-    assert_eq!(read_rocket_spending(&world, BASE, ROCKET), None);
+    assert_eq!(read_rocket_spending(&world, BASE, ROCKET, &QuietTestWitness), None);
 }
 
 #[test]
@@ -175,6 +182,16 @@ fn rocket_short_reads_keep_independent_scope_and_never_zero_the_input() {
     world.instant = None;
     assert_eq!(world.tick().failure, RocketFailure::Instant);
     world.instant = Some(1);
+    world.word(
+        DEFINITION + engine_native::cequipment_type::BUILD_COST_IC,
+        500_000,
+    );
+    world.word(VARIANT + cequipment_variant::BUILD_COST, 500_000);
+    world.word(VARIANT + cequipment_variant::BUILD_COST_IC_STAT, 500_000);
+    assert_eq!(
+        read_rocket_spending(&world, BASE, ROCKET, &()).unwrap().failure,
+        RocketFailure::Instant
+    );
     world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_IC_STAT);
     assert_eq!(world.tick().failure, RocketFailure::Instant);
     world.blocked = None;
@@ -227,7 +244,7 @@ fn rocket_authenticates_owner_backlink_and_both_receiver_identities() {
     }
     let world = World::new();
     for pointer in [0, usize::MAX - ROCKET_VARIANT] {
-        let tick = read_rocket_spending(&world, BASE, pointer).unwrap();
+        let tick = read_rocket_spending(&world, BASE, pointer, &QuietTestWitness).unwrap();
         assert_eq!(
             (tick.country, tick.variant, tick.failure),
             (0, 0, RocketFailure::Country)

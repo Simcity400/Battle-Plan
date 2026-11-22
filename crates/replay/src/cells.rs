@@ -109,7 +109,7 @@ impl Tapped {
 }
 
 pub(crate) fn read_columns(recording: &Recording, recorded: usize, table: usize, columns: Option<&[usize]>) -> Vec<usize> {
-    match columns {
+    let mut columns = match columns {
         Some(columns) => {
             let mut columns: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
             columns.sort_unstable();
@@ -117,7 +117,12 @@ pub(crate) fn read_columns(recording: &Recording, recorded: usize, table: usize,
             columns
         }
         None => recording.read_columns(table),
+    };
+    if let Some(&id) = TableId::ALL.get(table) {
+        let format = recording.format();
+        columns.retain(|&column| !id.column_withheld_at(column, format));
     }
+    columns
 }
 
 pub struct TableReader {

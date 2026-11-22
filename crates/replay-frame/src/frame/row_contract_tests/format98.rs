@@ -902,6 +902,18 @@ fn format_142_train_inventory_withholds_required_trucks_raw_and_skips_legacy_var
     assert_eq!(applied.required_trains, Recorded::Value(Some(3)));
     assert_eq!(applied.required_trucks_raw, Recorded::NotRecorded);
 
+    let next_train = TrainInventoryRow {
+        allocated_trucks: Recorded::Value(Some(18)),
+        required_trucks_raw: Recorded::Value(Some(100_000)),
+        ..train.clone()
+    };
+    let mut second_delta = next_train.delta(Some(&train)).unwrap().unwrap();
+    second_delta.format = format;
+    let updated = second_delta.apply(Some(decoded)).unwrap();
+    assert_eq!(updated.allocated_trucks, Recorded::Value(Some(18)));
+    assert_eq!(updated.required_trains, Recorded::Value(Some(3)));
+    assert_eq!(updated.required_trucks_raw, Recorded::NotRecorded);
+
     let mut legacy_snapshot = Vec::new();
     legacy_snapshot.extend_from_slice(&1_u32.to_le_bytes());
     TableId::VariantStats
