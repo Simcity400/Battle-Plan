@@ -246,11 +246,11 @@ export async function executeGroup(group, root = repositoryRoot, output = proces
     if (group.tabFull) process.env[flag] = '1';
     else delete process.env[flag];
   }
-  const invokedFrom = process.cwd();
+  const invokedFrom = process.cwd(), base = resolve(root);
   try {
-    process.chdir(root);
+    process.chdir(base);
     let failed = false;
-    const tests = run({ files: group.files.map(file => resolve(root, file)), concurrency: group.concurrency,
+    const tests = run({ files: group.files.map(file => resolve(base, file)), concurrency: group.concurrency,
       execArgv: ['--experimental-strip-types'] });
     tests.on('test:fail', () => { failed = true; });
     for await (const chunk of tests.compose(spec)) output.write(chunk);
