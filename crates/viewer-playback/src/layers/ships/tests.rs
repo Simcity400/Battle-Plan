@@ -27,11 +27,11 @@ use viewer_foundation::{
     },
     unit_class::CounterClass,
 };
-use viewer_world::map::{
+use viewer_unit_models::{
     equipment_graphics::Decided,
-    unit_history::naval::{Candidate, Formation, Hull},
     unit_models::{Force, ForcePart, ResolvedHull, ResolvedRoster},
 };
+use viewer_unit_history::unit_history::naval::{Candidate, Formation, Hull};
 
 struct Fake {
     bounds: BTreeMap<u32, [f32; 4]>,
@@ -437,7 +437,7 @@ fn contested(at: u32, store: &mut Store) {
 
 #[test]
 fn the_window_draws_the_layers_ships_and_todays_where_a_land_occupant_competes() {
-    use viewer_world::map::unit_models::{PreparedModels, naval_differ};
+    use viewer_unit_models::unit_models::{PreparedModels, naval_differ};
     let mut side = side_of("ships-handover", View::default(), fake(), contested);
     assert!(layer(&side).stands_in(), "drawn and equal to today's, it stands in ({:?})", layer(&side).needs_today());
     let first = layer(&side).seq();

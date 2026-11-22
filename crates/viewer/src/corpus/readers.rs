@@ -497,15 +497,15 @@ fn interface(
                         if let Some(writer) = &values {
                             writer.write("particles.emitters", &(object, &document));
                         }
-                        let root = viewer_world::map::weather_effects::particle_root(
+                        let root = viewer_weather_effects::weather_effects::particle_root(
                             &document,
                             &particle.path.text(),
                             &particle.name,
-                            viewer_world::map::weather_effects::Pick::First,
+                            viewer_weather_effects::weather_effects::Pick::First,
                         )?;
                         let mut textures = Vec::new();
                         let mut pages = BTreeMap::new();
-                        let read = viewer_world::map::weather_effects::read_emitters(
+                        let read = viewer_weather_effects::weather_effects::read_emitters(
                             layers,
                             decode,
                             root,
@@ -981,7 +981,7 @@ fn units(
         (Some(defines), Some(data), Some((_, default_map))) => {
             let mut warnings = Vec::new();
             let assets = log.read("viewer.unit_models", || {
-                viewer_world::map::unit_models::UnitModelAssets::try_load(
+                viewer_unit_models::unit_models::UnitModelAssets::try_load(
                     layers,
                     decode,
                     defines,
@@ -1016,7 +1016,7 @@ fn units(
         content_reader_core::train_gfx::cultures(layers)
     });
     let tags = log.read("viewer.country_tags", || {
-        viewer_world::map::trains::country_tag_index(layers)
+        content_reader_core::country_tags::country_tag_index(layers)
     });
     let roster = layers.descriptor_roster();
     if log.values.is_some() {
@@ -1090,7 +1090,7 @@ fn model_labels(
         .collect();
     log.value(READER, &(&dynamic, &keys));
     let first =
-        std::str::from_utf8(viewer_world::map::model_labels::DEFAULT_MODEL_KEY).unwrap_or_default();
+        std::str::from_utf8(viewer_unit_models::model_labels::DEFAULT_MODEL_KEY).unwrap_or_default();
     if localisation.get(first).is_none() {
         log.about(
             READER,
@@ -1410,12 +1410,12 @@ fn viewer_map_assets(
     };
     let mut warnings = Vec::new();
     log.read("viewer.trains", || {
-        viewer_world::map::trains::TrainAssets::load(layers, decode, defines, &mut warnings)
+        viewer_rail::trains::TrainAssets::load(layers, decode, defines, &mut warnings)
     });
     log.typed("viewer.trains", warnings);
     let mut warnings = Vec::new();
     log.read("viewer.bridges", || {
-        viewer_world::map::railways::Bridges::load(layers, decode, defines, &mut warnings)
+        viewer_rail::railways::Bridges::load(layers, decode, defines, &mut warnings)
     });
     log.typed("viewer.bridges", warnings);
     let mut warnings = Vec::new();
@@ -1442,7 +1442,7 @@ fn viewer_map_assets(
         Some(regions) => {
             let mut warnings = Vec::new();
             if let Some(aircraft) = log.read("viewer.aircraft", || {
-                viewer_world::map::aircraft::AircraftAssets::load(
+                viewer_aircraft::aircraft::AircraftAssets::load(
                     layers,
                     decode,
                     data,
@@ -1466,7 +1466,7 @@ fn viewer_map_assets(
     }
     let mut warnings = Vec::new();
     log.read("viewer.map_buildings", || {
-        viewer_world::map::map_buildings::MapBuildingAssets::load(
+        viewer_buildings::map_buildings::MapBuildingAssets::load(
             layers,
             decode,
             data,
@@ -1480,7 +1480,7 @@ fn viewer_map_assets(
         return;
     };
     if let Some(refusals) = log.read("viewer.map_text", || {
-        Ok(viewer_world::map::animated_map_text::Assets::load(
+        Ok(viewer_map_text::animated_map_text::Assets::load(
             layers,
             (defines, defines),
             [data.width, data.height],
@@ -1498,7 +1498,7 @@ fn viewer_map_assets(
         log.notes("viewer.raids", Kind::Refused, &raids.refusals());
         let mut warnings = Vec::new();
         log.read("viewer.map_frame", || {
-            viewer_world::map::mapframe::FrameAssets::load(
+            viewer_world::mapframe::FrameAssets::load(
                 layers,
                 decode,
                 raids.trigger_content.facts(),

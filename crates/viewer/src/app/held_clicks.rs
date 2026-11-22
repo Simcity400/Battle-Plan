@@ -11,7 +11,7 @@ use viewer_foundation::{
     unit_handle::Unit,
 };
 use viewer_raids::map::raids::offers::TooltipTarget;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Clone, Debug)]
 pub(super) enum Click {

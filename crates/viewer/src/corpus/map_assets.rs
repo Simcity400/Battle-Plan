@@ -12,7 +12,9 @@ use std::{
     io,
 };
 use viewer_foundation::map::camera::MapSize;
-use viewer_world::map::{border_pass::BorderAssets, railways::RailAssets, rivers::RiverAssets};
+use viewer_borders::border_pass::BorderAssets;
+use viewer_rail::railways::RailAssets;
+use viewer_terrain::rivers::RiverAssets;
 
 pub(super) fn read(
     log: &mut Log,
@@ -97,12 +99,12 @@ pub(super) fn read(
     });
     match regions {
         Some(regions) => {
-            let region_provinces = viewer_world::map::weather_effects::RegionProvinces::new(
+            let region_provinces = viewer_weather_effects::weather_effects::RegionProvinces::new(
                 regions,
                 |province| map.definitions.contains_key(&province),
             );
             if let Some(withheld) = log.read("viewer.weather_assets", || {
-                viewer_world::map::weather_effects::Assets::load(
+                viewer_weather_effects::weather_effects::Assets::load(
                     layers,
                     defines,
                     size,
@@ -124,7 +126,7 @@ fn trees_and_cities(
     layers: &ResolvedLayers,
     defines: &Defines,
     map: &MapData,
-    assets: &viewer_world::map::scene_content::MapAssets,
+    assets: &viewer_world::scene_content::MapAssets,
     decode: Decode,
 ) {
     let palettes: Vec<_> = assets
@@ -138,7 +140,7 @@ fn trees_and_cities(
         .collect();
     let mut warnings = Vec::new();
     log.read("viewer.tree_assets", || {
-        viewer_world::map::trees::TreeAssets::load(
+        viewer_terrain::trees::TreeAssets::load(
             layers,
             decode,
             &palettes,
@@ -151,7 +153,7 @@ fn trees_and_cities(
     let mut warnings = Vec::new();
     log.read("viewer.city_assets", || {
         let (cities, styles) = content_reader_core::cities::read(layers)?;
-        let plan = viewer_world::map::sprawl::generate(
+        let plan = viewer_buildings::sprawl::generate(
             &cities,
             &styles,
             &assets.spawn_city,
@@ -159,7 +161,7 @@ fn trees_and_cities(
             &map.province_ids,
             &assets.rivers,
         )?;
-        viewer_world::map::sprawl::Sprawl::load(layers, decode, &plan, defines, &mut warnings)
+        viewer_buildings::sprawl::Sprawl::load(layers, decode, &plan, defines, &mut warnings)
             .map(|_| ())
     });
     log.notes("viewer.city_assets", Kind::Warning, &warnings);
@@ -167,11 +169,11 @@ fn trees_and_cities(
 
 fn shaders(log: &mut Log, layers: &ResolvedLayers, size: [u32; 2], decode: Decode) {
     let Some(passes) = log.read("viewer.map_shader_sources", || {
-        viewer_world::map::shader_sources::passes(layers)
+        viewer_scene_base::shader_sources::passes(layers)
     }) else {
         return;
     };
-    let (mut library, defines) = viewer_world::map::shader_sources::library(layers, size, decode);
+    let (mut library, defines) = viewer_scene_base::shader_sources::library(layers, size, decode);
     let paths: BTreeSet<_> = passes.into_iter().map(|(_, path)| path).collect();
     for path in paths {
         let Some(effect) = log.read("viewer.map_shader_load", || {

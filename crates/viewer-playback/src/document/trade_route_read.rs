@@ -3,7 +3,7 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use std::sync::Arc;
 use viewer_foundation::table_access::{self, Available};
-use viewer_world::map::trade_routes::{ClientFields, OriginFields, RegionalFields, RouteFields};
+use viewer_unit_models::trade_routes::{ClientFields, OriginFields, RegionalFields, RouteFields};
 
 pub const TABLES: [TableId; 8] = [
     TableId::ResourceOrigins,

@@ -29,7 +29,9 @@ use viewer_foundation::{
     profiling::BuilderSpans,
     trigger_content::TriggerContent,
 };
-use viewer_world::map::{animated_map_text::events, labels, strike_effects, weather_effects};
+use viewer_map_text::animated_map_text::events;
+use viewer_map_icons::labels;
+use viewer_models::strike_effects;
 use witness::ContentReads;
 
 pub struct ProductInputs {
@@ -287,7 +289,7 @@ impl<'a> ProductHour<'a> {
         })
     }
 
-    pub fn weather_field(&self) -> io::Result<weather_effects::Field> {
+    pub fn weather_field(&self) -> io::Result<map_display_data::WeatherField> {
         self.content
             .weather
             .lock()
@@ -302,7 +304,7 @@ impl<'a> ProductHour<'a> {
     pub fn map_text(
         &self,
         vision: &perspective::Vision,
-    ) -> viewer_world::map::animated_map_text::events::Prepared {
+    ) -> viewer_map_text::animated_map_text::events::Prepared {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         events::Prepared::read(
             self.frame,

@@ -6,10 +6,7 @@ use viewer_foundation::map::{
     camera::{Free, Lens, Pose},
     gpu_contract::read_texture,
 };
-use viewer_world::map::{
-    scene::{Request, Scene, SceneProof, passes},
-    scene_faults::Point,
-};
+use viewer_world::{scene::{Request, Scene, SceneProof, passes}, scene_faults::Point};
 
 fn error(result: io::Result<()>) -> Result<(), (io::ErrorKind, String)> {
     result.map_err(|error| (error.kind(), error.to_string()))
@@ -98,7 +95,7 @@ fn render(
 ) {
     let batch = sprites.batch((request.animation_time * 60.).round() as usize);
     let request = Request {
-        overlay: viewer_world::map::scene::Overlay {
+        overlay: viewer_world::scene::Overlay {
             sprites: Some(&batch),
             ..request.overlay
         },
@@ -293,7 +290,7 @@ fn scene_immediate_later_fatal_refusals_and_recovery() -> io::Result<()> {
 fn scene_province_frame_cut_spends_once_and_restores_an_unwalked_frame() -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     use viewer_foundation::map::province_schedule::Shared;
-    use viewer_world::map::scene::SceneInput;
+    use viewer_world::scene::SceneInput;
 
     let fixture = Fixture::load("scene-province-frame")?;
     let (device, queue) = (&fixture.state.device, &fixture.state.queue);

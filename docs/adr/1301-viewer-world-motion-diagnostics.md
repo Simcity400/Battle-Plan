@@ -6,4 +6,4 @@ World rendering belongs in a crate that can operate independently of the host an
 
 Actor motion measures the displayed result. It compares the root on the visible map copy and the current animation samples, with zero samples reserved for actors that play no animation. A frame record can therefore distinguish a publication-driven pose from motion on the viewer's clock. Recent root motion keeps an actor a mover between those updates, with one second of history at the 240 FPS target. Off-projection movement counts as movement even when its screen distance cannot be measured. The record reports projected distances in thousandths of a pixel, and forgets unseen actors to bound state over a campaign.
 
-[Actor parity check](../../crates/viewer-world/src/map/actor_check.rs) · [Motion counters](../../crates/viewer-world/src/map/actor_motion.rs)
+[Actor parity check](../../crates/viewer-scene-base/src/actor_check.rs) · [Motion counters](../../crates/viewer-scene-base/src/actor_motion.rs)

@@ -54,7 +54,7 @@ pub fn load(layers: &ResolvedLayers, user: &Path, language: &str) -> io::Result<
                 },
             )),
             localisation,
-            map_text: viewer_world::map::animated_map_text::events::Content::new(&buildings),
+            map_text: viewer_map_text::animated_map_text::events::Content::new(&buildings),
             audio: audio.map(|source| Arc::clone(&source.content)),
             triggers: Arc::new(triggers),
         },

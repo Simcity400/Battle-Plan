@@ -28,11 +28,11 @@ use viewer_foundation::map::{
     province_admission::Admission,
     task_force_visual::skip_of,
 };
-use viewer_world::map::{
+use viewer_unit_models::{
     equipment_graphics::{Decided, LimitValues, Limits},
-    unit_history::NavalSources,
     unit_models::{Force, ForcePart, ModelReport, ResolvedRoster, ShipGround},
 };
+use viewer_unit_history::unit_history::NavalSources;
 
 const ROSTER_TABLES: &[TableId] = &[TableId::ShipModels, TableId::Ships, TableId::TaskForces, TableId::VariantDefinitions, TableId::Countries, TableId::CountryLinks, TableId::Clock];
 
@@ -828,7 +828,7 @@ impl Ships {
 
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let (mine, theirs) = (self.sources().0, other.sources().0);
-        let (_, differing, first) = viewer_world::map::unit_models::naval_differ(&mine, &theirs);
+        let (_, differing, first) = viewer_unit_models::unit_models::naval_differ(&mine, &theirs);
         let refused = u64::from(self.refused() != other.refused());
         (differing + refused, first.or_else(|| (refused > 0).then(|| format!("refused {:?} against {:?}", self.refused(), other.refused()))))
     }
@@ -1467,7 +1467,7 @@ impl Layer for Ships {
     }
 
     fn held(&self) -> usize {
-        let parts: usize = self.forces.iter().filter_map(|held| held.part.as_ref()).map(|part| std::mem::size_of::<ForcePart>() + part.candidate.as_ref().map_or(0, |candidate| candidate.route.capacity() * 4) + part.formation.as_ref().map_or(0, |formation| formation.roster.capacity() * std::mem::size_of::<viewer_world::map::unit_history::naval::Hull>())).sum();
+        let parts: usize = self.forces.iter().filter_map(|held| held.part.as_ref()).map(|part| std::mem::size_of::<ForcePart>() + part.candidate.as_ref().map_or(0, |candidate| candidate.route.capacity() * 4) + part.formation.as_ref().map_or(0, |formation| formation.roster.capacity() * std::mem::size_of::<viewer_unit_history::unit_history::naval::Hull>())).sum();
         self.forces.capacity() * std::mem::size_of::<Held>() + parts + self.by_id.len() * 40 + self.ship_force.capacity() * 24 + self.in_province.capacity() * 40 + self.dirty.bytes() + self.figures.bytes()
     }
 

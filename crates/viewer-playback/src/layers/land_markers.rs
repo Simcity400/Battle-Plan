@@ -1081,7 +1081,7 @@ impl Layer for LandMarkers {
             self.camera = camera;
             self.camera_dirty = true;
         }
-        let shown = viewer_world::map::map_mode::visibility::of(&view.map_mode);
+        let shown = viewer_map_modes::map_mode::visibility::of(&view.map_mode);
         let high = view.camera.is_some_and(|camera| matches!(camera.pose, Pose::Map) && camera.height >= self.field.cutoff());
         if !shown.province_icons || !view.overlay.land_combats || high {
             self.hidden = true;
