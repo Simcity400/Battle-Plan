@@ -2568,7 +2568,11 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
         consumer.wait_step_after(after_redeclare, last).unwrap(),
         "redeclaring table 1 at the last hour delivers a same-hour join step instead of reporting exhausted",
     );
-    playhead.wait_until(|| playhead.held().2.joins_open == 0 && playhead.held().2.declarations_applied == playhead.declarations());
+    playhead.wait_until(|| {
+        playhead.step_state().1 > after_redeclare.1
+            && playhead.held().2.joins_open == 0
+            && playhead.held().2.declarations_applied == playhead.declarations()
+    });
     let queued = playhead.step_state();
     assert!(
         consumer.wait_step_after(queued, last).unwrap(),
@@ -2579,4 +2583,109 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
     assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "the same-hour join step carries table 1");
     let drained = playhead.step_state();
     assert!(!consumer.wait_step_after(drained, last).unwrap(), "once the join step is drained at end, wait_step_after reports exhausted again");
+}
+
+#[test]
+fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() {
+    #[derive(Default)]
+    struct HookGate {
+        state: std::sync::Mutex<(Option<usize>, bool, [bool; 3])>,
+        changed: std::sync::Condvar,
+    }
+    struct OpenGate(Arc<HookGate>);
+    impl Drop for OpenGate {
+        fn drop(&mut self) {
+            let mut state = self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.1 = true;
+            self.0.changed.notify_all();
+        }
+    }
+    let gate = Arc::new(HookGate::default());
+    let _open = OpenGate(Arc::clone(&gate));
+    let hook_gate = Arc::clone(&gate);
+    let hook: super::Hook = Box::new(move |step, _| {
+        for table in [1usize, 2] {
+            if step.table(table).is_some() {
+                let mut state = hook_gate.state.lock().unwrap();
+                if state.2[table] {
+                    continue;
+                }
+                state.2[table] = true;
+                state.0 = Some(table);
+                state.1 = false;
+                hook_gate.changed.notify_all();
+                while !state.1 {
+                    state = hook_gate.changed.wait(state).unwrap();
+                }
+            }
+        }
+    });
+    let wait_hook = |target: usize| {
+        let mut state = gate.state.lock().unwrap();
+        while state.0 != Some(target) {
+            state = gate.changed.wait(state).unwrap();
+        }
+    };
+    let release_hook = || {
+        let mut state = gate.state.lock().unwrap();
+        state.1 = true;
+        gate.changed.notify_all();
+    };
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 3, &[(0, 40)]);
+    let log = Log::default();
+    let playhead = Playhead::new(
+        Arc::clone(&pages) as Arc<dyn Pages>,
+        Timeline::whole(&*pages).unwrap(),
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 4, speed: 4.0, rate: 1.0, ..Settings::default() },
+        Some(hook),
+    )
+    .unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let last = playhead.timeline().last();
+    let mut steps = Vec::new();
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0);
+        consumer.advance(head);
+        consumer.take(head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= last) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, last).unwrap(), "playhead reached end before step {last}");
+    }
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    wait_hook(1);
+    let before_t1_land = playhead.step_state();
+    playhead.redeclare(reader, every(&[0, 1, 2])).unwrap();
+    release_hook();
+    wait_hook(2);
+    playhead.wait_until(|| playhead.step_state().1 > before_t1_land.1);
+    let before_take = steps.len();
+    consumer.take(last, &mut steps);
+    assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "table 1 landed while table 2 is still joining");
+    assert!(steps[before_take..].iter().all(|step| step.table(2).is_none()), "table 2 has not landed yet");
+    assert_eq!(super::lock(&playhead.shared.control).caught_up_at, None, "table 1's completion did not clobber table 2's pending declaration");
+    let after_t1 = playhead.step_state();
+    let opener = {
+        let gate = Arc::clone(&gate);
+        std::thread::spawn(move || {
+            let mut state = gate.state.lock().unwrap();
+            state.1 = true;
+            gate.changed.notify_all();
+        })
+    };
+    assert!(consumer.wait_step_after(after_t1, last).unwrap(), "wait_step_after waits for table 2 instead of reporting exhausted");
+    opener.join().unwrap();
+    playhead.wait_until(|| {
+        playhead.step_state().1 > after_t1.1
+            && playhead.held().2.joins_open == 0
+            && playhead.held().2.declarations_applied == playhead.declarations()
+    });
+    let before_t2 = steps.len();
+    consumer.take(last, &mut steps);
+    assert!(steps[before_t2..].iter().any(|step| step.table(2).is_some()), "table 2 landed after release");
+    let drained = playhead.step_state();
+    assert!(!consumer.wait_step_after(drained, last).unwrap(), "after both joins drain at end, wait_step_after reports exhausted");
 }

@@ -893,7 +893,10 @@ impl Consumer {
 
     pub fn land(&mut self) {
         let id = self.id;
-        self.shared.nudge(|control| control.lands.push(id));
+        self.shared.nudge(|control| {
+            control.lands.push(id);
+            control.caught_up_at = None;
+        });
     }
 
     pub fn state(&self, step: &Step, table: usize) -> Option<State> {
@@ -1069,6 +1072,7 @@ impl Playhead {
         self.shared.nudge(|control| {
             if control.readers.remove(&reader).is_some() {
                 control.selection += 1;
+                control.caught_up_at = None;
             }
         });
     }
@@ -2102,8 +2106,16 @@ impl Stepper {
             self.counters.joins_open = now.0;
             lock(&self.shared.report).2 = self.counters;
             let caught_up = self.caught_up_at();
-            self.shared.nudge(|control| control.caught_up_at = caught_up);
+            self.shared.nudge(|control| self.publish_caught_up(control, caught_up));
         }
+    }
+
+    fn publish_caught_up(&self, control: &mut Control, caught_up: Option<Hour>) {
+        let current = control.selection == self.selection_seen
+            && control.seek.is_none()
+            && control.lands.is_empty()
+            && self.shared.epoch.load(Ordering::Acquire) == self.epoch;
+        control.caught_up_at = if current { caught_up } else { None };
     }
 
     fn caught_up_at(&self) -> Option<Hour> {
@@ -2342,7 +2354,7 @@ impl Stepper {
         let caught_up = self.caught_up_at();
         self.shared.nudge(|control| {
             control.published_steps += 1;
-            control.caught_up_at = caught_up;
+            self.publish_caught_up(control, caught_up);
         });
         Ok(true)
     }
@@ -2553,7 +2565,7 @@ impl Stepper {
         let caught_up = self.caught_up_at();
         self.shared.nudge(|control| {
             control.newest = Some(hour);
-            control.caught_up_at = caught_up;
+            self.publish_caught_up(control, caught_up);
         });
         Ok(true)
     }
@@ -2683,7 +2695,7 @@ impl Stepper {
         let caught_up = self.caught_up_at();
         self.shared.nudge(|control| {
             control.published_steps += 1;
-            control.caught_up_at = caught_up;
+            self.publish_caught_up(control, caught_up);
         });
         Ok(true)
     }
@@ -2821,7 +2833,7 @@ impl Stepper {
         let caught_up = self.caught_up_at();
         self.shared.nudge(|control| {
             control.published_steps += 1;
-            control.caught_up_at = caught_up;
+            self.publish_caught_up(control, caught_up);
         });
         Ok(true)
     }
@@ -3009,7 +3021,7 @@ impl Stepper {
                     let caught_up = self.caught_up_at();
                     self.shared.nudge(|control| {
                         control.published_steps += 1;
-                        control.caught_up_at = caught_up;
+                        self.publish_caught_up(control, caught_up);
                     });
                     moved = true;
                 }
@@ -3045,7 +3057,7 @@ impl Stepper {
                 self.shared.nudge(|control| {
                     control.newest = Some(last);
                     control.published_steps += 1;
-                    control.caught_up_at = caught_up;
+                    self.publish_caught_up(control, caught_up);
                 });
             }
             Err(step) => self.shared.free(step),
