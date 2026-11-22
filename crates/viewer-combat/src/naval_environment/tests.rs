@@ -1432,3 +1432,13 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
         Some(0)
     );
 }
+
+#[test]
+fn an_unreadable_weapon_term_of_an_explicit_default_module_withholds_the_convoy_bound() {
+    content_reader_core::test_game::enter();
+    let (bound, _) = bound_of(
+        "equipment_modules = { gun = { add_stats = { lg_attack = unknown_amount } } }
+         equipments = { convoy_1 = { type = convoy default_modules = { main = gun } } }",
+    );
+    assert!(bound.as_ref().is_err_and(|why| why.contains("lg_attack = unknown_amount is not a number")), "{bound:?}");
+}

@@ -32,6 +32,8 @@ fn localisation() -> Localisation {
         ("TACTIC_LIST_VALUE_NEUTRAL", "$VAL|=Y0%$"),
         ("DESIGNER_MANPOWER", "Manpower: "),
         ("PRODUCTION_MATERIALS_STEEL", "Steel"),
+        ("AIRWING_MISSION_TYPE_CAS", "Close Air Support"),
+        ("deck", "Flight Deck"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -124,7 +126,8 @@ fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability
     )]);
     let metadata = content_reader_core::equipment::stat_metadata();
     let stat = |name: &str| content_reader_core::equipment::stat_index(name.as_bytes()).unwrap();
-    let totals = |token: &str| equipment_totals(&database, metadata, token);
+    let names = localisation();
+    let totals = |token: &str| equipment_totals(&database, metadata, &names, token);
     let hull_1 = totals("hull_1").unwrap().stats;
     assert_eq!((hull_1[stat("lg_attack")], hull_1[stat("hg_attack")]), (450_000, 40_000), "the default gun adds 2 light attack, scaled to 3 and multiplied to 4.5");
     assert_eq!(hull_1[stat("torpedo_attack")], 100_000, "the engine slot inherited with the archetype keeps the archetype's default engine");
@@ -135,10 +138,10 @@ fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability
     assert!(refused.contains("lost_gun") && refused.contains("hull_3"), "{refused}");
     let hull_5 = totals("hull_5").unwrap();
     assert_eq!(hull_5.lineage[0].resources, [(b"steel".to_vec(), Ok(100_000))], "the equipment's own resources keep their names and amounts");
-    assert_eq!(hull_5.modules.iter().map(|(source, _)| source.as_str()).collect::<Vec<_>>(), ["Default module deck in slot main", "Default module motor in slot engine"]);
+    assert_eq!(hull_5.modules.iter().map(|(source, _)| source.as_str()).collect::<Vec<_>>(), ["Default module Flight Deck", "Default module motor (name unavailable)"]);
     assert!(hull_5.withheld.is_empty(), "known values are never withheld: {:?}", hull_5.withheld);
     let hull_6 = totals("hull_6").unwrap();
-    assert_eq!(hull_6.withheld, BTreeMap::from([(stat("lg_attack"), "Default module bad in slot main: lg_attack = unknown_amount is not a number".to_owned())]), "an unreadable module term withholds the stat it feeds, never a total without it");
+    assert_eq!(hull_6.withheld, BTreeMap::from([(stat("lg_attack"), "Default module bad (name unavailable): lg_attack = unknown_amount is not a number".to_owned())]), "an unreadable module term withholds the stat it feeds, never a total without it");
 }
 
 #[test]
@@ -151,18 +154,29 @@ fn a_modules_conditional_stats_and_costs_are_shown_with_their_condition_and_only
         build_resources: vec![(b"steel".to_vec(), Ok(200_000)), (b"chromium".to_vec(), Err("chromium = lots is not a number".into()))],
         ..Default::default()
     };
-    module_design(&mut sheet, METADATA, &design, Some("Default module deck in slot main"));
+    module_design(&mut sheet, METADATA, &design, Some("Default module Flight Deck"));
     let shown: Vec<_> = sheet.stats.iter().map(|stat| (shown(&stat.label), stat.source.clone())).collect();
     assert_eq!(
         shown,
         [
-            ("Soft Attack: ".to_owned(), Some("Default module deck in slot main, on cas missions".to_owned())),
-            ("Manpower: ".to_owned(), Some("Default module deck in slot main".to_owned())),
-            ("Steel".to_owned(), Some("Default module deck in slot main, production resources".to_owned())),
+            ("Soft Attack: ".to_owned(), Some("Default module Flight Deck · On Close Air Support missions".to_owned())),
+            ("Manpower: ".to_owned(), Some("Default module Flight Deck".to_owned())),
+            ("Steel".to_owned(), Some("Default module Flight Deck · Production resources".to_owned())),
         ]
     );
     assert!(shown_value(&sheet, 0).contains('6') && shown_value(&sheet, 1) == "500" && shown_value(&sheet, 2) == "2", "{:?}", sheet.stats);
-    assert_eq!(sheet.refusals, BTreeMap::from([("Default module deck in slot main, production resources: chromium = lots is not a number".to_owned(), 1)]));
+    assert_eq!(sheet.refusals, BTreeMap::from([("Default module Flight Deck · Production resources: chromium = lots is not a number".to_owned(), 1)]));
+}
+
+#[test]
+fn a_module_stat_with_an_unreadable_term_is_withheld_whole() {
+    let localisation = localisation();
+    let mut sheet = Sheet::new(&localisation);
+    let why = "soft_attack = unknown_amount is not a number";
+    let stats = StatGroup { add: vec![StatValue { index: 0, value: 200_000 }], unread: vec![(0, why.to_owned())], ..Default::default() };
+    sheet.module(METADATA, &stats);
+    assert!(sheet.stats.is_empty(), "a sum missing one of its terms is never shown: {:?}", lines(&sheet));
+    assert_eq!(sheet.refusals, BTreeMap::from([(why.to_owned(), 1)]));
 }
 
 fn shown_value(sheet: &Sheet<'_>, at: usize) -> String {

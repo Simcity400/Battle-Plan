@@ -134,7 +134,7 @@ impl Episodes {
 
     fn enter(&mut self, q: &Query<'_>, piece: Piece, last: bool, cancelled: &AtomicBool, count: &mut u64) -> io::Result<()> {
         let links = links_of(q, &mut self.links, piece.run)?;
-        let read = read_piece(q, links, &piece)?;
+        let read = read_piece(q, links, &piece, None)?;
         fold_piece(&mut self.fold, &piece, &read, &mut self.observed, &mut self.partial, cancelled)?;
         self.current = if last {
             let known: BTreeSet<_> = read.owners.keys().copied().collect();
@@ -216,7 +216,7 @@ impl Episodes {
                         row, read: reads[&row.owner], history: histories.get(&row.owner).map(|&read| (read, history.get(key).map_or(&[][..], Vec::as_slice))),
                         person: person(row.program, (row.program as u32 == PROGRAM_REFERENCE).then(|| c.scientists.as_ref().and_then(|t| t.rows.get(&u128::from(row.program >> 32))).map(AsRef::as_ref))),
                     }).collect();
-                    self.fold.observe((piece.slot, piece.id), next, next, &shown);
+                    self.fold.observe(piece.possession(), next, next, &shown);
                 } else { self.fold.extend(before, next); }
                 extend(&mut self.observed, next, next);
             } else if boundary && c.projects.reader.status() == Status::Complete {
@@ -224,7 +224,7 @@ impl Episodes {
                     .filter_map(|(&key, cells)| project_row((key >> 32) as u32, key as u32, cells))
                     .filter(|row| c.proven.0.contains_key(&row.owner))
                     .map(|row| ((row.owner, row.local, row.definition), super::fold::state(&row))).collect();
-                self.fold.absent((piece.slot, piece.id), |raw| c.proven.0.contains_key(&raw), &present);
+                self.fold.absent(piece.possession(), |raw| c.proven.0.contains_key(&raw), &present);
             }
             c.piece.last = next;
         }

@@ -2,7 +2,7 @@ use super::fold::{COMPLETION_MARKER, Entry, Fold, Look, Observed, Person, Row};
 use super::*;
 
 const START: i32 = 1_000;
-const HOLDER: (u32, u32) = (5, 9);
+const HOLDER: fold::Possession = (5, 9, START);
 
 fn running(local: u32, progress: i32) -> Row {
     Row { owner: 11, local, definition: 40, program: (7_u64 << 32) | u64::from(PROGRAM_REFERENCE), started: true, offset: 0x18, not_completed: 1, prototype_progress: progress }
@@ -98,10 +98,10 @@ fn episodes_end_at_a_restart_a_fall_in_iterations_and_another_holder() {
     let cancellations: Vec<_> = fold.episodes[1].runs.iter().map(|run| run.cancellation.clone()).collect();
     assert_eq!(cancellations, [None, Some(ProjectDate { hour: 1_010, exact: false }), Some(ProjectDate { hour: 1_010, exact: false })]);
     let shown: Vec<Observed<'_>> = Vec::new();
-    fold.observe((6, 9), 1_040, 1_049, &shown);
+    fold.observe((6, 9, START), 1_040, 1_049, &shown);
     let row = running(1, 20);
     let history = entries(1, None);
-    fold.observe((6, 9), 1_050, 1_059, &[Observed { row: &row, read: 1_050, history: Some((1_050, &history)), person: Person::Unassigned }]);
+    fold.observe((6, 9, START), 1_050, 1_059, &[Observed { row: &row, read: 1_050, history: Some((1_050, &history)), person: Person::Unassigned }]);
     assert_eq!(fold.episodes.len(), 5, "another holder's project is a new episode");
 }
 
@@ -248,7 +248,7 @@ fn folded(id: &str, first: i32, last: i32, frame: impl Fn(i32) -> replay_frame::
     let mut direct = Fold::new(first);
     let (mut observed, mut partial) = (Vec::new(), Vec::new());
     for piece in pieces(&query, &country, query.timeline.first, last).0 {
-        let read = read_piece(&query, links_of(&query, &mut links, piece.run).unwrap(), &piece).unwrap();
+        let read = read_piece(&query, links_of(&query, &mut links, piece.run).unwrap(), &piece, None).unwrap();
         fold_piece(&mut direct, &piece, &read, &mut observed, &mut partial, &AtomicBool::new(false)).unwrap();
     }
     [(direct, observed, partial), incremental::followed(&query, &country, first, last).unwrap()]
@@ -488,4 +488,55 @@ fn a_read_before_the_holder_took_the_tag_supplies_no_list() {
     for (_, observed, _) in folded("special-projects-taken", FIRST, LAST, frame) {
         assert_eq!(observed, [(READ, LAST)], "a read from before the country held the tag supplies none of its hours, as the details hold");
     }
+}
+
+#[test]
+fn a_restart_read_while_another_owner_is_unstamped_ends_the_completed_episode() {
+    let mut fold = Fold::new(START);
+    observe(&mut fold, 1_020, 1_020, &[(done(1), None, Person::Unassigned)]);
+    let restarted = running(1, 5);
+    fold.absent(HOLDER, |raw| raw == restarted.owner, &[((restarted.owner, 1, restarted.definition), fold::state(&restarted))]);
+    observe(&mut fold, 1_022, 1_030, &[(done(1), None, Person::Unassigned)]);
+    let completions: Vec<_> = fold.episodes.iter().map(|episode| episode.runs.last().and_then(|run| run.completion.clone())).collect();
+    assert_eq!(
+        completions,
+        [Some(ProjectDate { hour: 1_020, exact: false }), Some(ProjectDate { hour: 1_022, exact: false })],
+        "the project read running between two completed reads is a replacement, never given the earlier completion"
+    );
+}
+
+#[test]
+fn a_tag_held_again_after_another_country_is_a_new_possession_though_no_projects_were_read_between() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    const FIRST: i32 = 20;
+    const OTHER: std::ops::Range<i32> = 25..30;
+    const LAST: i32 = 40;
+    let frame = |hour: i32| {
+        let mut frame = project_frame(hour, |_| (0x18, 1), |_, hour| Some(hour));
+        if OTHER.contains(&hour) {
+            let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
+            let mut other = countries[0].clone();
+            (other.id, other.canonical_slot) = (9100, 8);
+            countries[0].tag = b"POL".to_vec();
+            countries.push(other);
+            *frame.tables[TableId::Projects.index()] = TableView::Unavailable { reason: "Synthetic projects refusal".into() };
+        }
+        frame
+    };
+    for (fold, ..) in folded("special-projects-tag-reused", FIRST, LAST, frame) {
+        let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+        assert_eq!(starts, [FIRST, OTHER.end], "another country held the tag between, so the same key read again is another episode");
+    }
+}
+
+#[test]
+fn an_iterations_episode_is_proven_by_its_own_owners_reads_whatever_other_owners_stamps() {
+    const FIRST: i32 = 20;
+    const CHOICE: i32 = 25;
+    const LAST: i32 = 30;
+    let source = synthetic("special-projects-own-owner", FIRST, LAST, |hour| project_frame(hour, |_| (0x18, 1), |owner, hour| (owner != 11 || hour != CHOICE).then_some(hour)));
+    let query = crate::answer::query(&source, 1).unwrap();
+    let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
+    assert!(one_episode(&query, &country, (9001, 1, 40), CHOICE, LAST).unwrap(), "another owner lacking a stamp at the choice hour proves nothing about this owner's project");
 }

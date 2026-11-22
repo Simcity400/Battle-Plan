@@ -7,7 +7,7 @@ use super::{
 use crate::{Source, catalogue};
 use content_reader_core::{
     combat_tactics::Tactic,
-    equipment::{Amount, Database, Equipment, ModuleDesign, RELIABILITY_STAT, ResourcePool, STAT_COUNT, StatComponents, StatGroup},
+    equipment::{Amount, Database, Equipment, ModuleDesign, RELIABILITY_STAT, ResourcePool, STAT_COUNT, StatComponents, StatGroup, StatValue},
     fixed5::format_fixed5,
 };
 use content_reader_localisation::localisation::{Argument, Localisation};
@@ -146,10 +146,11 @@ impl<'l> Sheet<'l> {
         for (_, why) in &stats.unread {
             self.refuse(why.clone());
         }
-        for term in &stats.add {
+        let read = |term: &&StatValue| stats.unread.iter().all(|(index, _)| *index != term.index);
+        for term in stats.add.iter().filter(read) {
             self.stat(metadata, term.index, term.value, &["{}_DIFF"]);
         }
-        for term in &stats.average {
+        for term in stats.average.iter().filter(read) {
             let before = self.stats.len();
             self.stat(metadata, term.index, term.value, &["{}_DIFF"]);
             if self.stats.len() > before {
@@ -159,7 +160,7 @@ impl<'l> Sheet<'l> {
                 }
             }
         }
-        for term in &stats.multiply {
+        for term in stats.multiply.iter().filter(read) {
             let positive = metadata.get(term.index).is_some_and(|(_, _, positive)| *positive);
             let fallback = if positive { "STAT_MODIFIER_DIFF" } else { "STAT_MODIFIER_DIFF_NEG" };
             self.stat(metadata, term.index, term.value, &["{}_MOD_DIFF", fallback]);
@@ -211,20 +212,35 @@ fn lossy(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-fn missions(missions: &[Vec<u8>]) -> String {
+fn named(localisation: &Localisation, key: &str, token: &str) -> String {
+    match localisation.get(key).is_some().then(|| localisation.localise_with(key.as_bytes(), &[])) {
+        Some(Ok(name)) => name,
+        _ => format!("{token} (name unavailable)"),
+    }
+}
+
+fn missions(localisation: &Localisation, missions: &[Vec<u8>]) -> String {
     if missions.is_empty() {
         return "On missions, with no mission limit".into();
     }
-    format!("On {} missions", missions.iter().map(|mission| lossy(mission)).collect::<Vec<_>>().join(", "))
+    let names: Vec<String> = missions
+        .iter()
+        .map(|mission| {
+            let token = lossy(mission);
+            named(localisation, &format!("AIRWING_MISSION_TYPE_{}", content_reader_localisation::localisation::crt_case_text(&token, true, false)), &token)
+        })
+        .collect();
+    format!("On {} missions", names.join(", "))
 }
 
 fn joined(prefix: Option<&str>, part: &str) -> String {
-    prefix.map_or_else(|| part.to_owned(), |prefix| format!("{prefix}, {}", part.to_lowercase()))
+    prefix.map_or_else(|| part.to_owned(), |prefix| format!("{prefix} · {part}"))
 }
 
 fn module_design(sheet: &mut Sheet<'_>, metadata: &Metadata, design: &ModuleDesign, prefix: Option<&str>) {
     for (limit, group) in &design.mission_terms {
-        sheet.from(Some(joined(prefix, &missions(limit)))).module(metadata, group);
+        let condition = joined(prefix, &missions(sheet.localisation, limit));
+        sheet.from(Some(condition)).module(metadata, group);
     }
     sheet.from(prefix.map(str::to_owned)).costs(design.manpower.as_ref(), &Vec::new());
     sheet.from(Some(joined(prefix, "Production resources"))).costs(None, &design.build_resources);
@@ -238,7 +254,7 @@ struct Totals<'d> {
     lineage: Vec<&'d Equipment>,
 }
 
-fn equipment_totals<'d>(database: &'d Database, metadata: &Metadata, token: &str) -> Result<Totals<'d>, String> {
+fn equipment_totals<'d>(database: &'d Database, metadata: &Metadata, localisation: &Localisation, token: &str) -> Result<Totals<'d>, String> {
     let at = database.get(token).ok_or_else(|| format!("Equipment {token} is not in the recorded content"))?;
     let equipment = &database.equipment[at];
     let mut components = StatComponents::base(&equipment.stats);
@@ -250,7 +266,7 @@ fn equipment_totals<'d>(database: &'d Database, metadata: &Metadata, token: &str
     for (slot, module) in database.default_modules(equipment)? {
         let (shown, slot) = (lossy(module), lossy(slot));
         let design = database.module_design(module).ok_or_else(|| format!("Default module {shown} in slot {slot} of equipment {token} is not in the recorded content, so its stats are withheld"))?;
-        let source = format!("Default module {shown} in slot {slot}");
+        let source = format!("Default module {}", named(localisation, &shown, &shown));
         if let Some(group) = database.module_stats(module) {
             components.apply_module(group, equipment)?;
             for (index, why) in &group.unread {
@@ -272,7 +288,7 @@ fn equipment_sheet(sheet: &mut Sheet<'_>, metadata: &Metadata, totals: &Totals<'
     sheet.equipment(metadata, &totals.stats, &totals.withheld);
     for (at, held) in totals.lineage.iter().enumerate() {
         let name = lossy(&held.name);
-        let set_by = (at != 0).then(|| format!("Set by {name}"));
+        let set_by = (at != 0).then(|| format!("Set by {}", named(sheet.localisation, &name, &name)));
         sheet.from(set_by.clone()).costs(held.manpower.as_ref(), &Vec::new());
         sheet.from(Some(joined(set_by.as_deref(), "Production resources"))).costs(None, &held.resources);
         for keyword in &held.off_sheet {
@@ -347,7 +363,7 @@ impl AtHour for EntityStatsAt {
             match params.kind {
                 EntityKind::Equipment => {
                     let metadata = stat_metadata()?;
-                    let totals = equipment_totals(&technologies()?.equipment, metadata, token)?;
+                    let totals = equipment_totals(&technologies()?.equipment, metadata, localisation, token)?;
                     equipment_sheet(&mut sheet, metadata, &totals);
                 }
                 EntityKind::Module => {

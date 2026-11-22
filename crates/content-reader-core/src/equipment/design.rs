@@ -283,8 +283,9 @@ impl ModuleDesign {
                 let fields = field.value.items().unwrap_or_default();
                 let mut missions = Vec::new();
                 for limit in fields.iter().filter(|field| field.keyword_is("limit")) {
-                    for mission in limit.value.items().unwrap_or_default() {
-                        missions.push(token(mission));
+                    match limit.value.items() {
+                        Some(items) => missions.extend(items.iter().map(token)),
+                        None => missions.push(token(limit)),
                     }
                 }
                 result
@@ -899,6 +900,15 @@ mod tests {
         let air_attack = super::super::stat_index(b"air_attack").unwrap();
         assert_eq!(stats.unread, [(air_attack, unread("air_attack").unwrap_err())]);
         assert!(stats.add.iter().all(|term| term.index != air_attack), "an unreadable term adds nothing that could be shown as its value");
+    }
+
+    #[test]
+    fn a_scalar_mission_limit_is_that_mission() {
+        crate::test_game::enter();
+        let mut db = super::super::Database::default();
+        db.read_file(b"equipment_modules = { custom = { mission_type_stats = { limit = cas add_stats = { air_attack = 1 } } } }", "common/units/equipment/modules/synthetic.txt", &crate::key_names::KeyNames::default());
+        let module = db.module_design(b"custom").unwrap();
+        assert_eq!(module.mission_terms.iter().map(|(missions, _)| missions.clone()).collect::<Vec<_>>(), [vec![b"cas".to_vec()]]);
     }
 
     #[test]

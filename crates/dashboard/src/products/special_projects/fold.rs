@@ -68,6 +68,8 @@ pub fn completion_date(history: &[Entry], observed: i32, campaign_start: i32) ->
         .map(|entry| ProjectDate { hour: entry.date, exact: true })
 }
 
+pub type Possession = (u32, u32, i32);
+
 pub struct Observed<'a> {
     pub row: &'a Row,
     pub read: i32,
@@ -83,7 +85,7 @@ pub struct Fold {
     look_ids: HashMap<Look, u32>,
     open: BTreeMap<(u32, u32, u32), usize>,
     ended: BTreeSet<(u32, u32, u32)>,
-    holder: Option<(u32, u32)>,
+    holder: Option<Possession>,
     last_iterations: HashMap<usize, i32>,
     since: HashMap<usize, i32>,
     pub warnings: BTreeMap<String, usize>,
@@ -114,7 +116,7 @@ impl Fold {
         id
     }
 
-    fn hold(&mut self, holder: (u32, u32)) {
+    pub fn hold(&mut self, holder: Possession) {
         if self.holder.is_some_and(|held| held != holder) {
             self.open.clear();
             self.ended.clear();
@@ -122,7 +124,7 @@ impl Fold {
         self.holder = Some(holder);
     }
 
-    pub fn absent(&mut self, holder: (u32, u32), proven: impl Fn(u32) -> bool, present: &[((u32, u32, u32), ProjectState)]) {
+    pub fn absent(&mut self, holder: Possession, proven: impl Fn(u32) -> bool, present: &[((u32, u32, u32), ProjectState)]) {
         self.hold(holder);
         for &(key, state) in present {
             if terminal(state) {
@@ -136,9 +138,10 @@ impl Fold {
         self.ended.retain(|key| open.contains_key(key));
     }
 
-    pub fn observe(&mut self, holder: (u32, u32), first: i32, last: i32, projects: &[Observed<'_>]) {
+    pub fn observe(&mut self, holder: Possession, first: i32, last: i32, projects: &[Observed<'_>]) {
         self.hold(holder);
         let mut next = BTreeMap::new();
+        let mut ended = BTreeSet::new();
         for observed in projects {
             let row = observed.row;
             let state = state(row);
@@ -147,8 +150,7 @@ impl Fold {
                 continue;
             }
             let done = state == ProjectState::Completed;
-            let restarted = resumed(state)
-                && self.open.get(&key).is_some_and(|&index| self.ended.contains(&key) || self.episodes[index].runs.last().is_some_and(|run| terminal(run.state)));
+            let restarted = resumed(state) && self.open.contains_key(&key) && self.ended.contains(&key);
             if restarted {
                 self.open.remove(&key);
             }
@@ -179,6 +181,9 @@ impl Fold {
                 }
             };
             next.insert(key, index);
+            if terminal(state) {
+                ended.insert(key);
+            }
             let previous = self.episodes[index].runs.last().cloned();
             let completion = done.then(|| {
                 history
@@ -210,7 +215,7 @@ impl Fold {
             }
         }
         self.open = next;
-        self.ended.clear();
+        self.ended = ended;
     }
 }
 

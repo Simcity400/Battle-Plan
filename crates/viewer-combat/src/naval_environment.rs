@@ -401,7 +401,12 @@ pub(super) fn convoy_weapon_bound_from_database(
                 .filter(|&at| seen_archetypes.insert(at))
                 .map(|at| &database.equipment[at]);
         }
-        if let Some((_, why)) = equipment.unread_terms.iter().find(|(index, _)| stats.contains(index)) {
+        let unread_default = equipment
+            .default_modules
+            .iter()
+            .filter_map(|(_, module)| database.module_stats(module))
+            .flat_map(|group| &group.unread);
+        if let Some((_, why)) = equipment.unread_terms.iter().chain(unread_default).find(|(index, _)| stats.contains(index)) {
             return (
                 Err(format!("convoy equipment {}: {why}", String::from_utf8_lossy(&equipment.name))),
                 misreads,

@@ -512,6 +512,10 @@ impl Piece {
     fn reach(&self) -> i32 {
         self.first.saturating_sub(STAGGER_PERIOD - 1).max(self.held_from)
     }
+
+    fn possession(&self) -> fold::Possession {
+        (self.slot, self.id, self.held_from)
+    }
 }
 
 struct PieceRows {
@@ -525,9 +529,12 @@ struct PieceRows {
     history_available: Vec<(i32, i32)>,
 }
 
-fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<PieceRows> {
+fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece, only: Option<u32>) -> io::Result<PieceRows> {
     let recording = query.replay.recording();
-    let owners = owner_ids(links, piece.slot, piece.reach(), piece.last);
+    let mut owners = owner_ids(links, piece.slot, piece.reach(), piece.last);
+    if let Some(owner) = only {
+        owners.retain(|&raw, _| raw == owner);
+    }
     let mut projects = Vec::new();
     let mut histories = Vec::new();
     for &raw in owners.keys() {
@@ -616,6 +623,7 @@ pub(super) fn sample(cells: Option<&[Cell]>) -> Option<i32> {
 }
 
 fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut Vec<(i32, i32)>, partial: &mut Vec<(i32, i32)>, cancelled: &AtomicBool) -> io::Result<()> {
+    fold.hold(piece.possession());
     for &(first, last) in &read.projects_partial {
         extend(partial, first, last);
     }
@@ -668,7 +676,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         }
         if projects_read.len() != linked.len() {
             let present: Vec<_> = rows.iter().map(|(_, row, _)| ((row.owner, row.local, row.definition), fold::state(row))).collect();
-            fold.absent((piece.slot, piece.id), |raw| projects_read.contains_key(&raw), &present);
+            fold.absent(piece.possession(), |raw| projects_read.contains_key(&raw), &present);
             continue;
         }
         let shown: Vec<Observed<'_>> = rows
@@ -680,7 +688,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
                 person: person(row.program, *scientist),
             })
             .collect();
-        fold.observe((piece.slot, piece.id), first, last, &shown);
+        fold.observe(piece.possession(), first, last, &shown);
         extend(observed, first, last);
     }
     Ok(())
@@ -812,7 +820,7 @@ fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Pro
     for piece in &pieces {
         crate::metadata::check_cancel(cancelled)?;
         let run_links = links_of(&query, &mut links, piece.run)?;
-        let read = read_piece(&query, run_links, piece)?;
+        let read = read_piece(&query, run_links, piece, None)?;
         fold_piece(&mut fold, piece, &read, &mut observed, &mut partial, cancelled)?;
     }
     let tag = query.holders.name(&params.country, through);
@@ -824,7 +832,7 @@ fn one_episode(query: &Query<'_>, country: &Country, project: (u32, u32, u32), f
     let mut fold = Fold::new(query.timeline.first);
     let (mut observed, mut partial, mut links) = (Vec::new(), Vec::new(), HashMap::new());
     for piece in pieces(query, country, first, last).0 {
-        let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
+        let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece, Some(owner))?;
         fold_piece(&mut fold, &piece, &read, &mut observed, &mut partial, &AtomicBool::new(false))?;
     }
     let at = |hour: i32| {
