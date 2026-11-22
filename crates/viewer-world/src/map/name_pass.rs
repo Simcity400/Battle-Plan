@@ -618,7 +618,7 @@ fn world_name(
     let map = inputs.map;
     let placed: PlacedName = names::place_name(
         &NameInput {
-            text: &text::strip_color_codes(text),
+            text,
             provinces: ProvinceMap {
                 width: map.width,
                 height: map.height,
@@ -633,6 +633,7 @@ fn world_name(
     let mut corners = Vec::with_capacity(placed.glyphs.len() * 4);
     let mut uvs = Vec::with_capacity(placed.glyphs.len());
     let mut pages = Vec::with_capacity(placed.glyphs.len());
+    let mut colors = Vec::with_capacity(placed.glyphs.len());
     for glyph in &placed.glyphs {
         pages.push(inputs.font.page_of(glyph.ch)?);
         let mut heights = glyph
@@ -648,6 +649,7 @@ fn world_name(
             corners.push([x, height, z]);
         }
         uvs.push(glyph.uv);
+        colors.push(glyph.color.unwrap_or([1.0; 4]));
     }
     if uvs.is_empty() {
         return None;
@@ -661,6 +663,7 @@ fn world_name(
         pages,
         corners,
         uvs,
+        colors,
         aabb: [placed.aabb[0], z_of_max_y, placed.aabb[2], z_of_min_y],
         wrapped: placed.aabb[2] >= MapSize::of(inputs.map).x(),
         font_size: placed.font_size,
@@ -734,9 +737,11 @@ fn name_glyphs(
         let mut bounds = [[f32::MAX; 3], [f32::MIN; 3]];
         while glyph < name.uvs.len() && name.pages[glyph] == page {
             let uv = name.uvs[glyph];
+            let color = name.colors.get(glyph).copied().unwrap_or([1.0; 4]);
             let corner = |slot: usize, u: f32, v: f32| NameVertex {
                 position: name.corners[glyph * 4 + slot],
                 uv: [u, v],
+                color,
             };
             let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3]);
             out.extend([

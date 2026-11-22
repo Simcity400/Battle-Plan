@@ -143,6 +143,7 @@ pub(super) struct PreparedLand {
     pub(super) flotillas: Vec<Flotilla>,
     pub(super) positions: Vec<counter_move::Position>,
     pub(super) units: Vec<Unit>,
+    pub(super) layout: counter_move::DrawnLayout,
     pub(super) icons: Vec<counter_groups::Icon>,
     pub(super) source_kinds: Vec<u32>,
     pub(super) groups: Vec<counter_groups::Group>,
@@ -255,7 +256,7 @@ impl PreparedLand {
             let world = inputs.route_world();
             let mut places: Vec<viewer_foundation::map::free_icons::Place> = Vec::new();
             for ((icon, position), &unit) in self.icons.iter_mut().zip(&self.positions).zip(&self.units) {
-                let drawn = history.sample(unit, position);
+                let drawn = history.sample_for(&self.layout, unit, position);
                 let placed = drawn.map_or_else(|| position.at(), |drawn| drawn.motion.position());
                 icon.anchor = placed;
                 places.clear();
@@ -268,7 +269,7 @@ impl PreparedLand {
                     }
                 }
                 places.push(viewer_foundation::map::free_icons::Place { hour, at: placed });
-                icon.track = history.track(unit, &places, hour, width);
+                icon.track = history.track(&self.layout, unit, &places, width).ok();
                 if settled && position.motion.is_some() {
                     *report
                         .land_counter_gaps
@@ -996,9 +997,12 @@ pub(super) struct JoinRules {
 
 impl JoinRules {
     pub(super) fn owners_join(self, countries: &Countries, rep: u32, candidate: u32) -> bool {
+        if rep == candidate {
+            return true;
+        }
         match self.color_mode {
-            CounterColorMode::Country => rep == candidate,
-            CounterColorMode::Allegiance => countries.side(rep) == countries.side(candidate),
+            CounterColorMode::Country => false,
+            CounterColorMode::Allegiance => countries.same_allegiance_group(rep, candidate),
         }
     }
 }
@@ -1114,7 +1118,7 @@ impl LandUnit<'_> {
         {
             return false;
         }
-        if countries.side(rep.owner) == Allegiance::Ours {
+        if countries.is_ours(rep.owner) {
             if rep.movement.map(|m| m.idle) != self.movement.map(|m| m.idle) {
                 return false;
             }
@@ -1143,7 +1147,7 @@ impl GunUnit {
         if self.name.is_empty() || self.name != first.name {
             return false;
         }
-        if countries.side(rep.owner) == Allegiance::Ours {
+        if countries.is_ours(rep.owner) {
             let idle = |action| matches!(action, 1 | 12);
             if self.join_action != first.join_action
                 && (idle(self.join_action) || idle(first.join_action))
@@ -2096,6 +2100,7 @@ pub(super) fn land_counters<'a>(
         .collect();
     Ok(PreparedLand {
         units,
+        layout: counter_move::DrawnLayout::new(inputs.hour),
         sprites: (0..drawn.len()).map(|_| None).collect(),
         plans,
         stacks: drawn,

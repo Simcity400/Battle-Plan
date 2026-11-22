@@ -3483,6 +3483,7 @@ fn prepare_with(
         fixed: out,
         land: prepared_land,
         drawn: DrawnCounters::default(),
+        motion_continuity: 0,
     })
 }
 
@@ -3603,6 +3604,7 @@ pub struct PreparedCounters {
     pub fixed: CounterFrame,
     land: Option<PreparedLand>,
     drawn: DrawnCounters,
+    motion_continuity: u64,
 }
 
 #[derive(Default)]
@@ -3617,6 +3619,21 @@ struct DrawnCounters {
 }
 
 impl PreparedCounters {
+    pub fn motion_layout(&self) -> Option<&counter_move::DrawnLayout> {
+        self.land.as_ref().map(|land| &land.layout)
+    }
+
+    pub fn motion_continuity(&self) -> u64 {
+        self.motion_continuity
+    }
+
+    pub fn set_motion_continuity(&mut self, continuity: u64) {
+        self.motion_continuity = continuity;
+        if let Some(land) = &self.land {
+            land.layout.set_continuity(continuity);
+        }
+    }
+
     pub fn flag_source<'a>(
         &'a self,
         assets: &'a CounterAssets,
@@ -3681,7 +3698,7 @@ impl PreparedCounters {
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
-        let Self { fixed, land, drawn } = self;
+        let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (counter_pointer, counter_exit) =
             hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
         let DrawnCounters {
@@ -3815,7 +3832,7 @@ impl PreparedCounters {
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<Option<viewer_foundation::profiling::OwnerSample>> {
-        let Self { fixed, land, drawn } = self;
+        let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (counter_pointer, counter_exit) =
             hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
         if let Some(land) = land.as_mut() {
@@ -3964,7 +3981,7 @@ impl PreparedCounters {
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
-        let Self { fixed, land, drawn } = self;
+        let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (mut scratch, mut report) = (Batch::default(), CounterReport::default());
         let countries = fixed.naval.countries.as_deref();
         if pools.pings {
@@ -4008,6 +4025,7 @@ impl PreparedCounters {
     }
 
     pub fn keep_drawn(&mut self, old: &mut PreparedCounters) {
+        self.set_motion_continuity(old.motion_continuity);
         if let (Some(land), Some(old)) = (self.land.as_mut(), old.land.as_mut()) {
             land.keep_drawn(old);
         }
@@ -4217,8 +4235,20 @@ impl Countries {
         flags.acquire(&keys.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
-    fn side(&self, slot: u32) -> Allegiance {
-        self.sides.get(&slot).copied().unwrap_or(Allegiance::Other)
+    fn known_side(&self, slot: u32) -> Option<Allegiance> {
+        self.sides.get(&slot).copied()
+    }
+
+    fn is_ours(&self, slot: u32) -> bool {
+        self.known_side(slot) == Some(Allegiance::Ours)
+    }
+
+    fn same_allegiance_group(&self, a: u32, b: u32) -> bool {
+        a == b
+            || matches!(
+                (self.known_side(a), self.known_side(b)),
+                (Some(first), Some(other)) if first == other
+            )
     }
 
     fn flag_keys(&self, slot: u32) -> Option<Vec<String>> {

@@ -1,5 +1,12 @@
 use super::*;
 
+fn test_defines() -> RiverDefines {
+    RiverDefines {
+        fade_from: 20.0,
+        fade_to: 3.0,
+    }
+}
+
 #[test]
 fn flow_runs_preserve_native_group_parity_and_index_order() {
     let heights = HeightField {
@@ -21,7 +28,7 @@ fn flow_runs_preserve_native_group_parity_and_index_order() {
         Seed::Junction(2),
     ] {
         river.seed = seed;
-        ribbon(&river, &heights, &mut mesh);
+        ribbon(&river, &heights, test_defines(), &mut mesh);
     }
     assert_eq!(
         (&mesh.coarse_runs, &mesh.coarse_indices, mesh.vertices.len()),
@@ -230,6 +237,7 @@ fn junctions_taper_and_fade_at_the_far_end_only() {
             height: 3,
             values: &values,
         },
+        test_defines(),
         &mut mesh,
     );
     assert_eq!(mesh.vertices[0].position[3], 1.0);
@@ -292,6 +300,7 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
             height,
             values: &values,
         },
+        test_defines(),
     )
     .unwrap();
     assert_eq!(trace.rivers.len(), 1);
@@ -385,6 +394,7 @@ fn a_wide_river_keeps_its_banks_within_the_tolerance_round_a_small_sharp_bend() 
             height: 8,
             values: &values,
         },
+        test_defines(),
         &mut mesh,
     );
     let (fine, coarse) = mesh.vertices.split_at(800);
@@ -415,6 +425,7 @@ fn a_bend_in_the_fade_keeps_the_fade_within_its_tolerance_as_well_as_the_banks()
                 height: 8,
                 values: &values,
             },
+            test_defines(),
             &mut mesh,
         );
         let (fine, coarse) = mesh.vertices.split_at(120);
@@ -456,6 +467,7 @@ fn a_ribbon_under_the_sea_keeps_its_sampled_height() {
             height,
             values: &values,
         },
+        test_defines(),
     )
     .unwrap();
     assert!(!mesh.is_empty());
@@ -480,6 +492,7 @@ fn a_mismatched_height_field_is_refused() {
                 height: height + 1,
                 values: &values
             },
+            test_defines(),
         )
         .is_err()
     );
@@ -498,5 +511,80 @@ fn a_mismatched_height_field_is_refused() {
             indices: &[]
         })
         .is_err()
+    );
+}
+
+#[test]
+fn river_fade_resolves_non_default_defines_and_refuses_missing_or_invalid_ones() {
+    let load = |body: &str| {
+        let defines = Defines::new().unwrap();
+        defines
+            .load(
+                "common/defines/00_graphics.lua",
+                format!("NDefines = {{ NGraphics = {{ {body} }} }}").as_bytes(),
+            )
+            .unwrap();
+        RiverDefines::load(&defines)
+    };
+    let custom = load("RIVER_FADE_FROM = 40.0, RIVER_FADE_TO = 10.0").unwrap();
+    assert_eq!(
+        custom,
+        RiverDefines {
+            fade_from: 40.0,
+            fade_to: 10.0,
+        }
+    );
+    let mut row = String::from(".S");
+    row.push_str(&"6".repeat(60));
+    row.push('.');
+    let rows = [".".repeat(row.len()), row.clone(), ".".repeat(row.len())];
+    let (width, height, indices) = image(&rows.iter().map(String::as_str).collect::<Vec<_>>());
+    let values = flat(width, height);
+    let (default_mesh, _) = build(
+        &RiverImage {
+            width,
+            height,
+            indices: &indices,
+        },
+        &HeightField {
+            width,
+            height,
+            values: &values,
+        },
+        test_defines(),
+    )
+    .unwrap();
+    let (custom_mesh, _) = build(
+        &RiverImage {
+            width,
+            height,
+            indices: &indices,
+        },
+        &HeightField {
+            width,
+            height,
+            values: &values,
+        },
+        custom,
+    )
+    .unwrap();
+    assert_eq!(default_mesh.vertices[15 * 2].position[3], 1.0);
+    assert!(
+        (custom_mesh.vertices[15 * 2].position[3] - 0.7).abs() < 1e-6,
+        "{}",
+        custom_mesh.vertices[15 * 2].position[3]
+    );
+    assert_eq!(custom_mesh.vertices[4 * 2].position[3], 0.0);
+
+    let missing_from = load("RIVER_FADE_TO = 3.0").unwrap_err().to_string();
+    assert!(missing_from.contains("RIVER_FADE_FROM"), "{missing_from}");
+    let missing_to = load("RIVER_FADE_FROM = 20.0").unwrap_err().to_string();
+    assert!(missing_to.contains("RIVER_FADE_TO"), "{missing_to}");
+    let inverted = load("RIVER_FADE_FROM = 5.0, RIVER_FADE_TO = 10.0")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        inverted.contains("RIVER_FADE_FROM") && inverted.contains("RIVER_FADE_TO"),
+        "{inverted}"
     );
 }

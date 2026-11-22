@@ -86,6 +86,7 @@ mod tests {
                 velocity: [0.; 3],
                 size: 1.,
                 rotation: [0.; 3],
+                rotation_base: [0.; 3],
                 spin: [0.; 3],
                 color: [0.; 4],
                 tile: [0; 4],

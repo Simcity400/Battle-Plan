@@ -561,7 +561,7 @@ pub(super) fn navy_calls(
     }
     let mut update = writes.update();
     update.selectable = Some((
-        state.countries.side(flotilla.owner) == Allegiance::Ours,
+        state.countries.is_ours(flotilla.owner),
         Arc::clone(&flotilla.members),
     ));
     update.owner = Some(flotilla.owner);

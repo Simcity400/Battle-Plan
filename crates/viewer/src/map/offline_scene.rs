@@ -198,14 +198,24 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         warnings,
     )?;
     let river_assets = rivers::RiverAssets::load(layers, [map.width, map.height], 0, decode)?;
-    let (river_mesh, _) = rivers::build(
-        &rivers::RiverImage {
-            width: map.width,
-            height: map.height,
-            indices: &assets.rivers.indices,
-        },
-        &heights,
-    )?;
+    let river_mesh = match rivers::RiverDefines::load(&defines) {
+        Ok(river_defines) => {
+            rivers::build(
+                &rivers::RiverImage {
+                    width: map.width,
+                    height: map.height,
+                    indices: &assets.rivers.indices,
+                },
+                &heights,
+                river_defines,
+            )?
+            .0
+        }
+        Err(error) => {
+            warnings.push(format!("Rivers are withheld and draw nothing: {error}"));
+            rivers::RiverMesh::default()
+        }
+    };
     eprintln!("Content scene: particle assets");
     let weather = viewer_world::map::weather_effects::Assets::load(
         layers,
