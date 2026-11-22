@@ -20,6 +20,7 @@ import { tooltipStore } from '../charts/tooltip';
 import { FrameEngine } from '../engine/frame';
 import AcesWidget from '../widgets/aces/AcesWidget';
 import DoctrineMasteryWidget from '../widgets/doctrine-mastery/DoctrineMasteryWidget';
+import NuclearArsenalWidget from '../widgets/nuclear-arsenal/NuclearArsenalWidget';
 import { arsenalNotice, arsenalStructure, validateNuclearArsenal } from '../widgets/nuclear-arsenal/nuclearArsenalData';
 import type { NuclearArsenalReply } from '../generated/dashboard';
 import type { Present } from './notifications';
@@ -31,11 +32,12 @@ const HOURS = 100_000;
 const reply: NuclearArsenalReply = { types: [{ ordinal: 0, token: 'nuke', name: 'Nuclear bomb' }],
   countries: [{ tag: 'GER', countryId: 1, total: 3, counts: [{ ordinal: 0, value: 3, ready: 3 }] }], missing: null, warnings: [] };
 const arsenalAt = (hour: number): NuclearArsenalReply => ({ ...reply,
-  countries: [{ tag: 'GER', countryId: 1, total: hour, counts: [{ ordinal: 0, value: hour, ready: hour }] }] });
+  countries: [{ tag: 'GER', countryId: 1, total: hour, counts: [{ ordinal: 0, value: hour, ready: hour }] }], warnings: [`read at ${hour}`] });
 const doctrine = { folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null, grand: { id: 'mobile', name: 'Mobile warfare', icon: null }, completed: [],
   tracks: [{ ordinal: 0, name: 'Infantry', sub: { id: 'sub_a', name: 'Sub A', icon: null }, unlocked: 1, rewards: [{ id: 'r1', name: 'First', threshold: '5000000' }] }] }], warnings: [] };
-const replies: Record<string, (hour: number) => unknown> = { 'nuclear-arsenal': arsenalAt, 'air-aces': hour => ({ readHour: hour, missing: null, aces: [], warnings: [] }),
-  'doctrine-mastery': () => doctrine };
+const replies: Record<string, (hour: number, query: Record<string, unknown>) => unknown> = { 'nuclear-arsenal': arsenalAt,
+  'air-aces': hour => ({ readHour: hour, missing: null, aces: [], warnings: [] }),
+  'doctrine-mastery': (_hour, query) => query.country === 'ENG' ? { folders: [], warnings: [] } : doctrine };
 const date = { since: 0, through: HOURS - 1 };
 const feed: PanelFeed = { view: 'nuclear-arsenal', offset: 0, structure: arsenalStructure(reply), reply, date };
 const clock = new PlaybackController(new FrameEngine({ request() {} }));
@@ -43,10 +45,19 @@ clock.setBounds({ firstHour: 0, lastHour: HOURS - 1 });
 clock.seek(23);
 
 const gate = { armed: false, held: [] as { message: FromWorker; deliver: () => void }[] };
-const views = new Map<number, string>();
+const offscreens = new WeakMap<OffscreenCanvas, HTMLCanvasElement>(), surfaces = new WeakMap<HTMLCanvasElement, number>(), owners = new Map<number, number>();
+const transferred = HTMLCanvasElement.prototype.transferControlToOffscreen;
+HTMLCanvasElement.prototype.transferControlToOffscreen = function (this: HTMLCanvasElement) {
+  const offscreen = transferred.call(this);
+  offscreens.set(offscreen, this);
+  return offscreen;
+};
+const surfaceOf = (canvas: HTMLCanvasElement | null) => canvas && surfaces.get(canvas);
 class GatedWorker extends Worker {
   override postMessage(message: ToWorker, transfer?: Transferable[] | StructuredSerializeOptions) {
-    if (message.type === 'surface') views.set(message.id, message.model.view);
+    const canvas = (message.type === 'surface' || message.type === 'race') && message.canvas && offscreens.get(message.canvas);
+    if (canvas) surfaces.set(canvas, message.id);
+    if (message.type === 'surface' || message.type === 'race') owners.set(message.id, message.owner);
     super.postMessage(message, transfer as Transferable[]);
   }
 }
@@ -61,26 +72,26 @@ Object.assign(window, { Worker: GatedWorker });
 
 const ports: MessagePort[] = [];
 const decoder = new FollowDecoder();
-const followed = new Map<number, string>(), pushedAt = new Map<number, string>();
+const followed = new Map<number, Record<string, unknown>>(), pushedAt = new Map<number, string>();
 const native = { id: -1, hold: false, asked: null as { hour: number; seek: number } | null, asks: 0 };
 function push() {
   const asked = native.asked;
   if (!asked) return;
   const at = `${asked.seek}:${asked.hour}`;
-  for (const [id, product] of followed) {
+  for (const [id, query] of followed) {
     if (pushedAt.get(id) === at) continue;
     pushedAt.set(id, at);
-    const item = decoder.item(datedPanel(id, asked.hour, replies[product]!(asked.hour), asked.seek).buffer);
+    const item = decoder.item(datedPanel(id, asked.hour, replies[String(query.panel)]!(asked.hour, query), asked.seek).buffer);
     for (const port of ports) port.postMessage([item]);
   }
 }
 const answer = (product: string, params: Record<string, unknown>): unknown => {
   if (product === 'follow') {
-    const { id, query } = params as { id: number; query: { panel?: unknown } };
+    const { id, query } = params as { id: number; query: Record<string, unknown> };
     const panel = String(query.panel);
     if (!replies[panel]) return { available: false, reason: `${panel} is not followed here` };
     if (panel === 'nuclear-arsenal') native.id = id;
-    followed.set(id, panel);
+    followed.set(id, query);
     if (!native.hold) push();
     return { available: true, route: 9 };
   }
@@ -93,7 +104,7 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
   const served = replies[product];
   if (!served) throw new Error(`${product} is not served here`);
   native.asks++;
-  return served((params as { hour: number }).hour);
+  return served((params as { hour: number }).hour, params);
 };
 const client = {
   available: true,
@@ -113,12 +124,16 @@ const headed = spec('headed', 'nuclear-arsenal', { kind: 'tags', tags: ['GER'] }
 const widgetProps = (widget: WidgetSpec) => ({ widget, runtime, active: true, headerSlot: null, onDiagnostics() {} }) as unknown as WidgetProps;
 const aces = widgetProps(spec('aces', 'aces', { kind: 'all' }));
 const doctrines = widgetProps(spec('doctrine', 'doctrine-mastery', { kind: 'tags', tags: ['GER'] }));
+const noDoctrines = widgetProps(spec('no-doctrines', 'doctrine-mastery', { kind: 'tags', tags: ['ENG'] }));
+const arsenalWarnings = { told: [] as string[] };
+const arsenal = { ...widgetProps(spec('arsenal', 'nuclear-arsenal', { kind: 'tags', tags: ['GER'] }, { view: 'race' })),
+  onDiagnostics: (warnings: string[]) => { arsenalWarnings.told = warnings; wake(); } };
 const NO_PARAMS = {};
 const DOCTRINE_TIPS = 'doctrine-mastery:doctrine';
 
 const presents = new Map<number, Present>();
 const drawn = new Map<number, number | null>();
-let racePresent: Extract<FromWorker, { type: 'racePresent' }> | undefined;
+const racePresents = new Map<number, Extract<FromWorker, { type: 'racePresent' }>>();
 const emptied = { seek: -1 };
 let strict: number | null = null, followedSurface = false, listedRead = '';
 const waiting = new Set<() => void>();
@@ -126,18 +141,21 @@ const wake = () => queueMicrotask(() => { for (const heard of [...waiting]) hear
 onDraw(message => {
   if (message.type === 'present') for (const surface of message.surfaces) {
     presents.set(surface.id, surface);
-    if (surface.readHour !== undefined || !surface.waiting) drawn.set(surface.id, surface.readHour ?? null);
+    const accepted = surface.owner === owners.get(surface.id) && surface.seek === clock.getSnapshot().seekSequence && surface.generation === clockGeneration(clock);
+    if (accepted && (surface.readHour !== undefined || !surface.waiting)) drawn.set(surface.id, surface.readHour ?? null);
   }
-  if (message.type === 'racePresent') racePresent = message;
+  if (message.type === 'racePresent') racePresents.set(message.id, message);
   if (message.type === 'structure' && message.updates.some(update => update.id === native.id && update.panel === null))
     emptied.seek = clock.getSnapshot().seekSequence;
   wake();
 });
 tooltipStore.subscribe(wake);
-const arsenals = () => [...presents.keys()].filter(id => views.get(id) === 'nuclear-arsenal');
-const panelId = () => Math.min(...arsenals()), headedId = () => { const ids = arsenals(); return ids.length > 1 ? Math.max(...ids) : -1; };
-const panelPresent = () => presents.get(panelId());
-const headedPresent = () => presents.get(headedId());
+const ink = (panel: string) => document.querySelector<HTMLElement>(`#${panel} [data-paint="empty"]`)?.dataset.rowInk ?? null;
+const inkOf = (panel: string) => document.querySelector<HTMLCanvasElement>(`#${panel} canvas.draw-panel-ink`);
+const raceCanvas = () => document.querySelector<HTMLCanvasElement>('#race canvas');
+const panelPresent = () => presents.get(surfaceOf(inkOf('panel')) ?? -1);
+const headedPresent = () => presents.get(surfaceOf(inkOf('headed')) ?? -1);
+const racePresent = () => racePresents.get(surfaceOf(raceCanvas()) ?? -1);
 
 function Panel() {
   const root = useRef<HTMLDivElement>(null);
@@ -198,7 +216,7 @@ function Race() {
 const pop = document.createElement('div');
 pop.id = 'pop'; pop.popover = 'manual'; pop.style.inset = 'auto 0 0 auto'; pop.style.margin = '0';
 document.body.append(pop);
-const box = { width: '260px', height: '140px', overflow: 'hidden' };
+const box = { width: '240px', height: '140px', overflow: 'hidden' };
 
 let mounts = 0;
 new MutationObserver(records => {
@@ -213,23 +231,20 @@ function opacity(element: Element | null) {
 function surface(canvas: HTMLCanvasElement | null, region: Element | null, visible: boolean, hour: number | null | undefined) {
   return { visible, opacity: opacity(canvas), busy: region?.getAttribute('aria-busy') === 'true', hour: hour ?? null };
 }
-const ink = (panel: string) => document.querySelector<HTMLElement>(`#${panel} [data-paint="empty"]`)?.dataset.rowInk ?? null;
-const inkOf = (panel: string) => document.querySelector<HTMLCanvasElement>(`#${panel} canvas.draw-panel-ink`);
 const stateOf = (selector: string) => document.querySelector<HTMLElement>(selector)?.dataset.state ?? null;
 function tip() {
   const open = tooltipStore.get();
   return open?.owner === DOCTRINE_TIPS ? open.content.rows?.find(row => row.label === 'As of')?.value ?? '' : null;
 }
 function shown() {
-  const ink1 = inkOf('panel'), ink2 = inkOf('headed');
-  const race = document.querySelector<HTMLCanvasElement>('#race canvas');
+  const ink1 = inkOf('panel'), ink2 = inkOf('headed'), race = raceCanvas();
   return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, asks: native.asks, listedRead,
-    listed: document.querySelector('#listed')?.textContent ?? null,
-    aces: stateOf('#aces .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
+    listed: document.querySelector('#listed')?.textContent ?? null, warned: arsenalWarnings.told.filter(warning => warning.startsWith('read at ')),
+    aces: stateOf('#aces .widget-state'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
     muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
-    panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(panelId())),
-    race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent?.hour),
-    headed: surface(ink2, document.querySelector('#headed'), !!ink2 && !ink2.hidden, drawn.get(headedId())) };
+    panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(surfaceOf(ink1) ?? -1)),
+    race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent()?.hour),
+    headed: surface(ink2, document.querySelector('#headed'), !!ink2 && !ink2.hidden, drawn.get(surfaceOf(ink2) ?? -1)) };
 }
 const lit = (now: { visible: boolean; opacity: number }) => now.visible && now.opacity === 1;
 const painted = () => { const now = shown(); return now.field === 'worker' && now.headedField === 'worker' && lit(now.panel) && lit(now.race) && lit(now.headed); };
@@ -237,7 +252,7 @@ const currentOf = (...given: (Present | Extract<FromWorker, { type: 'racePresent
   const generation = clockGeneration(clock), seek = clock.getSnapshot().seekSequence;
   return given.every(present => present?.generation === generation && present.seek === seek);
 };
-const current = () => currentOf(panelPresent(), headedPresent(), racePresent);
+const current = () => currentOf(panelPresent(), headedPresent(), racePresent());
 const readEmptied = () => emptied.seek === clock.getSnapshot().seekSequence && strict === null;
 
 function until(ready: () => boolean) {
@@ -264,7 +279,10 @@ function at(time: number, change: () => void) {
   try { change(); } finally { Reflect.deleteProperty(performance, 'now'); }
 }
 
-const landed = (hour: number) => current() && painted() && headedPresent()?.readHour === hour && shown().listed === String(hour) && shown().aces === 'empty';
+const landed = (hour: number) => {
+  const now = shown();
+  return current() && painted() && headedPresent()?.readHour === hour && now.listed === String(hour) && now.aces === 'empty' && now.noDoctrines === 'empty';
+};
 
 async function heldSeek(hour: number, settled: () => boolean, done: () => boolean = () => true) {
   let pending: ReturnType<typeof shown>[] = [];
@@ -309,15 +327,17 @@ export const fixture = {
     pop.showPopover();
     createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed />{createPortal(<Listed />, pop)}<Probe />
       <div style={{ display: 'flex', gap: '8px' }}><div id="aces" style={box}><AcesWidget {...aces} /></div>
-        <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div></div></>);
+        <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div>
+        <div id="no-doctrines" style={box}><DoctrineMasteryWidget {...noDoctrines} /></div></div>
+      <div id="arsenal-widget" style={{ width: '480px', height: '160px', overflow: 'hidden' }}><NuclearArsenalWidget {...arsenal} /></div></>);
     await until(() => followedSurface && listedRead === 'followed' && landed(23) && !!document.querySelector('#doctrine [data-track]'));
     document.querySelector<HTMLElement>('#doctrine [data-track]')!.focus();
     await until(() => shown().tip === dayLabel(23) && shown().described);
     return shown();
   },
   speed: (hoursPerSecond: number) => watch(() => clock.setSpeed(hoursPerSecond)),
-  heldSeek: (hour: number) => heldSeek(hour, () => current() && readEmptied(), () => shown().tip === dayLabel(hour)),
-  heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent) && readEmptied()),
+  heldSeek: (hour: number) => heldSeek(hour, () => current() && readEmptied(), () => shown().tip === dayLabel(hour) && shown().warned.join() === `read at ${hour}`),
+  heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent()) && readEmptied()),
   step: () => watch(() => clock.step(1), () => until(() => landed(clock.getHour()))),
   staleStep,
   async playFor(milliseconds: number) {

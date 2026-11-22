@@ -5,7 +5,7 @@ import { withNativePage } from '../../../tools/native-page.ts';
 interface Surface { visible: boolean; opacity: number; busy: boolean; hour: number | null }
 interface Shown {
   field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
-  aces: string | null; tip: string | null; described: boolean; muted: number;
+  warned: string[]; aces: string | null; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
   panel: Surface; race: Surface; headed: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
@@ -23,8 +23,8 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     mounts = mounted.mounts; muted = mounted.muted; asks = mounted.asks;
     assert.ok(muted > 0 && muted < 1, `the production styles give a held picture a muted opacity: ${muted}`);
     assert.ok(at(mounted, 23) && mounted.strict === 23, `the worker paints every picture at the paused hour on the surface the push made: ${show(mounted)}`);
-    assert.ok(mounted.aces === 'empty' && mounted.tip !== null && mounted.described,
-      `Aces shows 23:00, and a focused Doctrine mastery row shows its tooltip and description: ${show(mounted)}`);
+    assert.ok(mounted.aces === 'empty' && mounted.noDoctrines === 'empty' && mounted.tip !== null && mounted.described && mounted.warned.join() === 'read at 23',
+      `Aces and a country without doctrines show 23:00, a focused Doctrine mastery row shows its tooltip and description, and Nuclear arsenal reports 23:00's warning: ${show(mounted)}`);
     for (const speed of [168, 1, 1440]) {
       const seen = await act<Shown[]>(`speed(${speed})`);
       const wrong = seen.findIndex(state => !at(state, 23));
@@ -39,8 +39,10 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
       `before the worker paints, the previous day's pictures stay visible at the muted opacity and busy: ${show(held)}`);
     assert.ok(kept(pending) && pending.strict === null && dim(pending.headed, 23) && [pending.panel, pending.race].every(surface => dim(surface, 23) || lit(surface, 24)),
       `with the followed reply for 24:00 still pending, the head's data is empty and only the drawn host holds 23:00, dimmed on its surface: ${show(pending)}`);
-    assert.equal(pending.aces, 'loading', `while 24:00 is read, Aces shows loading, not a time outside the recording: ${show(pending)}`);
+    assert.ok(pending.aces === 'loading' && pending.noDoctrines === 'loading',
+      `while 24:00 is read, Aces shows loading, not a time outside the recording, and Doctrine mastery holding 23:00 shows loading, not 23:00's status: ${show(pending)}`);
     assert.ok(pending.tip === null && !pending.described, `while Doctrine mastery holds 23:00, its row tooltip and description are withheld: ${show(pending)}`);
+    assert.deepEqual(pending.warned, [], 'while 24:00 is read, Nuclear arsenal reports no warning of 23:00, though its race holds 23:00');
     const framed = midnight.slice(1);
     assert.ok(pending.listed === null && framed.every(state => state.listed !== '23'),
       `from the first frame at 24:00, a widget with no drawn host shows nothing of 23:00: ${show(framed.find(state => state.listed === '23'))}`);
@@ -51,7 +53,7 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     assert.equal(between, undefined, `every sample shows the previous day dimmed or the next day at full strength, on the surfaces it mounted with: ${show(between)}`);
     const midnightEnd = midnight.at(-1)!;
     assert.ok(at(midnightEnd, 24) && midnightEnd.strict === 24, `the next day is painted at full strength: ${show(midnightEnd)}`);
-    assert.ok(midnightEnd.aces === 'empty' && midnightEnd.tip !== null && midnightEnd.tip !== mounted.tip && midnightEnd.described,
+    assert.ok(midnightEnd.aces === 'empty' && midnightEnd.tip !== null && midnightEnd.tip !== mounted.tip && midnightEnd.described && midnightEnd.warned.join() === 'read at 24',
       `24:00 lands in every widget, and the row tooltip returns with its day: ${show(midnightEnd)}`);
     const sameDay = await act<Shown[]>('step()');
     const lost = sameDay.find(state => !kept(state) || ![state.panel, state.race].every(surface => lit(surface, 24) || lit(surface, 25)) ||
