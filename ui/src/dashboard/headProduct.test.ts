@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSource, headSubject, momentHour, retain, whenDue } from './headProduct.ts';
+import { headRead, headSource, headSubject, landedPanel, momentHour, retain, whenDue } from './headProduct.ts';
 import type { BoundTrack, WidgetSpec } from './model';
+import type { FollowEntry } from './follow/store';
 import { observeOnScreen } from './follow/useFollow.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
@@ -40,15 +41,31 @@ test('an hour outside the recorded branch, or no track, asks nothing', () => {
   assert.equal(headRead(widget({ mode: 'follow' }), undefined, [], null).hourAt(200), null);
 });
 
-test('a followed panel whose first push has not landed is asked by the fallback’s clock, never held at an earlier hour', () => {
-  assert.equal(headSource(true, 'followed', false), 'fallback', 'a seek before the first push asks the hour sought');
-  assert.equal(headSource(true, 'followed', true), 'pushed');
+test('a followed panel is asked by the fallback’s clock until its first push lands, and read only from pushes after, whatever a seek empties', () => {
+  assert.equal(headSource(true, 'followed', false), 'fallback', 'a follow whose first push has not landed asks the hour sought');
+  assert.equal(headSource(true, 'followed', true), 'pushed', 'once a push has landed, a seek that empties the reading keeps the pushed source and its surface');
   assert.equal(headSource(true, 'pending', false), 'fallback');
   assert.equal(headSource(true, 'unavailable', true), 'fallback');
   assert.equal(headSource(true, 'off', false), 'asked', 'not watched yet, or with no element, it is asked as rendered');
   assert.equal(headSource(true, 'off', false, true), 'idle', 'following but seen off screen, nothing is read for it, whatever renders around it');
   assert.equal(headSource(false, 'off', false, true), 'asked', 'not following, its own hour is asked wherever it is');
   assert.equal(headSource(false, 'followed', true), 'asked');
+});
+
+test('the panel a followed head shows stays the last one landed while a seek empties its reading, and only that follow’s', () => {
+  const panel = { data: 'hour 23', refused: null };
+  const values = new Map([['GER:total', 3]]);
+  const entry = { id: 1, status: 'followed', answer: undefined, panel, values, hour: 23, through: 23, version: 1 } as FollowEntry;
+  const landed = landedPanel(null, entry);
+  assert.deepEqual([landed?.panel, landed?.values], [panel, values]);
+  const emptied = { ...entry, panel: undefined, version: 2 } as FollowEntry;
+  assert.equal(landedPanel(landed, emptied)?.panel, undefined, 'another entry never shows it');
+  Object.assign(entry, { panel: undefined, values: undefined });
+  assert.equal(landedPanel(landed, entry), landed, 'emptied by a seek, the last panel, its values and its hours stay');
+  const next = { data: 'hour 24', refused: null };
+  Object.assign(entry, { panel: next, hour: 24, through: 24 });
+  assert.equal(landedPanel(landed, entry)?.panel, next, 'the new hour replaces it once it lands');
+  assert.equal(landedPanel(landed, null), null);
 });
 
 test('the reply shown while a newer hour loads is dated at the hour it was asked for', () => {
