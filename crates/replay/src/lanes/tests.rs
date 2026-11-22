@@ -686,3 +686,127 @@ fn statuses_from_page_entries_are_the_statuses_stepped() {
         assert!(available.iter().all(|&(a, b)| (a..=b).all(|hour| inside(&read, hour))), "run {run}: available reads are reads");
     }
 }
+
+#[test]
+fn log_span_reads_texts_filters_keys_and_reports_unavailable_gaps_across_blocks() {
+    use crate::{
+        columnar_frames::synthetic::{Input, Sample},
+        rows::{LeaderTraitGainRow, UnitLeaderRow, UnitLeaderTraitRow},
+    };
+    const L1: u64 = 11 << 32 | 5;
+    const L2: u64 = 12 << 32 | 5;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 100, 2)];
+    let streams = [TableId::UnitLeaders, TableId::UnitLeaderTraits];
+    let (bytes, _) = fixtures::written(b"log span text and gaps", &RUNS, &streams, |synthetic, _, ordinal| {
+        let leaders = [
+            UnitLeaderRow { id: 11, reference_type: 5, ..Default::default() },
+            UnitLeaderRow { id: 12, reference_type: 5, ..Default::default() },
+        ];
+        synthetic.table(TableId::UnitLeaders, Input::Snapshot { rows: &leaders, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        let traits_input = if (300..=305).contains(&ordinal) {
+            Input::Unavailable { reason: "traits unavailable", read: false, sample: Sample::FromReadBit }
+        } else if (715..=725).contains(&ordinal) {
+            Input::Unavailable { reason: "traits across block", read: false, sample: Sample::FromReadBit }
+        } else {
+            let mut rows = vec![
+                UnitLeaderTraitRow { leader_reference: L1, ordinal: 0, token_id: 101, definition_ordinal: 0, token: b"panzer_leader".to_vec() },
+                UnitLeaderTraitRow { leader_reference: L2, ordinal: 0, token_id: 102, definition_ordinal: 1, token: b"trickster".to_vec() },
+            ];
+            if ordinal >= 50 {
+                rows.push(UnitLeaderTraitRow { leader_reference: L1, ordinal: 1, token_id: 103, definition_ordinal: 2, token: b"fortress_buster".to_vec() });
+            }
+            if ordinal >= 800 {
+                rows.push(UnitLeaderTraitRow { leader_reference: L1, ordinal: 2, token_id: 104, definition_ordinal: 3, token: b"panzer_leader".to_vec() });
+                rows.push(UnitLeaderTraitRow { leader_reference: L2, ordinal: 1, token_id: 105, definition_ordinal: 4, token: b"hill_fighter".to_vec() });
+            }
+            synthetic.table(TableId::UnitLeaderTraits, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            return;
+        };
+        synthetic.table::<UnitLeaderTraitRow>(TableId::UnitLeaderTraits, traits_input).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let held = recording.run(0).unwrap();
+    let (first, last) = (held.first_hour, held.last_hour());
+    let spelling = field(TableId::LeaderTraitGains, "spelling");
+    let class = field(TableId::LeaderTraitGains, "class");
+    let columns = [spelling, class];
+
+    let mut all_rows = Vec::new();
+    let all = log_span(&recording, 0, TableId::LeaderTraitGains, &columns, Keys::All, first, last, &mut |hour, key, cells| {
+        all_rows.push((hour - first, (key >> 64) as u64, key as u32, cells[0], cells[1]));
+    })
+    .unwrap();
+    assert_eq!(all.columns, columns);
+    let named_all: Vec<_> = all_rows
+        .iter()
+        .map(|&(offset, leader, token, text, kind)| (offset, leader, token, all.text(text).map(<[u8]>::to_vec), kind))
+        .collect();
+    assert!(
+        named_all.contains(&(0, L1, 101, Some(b"panzer_leader".to_vec()), Cell::Number(i64::from(LeaderTraitGainRow::HELD_BEFORE))))
+            && named_all.contains(&(0, L2, 102, Some(b"trickster".to_vec()), Cell::Number(i64::from(LeaderTraitGainRow::HELD_BEFORE))))
+            && named_all.contains(&(50, L1, 103, Some(b"fortress_buster".to_vec()), Cell::Number(i64::from(LeaderTraitGainRow::GAINED))))
+            && named_all.contains(&(800, L1, 104, Some(b"panzer_leader".to_vec()), Cell::Number(i64::from(LeaderTraitGainRow::GAINED))))
+            && named_all.contains(&(800, L2, 105, Some(b"hill_fighter".to_vec()), Cell::Number(i64::from(LeaderTraitGainRow::GAINED)))),
+        "log_span exposes recorded text in caller column order: {named_all:?}"
+    );
+    assert!(
+        all.gaps
+            .iter()
+            .any(|gap| (gap.first, gap.last) == (first + 300, first + 305) && gap.reason.as_deref() == Some("unit leader traits: not available (traits unavailable)"))
+            && all
+                .gaps
+                .iter()
+                .any(|gap| (gap.first, gap.last) == (first + 715, first + 725) && gap.reason.as_deref() == Some("unit leader traits: not available (traits across block)")),
+        "log_span reports unavailable stretches with resolved reasons: {:?}",
+        all.gaps
+    );
+
+    let l1_low = u128::from(L1) << 64;
+    let l1_high = l1_low | ((1_u128 << 64) - 1);
+    let mut l1_rows = Vec::new();
+    let l1 = log_span(&recording, 0, TableId::LeaderTraitGains, &columns, Keys::Range(l1_low, l1_high), first, last, &mut |hour, key, cells| {
+        l1_rows.push((hour - first, (key >> 64) as u64, key as u32, cells[0], cells[1]));
+    })
+    .unwrap();
+    assert!(l1_rows.iter().all(|&(_, leader, ..)| leader == L1), "Keys::Range returns only the requested leader");
+    let l1_texts: Vec<_> = l1_rows.iter().map(|&(offset, _, token, text, _)| (offset, token, l1.text(text).unwrap().to_vec())).collect();
+    assert!(
+        l1_texts.contains(&(0, 101, b"panzer_leader".to_vec()))
+            && l1_texts.contains(&(50, 103, b"fortress_buster".to_vec()))
+            && l1_texts.contains(&(800, 104, b"panzer_leader".to_vec())),
+        "filtered log_span resolves texts cleanly across blocks: {l1_texts:?}"
+    );
+    assert!(
+        l1.texts.iter().all(|text| &**text != b"trickster" && &**text != b"hill_fighter"),
+        "filtered log_span must not leak unfiltered leaders' texts: {:?}",
+        l1.texts
+    );
+    assert_eq!(l1.texts.iter().filter(|text| &***text == b"panzer_leader").count(), 1, "identical texts deduplicate across blocks");
+
+    let mut block1_rows = Vec::new();
+    let block1 = log_span(&recording, 0, TableId::LeaderTraitGains, &columns, Keys::Range(l1_low, l1_high), first + 720, first + 900, &mut |hour, key, cells| {
+        block1_rows.push((hour - first, key as u32, cells[0]));
+    })
+    .unwrap();
+    assert_eq!(
+        block1.gaps.iter().map(|gap| (gap.first - first, gap.last - first, gap.reason.as_deref())).collect::<Vec<_>>(),
+        [(720, 725, Some("unit leader traits: not available (traits across block)"))],
+        "unavailable status carrying across a block boundary resolves its reason from the prior block restore"
+    );
+    assert!(
+        block1_rows.iter().any(|&(offset, token, text)| offset == 800 && token == 104 && block1.text(text) == Some(&b"panzer_leader"[..])),
+        "block 1 filtered read resolves text interned in block 0"
+    );
+
+    let mut gap_only_rows = Vec::new();
+    let gap_only = log_span(&recording, 0, TableId::LeaderTraitGains, &columns, Keys::All, first + 300, first + 305, &mut |hour, key, _| {
+        gap_only_rows.push((hour, key));
+    })
+    .unwrap();
+    assert!(gap_only_rows.is_empty());
+    assert_eq!(gap_only.gaps.len(), 1);
+    assert_eq!(gap_only.gaps[0].reason.as_deref(), Some("unit leader traits: not available (traits unavailable)"));
+
+    assert!(log_span(&recording, 0, TableId::LeaderTraitGains, &[99], Keys::All, first, last, &mut |_, _, _| {}).is_err());
+    assert!(log_span(&recording, 0, TableId::Countries, &[0], Keys::All, first, last, &mut |_, _, _| {}).is_err());
+}

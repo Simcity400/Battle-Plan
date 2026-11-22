@@ -139,6 +139,15 @@ pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<
 }
 
 pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    encode_framed_at(format, campaign_id, segments, |_, _| Ok(()))
+}
+
+pub fn encode_framed_at(
+    format: u16,
+    campaign_id: Vec<u8>,
+    segments: &[Vec<Record>],
+    mut each: impl FnMut(&mut crate::columnar_frames::synthetic::Synthetic, &DecodedFrame) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
     use crate::{
         columnar_frames::synthetic::{Input, Sample, Synthetic},
         rows::{TableId, tables},
@@ -165,6 +174,7 @@ pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Reco
             synthetic.table(TableId::Clock, Input::Snapshot { rows: clock, partial: None, read: true, sample: Sample::FromReadBit })?;
             let campaign = decoded.complete::<tables::Campaign>()?;
             synthetic.table(TableId::Campaign, Input::Snapshot { rows: campaign, partial: None, read: true, sample: Sample::FromReadBit })?;
+            each(synthetic, &decoded)?;
             synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
             *next = decoded.hour + 1;
         }
