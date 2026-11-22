@@ -1,5 +1,5 @@
 use super::Inner;
-use dashboard::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
+use dashboard_core::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -8,7 +8,7 @@ pub(super) struct SeekTarget {
     pub(super) revision: String,
     pub(super) branch: String,
     pub(super) hour: i32,
-    pub(super) playback: Option<dashboard::protocol::MapPlayback>,
+    pub(super) playback: Option<dashboard_core::protocol::MapPlayback>,
 }
 
 impl SeekTarget {
@@ -38,14 +38,14 @@ pub(super) struct DashboardSnapshot {
 
 #[derive(Default)]
 pub(super) struct Pending {
-    pub(super) actions: VecDeque<dashboard::protocol::MapAction>,
+    pub(super) actions: VecDeque<dashboard_core::protocol::MapAction>,
     pub(super) campaign_map: bool,
     pub(super) bounds: Option<ViewBounds>,
     pub(super) visibility: Option<bool>,
     pub(super) open: Option<(String, Option<String>)>,
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<DashboardSnapshot>,
-    pub(super) gamepad: Option<dashboard::protocol::GamepadMessage>,
+    pub(super) gamepad: Option<dashboard_core::protocol::GamepadMessage>,
     pub(super) close: bool,
 }
 
@@ -56,7 +56,7 @@ impl Pending {
         if self.actions.len() >= MAX_QUEUED_ACTIONS {
             return Err(format!(
                 "{}; try again",
-                dashboard::transport::MAP_CONTROLS_BUSY
+                dashboard_core::transport::MAP_CONTROLS_BUSY
             ));
         }
         Ok(())

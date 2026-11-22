@@ -1,5 +1,5 @@
 use super::{breakdown::Histories, *};
-use crate::{products::at_hour::Owner, test_fixtures::source};
+use dashboard_base::{products::at_hour::Owner, test_fixtures::source};
 use replay_data::rows::{
     CountryLinkRow, LexicalTokenRow, Recorded, ResearchAssignmentRow as A, ResearchCoverageRow, ResearchModifierRow, SliceReadRow, TableRows,
 };

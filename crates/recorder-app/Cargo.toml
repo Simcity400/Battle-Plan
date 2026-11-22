@@ -61,7 +61,6 @@ replay-derive = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-1 = { workspace = true }
 unify-bytemuck = { workspace = true }
-unify-either = { workspace = true }
 unify-hashbrown = { workspace = true }
 unify-log = { workspace = true }
 unify-num-traits = { workspace = true }

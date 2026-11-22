@@ -1,7 +1,7 @@
 #[cfg(test)]
 pub(crate) use viewer_playback::presentation::MAP_LINES_LOADING;
 use crate::map_views::CounterView;
-use dashboard::protocol::CameraMode;
+use dashboard_core::protocol::CameraMode;
 use std::path::Path;
 use std::sync::OnceLock;
 use viewer_combat as combat;
@@ -56,7 +56,7 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
-use dashboard::map_display::option_defaults;
+use dashboard_core::map_display::option_defaults;
 use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
 use viewer_world::scene::SceneInput;
 use viewer_counters::map::counters::CounterReport;
@@ -560,7 +560,7 @@ struct LoadedReplay {
     document: Document,
     scene: Scene,
     revision: Option<String>,
-    source: Option<Arc<dashboard::Source>>,
+    source: Option<Arc<dashboard_base::Source>>,
     config: Config,
 }
 
@@ -668,13 +668,13 @@ pub struct Viewer {
     dashboard_map: bool,
     host_graphics: bool,
     shared_pool: Option<Arc<crate::worker_pool::WorkerPool>>,
-    source: Option<Arc<dashboard::Source>>,
+    source: Option<Arc<dashboard_base::Source>>,
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
     rendered_sequence: u64,
     drawn_at: Option<f64>,
-    applying_options: Option<dashboard::protocol::MapOptions>,
-    drawn_options: Option<dashboard::protocol::MapOptions>,
+    applying_options: Option<dashboard_core::protocol::MapOptions>,
+    drawn_options: Option<dashboard_core::protocol::MapOptions>,
     hover: Option<String>,
     tooltip: Option<String>,
     tooltip_delay_ms: Option<f32>,
@@ -741,10 +741,10 @@ pub struct Viewer {
     started: Instant,
     opened: Option<Instant>,
     postfx: bool,
-    pub(crate) graphics: dashboard::protocol::MapGraphics,
-    pub(crate) counter_filter: dashboard::protocol::CounterFilter,
+    pub(crate) graphics: dashboard_core::protocol::MapGraphics,
+    pub(crate) counter_filter: dashboard_core::protocol::CounterFilter,
     pub(crate) player_counters: bool,
-    pub(crate) volumes: dashboard::protocol::MapAudio,
+    pub(crate) volumes: dashboard_core::protocol::MapAudio,
     overlay_layers: crate::document::OverlayLayers,
     counter_owners: crate::map_views::CounterOwners,
     resolved_settings: crate::map_views::ResolvedSettings,
@@ -877,7 +877,7 @@ pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     document: &Document,
-    graphics: dashboard::protocol::MapGraphics,
+    graphics: dashboard_core::protocol::MapGraphics,
     workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
     let _startup = crate::perf_log::StartupSpan::new("scene");
@@ -894,7 +894,7 @@ fn load_scene_scoped(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     document: &Document,
-    graphics: dashboard::protocol::MapGraphics,
+    graphics: dashboard_core::protocol::MapGraphics,
     workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
     use viewer_foundation::load_record::stage;
@@ -1268,7 +1268,7 @@ impl Viewer {
             fly_footprints: Default::default(),
             pointer_grabbed: false,
             postfx: options.postfx,
-            graphics: dashboard::protocol::MapGraphics {
+            graphics: dashboard_core::protocol::MapGraphics {
                 day_night: options.day_night.unwrap_or(option_defaults::DAY_NIGHT),
                 show_allied_plans: options.allied_plans.unwrap_or(option_defaults::ALLIED_PLANS),
                 ..Default::default()
@@ -1557,7 +1557,7 @@ impl Viewer {
         &mut self,
         service: &dashboard::Service,
         scope: String,
-    ) -> std::sync::Arc<dashboard::protocol::ResolvedMapSettings> {
+    ) -> std::sync::Arc<dashboard_core::protocol::ResolvedMapSettings> {
         let settings =
             self.resolved_settings
                 .get(service.map_settings_generation(), scope, |scope| {
@@ -1584,7 +1584,7 @@ impl Viewer {
 
     pub(crate) fn set_embedded_graphics(
         &mut self,
-        settings: &dashboard::protocol::ResolvedMapSettings,
+        settings: &dashboard_core::protocol::ResolvedMapSettings,
     ) {
         let graphics = settings.graphics;
         self.graphics = graphics;
@@ -1726,7 +1726,7 @@ impl Viewer {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        target: &dashboard::protocol::DashboardMapView,
+        target: &dashboard_core::protocol::DashboardMapView,
     ) {
         self.host_perspective(&target.options);
         self.applying_options = Some(target.options.clone());
@@ -2501,8 +2501,8 @@ impl Viewer {
 
     pub(crate) fn map_state(
         &self,
-        target: &dashboard::protocol::DashboardMapView,
-    ) -> dashboard::protocol::DashboardMapState {
+        target: &dashboard_core::protocol::DashboardMapView,
+    ) -> dashboard_core::protocol::DashboardMapState {
         let error = self.error.clone().or_else(|| self.map_error.clone());
         let clock = target.branch_id.parse().ok().map(|branch| {
             let requested = Playhead {
@@ -2531,7 +2531,7 @@ impl Viewer {
             (Some(_), Some(drawn)) => (Some(drawn), Some(0.0)),
             _ => (None, None),
         };
-        dashboard::protocol::DashboardMapState {
+        dashboard_core::protocol::DashboardMapState {
             id: target.id.clone(),
             clock_id: target.clock_id.clone(),
             source_id: Some(target.source_id.clone()),
@@ -2557,14 +2557,14 @@ impl Viewer {
         }
     }
 
-    fn applied_settings(&self) -> Option<dashboard::protocol::AppliedMapSettings> {
+    fn applied_settings(&self) -> Option<dashboard_core::protocol::AppliedMapSettings> {
         let document = self.document.as_ref()?;
         let mut graphics = self.graphics;
         graphics.texture_quality = document.texture_quality;
         if let Some(scene) = &self.scene {
             graphics.samples = scene.samples();
         }
-        Some(dashboard::protocol::AppliedMapSettings {
+        Some(dashboard_core::protocol::AppliedMapSettings {
             graphics,
             audio: self.volumes,
             counters: self.counter_filter.clone(),
@@ -2815,7 +2815,7 @@ impl Viewer {
             let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
                     let _stage = viewer_foundation::load_record::stage("load.replay_revision");
-                    let revision = dashboard::protocol::replay_revision(&path)
+                    let revision = dashboard_core::protocol::replay_revision(&path)
                         .map_err(|error| error.to_string())?;
                     if expected_revision
                         .as_ref()
@@ -4258,7 +4258,7 @@ impl Viewer {
             && (controls.pressed.contains(&CAMERA_MODE_KEY)
                 || controls
                     .pad
-                    .pressed(dashboard::protocol::GamepadButton::Select))
+                    .pressed(dashboard_core::protocol::GamepadButton::Select))
         {
             self.set_camera_mode(self.camera_mode.next(), self.free_overlays, ui.ctx());
         }
@@ -4568,7 +4568,7 @@ impl Viewer {
                 .and_then(|position| ground(frame_point(position)));
             let south = controls
                 .pad
-                .pressed(dashboard::protocol::GamepadButton::South);
+                .pressed(dashboard_core::protocol::GamepadButton::South);
             let centre = south
                 .then(|| ground([pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5]))
                 .flatten();
@@ -6646,7 +6646,7 @@ impl Viewer {
 }
 
 struct AudioInputs<'a> {
-    volumes: dashboard::protocol::MapAudio,
+    volumes: dashboard_core::protocol::MapAudio,
     muted: bool,
     reset: bool,
     music: Option<Arc<viewer_audio::Chances>>,
@@ -6657,7 +6657,7 @@ struct AudioInputs<'a> {
 
 fn audio_mix(
     document: &Document,
-    volumes: dashboard::protocol::MapAudio,
+    volumes: dashboard_core::protocol::MapAudio,
     muted: bool,
 ) -> viewer_audio::Mix {
     let percent = |value: f32| value / 100.0;
@@ -6951,15 +6951,15 @@ impl Viewer {
             for event in events {
                 match event {
                     picker::ViewEvent::Options(options) => embedded
-                        .report_view_options(dashboard::protocol::CAMPAIGN_MAP_VIEW, options),
+                        .report_view_options(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, options),
                     picker::ViewEvent::Toggle(toggle) => {
-                        embedded.report_view_toggle(dashboard::protocol::CAMPAIGN_MAP_VIEW, toggle)
+                        embedded.report_view_toggle(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, toggle)
                     }
                     picker::ViewEvent::Modes(modes) => {
-                        embedded.report_view_modes(dashboard::protocol::CAMPAIGN_MAP_VIEW, modes)
+                        embedded.report_view_modes(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, modes)
                     }
                     picker::ViewEvent::Observe(country) => {
-                        embedded.report_view_observe(dashboard::protocol::CAMPAIGN_MAP_VIEW, country)
+                        embedded.report_view_observe(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, country)
                     }
                 }
             }
@@ -8261,13 +8261,13 @@ pub(crate) mod tests {
         let mut owner = viewer_audio::System::shared().owner();
         owner.claim();
         viewer.audio = Some(owner);
-        let bounds = dashboard::protocol::ViewBounds {
+        let bounds = dashboard_core::protocol::ViewBounds {
             x: 0,
             y: 0,
             width: 64,
             height: 64,
         };
-        let target = dashboard::protocol::DashboardMapView {
+        let target = dashboard_core::protocol::DashboardMapView {
             options: Default::default(),
             id: "widget".into(),
             source_id: "source".into(),
@@ -8594,8 +8594,8 @@ pub(crate) mod tests {
             .unwrap(),
         );
         let source = Arc::new(
-            dashboard::Source::from_replay(
-                dashboard::SourceKey {
+            dashboard_base::Source::from_replay(
+                dashboard_base::SourceKey {
                     source_id: "source-test".into(),
                     revision: "revision-test".into(),
                 },
@@ -8735,7 +8735,7 @@ pub(crate) mod tests {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
-        viewer.host_map_action(dashboard::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
+        viewer.host_map_action(dashboard_core::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
         assert_eq!(viewer.take_export_results(), [(8, Err("Open a map and wait for any active export to finish".to_owned()))]);
         assert!(viewer.error.is_none() && viewer.capture.is_none());
     }

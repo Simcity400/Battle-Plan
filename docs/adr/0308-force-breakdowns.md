@@ -4,4 +4,4 @@ The recorder's declared air and navy totals supply counts and rankings. A ranked
 
 Part labels and grouping come from the recorded content. Plane variants group by archetype when resolved. A wing composition groups by its shared archetype or as a mix. Its signature is consulted at the last hour it is live in the window because the recorded signature belongs to one unbroken lifetime. Navy classes group by registered sub-unit or by the role indicated by the category mask. The reply keeps unresolved recorded identifiers distinct and groups neither missing data nor unsupported content under a guessed label.
 
-[Force products](../../crates/dashboard/src/products/forces.rs)
+[Force products](../../crates/dashboard-land/src/products/forces.rs)

@@ -21,7 +21,7 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
         .keys()
         .find_map(|name| document.aircraft.player(name).ok())
         .ok_or_else(|| invalid("the content registers no entity that can be flown"))?;
-    scene.set_graphics(dashboard::protocol::MapGraphics {
+    scene.set_graphics(dashboard_core::protocol::MapGraphics {
         samples: 1,
         units: false,
         ..Default::default()
