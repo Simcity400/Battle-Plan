@@ -1,30 +1,27 @@
-use crate::UnsavedWork;
+use crate::PageLeaving;
 use tauri::{AppHandle, Manager};
 
 pub struct Host(pub AppHandle);
 
 impl Host {
-    fn unsaved(&self) -> Option<String> {
-        self.0.state::<UnsavedWork>().update_refused()
+    fn leaving(&self) -> &PageLeaving {
+        self.0.state::<PageLeaving>().inner()
     }
 }
 
 impl app_update::Host for Host {
     fn busy(&self) -> Option<String> {
-        self.unsaved()
+        self.leaving().busy()
     }
 
-    fn install(&self, launch: app_update::Launch) -> Result<(), String> {
-        if let Some(reason) = self.unsaved() {
-            return Err(reason);
-        }
-        launch()?;
+    fn install(&self, launch: app_update::Launch, confirmed: bool) -> Result<(), String> {
+        self.leaving().install(confirmed, launch)?;
         self.0.exit(0);
         Ok(())
     }
 
     fn close_for_update(&self) -> Result<(), String> {
-        self.unsaved().map_or(Ok(()), Err)
+        self.leaving().close_for_update()
     }
 
     fn closed_for_update(&self) {

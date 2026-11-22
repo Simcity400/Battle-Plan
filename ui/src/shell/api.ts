@@ -1,4 +1,5 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
+import type { CloseRequest, CloseRequests } from './closeGuard.ts';
 import { listen } from '@tauri-apps/api/event';
 import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
 import type { MapPlayback } from '../dashboard/mapPlayback';
@@ -83,24 +84,28 @@ export function seekMap(path: string, revision: string, branch: string, hour: nu
   return invoke<void>('seek_map', { path, revision, branch, hour, playback });
 }
 
-export function setUnsavedWork(unsaved: boolean): Promise<void> {
-  if (!desktopAvailable) return Promise.resolve();
-  return invoke<void>('set_unsaved_work', { unsaved });
+let closeWatches = 0;
+
+export function closeRequests(onRequest: (request: CloseRequest) => void): CloseRequests {
+  if (!desktopAvailable) return { watch: () => Promise.resolve() };
+  const seq = ++closeWatches;
+  const requests = new Channel<CloseRequest>(onRequest);
+  return { watch: () => invoke<void>('watch_close_requests', { seq, requests }) };
 }
 
-export function onCloseRequested(callback: () => void): Promise<() => void> {
-  if (!desktopAvailable) return Promise.resolve(() => {});
-  return listen('close-requested', () => callback());
-}
-
-export function closeDiscardingUnsavedWork(): Promise<void> {
+export function answerCloseQuestion(id: number, unsaved: boolean): Promise<void> {
   requireDesktop();
-  return invoke<void>('close_discarding_unsaved_work');
+  return invoke<void>('answer_close_question', { id, unsaved });
 }
 
-export function installUpdateDiscardingUnsavedWork(): Promise<void> {
+export function leaveApp(): Promise<void> {
   requireDesktop();
-  return invoke<void>('install_update_discarding_unsaved_work');
+  return invoke<void>('leave_app');
+}
+
+export function installUpdateLeaving(): Promise<void> {
+  requireDesktop();
+  return invoke<void>('install_update_leaving');
 }
 
 export { errorMessage } from './errors';

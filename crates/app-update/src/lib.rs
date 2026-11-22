@@ -68,7 +68,7 @@ pub trait Host: Send + Sync + 'static {
     fn busy(&self) -> Option<String> {
         self.install_blocked()
     }
-    fn install(&self, launch: Launch) -> Result<(), String>;
+    fn install(&self, launch: Launch, confirmed: bool) -> Result<(), String>;
     fn close_for_update(&self) -> Result<(), String>;
     fn closed_for_update(&self) {}
 }
@@ -619,7 +619,7 @@ impl Updates {
         }
     }
 
-    pub fn install(&self, app: &AppHandle) -> Result<(), String> {
+    pub fn install(&self, app: &AppHandle, confirmed: bool) -> Result<(), String> {
         let (package, version) = self.start(app, false, |inner| {
             self.reconcile_channel(inner)?;
             let found = inner
@@ -639,7 +639,7 @@ impl Updates {
         }
         let arguments = self.role.installer_arguments();
         let launch: Launch = Box::new(move || install::launch(&version, &package, arguments));
-        let result = self.host.install(launch);
+        let result = self.host.install(launch, confirmed);
         if let Err(error) = &result {
             self.finish(app, |inner| {
                 inner.state.status = Status::Error;

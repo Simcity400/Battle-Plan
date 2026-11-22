@@ -2,6 +2,7 @@
 
 mod dashboard_service;
 mod follow_push;
+mod leaving;
 mod pull;
 mod native;
 mod perf;
@@ -17,9 +18,8 @@ use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::http::HeaderValue;
-use tauri::{Emitter, Manager, State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -199,66 +199,79 @@ fn context() -> tauri::Context {
     context
 }
 
-#[derive(Default)]
-struct UnsavedWork {
-    unsaved: AtomicBool,
-    discarding: AtomicUsize,
-}
+type PageLeaving = leaving::Leaving<tauri::ipc::Channel<leaving::Request>>;
 
-impl UnsavedWork {
-    const UPDATE_REFUSED: &'static str =
-        "BattlePlan has unsaved changes. Save or discard them in BattlePlan, then restart to update.";
-
-    fn kept(&self) -> bool {
-        self.unsaved.load(Ordering::Acquire) && self.discarding.load(Ordering::Acquire) == 0
-    }
-
-    fn update_refused(&self) -> Option<String> {
-        self.kept().then(|| Self::UPDATE_REFUSED.to_owned())
-    }
-
-    fn holds_close<E: std::fmt::Display>(&self, ask: impl FnOnce() -> Result<(), E>) -> bool {
-        if !self.kept() {
-            return false;
-        }
-        if let Err(error) = ask() {
-            eprintln!("Couldn’t ask about unsaved changes before closing, so BattlePlan stays open: {error}");
-        }
-        true
-    }
-
-    fn discarding<E>(&self, leave: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
-        self.discarding.fetch_add(1, Ordering::AcqRel);
-        let left = leave();
-        if left.is_err() {
-            self.discarding.fetch_sub(1, Ordering::AcqRel);
-        }
-        left
+fn main_page(webview: &tauri::Webview) -> Result<(), String> {
+    if webview.label() == "main" {
+        Ok(())
+    } else {
+        Err("Only BattlePlan’s main window decides whether it may close.".into())
     }
 }
 
 #[tauri::command]
-fn set_unsaved_work(work: State<'_, UnsavedWork>, unsaved: bool) {
-    work.unsaved.store(unsaved, Ordering::Release);
+fn watch_close_requests(
+    webview: tauri::Webview,
+    leaving: State<'_, PageLeaving>,
+    seq: u64,
+    requests: tauri::ipc::Channel<leaving::Request>,
+) -> Result<(), String> {
+    main_page(&webview)?;
+    leaving.watch(seq, requests);
+    Ok(())
 }
 
 #[tauri::command]
-fn close_discarding_unsaved_work(window: WebviewWindow, work: State<'_, UnsavedWork>) -> Result<(), String> {
-    work.discarding(|| window.close()).map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
+fn answer_close_question(webview: tauri::Webview, leaving: State<'_, PageLeaving>, id: u64, unsaved: bool) -> Result<(), String> {
+    main_page(&webview)?;
+    leaving.answer(id, unsaved);
+    Ok(())
 }
 
 #[tauri::command]
-async fn install_update_discarding_unsaved_work(app: tauri::AppHandle) -> Result<(), String> {
+fn leave_app(webview: tauri::Webview) -> Result<(), String> {
+    main_page(&webview)?;
+    webview.app_handle().exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+async fn install_update_leaving(webview: tauri::Webview) -> Result<(), String> {
+    main_page(&webview)?;
+    let app = webview.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let updates = Arc::clone(app.state::<Arc<app_update::Updates>>().inner());
-        app.state::<UnsavedWork>().discarding(|| updates.install(&app))
+        updates.install(&app, true)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
-fn ask_before_close(app: &tauri::AppHandle) -> bool {
-    app.state::<UnsavedWork>().holds_close(|| app.emit_to("main", "close-requested", ()))
+fn watch_page_process(window: &WebviewWindow) -> tauri::Result<()> {
+    let app = window.app_handle().clone();
+    window.with_webview(move |webview| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        };
+        let handler = webview2_com::ProcessFailedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            unsafe { args.ProcessFailedKind(&mut kind)? };
+            if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+                || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+            {
+                eprintln!("BattlePlan’s page process ended, so closing no longer waits for it.");
+                app.state::<PageLeaving>().page_died();
+            }
+            Ok(())
+        }));
+        let mut token = 0_i64;
+        let watched = unsafe { webview.controller().CoreWebView2().and_then(|page| page.add_ProcessFailed(&handler, &mut token)) };
+        if let Err(error) = watched {
+            eprintln!("BattlePlan can’t tell if its page process ends, so a crashed page could keep it from closing: {error}");
+        }
+    })
 }
 
 #[tauri::command]
@@ -320,6 +333,11 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
             serve_artwork(request, responder, artwork_origin.clone())
         })
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview.state::<PageLeaving>().page_left();
+            }
+        })
         .manage(video::VideoState::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main")
@@ -344,6 +362,7 @@ fn main() {
                 }
             })?;
             if let Some(window) = app.get_webview_window("main") {
+                watch_page_process(&window)?;
                 app.state::<NativeHost>().ensure_started(&window)?;
             }
             Ok(())
@@ -352,7 +371,7 @@ fn main() {
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
         .manage(follow_push::FollowPush::default())
-        .manage(UnsavedWork::default())
+        .manage(PageLeaving::default())
         .invoke_handler(tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
@@ -362,9 +381,10 @@ fn main() {
             video::set_map_muted,
             desktop_state,
             playback_pressure_merges,
-            set_unsaved_work,
-            close_discarding_unsaved_work,
-            install_update_discarding_unsaved_work,
+            watch_close_requests,
+            answer_close_question,
+            leave_app,
+            install_update_leaving,
             set_map_view,
             select_native_view,
             map_action,
@@ -421,7 +441,7 @@ fn main() {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == "main" && ask_before_close(app) => api.prevent_close(),
+        } if label == "main" && app.state::<PageLeaving>().close_requested() => api.prevent_close(),
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
@@ -503,73 +523,7 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, UnsavedWork};
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn unsaved_work_refuses_an_update_until_it_is_saved_or_discarded() {
-        let work = UnsavedWork::default();
-        assert_eq!(work.update_refused(), None, "nothing unsaved lets the update close the app");
-        work.unsaved.store(true, Ordering::Release);
-        assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
-        work.discarding.store(1, Ordering::Release);
-        assert_eq!(work.update_refused(), None, "work the user chose to discard no longer holds the update");
-        work.discarding.store(0, Ordering::Release);
-        work.unsaved.store(false, Ordering::Release);
-        assert_eq!(work.update_refused(), None, "saved work no longer holds the update");
-    }
-
-    #[test]
-    fn unsaved_work_holds_a_close_even_when_the_question_cannot_be_asked() {
-        let work = UnsavedWork::default();
-        assert!(!work.holds_close(|| -> Result<(), &'static str> { unreachable!() }), "nothing unsaved closes at once");
-        work.unsaved.store(true, Ordering::Release);
-        let mut asked = 0;
-        assert!(work.holds_close(|| -> Result<(), &'static str> {
-            asked += 1;
-            Ok(())
-        }));
-        assert_eq!(asked, 1);
-        assert!(work.holds_close(|| Err("no window")), "unsaved work is never closed silently");
-    }
-
-    #[test]
-    fn a_failed_discarding_close_leaves_the_work_guarded() {
-        let work = UnsavedWork::default();
-        work.unsaved.store(true, Ordering::Release);
-        assert_eq!(work.discarding(|| Err("no window")), Err("no window"));
-        assert!(work.kept(), "a close that failed doesn’t authorise a later close or update");
-        assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
-        assert_eq!(work.discarding(|| Ok::<(), &str>(())), Ok(()));
-        assert!(!work.kept(), "the closing window isn’t asked again");
-    }
-
-    #[test]
-    fn discarding_lasts_only_for_the_attempt_and_keeps_what_the_page_says_meanwhile() {
-        let work = UnsavedWork::default();
-        work.unsaved.store(true, Ordering::Release);
-        let installed = work.discarding(|| {
-            assert_eq!(work.update_refused(), None, "the install the user chose to discard for may close the app");
-            work.unsaved.store(false, Ordering::Release);
-            work.unsaved.store(true, Ordering::Release);
-            Err("installer didn’t start")
-        });
-        assert_eq!(installed, Err("installer didn’t start"));
-        assert!(work.kept(), "a new edit made during a failed install is still guarded");
-        work.discarding(|| {
-            work.unsaved.store(false, Ordering::Release);
-            Err("installer didn’t start")
-        })
-        .unwrap_err();
-        assert!(!work.kept(), "work saved during a failed install isn’t guarded again");
-        work.unsaved.store(true, Ordering::Release);
-        let closing = work.discarding(|| {
-            assert_eq!(work.discarding(|| Err("installer didn’t start")), Err("installer didn’t start"));
-            assert!(!work.kept(), "a failed install doesn’t take back a close the user chose");
-            Ok::<(), &str>(())
-        });
-        assert_eq!(closing, Ok(()));
-    }
+    use super::ExitOrder;
 
     #[test]
     fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {

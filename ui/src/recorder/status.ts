@@ -1,6 +1,7 @@
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
 import type { Compression } from './compression';
+import { errorMessage } from '../shell/errors.ts';
 
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
 export interface Problem { text: string; detail: string; failed: boolean }
@@ -291,6 +292,53 @@ export function followStatus<T>(listen: (show: (value: T) => void) => Promise<()
   };
   const first = start();
   return { first, retry: () => { void start(); }, stop };
+}
+
+export interface PanelPrompt { id: number; quitting: boolean; discarding: boolean }
+export interface PanelOpening { compact: boolean; prompt: PanelPrompt | null }
+export interface PanelFailure { title: string; detail: string; retry(): void }
+export const PROMPTS_UNHEARD = 'Couldn’t hear the recorder’s questions.';
+export const PANEL_UNOPENED = 'Couldn’t reach the recorder.';
+
+export function openPanel(listen: (onPrompt: (prompt: PanelPrompt) => void) => Promise<() => void>, opened: () => Promise<PanelOpening>,
+  on: { prompt(prompt: PanelPrompt): void; opened(opening: PanelOpening): void; failed(failure: PanelFailure | null): void }) {
+  let ended = false, unlisten: (() => void) | null = null;
+  const fail = (title: string, cause: unknown, again: () => void) => {
+    if (ended) return;
+    let used = false;
+    on.failed({ title, detail: errorMessage(cause), retry: () => {
+      if (ended || used) return;
+      used = true;
+      on.failed(null);
+      again();
+    } });
+  };
+  const open = () => { opened().then(opening => { if (!ended) on.opened(opening); }, cause => fail(PANEL_UNOPENED, cause, open)); };
+  const subscribe = () => {
+    listen(prompt => { if (!ended) on.prompt(prompt); }).then(stop => {
+      if (ended) { stop(); return; }
+      unlisten = stop;
+      open();
+    }, cause => fail(PROMPTS_UNHEARD, cause, subscribe));
+  };
+  subscribe();
+  return { end() { ended = true; unlisten?.(); unlisten = null; } };
+}
+
+export function panelPrompts() {
+  let shown = -1, retired = -1;
+  return {
+    show(prompt: PanelPrompt): boolean {
+      if (prompt.id <= retired) return false;
+      shown = Math.max(shown, prompt.id);
+      return true;
+    },
+    retire(): number | null {
+      if (shown <= retired) return null;
+      retired = shown;
+      return shown;
+    },
+  };
 }
 
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {

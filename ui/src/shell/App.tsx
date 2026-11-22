@@ -1,14 +1,14 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
-  closeDiscardingUnsavedWork,
+  answerCloseQuestion,
+  closeRequests,
   desktopAvailable,
   errorMessage,
-  installUpdateDiscardingUnsavedWork,
-  onCloseRequested,
+  installUpdateLeaving,
+  leaveApp,
   openReplay,
   selectNativeView,
-  setUnsavedWork,
 } from './api.ts';
 import { Icon } from '../components/Icons';
 import EmptyState from '../components/EmptyState';
@@ -48,7 +48,7 @@ import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
 import type { Restart, RestartGuard } from '../update/UpdateControl';
 import { installUpdate } from '../update/api';
 import { leavePrompt, unsavedDetail } from './unsaved';
-import { closeGuard, type CloseGuard, type CloseGuardFailure } from './closeGuard.ts';
+import { closeGuard, type CloseGuardFailure } from './closeGuard.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
 
@@ -245,8 +245,7 @@ export default function App() {
   const layoutsUnsaved = unsavedPages.length > 0;
   const [saveRequest, setSaveRequest] = useState(0);
   const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: Restart } | null>(null);
-  const [guardFailure, setGuardFailure] = useState<CloseGuardFailure | null>(null);
-  const guard = useRef<CloseGuard | null>(null);
+  const [guardFailures, setGuardFailures] = useState<readonly CloseGuardFailure[]>([]);
   useEffect(() => {
     if (tab !== 'settings' || widgetDefinitions().length) return;
     import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
@@ -385,13 +384,6 @@ export default function App() {
   const themeUnsaved = !!themeEditing && (!!themeEditing.typing || JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]));
   const unsavedWork = layoutsUnsaved || themeUnsaved;
   useEffect(() => {
-    const current = closeGuard({ mark: setUnsavedWork, listen: onCloseRequested, close: closeDiscardingUnsavedWork },
-      () => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement }), setGuardFailure);
-    guard.current = current;
-    return () => { current.end(); if (guard.current === current) guard.current = null; };
-  }, []);
-  useEffect(() => { guard.current?.mark(unsavedWork); }, [unsavedWork]);
-  useEffect(() => {
     if (!unsavedWork) { setLeaving(null); return; }
     if (desktopAvailable) return;
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
@@ -402,6 +394,13 @@ export default function App() {
   const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
   const unsavedRef = useRef(unsavedNames);
   unsavedRef.current = unsavedNames;
+  useEffect(() => {
+    const guard = closeGuard({ requests: closeRequests, answer: answerCloseQuestion, leave: leaveApp }, {
+      unsaved: () => unsavedRef.current !== null,
+      ask: () => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement }),
+    }, setGuardFailures);
+    return () => guard.end();
+  }, []);
   const guardRestart = useCallback<RestartGuard>((restart, opener) => {
     if (!unsavedRef.current) { void restart(installUpdate); return; }
     setLeaving({ kind: 'update', opener, restart });
@@ -412,8 +411,8 @@ export default function App() {
     if (back instanceof HTMLElement && back.isConnected) requestAnimationFrame(() => back.focus({ preventScroll: true }));
   };
   const discardAndLeave = async () => {
-    if (leaving?.kind !== 'update' || !leaving.restart) return closeDiscardingUnsavedWork();
-    if (await leaving.restart(installUpdateDiscardingUnsavedWork)) return;
+    if (leaving?.kind !== 'update' || !leaving.restart) return leaveApp();
+    if (await leaving.restart(installUpdateLeaving)) return;
     stayHere();
   };
   const saveBeforeClose = () => {
@@ -499,7 +498,7 @@ export default function App() {
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{pageStorageWarning}</span></div>}
         {switchFailure && <FailureLine className="shell-switch-failure" message={`Couldn’t show ${TAB_NAMES[switchFailure.tab]}.`}
           detail={switchFailure.message} retryDisabled={switching} onRetry={() => void changeTab(switchFailure.tab)} />}
-        {guardFailure && <FailureLine className="shell-guard-failure" message={guardFailure.message} detail={guardFailure.detail} onRetry={() => guard.current?.retry()} />}
+        {guardFailures.map(failure => <FailureLine key={failure.key} className="shell-guard-failure" message={failure.message} detail={failure.detail} onRetry={failure.retry} />)}
       </header>
 
       <main className="workspace" ref={content}>

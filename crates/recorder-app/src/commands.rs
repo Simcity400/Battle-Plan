@@ -61,10 +61,8 @@ pub fn recorder_status(recorder: State<'_, Arc<Recorder>>) -> Snapshot {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelOpened {
-    ask_stop: bool,
     compact: bool,
-    #[serde(flatten)]
-    ask: panel::Ask,
+    prompt: Option<panel::Prompt>,
 }
 
 #[tauri::command]
@@ -74,12 +72,8 @@ pub fn panel_opened(
     panel: String,
 ) -> PanelOpened {
     recorder.panel_opened(&app);
-    let (ask_stop, compact, ask) = panel::take_opening(&app, &panel);
-    PanelOpened {
-        ask_stop,
-        compact,
-        ask,
-    }
+    let (compact, prompt) = panel::opening(&app, &panel);
+    PanelOpened { compact, prompt }
 }
 
 #[tauri::command]
@@ -98,13 +92,25 @@ pub fn start_recording(recorder: State<'_, Arc<Recorder>>) {
 }
 
 #[tauri::command]
-pub fn stop_recording(app: AppHandle, recorder: State<'_, Arc<Recorder>>, discard: bool) {
+pub fn stop_recording(
+    app: AppHandle,
+    recorder: State<'_, Arc<Recorder>>,
+    discard: bool,
+    prompt: Option<u64>,
+) {
+    panel::retire(&app, prompt);
     recorder.stop(&app, discard);
 }
 
 #[tauri::command]
-pub fn cancel_stop_prompt(recorder: State<'_, Arc<Recorder>>) {
+pub fn cancel_stop_prompt(app: AppHandle, recorder: State<'_, Arc<Recorder>>, prompt: Option<u64>) {
+    panel::retire(&app, prompt);
     recorder.cancel_stop_prompt();
+}
+
+#[tauri::command]
+pub fn retire_prompt(app: AppHandle, prompt: u64) {
+    panel::retire(&app, Some(prompt));
 }
 
 #[tauri::command]

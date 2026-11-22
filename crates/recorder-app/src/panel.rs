@@ -44,12 +44,19 @@ impl Ask {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Prompt {
+    pub id: u64,
+    #[serde(flatten)]
+    pub ask: Ask,
+}
+
 #[derive(Default)]
 struct State {
     anchor: Option<Rect>,
     closed_at: Option<Instant>,
-    ask_stop: bool,
-    ask: Ask,
+    prompts: Vec<Prompt>,
+    next_prompt: u64,
     compact: bool,
     moved: Option<PhysicalPosition<i32>>,
     placed: Option<PhysicalPosition<i32>>,
@@ -58,23 +65,26 @@ struct State {
     shown: bool,
     opening: bool,
     recordings_panel: Option<String>,
-    answered: Option<(String, bool, Ask)>,
 }
 
 impl State {
-    fn answer(&mut self, panel: &str) -> (bool, Ask) {
-        let ask_stop = std::mem::take(&mut self.ask_stop);
-        let ask = std::mem::take(&mut self.ask);
-        let answered = match self.answered.take() {
-            Some((answered, previous_stop, mut previous)) if answered == panel => {
-                previous.join(ask);
-                (answered, previous_stop || ask_stop, previous)
-            }
-            _ => (panel.to_owned(), ask_stop, ask),
-        };
-        let reply = (answered.1, answered.2);
-        self.answered = Some(answered);
-        reply
+    fn prompt(&mut self, ask: Ask) -> Prompt {
+        let prompt = Prompt { id: self.next_prompt, ask };
+        self.next_prompt += 1;
+        self.prompts.push(prompt);
+        prompt
+    }
+
+    fn pending(&self) -> Option<Prompt> {
+        self.prompts.iter().copied().reduce(|mut joined, prompt| {
+            joined.ask.join(prompt.ask);
+            joined.id = joined.id.max(prompt.id);
+            joined
+        })
+    }
+
+    fn retire(&mut self, through: u64) {
+        self.prompts.retain(|prompt| prompt.id > through);
     }
 }
 
@@ -137,12 +147,8 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
     let ask = Ask::of(opening);
     if let Some(window) = app.get_webview_window(LABEL) {
         if ask_stop {
-            {
-                let mut state = state(app);
-                state.ask_stop = true;
-                state.ask.join(ask);
-            }
-            let _ = window.emit(ASK_STOP_EVENT, ask);
+            let prompt = state(app).prompt(ask);
+            let _ = window.emit(ASK_STOP_EVENT, prompt);
         }
         let _ = window.set_focus();
         return;
@@ -154,19 +160,22 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
     {
         let mut state = state(app);
         if state.opening {
-            state.ask_stop |= ask_stop;
-            state.ask.join(ask);
+            if ask_stop {
+                state.prompt(ask);
+            }
             return;
         }
         *state = State {
             anchor,
-            ask_stop,
-            ask,
             compact: ask_stop,
             moved: state.moved,
+            next_prompt: state.next_prompt,
             opening: true,
             ..State::default()
         };
+        if ask_stop {
+            state.prompt(ask);
+        }
     }
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
@@ -246,9 +255,7 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
                 state.closed_at = Some(Instant::now());
                 state.focused = false;
                 state.shown = false;
-                state.ask_stop = false;
-                state.ask = Ask::default();
-                state.answered = None;
+                state.prompts.clear();
                 if let Some(panel) = state.recordings_panel.take() {
                     handle.state::<crate::recordings::Library>().close(&panel);
                 }
@@ -260,7 +267,7 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool, Ask) {
+pub fn opening(app: &AppHandle, panel: &str) -> (bool, Option<Prompt>) {
     let mut state = state(app);
     if state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel) {
         let library = app.state::<crate::recordings::Library>();
@@ -269,8 +276,13 @@ pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool, Ask) {
         }
         library.register_panel(panel);
     }
-    let (ask_stop, ask) = state.answer(panel);
-    (ask_stop, state.compact, ask)
+    (state.compact, state.pending())
+}
+
+pub fn retire(app: &AppHandle, prompt: Option<u64>) {
+    if let Some(prompt) = prompt {
+        state(app).retire(prompt);
+    }
 }
 
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
@@ -488,23 +500,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_panel_that_asks_again_hears_the_same_prompt_and_a_new_panel_hears_only_new_ones() {
-        let mut state = State {
-            ask_stop: true,
-            ask: Ask::of(Opening::QuitPrompt),
-            ..State::default()
-        };
-        let quit = (true, Ask::of(Opening::QuitPrompt));
-        assert_eq!(state.answer("first"), quit);
-        assert_eq!(state.answer("first"), quit, "a reply the page lost is given again");
-        state.ask_stop = true;
-        state.ask = Ask::of(Opening::DiscardPrompt);
+    fn a_prompt_stays_until_a_panel_retires_it_and_a_newer_one_outlives_that() {
+        let mut state = State::default();
+        let discard = state.prompt(Ask::of(Opening::DiscardPrompt));
+        assert_eq!(state.pending(), Some(discard));
+        assert_eq!(state.pending(), Some(discard), "a panel that asks again, or a reloaded one, hears the same prompt");
+        state.retire(discard.id);
+        assert_eq!(state.pending(), None, "a reloaded panel isn’t asked what the user already cancelled");
+
+        let quit = state.prompt(Ask::of(Opening::QuitPrompt));
+        let discard = state.prompt(Ask::of(Opening::DiscardPrompt));
         assert_eq!(
-            state.answer("first"),
-            (true, Ask { quitting: true, discarding: true }),
-            "a prompt asked since is added to it"
+            state.pending(),
+            Some(Prompt { id: discard.id, ask: Ask { quitting: true, discarding: true } }),
+            "prompts asked together are shown together"
         );
-        assert_eq!(state.answer("second"), (false, Ask::default()), "another page isn’t asked again");
+        state.retire(quit.id);
+        assert_eq!(state.pending(), Some(discard), "a prompt asked after the one handled stays");
+        state.retire(discard.id);
+        state.retire(discard.id);
+        assert_eq!(state.pending(), None);
     }
 
     #[test]
