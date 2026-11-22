@@ -524,22 +524,32 @@ fn non_spawn_life_curve_does_not_extend_lifetime_and_rotation_and_system_clock_m
     let first_rot = native::DrawPacket::weather(&rot_emitter, &rot_sim, [0.0; 3], 1.0).instances[0]
         .rotation;
     assert!(first_rot[2].abs() < 1e-4, "birth rotation should start at 0, got {first_rot:?}");
-    rot_emitter.emission.base = 0.0;
     rot_sim.tick(&rot_emitter, 0.5);
-    let second_rot = native::DrawPacket::weather(&rot_emitter, &rot_sim, [0.0; 3], 1.0).instances
-        [0]
-    .rotation;
+    assert_eq!(rot_sim.particles.len(), 2);
+    let rot_packet = native::DrawPacket::weather(&rot_emitter, &rot_sim, [0.0; 3], 1.0);
+    let older_rot = rot_packet.instances[0].rotation;
+    let newborn_rot = rot_packet.instances[1].rotation;
     let expected_angle = 90.0 * (32.0 / 63.0);
     assert!(
-        (second_rot[2] - expected_angle).abs() < 1e-3,
-        "life_abs rotation curve should advance to ~{expected_angle}, got {}",
-        second_rot[2]
+        (older_rot[2] - expected_angle).abs() < 1e-3,
+        "older particle life_abs rotation curve should advance to ~{expected_angle}, got {}",
+        older_rot[2]
+    );
+    assert!(
+        newborn_rot[2].abs() < 1e-4,
+        "newborn particle life_abs rotation curve should remain at 0, got {}",
+        newborn_rot[2]
     );
     let expected_spin_angle = 10.0 * (2.0 * 32.0 / 63.0) * 0.5;
     assert!(
-        (second_rot[0] - expected_spin_angle).abs() < 1e-3,
-        "life_abs spin curve should advance to ~{expected_spin_angle}, got {}",
-        second_rot[0]
+        (older_rot[0] - expected_spin_angle).abs() < 1e-3,
+        "older particle should receive first particle spin increment ~{expected_spin_angle}, got {}",
+        older_rot[0]
+    );
+    assert!(
+        (newborn_rot[0] - expected_spin_angle).abs() < 1e-3,
+        "newborn particle should receive first particle spin increment ~{expected_spin_angle}, got {}",
+        newborn_rot[0]
     );
 
     let sys_size = Curve::parse(

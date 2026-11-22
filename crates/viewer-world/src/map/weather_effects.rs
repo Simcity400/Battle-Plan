@@ -1623,6 +1623,11 @@ impl Simulation {
                 }
             }
         }
+        let shared_spin = self.particles.first().map_or([0.0; 3], |first| {
+            std::array::from_fn(|j| {
+                e.spin[j].animate_particle(first.spin[j], first.age, first.life, self.age)
+            })
+        });
         for p in &mut self.particles {
             if e.forces.is_empty() {
                 let step = scale * dt;
@@ -1654,8 +1659,7 @@ impl Simulation {
                         self.age,
                     );
                 }
-                let spin = e.spin[j].animate_particle(p.spin[j], p.age, p.life, self.age);
-                p.rotation[j] += spin * dt;
+                p.rotation[j] += shared_spin[j] * dt;
             }
         }
         if let Some(space) = space {
