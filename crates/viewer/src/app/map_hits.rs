@@ -12,8 +12,8 @@ use {
 pub(crate) struct Shapes<'a> {
     pub report: &'a CounterReport,
     pub raids: &'a [viewer_raids::map::raids::tooltips::Hit],
-    pub occupation: &'a [viewer_world::map::occupation_icons::Hit],
-    pub adjacency: &'a [viewer_world::map::adjacency_icons::Hit],
+    pub occupation: &'a [viewer_map_icons::occupation_icons::Hit],
+    pub adjacency: &'a [viewer_map_icons::adjacency_icons::Hit],
     pub looks: Option<&'a free_icons::Looks>,
     pub shifts: Option<&'a Shifts>,
 }

@@ -872,7 +872,7 @@ impl Layer for AirMissionCounters {
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        if viewer_world::map::map_mode::visibility::of(&view.map_mode).priorities != PriorityTable::StrategicAir {
+        if viewer_map_modes::map_mode::visibility::of(&view.map_mode).priorities != PriorityTable::StrategicAir {
             self.hidden = true;
             return Ok(());
         }

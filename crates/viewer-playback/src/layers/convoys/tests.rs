@@ -17,7 +17,7 @@ use std::{
     },
 };
 use viewer_foundation::map::perspective::{Choice, Vision};
-use viewer_world::map::trade_routes::{self, Countries, ExchangeOrder, Stops, TradeRoutes};
+use viewer_unit_models::trade_routes::{self, Countries, ExchangeOrder, Stops, TradeRoutes};
 
 #[derive(Default)]
 struct Lines {
@@ -156,7 +156,7 @@ fn side_seeing(name: &str, seeing: bool) -> (MapSide, Arc<Lines>) {
 }
 
 fn supply() -> View {
-    View { map_mode: viewer_world::map::map_mode::MapMode::parse("supply").unwrap(), ..View::default() }
+    View { map_mode: viewer_map_modes::map_mode::MapMode::parse("supply").unwrap(), ..View::default() }
 }
 
 fn side(name: &str) -> (MapSide, Arc<Lines>) {

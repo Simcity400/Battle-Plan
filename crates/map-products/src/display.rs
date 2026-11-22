@@ -133,7 +133,7 @@ impl FogProduct {
             limitations: Limitations::from_lines(fog.limitations),
             header: Arc::new(fog.header),
             map_text: Arc::new(
-                viewer_world::map::animated_map_text::events::Prepared::from_display(fog.map_text)?,
+                viewer_map_text::animated_map_text::events::Prepared::from_display(fog.map_text)?,
             ),
             music: fog.music.map(Arc::new),
             battles: fog.battles.map(Arc::new),
@@ -144,16 +144,16 @@ impl FogProduct {
 
 #[derive(Default)]
 pub struct SnowMemo {
-    values: Mutex<Vec<std::sync::Weak<map_snow::SnowMud>>>,
+    values: Mutex<Vec<std::sync::Weak<map_display_data::SnowMud>>>,
 }
 impl SnowMemo {
     pub fn new() -> Self {
         Self::default()
     }
-    fn intern(&self, snow: map_snow::SnowMud) -> Arc<map_snow::SnowMud> {
+    fn intern(&self, snow: map_display_data::SnowMud) -> Arc<map_display_data::SnowMud> {
         self.intern_shared(Arc::new(snow))
     }
-    fn intern_shared(&self, snow: Arc<map_snow::SnowMud>) -> Arc<map_snow::SnowMud> {
+    fn intern_shared(&self, snow: Arc<map_display_data::SnowMud>) -> Arc<map_display_data::SnowMud> {
         let mut values = self
             .values
             .lock()
@@ -230,7 +230,7 @@ impl ProductHour<'_> {
         Ok(())
     }
 
-    pub fn snow_grid(&self, cells: &map_snow::SnowCells) -> io::Result<map_snow::SnowMud> {
+    pub fn snow_grid(&self, cells: &map_snow::SnowCells) -> io::Result<map_display_data::SnowMud> {
         map_snow::grid_from_cells(cells, self.frame)
     }
 
@@ -239,7 +239,7 @@ impl ProductHour<'_> {
         cells: &map_snow::SnowCells,
         winter: &impl map_snow::winter::Factors,
         memo: &SnowMemo,
-    ) -> io::Result<Arc<map_snow::SnowMud>> {
+    ) -> io::Result<Arc<map_display_data::SnowMud>> {
         let built = map_snow::build(cells, self.frame, winter)?;
         Ok(memo.intern(built))
     }
@@ -287,7 +287,7 @@ impl SnowContent {
         &self,
         frame: &DecodedFrame,
         memo: &SnowMemo,
-    ) -> io::Result<Arc<map_snow::SnowMud>> {
+    ) -> io::Result<Arc<map_display_data::SnowMud>> {
         let projected = self
             .fold
             .lock()

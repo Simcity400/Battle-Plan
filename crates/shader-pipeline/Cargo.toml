@@ -39,7 +39,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
-shader-pipeline = { path = ".", features = ["test-support"] }
+shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }
 unify-either = { workspace = true }

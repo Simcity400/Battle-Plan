@@ -389,14 +389,14 @@ fn gpu_counts() -> serde_json::Map<String, Value> {
         .zip(shader_pipeline::gpu::stats::take())
         .map(|(name, count)| (name.to_string(), json!(count)))
         .chain(
-            viewer_world::map::models::take_counts()
+            viewer_models::take_counts()
                 .map(|(name, count)| (name.to_string(), json!(count))),
         )
         .chain(std::iter::once(("passes".to_string(), Value::Object(passes))))
         .chain(std::iter::once((
             "refusals".to_string(),
             Value::Object(
-                viewer_world::map::models::take_refusals()
+                viewer_models::take_refusals()
                     .into_iter()
                     .map(|(name, count)| (name, json!(count)))
                     .collect(),
@@ -865,7 +865,7 @@ pub(crate) fn measure(
                 && let Some(targets) = viewer
                     .scene
                     .as_ref()
-                    .and_then(viewer_world::map::scene::Scene::targets)
+                    .and_then(viewer_world::scene::Scene::targets)
             {
                 let pictures = match &mut pictures {
                     Some(pictures) => pictures,
@@ -879,7 +879,7 @@ pub(crate) fn measure(
                 pictures.count(&state.device, &state.queue, targets, index);
             }
             if schedule.png_frames.is_some_and(|presented| presented.saves(index))
-                && let Some(targets) = viewer.scene.as_ref().and_then(viewer_world::map::scene::Scene::targets)
+                && let Some(targets) = viewer.scene.as_ref().and_then(viewer_world::scene::Scene::targets)
             {
                 saved_frames.push((index, copy_of_output(&state.device, &state.queue, targets)));
             }

@@ -2,7 +2,7 @@
 use crate::layers::political::Political;
 use map_display_data::{landscape::Regions, province_field, value_index::ValueIndex};
 use std::{collections::BTreeSet, sync::Arc};
-use viewer_world::map::demilitarized::Zone;
+use viewer_borders::demilitarized::Zone;
 
 #[derive(Clone)]
 pub enum Over<P> {

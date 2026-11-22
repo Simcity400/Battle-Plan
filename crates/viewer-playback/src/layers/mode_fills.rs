@@ -13,11 +13,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use viewer_foundation::map::{perspective::Choice, presentation::Continuity};
-use viewer_world::map::{
-    border_pass::ClassPlan,
-    demilitarized::{Zone, ZonePlan},
-    map_mode::{MapMode, Stock},
-};
+use viewer_borders::{border_pass::ClassPlan, demilitarized::{Zone, ZonePlan}};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub const TABLES: &[TableId] = &[
     TableId::Provinces,

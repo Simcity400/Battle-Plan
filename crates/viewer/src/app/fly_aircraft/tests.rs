@@ -159,7 +159,7 @@ fn a_refused_aircraft_reports_why_and_is_never_ready() {
 #[test]
 fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
     use crate::app::fly::placed;
-    use viewer_world::map::models::ModelInstance;
+    use viewer_models::ModelInstance;
     let assets = assets("scene");
     let view = ModelInstance {
         rotation: 1.5,
