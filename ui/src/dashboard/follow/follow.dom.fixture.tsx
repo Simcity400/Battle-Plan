@@ -12,12 +12,7 @@ const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => res
 async function settle() { for (let i = 0; i < 4; i++) await frame(); }
 
 const transport = fakeTransport();
-const passes: number[] = [];
-const store = new FollowStore(transport, run => requestAnimationFrame(() => {
-  const started = performance.now();
-  run();
-  passes.push(performance.now() - started);
-}));
+const store = new FollowStore(transport, run => requestAnimationFrame(() => run()));
 const renders = { measure: 0, army: 0, far: 0 };
 
 const MEASURE = { kind: 'series', series: 'country-measure', measure: 'politicalPower', tags: ['GER', 'SOV'] };
@@ -80,6 +75,33 @@ function idOf(query: Record<string, unknown>): number {
 
 const series = (values: bigint[]): Spec => ({ keys: values.map((_, at) => BigInt(at + 1)), columns: 1, values });
 
+async function painted(root: Node, cells: Node[], messages: Uint8Array[]) {
+  let records: MutationRecord[] = [];
+  const writes = new MutationObserver(seen => { records.push(...seen); });
+  writes.observe(root, { characterData: true, childList: true, attributes: true, subtree: true });
+  const expected = new Set(cells);
+  const rounds: { received: number; frames: number; paints: number; once: number; others: number }[] = [];
+  for (const bytes of messages) {
+    const before = { ...store.counts };
+    records = [];
+    transport.deliver(bytes);
+    const received = store.counts.paints - before.paints;
+    await frame();
+    await frame();
+    records.push(...writes.takeRecords());
+    const written = new Map<Node, number>();
+    let others = 0;
+    for (const record of records) {
+      if (record.type === 'characterData' && expected.has(record.target)) written.set(record.target, (written.get(record.target) ?? 0) + 1);
+      else others++;
+    }
+    rounds.push({ received, frames: store.counts.frames - before.frames, paints: store.counts.paints - before.paints,
+      once: cells.filter(cell => written.get(cell) === 1).length, others });
+  }
+  writes.disconnect();
+  return { rounds };
+}
+
 export const fixture = {
   async mount() {
     root.render(<><Measure query={MEASURE} count="measure" tags={MEASURE.tags} /><Army /><div style={{ height: '20000px' }} /><Measure query={FAR} count="far" tags={FAR.tags} /></>);
@@ -114,20 +136,19 @@ export const fixture = {
     window.scrollTo(0, 0);
     await settle();
   },
-  async receiveTimes(rounds: number) {
+  async receive(rounds: number) {
     const ids = Array.from({ length: 50 }, (_, at) => store.acquire({ receive: at }).entry.id);
     const messages = Array.from({ length: rounds }, (_, round) => message(round, ids.map((id, at) => ({ id, answer: {
       keys: Array.from({ length: 16 }, (_, row) => BigInt(row + at)), columns: 1,
       values: Array.from({ length: 16 }, (_, row) => BigInt((row + round) * 100_000)), names: Array.from({ length: 16 }, (_, row) => `T${row}`) } }))));
     await settle();
-    const times: number[] = [];
-    for (const bytes of messages) {
-      const started = performance.now();
-      transport.deliver(bytes);
-      times.push(performance.now() - started);
-      if (times.length % 10 === 0) await frame();
-    }
-    return { times, bytes: messages[0]!.length };
+    const versions = ids.map(id => store.get(id)!.version), counts = { ...store.counts };
+    const { decode } = TextDecoder.prototype;
+    let decoded = 0;
+    TextDecoder.prototype.decode = function (this: TextDecoder, ...input: Parameters<TextDecoder['decode']>) { decoded++; return decode.apply(this, input); };
+    try { for (const bytes of messages) transport.deliver(bytes); } finally { TextDecoder.prototype.decode = decode; }
+    await settle();
+    return { moved: ids.map((id, at) => store.get(id)!.version - versions[at]!), frames: store.counts.frames - counts.frames, paints: store.counts.paints - counts.paints, decoded };
   },
   async paintMany(rounds: number) {
     const spans: HTMLSpanElement[] = [];
@@ -143,16 +164,7 @@ export const fixture = {
     }
     const messages = Array.from({ length: rounds }, (_, round) => message(round, ids.map((id, at) => ({ id, answer: series([BigInt(at + round) * 100_000n]) }))));
     await settle();
-    passes.length = 0;
-    const delivered: number[] = [];
-    for (const bytes of messages) {
-      const started = performance.now();
-      transport.deliver(bytes);
-      delivered.push(performance.now() - started);
-      await frame();
-      await frame();
-    }
-    return { passes: [...passes], delivered, last: spans[499]!.textContent, bytes: message(0, ids.map((id, at) => ({ id, answer: series([BigInt(at) * 100_000n]) }))).length };
+    return { ...await painted(many, spans.map(span => span.firstChild!), messages), last: spans[499]!.textContent };
   },
   async paintTable(rows: number, rounds: number) {
     const handle = store.acquire({ table: rows });
@@ -167,13 +179,7 @@ export const fixture = {
       values: cells.map((_, row) => BigInt(row * 7 + round) * 100_000n), names: cells.map((_, row) => `T${row}`) } });
     const messages = Array.from({ length: rounds }, (_, round) => message(round, [answer(round)]));
     await settle();
-    passes.length = 0;
-    for (const bytes of messages) {
-      transport.deliver(bytes);
-      await frame();
-      await frame();
-    }
-    return { passes: [...passes], last: table.rows[rows - 1]!.cells[1]!.textContent, bytes: messages[0]!.length };
+    return { ...await painted(table, [...table.rows].map(row => row.cells[1]!.firstChild!), messages), last: table.rows[rows - 1]!.cells[1]!.textContent };
   },
 };
 (window as unknown as { followFixture: typeof fixture }).followFixture = fixture;
