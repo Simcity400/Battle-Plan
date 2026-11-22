@@ -199,7 +199,7 @@ impl Target for OnScene<'_, '_> {
 
     fn whole(&mut self, grid: &Arc<SnowMud>, continuity: Continuity) -> io::Result<()> {
         let gpu = &mut *self.0;
-        gpu.scene.set_hour_layers(gpu.device, gpu.queue, viewer_world::map::scene::HourLayers { snow_mud: Some((grid, continuity)), ..Default::default() })
+        gpu.scene.set_hour_layers(gpu.device, gpu.queue, viewer_world::scene::HourLayers { snow_mud: Some((grid, continuity)), ..Default::default() })
     }
 
     fn begin(&mut self, grid: &SnowMud, continuity: Continuity) -> io::Result<()> {

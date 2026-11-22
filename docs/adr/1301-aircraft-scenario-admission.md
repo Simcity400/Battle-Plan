@@ -10,4 +10,4 @@ Only the four initial bomber and fighter arrays gate training. The pass admits t
 
 Unpaired naval patrols use the first task force fighting in the mission region and the viewed country's first-window losses and sinks. Sinks plus losses choose the combat province with success. Losses without sinks choose another reached sea province when possible. Other cases return to the region's ordinary draw. Ordinary location selection deduplicates provinces in first-listing order, while region counts preserve repeated known entries and omit absent IDs with a warning. Draws and random seeds are presentation state. The recording retains the inputs for admission and outcomes, so unlike the native wall-clock seed the viewer's replacements are reproducible across seek and play.
 
-[Mission admission, history and training](../../crates/viewer-world/src/map/aircraft.rs) · [Scenario scheduling](../../crates/viewer-world/src/map/aircraft/scenarios.rs)
+[Mission admission, history and training](../../crates/viewer-aircraft/src/aircraft.rs) · [Scenario scheduling](../../crates/viewer-aircraft/src/aircraft/scenarios.rs)

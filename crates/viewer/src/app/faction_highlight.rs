@@ -3,7 +3,8 @@ use std::sync::{Arc, mpsc};
 use viewer_foundation::retirement::Dropper;
 pub(crate) use viewer_playback::highlight::{Over, Picture};
 
-use {viewer_foundation::map::perspective, viewer_world::map::scene::FactionHighlight};
+use viewer_foundation::map::perspective;
+use viewer_world::scene::FactionHighlight;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Key {

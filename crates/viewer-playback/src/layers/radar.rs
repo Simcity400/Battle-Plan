@@ -11,7 +11,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_world::map::radar_symbols::Group;
+use viewer_aircraft::radar_symbols::Group;
 
 #[derive(Clone, Copy)]
 struct Columns {
@@ -52,7 +52,7 @@ pub struct Radar {
     index: BTreeMap<u128, u32>,
     whole: bool,
     ours: Option<u32>,
-    field: Option<Arc<viewer_world::map::radar_symbols::Field>>,
+    field: Option<Arc<viewer_aircraft::radar_symbols::Field>>,
     field_dirty: bool,
     statuses: std::collections::HashMap<usize, replay_columnar::manifest::Status>,
     frame: u64,
@@ -88,7 +88,7 @@ impl Radar {
         self.marked
     }
 
-    pub fn field(&self) -> Option<Arc<viewer_world::map::radar_symbols::Field>> {
+    pub fn field(&self) -> Option<Arc<viewer_aircraft::radar_symbols::Field>> {
         self.field.clone()
     }
 
@@ -271,7 +271,7 @@ impl Layer for Radar {
         }
         let assets = &gpu.content.assets;
         let heights = viewer_foundation::map::province_map::HeightField { width: assets.heightmap.width, height: assets.heightmap.height, values: assets.heightmap_texels() };
-        let mut field = viewer_world::map::radar_symbols::Field::default();
+        let mut field = viewer_aircraft::radar_symbols::Field::default();
         match (self.ours, self.groups(self.ours.unwrap_or(u32::MAX))) {
             (Some(ours), Ok(groups)) => field.groups(groups, ours, heights, &gpu.content.radar_centers),
             (_, Err(why)) => *field.refused.entry(why).or_default() += 1,

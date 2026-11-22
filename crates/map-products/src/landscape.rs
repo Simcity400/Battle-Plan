@@ -13,16 +13,14 @@ use viewer_foundation::{
     map::{name_draw::Placements, perspective, tables::core},
     profiling::BuilderSpans,
 };
-use viewer_world::map::{
-    demilitarized::{self, Zone},
-    labels,
-    map_buildings::{self, BuildingsBase, MapBuildingSummary},
-    map_mode::{self, ColourState, MapMode, ModeFill},
-    models::ModelField,
-    name_pass::{self, NameAreas, NameContent, PlacedAreas, PlacementInputs},
-    naval_dominance, political,
-    railways::{self, Bridges, RailGeometry, RailNetwork},
-};
+use viewer_borders::demilitarized::{self, Zone};
+use viewer_map_icons::labels;
+use viewer_buildings::map_buildings::{self, BuildingsBase, MapBuildingSummary};
+use viewer_map_modes::{map_mode::{self, MapMode}, naval_dominance, political};
+use map_display_data::landscape::{ColourState, ModeFill};
+use viewer_models::ModelField;
+use viewer_map_text::name_pass::{self, NameAreas, NameContent, PlacedAreas, PlacementInputs};
+use viewer_rail::railways::{self, Bridges, RailGeometry, RailNetwork};
 
 #[derive(Default)]
 pub(crate) struct Projections {
@@ -298,7 +296,7 @@ impl ProductHour<'_> {
         }
         let ours = self.vision(choice)?.ours();
         let selected = diplomatic_selection(mode, ours, selected);
-        map_mode::resolved::apply(
+        map_display_data::landscape::apply_mode(
             self.mode_projection(content, mode, selected)?.as_ref(),
             previous,
         )
@@ -318,7 +316,7 @@ impl ProductHour<'_> {
         let ours = self.vision(choice)?.ours();
         let selected = diplomatic_selection(mode, ours, selected);
         let projection = self.mode_projection(content, mode, selected)?;
-        let fill = map_mode::resolved::apply(&projection, previous)?;
+        let fill = map_display_data::landscape::apply_mode(&projection, previous)?;
         let colour = fill.colour.clone();
         let territory = self.territory()?;
         let naval = {
@@ -454,7 +452,7 @@ impl ProductHour<'_> {
         *products = Some((key, Arc::clone(&product)));
         Ok(product)
     }
-    pub fn zone(&self, regions: &political::Regions, extra: &BTreeSet<u32>) -> io::Result<Zone> {
+    pub fn zone(&self, regions: &map_display_data::landscape::Regions, extra: &BTreeSet<u32>) -> io::Result<Zone> {
         let mut states = demilitarized::recorded_states(self.frame)?;
         states.extend(extra.iter().copied());
         Ok(Zone::new(&self.content.map, regions, &states))

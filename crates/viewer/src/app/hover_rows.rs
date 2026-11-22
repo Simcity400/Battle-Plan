@@ -706,7 +706,7 @@ impl super::Viewer {
             }
             Family::Counters => self.counter_report.land_hovers.first().map(|hover| middle(hover.rect)),
             Family::Naval => self.counter_report.naval_region_hovers.iter().find(|hover| matches!(hover.control, viewer_counters::map::counters::NavalRegionalControl::Mines | viewer_counters::map::counters::NavalRegionalControl::Accidents)).map(|hover| middle(hover.rect)),
-            Family::Occupation => self.overlay_hits.occupation.iter().find(|hit| matches!(hit.hover, viewer_world::map::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
+            Family::Occupation => self.overlay_hits.occupation.iter().find(|hit| matches!(hit.hover, viewer_map_icons::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
             Family::Capture => None,
         }
     }

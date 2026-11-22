@@ -19,7 +19,7 @@ use viewer_foundation::map::{
     frame::DayNight,
     presentation::{Continuity, UnitRestart},
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const BRANCH: BranchId = 1;
 const LAST: Hour = 11;

@@ -22,14 +22,11 @@ use std::{
 };
 use map_display_data::{buildings as wire, value_index::ValueIndex};
 use viewer_foundation::map::perspective::{Choice, MAP_OBJECT_VISIBILITY, Vision};
-use viewer_world::map::{
-    map_buildings::{
-        BuildingInput, CityTerrain, FLOATING_HARBOR_VISIBILITY, HarbourCounts, MapBuildingAssets, SlotPages, WIRE_CHUNK as CHUNK, WireHour,
-        MapBuildingSummary, PreparedSlot, READS_DETECTION, READS_FOG, READS_HUB, Scope, SlotGates, TokenClass, detected,
-        health_state,
-    },
+use viewer_buildings::{
+    map_buildings::{BuildingInput, CityTerrain, FLOATING_HARBOR_VISIBILITY, HarbourCounts, MapBuildingAssets, SlotPages, WIRE_CHUNK as CHUNK, WireHour, MapBuildingSummary, PreparedSlot, READS_DETECTION, READS_FOG, READS_HUB, SlotGates, TokenClass, detected, health_state},
     sprawl::average_health,
 };
+use viewer_foundation::map::building_facts::Scope;
 
 const TABLES: [TableId; 2] = [TableId::StateBuildings, TableId::ProvinceBuildings];
 

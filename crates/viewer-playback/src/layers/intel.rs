@@ -203,7 +203,7 @@ impl Layer for Intel {
             }
             _ => map_display_data::Paged::try_from_vec(self.texels.clone())?,
         };
-        gpu.scene.set_hour_layers(gpu.device, gpu.queue, viewer_world::map::scene::HourLayers { buildings: None, political: None, border_plans: None, snow_mud: None, fog: Some((&texels, self.drawn)), unit_models: None, rails: None, names: None, orders: None })?;
+        gpu.scene.set_hour_layers(gpu.device, gpu.queue, viewer_world::scene::HourLayers { buildings: None, political: None, border_plans: None, snow_mud: None, fog: Some((&texels, self.drawn)), unit_models: None, rails: None, names: None, orders: None })?;
         self.shown = Some(texels);
         self.shown_drawn = self.drawn;
         self.upload_cells.clear();

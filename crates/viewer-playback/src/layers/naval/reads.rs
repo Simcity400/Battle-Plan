@@ -3,7 +3,7 @@ use super::super::{Inputs, List, Num, owned::opaque};
 use crate::playhead_host::mirror::{Cell, Mirror};
 use replay_data::rows::{DirectedWars, Recorded, ReservedReverseVisibilityInputs, ReverseZeroVisibilityInputs, TableId};
 use std::io;
-use viewer_world::map::naval_dominance::Supremacy;
+use viewer_map_modes::naval_dominance::Supremacy;
 
 pub(super) const TABLES: [TableId; 9] = [
     TableId::NavalSupremacy,
